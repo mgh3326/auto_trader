@@ -1,6 +1,6 @@
 from fastapi import FastAPI
-from core.scheduler import start_scheduler
-from routers import telegram, dashboard, health
+from app.core import start_scheduler
+from app.routers import telegram, dashboard, health
 
 def create_app() -> FastAPI:
     app = FastAPI(title="KIS Auto Screener", version="0.1.0")

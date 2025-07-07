@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
-from jobs.screener import screen_once_async
-from services.telegram import send
+from app.jobs.screener import screen_once_async
+from app.services.telegram import send
 
 router = APIRouter(prefix="/telegram", tags=["Telegram"])
 

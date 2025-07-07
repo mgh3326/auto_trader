@@ -30,7 +30,7 @@ async def dashboard_home(request: Request):
 # ───────── API 예시: 최근 알림 목록 ──────────
 # jobs.screener.DedupCache 같은 in-memory 구조를 가져다 쓰는 예시
 try:
-    from jobs.screener import dedup  # 최근 알림을 보관하는 LRUCache
+    from app.jobs.screener import dedup  # 최근 알림을 보관하는 LRUCache
 except ModuleNotFoundError:
     dedup = None
 

@@ -1,5 +1,5 @@
-import httpx, asyncio
-from core.config import settings
+import httpx
+from app.core.config import settings
 
 BASE = f"https://api.telegram.org/bot{settings.telegram_token}"
 

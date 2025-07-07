@@ -1,6 +1,6 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from jobs.screener import screen_once_async
-from core.config import settings
+from app.jobs.screener import screen_once_async
+from app.core.config import settings
 import pytz
 
 sched = AsyncIOScheduler(timezone=pytz.timezone("Asia/Seoul"))
