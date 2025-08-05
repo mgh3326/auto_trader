@@ -1,19 +1,17 @@
 # debug_kis.py
-import asyncio, json
+import asyncio
 
 import pandas as pd
 
 from app.analysis.prompt import build_prompt
 from app.services.kis import kis  # 경로는 실제 패키지 구조에 맞게
-import ta
-
 from data.stocks_info import KOSPI_NAME_TO_CODE
 
 
 async def main():
     # price = await kis.inquire_price("005930")   # 삼성전자
     # print(json.dumps(price, indent=2, ensure_ascii=False))
-    stock_code = KOSPI_NAME_TO_CODE.get("삼성전자")
+    stock_code = KOSPI_NAME_TO_CODE.get("SK하이닉스")
     df = await kis.inquire_daily_itemchartprice(stock_code)
     today_now = await kis.inquire_price(stock_code)  # 1행 DataFrame, index='code'
     df_full = (
@@ -22,8 +20,8 @@ async def main():
         .reset_index(drop=True)
     )
 
-    df_full["diff"] = df_full.close.diff()
-    df_full["pct"] = df_full.close.pct_change() * 100
+    # df_full["diff"] = df_full.close.diff()
+    # df_full["pct"] = df_full.close.pct_change() * 100
 
     prompt = build_prompt(df, stock_code)
     print(prompt)

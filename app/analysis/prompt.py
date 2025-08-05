@@ -4,7 +4,12 @@ import ta
 from .indicators import add_indicators
 
 
-def build_prompt(df: pd.DataFrame, ticker: str) -> str:
+def build_prompt(
+    df: pd.DataFrame,
+    ticker: str,
+    currency: str = "₩",
+    unit_shares: str = "주",
+) -> str:
     df = add_indicators(df).sort_values("date").reset_index(drop=True)
     """
     df : FHKST03010100 로 가져온 100-행 DataFrame
@@ -40,19 +45,23 @@ def build_prompt(df: pd.DataFrame, ticker: str) -> str:
     )
     today_diff = today["diff"]
     today_pct = today["pct"]
+    obs_date = today["date"]
+    if hasattr(obs_date, "date"):  # Timestamp → date 로 변환
+        obs_date = obs_date.date()
 
     # ─ 2) 프롬프트 구성 ────────────────────────────────
     prompt = f"""
-    종목코드 {ticker} (관측일 {today.date.date()})
+    종목코드 {ticker} (관측일 {obs_date})
     {tech_summary}
 
     [가격 지표]
-    - 현재가 : {today.close:,.0f}원
-    - MA 5/20/60 : {ma5:,.0f} / {ma20:,.0f} / {ma60:,.0f}
-    - 전일 대비 : {today_diff:+,.0f}원 ({today_pct:+.2f}%)
+    - 현재가 : {today.close:,.2f}{currency}
+    - MA 5/20/60 : {ma5:,.2f} / {ma20:,.2f} / {ma60:,.2f}{currency}
+    - 전일 대비 : {today_diff:+,.2f}{currency} ({today_pct:+.2f}%)
     - RSI(14)   : {rsi14:.1f}
+
     [거래량 지표]
-    - 오늘 거래량 : {today.volume:,.0f}주
+    - 오늘 거래량 : {today.volume:,.0f}{unit_shares}
     - 전일 대비   : {today.vol_rate:+.2f}%
 
     [최근 10거래일 (날짜·종가·거래량)]
