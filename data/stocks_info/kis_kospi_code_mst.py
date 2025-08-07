@@ -14,6 +14,7 @@ PROJ_ROOT = Path(__file__).resolve().parents[2]  # 프로젝트 루트로 조정
 CACHE_DIR = PROJ_ROOT / "tmp"
 CACHE_DIR.mkdir(exist_ok=True)
 CACHE_FILE = CACHE_DIR / "kospi_master_cache.json"
+LIFETIME = 24 * 3600  # 24 h
 
 
 def _download_and_parse_kospi_master() -> dict[str, str]:
@@ -113,9 +114,6 @@ def _save_cache_data(name_to_code: dict[str, str]) -> None:
         json.dumps(cache_data, ensure_ascii=False, indent=2),
         encoding='utf-8'
     )
-
-
-LIFETIME = 24 * 3600  # 24 h
 
 
 def _load_cached_data() -> dict[str, str] | None:

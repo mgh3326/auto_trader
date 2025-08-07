@@ -5,13 +5,13 @@ import pandas as pd
 
 from app.analysis.prompt import build_prompt
 from app.services.kis import kis  # 경로는 실제 패키지 구조에 맞게
-from data.stocks_info import KOSPI_NAME_TO_CODE
+from data.stocks_info import KOSPI_NAME_TO_CODE, KOSDAQ_NAME_TO_CODE, KRX_NAME_TO_CODE
 
 
 async def main():
     # price = await kis.inquire_price("005930")   # 삼성전자
     # print(json.dumps(price, indent=2, ensure_ascii=False))
-    stock_code = KOSPI_NAME_TO_CODE.get("SK하이닉스")
+    stock_code = KRX_NAME_TO_CODE.get("에코프로")
     df = await kis.inquire_daily_itemchartprice(stock_code)
     today_now = await kis.inquire_price(stock_code)  # 1행 DataFrame, index='code'
     df_full = (
