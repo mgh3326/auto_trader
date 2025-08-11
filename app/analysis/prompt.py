@@ -5,10 +5,11 @@ from .indicators import add_indicators
 
 
 def build_prompt(
-    df: pd.DataFrame,
-    ticker: str,
-    currency: str = "₩",
-    unit_shares: str = "주",
+        df: pd.DataFrame,
+        ticker: str,
+        stock_name: str,
+        currency: str = "₩",
+        unit_shares: str = "주",
 ) -> str:
     df = add_indicators(df).sort_values("date").reset_index(drop=True)
     """
@@ -25,9 +26,8 @@ def build_prompt(
         f"BB폭 {(latest.bb_width / latest.close) * 100:.1f}%, "
         f"Stoch %K {latest.stoch_k:.1f}"
     )
-    ma5 = df.close.rolling(5).mean().iloc[-1]
-    ma20 = df.close.rolling(20).mean().iloc[-1]
-    ma60 = df.close.rolling(60).mean().iloc[-1]
+    df = add_ma(df, windows=(5, 20, 60, 120, 200))
+    ma_line = format_ma_line(df, currency)
     rsi14 = ta.momentum.RSIIndicator(df.close).rsi().iloc[-1]
 
     # 전일 대비·등락률·거래량 증감
@@ -51,12 +51,12 @@ def build_prompt(
 
     # ─ 2) 프롬프트 구성 ────────────────────────────────
     prompt = f"""
-    종목코드 {ticker} (관측일 {obs_date})
+    {stock_name}({ticker}) (관측일 {obs_date})
     {tech_summary}
 
     [가격 지표]
+    {ma_line}
     - 현재가 : {today.close:,.2f}{currency}
-    - MA 5/20/60 : {ma5:,.2f} / {ma20:,.2f} / {ma60:,.2f}{currency}
     - 전일 대비 : {today_diff:+,.2f}{currency} ({today_pct:+.2f}%)
     - RSI(14)   : {rsi14:.1f}
 
@@ -70,5 +70,25 @@ def build_prompt(
     [질문]
     위 정보만으로 오늘 매수·관망·매도 중 하나를 선택하고,
     근거를 3줄 이내로 한글로 설명해 주세요.
+    적절한 매수,매도 가격도 알려줘
+    매수 희망가, 매도 목표가도 부탁해
     """
     return prompt.strip()
+
+
+def add_ma(df: pd.DataFrame, windows=(5, 20, 60, 120, 200)) -> pd.DataFrame:
+    df = df.copy()
+    for w in windows:
+        df[f"ma{w}"] = df["close"].rolling(window=w, min_periods=w).mean()
+    return df
+
+
+def format_ma_line(df: pd.DataFrame, currency, windows=(5, 20, 60, 120, 200)) -> str:
+    """마지막 행 기준으로 값이 있는 MA만 골라 'MA 5/20/... : v1 / v2 / ...' 형태로 반환"""
+    last = df.iloc[-1]
+    avail = [w for w in windows if not pd.isna(last[f"ma{w}"])]
+    if not avail:
+        return "- MA : 자료 부족"
+    labels = "/".join(str(w) for w in avail)
+    values = " / ".join(f"{last[f'ma{w}']:,.0f}" for w in avail)
+    return f"- MA {labels} : {values} {currency}"

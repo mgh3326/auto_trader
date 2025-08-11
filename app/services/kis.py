@@ -135,52 +135,61 @@ class KISClient:
             self,
             code: str,
             market: str = "J",
-            n: int = 100,
+            n: int = 200,  # 최종 확보하고 싶은 캔들 수
             adj: bool = True,
+            period: str = "D",  # D/W/M (일/주/월봉)
+            end_date: datetime.date | None = None,  # None이면 오늘까지
+            per_call_days: int = 150,  # 한 번 호출 시 조회 날짜 폭
     ) -> pd.DataFrame:
         """
-        ✅ 최근 n개 일봉 OHLCV를 DataFrame으로 반환
-        :param code: 6자리 종목코드
-        :param market: K(코스피)/Q(코스닥)/J(통합)
-        :param n: 반환할 캔들 수 (최대 100)
-        :param adj: True → 수정주가(권배정 반영), False → 원본
+        ✅ KIS 일봉/주봉/월봉을 여러 번 호출해 최근 n개 OHLCV만 반환
+           (이평 같은 지표 계산은 외부에서!)
+        컬럼: date • open • high • low • close • volume • value
         """
-        if n > 100:
-            raise ValueError("KIS 일봉 API는 호출당 최대 100건만 반환합니다.")
-
         await self._ensure_token()
         hdr = self._hdr_base | {
             "authorization": f"Bearer {settings.kis_access_token}",
             "tr_id": DAILY_ITEMCHARTPRICE_TR,
         }
-        today = datetime.date.today()
-        start = today - datetime.timedelta(days=150)
-        params = {
-            "FID_COND_MRKT_DIV_CODE": market,
-            "FID_INPUT_ISCD": code.zfill(6),
-            "FID_PERIOD_DIV_CODE": "D",  # 일봉 고정
-            "FID_ORG_ADJ_PRC": "0" if adj else "1",  # 0 = 수정, 1 = 원본
-            # 날짜 범위를 지정하려면 FID_INPUT_DATE_1, FID_INPUT_DATE_2 추가
-            "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),  # ★ 시작일
-            "FID_INPUT_DATE_2": today.strftime("%Y%m%d"),  # ★ 종료일
-        }
 
-        async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(f"{BASE}{DAILY_ITEMCHARTPRICE_URL}", headers=hdr, params=params)
-        js = r.json()
+        end = end_date or datetime.date.today()
+        rows: list[dict] = []
 
-        # 토큰 만료 처리
-        if js["rt_cd"] == "0":
-            rows = js["output2"]  # list[dict] OHLCV
-        elif js["msg_cd"] == "EGW00123":
-            settings.kis_access_token = await self._fetch_token()
-            return await self.inquire_daily_itemchartprice(code, market, n, adj)
-        else:
-            raise RuntimeError(f'{js["msg_cd"]} {js["msg1"]}')
+        while len(rows) < n:
+            start = end - datetime.timedelta(days=per_call_days)
+            params = {
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+                "FID_PERIOD_DIV_CODE": period,  # 'D'|'W'|'M'
+                "FID_ORG_ADJ_PRC": "0" if adj else "1",  # 0=수정, 1=원본
+                "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+            }
 
-        # ── DataFrame 변환 ───────────────────────────────
+            async with httpx.AsyncClient(timeout=5) as cli:
+                r = await cli.get(f"{BASE}{DAILY_ITEMCHARTPRICE_URL}", headers=hdr, params=params)
+            js = r.json()
+
+            if js.get("rt_cd") != "0":
+                if js.get("msg_cd") == "EGW00123":  # 토큰 만료
+                    settings.kis_access_token = await self._fetch_token()
+                    continue
+                raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+
+            chunk = js.get("output2") or js.get("output") or []
+            if not chunk:
+                break  # 더 과거 없음
+
+            rows.extend(chunk)
+
+            # 다음 루프에서 더 과거로
+            oldest_str = min(c["stck_bsop_date"] for c in chunk)  # 'YYYYMMDD'
+            oldest = datetime.datetime.strptime(oldest_str, "%Y%m%d").date()
+            end = oldest - datetime.timedelta(days=1)
+
+        # ---- DataFrame 변환 (지표 계산 없음) ----
         df = (
-            pd.DataFrame(rows[:n])  # 최근부터 100개이므로 [:n]
+            pd.DataFrame(rows)
             .rename(columns={
                 "stck_bsop_date": "date",
                 "stck_oprc": "open",
@@ -198,9 +207,11 @@ class KISClient:
                 "close": "float",
                 "volume": "int",
                 "value": "int",
-            })
-            .assign(date=lambda d: pd.to_datetime(d.date, format="%Y%m%d"))
-            .sort_values("date")  # 과거→현재 순서
+            }, errors="ignore")
+            .assign(date=lambda d: pd.to_datetime(d["date"], format="%Y%m%d"))
+            .drop_duplicates(subset=["date"], keep="first")
+            .sort_values("date")
+            .tail(n)  # 요청한 개수만
             .reset_index(drop=True)
         )
         return df
