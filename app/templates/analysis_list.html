@@ -15,70 +15,131 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background-color: #f5f5f5;
             color: #333;
+            font-size: 14px;
         }
         
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            padding: 20px;
+            padding: 10px;
+        }
+        
+        @media (min-width: 768px) {
+            .container {
+                padding: 20px;
+            }
         }
         
         .header {
             background: white;
-            padding: 20px;
+            padding: 15px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
+            margin-bottom: 15px;
+        }
+        
+        @media (min-width: 768px) {
+            .header {
+                padding: 20px;
+                margin-bottom: 20px;
+            }
         }
         
         .header h1 {
             color: #2c3e50;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
+            font-size: 1.5rem;
+        }
+        
+        @media (min-width: 768px) {
+            .header h1 {
+                font-size: 2rem;
+                margin-bottom: 10px;
+            }
+        }
+        
+        .header p {
+            font-size: 0.9rem;
+            color: #666;
+        }
+        
+        @media (min-width: 768px) {
+            .header p {
+                font-size: 1rem;
+            }
         }
         
         .filters {
             background: white;
-            padding: 20px;
+            padding: 15px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
+            margin-bottom: 15px;
+        }
+        
+        @media (min-width: 768px) {
+            .filters {
+                padding: 20px;
+                margin-bottom: 20px;
+            }
         }
         
         .filter-row {
             display: flex;
-            gap: 15px;
-            align-items: center;
-            flex-wrap: wrap;
-            margin-bottom: 15px;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        @media (min-width: 768px) {
+            .filter-row {
+                flex-direction: row;
+                gap: 15px;
+                align-items: flex-end;
+                flex-wrap: wrap;
+                margin-bottom: 15px;
+            }
         }
         
         .filter-group {
             display: flex;
             flex-direction: column;
             gap: 5px;
+            flex: 1;
+            min-width: 0;
         }
         
         .filter-group label {
             font-weight: 500;
             color: #555;
+            font-size: 0.9rem;
         }
         
         .filter-group select, .filter-group input {
-            padding: 8px 12px;
+            padding: 10px 12px;
             border: 1px solid #ddd;
-            border-radius: 4px;
+            border-radius: 6px;
             font-size: 14px;
+            width: 100%;
         }
         
         .btn {
-            padding: 8px 16px;
+            padding: 10px 16px;
             background: #3498db;
             color: white;
             border: none;
-            border-radius: 4px;
+            border-radius: 6px;
             cursor: pointer;
             font-size: 14px;
             transition: background 0.2s;
+            width: 100%;
+            margin-top: 5px;
+        }
+        
+        @media (min-width: 768px) {
+            .btn {
+                width: auto;
+                margin-top: 0;
+            }
         }
         
         .btn:hover {
@@ -101,24 +162,131 @@
         }
         
         .results-header {
-            padding: 20px;
+            padding: 15px;
             border-bottom: 1px solid #eee;
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        @media (min-width: 768px) {
+            .results-header {
+                padding: 20px;
+                flex-direction: row;
+                justify-content: space-between;
+                align-items: center;
+                gap: 0;
+            }
+        }
+        
+        .results-header h3 {
+            font-size: 1.2rem;
+        }
+        
+        @media (min-width: 768px) {
+            .results-header h3 {
+                font-size: 1.3rem;
+            }
         }
         
         .results-count {
             color: #666;
+            font-size: 0.9rem;
         }
         
         .table-container {
             overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        
+        /* 모바일에서 테이블을 카드 형태로 표시 */
+        @media (max-width: 767px) {
+            .mobile-cards {
+                display: block;
+            }
+            
+            .mobile-cards .card {
+                background: #f8f9fa;
+                margin: 10px;
+                padding: 15px;
+                border-radius: 8px;
+                border: 1px solid #eee;
+            }
+            
+            .mobile-cards .card-row {
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 8px;
+                padding-bottom: 8px;
+                border-bottom: 1px solid #eee;
+            }
+            
+            .mobile-cards .card-row:last-child {
+                border-bottom: none;
+                margin-bottom: 0;
+            }
+            
+            .mobile-cards .card-label {
+                font-weight: 600;
+                color: #555;
+                min-width: 80px;
+            }
+            
+            .mobile-cards .card-value {
+                text-align: right;
+                flex: 1;
+                margin-left: 10px;
+            }
+            
+            .mobile-cards .symbol {
+                font-weight: 600;
+                color: #2c3e50;
+                font-size: 1.1rem;
+            }
+            
+            .mobile-cards .instrument-type {
+                padding: 4px 8px;
+                border-radius: 12px;
+                font-size: 11px;
+                font-weight: 500;
+                text-align: center;
+                display: inline-block;
+                min-width: 60px;
+            }
+            
+            .mobile-cards .result-text {
+                max-width: none;
+                white-space: normal;
+                line-height: 1.4;
+            }
+            
+            .mobile-cards .expand-btn {
+                margin-top: 8px;
+                width: 100%;
+                padding: 8px;
+                background: #f8f9fa;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+        }
+        
+        /* 데스크톱에서만 테이블 표시 */
+        @media (min-width: 768px) {
+            .mobile-cards {
+                display: none;
+            }
         }
         
         table {
             width: 100%;
             border-collapse: collapse;
+            display: none;
+        }
+        
+        @media (min-width: 768px) {
+            table {
+                display: table;
+            }
         }
         
         th, td {
@@ -176,17 +344,26 @@
             justify-content: center;
             align-items: center;
             gap: 10px;
-            padding: 20px;
+            padding: 15px;
             background: white;
             border-top: 1px solid #eee;
+            flex-wrap: wrap;
+        }
+        
+        @media (min-width: 768px) {
+            .pagination {
+                padding: 20px;
+            }
         }
         
         .pagination button {
-            padding: 8px 12px;
+            padding: 10px 16px;
             border: 1px solid #ddd;
             background: white;
             cursor: pointer;
-            border-radius: 4px;
+            border-radius: 6px;
+            font-size: 14px;
+            min-width: 60px;
         }
         
         .pagination button:hover:not(:disabled) {
@@ -199,15 +376,17 @@
         }
         
         .pagination .current-page {
-            padding: 8px 12px;
+            padding: 10px 16px;
             background: #3498db;
             color: white;
-            border-radius: 4px;
+            border-radius: 6px;
+            min-width: 40px;
+            text-align: center;
         }
         
         .loading {
             text-align: center;
-            padding: 40px;
+            padding: 40px 20px;
             color: #666;
         }
         
@@ -216,7 +395,7 @@
             color: #721c24;
             padding: 15px;
             border-radius: 4px;
-            margin: 20px 0;
+            margin: 15px;
         }
         
         .result-text {
@@ -224,11 +403,21 @@
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            height: 20px;
+            line-height: 20px;
         }
         
         .result-text.expanded {
             white-space: normal;
             max-width: none;
+            height: auto;
+            max-height: 200px;
+            overflow-y: auto;
+            line-height: 1.4;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border: 1px solid #eee;
         }
         
         .expand-btn {
@@ -238,6 +427,48 @@
             cursor: pointer;
             text-decoration: underline;
             font-size: 12px;
+            margin-top: 5px;
+            display: block;
+        }
+        
+        /* 분석 결과 컬럼 고정 너비 */
+        .result-column {
+            width: 300px;
+            min-width: 300px;
+            max-width: 300px;
+        }
+        
+        /* 모바일에서 결과 텍스트 최적화 */
+        @media (max-width: 767px) {
+            .mobile-cards .result-text {
+                max-width: none;
+                white-space: normal;
+                line-height: 1.4;
+                height: auto;
+                max-height: 150px;
+                overflow-y: auto;
+            }
+            
+            .mobile-cards .result-text.expanded {
+                max-height: none;
+                background: #f8f9fa;
+                padding: 8px;
+                border-radius: 4px;
+                border: 1px solid #eee;
+            }
+        }
+        
+        /* 모바일 최적화된 로딩 상태 */
+        @media (max-width: 767px) {
+            .loading {
+                padding: 20px;
+                font-size: 0.9rem;
+            }
+            
+            .error {
+                margin: 10px;
+                font-size: 0.9rem;
+            }
         }
     </style>
 </head>
@@ -287,6 +518,12 @@
                 <div class="results-count" id="resultsCount">총 0건</div>
             </div>
             
+            <!-- 모바일용 카드 뷰 -->
+            <div class="mobile-cards" id="mobileCards">
+                <div class="loading">데이터를 불러오는 중...</div>
+            </div>
+            
+            <!-- 데스크톱용 테이블 뷰 -->
             <div class="table-container">
                 <table id="resultsTable">
                     <thead>
@@ -295,7 +532,7 @@
                             <th>종목명</th>
                             <th>상품타입</th>
                             <th>모델명</th>
-                            <th>분석 결과</th>
+                            <th class="result-column">분석 결과</th>
                             <th>생성일시</th>
                         </tr>
                     </thead>
@@ -327,9 +564,16 @@
             loadModelNames();
         });
         
-        // 상품 타입 변경 시 종목 코드 업데이트
+        // 종목 코드 변경 시 모델명 업데이트
+        document.getElementById('symbol').addEventListener('change', function() {
+            loadModelNames();
+            loadResults();
+        });
+        
+        // 상품 타입 변경 시 종목 코드와 모델명 업데이트
         document.getElementById('instrumentType').addEventListener('change', function() {
             loadSymbols();
+            loadModelNames();
             loadResults();
         });
         
@@ -359,8 +603,9 @@
                 
             } catch (error) {
                 console.error('데이터 로드 실패:', error);
-                document.getElementById('resultsBody').innerHTML = 
-                    '<tr><td colspan="6" class="error">데이터 로드에 실패했습니다.</td></tr>';
+                const errorMsg = '<tr><td colspan="6" class="error">데이터 로드에 실패했습니다.</td></tr>';
+                document.getElementById('resultsBody').innerHTML = errorMsg;
+                document.getElementById('mobileCards').innerHTML = '<div class="error">데이터 로드에 실패했습니다.</div>';
             }
         }
         
@@ -369,10 +614,12 @@
             try {
                 const instrumentType = document.getElementById('instrumentType').value;
                 const symbol = document.getElementById('symbol').value;
+                const modelName = document.getElementById('modelName').value;
                 
                 const params = new URLSearchParams();
                 if (instrumentType) params.append('instrument_type', instrumentType);
                 if (symbol) params.append('symbol', symbol);
+                if (modelName) params.append('model_name', modelName);
                 
                 const response = await fetch(`/dashboard/api/analysis/count?${params}`);
                 const data = await response.json();
@@ -414,30 +661,51 @@
             }
         }
         
-        // 모델명 목록 로드 (임시로 하드코딩)
+        // 모델명 목록 로드 (API에서 실제 데이터 가져오기)
         async function loadModelNames() {
-            const modelSelect = document.getElementById('modelName');
-            modelSelect.innerHTML = '<option value="">전체</option>';
-            
-            // 실제로는 API에서 가져와야 하지만 임시로 하드코딩
-            const models = ['gpt-4', 'gpt-3.5-turbo', 'claude-3-sonnet'];
-            models.forEach(model => {
-                const option = document.createElement('option');
-                option.value = model;
-                option.textContent = model;
-                modelSelect.appendChild(option);
-            });
+            try {
+                const instrumentType = document.getElementById('instrumentType').value;
+                const symbol = document.getElementById('symbol').value;
+                
+                const params = new URLSearchParams();
+                if (instrumentType) params.append('instrument_type', instrumentType);
+                if (symbol) params.append('symbol', symbol);
+                
+                const response = await fetch(`/dashboard/api/analysis/models?${params}`);
+                const data = await response.json();
+                
+                const modelSelect = document.getElementById('modelName');
+                modelSelect.innerHTML = '<option value="">전체</option>';
+                
+                const models = data.models || [];
+                models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model;
+                    option.textContent = model;
+                    modelSelect.appendChild(option);
+                });
+                
+            } catch (error) {
+                console.error('모델명 로드 실패:', error);
+                // 에러 발생 시 기본 모델명 표시
+                const modelSelect = document.getElementById('modelName');
+                modelSelect.innerHTML = '<option value="">전체</option>';
+            }
         }
         
-        // 결과 표시
+        // 결과 표시 (모바일과 데스크톱 모두 지원)
         function displayResults(data) {
             const tbody = document.getElementById('resultsBody');
+            const mobileCards = document.getElementById('mobileCards');
             
             if (data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="loading">데이터가 없습니다.</td></tr>';
+                const noDataMsg = '<tr><td colspan="6" class="loading">데이터가 없습니다.</td></tr>';
+                tbody.innerHTML = noDataMsg;
+                mobileCards.innerHTML = '<div class="loading">데이터가 없습니다.</div>';
                 return;
             }
             
+            // 데스크톱 테이블용 HTML
             tbody.innerHTML = data.map(item => `
                 <tr>
                     <td class="symbol">${item.symbol}</td>
@@ -448,7 +716,7 @@
                         </span>
                     </td>
                     <td>${item.model_name || '-'}</td>
-                    <td>
+                    <td class="result-column">
                         <div class="result-text" id="result-${item.id}">
                             ${item.result.substring(0, 100)}${item.result.length > 100 ? '...' : ''}
                         </div>
@@ -458,6 +726,47 @@
                     </td>
                     <td>${formatDateTime(item.created_at)}</td>
                 </tr>
+            `).join('');
+            
+            // 모바일 카드용 HTML
+            mobileCards.innerHTML = data.map(item => `
+                <div class="card">
+                    <div class="card-row">
+                        <span class="card-label">종목</span>
+                        <span class="card-value symbol">${item.symbol}</span>
+                    </div>
+                    <div class="card-row">
+                        <span class="card-label">종목명</span>
+                        <span class="card-value">${item.name}</span>
+                    </div>
+                    <div class="card-row">
+                        <span class="card-label">상품타입</span>
+                        <span class="card-value">
+                            <span class="instrument-type ${getInstrumentTypeClass(item.instrument_type)}">
+                                ${getInstrumentTypeLabel(item.instrument_type)}
+                            </span>
+                        </span>
+                    </div>
+                    <div class="card-row">
+                        <span class="card-label">모델명</span>
+                        <span class="card-value">${item.model_name || '-'}</span>
+                    </div>
+                    <div class="card-row">
+                        <span class="card-label">분석 결과</span>
+                        <span class="card-value">
+                            <div class="result-text" id="mobile-result-${item.id}">
+                                ${item.result.substring(0, 150)}${item.result.length > 150 ? '...' : ''}
+                            </div>
+                            ${item.result.length > 150 ? 
+                                `<button class="expand-btn" onclick="toggleMobileResult(${item.id})">더보기</button>` : 
+                                ''}
+                        </span>
+                    </div>
+                    <div class="card-row">
+                        <span class="card-label">생성일시</span>
+                        <span class="card-value">${formatDateTime(item.created_at)}</span>
+                    </div>
+                </div>
             `).join('');
         }
         
@@ -485,21 +794,42 @@
             return labelMap[type] || type;
         }
         
-        // 결과 텍스트 토글
+        // 결과 텍스트 토글 (데스크톱)
         function toggleResult(id) {
             const resultDiv = document.getElementById(`result-${id}`);
             const isExpanded = resultDiv.classList.contains('expanded');
             
             if (isExpanded) {
                 resultDiv.classList.remove('expanded');
-                resultDiv.textContent = resultDiv.textContent.substring(0, 100) + '...';
+                resultDiv.innerHTML = resultDiv.innerHTML.substring(0, 100) + '...';
                 event.target.textContent = '더보기';
             } else {
                 // 전체 텍스트를 가져와서 표시
                 fetch(`/dashboard/api/analysis/${id}`)
                     .then(response => response.json())
                     .then(data => {
-                        resultDiv.textContent = data.result;
+                        resultDiv.innerHTML = data.result;
+                        resultDiv.classList.add('expanded');
+                        event.target.textContent = '접기';
+                    });
+            }
+        }
+        
+        // 결과 텍스트 토글 (모바일)
+        function toggleMobileResult(id) {
+            const resultDiv = document.getElementById(`mobile-result-${id}`);
+            const isExpanded = resultDiv.classList.contains('expanded');
+            
+            if (isExpanded) {
+                resultDiv.classList.remove('expanded');
+                resultDiv.innerHTML = resultDiv.innerHTML.substring(0, 150) + '...';
+                event.target.textContent = '더보기';
+            } else {
+                // 전체 텍스트를 가져와서 표시
+                fetch(`/dashboard/api/analysis/${id}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        resultDiv.innerHTML = data.result;
                         resultDiv.classList.add('expanded');
                         event.target.textContent = '접기';
                     });
@@ -543,6 +873,7 @@
             document.getElementById('modelName').value = '';
             currentPage = 1;
             loadSymbols();
+            loadModelNames();
             loadResults();
         }
     </script>

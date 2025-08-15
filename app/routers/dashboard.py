@@ -1,3 +1,4 @@
+# app/routers/dashboard.py
 from pathlib import Path
 from typing import List, Optional
 from sqlalchemy import select, desc
@@ -85,10 +86,57 @@ async def get_unique_symbols(
         return {"symbols": []}
 
 
+@router.get("/api/analysis/models")
+async def get_unique_models(
+    instrument_type: Optional[str] = None,
+    symbol: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    고유한 모델명 목록을 반환
+    """
+    print(f"Models API 호출됨 - instrument_type: {instrument_type}, symbol: {symbol}")
+    
+    try:
+        query = select(PromptResult.model_name).distinct()
+        
+        if instrument_type and instrument_type.strip():
+            print(f"모델명 필터링 적용: {instrument_type}")
+            try:
+                if instrument_type == "equity_kr":
+                    query = query.where(PromptResult.instrument_type == InstrumentType.equity_kr)
+                elif instrument_type == "equity_us":
+                    query = query.where(PromptResult.instrument_type == InstrumentType.equity_us)
+                elif instrument_type == "crypto":
+                    query = query.where(PromptResult.instrument_type == InstrumentType.crypto)
+                elif instrument_type == "forex":
+                    query = query.where(PromptResult.instrument_type == InstrumentType.forex)
+                elif instrument_type == "index":
+                    query = query.where(PromptResult.instrument_type == InstrumentType.index)
+            except Exception as e:
+                print(f"모델명 Instrument type 변환 에러: {e}")
+        
+        if symbol and symbol.strip():
+            query = query.where(PromptResult.symbol == symbol)
+        
+        result = await db.execute(query)
+        models = result.scalars().all()
+        
+        # None 값 제거하고 정렬
+        models = [model for model in models if model]
+        print(f"조회된 models: {models}")
+        
+        return {"models": sorted(models)}
+    except Exception as e:
+        print(f"Models API 에러: {e}")
+        return {"models": []}
+
+
 @router.get("/api/analysis/count")
 async def get_analysis_count(
     symbol: Optional[str] = None,
     instrument_type: Optional[str] = None,
+    model_name: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -103,6 +151,9 @@ async def get_analysis_count(
         
         if symbol and symbol.strip():
             query = query.where(PromptResult.symbol == symbol)
+        
+        if model_name and model_name.strip():
+            query = query.where(PromptResult.model_name == model_name)
         
         if instrument_type and instrument_type.strip():
             print(f"필터링 적용: {instrument_type}")
@@ -134,6 +185,7 @@ async def get_analysis_count(
 async def get_analysis_results(
     symbol: Optional[str] = None,
     instrument_type: Optional[str] = None,
+    model_name: Optional[str] = None,
     page: int = 1,
     limit: int = 20,
     db: AsyncSession = Depends(get_db)
@@ -148,6 +200,9 @@ async def get_analysis_results(
         
         if symbol and symbol.strip():
             query = query.where(PromptResult.symbol == symbol)
+        
+        if model_name and model_name.strip():
+            query = query.where(PromptResult.model_name == model_name)
         
         if instrument_type and instrument_type.strip():
             print(f"필터링 적용: {instrument_type}")
