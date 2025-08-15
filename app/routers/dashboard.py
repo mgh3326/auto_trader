@@ -272,7 +272,7 @@ async def get_analysis_result(
             "prompt": record.prompt,
             "result": record.result,
             "created_at": record.created_at.isoformat() if record.created_at else None,
-            "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+            "updated_at": record.updated_at.isbformat() if record.updated_at else None,
         }
     except Exception as e:
         print(f"Individual analysis API 에러: {e}")
