@@ -1,7 +1,7 @@
 # app/models/__init__.py
 from .base import Base
-from .trading import Exchange, Instrument, User, UserChannel, UserWatchItem
 from .prompt import PromptResult
+from .trading import Exchange, Instrument, User, UserChannel, UserWatchItem
 
 # 필요한 다른 모델도 전부 여기서 import
 # from .alert import AlertRule, AlertEvent

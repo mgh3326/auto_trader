@@ -95,7 +95,8 @@ async def fetch_price(market: str = "KRW-BTC") -> pd.DataFrame:
 
 # --- 작은 데모 스크립트 (직접 실행 시) ----------------------------------------
 if __name__ == "__main__":
-    import asyncio, pprint
+    import asyncio
+    import pprint
 
     async def demo():
         df = await fetch_ohlcv("KRW-BTC", 5)

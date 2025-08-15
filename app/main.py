@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.routers import health, dashboard
+from app.routers import dashboard, health
 
 
 def create_app() -> FastAPI:

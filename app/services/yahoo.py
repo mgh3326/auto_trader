@@ -1,6 +1,8 @@
 # app/services/yahoo.py
-import pandas as pd, yfinance as yf
 from datetime import datetime, timedelta, timezone
+
+import pandas as pd
+import yfinance as yf
 
 
 def _flatten_cols(df: pd.DataFrame) -> pd.DataFrame:

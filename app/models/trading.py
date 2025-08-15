@@ -1,16 +1,10 @@
-from sqlalchemy import (
-    BigInteger,
-    Text,
-    Boolean,
-    Numeric,
-    Enum,
-    ForeignKey,
-    TIMESTAMP,
-    Interval,
-)
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.models.base import Base
 import enum
+
+from sqlalchemy import (TIMESTAMP, BigInteger, Boolean, Enum, ForeignKey,
+                        Interval, Numeric, Text)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import Base
 
 
 class InstrumentType(str, enum.Enum):

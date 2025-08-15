@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Text, Enum, TIMESTAMP, text
+from sqlalchemy import TIMESTAMP, BigInteger, Enum, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base

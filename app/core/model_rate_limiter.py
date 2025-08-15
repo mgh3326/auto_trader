@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 import redis.asyncio as redis
 

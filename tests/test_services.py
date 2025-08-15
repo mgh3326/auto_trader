@@ -1,9 +1,11 @@
 """
 Tests for service modules.
 """
-import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pandas as pd
-from unittest.mock import AsyncMock, patch, MagicMock
+import pytest
+
 from app.services.upbit import fetch_ohlcv, fetch_price
 
 

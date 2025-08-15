@@ -1,6 +1,9 @@
 from __future__ import annotations
+
 import datetime as dt
+
 import dart_fss  # 또는 httpx로 OpenDART 직접 호출
+
 from app.core.config import settings  # OPEN_DART_API_KEY
 from data.disclosures.dart_corp_index import NAME_TO_CORP, prime_index
 

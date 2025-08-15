@@ -3,7 +3,7 @@ Tests for configuration module.
 """
 from unittest.mock import patch
 
-from app.core.config import settings, Settings
+from app.core.config import Settings, settings
 
 
 class TestSettings:

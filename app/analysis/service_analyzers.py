@@ -1,10 +1,12 @@
 from typing import List
+
 import pandas as pd
 
-from .analyzer import Analyzer, DataProcessor
-from app.services import upbit, yahoo, kis
+from app.services import kis, upbit, yahoo
 from data.coins_info import upbit_pairs
 from data.stocks_info import KRX_NAME_TO_CODE
+
+from .analyzer import Analyzer, DataProcessor
 
 
 class UpbitAnalyzer(Analyzer):

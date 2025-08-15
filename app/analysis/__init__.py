@@ -1,7 +1,7 @@
+from .analyzer import Analyzer, DataProcessor
 from .indicators import add_indicators
 from .prompt import build_prompt
-from .analyzer import Analyzer, DataProcessor
-from .service_analyzers import UpbitAnalyzer, YahooAnalyzer, KISAnalyzer
+from .service_analyzers import KISAnalyzer, UpbitAnalyzer, YahooAnalyzer
 
 __all__ = [
     "add_indicators",
