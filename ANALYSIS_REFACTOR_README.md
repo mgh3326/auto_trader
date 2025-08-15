@@ -64,6 +64,7 @@ python debug_unified.py
 3. **확장성**: 새로운 서비스 추가 시 간단한 상속만으로 구현 가능
 4. **일관성**: 모든 서비스에서 동일한 에러 처리 및 재시도 로직
 5. **테스트 용이성**: 공통 로직을 독립적으로 테스트 가능
+6. **스마트 모델 제한**: Redis 기반으로 429 에러 시 자동 모델 사용 제한
 
 ### 5. 마이그레이션 가이드
 
@@ -88,10 +89,156 @@ class CustomUpbitAnalyzer(UpbitAnalyzer):
 ```
 app/analysis/
 ├── __init__.py              # 모듈 export
-├── analyzer.py              # 핵심 분석기 클래스
+├── analyzer.py              # 핵심 분석기 클래스 (Redis 기반 모델 제한 포함)
 ├── service_analyzers.py     # 서비스별 분석기
 ├── prompt.py                # 프롬프트 생성 (기존)
 └── indicators.py            # 기술적 지표 (기존)
 
+app/core/
+├── config.py                # 설정 (Redis URL 포함)
+├── model_rate_limiter.py    # Redis 기반 모델 제한 관리자
+└── ...
+
 debug_*.py                   # 새로운 debug 파일들
+debug_model_status.py        # 모델 상태 확인 및 관리 도구
+```
+
+## Redis 기반 모델 제한 시스템
+
+### 개요
+Google Gemini API에서 429 에러(할당량 초과)가 발생하면, `retry_delay` 정보를 활용하여 **API 키별로** 해당 모델의 사용을 자동으로 제한합니다.
+
+### 주요 기능
+
+1. **API 키별 모델 제한**: 429 에러 발생 시 특정 API 키의 모델 사용을 제한
+2. **자동 모델 제한**: `retry_delay` 정보를 Redis에 저장하여 정확한 제한 시간 적용
+3. **스마트 재시도**: 제한된 API 키의 모델은 자동으로 건너뛰고 다음 모델 시도
+4. **실시간 상태 확인**: Redis를 통해 모델별, API 키별 제한 상태 실시간 모니터링
+5. **수동 제한 해제**: 필요시 특정 모델의 특정 API 키 또는 전체 제한을 수동으로 해제
+6. **보안 강화**: API 키를 마스킹하여 Redis에 저장
+
+### 사용법
+
+#### 환경 설정
+
+**방법 1: 전체 URL 설정 (권장)**
+```bash
+# .env 파일에 Redis URL 직접 설정
+REDIS_URL=redis://localhost:6379/0
+```
+
+**방법 2: 개별 설정 (REDIS_URL이 설정되지 않은 경우에만 사용)**
+```bash
+# Redis 개별 설정
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=your_password  # 비밀번호가 있는 경우
+REDIS_SSL=false  # SSL 사용 시 true
+
+# Redis 연결 풀 설정
+REDIS_MAX_CONNECTIONS=10
+REDIS_SOCKET_TIMEOUT=5
+REDIS_SOCKET_CONNECT_TIMEOUT=5
+```
+
+**환경별 Redis URL 설정 예시:**
+```bash
+# 개발 환경
+REDIS_URL=redis://localhost:6379/0
+
+# 프로덕션 환경 (비밀번호 포함)
+REDIS_URL=redis://:your_password@your-redis-host.com:6379/0
+
+# 프로덕션 환경 (SSL 사용)
+REDIS_URL=rediss://:your_password@your-redis-host.com:6379/0
+
+# Docker environment
+REDIS_URL=redis://auto_trader_redis:6379/0
+
+# 클라우드 Redis (예: AWS ElastiCache)
+REDIS_URL=redis://:your_password@your-elasticache-endpoint.cache.amazonaws.com:6379/0
+
+#### Docker Compose 사용법
+
+**1. 서비스 시작**
+```bash
+# 모든 서비스 시작 (PostgreSQL, Redis, Adminer)
+docker-compose up -d
+
+# 특정 서비스만 시작
+docker-compose up -d redis
+```
+
+**2. 서비스 상태 확인**
+```bash
+# 모든 서비스 상태 확인
+docker-compose ps
+
+# Redis 로그 확인
+docker-compose logs redis
+
+# Redis 상태 확인
+docker-compose exec redis redis-cli -a redis_password ping
+```
+
+**3. 서비스 중지**
+```bash
+# 모든 서비스 중지
+docker-compose down
+
+# 볼륨까지 삭제 (데이터 손실 주의!)
+docker-compose down -v
+```
+
+**4. 환경 변수 설정**
+```bash
+# .env 파일에 Docker 환경용 Redis URL 설정
+REDIS_URL=redis://auto_trader_redis:6379/0
+```
+
+**5. Redis 연결 테스트**
+```bash
+# Redis 컨테이너에 접속하여 연결 테스트
+docker-compose exec auto_trader_redis redis-cli ping
+# 응답: PONG
+```
+
+#### 모델 상태 확인
+```bash
+python debug_model_status.py
+```
+
+**주요 기능:**
+- 모델별, API 키별 제한 상태 확인
+- 전체 제한 상태 요약
+- 특정 API 키의 제한 해제
+- 모델별 모든 API 키 제한 해제
+- 모든 제한 일괄 해제
+
+#### 코드에서 사용
+```python
+from app.analysis.service_analyzers import UpbitAnalyzer
+
+analyzer = UpbitAnalyzer()
+# 자동으로 Redis 기반 API 키별 모델 제한 적용
+await analyzer.analyze_coins(["비트코인"])
+```
+
+#### Redis 키 구조
+```
+model_rate_limit:gemini-2.5-pro:AIza...abc123  # 모델:API키별 제한 정보
+model_retry_info:gemini-2.5-pro:AIza...abc123  # 모델:API키별 재시도 정보
+```
+
+#### 제한 정보 예시
+```json
+{
+  "model": "gemini-2.5-pro",
+  "api_key": "AIza...abc123",
+  "error_code": 429,
+  "until": "2024-01-15T14:30:00",
+  "retry_delay": {"seconds": 300},
+  "set_at": "2024-01-15T14:25:00"
+}
 ```

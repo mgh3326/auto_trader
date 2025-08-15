@@ -25,7 +25,8 @@ dependencies = [
     "base (>=0.0.0,<0.0.1)",
     "alembic (>=1.16.4,<2.0.0)",
     "asyncpg (>=0.30.0,<0.31.0)",
-    "google-cloud-core (>=2.4.3,<3.0.0)"
+    "google-cloud-core (>=2.4.3,<3.0.0)",
+    "redis (>=5.0.0,<6.0.0)"
 ]
 
 [tool.poetry]

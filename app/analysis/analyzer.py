@@ -8,6 +8,7 @@ from google.genai.errors import ClientError
 from app.analysis.prompt import build_prompt
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.core.model_rate_limiter import ModelRateLimiter
 from app.models.prompt import PromptResult
 
 
@@ -15,8 +16,9 @@ class Analyzer:
     """프롬프트 생성, Gemini 실행, DB 저장을 담당하는 공통 클래스"""
     
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.google_api_key
+        self.api_key = api_key or settings.get_random_key()
         self.client = genai.Client(api_key=self.api_key)
+        self.rate_limiter = ModelRateLimiter()
     
     async def analyze_and_save(
         self,
@@ -52,13 +54,47 @@ class Analyzer:
         
         return result, model_name
     
+    async def close(self):
+        """리소스 정리"""
+        await self.rate_limiter.close()
+    
+    def __del__(self):
+        """소멸자에서 리소스 정리"""
+        try:
+            # 비동기 메서드를 동기적으로 호출할 수 없으므로 경고만 출력
+            pass
+        except:
+            pass
+    
+    def _mask_api_key(self, api_key: str) -> str:
+        """
+        API 키를 마스킹하여 보안 강화
+        
+        Args:
+            api_key: 원본 API 키
+            
+        Returns:
+            마스킹된 API 키 (예: "AIza...abc123" -> "AIza...***")
+        """
+        if not api_key or len(api_key) < 8:
+            return "***"
+        
+        # 앞 4글자와 뒤 3글자만 보이고 나머지는 ***
+        return f"{api_key[:4]}...{api_key[-3:]}"
+    
     async def _generate_with_smart_retry(self, prompt: str, max_retries: int = 3) -> Tuple[str, str]:
-        """스마트 재시도: 429 에러 시 다음 모델로 즉시 전환"""
+        """스마트 재시도: Redis 기반 모델 제한 + 429 에러 시 다음 모델로 즉시 전환"""
         
         models_to_try = ["gemini-2.5-pro", "gemini-2.5-flash"]
         
         for model in models_to_try:
             print(f"모델 시도: {model}")
+            
+            # Redis에서 현재 API 키의 모델 사용 제한 확인
+            current_api_key = self._mask_api_key(self.api_key)
+            if not await self.rate_limiter.is_model_available(model, current_api_key):
+                print(f"  {model} 모델 (API: {current_api_key}) 사용 제한 중, 다음 모델로...")
+                continue
             
             for attempt in range(max_retries):
                 try:
@@ -86,20 +122,43 @@ class Analyzer:
                             
                 except ClientError as e:
                     if e.code == 429:
-                        # 429 에러(할당량 초과) 발생 시, 해당 모델 재시도 없이 바로 다음 모델로 넘어감
-                        print(f"  {model} 모델 할당량 초과(429), 다음 모델로 시도...")
-                        self.client = genai.Client(api_key=settings.get_next_key())  # API 키 교체
-                        for detail in e.details["error"]["details"]:
-                            if "@type" in detail and detail["@type"] == "type.googleapis.com/google.rpc.RetryInfo":
-                                retry_delay = detail.get("retryDelay")
-                                if retry_delay:
-                                    print(retry_delay)
-                        break  # attempt 루프를 탈출하여 다음 model로 넘어감
+                        # 429 에러(할당량 초과) 발생 시, Redis에 모델 제한 설정
+                        print(f"  {model} 모델 할당량 초과(429), Redis에 제한 설정...")
+                        
+                        # retry_delay 정보 추출 및 Redis에 제한 설정
+                        retry_delay = None
+                        if hasattr(e, 'details') and e.details:
+                            try:
+                                for detail in e.details.get("error", {}).get("details", []):
+                                    if "@type" in detail and detail["@type"] == "type.googleapis.com/google.rpc.RetryInfo":
+                                        retry_delay = detail.get("retryDelay")
+                                        if retry_delay:
+                                            print(f"  retry_delay: {retry_delay}")
+                                            # Redis에 모델 사용 제한 설정
+                                            await self.rate_limiter.set_model_rate_limit(
+                                                model, current_api_key, retry_delay, e.code
+                                            )
+                            except Exception as parse_error:
+                                print(f"  retry_delay 파싱 오류: {parse_error}")
+                        
+                        # retry_delay 정보가 없으면 기본 제한 설정
+                        if not retry_delay:
+                            await self.rate_limiter.set_model_rate_limit(
+                                model, current_api_key, {"seconds": 60}, e.code
+                            )
+                        
+                        # API 키 교체 및 계속 시도
+                        new_api_key = settings.get_next_key()
+                        print(f"  API 키 교체: {self._mask_api_key(current_api_key)} → {self._mask_api_key(new_api_key)}")
+                        self.client = genai.Client(api_key=new_api_key)
+                        self.api_key = new_api_key
+                        
+                        # 새로운 API 키로 계속 시도 (break 제거)
+                        print(f"  새로운 API 키로 계속 시도...")
+                        continue
                     else:
                         print(f"  시도 {attempt + 1} 실패 (ClientError {e.code}): {e}")
                         await asyncio.sleep(2 + attempt)
-
-
 
                 except Exception as e:
                     print(f"  시도 {attempt + 1} 실패: {e}")

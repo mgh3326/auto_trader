@@ -15,12 +15,41 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - local_dev
 
   adminer:
     image: adminer
     container_name: adminer
     ports: ["8080:8080"]
-    depends_on: [db]
+    depends_on: 
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - local_dev
+
+  redis:
+    image: redis:latest
+    container_name: auto_trader_redis
+    ports: ["6379:6379"]
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - local_dev
 
 volumes:
   pg_data:
+  redis_data:
+
+networks:
+  local_dev:
+    driver: bridge
