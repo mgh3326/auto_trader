@@ -96,7 +96,6 @@ class TestExternalServiceMocking:
             'Open': [100], 'High': [105], 'Low': [95],
             'Close': [103], 'Volume': [1000]
         })
-        # yfinance는 DatetimeIndex를 반환하므로 이를 모방합니다.
         mock_df.index = pd.to_datetime(['2023-01-01'])
         mock_df.index.name = 'Date'
         mock_yahoo_download.return_value = mock_df
@@ -106,16 +105,28 @@ class TestExternalServiceMocking:
         assert mock_yahoo_download.called
 
     @pytest.mark.asyncio
-    @patch('app.services.kis.load_token', return_value='dummy_token')
+    @patch('app.services.kis.load_token', return_value=None) # 토큰이 없는 상태에서 시작하여 fetch_token 호출 유도
     @patch('app.services.kis.httpx.AsyncClient')
-    async def test_kis_service_mocking(self, mock_kis, mock_load_token):
+    async def test_kis_service_mocking(self, mock_kis_client, mock_load_token):
         """Test KIS service mocking."""
-        mock_instance = mock_kis.return_value.__aenter__.return_value
-        mock_instance.get.return_value = MagicMock(json=lambda: {"rt_cd": "0", "output": []})
+        mock_instance = mock_kis_client.return_value.__aenter__.return_value
+
+        # POST 요청(토큰 발급)에 대한 Mock 응답 설정
+        mock_post_response = MagicMock()
+        mock_post_response.json.return_value = {"access_token": "dummy_token"}
+        mock_instance.post.return_value = mock_post_response
+
+        # GET 요청(데이터 조회)에 대한 Mock 응답 설정
+        mock_get_response = MagicMock()
+        mock_get_response.json.return_value = {"rt_cd": "0", "output": []}
+        mock_instance.get.return_value = mock_get_response
 
         await kis_client.volume_rank()
 
-        assert mock_kis.called
+        assert mock_kis_client.called
+        mock_instance.post.assert_called_once()
+        mock_instance.get.assert_called_once()
+
 
     @pytest.mark.asyncio
     @patch('app.analysis.analyzer.Analyzer._save_to_db', new_callable=AsyncMock)
@@ -131,7 +142,6 @@ class TestExternalServiceMocking:
         mock_instance.models.generate_content.return_value = mock_response
 
         analyzer = Analyzer()
-        # 'date' 컬럼을 포함한 dummy_df 생성
         dummy_df = pd.DataFrame({
             'date': pd.to_datetime(['2023-01-01', '2023-01-02', '2023-01-03']),
             'close': [1,2,3], 'high': [1,2,3],
