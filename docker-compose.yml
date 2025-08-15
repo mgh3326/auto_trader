@@ -1,7 +1,7 @@
 version: "3.9"
 services:
   db:
-    image: postgres:16
+    image: postgres:17
     container_name: auto_trader_pg
     environment:
       POSTGRES_USER: postgres
