@@ -1,8 +1,8 @@
 import asyncio
 from typing import Optional, Tuple
+
 import pandas as pd
 from google import genai
-from google.api_core.exceptions import ResourceExhausted
 from google.genai.errors import ClientError
 
 from app.analysis.prompt import build_prompt
