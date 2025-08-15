@@ -74,7 +74,7 @@ jobs:
     
     - name: Set environment variables
       run: |
-        echo "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/test_db" >> $GITHUB_ENV
+        echo "DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/test_db" >> $GITHUB_ENV
         echo "REDIS_URL=redis://localhost:6379/0" >> $GITHUB_ENV
         echo "KIS_APP_KEY=DUMMY_KIS_APP_KEY" >> $GITHUB_ENV
         echo "KIS_APP_SECRET=DUMMY_KIS_APP_SECRET" >> $GITHUB_ENV

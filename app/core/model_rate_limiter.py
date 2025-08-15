@@ -1,9 +1,8 @@
-import asyncio
 import json
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
+
 import redis.asyncio as redis
-from google.genai.errors import ClientError
 
 from app.core.config import settings
 
