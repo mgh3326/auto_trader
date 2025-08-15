@@ -49,7 +49,7 @@ class TestRouterIntegration:
         # Test that the main app has the expected routers
         app = client.app
         routes = [route.path for route in app.routes]
-        
+
         # Check that expected routes exist
         assert any("/healthz" in route for route in routes)
         assert any("/dashboard" in route for route in routes)

@@ -1,6 +1,4 @@
-from sqlalchemy import (
-    BigInteger, Text, Enum, TIMESTAMP, text
-)
+from sqlalchemy import BigInteger, Text, Enum, TIMESTAMP, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -19,5 +17,9 @@ class PromptResult(Base):
     instrument_type: Mapped[InstrumentType] = mapped_column(
         Enum(InstrumentType, name="instrument_type"), nullable=False
     )
-    created_at: Mapped[str] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
-    updated_at: Mapped[str] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"), onupdate=None)
+    created_at: Mapped[str] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+    updated_at: Mapped[str] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()"), onupdate=None
+    )

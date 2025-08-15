@@ -29,10 +29,14 @@ async def list_filings(korean_name: str, days: int = 3) -> list[dict]:
     # reports = search_filings(corp_code=corp.corp_code, bgn_de=bgn, end_de=end, page_count=100)
     out = []
     for r in reports:
-        out.append({
-            "date": r.rcp_dt, "report_nm": r.report_nm,
-            "rcp_no": r.rcp_no, "corp_name": korean_name
-        })
+        out.append(
+            {
+                "date": r.rcp_dt,
+                "report_nm": r.report_nm,
+                "rcp_no": r.rcp_no,
+                "corp_name": korean_name,
+            }
+        )
     return out
     # 4) 결과 다루기
     # SearchResults는 인덱싱/슬라이싱 가능, dict로도 변환 가능

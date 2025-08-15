@@ -13,7 +13,9 @@ BASE = "https://openapi.koreainvestment.com:9443"
 VOL_URL = "/uapi/domestic-stock/v1/quotations/volume-rank"
 PRICE_TR = "FHKST01010100"
 PRICE_URL = "/uapi/domestic-stock/v1/quotations/inquire-price"
-DAILY_ITEMCHARTPRICE_URL = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+DAILY_ITEMCHARTPRICE_URL = (
+    "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+)
 VOL_TR = "FHPST01710000"  # 실전 전용
 DAILY_ITEMCHARTPRICE_TR = "FHKST03010100"  # (일봉·주식·실전/모의 공통)
 
@@ -33,10 +35,12 @@ class KISClient:
         async with httpx.AsyncClient() as cli:
             r = await cli.post(
                 f"{BASE}/oauth2/token",
-                data={"grant_type": "client_credentials",
-                      "appkey": settings.kis_app_key,
-                      "appsecret": settings.kis_app_secret},
-                timeout=5
+                data={
+                    "grant_type": "client_credentials",
+                    "appkey": settings.kis_app_key,
+                    "appsecret": settings.kis_app_secret,
+                },
+                timeout=5,
             )
         token = r.json()["access_token"]
         save_token(token)  # ② 디스크 캐시 갱신
@@ -55,20 +59,24 @@ class KISClient:
             "tr_id": VOL_TR,
         }
         async with httpx.AsyncClient() as cli:
-
-            r = await cli.get(f"{BASE}{VOL_URL}", headers=hdr, params={
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_COND_SCR_DIV_CODE": "20171",
-                "FID_INPUT_ISCD": "0000",
-                "FID_DIV_CLS_CODE": "0",
-                "FID_BLNG_CLS_CODE": "1",
-                "FID_TRGT_CLS_CODE": "11111111",
-                "FID_TRGT_EXLS_CLS_CODE": "0000001100",
-                "FID_INPUT_PRICE_1": "0",
-                "FID_INPUT_PRICE_2": "1000000",
-                "FID_VOL_CNT": "100000",
-                "FID_INPUT_DATE_1": "",
-            }, timeout=5)
+            r = await cli.get(
+                f"{BASE}{VOL_URL}",
+                headers=hdr,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_COND_SCR_DIV_CODE": "20171",
+                    "FID_INPUT_ISCD": "0000",
+                    "FID_DIV_CLS_CODE": "0",
+                    "FID_BLNG_CLS_CODE": "1",
+                    "FID_TRGT_CLS_CODE": "11111111",
+                    "FID_TRGT_EXLS_CLS_CODE": "0000001100",
+                    "FID_INPUT_PRICE_1": "0",
+                    "FID_INPUT_PRICE_2": "1000000",
+                    "FID_VOL_CNT": "100000",
+                    "FID_INPUT_DATE_1": "",
+                },
+                timeout=5,
+            )
         js = r.json()
         if js["rt_cd"] == "0":
             return js["output"]
@@ -126,20 +134,17 @@ class KISClient:
             "volume": int(out["acml_vol"]),
             "value": int(out["acml_tr_pbmn"]),
         }
-        return (
-            pd.DataFrame([row])
-            .set_index("code")  # index = 종목코드
-        )
+        return pd.DataFrame([row]).set_index("code")  # index = 종목코드
 
     async def inquire_daily_itemchartprice(
-            self,
-            code: str,
-            market: str = "J",
-            n: int = 200,  # 최종 확보하고 싶은 캔들 수
-            adj: bool = True,
-            period: str = "D",  # D/W/M (일/주/월봉)
-            end_date: datetime.date | None = None,  # None이면 오늘까지
-            per_call_days: int = 150,  # 한 번 호출 시 조회 날짜 폭
+        self,
+        code: str,
+        market: str = "J",
+        n: int = 200,  # 최종 확보하고 싶은 캔들 수
+        adj: bool = True,
+        period: str = "D",  # D/W/M (일/주/월봉)
+        end_date: datetime.date | None = None,  # None이면 오늘까지
+        per_call_days: int = 150,  # 한 번 호출 시 조회 날짜 폭
     ) -> pd.DataFrame:
         """
         ✅ KIS 일봉/주봉/월봉을 여러 번 호출해 최근 n개 OHLCV만 반환
@@ -167,7 +172,9 @@ class KISClient:
             }
 
             async with httpx.AsyncClient(timeout=5) as cli:
-                r = await cli.get(f"{BASE}{DAILY_ITEMCHARTPRICE_URL}", headers=hdr, params=params)
+                r = await cli.get(
+                    f"{BASE}{DAILY_ITEMCHARTPRICE_URL}", headers=hdr, params=params
+                )
             js = r.json()
 
             if js.get("rt_cd") != "0":
@@ -190,24 +197,29 @@ class KISClient:
         # ---- DataFrame 변환 (지표 계산 없음) ----
         df = (
             pd.DataFrame(rows)
-            .rename(columns={
-                "stck_bsop_date": "date",
-                "stck_oprc": "open",
-                "stck_hgpr": "high",
-                "stck_lwpr": "low",
-                "stck_clpr": "close",
-                "acml_vol": "volume",
-                "acml_tr_pbmn": "value",
-            })
-            .astype({
-                "date": "int",
-                "open": "float",
-                "high": "float",
-                "low": "float",
-                "close": "float",
-                "volume": "int",
-                "value": "int",
-            }, errors="ignore")
+            .rename(
+                columns={
+                    "stck_bsop_date": "date",
+                    "stck_oprc": "open",
+                    "stck_hgpr": "high",
+                    "stck_lwpr": "low",
+                    "stck_clpr": "close",
+                    "acml_vol": "volume",
+                    "acml_tr_pbmn": "value",
+                }
+            )
+            .astype(
+                {
+                    "date": "int",
+                    "open": "float",
+                    "high": "float",
+                    "low": "float",
+                    "close": "float",
+                    "volume": "int",
+                    "value": "int",
+                },
+                errors="ignore",
+            )
             .assign(date=lambda d: pd.to_datetime(d["date"], format="%Y%m%d"))
             .drop_duplicates(subset=["date"], keep="first")
             .sort_values("date")

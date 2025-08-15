@@ -5,6 +5,7 @@ import pytz
 
 sched = AsyncIOScheduler(timezone=pytz.timezone("Asia/Seoul"))
 
+
 def start_scheduler():
     # “0 * * * *” → cron 표현 → 파싱
     minute, hour, *_ = settings.cron.split()

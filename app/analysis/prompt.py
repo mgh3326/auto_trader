@@ -7,11 +7,11 @@ from .indicators import add_indicators
 
 
 def build_prompt(
-        df: pd.DataFrame,
-        ticker: str,
-        stock_name: str,
-        currency: str = "₩",
-        unit_shares: str = "주",
+    df: pd.DataFrame,
+    ticker: str,
+    stock_name: str,
+    currency: str = "₩",
+    unit_shares: str = "주",
 ) -> str:
     df = add_indicators(df).sort_values("date").reset_index(drop=True)
     """
@@ -36,11 +36,22 @@ def build_prompt(
     df2 = add_ma_multi(df, columns=("close", "volume"), windows=(5, 20, 60, 120, 200))
 
     # 2) 프롬프트용 라인 만들기
-    price_line = format_ma_line(df2, column="close", windows=(5, 20, 60, 120, 200),
-                                label_prefix="MA", number_fmt="{:,.2f}", suffix=currency)  # 통화 단위
-    volume_line = format_ma_line(df2, column="volume", windows=(5, 20, 60, 120, 200),
-                                 label_prefix="VMA", number_fmt="{:,.0f}", suffix="vol")  # 개수/주수 등 단위
-
+    price_line = format_ma_line(
+        df2,
+        column="close",
+        windows=(5, 20, 60, 120, 200),
+        label_prefix="MA",
+        number_fmt="{:,.2f}",
+        suffix=currency,
+    )  # 통화 단위
+    volume_line = format_ma_line(
+        df2,
+        column="volume",
+        windows=(5, 20, 60, 120, 200),
+        label_prefix="VMA",
+        number_fmt="{:,.0f}",
+        suffix="vol",
+    )  # 개수/주수 등 단위
 
     df = add_ma(df, windows=(5, 20, 60, 120, 200))
     ma_line = format_ma_line(df, currency)
@@ -55,9 +66,8 @@ def build_prompt(
     yday = df.iloc[-2]
 
     # 최근 10 봉만 미니 테이블로 추림 → 토큰 절약
-    recent10 = (
-        df.iloc[-11:-1][["date", "close", "volume"]]
-        .to_string(index=False, header=False)
+    recent10 = df.iloc[-11:-1][["date", "close", "volume"]].to_string(
+        index=False, header=False
     )
     today_diff = today["diff"]
     today_pct = today["pct"]
@@ -111,7 +121,6 @@ def format_ma_line(df: pd.DataFrame, currency, windows=(5, 20, 60, 120, 200)) ->
     return f"- MA {labels} : {values} {currency}"
 
 
-
 def add_ma_multi(
     df: pd.DataFrame,
     columns: Iterable[str] = ("close", "volume"),
@@ -154,7 +163,11 @@ def format_ma_line(
 
     last = df.iloc[-1]
     keys = [f"{column}_ma{w}" for w in windows]
-    avail = [w for w, k in zip(windows, keys) if k in df.columns and pd.notna(last.get(k, pd.NA))]
+    avail = [
+        w
+        for w, k in zip(windows, keys)
+        if k in df.columns and pd.notna(last.get(k, pd.NA))
+    ]
     if not avail:
         return f"- {label_prefix} : 자료 부족"
 
@@ -170,4 +183,3 @@ def format_ma_line(
 
     tail = f" {suffix}".rstrip()
     return f"- {label_prefix} {labels} : {' / '.join(values)}{(' ' + suffix) if suffix else ''}"
-

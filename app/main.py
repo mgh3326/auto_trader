@@ -9,8 +9,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(health.router)
 
-
-
     return app
+
 
 api = create_app()

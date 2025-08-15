@@ -20,6 +20,5 @@ def load_token() -> str | None:
 
 
 def save_token(token: str) -> None:
-    CACHE_FILE.write_text(
-        json.dumps({"access_token": token, "issued_at": time.time()}))
+    CACHE_FILE.write_text(json.dumps({"access_token": token, "issued_at": time.time()}))
     os.chmod(CACHE_FILE, 0o600)  # 읽기 / 쓰기 = 소유자만

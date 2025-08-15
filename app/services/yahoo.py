@@ -16,9 +16,9 @@ async def fetch_ohlcv(ticker: str, days: int = 100) -> pd.DataFrame:
     """최근 days개(최대 100) 일봉 OHLCV DataFrame 반환"""
     end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=days * 2)  # 휴일 감안 넉넉히
-    df = yf.download(ticker,
-                     start=start, end=end, interval="1d",
-                     progress=False, auto_adjust=False)
+    df = yf.download(
+        ticker, start=start, end=end, interval="1d", progress=False, auto_adjust=False
+    )
     df = _flatten_cols(df).reset_index(names="date")  # ← 여기만 변경
     df = (
         df.assign(date=lambda d: pd.to_datetime(d["date"]).dt.date)
