@@ -1,12 +1,12 @@
 # app/routers/dashboard.py
 from pathlib import Path
-from typing import List, Optional
-from sqlalchemy import select, desc
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
 
-from fastapi import APIRouter, Request, Depends, Query
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select, desc
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.models.prompt import PromptResult

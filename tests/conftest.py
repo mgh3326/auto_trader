@@ -2,10 +2,11 @@
 Pytest configuration and common fixtures for auto-trader tests.
 """
 import asyncio
-import pytest
-from typing import AsyncGenerator, Generator
+from typing import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import pandas as pd
+import pytest
 
 from app.core.config import settings
 

@@ -1,10 +1,9 @@
 from sqlalchemy import (
-    BigInteger, Text, Boolean, Numeric, Enum, ForeignKey, TIMESTAMP, Interval, text
+    BigInteger, Text, Enum, TIMESTAMP, text
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from app.models.base import Base
-import enum
+from sqlalchemy.orm import Mapped, mapped_column
 
+from app.models.base import Base
 from app.models.trading import InstrumentType
 
 

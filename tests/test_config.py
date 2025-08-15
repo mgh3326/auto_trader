@@ -1,8 +1,8 @@
 """
 Tests for configuration module.
 """
-import pytest
 from unittest.mock import patch
+
 from app.core.config import settings, Settings
 
 

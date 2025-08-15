@@ -1,7 +1,8 @@
-import pandas as pd
-import httpx
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Literal
+
+import httpx
+import pandas as pd
 
 UPBIT_REST = "https://api.upbit.com/v1"
 

@@ -1,9 +1,8 @@
 """
 Tests for analysis module.
 """
-import pytest
 import pandas as pd
-from unittest.mock import AsyncMock, patch
+
 from app.analysis.indicators import add_indicators
 
 
