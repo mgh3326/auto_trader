@@ -1,10 +1,16 @@
 """
 Integration tests for auto-trader application.
 """
+import asyncio
 import pytest
+import pandas as pd
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch, MagicMock
+
 from app.main import api
+# 테스트를 위해 서비스 및 분석기 임포트
+from app.services import upbit, kis, yahoo
+from app.analysis.analyzer import Analyzer
 
 
 @pytest.mark.integration
@@ -40,34 +46,34 @@ class TestApplicationIntegration:
         assert app.version == "0.1.0"
 
     @patch('app.services.upbit.httpx.AsyncClient')
-    @patch('app.services.yahoo.yfinance.Ticker')
+    @patch('app.services.yahoo.yf.Ticker')  # 경로 수정
     @patch('app.services.kis.httpx.AsyncClient')
-    @patch('app.core.model_rate_limiter.google.generativeai.GenerativeModel')
-    def test_external_services_integration(self, mock_gemini, mock_kis, mock_yahoo, mock_upbit, client):
+    @patch('app.analysis.analyzer.genai.Client')  # 경로 수정
+    def test_external_services_integration(self, mock_gemini_client, mock_kis_client, mock_yahoo_ticker, mock_upbit_client, client):
         """Test integration with external services (mocked)."""
         # Configure mocks
-        mock_upbit.return_value.get.return_value = AsyncMock(
+        mock_upbit_client.return_value.__aenter__.return_value.get.return_value = AsyncMock(
             status_code=200,
             json=AsyncMock(return_value=[{"market": "KRW-BTC", "trade_price": 45000000}])
         )
         
-        mock_yahoo.return_value.info = {
+        mock_yahoo_ticker.return_value.info = {
             "symbol": "AAPL",
             "longName": "Apple Inc.",
             "currentPrice": 150.0
         }
         
-        mock_kis.return_value.post.return_value = AsyncMock(
+        mock_kis_client.return_value.__aenter__.return_value.post.return_value = AsyncMock(
             status_code=200,
             json=AsyncMock(return_value={"access_token": "test_token"})
         )
         
-        mock_gemini.return_value.generate_content.return_value = MagicMock(
-            text="Mock AI analysis response"
-        )
+        mock_gemini_instance = MagicMock()
+        mock_gemini_instance.models.generate_content.return_value = MagicMock(text="Mock AI analysis response")
+        mock_gemini_client.return_value = mock_gemini_instance
         
-        # Test that the application can handle external service calls
-        # This would depend on your actual implementation
+        # 실제 API 호출을 통해 Mock이 사용되는지 테스트해야 하지만,
+        # 여기서는 patch 경로가 올바른지만 확인하므로 pass
         pass
 
 
@@ -77,24 +83,10 @@ class TestDataFlow:
 
     def test_data_processing_pipeline(self):
         """Test the complete data processing pipeline."""
-        # This test would verify that data flows correctly through:
-        # 1. Data collection (from various services)
-        # 2. Data processing and analysis
-        # 3. Data storage
-        # 4. Data retrieval and presentation
-        
-        # Implementation depends on your actual data flow
         pass
 
     def test_analysis_workflow(self):
         """Test the complete analysis workflow."""
-        # This test would verify:
-        # 1. Data input validation
-        # 2. Technical analysis execution
-        # 3. Result generation and formatting
-        # 4. Result storage and retrieval
-        
-        # Implementation depends on your actual workflow
         pass
 
 
@@ -105,41 +97,55 @@ class TestExternalServiceMocking:
     @patch('app.services.upbit.httpx.AsyncClient')
     def test_upbit_service_mocking(self, mock_upbit):
         """Test Upbit service mocking."""
-        mock_upbit.return_value.get.return_value = AsyncMock(
-            status_code=200,
-            json=AsyncMock(return_value=[])
+        mock_upbit.return_value.__aenter__.return_value.get.return_value = AsyncMock(
+            status_code=200, json=AsyncMock(return_value={})
         )
         
-        # Verify mock is configured
+        # 실제 서비스 함수를 호출하여 Mock이 사용되도록 함
+        asyncio.run(upbit.fetch_price("KRW-BTC"))
+        
         assert mock_upbit.called
 
-    @patch('app.services.yahoo.yfinance.Ticker')
-    def test_yahoo_service_mocking(self, mock_yahoo):
+    @patch('app.services.yahoo.yf.download')  # Ticker 대신 download 함수를 mock
+    def test_yahoo_service_mocking(self, mock_yahoo_download):
         """Test Yahoo Finance service mocking."""
-        mock_ticker = MagicMock()
-        mock_ticker.info = {"symbol": "TEST"}
-        mock_yahoo.return_value = mock_ticker
+        mock_yahoo_download.return_value = pd.DataFrame() # 빈 DataFrame 반환
         
-        # Verify mock is configured
-        assert mock_yahoo.called
+        # 실제 서비스 함수를 호출
+        asyncio.run(yahoo.fetch_ohlcv("AAPL"))
+        
+        assert mock_yahoo_download.called
 
     @patch('app.services.kis.httpx.AsyncClient')
     def test_kis_service_mocking(self, mock_kis):
         """Test KIS service mocking."""
-        mock_kis.return_value.post.return_value = AsyncMock(
-            status_code=200,
-            json=AsyncMock(return_value={"access_token": "test"})
-        )
-        
-        # Verify mock is configured
+        mock_instance = mock_kis.return_value.__aenter__.return_value
+        mock_instance.post.return_value = AsyncMock(status_code=200, json=AsyncMock(return_value={"access_token": "test"}))
+        mock_instance.get.return_value = AsyncMock(status_code=200, json=AsyncMock(return_value={"rt_cd": "0", "output": []}))
+
+        # 실제 서비스 함수를 호출
+        asyncio.run(kis.volume_rank())
+
         assert mock_kis.called
 
-    @patch('app.core.model_rate_limiter.google.generativeai.GenerativeModel')
-    def test_gemini_service_mocking(self, mock_gemini):
+    @patch('app.analysis.analyzer.genai.Client') # 경로 수정
+    def test_gemini_service_mocking(self, mock_gemini_client):
         """Test Gemini AI service mocking."""
-        mock_model = MagicMock()
-        mock_model.generate_content.return_value = MagicMock(text="test response")
-        mock_gemini.return_value = mock_model
+        mock_instance = mock_gemini_client.return_value
+        mock_response = MagicMock()
+        mock_response.text = "test response"
+        # candidates와 finish_reason을 포함한 응답 구조 모방
+        mock_candidate = MagicMock()
+        mock_candidate.finish_reason = "STOP"
+        mock_response.candidates = [mock_candidate]
+        mock_instance.models.generate_content.return_value = mock_response
+
+        # 실제 분석기를 실행하여 Mock이 사용되도록 함
+        analyzer = Analyzer()
+        dummy_df = pd.DataFrame({'close': [1,2,3], 'high': [1,2,3], 'low':[1,2,3], 'open':[1,2,3], 'volume':[1,2,3]})
+
+        # _save_to_db는 테스트 대상이 아니므로 mock 처리
+        with patch('app.analysis.analyzer.Analyzer._save_to_db', new_callable=AsyncMock):
+            asyncio.run(analyzer.analyze_and_save(df=dummy_df, symbol="TEST", name="Test", instrument_type="test"))
         
-        # Verify mock is configured
-        assert mock_gemini.called
+        assert mock_gemini_client.called
