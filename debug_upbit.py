@@ -3,7 +3,6 @@ import asyncio
 
 import pandas as pd
 from google import genai
-from google.api_core.exceptions import ResourceExhausted
 
 from app.analysis.prompt import build_prompt
 from app.core.config import settings
@@ -81,12 +80,6 @@ async def generate_with_smart_retry(client, prompt, max_retries=3):
                     if resp.text:
                         print(f"  {model} 성공!")
                         return resp.text, model
-
-            except ResourceExhausted as e:
-                # 429 에러(할당량 초과) 발생 시, 해당 모델 재시도 없이 바로 다음 모델로 넘어감
-                print(f"  {model} 모델 할당량 초과(429), 다음 모델로 시도...")
-                client = genai.Client(api_key=settings.get_next_key())  # API 키 교체
-                break  # attempt 루프를 탈출하여 다음 model로 넘어감
 
             except Exception as e:
                 print(f"  시도 {attempt + 1} 실패: {e}")
