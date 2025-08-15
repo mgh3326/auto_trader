@@ -1,0 +1,20 @@
+# app/models/__init__.py
+from .base import Base
+from .trading import Exchange, Instrument, User, UserChannel, UserWatchItem
+from .prompt import PromptResult
+
+# 필요한 다른 모델도 전부 여기서 import
+# from .alert import AlertRule, AlertEvent
+# from .price import PricesLatest, PricesOHLCV, FxRate
+
+__all__ = [
+    "Base",
+    "Exchange",
+    "Instrument",
+    "User",
+    "UserChannel",
+    "UserWatchItem",
+    "PromptResult",
+    # "AlertRule", "AlertEvent",
+    # "PricesLatest", "PricesOHLCV", "FxRate",
+]
