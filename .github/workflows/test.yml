@@ -76,13 +76,18 @@ jobs:
       run: |
         echo "DATABASE_URL=postgresql://postgres:postgres@localhost:5432/test_db" >> $GITHUB_ENV
         echo "REDIS_URL=redis://localhost:6379/0" >> $GITHUB_ENV
-        echo "API_KEY=test_key" >> $GITHUB_ENV
+        echo "KIS_APP_KEY=DUMMY_KIS_APP_KEY" >> $GITHUB_ENV
+        echo "KIS_APP_SECRET=DUMMY_KIS_APP_SECRET" >> $GITHUB_ENV
+        echo "TELEGRAM_TOKEN=DUMMY_TELEGRAM_TOKEN" >> $GITHUB_ENV
+        echo "GOOGLE_API_KEY=DUMMY_GOOGLE_API_KEY" >> $GITHUB_ENV
+        echo "GOOGLE_API_KEYS=[\"DUMMY_GOOGLE_API_KEY_1\", \"DUMMY_GOOGLE_API_KEY_2\"]" >> $GITHUB_ENV
+        echo "OPENDART_API_KEY=DUMMY_OPENDART_API_KEY" >> $GITHUB_ENV
         echo "ENVIRONMENT=test" >> $GITHUB_ENV
-    
+
     - name: Run tests
       run: |
         poetry run pytest tests/ -v --cov=app --cov-report=xml --cov-report=html
-    
+
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
       with:
@@ -90,7 +95,7 @@ jobs:
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
-    
+
     - name: Upload coverage reports to GitHub
       uses: actions/upload-artifact@v4
       with:
@@ -99,27 +104,27 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: "3.11"
-    
+
     - name: Install Poetry
       uses: snok/install-poetry@v1
       with:
         version: latest
         virtualenvs-create: true
         virtualenvs-in-project: true
-    
+
     - name: Install dependencies
       run: |
         poetry install --with test
         poetry run pip install flake8 black isort mypy
-    
+
     - name: Run linting
       run: |
         poetry run flake8 app/ tests/ --max-line-length=88 --extend-ignore=E203,W503
@@ -129,32 +134,32 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: "3.11"
-    
+
     - name: Install Poetry
       uses: snok/install-poetry@v1
       with:
         version: latest
         virtualenvs-create: true
         virtualenvs-in-project: true
-    
+
     - name: Install dependencies
       run: |
         poetry install --with test
         poetry run pip install bandit safety
-    
+
     - name: Run security checks
       run: |
         poetry run bandit -r app/ -f json -o bandit-report.json || true
         poetry run safety check --json --output safety-report.json || true
-    
+
     - name: Upload security reports
       uses: actions/upload-artifact@v4
       with:
