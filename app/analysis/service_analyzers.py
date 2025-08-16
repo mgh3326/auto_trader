@@ -22,8 +22,9 @@ class UpbitAnalyzer(Analyzer):
         """
         try:
             balance = float(coin["balance"])
+            locked = float(coin["locked"])
             avg_price = float(coin["avg_buy_price"])
-            estimated_value = balance * avg_price
+            estimated_value = (balance + locked) * avg_price
             # 클래스 속성인 MIN_TRADE_THRESHOLD를 사용합니다.
             return estimated_value >= UpbitAnalyzer.MIN_TRADE_THRESHOLD
         except (ValueError, KeyError, TypeError):
@@ -32,25 +33,24 @@ class UpbitAnalyzer(Analyzer):
     async def analyze_coins(self, coin_names: List[str]) -> None:
         """여러 코인을 순차적으로 분석"""
         await upbit_pairs.prime_upbit_constants()
+        
+        # 보유 코인 정보 가져오기 (이미 debug_upbit_new.py에서 필터링된 coin_names를 받음)
         try:
             my_coins = await upbit.fetch_my_coins()
         except Exception as e:
             print(f"에러: 보유 자산 정보를 가져오는 데 실패했습니다. ({e})")
             return
-            # 내부 메서드인 _is_tradable을 사용하여 거래 가능한 코인만 필터링합니다.
-        tradable_coins_list = [
-            coin for coin in my_coins
-            if coin.get("currency") != "KRW"  # 원화 제외
-               and self._is_tradable(coin)  # 최소 평가액 이상
-               and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS  # KRW 마켓에서 거래 가능
-        ]
         for coin_name in coin_names:
             stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
             if not stock_symbol:
                 print(f"코인명을 찾을 수 없음: {coin_name}")
                 continue
+            # 보유 코인을 심볼별로 매핑
             tradable_coins_map = {
-                f"KRW-{coin['currency']}": coin for coin in tradable_coins_list
+                f"KRW-{coin['currency']}": coin for coin in my_coins
+                if coin.get("currency") != "KRW"  # 원화 제외
+                and self._is_tradable(coin)  # 최소 평가액 이상
+                and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS  # KRW 마켓에서 거래 가능
             }
             my_coin = tradable_coins_map.get(stock_symbol)
             
