@@ -35,7 +35,7 @@ class UpbitAnalyzer(Analyzer):
             )
 
             # 분석 및 저장
-            result, model_name = await self.analyzeAnd_save(
+            result, model_name = await self.analyze_and_save(
                 df=df_merged,
                 symbol=stock_symbol,
                 name=coin_name,

@@ -407,19 +407,6 @@
             line-height: 20px;
         }
         
-        .result-text.expanded {
-            white-space: normal;
-            max-width: none;
-            height: auto;
-            max-height: 200px;
-            overflow-y: auto;
-            line-height: 1.4;
-            padding: 8px;
-            background: #f8f9fa;
-            border-radius: 4px;
-            border: 1px solid #eee;
-        }
-        
         .expand-btn {
             background: none;
             border: none;
@@ -429,6 +416,115 @@
             font-size: 12px;
             margin-top: 5px;
             display: block;
+        }
+        
+        /* 모달 스타일 */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        
+        .modal-content {
+            background-color: #fefefe;
+            margin: 5% auto;
+            padding: 20px;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            position: relative;
+        }
+        
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+            position: absolute;
+            right: 20px;
+            top: 15px;
+        }
+        
+        .close:hover,
+        .close:focus {
+            color: #000;
+            text-decoration: none;
+        }
+        
+        .modal-header {
+            border-bottom: 1px solid #eee;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .modal-title {
+            margin: 0;
+            color: #2c3e50;
+            font-size: 1.5rem;
+        }
+        
+        .modal-body {
+            line-height: 1.6;
+            color: #333;
+        }
+        
+        .analysis-meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 6px;
+        }
+        
+        .meta-item {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .meta-label {
+            font-weight: 600;
+            color: #555;
+            font-size: 0.9rem;
+            margin-bottom: 5px;
+        }
+        
+        .meta-value {
+            color: #333;
+            font-size: 1rem;
+        }
+        
+        .analysis-content {
+            background: white;
+            padding: 20px;
+            border-radius: 6px;
+            border: 1px solid #eee;
+            white-space: pre-wrap;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+        }
+        
+        /* 모바일 모달 최적화 */
+        @media (max-width: 768px) {
+            .modal-content {
+                width: 95%;
+                margin: 10% auto;
+                padding: 15px;
+            }
+            
+            .analysis-meta {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
         }
         
         /* 분석 결과 컬럼 고정 너비 */
@@ -447,27 +543,6 @@
                 height: auto;
                 max-height: 150px;
                 overflow-y: auto;
-            }
-            
-            .mobile-cards .result-text.expanded {
-                max-height: none;
-                background: #f8f9fa;
-                padding: 8px;
-                border-radius: 4px;
-                border: 1px solid #eee;
-            }
-        }
-        
-        /* 모바일 최적화된 로딩 상태 */
-        @media (max-width: 767px) {
-            .loading {
-                padding: 20px;
-                font-size: 0.9rem;
-            }
-            
-            .error {
-                margin: 10px;
-                font-size: 0.9rem;
             }
         }
     </style>
@@ -548,6 +623,24 @@
                 <button onclick="changePage(-1)" id="prevBtn">이전</button>
                 <span class="current-page" id="currentPage">1</span>
                 <button onclick="changePage(1)" id="nextBtn">다음</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 분석 결과 상세 모달 -->
+    <div id="analysisModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <div class="modal-header">
+                <h2 class="modal-title">📊 분석 결과 상세</h2>
+            </div>
+            <div class="modal-body">
+                <div class="analysis-meta" id="modalMeta">
+                    <!-- 메타 정보가 여기에 동적으로 추가됩니다 -->
+                </div>
+                <div class="analysis-content" id="modalContent">
+                    <!-- 분석 내용이 여기에 동적으로 추가됩니다 -->
+                </div>
             </div>
         </div>
     </div>
@@ -721,7 +814,7 @@
                             ${item.result.substring(0, 100)}${item.result.length > 100 ? '...' : ''}
                         </div>
                         ${item.result.length > 100 ? 
-                            `<button class="expand-btn" onclick="toggleResult(${item.id})">더보기</button>` : 
+                            `<button class="expand-btn" onclick="showAnalysisModal(${item.id})">더보기</button>` : 
                             ''}
                     </td>
                     <td>${formatDateTime(item.created_at)}</td>
@@ -758,7 +851,7 @@
                                 ${item.result.substring(0, 150)}${item.result.length > 150 ? '...' : ''}
                             </div>
                             ${item.result.length > 150 ? 
-                                `<button class="expand-btn" onclick="toggleMobileResult(${item.id})">더보기</button>` : 
+                                `<button class="expand-btn" onclick="showAnalysisModal(${item.id})">더보기</button>` : 
                                 ''}
                         </span>
                     </div>
@@ -794,47 +887,78 @@
             return labelMap[type] || type;
         }
         
-        // 결과 텍스트 토글 (데스크톱)
-        function toggleResult(id) {
-            const resultDiv = document.getElementById(`result-${id}`);
-            const isExpanded = resultDiv.classList.contains('expanded');
-            
-            if (isExpanded) {
-                resultDiv.classList.remove('expanded');
-                resultDiv.innerHTML = resultDiv.innerHTML.substring(0, 100) + '...';
-                event.target.textContent = '더보기';
-            } else {
-                // 전체 텍스트를 가져와서 표시
-                fetch(`/dashboard/api/analysis/${id}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        resultDiv.innerHTML = data.result;
-                        resultDiv.classList.add('expanded');
-                        event.target.textContent = '접기';
-                    });
+        // 분석 결과 모달 표시
+        async function showAnalysisModal(id) {
+            try {
+                const response = await fetch(`/dashboard/api/analysis/${id}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    alert('분석 결과를 불러올 수 없습니다: ' + data.error);
+                    return;
+                }
+                
+                // 메타 정보 설정
+                const modalMeta = document.getElementById('modalMeta');
+                modalMeta.innerHTML = `
+                    <div class="meta-item">
+                        <span class="meta-label">종목</span>
+                        <span class="meta-value">${data.symbol}</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">종목명</span>
+                        <span class="meta-value">${data.name}</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">상품타입</span>
+                        <span class="meta-value">
+                            <span class="instrument-type ${getInstrumentTypeClass(data.instrument_type)}">
+                                ${getInstrumentTypeLabel(data.instrument_type)}
+                            </span>
+                        </span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">모델명</span>
+                        <span class="meta-value">${data.model_name || '-'}</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">생성일시</span>
+                        <span class="meta-value">${formatDateTime(data.created_at)}</span>
+                    </div>
+                `;
+                
+                // 분석 내용 설정
+                const modalContent = document.getElementById('modalContent');
+                modalContent.textContent = data.result;
+                
+                // 모달 표시
+                document.getElementById('analysisModal').style.display = 'block';
+                
+            } catch (error) {
+                console.error('분석 결과 로드 실패:', error);
+                alert('분석 결과를 불러올 수 없습니다.');
             }
         }
         
-        // 결과 텍스트 토글 (모바일)
-        function toggleMobileResult(id) {
-            const resultDiv = document.getElementById(`mobile-result-${id}`);
-            const isExpanded = resultDiv.classList.contains('expanded');
-            
-            if (isExpanded) {
-                resultDiv.classList.remove('expanded');
-                resultDiv.innerHTML = resultDiv.innerHTML.substring(0, 150) + '...';
-                event.target.textContent = '더보기';
-            } else {
-                // 전체 텍스트를 가져와서 표시
-                fetch(`/dashboard/api/analysis/${id}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        resultDiv.innerHTML = data.result;
-                        resultDiv.classList.add('expanded');
-                        event.target.textContent = '접기';
-                    });
+        // 모달 닫기
+        function closeModal() {
+            document.getElementById('analysisModal').style.display = 'none';
+        }
+        
+        // 모달 외부 클릭 시 닫기
+        window.onclick = function(event) {
+            const modal = document.getElementById('analysisModal');
+            if (event.target === modal) {
+                modal.style.display = 'none';
             }
         }
+        
+        // ESC 키로 모달 닫기
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeModal();
+            }
+        });
         
         // 날짜 포맷팅
         function formatDateTime(dateString) {
