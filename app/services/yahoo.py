@@ -48,3 +48,20 @@ async def fetch_price(ticker: str) -> pd.DataFrame:
         "value": 0,
     }
     return pd.DataFrame([row]).set_index("code")
+
+
+async def fetch_fundamental_info(ticker: str) -> dict:
+    """
+    yf.Ticker(ticker).info에서 PER, PBR, EPS, BPS, 배당수익률 등
+    주요 펀더멘털 지표를 가져와 딕셔너리로 반환합니다.
+    """
+    info = yf.Ticker(ticker).info
+
+    fundamental_data = {
+        "PER": info.get("trailingPE"),
+        "PBR": info.get("priceToBook"),
+        "EPS": info.get("trailingEps"),
+        "BPS": info.get("bookValue"),
+        "Dividend Yield": info.get("trailingAnnualDividendYield"),
+    }
+    return fundamental_data

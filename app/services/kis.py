@@ -138,6 +138,52 @@ class KISClient:
         }
         return pd.DataFrame([row]).set_index("code")  # index = 종목코드
 
+    async def fetch_fundamental_info(self, code: str, market: str = "J") -> dict:
+        """
+        종목의 기본 정보를 가져와 딕셔너리로 반환합니다.
+        :param code: 6자리 종목코드(005930)
+        :param market: K(코스피)/Q(코스닥)/J(통합)
+        :return: 기본 정보 딕셔너리
+        """
+        await self._ensure_token()
+
+        # 요청 헤더
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": PRICE_TR,
+        }
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_INPUT_ISCD": code.zfill(6),  # 000000 형태도 OK
+        }
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(f"{BASE}{PRICE_URL}", headers=hdr, params=params)
+        js = r.json()
+        if js["rt_cd"] != "0":
+            raise RuntimeError(f'{js["msg_cd"]} {js["msg1"]}')
+        out = js["output"]  # 단일 dict
+
+        # 기본 정보 구성
+        fundamental_data = {
+            "종목코드": out.get("stck_shrn_iscd"),
+            "종목명": out.get("hts_kor_isnm"),
+            "현재가": out.get("stck_prpr"),
+            "전일대비": out.get("prdy_vrss"),
+            "등락률": out.get("prdy_ctrt"),
+            "거래량": out.get("acml_vol"),
+            "거래대금": out.get("acml_tr_pbmn"),
+            "시가총액": out.get("hts_avls"),
+            "상장주수": out.get("lstn_stcn"),
+            "외국인비율": out.get("frgn_hlg"),
+            "52주최고": out.get("w52_hgpr"),
+            "52주최저": out.get("w52_lwpr"),
+        }
+
+        # None이 아닌 값만 반환
+        return {k: v for k, v in fundamental_data.items() if v is not None}
+
     async def inquire_daily_itemchartprice(
         self,
         code: str,

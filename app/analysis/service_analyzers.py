@@ -2,7 +2,7 @@ from typing import List
 
 import pandas as pd
 
-from app.services import kis, upbit, yahoo
+from app.services import upbit, yahoo, kis
 from data.coins_info import upbit_pairs
 from data.stocks_info import KRX_NAME_TO_CODE
 
@@ -27,6 +27,7 @@ class UpbitAnalyzer(Analyzer):
             # 데이터 수집
             df_historical = await upbit.fetch_ohlcv(stock_symbol, days=200)
             df_current = await upbit.fetch_price(stock_symbol)
+            fundamental_info = await upbit.fetch_fundamental_info(stock_symbol)
 
             # 데이터 병합
             df_merged = DataProcessor.merge_historical_and_current(
@@ -34,13 +35,14 @@ class UpbitAnalyzer(Analyzer):
             )
 
             # 분석 및 저장
-            result, model_name = await self.analyze_and_save(
+            result, model_name = await self.analyzeAnd_save(
                 df=df_merged,
                 symbol=stock_symbol,
                 name=coin_name,
                 instrument_type="crypto",
                 currency="₩",
                 unit_shares="개",
+                fundamental_info=fundamental_info,
             )
 
             print(f"분석 완료: {coin_name}")
@@ -59,6 +61,7 @@ class YahooAnalyzer(Analyzer):
             # 데이터 수집
             df_historical = await yahoo.fetch_ohlcv(stock_symbol, 200)
             df_current = await yahoo.fetch_price(stock_symbol)
+            fundamental_info = await yahoo.fetch_fundamental_info(stock_symbol)
 
             # 데이터 병합
             df_merged = DataProcessor.merge_historical_and_current(
@@ -73,6 +76,7 @@ class YahooAnalyzer(Analyzer):
                 instrument_type="equity_us",
                 currency="$",
                 unit_shares="주",
+                fundamental_info=fundamental_info,
             )
 
             print(f"분석 완료: {stock_symbol}")
@@ -93,9 +97,9 @@ class KISAnalyzer(Analyzer):
             return
 
         # 데이터 수집
-        df_historical = await kis.inquire_daily_itemchartprice(stock_code)
-        df_current = await kis.inquire_price(stock_code)
-
+        df_historical = await kis.kis.inquire_daily_itemchartprice(stock_code)
+        df_current = await kis.kis.inquire_price(stock_code)
+        fundamental_info = await kis.kis.fetch_fundamental_info(stock_code)
         # 데이터 병합
         df_merged = DataProcessor.merge_historical_and_current(
             df_historical, df_current
@@ -109,6 +113,7 @@ class KISAnalyzer(Analyzer):
             instrument_type="equity_kr",
             currency="₩",
             unit_shares="주",
+            fundamental_info=fundamental_info,
         )
 
         print(f"분석 완료: {stock_name}")

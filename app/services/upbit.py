@@ -93,6 +93,39 @@ async def fetch_price(market: str = "KRW-BTC") -> pd.DataFrame:
     return pd.DataFrame([row]).reset_index(drop=True)
 
 
+async def fetch_fundamental_info(market: str = "KRW-BTC") -> dict:
+    """
+    암호화폐의 기본 정보를 가져와 딕셔너리로 반환합니다.
+    :param market: 업비트 마켓코드 (예: "KRW-BTC", "USDT-ETH")
+    :return: 기본 정보 딕셔너리
+    """
+    url = f"{UPBIT_REST}/ticker"
+    rows = await _request_json(url, {"markets": market})
+    if not rows:
+        raise ValueError(f"시장 {market} 반환 데이터 없음")
+
+    t = rows[0]
+    
+    # 기본 정보 구성
+    fundamental_data = {
+        "마켓코드": t.get("market"),
+        "현재가": t.get("trade_price"),
+        "24시간변동": t.get("signed_change_price"),
+        "24시간변동률": t.get("signed_change_rate"),
+        "24시간고가": t.get("high_price"),
+        "24시간저가": t.get("low_price"),
+        "24시간거래량": t.get("acc_trade_volume_24h"),
+        "24시간거래대금": t.get("acc_trade_price_24h"),
+        "최고가": t.get("highest_52_week_price"),
+        "최저가": t.get("lowest_52_week_price"),
+        "최고가대비": t.get("highest_52_week_ratio"),
+        "최저가대비": t.get("lowest_52_week_ratio"),
+    }
+
+    # None이 아닌 값만 반환
+    return {k: v for k, v in fundamental_data.items() if v is not None}
+
+
 # --- 작은 데모 스크립트 (직접 실행 시) ----------------------------------------
 if __name__ == "__main__":
     import asyncio

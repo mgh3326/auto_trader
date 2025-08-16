@@ -1,4 +1,4 @@
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import pandas as pd
 import ta
@@ -12,6 +12,7 @@ def build_prompt(
     stock_name: str,
     currency: str = "₩",
     unit_shares: str = "주",
+    fundamental_info: Optional[dict] = None,
 ) -> str:
     df = add_indicators(df).sort_values("date").reset_index(drop=True)
     """
@@ -76,9 +77,26 @@ def build_prompt(
         obs_date = obs_date.date()
 
     # ─ 2) 프롬프트 구성 ────────────────────────────────
+    
+    # 기본 정보 섹션 구성
+    fundamental_section = ""
+    if fundamental_info:
+        fundamental_section = "\n[기본 정보]\n"
+        for key, value in fundamental_info.items():
+            if value is not None and value != "":
+                # 숫자 형식인 경우 천 단위 구분자 추가
+                if isinstance(value, (int, float)):
+                    if isinstance(value, int):
+                        formatted_value = f"{value:,}"
+                    else:
+                        formatted_value = f"{value:,.2f}"
+                else:
+                    formatted_value = str(value)
+                fundamental_section += f"- {key}: {formatted_value}\n"
+    
     prompt = f"""
     {stock_name}({ticker}) (관측일 {obs_date})
-    {tech_summary}
+    {tech_summary}{fundamental_section}
 
     [가격 지표]
     {price_line}
