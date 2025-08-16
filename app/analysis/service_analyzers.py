@@ -11,16 +11,58 @@ from .analyzer import Analyzer, DataProcessor
 
 class UpbitAnalyzer(Analyzer):
     """Upbit 암호화폐 분석기"""
+    # 상수를 클래스 속성으로 정의합니다.
+    MIN_TRADE_THRESHOLD = 1000  # 1000원 미만은 거래 불가로 간주
+
+    @staticmethod
+    def _is_tradable(coin: dict) -> bool:
+        """
+        코인의 평가액이 최소 거래 금액 이상인지 확인하는 내부 유틸리티 메서드.
+        (self를 사용하지 않으므로 @staticmethod로 선언)
+        """
+        try:
+            balance = float(coin["balance"])
+            avg_price = float(coin["avg_buy_price"])
+            estimated_value = balance * avg_price
+            # 클래스 속성인 MIN_TRADE_THRESHOLD를 사용합니다.
+            return estimated_value >= UpbitAnalyzer.MIN_TRADE_THRESHOLD
+        except (ValueError, KeyError, TypeError):
+            return False
 
     async def analyze_coins(self, coin_names: List[str]) -> None:
         """여러 코인을 순차적으로 분석"""
         await upbit_pairs.prime_upbit_constants()
-
+        try:
+            my_coins = await upbit.fetch_my_coins()
+        except Exception as e:
+            print(f"에러: 보유 자산 정보를 가져오는 데 실패했습니다. ({e})")
+            return
+            # 내부 메서드인 _is_tradable을 사용하여 거래 가능한 코인만 필터링합니다.
+        tradable_coins_list = [
+            coin for coin in my_coins
+            if coin.get("currency") != "KRW"  # 원화 제외
+               and self._is_tradable(coin)  # 최소 평가액 이상
+               and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS  # KRW 마켓에서 거래 가능
+        ]
         for coin_name in coin_names:
             stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
             if not stock_symbol:
                 print(f"코인명을 찾을 수 없음: {coin_name}")
                 continue
+            tradable_coins_map = {
+                f"KRW-{coin['currency']}": coin for coin in tradable_coins_list
+            }
+            my_coin = tradable_coins_map.get(stock_symbol)
+            
+            # position_info로 변환
+            position_info = None
+            if my_coin:
+                position_info = {
+                    "quantity": my_coin.get("balance"),
+                    "avg_price": my_coin.get("avg_buy_price"),
+                    "total_value": float(my_coin.get("balance", 0)) * float(my_coin.get("avg_buy_price", 0)) if my_coin.get("balance") and my_coin.get("avg_buy_price") else None,
+                    "locked_quantity": my_coin.get("locked"),
+                }
 
             print(f"\n=== {coin_name} ({stock_symbol}) 분석 시작 ===")
 
@@ -43,6 +85,7 @@ class UpbitAnalyzer(Analyzer):
                 currency="₩",
                 unit_shares="개",
                 fundamental_info=fundamental_info,
+                position_info=position_info,
             )
 
             print(f"분석 완료: {coin_name}")

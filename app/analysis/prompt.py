@@ -6,6 +6,120 @@ import ta
 from .indicators import add_indicators
 
 
+def format_decimal(value: float, currency: str = "₩") -> str:
+    """
+    값의 크기에 따라 적절한 소수점 자릿수를 결정하여 포맷팅
+    
+    Args:
+        value: 포맷팅할 값
+        currency: 통화 단위 (₩, $ 등)
+    
+    Returns:
+        포맷팅된 문자열
+    """
+    if value == 0:
+        return "0"
+    
+    abs_value = abs(value)
+    
+    # 한국 원화 (₩) 기준
+    if currency == "₩":
+        if abs_value >= 1000000:  # 100만원 이상
+            return f"{value:,.0f}"
+        elif abs_value >= 10000:   # 1만원 이상
+            return f"{value:,.1f}"
+        elif abs_value >= 1000:    # 1천원 이상
+            return f"{value:,.2f}"
+        elif abs_value >= 100:     # 100원 이상
+            return f"{value:,.2f}"
+        else:                       # 100원 미만
+            return f"{value:,.2f}"
+    
+    # 미국 달러 ($) 기준
+    elif currency == "$":
+        if abs_value >= 1000:      # $1,000 이상
+            return f"{value:,.2f}"
+        elif abs_value >= 100:     # $100 이상
+            return f"{value:,.2f}"
+        elif abs_value >= 10:      # $10 이상
+            return f"{value:,.2f}"
+        else:                       # $10 미만
+            return f"{value:,.3f}"
+    
+    # 암호화폐 등 기타 통화 (기본값)
+    else:
+        if abs_value >= 1000:      # 1000 이상
+            return f"{value:,.2f}"
+        elif abs_value >= 100:     # 100 이상
+            return f"{value:,.3f}"
+        elif abs_value >= 10:      # 10 이상
+            return f"{value:,.4f}"
+        elif abs_value >= 1:       # 1 이상
+            return f"{value:,.5f}"
+        elif abs_value >= 0.1:     # 0.1 이상
+            return f"{value:,.6f}"
+        elif abs_value >= 0.01:    # 0.01 이상
+            return f"{value:,.7f}"
+        else:                       # 0.01 미만
+            return f"{value:,.8f}"
+
+
+def format_quantity(quantity: float, unit_shares: str = "개") -> str:
+    """
+    수량을 적절한 소수점 자릿수로 포맷팅
+    
+    Args:
+        quantity: 수량
+        unit_shares: 단위 (개, 주 등)
+    
+    Returns:
+        포맷팅된 문자열
+    """
+    if quantity == 0:
+        return "0"
+    
+    abs_quantity = abs(quantity)
+    
+    # 주식의 경우 (보통 정수 단위)
+    if unit_shares == "주":
+        if abs_quantity >= 1000:   # 1000주 이상
+            return f"{quantity:,.0f}"
+        elif abs_quantity >= 100:  # 100주 이상
+            return f"{quantity:,.0f}"
+        else:                       # 100주 미만
+            return f"{quantity:,.0f}"
+    
+    # 암호화폐의 경우 (소수점 포함)
+    elif unit_shares == "개":
+        if abs_quantity >= 1000:   # 1000개 이상
+            return f"{quantity:,.2f}"
+        elif abs_quantity >= 100:  # 100개 이상
+            return f"{quantity:,.3f}"
+        elif abs_quantity >= 10:   # 10개 이상
+            return f"{quantity:,.4f}"
+        elif abs_quantity >= 1:    # 1개 이상
+            return f"{quantity:,.5f}"
+        elif abs_quantity >= 0.1:  # 0.1개 이상
+            return f"{quantity:,.6f}"
+        elif abs_quantity >= 0.01: # 0.01개 이상
+            return f"{quantity:,.7f}"
+        else:                       # 0.01개 미만
+            return f"{quantity:,.8f}"
+    
+    # 기타 단위
+    else:
+        if abs_quantity >= 1000:
+            return f"{quantity:,.2f}"
+        elif abs_quantity >= 100:
+            return f"{quantity:,.3f}"
+        elif abs_quantity >= 10:
+            return f"{quantity:,.4f}"
+        elif abs_quantity >= 1:
+            return f"{quantity:,.5f}"
+        else:
+            return f"{quantity:,.6f}"
+
+
 def build_prompt(
     df: pd.DataFrame,
     ticker: str,
@@ -13,6 +127,7 @@ def build_prompt(
     currency: str = "₩",
     unit_shares: str = "주",
     fundamental_info: Optional[dict] = None,
+    position_info: Optional[dict] = None,
 ) -> str:
     df = add_indicators(df).sort_values("date").reset_index(drop=True)
     """
@@ -42,7 +157,6 @@ def build_prompt(
         column="close",
         windows=(5, 20, 60, 120, 200),
         label_prefix="MA",
-        number_fmt="{:,.2f}",
         suffix=currency,
     )  # 통화 단위
     volume_line = format_ma_line(
@@ -50,7 +164,6 @@ def build_prompt(
         column="volume",
         windows=(5, 20, 60, 120, 200),
         label_prefix="VMA",
-        number_fmt="{:,.0f}",
         suffix="vol",
     )  # 개수/주수 등 단위
 
@@ -94,19 +207,47 @@ def build_prompt(
                     formatted_value = str(value)
                 fundamental_section += f"- {key}: {formatted_value}\n"
     
+    # 보유 자산 정보 섹션 구성
+    position_section = ""
+    if position_info:
+        position_section = "\n[보유 자산 정보]\n"
+        # 보유 수량
+        if position_info.get("quantity"):
+            quantity = float(position_info["quantity"])
+            formatted_quantity = format_quantity(quantity, unit_shares)
+            position_section += f"- 보유 수량: {formatted_quantity}{unit_shares}\n"
+        
+        # 평균 매수가
+        if position_info.get("avg_price"):
+            avg_price = float(position_info["avg_price"])
+            formatted_avg_price = format_decimal(avg_price, currency)
+            position_section += f"- 평균 매수가: {formatted_avg_price}{currency}\n"
+        
+        # 총 평가 금액
+        if position_info.get("total_value"):
+            total_value = float(position_info["total_value"])
+            formatted_total_value = format_decimal(total_value, currency)
+            position_section += f"- 총 평가 금액: {formatted_total_value}{currency}\n"
+        
+        # 거래 중인 수량 (잠긴 수량)
+        if position_info.get("locked_quantity") and float(position_info["locked_quantity"]) > 0:
+            locked = float(position_info["locked_quantity"])
+            formatted_locked = format_quantity(locked, unit_shares)
+            position_section += f"- 거래 중인 수량: {formatted_locked}{unit_shares}\n"
+    
     prompt = f"""
     {stock_name}({ticker}) (관측일 {obs_date})
-    {tech_summary}{fundamental_section}
+    {tech_summary}{fundamental_section}{position_section}
 
     [가격 지표]
     {price_line}
-    - 현재가 : {today.close:,.2f}{currency}
-    - 전일 대비 : {today_diff:+,.2f}{currency} ({today_pct:+.2f}%)
+    - 현재가 : {format_decimal(today.close, currency)}{currency}
+    - 전일 대비 : {format_decimal(today_diff, currency)}{currency} ({today_pct:+.2f}%)
     - RSI(14)   : {rsi14:.1f}
 
     [거래량 지표]
     {volume_line}
-    - 오늘 거래량 : {today.volume:,.0f}{unit_shares}
+    - 오늘 거래량 : {format_quantity(today.volume, unit_shares)}{unit_shares}
     - 전일 대비   : {today.vol_rate:+.2f}%
 
     [최근 10거래일 (날짜·종가·거래량)]
@@ -135,7 +276,7 @@ def format_ma_line(df: pd.DataFrame, currency, windows=(5, 20, 60, 120, 200)) ->
     if not avail:
         return "- MA : 자료 부족"
     labels = "/".join(str(w) for w in avail)
-    values = " / ".join(f"{last[f'ma{w}']:,.2f}" for w in avail)
+    values = " / ".join(format_decimal(last[f'ma{w}'], currency) for w in avail)
     return f"- MA {labels} : {values} {currency}"
 
 

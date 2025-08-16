@@ -1,10 +1,19 @@
 from datetime import datetime, timezone
 from typing import Literal
+import uuid
+import jwt  # pyjwt 라이브러리가 필요합니다 (pip install pyjwt)
 
 import httpx
 import pandas as pd
 
+from app.core.config import settings
+
 UPBIT_REST = "https://api.upbit.com/v1"
+
+
+# --- 인증 정보 (실제 키로 교체 필요) ---
+# 보안을 위해 환경 변수나 다른 안전한 방법을 사용하세요.
+# 예: import os; UPBIT_ACCESS_KEY = os.environ.get("UPBIT_ACCESS_KEY")
 
 
 async def _request_json(url: str, params: dict | None = None) -> list[dict]:
@@ -15,10 +24,27 @@ async def _request_json(url: str, params: dict | None = None) -> list[dict]:
         return r.json()
 
 
+async def fetch_my_coins() -> list[dict]:
+    """보유자산 리스트 반환 (API Key 필요)"""
+    payload = {
+        'access_key': settings.upbit_access_key,
+        'nonce': str(uuid.uuid4()),
+    }
+
+    jwt_token = jwt.encode(payload, settings.upbit_secret_key)
+    authorize_token = f'Bearer {jwt_token}'
+    headers = {"Authorization": authorize_token}
+
+    async with httpx.AsyncClient(timeout=5) as cli:
+        res = await cli.get(f"{UPBIT_REST}/accounts", headers=headers)
+        res.raise_for_status()
+        return res.json()
+
+
 async def fetch_ohlcv(
-    market: str = "KRW-BTC",
-    days: int = 100,
-    adjust_price: Literal["true", "false"] = "false",
+        market: str = "KRW-BTC",
+        days: int = 100,
+        adjust_price: Literal["true", "false"] = "false",
 ) -> pd.DataFrame:
     """최근 *days*개 일봉 OHLCV DataFrame 반환 (Upbit)
 
@@ -105,7 +131,7 @@ async def fetch_fundamental_info(market: str = "KRW-BTC") -> dict:
         raise ValueError(f"시장 {market} 반환 데이터 없음")
 
     t = rows[0]
-    
+
     # 기본 정보 구성
     fundamental_data = {
         "마켓코드": t.get("market"),
@@ -131,10 +157,22 @@ if __name__ == "__main__":
     import asyncio
     import pprint
 
+
     async def demo():
-        df = await fetch_ohlcv("KRW-BTC", 5)
-        pprint.pp(df)
-        now = await fetch_price("KRW-BTC")
-        print(now.T)
+        # # 기존 데모 코드
+        # df = await fetch_ohlcv("KRW-BTC", 5)
+        # pprint.pp(df)
+        # now = await fetch_price("KRW-BTC")
+        # print(now.T)
+        try:
+            print("--- 내 보유 자산 ---")
+            my_coins = await fetch_my_coins()
+            pprint.pp(my_coins)
+        except httpx.HTTPStatusError as e:
+            print(f"API 호출에 실패했습니다: {e.response.status_code}")
+            print(f"응답 내용: {e.response.text}")
+        except Exception as e:
+            print(f"오류 발생: {e}")
+
 
     asyncio.run(demo())

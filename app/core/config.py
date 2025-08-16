@@ -59,6 +59,8 @@ class Settings(BaseSettings):
 
     opendart_api_key: str
     DATABASE_URL: str
+    upbit_access_key: str
+    upbit_secret_key: str
 
     # Redis 설정
     redis_url: str | None = None  # .env에서 설정하거나 None으로 두면 개별 설정 사용
@@ -72,7 +74,6 @@ class Settings(BaseSettings):
     redis_max_connections: int = 10
     redis_socket_timeout: int = 5
     redis_socket_connect_timeout: int = 5
-
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
