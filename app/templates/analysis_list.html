@@ -503,14 +503,61 @@
             font-size: 1rem;
         }
         
+        /* 탭 스타일 추가 */
+        .modal-tabs {
+            display: flex;
+            border-bottom: 1px solid #eee;
+            margin-bottom: 20px;
+        }
+        
+        .modal-tab {
+            padding: 12px 20px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            color: #666;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .modal-tab.active {
+            color: #3498db;
+            border-bottom-color: #3498db;
+            background: #f8f9fa;
+        }
+        
+        .modal-tab:hover {
+            background: #f8f9fa;
+            color: #333;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
         .analysis-content {
             background: white;
             padding: 20px;
             border-radius: 6px;
             border: 1px solid #eee;
-            white-space: pre-wrap;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             line-height: 1.6;
+        }
+        
+        .prompt-content {
+            background: white;
+            padding: 20px;
+            border-radius: 6px;
+            border: 1px solid #eee;
+            font-family: 'Courier New', monospace;
+            line-height: 1.6;
+            background-color: #f8f9fa;
+            font-size: 13px;
         }
         
         /* 모바일 모달 최적화 */
@@ -524,6 +571,21 @@
             .analysis-meta {
                 grid-template-columns: 1fr;
                 gap: 10px;
+            }
+            
+            .modal-tabs {
+                flex-direction: column;
+            }
+            
+            .modal-tab {
+                text-align: left;
+                border-bottom: none;
+                border-left: 2px solid transparent;
+            }
+            
+            .modal-tab.active {
+                border-left-color: #3498db;
+                border-bottom-color: transparent;
             }
         }
         
@@ -638,8 +700,15 @@
                 <div class="analysis-meta" id="modalMeta">
                     <!-- 메타 정보가 여기에 동적으로 추가됩니다 -->
                 </div>
-                <div class="analysis-content" id="modalContent">
+                <div class="modal-tabs">
+                    <button class="modal-tab active" onclick="switchTab('analysis')">📊 분석 결과</button>
+                    <button class="modal-tab" onclick="switchTab('prompt')">💬 Prompt</button>
+                </div>
+                <div class="tab-content active" id="analysisContent">
                     <!-- 분석 내용이 여기에 동적으로 추가됩니다 -->
+                </div>
+                <div class="tab-content" id="promptContent">
+                    <!-- Prompt 내용이 여기에 동적으로 추가됩니다 -->
                 </div>
             </div>
         </div>
@@ -811,7 +880,7 @@
                     <td>${item.model_name || '-'}</td>
                     <td class="result-column">
                         <div class="result-text" id="result-${item.id}">
-                            ${item.result.substring(0, 100)}${item.result.length > 100 ? '...' : ''}
+                            ${item.result.substring(0, 100).replace(/\n/g, ' ')}${item.result.length > 100 ? '...' : ''}
                         </div>
                         ${item.result.length > 100 ? 
                             `<button class="expand-btn" onclick="showAnalysisModal(${item.id})">더보기</button>` : 
@@ -848,7 +917,7 @@
                         <span class="card-label">분석 결과</span>
                         <span class="card-value">
                             <div class="result-text" id="mobile-result-${item.id}">
-                                ${item.result.substring(0, 150)}${item.result.length > 150 ? '...' : ''}
+                                ${item.result.substring(0, 150).replace(/\n/g, ' ')}${item.result.length > 150 ? '...' : ''}
                             </div>
                             ${item.result.length > 150 ? 
                                 `<button class="expand-btn" onclick="showAnalysisModal(${item.id})">더보기</button>` : 
@@ -927,9 +996,23 @@
                     </div>
                 `;
                 
-                // 분석 내용 설정
-                const modalContent = document.getElementById('modalContent');
-                modalContent.textContent = data.result;
+                // 분석 내용 설정 (개행 처리)
+                const analysisContent = document.getElementById('analysisContent');
+                analysisContent.innerHTML = data.result.replace(/\n/g, '<br>');
+
+                // Prompt 내용 설정 (개행 처리)
+                const promptContent = document.getElementById('promptContent');
+                promptContent.innerHTML = (data.prompt || 'Prompt 내용이 없습니다.').replace(/\n/g, '<br>');
+                
+                // 초기 탭 상태 설정 (분석 결과 탭이 활성화)
+                const allTabs = document.querySelectorAll('.modal-tab');
+                const allContents = document.querySelectorAll('.tab-content');
+                
+                allTabs.forEach(tab => tab.classList.remove('active'));
+                allContents.forEach(content => content.classList.remove('active'));
+                
+                allTabs[0].classList.add('active');
+                analysisContent.classList.add('active');
                 
                 // 모달 표시
                 document.getElementById('analysisModal').style.display = 'block';
@@ -940,16 +1023,46 @@
             }
         }
         
+        // 탭 전환 함수
+        function switchTab(tabName) {
+            // 모든 탭과 콘텐츠 비활성화
+            const allTabs = document.querySelectorAll('.modal-tab');
+            const allContents = document.querySelectorAll('.tab-content');
+            
+            allTabs.forEach(tab => tab.classList.remove('active'));
+            allContents.forEach(content => content.classList.remove('active'));
+            
+            // 선택된 탭과 콘텐츠 활성화
+            if (tabName === 'analysis') {
+                document.querySelector('.modal-tab:first-child').classList.add('active');
+                document.getElementById('analysisContent').classList.add('active');
+            } else if (tabName === 'prompt') {
+                document.querySelector('.modal-tab:last-child').classList.add('active');
+                document.getElementById('promptContent').classList.add('active');
+            }
+        }
+        
         // 모달 닫기
         function closeModal() {
             document.getElementById('analysisModal').style.display = 'none';
+            
+            // 탭 상태 초기화
+            const allTabs = document.querySelectorAll('.modal-tab');
+            const allContents = document.querySelectorAll('.tab-content');
+            
+            allTabs.forEach(tab => tab.classList.remove('active'));
+            allContents.forEach(content => content.classList.remove('active'));
+            
+            // 첫 번째 탭 활성화
+            allTabs[0].classList.add('active');
+            allContents[0].classList.add('active');
         }
         
         // 모달 외부 클릭 시 닫기
         window.onclick = function(event) {
             const modal = document.getElementById('analysisModal');
             if (event.target === modal) {
-                modal.style.display = 'none';
+                closeModal();
             }
         }
         
