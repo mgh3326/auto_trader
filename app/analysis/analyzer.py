@@ -91,7 +91,7 @@ class Analyzer:
     ) -> Tuple[str, str]:
         """스마트 재시도: Redis 기반 모델 제한 + 429 에러 시 다음 모델로 즉시 전환"""
 
-        models_to_try = ["gemini-2.5-pro", "gemini-2.5-flash"]
+        models_to_try = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
 
         for model in models_to_try:
             print(f"모델 시도: {model}")
