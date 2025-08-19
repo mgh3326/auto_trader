@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Literal
 import uuid
 import jwt  # pyjwt 라이브러리가 필요합니다 (pip install pyjwt)
@@ -98,25 +98,106 @@ async def fetch_price(market: str = "KRW-BTC") -> pd.DataFrame:
     (open/high/low 는 24시간 기준, value=24h 누적 거래대금)
     """
     url = f"{UPBIT_REST}/ticker"
-    rows = await _request_json(url, {"markets": market})
+    params = {"markets": market}
+    rows = await _request_json(url, params)
+
     if not rows:
-        raise ValueError(f"시장 {market} 반환 데이터 없음")
+        raise ValueError(f"마켓 {market}에 대한 데이터를 찾을 수 없습니다.")
 
-    t = rows[0]
-    now = datetime.now(timezone.utc)
+    row = rows[0]
 
-    row = {
-        "code": market,
-        "date": now.date(),
-        "time": now.time(),
-        "open": float(t["opening_price"]),
-        "high": float(t["high_price"]),
-        "low": float(t["low_price"]),
-        "close": float(t["trade_price"]),
-        "volume": float(t["acc_trade_volume_24h"]),
-        "value": float(t["acc_trade_price_24h"]),
+    # 현재 시간을 KST로 설정
+    now = datetime.now(timezone.utc).replace(tzinfo=timezone.utc)
+    kst_time = now.astimezone(timezone(timedelta(hours=9)))
+
+    df = pd.DataFrame([{
+        "date": kst_time.date(),
+        "time": kst_time.time(),
+        "open": row["opening_price"],
+        "high": row["high_price"],
+        "low": row["low_price"],
+        "close": row["trade_price"],
+        "volume": row["acc_trade_volume_24h"],
+        "value": row["acc_trade_price_24h"],
+    }])
+
+    return df
+
+
+async def fetch_minute_candles(
+    market: str = "KRW-BTC",
+    unit: int = 1,
+    count: int = 200
+) -> pd.DataFrame:
+    """분봉 캔들 데이터를 가져오는 메서드 (Upbit)
+
+    Parameters
+    ----------
+    market : str, default "KRW-BTC"
+        업비트 마켓코드 (예: "KRW-BTC", "USDT-ETH")
+    unit : int, default 1
+        분봉 단위 (1, 3, 5, 10, 15, 30, 60, 240)
+    count : int, default 200
+        가져올 캔들 수 (최대 200)
+
+    Returns
+    -------
+    pd.DataFrame
+        컬럼: datetime, open, high, low, close, volume, value
+    """
+    if unit not in [1, 3, 5, 10, 15, 30, 60, 240]:
+        raise ValueError("unit은 1, 3, 5, 10, 15, 30, 60, 240 중 하나여야 합니다.")
+
+    if count > 200:
+        raise ValueError("Upbit 분봉 API는 최대 200개까지 요청 가능합니다.")
+
+    url = f"{UPBIT_REST}/candles/minutes/{unit}"
+    params = {
+        "market": market,
+        "count": count,
     }
-    return pd.DataFrame([row]).reset_index(drop=True)
+
+    rows = await _request_json(url, params)
+
+    df = (
+        pd.DataFrame(rows)
+        .rename(
+            columns={
+                "candle_date_time_kst": "datetime",
+                "opening_price": "open",
+                "high_price": "high",
+                "low_price": "low",
+                "trade_price": "close",
+                "candle_acc_trade_volume": "volume",
+                "candle_acc_trade_price": "value",
+            }
+        )
+        .assign(
+            datetime=lambda d: pd.to_datetime(d["datetime"]),
+            date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
+            time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
+        )
+        .loc[:, ["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"]]
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+
+    return df
+
+
+async def fetch_hourly_candles(market: str = "KRW-BTC", count: int = 24) -> pd.DataFrame:
+    """60분 캔들 데이터를 가져오는 편의 메서드"""
+    return await fetch_minute_candles(market, unit=60, count=count)
+
+
+async def fetch_5min_candles(market: str = "KRW-BTC", count: int = 24) -> pd.DataFrame:
+    """5분 캔들 데이터를 가져오는 편의 메서드"""
+    return await fetch_minute_candles(market, unit=5, count=count)
+
+
+async def fetch_1min_candles(market: str = "KRW-BTC", count: int = 20) -> pd.DataFrame:
+    """1분 캔들 데이터를 가져오는 편의 메서드"""
+    return await fetch_minute_candles(market, unit=1, count=count)
 
 
 async def fetch_fundamental_info(market: str = "KRW-BTC") -> dict:

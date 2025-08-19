@@ -128,6 +128,7 @@ def build_prompt(
     unit_shares: str = "주",
     fundamental_info: Optional[dict] = None,
     position_info: Optional[dict] = None,
+    minute_candles: Optional[dict] = None,
 ) -> str:
     df = add_indicators(df).sort_values("date").reset_index(drop=True)
     """
@@ -235,9 +236,50 @@ def build_prompt(
             formatted_locked = format_quantity(locked, unit_shares)
             position_section += f"- 거래 중인 수량: {formatted_locked}{unit_shares}\n"
     
+    # 분봉 캔들 정보 섹션 구성
+    minute_candles_section = ""
+    if minute_candles:
+        minute_candles_section = "\n[단기(분) 캔들 정보]\n"
+        
+        # 60분 캔들 (최근 12개)
+        if "60min" in minute_candles and not minute_candles["60min"].empty:
+            df_60min = minute_candles["60min"]
+            recent_12_60min = df_60min.tail(12)
+            candles_60min = []
+            for _, row in recent_12_60min.iterrows():
+                time_str = row["time"].strftime("%H:%M") if hasattr(row["time"], "strftime") else str(row["time"])
+                close_str = format_decimal(row["close"], currency)
+                volume_str = format_quantity(row["volume"], unit_shares)
+                candles_60min.append(f"{time_str} {close_str} {volume_str}")
+            minute_candles_section += f"- 60분 캔들 (최근 12개, 시간·종가·거래량):\n  ({', '.join(candles_60min)})\n"
+        
+        # 5분 캔들 (최근 12개)
+        if "5min" in minute_candles and not minute_candles["5min"].empty:
+            df_5min = minute_candles["5min"]
+            recent_12_5min = df_5min.tail(12)
+            candles_5min = []
+            for _, row in recent_12_5min.iterrows():
+                time_str = row["time"].strftime("%H:%M") if hasattr(row["time"], "strftime") else str(row["time"])
+                close_str = format_decimal(row["close"], currency)
+                volume_str = format_quantity(row["volume"], unit_shares)
+                candles_5min.append(f"{time_str} {close_str} {volume_str}")
+            minute_candles_section += f"- 5분 캔들 (최근 12개, 시간·종가·거래량):\n  ({', '.join(candles_5min)})\n"
+        
+        # 1분 캔들 (최근 10개)
+        if "1min" in minute_candles and not minute_candles["1min"].empty:
+            df_1min = minute_candles["1min"]
+            recent_10_1min = df_1min.tail(10)
+            candles_1min = []
+            for _, row in recent_10_1min.iterrows():
+                time_str = row["time"].strftime("%H:%M:%S") if hasattr(row["time"], "strftime") else str(row["time"])
+                close_str = format_decimal(row["close"], currency)
+                volume_str = format_quantity(row["volume"], unit_shares)
+                candles_1min.append(f"{time_str} {close_str} {volume_str}")
+            minute_candles_section += f"- 1분 캔들 (최근 10개, 시간·종가·거래량):\n  ({', '.join(candles_1min)})\n"
+    
     prompt = f"""
     {stock_name}({ticker}) (관측일 {obs_date})
-    {tech_summary}{fundamental_section}{position_section}
+    {tech_summary}{fundamental_section}{position_section}{minute_candles_section}
 
     [가격 지표]
     {price_line}

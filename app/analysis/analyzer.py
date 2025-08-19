@@ -30,6 +30,7 @@ class Analyzer:
         unit_shares: str = "주",
         fundamental_info: Optional[dict] = None,
         position_info: Optional[dict] = None,
+        minute_candles: Optional[dict] = None,
     ) -> Tuple[str, str]:
         """
         데이터 분석, 프롬프트 생성, Gemini 실행, DB 저장을 순차적으로 수행
@@ -41,12 +42,15 @@ class Analyzer:
             instrument_type: 상품 유형
             currency: 통화 단위
             unit_shares: 주식/코인 단위
+            fundamental_info: 기본 정보
+            position_info: 보유 자산 정보
+            minute_candles: 분봉 캔들 데이터 (60분, 5분, 1분)
 
         Returns:
             (결과 텍스트, 모델명) 튜플
         """
         # 1. 프롬프트 생성
-        prompt = build_prompt(df, symbol, name, currency, unit_shares, fundamental_info, position_info)
+        prompt = build_prompt(df, symbol, name, currency, unit_shares, fundamental_info, position_info, minute_candles)
 
         # 2. Gemini 실행
         result, model_name = await self._generate_with_smart_retry(prompt)

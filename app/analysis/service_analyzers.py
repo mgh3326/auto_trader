@@ -70,6 +70,24 @@ class UpbitAnalyzer(Analyzer):
             df_historical = await upbit.fetch_ohlcv(stock_symbol, days=200)
             df_current = await upbit.fetch_price(stock_symbol)
             fundamental_info = await upbit.fetch_fundamental_info(stock_symbol)
+            
+            # 분봉 데이터 수집
+            minute_candles = {}
+            try:
+                # 60분 캔들 (최근 12개)
+                df_60min = await upbit.fetch_hourly_candles(stock_symbol, count=12)
+                minute_candles["60min"] = df_60min
+                
+                # 5분 캔들 (최근 12개)
+                df_5min = await upbit.fetch_5min_candles(stock_symbol, count=12)
+                minute_candles["5min"] = df_5min
+                
+                # 1분 캔들 (최근 10개)
+                df_1min = await upbit.fetch_1min_candles(stock_symbol, count=10)
+                minute_candles["1min"] = df_1min
+            except Exception as e:
+                print(f"분봉 데이터 수집 실패: {e}")
+                minute_candles = {}
 
             # 데이터 병합
             df_merged = DataProcessor.merge_historical_and_current(
@@ -86,6 +104,7 @@ class UpbitAnalyzer(Analyzer):
                 unit_shares="개",
                 fundamental_info=fundamental_info,
                 position_info=position_info,
+                minute_candles=minute_candles,
             )
 
             print(f"분석 완료: {coin_name}")
@@ -120,6 +139,7 @@ class YahooAnalyzer(Analyzer):
                 currency="$",
                 unit_shares="주",
                 fundamental_info=fundamental_info,
+                minute_candles=None,  # Yahoo는 분봉 데이터를 지원하지 않음
             )
 
             print(f"분석 완료: {stock_symbol}")
@@ -157,6 +177,7 @@ class KISAnalyzer(Analyzer):
             currency="₩",
             unit_shares="주",
             fundamental_info=fundamental_info,
+            minute_candles=None,  # KIS는 분봉 데이터를 지원하지 않음
         )
 
         print(f"분석 완료: {stock_name}")
