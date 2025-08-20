@@ -244,38 +244,38 @@ def build_prompt(
         # 60분 캔들 (최근 12개)
         if "60min" in minute_candles and not minute_candles["60min"].empty:
             df_60min = minute_candles["60min"]
-            recent_12_60min = df_60min.tail(12)
+            recent_60min = df_60min.tail(12)
             candles_60min = []
-            for _, row in recent_12_60min.iterrows():
+            for _, row in recent_60min.iterrows():
                 time_str = row["time"].strftime("%H:%M") if hasattr(row["time"], "strftime") else str(row["time"])
                 close_str = format_decimal(row["close"], currency)
                 volume_str = format_quantity(row["volume"], unit_shares)
                 candles_60min.append(f"{time_str} {close_str} {volume_str}")
-            minute_candles_section += f"- 60분 캔들 (최근 12개, 시간·종가·거래량):\n  ({', '.join(candles_60min)})\n"
+            minute_candles_section += f"- 60분 캔들 (최근 {len(recent_60min)}개, 시간·종가·거래량):\n  ({', '.join(candles_60min)})\n"
         
         # 5분 캔들 (최근 12개)
         if "5min" in minute_candles and not minute_candles["5min"].empty:
             df_5min = minute_candles["5min"]
-            recent_12_5min = df_5min.tail(12)
+            recent_5min = df_5min.tail(12)
             candles_5min = []
-            for _, row in recent_12_5min.iterrows():
+            for _, row in recent_5min.iterrows():
                 time_str = row["time"].strftime("%H:%M") if hasattr(row["time"], "strftime") else str(row["time"])
                 close_str = format_decimal(row["close"], currency)
                 volume_str = format_quantity(row["volume"], unit_shares)
                 candles_5min.append(f"{time_str} {close_str} {volume_str}")
-            minute_candles_section += f"- 5분 캔들 (최근 12개, 시간·종가·거래량):\n  ({', '.join(candles_5min)})\n"
+            minute_candles_section += f"- 5분 캔들 (최근 {len(recent_5min)}개, 시간·종가·거래량):\n  ({', '.join(candles_5min)})\n"
         
         # 1분 캔들 (최근 10개)
         if "1min" in minute_candles and not minute_candles["1min"].empty:
             df_1min = minute_candles["1min"]
-            recent_10_1min = df_1min.tail(10)
+            recent_1min = df_1min.tail(10)
             candles_1min = []
-            for _, row in recent_10_1min.iterrows():
+            for _, row in recent_1min.iterrows():
                 time_str = row["time"].strftime("%H:%M:%S") if hasattr(row["time"], "strftime") else str(row["time"])
                 close_str = format_decimal(row["close"], currency)
                 volume_str = format_quantity(row["volume"], unit_shares)
                 candles_1min.append(f"{time_str} {close_str} {volume_str}")
-            minute_candles_section += f"- 1분 캔들 (최근 10개, 시간·종가·거래량):\n  ({', '.join(candles_1min)})\n"
+            minute_candles_section += f"- 1분 캔들 (최근 {len(recent_1min)}개, 시간·종가·거래량):\n  ({', '.join(candles_1min)})\n"
     
     prompt = f"""
     {stock_name}({ticker}) (관측일 {obs_date})

@@ -21,6 +21,10 @@ DAILY_ITEMCHARTPRICE_URL = (
 VOL_TR = "FHPST01710000"  # 실전 전용
 DAILY_ITEMCHARTPRICE_TR = "FHKST03010100"  # (일봉·주식·실전/모의 공통)
 
+# 분봉 데이터 관련 URL 및 TR ID 추가
+MINUTE_CHART_URL = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
+MINUTE_CHART_TR = "FHKST03010200"  # 분봉 조회 TR ID
+
 
 class KISClient:
     def __init__(self):
@@ -185,14 +189,14 @@ class KISClient:
         return {k: v for k, v in fundamental_data.items() if v is not None}
 
     async def inquire_daily_itemchartprice(
-        self,
-        code: str,
-        market: str = "J",
-        n: int = 200,  # 최종 확보하고 싶은 캔들 수
-        adj: bool = True,
-        period: str = "D",  # D/W/M (일/주/월봉)
-        end_date: datetime.date | None = None,  # None이면 오늘까지
-        per_call_days: int = 150,  # 한 번 호출 시 조회 날짜 폭
+            self,
+            code: str,
+            market: str = "J",
+            n: int = 200,  # 최종 확보하고 싶은 캔들 수
+            adj: bool = True,
+            period: str = "D",  # D/W/M (일/주/월봉)
+            end_date: datetime.date | None = None,  # None이면 오늘까지
+            per_call_days: int = 150,  # 한 번 호출 시 조회 날짜 폭
     ) -> pd.DataFrame:
         """
         ✅ KIS 일봉/주봉/월봉을 여러 번 호출해 최근 n개 OHLCV만 반환
@@ -275,6 +279,251 @@ class KISClient:
             .reset_index(drop=True)
         )
         return df
+
+    async def inquire_minute_chart(
+            self,
+            code: str,
+            market: str = "J",
+            time_unit: int = 1,  # 1: 1분, 3: 3분, 5: 5분, 10: 10분, 15: 15분, 30: 30분, 45: 45분, 60: 60분
+            n: int = 200,  # 최종 확보하고 싶은 캔들 수
+            end_date: datetime.date | None = None,  # None이면 오늘까지
+    ) -> pd.DataFrame:
+        """
+        KIS 분봉 데이터 조회
+        컬럼: datetime, date, time, open, high, low, close, volume, value
+        
+        Parameters
+        ----------
+        code : str
+            6자리 종목코드 (예: "005930")
+        market : str, default "J"
+            시장 구분 (J: 통합, K: 코스피, Q: 코스닥)
+        time_unit : int, default 1
+            분봉 단위 (1, 3, 5, 10, 15, 30, 45, 60)
+        n : int, default 200
+            가져올 캔들 수 (최대 200)
+        end_date : datetime.date, optional
+            종료 날짜 (None이면 오늘까지)
+        """
+        await self._ensure_token()
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": MINUTE_CHART_TR,
+        }
+
+        # KIS 분봉 API는 time_unit 파라미터를 제대로 인식하지 못하는 문제가 있음
+        # 현재로서는 모든 시간대에서 동일한 데이터가 반환됨
+        # 향후 API 문서 업데이트나 기술지원을 통해 해결 필요
+        
+        # 현재 시간을 시분초로 설정 (장 시간 내에만 작동)
+        current_time = datetime.datetime.now().strftime("%H%M%S")
+        
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_INPUT_ISCD": code.zfill(6),
+            "FID_INPUT_HOUR_1": current_time,  # 현재 시분초
+            "FID_INPUT_DATE_1": (end_date or datetime.date.today()).strftime("%Y%m%d"),
+            "FID_INPUT_DATE_2": (end_date or datetime.date.today()).strftime("%Y%m%d"),
+            "FID_INPUT_TIME_1": "01",  # 1분봉으로 고정 (API가 time_unit을 지원하지 않음)
+            "FID_INPUT_TIME_2": "01",  # 1분봉으로 고정
+            "FID_PW_DATA_INCU_YN": "N",
+            "FID_ETC_CLS_CODE": ""
+        }
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(
+                f"{BASE}{MINUTE_CHART_URL}", headers=hdr, params=params
+            )
+
+        js = r.json()
+        
+        # 디버깅을 위한 로깅 추가
+        logging.info(f"KIS 분봉 API 응답: {js}")
+
+        # rt_cd가 비어있어도 output2에 데이터가 있을 수 있음
+        rows = js.get("output2") or js.get("output") or []
+        
+        if not rows:
+            # 데이터가 없는 경우 빈 DataFrame 반환
+            logging.warning(f"KIS 분봉 API에서 데이터를 찾을 수 없음: {js}")
+            return pd.DataFrame(columns=["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"])
+
+        # 데이터가 있으면 성공으로 처리 (rt_cd가 비어있어도)
+        logging.info(f"KIS 분봉 API에서 {len(rows)}개 데이터 수집 성공")
+
+        # DataFrame 변환
+        df = (
+            pd.DataFrame(rows)
+            .rename(
+                columns={
+                    "stck_bsop_date": "date",
+                    "stck_cntg_hour": "time",
+                    "stck_oprc": "open",
+                    "stck_hgpr": "high",
+                    "stck_lwpr": "low",
+                    "stck_prpr": "close",
+                    "cntg_vol": "volume",
+                    "acml_tr_pbmn": "value",
+                }
+            )
+            .astype(
+                {
+                    "date": "str",
+                    "time": "str",
+                    "open": "float",
+                    "high": "float",
+                    "low": "float",
+                    "close": "float",
+                    "volume": "int",
+                    "value": "int",
+                },
+                errors="ignore",
+            )
+            .assign(
+                # 날짜와 시간을 결합하여 datetime 생성
+                datetime=lambda d: pd.to_datetime(
+                    d["date"] + d["time"], 
+                    format="%Y%m%d%H%M%S"
+                ),
+                date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
+                time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
+            )
+            .loc[:, ["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"]]
+            .drop_duplicates(subset=["datetime"], keep="first")
+            .sort_values("datetime")
+            .tail(n)  # 요청한 개수만
+            .reset_index(drop=True)
+        )
+
+        return df
+
+    def _aggregate_minute_candles(self, df_1min: pd.DataFrame, time_unit: int) -> pd.DataFrame:
+        """
+        1분봉 데이터를 지정된 시간 단위로 집계
+        
+        Args:
+            df_1min: 1분봉 DataFrame
+            time_unit: 집계할 시간 단위 (분)
+            
+        Returns:
+            집계된 DataFrame (완전한 시간대만)
+        """
+        if df_1min.empty:
+            return df_1min
+        
+        # 시간을 time_unit 단위로 그룹화
+        df_1min = df_1min.copy()
+        df_1min['time_group'] = df_1min['datetime'].dt.floor(f'{time_unit}min')
+        
+        # 그룹별로 OHLCV 집계
+        aggregated = df_1min.groupby('time_group').agg({
+            'open': 'first',      # 첫 번째 시가
+            'high': 'max',        # 최고가
+            'low': 'min',         # 최저가
+            'close': 'last',      # 마지막 종가
+            'volume': 'sum',      # 거래량 합계
+            'value': 'sum'        # 거래대금 합계
+        }).reset_index()
+        
+        # 완전한 시간대만 필터링 (time_unit만큼의 분 데이터가 있는 그룹만)
+        complete_periods = []
+        for _, row in aggregated.iterrows():
+            group_start = row['time_group']
+            group_end = group_start + pd.Timedelta(minutes=time_unit)
+            
+            # 해당 그룹에 속하는 1분봉 개수 확인
+            period_data = df_1min[
+                (df_1min['datetime'] >= group_start) & 
+                (df_1min['datetime'] < group_end)
+            ]
+            
+            # 완전한 시간대인지 확인 (time_unit만큼의 분 데이터가 있어야 함)
+            if len(period_data) >= time_unit:
+                complete_periods.append(row)
+        
+        if not complete_periods:
+            # 완전한 시간대가 없으면 빈 DataFrame 반환
+            return pd.DataFrame(
+                columns=["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"]
+            )
+        
+        # 완전한 시간대만으로 DataFrame 재구성
+        df_complete = pd.DataFrame(complete_periods)
+        
+        # 컬럼명 변경 및 시간 정보 추가
+        df_complete = df_complete.rename(columns={'time_group': 'datetime'})
+        df_complete['date'] = df_complete['datetime'].dt.date
+        df_complete['time'] = df_complete['datetime'].dt.time
+        
+        # 원본 컬럼 순서로 재정렬
+        return df_complete[['datetime', 'date', 'time', 'open', 'high', 'low', 'close', 'volume', 'value']]
+
+    async def fetch_minute_candles(
+        self,
+        code: str,
+        market: str = "J",
+        end_date: datetime.date | None = None,
+    ) -> dict:
+        """
+        분봉 데이터를 가져와서 60분, 5분, 1분 캔들로 반환
+        
+        Args:
+            code: 종목코드
+            market: 시장 구분 (J: KRX)
+            end_date: 종료 날짜 (None이면 오늘)
+            
+        Returns:
+            분봉 캔들 데이터 딕셔너리
+        """
+        minute_candles = {}
+        
+        try:
+            logging.info(f"분봉 데이터 수집 시작: {code}")
+            
+            # 단일 요청으로 200개 1분봉 수집
+            df_1min = await self.inquire_minute_chart(
+                code, market, time_unit=1, n=200, end_date=end_date
+            )
+            
+            if not df_1min.empty:
+                logging.info(f"1분봉 {len(df_1min)}개 수집 완료")
+                
+                minute_candles["1min"] = df_1min
+                
+                # 1분봉 데이터를 5분봉으로 가공
+                df_5min = self._aggregate_minute_candles(df_1min, 5)
+                minute_candles["5min"] = df_5min
+                
+                # 1분봉 데이터를 60분봉으로 가공
+                df_60min = self._aggregate_minute_candles(df_1min, 60)
+                minute_candles["60min"] = df_60min
+                
+                logging.info(f"집계 완료 - 1분봉: {len(df_1min)}개, 5분봉: {len(df_5min)}개, 60분봉: {len(df_60min)}개")
+                
+            else:
+                # 데이터가 없는 경우 빈 DataFrame으로 설정
+                empty_df = pd.DataFrame(
+                    columns=["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"])
+                minute_candles = {
+                    "60min": empty_df,
+                    "5min": empty_df,
+                    "1min": empty_df
+                }
+                logging.warning("수집된 데이터가 없습니다")
+            
+        except Exception as e:
+            logging.warning(f"분봉 데이터 수집 실패 ({code}): {e}")
+            # 실패한 경우 빈 DataFrame으로 설정
+            empty_df = pd.DataFrame(
+                columns=["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"])
+            minute_candles = {
+                "60min": empty_df,
+                "5min": empty_df,
+                "1min": empty_df
+            }
+        
+        return minute_candles
 
 
 kis = KISClient()  # 싱글턴

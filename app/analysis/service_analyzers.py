@@ -163,6 +163,15 @@ class KISAnalyzer(Analyzer):
         df_historical = await kis.kis.inquire_daily_itemchartprice(stock_code)
         df_current = await kis.kis.inquire_price(stock_code)
         fundamental_info = await kis.kis.fetch_fundamental_info(stock_code)
+        
+        # 분봉 데이터 수집
+        minute_candles = {}
+        try:
+            minute_candles = await kis.kis.fetch_minute_candles(stock_code)
+        except Exception as e:
+            print(f"분봉 데이터 수집 실패: {e}")
+            minute_candles = {}
+        
         # 데이터 병합
         df_merged = DataProcessor.merge_historical_and_current(
             df_historical, df_current
@@ -177,7 +186,7 @@ class KISAnalyzer(Analyzer):
             currency="₩",
             unit_shares="주",
             fundamental_info=fundamental_info,
-            minute_candles=None,  # KIS는 분봉 데이터를 지원하지 않음
+            minute_candles=minute_candles,
         )
 
         print(f"분석 완료: {stock_name}")
