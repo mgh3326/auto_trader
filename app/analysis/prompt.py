@@ -384,3 +384,60 @@ def format_ma_line(
 
     tail = f" {suffix}".rstrip()
     return f"- {label_prefix} {labels} : {' / '.join(values)}{(' ' + suffix) if suffix else ''}"
+
+
+def build_json_prompt(
+    df: pd.DataFrame,
+    ticker: str,
+    stock_name: str,
+    currency: str = "₩",
+    unit_shares: str = "주",
+    fundamental_info: Optional[dict] = None,
+    position_info: Optional[dict] = None,
+    minute_candles: Optional[dict] = None,
+) -> str:
+    """
+    JSON 형식의 응답을 받기 위한 프롬프트를 생성합니다.
+    """
+    # 기본 프롬프트 생성
+    original_prompt = build_prompt(
+        df, ticker, stock_name, currency, unit_shares, 
+        fundamental_info, position_info, minute_candles
+    )
+    
+    # JSON 형식 프롬프트로 변환
+    json_prompt = f"""
+{original_prompt}
+
+당신은 전문 주식 분석가입니다. 위 정보를 바탕으로 투자 결정을 내려주세요.
+
+**가격 용어 정의:**
+- **적절한 매수 범위**: 현재 시점에서 매수하기에 적정한 가격 범위 (현재가 기준)
+- **적절한 매도 범위**: 보유중일 때 매도하기에 적정한 가격 범위 (단기 목표)
+- **매수 희망 범위**: 조금 더 저렴하게 사고 싶은 이상적인 매수 가격 범위 (지정가 주문용)
+- **매도 목표 범위**: 최종적으로 도달하기를 기대하는 매도 가격 범위 (장기 목표)
+
+**중요**: 매수 희망가 ≤ 적절한 매수가, 적절한 매도가 ≤ 매도 목표가 관계를 유지하세요.
+
+반드시 아래 JSON 형식으로만 답변하세요:
+
+{{
+    "decision": "매수/관망/매도 중 하나",
+    "reasons": [
+        "근거1 (기술적 분석 관점)",
+        "근거2 (거래량 또는 모멘텀 관점)",
+        "근거3 (위험도 또는 타이밍 관점)"
+    ],
+    "price_analysis": {{
+        "appropriate_buy_range": {{"min": 숫자, "max": 숫자}},
+        "appropriate_sell_range": {{"min": 숫자, "max": 숫자}},
+        "buy_hope_range": {{"min": 숫자, "max": 숫자}},
+        "sell_target_range": {{"min": 숫자, "max": 숫자}}
+    }},
+    "detailed_text": "**매수**\\n\\n**근거:**\\n1. 근거1\\n2. 근거2\\n3. 근거3\\n\\n**가격 제안:**\\n* **적절한 매수 가격:** X원 ~ Y원\\n* **적절한 매도 가격:** X원 ~ Y원\\n* **매수 희망가:** X원 ~ Y원\\n* **매도 목표가:** X원 ~ Y원",
+    "confidence": 숫자0부터100
+}}
+
+다른 설명 없이 오직 JSON만 출력하세요.
+"""
+    return json_prompt.strip()
