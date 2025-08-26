@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
@@ -79,7 +80,7 @@ class ModelRateLimiter:
         self,
         model_name: str,
         api_key: str,
-        retry_delay: Dict[str, Any],
+        retry_delay: Any,
         error_code: int = 429,
     ) -> None:
         """
@@ -88,7 +89,7 @@ class ModelRateLimiter:
         Args:
             model_name: 모델명
             api_key: Gemini API 키 (마스킹된 형태)
-            retry_delay: Google API에서 받은 retry_delay 정보
+            retry_delay: Google API에서 받은 retry_delay 정보 (dict, str, int 등 다양한 형태)
             error_code: 에러 코드 (기본값: 429)
         """
         try:
@@ -142,29 +143,57 @@ class ModelRateLimiter:
         except Exception as e:
             print(f"Redis 제한 설정 오류: {e}")
 
-    def _extract_retry_seconds(self, retry_delay: Dict[str, Any]) -> Optional[int]:
+    def _extract_retry_seconds(self, retry_delay: Any) -> Optional[int]:
         """
         retry_delay에서 seconds 값을 추출
 
         Args:
-            retry_delay: Google API retry_delay 정보
+            retry_delay: Google API retry_delay 정보 (dict, str, int 등 다양한 형태)
 
         Returns:
             초 단위 시간 또는 None
         """
         try:
-            # Google API retry_delay 구조에 따라 seconds 추출
-            if "seconds" in retry_delay:
-                return int(retry_delay["seconds"])
-            elif "nanos" in retry_delay:
-                # nanos가 있는 경우 seconds로 변환
-                return int(retry_delay.get("seconds", 0)) + (
-                    int(retry_delay["nanos"]) // 1_000_000_000
-                )
+            # 문자열 형태인 경우 (예: "52s", "1m", "30")
+            if isinstance(retry_delay, str):
+                # 숫자와 단위 분리
+                match = re.match(r'^(\d+)([smh]?)$', retry_delay.strip())
+                if match:
+                    value = int(match.group(1))
+                    unit = match.group(2)
+                    
+                    if unit == 's' or unit == '':  # 초 단위 또는 단위 없음
+                        return value
+                    elif unit == 'm':  # 분 단위
+                        return value * 60
+                    elif unit == 'h':  # 시간 단위
+                        return value * 3600
+                else:
+                    print(f"  retry_delay 문자열 파싱 실패: {retry_delay}")
+                    return None
+            
+            # 숫자형 (int, float)인 경우
+            elif isinstance(retry_delay, (int, float)):
+                return int(retry_delay)
+            
+            # dict 형태인 경우 (기존 Google API 구조)
+            elif isinstance(retry_delay, dict):
+                if "seconds" in retry_delay:
+                    return int(retry_delay["seconds"])
+                elif "nanos" in retry_delay:
+                    # nanos가 있는 경우 seconds로 변환
+                    return int(retry_delay.get("seconds", 0)) + (
+                        int(retry_delay["nanos"]) // 1_000_000_000
+                    )
+                else:
+                    # 기본 구조 확인
+                    print(f"  retry_delay dict 구조: {retry_delay}")
+                    return None
             else:
-                # 기본 구조 확인
-                print(f"  retry_delay 구조: {retry_delay}")
+                # 알 수 없는 타입
+                print(f"  retry_delay 알 수 없는 타입: {type(retry_delay)} - {retry_delay}")
                 return None
+                
         except Exception as e:
             print(f"  retry_delay 파싱 오류: {e}")
             return None

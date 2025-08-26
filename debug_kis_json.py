@@ -27,6 +27,8 @@ async def main():
             "에코프로머티",
             "삼성전자우",
         ]
+
+
         stock_names = [
             "TIGER 미국나스닥100",
             "TIGER 미국S&P500",
@@ -36,8 +38,15 @@ async def main():
             "TIGER 미국테크TOP10 INDXX",
             "TIGER 미국필라델피아반도체나스닥",
             "SOL 미국S&P500",
-
         ]
+        stock_names = [
+            "펩트론",
+            "NAVER",
+            "삼양컴텍",
+            "현대건설",
+            "JYP Ent."
+            ]
+
         print(f"분석할 주식 목록: {stock_names}")
         print(f"총 {len(stock_names)}개 주식 분석 시작\n")
 

@@ -6,7 +6,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
-from app.models.analysis import StockAnalysisResult
+from app.models.analysis import StockInfo, StockAnalysisResult
 from app.models.base import Base
 
 router = APIRouter(prefix="/analysis-json", tags=["JSON Analysis Results"])
@@ -39,15 +39,17 @@ async def get_analysis_results(
 ):
     """JSON 분석 결과를 조회하는 API"""
     
-    # 기본 쿼리 생성
-    query = select(StockAnalysisResult)
+    # 기본 쿼리 생성 (StockInfo와 JOIN)
+    query = select(StockAnalysisResult, StockInfo).join(
+        StockInfo, StockAnalysisResult.stock_info_id == StockInfo.id
+    ).where(StockInfo.is_active == True)
     
     # 필터 적용
     if instrument_type and instrument_type != "전체":
-        query = query.where(StockAnalysisResult.instrument_type == instrument_type)
+        query = query.where(StockInfo.instrument_type == instrument_type)
     
     if symbol and symbol != "전체":
-        query = query.where(StockAnalysisResult.symbol == symbol)
+        query = query.where(StockInfo.symbol.ilike(f"%{symbol}%"))
     
     if model_name and model_name != "전체":
         query = query.where(StockAnalysisResult.model_name == model_name)
@@ -56,11 +58,14 @@ async def get_analysis_results(
         query = query.where(StockAnalysisResult.decision == decision)
     
     # 전체 개수 조회
-    count_query = select(func.count(StockAnalysisResult.id))
+    count_query = select(func.count(StockAnalysisResult.id)).join(
+        StockInfo, StockAnalysisResult.stock_info_id == StockInfo.id
+    ).where(StockInfo.is_active == True)
+    
     if instrument_type and instrument_type != "전체":
-        count_query = count_query.where(StockAnalysisResult.instrument_type == instrument_type)
+        count_query = count_query.where(StockInfo.instrument_type == instrument_type)
     if symbol and symbol != "전체":
-        count_query = count_query.where(StockAnalysisResult.symbol == symbol)
+        count_query = count_query.where(StockInfo.symbol.ilike(f"%{symbol}%"))
     if model_name and model_name != "전체":
         count_query = count_query.where(StockAnalysisResult.model_name == model_name)
     if decision and decision != "전체":
@@ -74,30 +79,30 @@ async def get_analysis_results(
     
     # 결과 조회
     result = await db.execute(query)
-    results = result.scalars().all()
+    results = result.fetchall()
     
     # 응답 데이터 구성
     analysis_results = []
-    for row in results:
+    for analysis_result, stock_info in results:
         analysis_results.append({
-            "id": row.id,
-            "symbol": row.symbol,
-            "name": row.name,
-            "instrument_type": row.instrument_type,
-            "model_name": row.model_name,
-            "decision": row.decision,
-            "confidence": row.confidence,
-            "appropriate_buy_min": row.appropriate_buy_min,
-            "appropriate_buy_max": row.appropriate_buy_max,
-            "appropriate_sell_min": row.appropriate_sell_min,
-            "appropriate_sell_max": row.appropriate_sell_max,
-            "buy_hope_min": row.buy_hope_min,
-            "buy_hope_max": row.buy_hope_max,
-            "sell_target_min": row.sell_target_min,
-            "sell_target_max": row.sell_target_max,
-            "reasons": row.reasons,
-            "detailed_text": row.detailed_text,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "id": analysis_result.id,
+            "symbol": stock_info.symbol,
+            "name": stock_info.name,
+            "instrument_type": stock_info.instrument_type,
+            "model_name": analysis_result.model_name,
+            "decision": analysis_result.decision,
+            "confidence": analysis_result.confidence,
+            "appropriate_buy_min": analysis_result.appropriate_buy_min,
+            "appropriate_buy_max": analysis_result.appropriate_buy_max,
+            "appropriate_sell_min": analysis_result.appropriate_sell_min,
+            "appropriate_sell_max": analysis_result.appropriate_sell_max,
+            "buy_hope_min": analysis_result.buy_hope_min,
+            "buy_hope_max": analysis_result.buy_hope_max,
+            "sell_target_min": analysis_result.sell_target_min,
+            "sell_target_max": analysis_result.sell_target_max,
+            "reasons": analysis_result.reasons,
+            "detailed_text": analysis_result.detailed_text,
+            "created_at": analysis_result.created_at.isoformat() if analysis_result.created_at else None,
         })
     
     return {
@@ -116,50 +121,55 @@ async def get_analysis_detail(
 ):
     """특정 분석 결과의 상세 정보를 조회하는 API"""
     
-    query = select(StockAnalysisResult).where(StockAnalysisResult.id == result_id)
+    query = select(StockAnalysisResult, StockInfo).join(
+        StockInfo, StockAnalysisResult.stock_info_id == StockInfo.id
+    ).where(StockAnalysisResult.id == result_id)
+    
     result = await db.execute(query)
-    row = result.scalar_one_or_none()
+    row = result.first()
     
     if not row:
         return {"error": "분석 결과를 찾을 수 없습니다."}
+    
+    analysis_result, stock_info = row
     
     # 근거를 JSON에서 파싱
     import json
     reasons = []
     try:
-        if row.reasons:
-            reasons = json.loads(row.reasons)
+        if analysis_result.reasons:
+            reasons = json.loads(analysis_result.reasons)
     except:
         reasons = []
     
     return {
-        "id": row.id,
-        "symbol": row.symbol,
-        "name": row.name,
-        "instrument_type": row.instrument_type,
-        "model_name": row.model_name,
-        "decision": row.decision,
-        "confidence": row.confidence,
+        "id": analysis_result.id,
+        "symbol": stock_info.symbol,
+        "name": stock_info.name,
+        "instrument_type": stock_info.instrument_type,
+        "model_name": analysis_result.model_name,
+        "decision": analysis_result.decision,
+        "confidence": analysis_result.confidence,
         "appropriate_buy_range": {
-            "min": row.appropriate_buy_min,
-            "max": row.appropriate_buy_max
+            "min": analysis_result.appropriate_buy_min,
+            "max": analysis_result.appropriate_buy_max
         },
         "appropriate_sell_range": {
-            "min": row.appropriate_sell_min,
-            "max": row.appropriate_sell_max
+            "min": analysis_result.appropriate_sell_min,
+            "max": analysis_result.appropriate_sell_max
         },
         "buy_hope_range": {
-            "min": row.buy_hope_min,
-            "max": row.buy_hope_max
+            "min": analysis_result.buy_hope_min,
+            "max": analysis_result.buy_hope_max
         },
         "sell_target_range": {
-            "min": row.sell_target_min,
-            "max": row.sell_target_max
+            "min": analysis_result.sell_target_min,
+            "max": analysis_result.sell_target_max
         },
         "reasons": reasons,
-        "detailed_text": row.detailed_text,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "prompt": row.prompt
+        "detailed_text": analysis_result.detailed_text,
+        "created_at": analysis_result.created_at.isoformat() if analysis_result.created_at else None,
+        "prompt": analysis_result.prompt
     }
 
 
@@ -167,23 +177,25 @@ async def get_analysis_detail(
 async def get_filter_options(db: AsyncSession = Depends(get_db)):
     """필터 옵션을 조회하는 API"""
     
-    # 상품 타입 옵션
+    # 상품 타입 옵션 (StockInfo에서 조회)
     instrument_types = await db.execute(
-        select(StockAnalysisResult.instrument_type)
+        select(StockInfo.instrument_type)
         .distinct()
-        .where(StockAnalysisResult.instrument_type.isnot(None))
+        .where(StockInfo.is_active == True)
+        .where(StockInfo.instrument_type.isnot(None))
     )
     instrument_type_options = [row[0] for row in instrument_types.fetchall()]
     
-    # 종목 코드 옵션
+    # 종목 코드 옵션 (StockInfo에서 조회)
     symbols = await db.execute(
-        select(StockAnalysisResult.symbol)
+        select(StockInfo.symbol)
         .distinct()
-        .where(StockAnalysisResult.symbol.isnot(None))
+        .where(StockInfo.is_active == True)
+        .where(StockInfo.symbol.isnot(None))
     )
     symbol_options = [row[0] for row in symbols.fetchall()]
     
-    # 모델명 옵션
+    # 모델명 옵션 (StockAnalysisResult에서 조회)
     model_names = await db.execute(
         select(StockAnalysisResult.model_name)
         .distinct()
@@ -202,8 +214,12 @@ async def get_filter_options(db: AsyncSession = Depends(get_db)):
 async def get_analysis_statistics(db: AsyncSession = Depends(get_db)):
     """분석 통계를 조회하는 API"""
     
-    # 전체 분석 개수
-    total_count = await db.scalar(select(func.count(StockAnalysisResult.id)))
+    # 전체 분석 개수 (활성화된 주식만)
+    total_count = await db.scalar(
+        select(func.count(StockAnalysisResult.id))
+        .join(StockInfo, StockAnalysisResult.stock_info_id == StockInfo.id)
+        .where(StockInfo.is_active == True)
+    )
     
     # 투자 결정별 통계
     decision_stats = await db.execute(
@@ -211,17 +227,21 @@ async def get_analysis_statistics(db: AsyncSession = Depends(get_db)):
             StockAnalysisResult.decision,
             func.count(StockAnalysisResult.id)
         )
+        .join(StockInfo, StockAnalysisResult.stock_info_id == StockInfo.id)
+        .where(StockInfo.is_active == True)
         .group_by(StockAnalysisResult.decision)
     )
     decision_counts = {row[0]: row[1] for row in decision_stats.fetchall()}
     
-    # 상품 타입별 통계
+    # 상품 타입별 통계 (StockInfo에서 조회)
     instrument_stats = await db.execute(
         select(
-            StockAnalysisResult.instrument_type,
+            StockInfo.instrument_type,
             func.count(StockAnalysisResult.id)
         )
-        .group_by(StockAnalysisResult.instrument_type)
+        .join(StockAnalysisResult, StockInfo.id == StockAnalysisResult.stock_info_id)
+        .where(StockInfo.is_active == True)
+        .group_by(StockInfo.instrument_type)
     )
     instrument_counts = {row[0]: row[1] for row in instrument_stats.fetchall()}
     
@@ -231,6 +251,8 @@ async def get_analysis_statistics(db: AsyncSession = Depends(get_db)):
             StockAnalysisResult.model_name,
             func.count(StockAnalysisResult.id)
         )
+        .join(StockInfo, StockAnalysisResult.stock_info_id == StockInfo.id)
+        .where(StockInfo.is_active == True)
         .group_by(StockAnalysisResult.model_name)
     )
     model_counts = {row[0]: row[1] for row in model_stats.fetchall()}
@@ -238,6 +260,8 @@ async def get_analysis_statistics(db: AsyncSession = Depends(get_db)):
     # 평균 신뢰도
     avg_confidence = await db.scalar(
         select(func.avg(StockAnalysisResult.confidence))
+        .join(StockInfo, StockAnalysisResult.stock_info_id == StockInfo.id)
+        .where(StockInfo.is_active == True)
         .where(StockAnalysisResult.confidence.isnot(None))
     )
     

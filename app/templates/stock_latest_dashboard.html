@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>종목별 최신 분석 결과 - Auto Trader</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .stats-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.5rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .stats-number {
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin: 0;
+        }
+        .stats-label {
+            font-size: 0.8rem;
+            opacity: 0.9;
+            margin: 0;
+        }
+        .filter-section {
+            background-color: #f8f9fa;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+        .table-responsive {
+            max-height: 700px;
+            overflow-y: auto;
+        }
+        .badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+        }
+        .bg-primary { background-color: #0d6efd !important; }
+        .bg-info { background-color: #0dcaf0 !important; }
+        .bg-success { background-color: #198754 !important; }
+        .bg-secondary { background-color: #6c757d !important; }
+        .price-range {
+            font-size: 0.85rem;
+            color: #666;
+        }
+        .analysis-summary {
+            font-size: 0.85rem;
+            line-height: 1.3;
+        }
+        .analysis-summary .price-range {
+            margin-bottom: 0.4rem;
+        }
+        .analysis-summary .row {
+            margin: 0;
+        }
+        .analysis-summary .col-6 {
+            padding: 0 0.3rem;
+        }
+        .decision-badge {
+            font-weight: bold;
+        }
+        .confidence-text {
+            font-size: 0.85rem;
+            color: #666;
+        }
+        .stock-name {
+            font-weight: 600;
+            color: #333;
+            line-height: 1.3;
+            word-break: break-word;
+            max-width: 150px;
+        }
+        .stock-symbol {
+            font-family: monospace;
+            color: #666;
+            font-size: 0.9rem;
+        }
+        .stock-info-cell {
+            max-width: 150px;
+            min-width: 150px;
+            width: 150px;
+        }
+        .latest-analysis-date {
+            font-size: 0.8rem;
+            color: #999;
+            white-space: nowrap;
+            line-height: 1.2;
+        }
+        .pagination-sm .page-link {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.875rem;
+        }
+        .table {
+            table-layout: fixed;
+        }
+        .table td {
+            vertical-align: middle;
+            word-wrap: break-word;
+        }
+        .table th:nth-child(1),
+        .table td:nth-child(1) {
+            width: 150px;
+            min-width: 150px;
+            max-width: 150px;
+        }
+        .table th:nth-child(2),
+        .table td:nth-child(2) {
+            width: 100px;
+            min-width: 100px;
+        }
+        .table th:nth-child(3),
+        .table td:nth-child(3) {
+            width: 80px;
+            min-width: 80px;
+        }
+        .table th:nth-child(4),
+        .table td:nth-child(4) {
+            width: 80px;
+            min-width: 80px;
+        }
+        .table th:nth-child(5),
+        .table td:nth-child(5) {
+            width: auto;
+            min-width: 300px;
+        }
+        .table th:nth-child(6),
+        .table td:nth-child(6) {
+            width: 140px;
+            min-width: 140px;
+        }
+        .table th:nth-child(7),
+        .table td:nth-child(7) {
+            width: 150px;
+            min-width: 150px;
+        }
+        .btn-group .btn {
+            white-space: nowrap;
+            font-size: 0.75rem;
+            padding: 0.2rem 0.35rem;
+            min-width: 65px;
+        }
+        .btn-group {
+            display: flex;
+            flex-wrap: nowrap;
+            gap: 2px;
+            justify-content: flex-start;
+        }
+        .btn-group .btn i {
+            margin-right: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <!-- 페이지 헤더 -->
+        <div class="row mb-3">
+            <div class="col">
+                <h1 class="h3">종목별 최신 분석 결과</h1>
+                <p class="text-muted mb-2">각 종목의 가장 최근 AI 분석 결과를 확인하고 이력을 조회할 수 있습니다.</p>
+            </div>
+        </div>
+
+        <!-- 통계 카드 섹션 -->
+        <div class="row mb-3 statistics-section">
+            <div class="col-lg-3 col-md-6">
+                <div class="stats-card">
+                    <p class="stats-number" id="active-stocks-count">-</p>
+                    <p class="stats-label">활성 종목 수</p>
+                </div>
+            </div>
+            <div class="col-lg-3 col-md-6">
+                <div class="stats-card">
+                    <p class="stats-number" id="analyzed-stocks-count">-</p>
+                    <p class="stats-label">분석된 종목 수</p>
+                </div>
+            </div>
+            <div class="col-lg-3 col-md-6">
+                <div class="stats-card">
+                    <p class="stats-number" id="buy-decisions-count">-</p>
+                    <p class="stats-label">매수 추천 종목</p>
+                </div>
+            </div>
+            <div class="col-lg-3 col-md-6">
+                <div class="stats-card">
+                    <p class="stats-number" id="avg-confidence">-</p>
+                    <p class="stats-label">평균 신뢰도</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 필터 섹션 -->
+        <div class="filter-section">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label for="instrumentTypeFilter" class="form-label">상품 타입</label>
+                    <select class="form-select" id="instrumentTypeFilter">
+                        <option value="전체">전체</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label for="symbolFilter" class="form-label">종목 코드</label>
+                    <select class="form-select" id="symbolFilter">
+                        <option value="전체">전체</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label for="decisionFilter" class="form-label">투자 결정</label>
+                    <select class="form-select" id="decisionFilter">
+                        <option value="전체">전체</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">&nbsp;</label>
+                    <div>
+                        <button class="btn btn-primary w-100" onclick="loadResults()">
+                            <i class="bi bi-search"></i> 검색
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 결과 테이블 -->
+        <div class="card" id="resultsSection">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">종목별 최신 분석 결과</h5>
+                <span class="badge bg-secondary" id="totalCount">총 0건</span>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th>종목 정보</th>
+                                <th>상품 타입</th>
+                                <th>투자 결정</th>
+                                <th>신뢰도</th>
+                                <th>가격 범위 분석</th>
+                                <th>최신 분석일</th>
+                                <th>액션</th>
+                            </tr>
+                        </thead>
+                        <tbody id="resultsTableBody">
+                            <!-- 결과가 여기에 동적으로 추가됩니다 -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- 페이지네이션 -->
+                <div class="mt-3 border-top pt-3">
+                    <nav aria-label="페이지 네비게이션">
+                        <ul class="pagination pagination-sm justify-content-center" id="pagination">
+                            <!-- 페이지네이션이 여기에 동적으로 추가됩니다 -->
+                        </ul>
+                    </nav>
+                </div>
+            </div>
+        </div>
+
+        <!-- 로딩 스피너 -->
+        <div class="text-center my-4" id="loadingSpinner" style="display: none;">
+            <div class="spinner-border" role="status">
+                <span class="visually-hidden">로딩 중...</span>
+            </div>
+        </div>
+
+        <!-- 에러 메시지 -->
+        <div class="alert alert-danger" id="errorMessage" style="display: none;">
+            데이터를 불러오는 중 오류가 발생했습니다.
+        </div>
+    </div>
+
+    <!-- 종목 분석 이력 모달 -->
+    <div class="modal fade" id="stockHistoryModal" tabindex="-1" aria-labelledby="stockHistoryModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="stockHistoryModalLabel">분석 이력</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="stockHistoryContent">
+                        <!-- 분석 이력이 여기에 동적으로 추가됩니다 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 분석 상세 정보 모달 -->
+    <div class="modal fade" id="analysisDetailModal" tabindex="-1" aria-labelledby="analysisDetailModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="analysisDetailModalLabel">분석 상세 정보</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="analysisDetailContent">
+                        <!-- 분석 상세 정보가 여기에 동적으로 추가됩니다 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let currentPage = 1;
+        const pageSize = 20;
+
+        // 상품 타입별 배지 색상 함수
+        function getInstrumentTypeBadge(type) {
+            const badges = {
+                'equity_kr': '<span class="badge bg-primary">한국 주식</span>',
+                'equity_us': '<span class="badge bg-info">미국 주식</span>',
+                'crypto': '<span class="badge bg-success">암호화폐</span>'
+            };
+            return badges[type] || `<span class="badge bg-secondary">${type}</span>`;
+        }
+
+        // 투자 결정별 배지 함수
+        function getDecisionBadge(decision) {
+            const badges = {
+                'buy': '<span class="badge bg-success decision-badge">매수</span>',
+                'sell': '<span class="badge bg-danger decision-badge">매도</span>',
+                'hold': '<span class="badge bg-warning decision-badge">보유</span>'
+            };
+            return badges[decision] || `<span class="badge bg-secondary decision-badge">${decision}</span>`;
+        }
+
+        // 날짜 포맷팅 함수
+        function formatDate(dateString) {
+            if (!dateString) return '-';
+            const date = new Date(dateString);
+            const dateStr = date.toLocaleDateString('ko-KR').replace(/\./g, '.').replace(/\s/g, '');
+            const timeStr = date.toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit'});
+            return `${dateStr} ${timeStr}`;
+        }
+
+        // 가격 범위 포맷팅 함수
+        function formatPriceRange(min, max) {
+            if (min === null || max === null) return '-';
+            return `${min.toLocaleString()} ~ ${max.toLocaleString()}`;
+        }
+
+        // 페이지 로드 시 초기화
+        document.addEventListener('DOMContentLoaded', function() {
+            loadFilters();
+            loadStatistics();
+            loadResults();
+        });
+
+        // 필터 옵션 로드
+        async function loadFilters() {
+            try {
+                const response = await fetch('/stock-latest/api/filters');
+                if (!response.ok) throw new Error('Network response was not ok');
+                
+                const data = await response.json();
+                
+                // 상품 타입 옵션 로드
+                const instrumentTypeSelect = document.getElementById('instrumentTypeFilter');
+                data.instrument_types.forEach(type => {
+                    const option = document.createElement('option');
+                    option.value = type;
+                    option.textContent = type;
+                    instrumentTypeSelect.appendChild(option);
+                });
+                
+                // 종목 코드 옵션 로드
+                const symbolSelect = document.getElementById('symbolFilter');
+                data.symbols.forEach(symbol => {
+                    const option = document.createElement('option');
+                    option.value = symbol;
+                    option.textContent = symbol;
+                    symbolSelect.appendChild(option);
+                });
+                
+                // 투자 결정 옵션 로드
+                const decisionSelect = document.getElementById('decisionFilter');
+                data.decisions.forEach(decision => {
+                    const option = document.createElement('option');
+                    option.value = decision;
+                    option.textContent = decision;
+                    decisionSelect.appendChild(option);
+                });
+            } catch (error) {
+                console.error('필터 옵션 로드 실패:', error);
+            }
+        }
+
+        // 통계 로드
+        async function loadStatistics() {
+            try {
+                const response = await fetch('/stock-latest/api/statistics');
+                if (!response.ok) throw new Error('Network response was not ok');
+                
+                const data = await response.json();
+                
+                document.getElementById('active-stocks-count').textContent = data.active_stocks_count || 0;
+                document.getElementById('analyzed-stocks-count').textContent = data.analyzed_stocks_count || 0;
+                document.getElementById('buy-decisions-count').textContent = data.decision_counts?.buy || 0;
+                document.getElementById('avg-confidence').textContent = data.average_confidence ? `${data.average_confidence}%` : '-';
+            } catch (error) {
+                console.error('통계 로드 실패:', error);
+            }
+        }
+
+        // 결과 로드
+        async function loadResults(page = 1) {
+            currentPage = page;
+            
+            // 첫 번째 종목이 화면 상단에 보이도록 스크롤 (데이터 로드 후 실행)
+            
+            // 로딩 스피너 표시
+            document.getElementById('loadingSpinner').style.display = 'block';
+            document.getElementById('errorMessage').style.display = 'none';
+            
+            // 필터 값 가져오기
+            const instrumentType = document.getElementById('instrumentTypeFilter').value;
+            const symbol = document.getElementById('symbolFilter').value;
+            const decision = document.getElementById('decisionFilter').value;
+            
+            // URL 파라미터 구성
+            const params = new URLSearchParams({
+                page: page,
+                page_size: pageSize
+            });
+            
+            if (instrumentType && instrumentType !== '전체') params.append('instrument_type', instrumentType);
+            if (symbol && symbol !== '전체') params.append('symbol', symbol);
+            if (decision && decision !== '전체') params.append('decision', decision);
+            
+            try {
+                const response = await fetch(`/stock-latest/api/latest-results?${params}`);
+                if (!response.ok) throw new Error('Network response was not ok');
+                
+                const data = await response.json();
+                
+                // 결과 테이블 업데이트
+                updateResultsTable(data.results);
+                
+                // 페이지네이션 업데이트
+                updatePagination(data.page, data.total_pages, data.total_count);
+                
+                // 총 개수 업데이트
+                document.getElementById('totalCount').textContent = `총 ${data.total_count}건`;
+                
+            } catch (error) {
+                console.error('결과 로드 실패:', error);
+                document.getElementById('errorMessage').style.display = 'block';
+            } finally {
+                document.getElementById('loadingSpinner').style.display = 'none';
+            }
+        }
+
+        // 결과 테이블 업데이트
+        function updateResultsTable(results) {
+            const tbody = document.getElementById('resultsTableBody');
+            tbody.innerHTML = '';
+            
+            results.forEach(result => {
+                const row = document.createElement('tr');
+                
+                const analysis = result.latest_analysis;
+                
+                row.innerHTML = `
+                    <td class="stock-info-cell">
+                        <div>
+                            <div class="stock-name">${result.name}</div>
+                            <div class="stock-symbol">${result.symbol}</div>
+                            ${result.exchange ? `<small class="text-muted">${result.exchange}</small>` : ''}
+                        </div>
+                    </td>
+                    <td>${getInstrumentTypeBadge(result.instrument_type)}</td>
+                    <td>${getDecisionBadge(analysis.decision)}</td>
+                    <td>
+                        <div class="confidence-text">${analysis.confidence}%</div>
+                    </td>
+                    <td>
+                        <div class="analysis-summary">
+                            <div class="row">
+                                <div class="col-6">
+                                    <div class="price-range">
+                                        <strong>적정 매수:</strong><br>
+                                        ${formatPriceRange(analysis.appropriate_buy_min, analysis.appropriate_buy_max)}
+                                    </div>
+                                    <div class="price-range">
+                                        <strong>희망 매수:</strong><br>
+                                        ${formatPriceRange(analysis.buy_hope_min, analysis.buy_hope_max)}
+                                    </div>
+                                </div>
+                                <div class="col-6">
+                                    <div class="price-range">
+                                        <strong>적정 매도:</strong><br>
+                                        ${formatPriceRange(analysis.appropriate_sell_min, analysis.appropriate_sell_max)}
+                                    </div>
+                                    <div class="price-range">
+                                        <strong>목표 매도:</strong><br>
+                                        ${formatPriceRange(analysis.sell_target_min, analysis.sell_target_max)}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="latest-analysis-date">${formatDate(analysis.created_at)}</div>
+                    </td>
+                    <td>
+                        <div class="btn-group" role="group">
+                            <button class="btn btn-outline-primary btn-sm" onclick="showLatestAnalysisDetail(${analysis.id}, '${result.symbol}', '${result.name}', ${result.stock_info_id})">
+                                <i class="bi bi-eye"></i> 상세
+                            </button>
+                            <button class="btn btn-outline-success btn-sm" onclick="triggerNewAnalysis(${result.stock_info_id}, '${result.symbol}', '${result.name}')">
+                                <i class="bi bi-arrow-clockwise"></i> 분석
+                            </button>
+                        </div>
+                    </td>
+                `;
+                
+                tbody.appendChild(row);
+            });
+            
+            if (results.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">검색 결과가 없습니다.</td></tr>';
+            }
+            
+            // 첫 번째 종목 행이 화면 상단에 보이도록 스크롤
+            if (results.length > 0) {
+                setTimeout(() => {
+                    const firstRow = tbody.querySelector('tr:first-child');
+                    if (firstRow) {
+                        firstRow.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
+                }, 100);
+            }
+        }
+
+        // 페이지네이션 업데이트
+        function updatePagination(currentPage, totalPages, totalCount) {
+            const pagination = document.getElementById('pagination');
+            pagination.innerHTML = '';
+            
+            if (totalPages <= 1) return;
+            
+            // 이전 페이지 버튼
+            const prevLi = document.createElement('li');
+            prevLi.className = `page-item ${currentPage === 1 ? 'disabled' : ''}`;
+            prevLi.innerHTML = `<a class="page-link" href="#" onclick="${currentPage > 1 ? `loadResults(${currentPage - 1})` : 'return false;'}">이전</a>`;
+            pagination.appendChild(prevLi);
+            
+            // 페이지 번호들
+            const startPage = Math.max(1, currentPage - 2);
+            const endPage = Math.min(totalPages, currentPage + 2);
+            
+            for (let i = startPage; i <= endPage; i++) {
+                const li = document.createElement('li');
+                li.className = `page-item ${i === currentPage ? 'active' : ''}`;
+                li.innerHTML = `<a class="page-link" href="#" onclick="loadResults(${i})">${i}</a>`;
+                pagination.appendChild(li);
+            }
+            
+            // 다음 페이지 버튼
+            const nextLi = document.createElement('li');
+            nextLi.className = `page-item ${currentPage === totalPages ? 'disabled' : ''}`;
+            nextLi.innerHTML = `<a class="page-link" href="#" onclick="${currentPage < totalPages ? `loadResults(${currentPage + 1})` : 'return false;'}">다음</a>`;
+            pagination.appendChild(nextLi);
+        }
+
+        // 종목 분석 이력 표시
+        async function showStockHistory(stockInfoId, symbol, name) {
+            const modal = new bootstrap.Modal(document.getElementById('stockHistoryModal'));
+            const modalTitle = document.getElementById('stockHistoryModalLabel');
+            const modalContent = document.getElementById('stockHistoryContent');
+            
+            modalTitle.textContent = `${name} (${symbol}) 분석 이력`;
+            modalContent.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"></div></div>';
+            
+            modal.show();
+            
+            try {
+                const response = await fetch(`/stock-latest/api/stock/${stockInfoId}/history`);
+                if (!response.ok) throw new Error('Network response was not ok');
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    modalContent.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                    return;
+                }
+                
+                // 이력 테이블 생성
+                let historyHtml = `
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <h6 class="mb-0">종목 정보</h6>
+                            <p class="mb-0"><strong>${data.stock_info.name}</strong> (${data.stock_info.symbol}) - ${data.stock_info.instrument_type}</p>
+                        </div>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="goBackToLatestDetail()">
+                            <i class="bi bi-arrow-left"></i> 최신 분석으로
+                        </button>
+                    </div>
+                    <h6>분석 이력 (총 ${data.total_count}건)</h6>
+                    <div class="table-responsive">
+                        <table class="table table-sm">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>분석일시</th>
+                                    <th>모델</th>
+                                    <th>결정</th>
+                                    <th>신뢰도</th>
+                                    <th>가격 범위 분석</th>
+                                    <th>상세</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                `;
+                
+                data.history.forEach(analysis => {
+                    historyHtml += `
+                        <tr>
+                            <td>${formatDate(analysis.created_at)}</td>
+                            <td><small>${analysis.model_name}</small></td>
+                            <td>${getDecisionBadge(analysis.decision)}</td>
+                            <td>${analysis.confidence}%</td>
+                            <td>
+                                <div class="row">
+                                    <div class="col-6">
+                                        <small>
+                                            <strong>적정매수:</strong><br>
+                                            ${formatPriceRange(analysis.appropriate_buy_range.min, analysis.appropriate_buy_range.max)}<br>
+                                            <strong>희망매수:</strong><br>
+                                            ${formatPriceRange(analysis.buy_hope_range.min, analysis.buy_hope_range.max)}
+                                        </small>
+                                    </div>
+                                    <div class="col-6">
+                                        <small>
+                                            <strong>적정매도:</strong><br>
+                                            ${formatPriceRange(analysis.appropriate_sell_range.min, analysis.appropriate_sell_range.max)}<br>
+                                            <strong>목표매도:</strong><br>
+                                            ${formatPriceRange(analysis.sell_target_range.min, analysis.sell_target_range.max)}
+                                        </small>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>
+                                <button class="btn btn-outline-info btn-sm" onclick="showAnalysisDetail(${analysis.id})">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                });
+                
+                historyHtml += `
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+                
+                modalContent.innerHTML = historyHtml;
+                
+            } catch (error) {
+                console.error('이력 로드 실패:', error);
+                modalContent.innerHTML = '<div class="alert alert-danger">이력을 불러오는 중 오류가 발생했습니다.</div>';
+            }
+        }
+
+        // 최신 분석 상세 정보 표시 (메인 테이블에서 호출)
+        async function showLatestAnalysisDetail(analysisId, symbol, name, stockInfoId) {
+            const modal = new bootstrap.Modal(document.getElementById('analysisDetailModal'));
+            const modalTitle = document.getElementById('analysisDetailModalLabel');
+            const modalContent = document.getElementById('analysisDetailContent');
+            
+            modalTitle.textContent = `${name} (${symbol}) - 최신 분석 상세`;
+            modalContent.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"></div></div>';
+            
+            modal.show();
+            
+            try {
+                const response = await fetch(`/analysis-json/api/detail/${analysisId}`);
+                if (!response.ok) throw new Error('Network response was not ok');
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    modalContent.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                    return;
+                }
+                
+                // 근거 HTML 생성
+                let reasonsHtml = '';
+                if (data.reasons && data.reasons.length > 0) {
+                    reasonsHtml = data.reasons.map(reason => `<li>${reason}</li>`).join('');
+                } else {
+                    reasonsHtml = '<li class="text-muted">근거 정보가 없습니다.</li>';
+                }
+                
+                // 상세 정보 HTML 생성 (분석 이력 버튼 추가)
+                const detailHtml = `
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h6 class="mb-0">분석 상세 정보</h6>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="showStockHistoryFromDetail(${stockInfoId}, '${symbol}', '${name}')">
+                            <i class="bi bi-clock-history"></i> 분석 이력 보기
+                        </button>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>기본 정보</h6>
+                            <table class="table table-sm">
+                                <tr><td>종목 코드</td><td><strong>${data.symbol}</strong></td></tr>
+                                <tr><td>종목명</td><td><strong>${data.name}</strong></td></tr>
+                                <tr><td>상품타입</td><td>${getInstrumentTypeBadge(data.instrument_type)}</td></tr>
+                                <tr><td>모델명</td><td><code>${data.model_name}</code></td></tr>
+                                <tr><td>생성일시</td><td>${formatDate(data.created_at)}</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>투자 결정</h6>
+                            <div class="mb-3">
+                                ${getDecisionBadge(data.decision)}
+                                <div class="mt-2">
+                                    <strong>신뢰도:</strong> ${data.confidence}%
+                                    <div class="progress mt-1" style="height: 10px;">
+                                        <div class="progress-bar" role="progressbar" style="width: ${data.confidence}%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <h6>분석 근거</h6>
+                            <ol class="mb-3">
+                                ${reasonsHtml}
+                            </ol>
+                        </div>
+                    </div>
+                    
+                    <hr>
+                    
+                    <div class="row">
+                        <div class="col-12">
+                            <h6>가격 분석</h6>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="card mb-2">
+                                        <div class="card-header py-2">
+                                            <small class="text-muted">적절한 매수 범위</small>
+                                        </div>
+                                        <div class="card-body py-2">
+                                            <strong>${formatPriceRange(data.appropriate_buy_range.min, data.appropriate_buy_range.max)}</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="card mb-2">
+                                        <div class="card-header py-2">
+                                            <small class="text-muted">적절한 매도 범위</small>
+                                        </div>
+                                        <div class="card-body py-2">
+                                            <strong>${formatPriceRange(data.appropriate_sell_range.min, data.appropriate_sell_range.max)}</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="card mb-2">
+                                        <div class="card-header py-2">
+                                            <small class="text-muted">매수 희망 범위</small>
+                                        </div>
+                                        <div class="card-body py-2">
+                                            <strong>${formatPriceRange(data.buy_hope_range.min, data.buy_hope_range.max)}</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="card mb-2">
+                                        <div class="card-header py-2">
+                                            <small class="text-muted">매도 목표 범위</small>
+                                        </div>
+                                        <div class="card-body py-2">
+                                            <strong>${formatPriceRange(data.sell_target_range.min, data.sell_target_range.max)}</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    ${data.detailed_text ? `
+                    <hr>
+                    <div class="row">
+                        <div class="col-12">
+                            <h6>상세 분석 내용</h6>
+                            <div class="alert alert-light">
+                                <pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">${data.detailed_text}</pre>
+                            </div>
+                        </div>
+                    </div>
+                    ` : ''}
+                `;
+                
+                modalContent.innerHTML = detailHtml;
+                
+            } catch (error) {
+                console.error('상세 정보 로드 실패:', error);
+                modalContent.innerHTML = '<div class="alert alert-danger">상세 정보를 불러오는 중 오류가 발생했습니다.</div>';
+            }
+        }
+
+        // 상세 모달에서 분석 이력으로 이동
+        function showStockHistoryFromDetail(stockInfoId, symbol, name) {
+            // 현재 상세 모달을 닫고 이력 모달을 표시
+            const detailModal = bootstrap.Modal.getInstance(document.getElementById('analysisDetailModal'));
+            if (detailModal) {
+                detailModal.hide();
+            }
+            
+            // 잠시 후 이력 모달 표시
+            setTimeout(() => {
+                showStockHistory(stockInfoId, symbol, name);
+            }, 300);
+        }
+
+        // 이력 모달에서 최신 분석 상세로 돌아가기
+        function goBackToLatestDetail() {
+            // 현재 이력 모달을 닫고 상세 모달을 다시 표시
+            const historyModal = bootstrap.Modal.getInstance(document.getElementById('stockHistoryModal'));
+            if (historyModal) {
+                historyModal.hide();
+            }
+            
+            // 최신 분석 상세 모달을 다시 표시 (이전 상태 복원)
+            setTimeout(() => {
+                const detailModal = new bootstrap.Modal(document.getElementById('analysisDetailModal'));
+                detailModal.show();
+            }, 300);
+        }
+
+        // 새로운 분석 트리거
+        async function triggerNewAnalysis(stockInfoId, symbol, name) {
+            // 분석 중인 상태로 변경
+            const button = event.target.closest('button');
+            const originalHtml = button.innerHTML;
+            button.disabled = true;
+            button.innerHTML = '<i class="bi bi-hourglass-split"></i> 분석중...';
+            
+            try {
+                const response = await fetch(`/stock-latest/api/analyze/${stockInfoId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || '분석 요청에 실패했습니다.');
+                }
+                
+                const data = await response.json();
+                
+                // 성공 메시지 표시
+                alert(`${name} (${symbol})의 분석이 시작되었습니다. \n분석이 완료되면 페이지를 새로고침해 주세요.`);
+                
+                // 버튼 상태 복원
+                button.disabled = false;
+                button.innerHTML = originalHtml;
+                
+            } catch (error) {
+                console.error('분석 요청 실패:', error);
+                alert(`분석 요청에 실패했습니다: ${error.message}`);
+                
+                // 버튼 상태 복원
+                button.disabled = false;
+                button.innerHTML = originalHtml;
+            }
+        }
+
+        // 개별 분석 상세 정보 표시 (이력 모달에서 호출)
+        async function showAnalysisDetail(analysisId) {
+            const modal = new bootstrap.Modal(document.getElementById('analysisDetailModal'));
+            const modalTitle = document.getElementById('analysisDetailModalLabel');
+            const modalContent = document.getElementById('analysisDetailContent');
+            
+            modalTitle.textContent = '분석 상세 정보';
+            modalContent.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"></div></div>';
+            
+            modal.show();
+            
+            try {
+                const response = await fetch(`/analysis-json/api/detail/${analysisId}`);
+                if (!response.ok) throw new Error('Network response was not ok');
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    modalContent.innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+                    return;
+                }
+                
+                // 근거 HTML 생성
+                let reasonsHtml = '';
+                if (data.reasons && data.reasons.length > 0) {
+                    reasonsHtml = data.reasons.map(reason => `<li>${reason}</li>`).join('');
+                } else {
+                    reasonsHtml = '<li class="text-muted">근거 정보가 없습니다.</li>';
+                }
+                
+                // 상세 정보 HTML 생성
+                const detailHtml = `
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>기본 정보</h6>
+                            <table class="table table-sm">
+                                <tr><td>종목 코드</td><td><strong>${data.symbol}</strong></td></tr>
+                                <tr><td>종목명</td><td><strong>${data.name}</strong></td></tr>
+                                <tr><td>상품타입</td><td>${getInstrumentTypeBadge(data.instrument_type)}</td></tr>
+                                <tr><td>모델명</td><td><code>${data.model_name}</code></td></tr>
+                                <tr><td>생성일시</td><td>${formatDate(data.created_at)}</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>투자 결정</h6>
+                            <div class="mb-3">
+                                ${getDecisionBadge(data.decision)}
+                                <div class="mt-2">
+                                    <strong>신뢰도:</strong> ${data.confidence}%
+                                    <div class="progress mt-1" style="height: 10px;">
+                                        <div class="progress-bar" role="progressbar" style="width: ${data.confidence}%"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <h6>분석 근거</h6>
+                            <ol class="mb-3">
+                                ${reasonsHtml}
+                            </ol>
+                        </div>
+                    </div>
+                    
+                    <hr>
+                    
+                    <div class="row">
+                        <div class="col-12">
+                            <h6>가격 분석</h6>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="card mb-2">
+                                        <div class="card-header py-2">
+                                            <small class="text-muted">적절한 매수 범위</small>
+                                        </div>
+                                        <div class="card-body py-2">
+                                            <strong>${formatPriceRange(data.appropriate_buy_range.min, data.appropriate_buy_range.max)}</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="card mb-2">
+                                        <div class="card-header py-2">
+                                            <small class="text-muted">적절한 매도 범위</small>
+                                        </div>
+                                        <div class="card-body py-2">
+                                            <strong>${formatPriceRange(data.appropriate_sell_range.min, data.appropriate_sell_range.max)}</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="card mb-2">
+                                        <div class="card-header py-2">
+                                            <small class="text-muted">매수 희망 범위</small>
+                                        </div>
+                                        <div class="card-body py-2">
+                                            <strong>${formatPriceRange(data.buy_hope_range.min, data.buy_hope_range.max)}</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="card mb-2">
+                                        <div class="card-header py-2">
+                                            <small class="text-muted">매도 목표 범위</small>
+                                        </div>
+                                        <div class="card-body py-2">
+                                            <strong>${formatPriceRange(data.sell_target_range.min, data.sell_target_range.max)}</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    ${data.detailed_text ? `
+                    <hr>
+                    <div class="row">
+                        <div class="col-12">
+                            <h6>상세 분석 내용</h6>
+                            <div class="alert alert-light">
+                                <pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">${data.detailed_text}</pre>
+                            </div>
+                        </div>
+                    </div>
+                    ` : ''}
+                `;
+                
+                modalContent.innerHTML = detailHtml;
+                
+            } catch (error) {
+                console.error('상세 정보 로드 실패:', error);
+                modalContent.innerHTML = '<div class="alert alert-danger">상세 정보를 불러오는 중 오류가 발생했습니다.</div>';
+            }
+        }
+    </script>
+</body>
+</html>

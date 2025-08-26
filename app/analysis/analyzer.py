@@ -5,6 +5,7 @@ from typing import Optional, Tuple, Union
 import pandas as pd
 from google import genai
 from google.genai.errors import ClientError
+from google.genai.types import HttpOptions
 
 from app.analysis.prompt import build_prompt, build_json_prompt
 from app.analysis.models import StockAnalysisResponse
@@ -12,15 +13,16 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.model_rate_limiter import ModelRateLimiter
 from app.models.prompt import PromptResult
-from app.models.analysis import StockAnalysisResult
-
+from app.models.analysis import StockInfo, StockAnalysisResult
+from app.services.stock_info_service import create_stock_if_not_exists
+GEMINI_TIMEOUT = 3 * 60 * 1000 # 3 minutes
 
 class Analyzer:
     """프롬프트 생성, Gemini 실행, DB 저장을 담당하는 공통 클래스"""
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.get_random_key()
-        self.client = genai.Client(api_key=self.api_key)
+        self.client = genai.Client(api_key=self.api_key, http_options=HttpOptions(timeout=GEMINI_TIMEOUT))
         self.rate_limiter = ModelRateLimiter()
 
     async def analyze_and_save(
@@ -238,7 +240,7 @@ class Analyzer:
                         print(
                             f"  API 키 교체: {self._mask_api_key(current_api_key)} → {self._mask_api_key(new_api_key)}"
                         )
-                        self.client = genai.Client(api_key=new_api_key)
+                        self.client = genai.Client(api_key=new_api_key, http_options=HttpOptions(timeout=GEMINI_TIMEOUT))
                         self.api_key = new_api_key
 
                         # 새로운 API 키로 계속 시도 (break 제거)
@@ -294,14 +296,20 @@ class Analyzer:
     ) -> None:
         """JSON 분석 결과를 DB에 저장"""
         async with AsyncSessionLocal() as db:
-            # 근거를 JSON 문자열로 변환
-            reasons_json = json.dumps(result.reasons, ensure_ascii=False)
-            
-            record = StockAnalysisResult(
-                prompt=prompt,
+            # 1. 주식 정보가 없으면 생성 (또는 기존 정보 조회)
+            stock_info = await create_stock_if_not_exists(
                 symbol=symbol,
                 name=name,
-                instrument_type=instrument_type,
+                instrument_type=instrument_type
+            )
+            
+            # 2. 근거를 JSON 문자열로 변환
+            reasons_json = json.dumps(result.reasons, ensure_ascii=False)
+            
+            # 3. 분석 결과 저장
+            record = StockAnalysisResult(
+                stock_info_id=stock_info.id,  # 주식 정보와 연결
+                prompt=prompt,
                 model_name=model_name,
                 decision=result.decision,
                 confidence=result.confidence,
@@ -319,7 +327,7 @@ class Analyzer:
             db.add(record)
             await db.commit()
             await db.refresh(record)
-            print(f"JSON 분석 결과 DB 저장 완료: {symbol} ({name})")
+            print(f"JSON 분석 결과 DB 저장 완료: {symbol} ({name}) - StockInfo ID: {stock_info.id}")
 
 
 class DataProcessor:
