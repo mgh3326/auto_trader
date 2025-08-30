@@ -1,3 +1,5 @@
+import asyncio
+from asyncio import AbstractEventLoop
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, Query, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse
@@ -414,12 +416,14 @@ async def trigger_new_analysis(
     if not stock_info.is_active:
         raise HTTPException(status_code=400, detail="비활성화된 종목입니다.")
 
-    # 백그라운드 태스크로 분석 실행
+    # 현재 실행 중인 이벤트 루프를 가져와 백그라운드 태스크에 전달
+    loop = asyncio.get_running_loop()
     background_tasks.add_task(
         _execute_analysis_for_stock,
         stock_info.symbol,
         stock_info.name,
-        stock_info.instrument_type
+        stock_info.instrument_type,
+        loop
     )
 
     return {
@@ -433,33 +437,47 @@ async def trigger_new_analysis(
     }
 
 
-async def _execute_analysis_for_stock(
+
+def _execute_analysis_for_stock(
         symbol: str,
         name: str,
-        instrument_type: str
+        instrument_type: str,
+        loop: AbstractEventLoop
 ):
-    """개별 종목에 대한 분석을 실행하는 내부 함수"""
+    """개별 종목에 대한 분석을 실행하는 내부 함수 (백그라운드 스레드에서 실행)"""
+
+    async def run_analysis():
+        """내부 비동기 분석 실행 함수"""
+        analyzer = None
+        try:
+            print(f"새로운 분석 시작: {name} ({symbol}) - {instrument_type}")
+
+            if instrument_type == "equity_kr":
+                analyzer = KISAnalyzer()
+                await analyzer.analyze_stock_json(name)
+            elif instrument_type == "equity_us":
+                analyzer = YahooAnalyzer()
+                await analyzer.analyze_stock_json(symbol)
+            elif instrument_type == "crypto":
+                analyzer = UpbitAnalyzer()
+                await analyzer.analyze_coin_json(name)
+            else:
+                print(f"지원하지 않는 상품 타입: {instrument_type}")
+                return
+
+            print(f"분석 완료: {name} ({symbol})")
+
+        except Exception as e:
+            print(f"분석 실행 중 오류 발생: {name} ({symbol}) - {str(e)}")
+        finally:
+            if analyzer and hasattr(analyzer, 'close'):
+                await analyzer.close()
+
+    # 백그라운드 스레드에서 메인 이벤트 루프로 비동기 함수 실행을 스케줄
+    future = asyncio.run_coroutine_threadsafe(run_analysis(), loop)
     try:
-        print(f"새로운 분석 시작: {name} ({symbol}) - {instrument_type}")
-
-        if instrument_type == "equity_kr":
-            # 한국 주식 분석
-            analyzer = KISAnalyzer()
-            await analyzer.analyze_stock_json(name)
-        elif instrument_type == "equity_us":
-            # 미국 주식 분석
-            analyzer = YahooAnalyzer()
-            await analyzer.analyze_stock_json(symbol)
-        elif instrument_type == "crypto":
-            # 암호화폐 분석
-            analyzer = UpbitAnalyzer()
-            # 암호화폐의 경우 symbol에서 KRW- 제거하여 코인명 추출
-            await analyzer.analyze_coin_json(name)
-        else:
-            print(f"지원하지 않는 상품 타입: {instrument_type}")
-            return
-
-        print(f"분석 완료: {name} ({symbol})")
-
+        # 작업이 완료될 때까지 백그라운드 스레드에서 대기 (메인 루프는 영향 없음)
+        future.result()
     except Exception as e:
-        print(f"분석 실행 중 오류 발생: {name} ({symbol}) - {str(e)}")
+        print(f"백그라운드 분석 작업 완료 중 오류 발생: {name} ({symbol}) - {str(e)}")
+

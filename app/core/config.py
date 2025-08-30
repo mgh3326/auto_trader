@@ -23,7 +23,8 @@ class Settings(BaseSettings):
     def _ensure_key_index(self):
         """API 키 인덱스 초기화 (필요시에만)"""
         if not hasattr(self, "_current_key_index"):
-            self._current_key_index = 0
+            keys = self.google_api_keys or [self.google_api_key]
+            self._current_key_index = random.randint(0, len(keys) - 1)
 
     def get_random_key(self) -> str:
         """랜덤 Google API 키 반환"""
@@ -37,8 +38,8 @@ class Settings(BaseSettings):
         """순환 방식으로 다음 Google API 키 반환"""
         keys = self.google_api_keys or [self.google_api_key]
         self._ensure_key_index()
-        key = keys[self._current_key_index]
         self._current_key_index = (self._current_key_index + 1) % len(keys)
+        key = keys[self._current_key_index]
         return key
 
     def get_redis_url(self) -> str:
@@ -63,8 +64,8 @@ class Settings(BaseSettings):
     upbit_secret_key: str
     
     # Upbit 매수 설정
-    upbit_buy_amount: int = 49000  # 분할 매수 금액 (기본 10만원)
-    upbit_min_krw_balance: int = 50000  # 최소 KRW 잔고 (기본 10만원)
+    upbit_buy_amount: int = 10000  # 분할 매수 금액 (기본 10만원)
+    upbit_min_krw_balance: int = upbit_buy_amount + 5000  # 최소 KRW 잔고 (기본 10만원)
 
     # Redis 설정
     redis_url: str | None = None  # .env에서 설정하거나 None으로 두면 개별 설정 사용

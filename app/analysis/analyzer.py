@@ -141,9 +141,9 @@ class Analyzer:
             print(f"모델 시도: {model}")
 
             # Redis에서 현재 API 키의 모델 사용 제한 확인
-            current_api_key = self._mask_api_key(self.api_key)
-            if not await self.rate_limiter.is_model_available(model, current_api_key):
-                print(f"  {model} 모델 (API: {current_api_key}) 사용 제한 중, 다음 모델로...")
+            masked_api_key = self._mask_api_key(self.api_key)
+            if not await self.rate_limiter.is_model_available(model, self.api_key):
+                print(f"  {model} 모델 (API: {masked_api_key}) 사용 제한 중, 다음 모델로...")
                 continue
 
             for attempt in range(max_retries):
@@ -222,7 +222,7 @@ class Analyzer:
                                             # Redis에 모델 사용 제한 설정
                                             await self.rate_limiter.set_model_rate_limit(
                                                 model,
-                                                current_api_key,
+                                                self.api_key,
                                                 retry_delay,
                                                 e.code,
                                             )
@@ -232,19 +232,23 @@ class Analyzer:
                         # retry_delay 정보가 없으면 기본 제한 설정
                         if not retry_delay:
                             await self.rate_limiter.set_model_rate_limit(
-                                model, current_api_key, {"seconds": 60}, e.code
+                                model, self.api_key, {"seconds": 60}, e.code
                             )
 
                         # API 키 교체 및 계속 시도
-                        new_api_key = settings.get_next_key()
+                        new_api_key = settings.get_next_key() # 매번 첫번째껏만 받는것 같아서 랜덤으로 변경
                         print(
-                            f"  API 키 교체: {self._mask_api_key(current_api_key)} → {self._mask_api_key(new_api_key)}"
+                            f"  API 키 교체: {masked_api_key} → {self._mask_api_key(new_api_key)}"
                         )
                         self.client = genai.Client(api_key=new_api_key, http_options=HttpOptions(timeout=GEMINI_TIMEOUT))
                         self.api_key = new_api_key
+                        masked_api_key = self._mask_api_key(self.api_key)
 
                         # 새로운 API 키로 계속 시도 (break 제거)
                         print(f"  새로운 API 키로 계속 시도...")
+                        if model == "gemini-2.5-pro":
+                            print("pro 는 다음 모델로 실행")
+                            break
                         continue
                     else:
                         print(f"  시도 {attempt + 1} 실패 (ClientError {e.code}): {e}")
@@ -252,6 +256,33 @@ class Analyzer:
 
                 except Exception as e:
                     print(f"  시도 {attempt + 1} 실패: {e}")
+
+                    # 503 에러(모델 과부하) 체크
+                    error_str = str(e)
+                    if "503" in error_str and "UNAVAILABLE" in error_str or "500" in error_str:
+                        print(f"  {model} 모델 과부하(503), Redis에 1분 제한 설정...")
+
+                        # 503 에러 시 1분 제한 설정
+                        await self.rate_limiter.set_model_rate_limit(
+                            model, self.api_key, {"seconds": 60}, 503
+                        )
+
+                        # API 키 교체 및 계속 시도
+                        new_api_key = settings.get_next_key()
+                        masked_api_key = self._mask_api_key(self.api_key)
+                        print(
+                            f"  API 키 교체: {masked_api_key} → {self._mask_api_key(new_api_key)}"
+                        )
+                        self.client = genai.Client(api_key=new_api_key, http_options=HttpOptions(timeout=GEMINI_TIMEOUT))
+                        self.api_key = new_api_key
+
+                        # 새로운 API 키로 계속 시도
+                        print(f"  새로운 API 키로 계속 시도...")
+                        if model == "gemini-2.5-pro":
+                            print("pro 는 다음 모델로 실행")
+                            break
+                        continue
+
                     # 그 외 다른 에러는 잠시 후 재시도
                     await asyncio.sleep(2 + attempt)
             else:
@@ -302,10 +333,10 @@ class Analyzer:
                 name=name,
                 instrument_type=instrument_type
             )
-            
+
             # 2. 근거를 JSON 문자열로 변환
             reasons_json = json.dumps(result.reasons, ensure_ascii=False)
-            
+
             # 3. 분석 결과 저장
             record = StockAnalysisResult(
                 stock_info_id=stock_info.id,  # 주식 정보와 연결

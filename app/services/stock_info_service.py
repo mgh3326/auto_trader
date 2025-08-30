@@ -3,6 +3,7 @@ from sqlalchemy import select, update, delete, func, desc
 from typing import List, Optional, Dict, Any, Tuple
 from app.models.analysis import StockInfo, StockAnalysisResult
 from app.core.db import get_db
+from app.analysis.prompt import format_decimal
 
 
 class StockInfoService:
@@ -302,7 +303,7 @@ async def check_buy_condition_with_analysis(symbol: str, current_price: float, a
         # 1. 기본 조건: 현재가가 평균 매수가보다 1% 낮아야 함
         target_price = avg_buy_price * 0.99
         if current_price >= target_price:
-            return False, f"현재가 {current_price:,.0f}원이 목표가 {target_price:,.0f}원보다 높음"
+            return False, f"현재가 {format_decimal(current_price, '₩')}원이 목표가 {format_decimal(target_price, '₩')}원보다 높음"
         
         # 2. 분석 결과가 없으면 1% 룰만으로 판단
         if not analysis:
@@ -315,12 +316,12 @@ async def check_buy_condition_with_analysis(symbol: str, current_price: float, a
         # appropriate_buy 범위 확인
         if analysis.appropriate_buy_min is not None and analysis.appropriate_buy_max is not None:
             buy_ranges.append((analysis.appropriate_buy_min, analysis.appropriate_buy_max))
-            range_info.append(f"적절매수: {analysis.appropriate_buy_min:,.0f}~{analysis.appropriate_buy_max:,.0f}원")
+            range_info.append(f"적절매수: {format_decimal(analysis.appropriate_buy_min, '₩')}~{format_decimal(analysis.appropriate_buy_max, '₩')}원")
         
         # buy_hope 범위 확인
         if analysis.buy_hope_min is not None and analysis.buy_hope_max is not None:
             buy_ranges.append((analysis.buy_hope_min, analysis.buy_hope_max))
-            range_info.append(f"희망매수: {analysis.buy_hope_min:,.0f}~{analysis.buy_hope_max:,.0f}원")
+            range_info.append(f"희망매수: {format_decimal(analysis.buy_hope_min, '₩')}~{format_decimal(analysis.buy_hope_max, '₩')}원")
         
         # 분석 결과에 매수 범위가 없으면 1% 룰만 적용
         if not buy_ranges:
@@ -329,10 +330,10 @@ async def check_buy_condition_with_analysis(symbol: str, current_price: float, a
         # 4. 현재가가 매수 범위 중 하나라도 포함되는지 확인
         for min_price, max_price in buy_ranges:
             if min_price <= current_price <= max_price:
-                return True, f"현재가 {current_price:,.0f}원이 매수 범위에 포함됨 ({', '.join(range_info)})"
+                return True, f"현재가 {format_decimal(current_price, '₩')}원이 매수 범위에 포함됨 ({', '.join(range_info)})"
         
         # 5. 매수 범위에 포함되지 않음
-        return False, f"현재가 {current_price:,.0f}원이 매수 범위에 포함되지 않음 ({', '.join(range_info)})"
+        return False, f"현재가 {format_decimal(current_price, '₩')}원이 매수 범위에 포함되지 않음 ({', '.join(range_info)})"
 
 
 async def process_buy_orders_with_analysis(symbol: str, current_price: float, avg_buy_price: float) -> None:
@@ -345,11 +346,11 @@ async def process_buy_orders_with_analysis(symbol: str, current_price: float, av
     print(f"💰 KRW 잔고 확인 중...")
     is_sufficient, krw_balance = await upbit.check_krw_balance_sufficient(settings.upbit_min_krw_balance)
     
-    print(f"현재 KRW 잔고: {krw_balance:,.0f}원")
-    print(f"최소 필요 잔고: {settings.upbit_min_krw_balance:,.0f}원")
+    print(f"현재 KRW 잔고: {format_decimal(krw_balance, '₩')}원")
+    print(f"최소 필요 잔고: {format_decimal(settings.upbit_min_krw_balance, '₩')}원")
     
     if not is_sufficient:
-        print(f"❌ KRW 잔고 부족: 매수를 위해서는 최소 {settings.upbit_min_krw_balance:,.0f}원이 필요합니다.")
+        print(f"❌ KRW 잔고 부족: 매수를 위해서는 최소 {format_decimal(settings.upbit_min_krw_balance, '₩')}원이 필요합니다.")
         return
     
     print(f"✅ KRW 잔고 충분: 매수 가능")
@@ -395,13 +396,13 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
     from app.core.config import settings
     
     print(f"📊 {market} 분석 기반 다중 매수 주문 처리")
-    print(f"현재가: {current_price:,.0f}원")
-    print(f"평균 매수가: {avg_buy_price:,.0f}원")
-    print(f"매수 단위: {settings.upbit_buy_amount:,.0f}원")
+    print(f"현재가: {format_decimal(current_price, '₩')}원")
+    print(f"평균 매수가: {format_decimal(avg_buy_price, '₩')}원")
+    print(f"매수 단위: {format_decimal(settings.upbit_buy_amount, '₩')}원")
     
     # 1% 룰 기준가 계산
     threshold_price = avg_buy_price * 0.99
-    print(f"매수 기준가 (99%): {threshold_price:,.0f}원")
+    print(f"매수 기준가 (99%): {format_decimal(threshold_price, '₩')}원")
     
     # 4개 가격 값 추출
     buy_prices = []
@@ -417,9 +418,9 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
     
     # 범위 정보 출력
     if analysis.appropriate_buy_min is not None and analysis.appropriate_buy_max is not None:
-        print(f"적절한 매수 범위: {analysis.appropriate_buy_min:,.0f}원 ~ {analysis.appropriate_buy_max:,.0f}원")
+        print(f"적절한 매수 범위: {format_decimal(analysis.appropriate_buy_min, '₩')}원 ~ {format_decimal(analysis.appropriate_buy_max, '₩')}원")
     if analysis.buy_hope_min is not None and analysis.buy_hope_max is not None:
-        print(f"희망 매수 범위: {analysis.buy_hope_min:,.0f}원 ~ {analysis.buy_hope_max:,.0f}원")
+        print(f"희망 매수 범위: {format_decimal(analysis.buy_hope_min, '₩')}원 ~ {format_decimal(analysis.buy_hope_max, '₩')}원")
     
     if not buy_prices:
         print("❌ 분석 결과에 매수 가격 정보가 없습니다.")
@@ -435,14 +436,14 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
             valid_prices.append((price_name, price_value))
             threshold_diff = ((threshold_price - price_value) / threshold_price * 100)
             current_diff = ((current_price - price_value) / current_price * 100)
-            print(f"✅ {price_name}: {price_value:,.0f}원 (기준가보다 {threshold_diff:.1f}% 낮음, 현재가보다 {current_diff:.1f}% 낮음)")
+            print(f"✅ {price_name}: {format_decimal(price_value, '₩')}원 (기준가보다 {threshold_diff:.1f}% 낮음, 현재가보다 {current_diff:.1f}% 낮음)")
         else:
             reasons = []
             if not is_below_threshold:
                 reasons.append("기준가보다 높음")
             if not is_below_current:
                 reasons.append("현재가보다 높음")
-            print(f"❌ {price_name}: {price_value:,.0f}원 ({', '.join(reasons)})")
+            print(f"❌ {price_name}: {format_decimal(price_value, '₩')}원 ({', '.join(reasons)})")
     
     if not valid_prices:
         print("⚠️ 조건에 맞는 매수 가격이 없습니다. (기준가보다 낮고 현재가보다 낮아야 함)")
@@ -455,7 +456,7 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
     total_orders = len(valid_prices)
     
     for i, (price_name, buy_price) in enumerate(valid_prices, 1):
-        print(f"\n[{i}/{total_orders}] {price_name} - {buy_price:,.0f}원")
+        print(f"\n[{i}/{total_orders}] {price_name} - {format_decimal(buy_price, '₩')}원")
         
         result = await _place_single_buy_order(market, settings.upbit_buy_amount, buy_price, price_name)
         if result:
@@ -498,7 +499,7 @@ async def _place_single_buy_order(market: str, amount: int, buy_price: float, pr
         print(f"    ✅ 주문 성공:")
         print(f"      - 주문 ID: {order_result.get('uuid')}")
         print(f"      - 실제 주문가: {adjusted_price:,.5f}원")
-        print(f"      - 예상 금액: {adjusted_price * volume:,.0f}원")
+        print(f"      - 예상 금액: {format_decimal(adjusted_price * volume, '₩')}원")
         print(f"      - 주문 시간: {order_result.get('created_at')}")
         
         return order_result
