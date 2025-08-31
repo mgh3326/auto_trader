@@ -1,0 +1,30 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: auto_trader_api
+    ports: [ "8001:8000" ]
+    env_file:
+      - .env
+    volumes:
+      - ./tmp:/app/tmp  # 토큰 캐시 영속성
+      - ./logs:/app/logs  # 로그 파일 (선택적)
+    restart: unless-stopped
+    external_links:
+      - auto_trader_pg:db
+      - auto_trader_redis:redis
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); print('ok')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - local_dev
+
+networks:
+  local_dev:
+    external: true
+    name: auto_trader_local_dev
+

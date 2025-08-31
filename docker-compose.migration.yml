@@ -1,0 +1,26 @@
+# Migration-only compose file
+# 마이그레이션을 별도로 실행하기 위한 파일
+
+services:
+  migration:
+    image: ghcr.io/${GITHUB_REPOSITORY}:latest
+    container_name: auto_trader_migration
+    env_file:
+      - .env.prod
+    network_mode: host
+    volumes:
+      - ./tmp:/app/tmp
+      - ./logs:/app/logs
+    command: >
+      sh -c "
+        echo '🔍 Checking database connection...' &&
+        python -c 'import asyncio; import asyncpg; import os; asyncio.run(asyncpg.connect(os.environ[\"DATABASE_URL\"]).connect())' &&
+        echo '✅ Database connection successful' &&
+        echo '📊 Current migration status:' &&
+        alembic current &&
+        echo '🔄 Running migrations...' &&
+        alembic upgrade head &&
+        echo '✅ Migrations completed successfully'
+      "
+    profiles:
+      - migration  # 기본 실행에서 제외

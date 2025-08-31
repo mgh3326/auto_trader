@@ -33,6 +33,32 @@ services:
     networks:
       - local_dev
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: auto_trader_api
+    ports: [ "8001:8000" ]
+    env_file:
+      - .env
+    volumes:
+      - ./tmp:/app/tmp  # 토큰 캐시 영속성
+      - ./logs:/app/logs  # 로그 파일 (선택적)
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - local_dev
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); print('ok')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   adminer:
     image: adminer
     container_name: adminer
@@ -52,3 +78,4 @@ volumes:
 networks:
   local_dev:
     driver: bridge
+

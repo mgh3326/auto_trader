@@ -18,15 +18,28 @@ async def main():
 
     try:
         # 보유 코인 정보 가져오기
+        my_coins = await upbit.fetch_my_coins()
+        my_coin_markets = {coin.get("currency") for coin in my_coins if coin.get("currency")}
+
+        # 거래량 상위 코인 가져오기
         traded_coins = await upbit.fetch_top_traded_coins()
-        # 보유 코인의 한국 이름으로 coin_names 생성
+
+        # 보유 코인을 제외한 코인들의 한국 이름으로 coin_names 생성
         coin_names = []
-        for coin in traded_coins[:10]:
+        for coin in traded_coins:
             coin_name = coin.get("market")
+            # my_coins에 있는 코인 제외 (예: KRW-BTC에서 BTC 부분 비교)
+            if coin_name and coin_name.startswith("KRW-"):
+                currency = coin_name.split("-")[1]
+                if currency in my_coin_markets:
+                    continue  # 보유 코인이면 제외
+
             # COIN_TO_NAME_KR에서 한국 이름 찾기
             korean_name = upbit_pairs.PAIR_TO_NAME_KR.get(coin_name)
             if korean_name:
                 coin_names.append(korean_name)
+            if len(coin_names) >= 10:
+                break
         if not coin_names:
             print("분석 가능한 코인이 없습니다.")
             return
@@ -37,7 +50,7 @@ async def main():
 
     except Exception as e:
         print(f"에러 발생: {e}")
-    finally:
+    finally:ㅔ
         await analyzer.close()
 
 

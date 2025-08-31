@@ -66,11 +66,12 @@ async def main():
             "QQQM",
         ])
         stock_symbols.extend([
-            "PLTR"
-        ])
-        stock_symbols= ([
+            "PLTR",
             "PTIR"
         ])
+        stock_symbols = ["INTC",
+                         "AMD",
+                         "XXRP"]
         stock_symbols = list(set(stock_symbols))
         print(f"분석할 주식 목록: {stock_symbols}")
         print(f"총 {len(stock_symbols)}개 주식 분석 시작\n")

@@ -65,6 +65,9 @@ async def process_sell_orders_for_my_coins():
 
             # 3-1. 기존 매도 주문 확인 및 취소
             await cancel_existing_sell_orders(market)
+            # --- 추가: API 서버 데이터 동기화를 위해 잠시 대기 ---
+            print(f"  ⏳ API 서버 동기화를 위해 1초 대기...")
+            await asyncio.sleep(1)
 
             # 3-2. 주문 취소 후 보유 수량 재조회
             print(f"  🔄 주문 취소 후 보유 수량 재조회...")
@@ -216,11 +219,23 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
     # 분할 수량이 최소 주문 수량을 만족하는지 체크
     split_ratio = 1.0 / len(sell_prices)
     min_split_volume = balance * split_ratio
+    
+    # 분할한 개별 금액 계산 (첫 번째 매도 가격 기준)
+    first_sell_price = sell_prices_sorted[0]
+    split_amount = (balance * split_ratio) * first_sell_price
 
-    if min_split_volume < 0.00000001:
-        print(f"  ⚠️  보유 수량이 적어 분할 불가능. 최고가에서 전량 매도로 전환")
-        highest_price = max(sell_prices_sorted)
-        await place_new_sell_order(market, balance, highest_price, currency)
+    if min_split_volume < 0.00000001 or split_amount < 10000:
+        reason = ""
+        if min_split_volume < 0.00000001:
+            reason += "보유 수량이 적어 분할 불가능"
+        if split_amount < 10000:
+            if reason:
+                reason += " 및 "
+            reason += f"분할 금액이 1만원 미만 ({split_amount:,.0f}원)"
+        
+        print(f"  ⚠️  {reason}. 최저가에서 전량 매도로 전환")
+        lowest_price = min(sell_prices_sorted)
+        await place_new_sell_order(market, balance, lowest_price, currency)
         return
 
     # 마지막 가격을 제외한 나머지 가격들로 분할 매도
@@ -430,3 +445,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+ㅊ

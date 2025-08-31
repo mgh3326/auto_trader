@@ -1,0 +1,74 @@
+services:
+  # 마이그레이션 전용 서비스 (선택적 실행)
+  migration:
+    image: ghcr.io/${GITHUB_REPOSITORY}:latest
+    container_name: auto_trader_migration
+    env_file:
+      - .env.prod
+    network_mode: host
+    volumes:
+      - ./tmp:/app/tmp
+      - ./logs:/app/logs
+    command: >
+      sh -c "
+        echo '🔍 Checking database connection...' &&
+        python -c 'import asyncio; import asyncpg; import os; asyncio.run(asyncpg.connect(os.environ[\"DATABASE_URL\"]))' &&
+        echo '✅ Database connection successful' &&
+        echo '📊 Current migration status:' &&
+        alembic current &&
+        echo '🔄 Running migrations...' &&
+        alembic upgrade head &&
+        echo '✅ Migrations completed successfully'
+      "
+    profiles:
+      - migration  # --profile migration으로만 실행
+
+  api:
+    image: ghcr.io/${GITHUB_REPOSITORY}:latest
+    container_name: auto_trader_api_prod
+    ports: 
+      - "${API_PORT:-8000}:8000"
+    env_file:
+      - .env.prod
+    volumes:
+      - ./tmp:/app/tmp
+      - ./logs:/app/logs
+    restart: unless-stopped
+    network_mode: host  # Host 네트워크 사용으로 localhost DB/Redis 접근
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); print('ok')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+
+  websocket:
+    image: ghcr.io/${GITHUB_REPOSITORY}-ws:latest
+    container_name: auto_trader_ws_prod
+    env_file:
+      - .env.prod
+    volumes:
+      - ./tmp:/app/tmp
+      - ./logs:/app/logs
+    depends_on:
+      - api
+    restart: unless-stopped
+    network_mode: host  # Host 네트워크 사용으로 localhost DB/Redis 접근
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.25'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+
+# 네이티브 PostgreSQL과 Redis 사용으로 볼륨/네트워크 불필요

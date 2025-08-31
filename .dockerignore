@@ -1,0 +1,91 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments & Environment files
+.env
+.env.*
+.environment
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+tmp/
+logs/
+htmlcov/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.tox/
+
+# Sensitive data files
+*_token_cache.json
+*.key
+*.pem
+*.p12
+secrets/
+
+# Documentation
+*.md
+README*
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Tests
+tests/
+test_*.py
+*_test.py
+
+# Development files
+debug_*.py
+example_*.py
+renovate.json
+Makefile
+

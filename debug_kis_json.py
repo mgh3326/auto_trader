@@ -25,7 +25,9 @@ async def main():
             "두산에너빌리티",
             "한화에어로스페이스",
             "에코프로머티",
-            "삼성전자우",
+            "에이피알",
+            "펩트론",
+            "NAVER",
         ]
 
 
@@ -46,7 +48,14 @@ async def main():
             "현대건설",
             "JYP Ent."
             ]
-
+        stock_names = [
+            "에이피알",
+            "로보티즈",
+            "현대로템",
+            "JYP Ent.",
+            "알테오젠",
+            "삼성전자우",
+        ]
         print(f"분석할 주식 목록: {stock_names}")
         print(f"총 {len(stock_names)}개 주식 분석 시작\n")
 
