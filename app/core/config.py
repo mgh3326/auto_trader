@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     kis_access_token: str | None = None  # 최초엔 비워두고 자동 발급
     # Telegram
     telegram_token: str
-    telegram_chat_ids: list[int] = []
+    telegram_chat_ids: list[str] = []
     # Strategy
     top_n: int = 30
     drop_pct: float = -3.0  # '-3'은 -3 %
