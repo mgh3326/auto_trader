@@ -65,17 +65,10 @@ jobs:
         poetry install --with test
         poetry run pip install pytest-cov
     
-    - name: Set environment variables
+    - name: Set environment variables from env.example
       run: |
-        echo "DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/test_db" >> $GITHUB_ENV
-        echo "REDIS_URL=redis://localhost:6379/0" >> $GITHUB_ENV
-        echo "KIS_APP_KEY=DUMMY_KIS_APP_KEY" >> $GITHUB_ENV
-        echo "KIS_APP_SECRET=DUMMY_KIS_APP_SECRET" >> $GITHUB_ENV
-        echo "TELEGRAM_TOKEN=DUMMY_TELEGRAM_TOKEN" >> $GITHUB_ENV
-        echo "GOOGLE_API_KEY=DUMMY_GOOGLE_API_KEY" >> $GITHUB_ENV
-        echo "GOOGLE_API_KEYS=[\"DUMMY_GOOGLE_API_KEY_1\", \"DUMMY_GOOGLE_API_KEY_2\"]" >> $GITHUB_ENV
-        echo "OPENDART_API_KEY=DUMMY_OPENDART_API_KEY" >> $GITHUB_ENV
-        echo "ENVIRONMENT=test" >> $GITHUB_ENV
+        chmod +x scripts/setup-test-env.sh
+        bash scripts/setup-test-env.sh
 
     - name: Run tests
       run: |

@@ -41,4 +41,4 @@ USER appuser
 VOLUME ["/app/tmp"]
 
 # WebSocket 모니터 실행
-CMD ["python", "/app/upbit_websocket_monitor.py"]
+CMD ["python", "upbit_websocket_monitor.py"]

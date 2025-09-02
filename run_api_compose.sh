@@ -51,3 +51,4 @@ echo "  - 로그 확인: docker-compose -f docker-compose.api.yml logs -f"
 echo "  - API 중지: docker-compose -f docker-compose.api.yml down"
 echo "  - 전체 중지: docker-compose down && docker-compose -f docker-compose.api.yml down"
 
+

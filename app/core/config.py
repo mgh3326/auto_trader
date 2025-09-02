@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     upbit_secret_key: str
     
     # Upbit 매수 설정
-    upbit_buy_amount: int = 15000  # 분할 매수 금액 (기본 10만원)
+    upbit_buy_amount: int = 10000  # 분할 매수 금액 (기본 10만원)
     upbit_min_krw_balance: int = upbit_buy_amount + 5000  # 최소 KRW 잔고 (기본 10만원)
 
     # Redis 설정

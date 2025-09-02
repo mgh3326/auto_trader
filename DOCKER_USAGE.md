@@ -152,3 +152,4 @@ docker exec -it auto_trader_api bash
 docker-compose -f docker-compose.api.yml up -d --build --force-recreate
 ```
 
+

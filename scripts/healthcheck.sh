@@ -107,3 +107,4 @@ docker images --filter "reference=ghcr.io/*/*auto*" --format "table {{.Repositor
 echo ""
 echo -e "${GREEN}🎉 Health check completed!${NC}"
 echo "For detailed logs: docker-compose -f docker-compose.prod.yml logs"
+

@@ -24,3 +24,4 @@ services:
       "
     profiles:
       - migration  # 기본 실행에서 제외
+

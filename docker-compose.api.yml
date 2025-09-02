@@ -28,3 +28,4 @@ networks:
     external: true
     name: auto_trader_local_dev
 
+
