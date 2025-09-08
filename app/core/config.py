@@ -1,6 +1,7 @@
 import random
 from typing import List
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,14 +12,28 @@ class Settings(BaseSettings):
     kis_access_token: str | None = None  # 최초엔 비워두고 자동 발급
     # Telegram
     telegram_token: str
-    telegram_chat_ids: list[str] = []
+    telegram_chat_ids_str: str = ""
     # Strategy
     top_n: int = 30
     drop_pct: float = -3.0  # '-3'은 -3 %
     # Scheduler
     cron: str = "0 * * * *"  # 매시 정각
     google_api_key: str
-    google_api_keys: List[str]  # 소문자로 변경
+    google_api_keys_str: str = ""
+
+    @property
+    def telegram_chat_ids(self) -> List[str]:
+        """콤마로 구분된 문자열을 리스트로 변환"""
+        if not self.telegram_chat_ids_str:
+            return []
+        return [chat_id.strip() for chat_id in self.telegram_chat_ids_str.split(',') if chat_id.strip()]
+
+    @property
+    def google_api_keys(self) -> List[str]:
+        """콤마로 구분된 문자열을 리스트로 변환"""
+        if not self.google_api_keys_str:
+            return []
+        return [key.strip() for key in self.google_api_keys_str.split(',') if key.strip()]
 
     def _ensure_key_index(self):
         """API 키 인덱스 초기화 (필요시에만)"""
@@ -83,6 +98,10 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,  # 대소문자 구분 안 함
+        env_parse_none_str="None",  # None 문자열 파싱
+        # JSON 자동 파싱 비활성화
+        env_parse_enums=True,
+        extra='ignore',  # 추가 필드 무시
     )
 
 
