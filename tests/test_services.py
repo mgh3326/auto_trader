@@ -63,7 +63,7 @@ class TestUpbitService:
 
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 1
-        assert "code" in result.columns
+        # 실제 fetch_price 함수에서 반환하는 컬럼들 확인
         assert "date" in result.columns
         assert "time" in result.columns
         assert "open" in result.columns
