@@ -4,7 +4,8 @@
 # STAGE 1: 'builder' - 의존성 설치를 전담하는 스테이지
 # 이 스테이지는 각 아키텍처(amd64, arm64)에 맞게 의존성을 설치하는 역할만 합니다.
 # ==============================================================================
-FROM --platform=$BUILDPLATFORM python:3.11-slim AS builder
+# Build dependencies for the TARGET platform (not the build host)
+FROM --platform=$TARGETPLATFORM python:3.11-slim AS builder
 
 # Poetry 설치
 RUN pip install --upgrade pip && pip install poetry
