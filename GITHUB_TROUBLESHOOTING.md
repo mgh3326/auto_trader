@@ -77,7 +77,7 @@ permissions:
 **해결**: 
 ```yaml
 timeout-minutes: 30
-platforms: linux/amd64  # ARM64 제거
+platforms: linux/amd64,linux/arm64
 cache-from: type=gha,scope=${{ matrix.image }}
 ```
 

@@ -74,17 +74,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-          platforms: linux/amd64  # ARM64 제외로 빌드 속도 및 안정성 향상
+          platforms: linux/amd64,linux/arm64
           provenance: false  # Provenance 비활성화로 빌드 속도 향상
 
-      - name: Generate artifact attestation for ${{ matrix.image }}
-        if: success()  # 빌드가 성공했을 때만 실행
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}${{ matrix.suffix }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
-        continue-on-error: true  # attestation 실패해도 워크플로우 계속 진행
+# Attestation 단계 제거 - OIDC 권한 이슈로 인해 주석 처리
+      # - name: Generate artifact attestation for ${{ matrix.image }}
+      #   if: success()
+      #   uses: actions/attest-build-provenance@v1
+      #   with:
+      #     subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}${{ matrix.suffix }}
+      #     subject-digest: ${{ steps.build.outputs.digest }}
+      #     push-to-registry: true
+      #   continue-on-error: true
 
       - name: Build Summary
         if: always()
