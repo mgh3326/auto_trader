@@ -1,32 +1,55 @@
 # syntax=docker/dockerfile:1.7
-FROM python:3.11-slim AS base
 
+# ==============================================================================
+# STAGE 1: 'builder' - 의존성 설치를 전담하는 스테이지
+# 이 스테이지는 각 아키텍처(amd64, arm64)에 맞게 의존성을 설치하는 역할만 합니다.
+# ==============================================================================
+FROM --platform=$BUILDPLATFORM python:3.11-slim AS builder
+
+# Poetry 설치
+RUN pip install --upgrade pip && pip install poetry
+
+WORKDIR /app
+
+# pyproject.toml과 poetry.lock 파일만 먼저 복사
+COPY pyproject.toml poetry.lock ./
+
+# Poetry 캐시를 활용하여 빌드 속도 향상
+# 가장 무거운 작업인 의존성 설치를 이 단계에서 실행합니다.
+RUN --mount=type=cache,target=/root/.cache \
+    poetry config virtualenvs.create false \
+    && poetry install --only main --no-root --no-interaction --no-ansi
+
+# ==============================================================================
+# STAGE 2: 'final' - 최종 실행 이미지를 만드는 스테이지
+# 가볍고 깨끗한 상태에서 시작합니다.
+# ==============================================================================
+FROM python:3.11-slim AS final
+
+# 환경 변수 설정
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# 필수 OS 패키지
+# 필수 OS 패키지 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl ca-certificates \
+    curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# poetry 설치 및 의존성 설치
-RUN pip install --upgrade pip && pip install poetry
-
-# 프로젝트 메타데이터 복사
-COPY pyproject.toml poetry.lock /app/
-RUN poetry config virtualenvs.create false \
-    && poetry install --only main --no-root --no-interaction --no-ansi
-
 # 비루트 유저 생성
 RUN useradd -u 10001 -m appuser
 
-# 앱 소스 복사
+# ✨ 가장 중요한 부분 ✨
+# 'builder' 스테이지에서 설치 완료된 패키지들을 그대로 복사해옵니다.
+# 이렇게 하면 이 단계에서 다시 'poetry install'을 실행할 필요가 없습니다.
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+
+# 앱 소스 코드 복사
 COPY . .
 
-# tmp 디렉토리 생성 및 권한 설정 (root 권한으로)
+# tmp 디렉토리 생성 및 권한 설정
 RUN mkdir -p /app/tmp && \
     chown -R appuser:appuser /app/tmp && \
     chmod 755 /app/tmp
@@ -37,14 +60,14 @@ RUN chown -R appuser:appuser /app
 # 비루트 유저로 전환
 USER appuser
 
-# 볼륨 마운트 포인트 (선택적)
+# 볼륨 마운트 포인트
 VOLUME ["/app/tmp"]
 
-# 헬스체크(8000)
+# 헬스체크
 HEALTHCHECK --interval=30s --timeout=3s --retries=5 \
   CMD python -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); print('ok')" || exit 1
 
 EXPOSE 8000
 
-# FastAPI 실행 (uvicorn)
+# FastAPI 실행
 CMD ["python", "-m", "uvicorn", "app.main:api", "--host", "0.0.0.0", "--port", "8000"]
