@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # Scheduler
     cron: str = "0 * * * *"  # 매시 정각
     google_api_key: str
-    google_api_keys_str: str = ""
+    google_api_keys: List[str]  # 소문자로 변경
 
     @property
     def telegram_chat_ids(self) -> List[str]:
@@ -27,13 +27,6 @@ class Settings(BaseSettings):
         if not self.telegram_chat_ids_str:
             return []
         return [chat_id.strip() for chat_id in self.telegram_chat_ids_str.split(',') if chat_id.strip()]
-
-    @property
-    def google_api_keys(self) -> List[str]:
-        """콤마로 구분된 문자열을 리스트로 변환"""
-        if not self.google_api_keys_str:
-            return []
-        return [key.strip() for key in self.google_api_keys_str.split(',') if key.strip()]
 
     def _ensure_key_index(self):
         """API 키 인덱스 초기화 (필요시에만)"""
