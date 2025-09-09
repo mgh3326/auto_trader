@@ -23,9 +23,6 @@ jobs:
           - image: api
             dockerfile: ./Dockerfile.api
             suffix: ""
-          - image: websocket
-            dockerfile: ./Dockerfile.ws
-            suffix: "-ws"
 
     steps:
       - name: Checkout repository
