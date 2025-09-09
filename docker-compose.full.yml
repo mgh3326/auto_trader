@@ -59,6 +59,23 @@ services:
       retries: 3
       start_period: 40s
 
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: auto_trader_worker
+    command: bash -lc "poetry run celery -A app.core.celery_app.celery_app worker --loglevel=INFO"
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - local_dev
+
   adminer:
     image: adminer
     container_name: adminer

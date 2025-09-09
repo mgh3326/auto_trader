@@ -140,13 +140,14 @@ class Analyzer:
         for model in models_to_try:
             print(f"모델 시도: {model}")
 
-            # Redis에서 현재 API 키의 모델 사용 제한 확인
-            masked_api_key = self._mask_api_key(self.api_key)
-            if not await self.rate_limiter.is_model_available(model, self.api_key):
-                print(f"  {model} 모델 (API: {masked_api_key}) 사용 제한 중, 다음 모델로...")
-                continue
 
             for attempt in range(max_retries):
+                # Redis에서 현재 API 키의 모델 사용 제한 확인
+                masked_api_key = self._mask_api_key(self.api_key)
+                if not await self.rate_limiter.is_model_available(model, self.api_key):
+                    print(f"  {model} 모델 (API: {masked_api_key}) 사용 제한 중, 다음 모델로...")
+                    self.api_key = settings.get_next_key()  # 매번 첫번째껏만 받는것 같아서 랜덤으로 변경
+                    continue
                 try:
                     if use_json:
                         # JSON 스키마를 사용하여 구조화된 응답 생성

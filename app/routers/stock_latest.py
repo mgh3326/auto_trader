@@ -12,6 +12,7 @@ from app.core.db import get_db
 from app.models.analysis import StockInfo, StockAnalysisResult
 from app.models.base import Base
 from app.analysis.service_analyzers import KISAnalyzer, YahooAnalyzer, UpbitAnalyzer
+from app.core.celery_app import celery_app
 
 router = APIRouter(prefix="/stock-latest", tags=["Stock Latest Analysis"])
 
@@ -400,10 +401,9 @@ async def get_latest_analysis_statistics(db: AsyncSession = Depends(get_db)):
 @router.post("/api/analyze/{stock_info_id}")
 async def trigger_new_analysis(
         stock_info_id: int,
-        background_tasks: BackgroundTasks,
         db: AsyncSession = Depends(get_db)
 ):
-    """특정 종목에 대한 새로운 분석을 트리거하는 API"""
+    """특정 종목에 대한 새로운 분석을 Celery로 비동기 트리거"""
 
     # 종목 정보 확인
     stock_info_query = select(StockInfo).where(StockInfo.id == stock_info_id)
@@ -416,18 +416,15 @@ async def trigger_new_analysis(
     if not stock_info.is_active:
         raise HTTPException(status_code=400, detail="비활성화된 종목입니다.")
 
-    # 현재 실행 중인 이벤트 루프를 가져와 백그라운드 태스크에 전달
-    loop = asyncio.get_running_loop()
-    background_tasks.add_task(
-        _execute_analysis_for_stock,
-        stock_info.symbol,
-        stock_info.name,
-        stock_info.instrument_type,
-        loop
+    # Celery 작업 큐에 등록
+    async_result = celery_app.send_task(
+        "analyze.run_for_stock",
+        args=[stock_info.symbol, stock_info.name, stock_info.instrument_type],
     )
 
     return {
-        "message": "분석이 시작되었습니다.",
+        "message": "분석이 큐에 등록되었습니다.",
+        "task_id": async_result.id,
         "stock_info": {
             "id": stock_info.id,
             "symbol": stock_info.symbol,
@@ -438,46 +435,21 @@ async def trigger_new_analysis(
 
 
 
-def _execute_analysis_for_stock(
-        symbol: str,
-        name: str,
-        instrument_type: str,
-        loop: AbstractEventLoop
-):
-    """개별 종목에 대한 분석을 실행하는 내부 함수 (백그라운드 스레드에서 실행)"""
-
-    async def run_analysis():
-        """내부 비동기 분석 실행 함수"""
-        analyzer = None
+@router.get("/api/analyze-task/{task_id}")
+async def get_analyze_task_status(task_id: str):
+    """Celery 작업 상태 조회 API"""
+    result = celery_app.AsyncResult(task_id)
+    response = {
+        "task_id": task_id,
+        "state": result.state,
+        "ready": result.ready(),
+    }
+    if result.successful():
         try:
-            print(f"새로운 분석 시작: {name} ({symbol}) - {instrument_type}")
-
-            if instrument_type == "equity_kr":
-                analyzer = KISAnalyzer()
-                await analyzer.analyze_stock_json(name)
-            elif instrument_type == "equity_us":
-                analyzer = YahooAnalyzer()
-                await analyzer.analyze_stock_json(symbol)
-            elif instrument_type == "crypto":
-                analyzer = UpbitAnalyzer()
-                await analyzer.analyze_coin_json(name)
-            else:
-                print(f"지원하지 않는 상품 타입: {instrument_type}")
-                return
-
-            print(f"분석 완료: {name} ({symbol})")
-
-        except Exception as e:
-            print(f"분석 실행 중 오류 발생: {name} ({symbol}) - {str(e)}")
-        finally:
-            if analyzer and hasattr(analyzer, 'close'):
-                await analyzer.close()
-
-    # 백그라운드 스레드에서 메인 이벤트 루프로 비동기 함수 실행을 스케줄
-    future = asyncio.run_coroutine_threadsafe(run_analysis(), loop)
-    try:
-        # 작업이 완료될 때까지 백그라운드 스레드에서 대기 (메인 루프는 영향 없음)
-        future.result()
-    except Exception as e:
-        print(f"백그라운드 분석 작업 완료 중 오류 발생: {name} ({symbol}) - {str(e)}")
+            response["result"] = result.get(timeout=0)
+        except Exception:
+            response["result"] = None
+    elif result.failed():
+        response["error"] = str(result.result)
+    return response
 
