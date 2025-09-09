@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # Scheduler
     cron: str = "0 * * * *"  # 매시 정각
     google_api_key: str
-    google_api_keys: List[str]  # 소문자로 변경
+    google_api_keys: Optional[List[str]] = None 
 
     @property
     def telegram_chat_ids(self) -> List[str]:
