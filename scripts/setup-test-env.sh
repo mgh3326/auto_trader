@@ -61,8 +61,8 @@ while IFS= read -r line; do
             "GOOGLE_API_KEY")
                 echo "GOOGLE_API_KEY=DUMMY_GOOGLE_API_KEY" >> "$OUTPUT_TARGET"
                 ;;
-            "GOOGLE_API_KEYS_STR")
-                echo "GOOGLE_API_KEYS_STR=DUMMY_GOOGLE_API_KEY_1,DUMMY_GOOGLE_API_KEY_2" >> "$OUTPUT_TARGET"
+            "GOOGLE_API_KEYS")
+                echo 'GOOGLE_API_KEYS=("DUMMY_GOOGLE_API_KEY_1" "DUMMY_GOOGLE_API_KEY_2")' >> "$OUTPUT_TARGET"
                 ;;
             "OPENDART_API_KEY")
                 echo "OPENDART_API_KEY=DUMMY_OPENDART_API_KEY" >> "$OUTPUT_TARGET"
