@@ -1,5 +1,5 @@
 import random
-from typing import List
+from typing import List, Optional
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # Scheduler
     cron: str = "0 * * * *"  # 매시 정각
     google_api_key: str
-    google_api_keys: Optional[List[str]] = None 
+    google_api_keys: Optional[List[str]] = None
 
     @property
     def telegram_chat_ids(self) -> List[str]:
