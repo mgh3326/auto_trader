@@ -31,11 +31,16 @@ class Settings(BaseSettings):
     @field_validator("google_api_keys", mode='before')
     @classmethod
     def split_google_api_keys(cls, v: any) -> List[str]:
+        # --- 디버깅 코드 추가 ---
+        print(f"Validator for google_api_keys received value: {v!r}")
+        print(f"Type of received value: {type(v)}")
+        # ---------------------
+
         if isinstance(v, str):
-            # 쉼표로 분리하고, 각 항목의 앞뒤 공백을 제거하며, 빈 항목은 제외합니다.
+            if not v:  # 빈 문자열 처리
+                return []
             return [key.strip() for key in v.split(',') if key.strip()]
-        return v  # 이미 리스트인 경우 (예: 테스트 코드) 그대로 반환
-    
+        return v
     def _ensure_key_index(self):
         """API 키 인덱스 초기화 (필요시에만)"""
         if not hasattr(self, "_current_key_index"):
@@ -78,7 +83,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     upbit_access_key: str
     upbit_secret_key: str
-    
+
     # Upbit 매수 설정
     upbit_buy_amount: int = 10000  # 분할 매수 금액 (기본 10만원)
     upbit_min_krw_balance: int = upbit_buy_amount + 5000  # 최소 KRW 잔고 (기본 10만원)
