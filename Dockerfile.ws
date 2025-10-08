@@ -4,7 +4,7 @@
 # STAGE 1: 'builder' - 의존성 설치를 전담하는 스테이지
 # This stage is dedicated to installing dependencies for the target architecture.
 # ==============================================================================
-FROM --platform=$BUILDPLATFORM python:3.11-slim AS builder
+FROM --platform=$BUILDPLATFORM python:3.14-slim AS builder
 
 # Poetry 설치 (Install Poetry)
 RUN pip install --upgrade pip && pip install poetry
@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/root/.cache \
 # STAGE 2: 'final' - 최종 실행 이미지를 만드는 스테이지
 # This stage builds the final, lean production image.
 # ==============================================================================
-FROM python:3.11-slim AS final
+FROM python:3.14-slim AS final
 
 # 환경 변수 설정 (Set environment variables)
 ENV PYTHONDONTWRITEBYTECODE=1 \
