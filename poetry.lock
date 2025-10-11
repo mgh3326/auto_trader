@@ -903,14 +903,14 @@ test = ["charset_normalizer (>=3.3.2,<4.0)", "cryptography (>=42.0.5,<43.0)", "f
 
 [[package]]
 name = "dart-fss"
-version = "0.4.13"
+version = "0.4.14"
 description = "Web-scraping https://dart.fss.or.kr"
 optional = false
 python-versions = ">=3.7"
 groups = ["main"]
 files = [
-    {file = "dart_fss-0.4.13-py3-none-any.whl", hash = "sha256:efedab61b523dc738af40cdaf31fc0a5268a9e72fb4e850dd25c2d54bc984884"},
-    {file = "dart_fss-0.4.13.tar.gz", hash = "sha256:1e3531f37aeff8d6a0d9dbc76ac8eb7cf20e0e2ae12fbce7ce19fdeeeca261a3"},
+    {file = "dart_fss-0.4.14-py3-none-any.whl", hash = "sha256:bd769d0093703385c8822fc1750273c8469b6756c836aaca3227ab33a99a3348"},
+    {file = "dart_fss-0.4.14.tar.gz", hash = "sha256:bb86d00349a43fd2b3734dda5c82a4aff15e3f62cbadbec504132928db045f9e"},
 ]
 
 [package.dependencies]
@@ -918,6 +918,7 @@ appdirs = "*"
 arelle-release = "*"
 beautifulsoup4 = "*"
 fake-useragent = ">=1.5"
+lxml = "*"
 numpy = "*"
 pandas = "*"
 requests = "*"
