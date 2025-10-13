@@ -4,7 +4,7 @@ import pandas as pd
 
 from app.services import upbit, yahoo, kis
 from data.coins_info import upbit_pairs
-from data.stocks_info import KRX_NAME_TO_CODE
+from data.stocks_info import KRX_NAME_TO_CODE, get_exchange_by_symbol
 
 from .analyzer import Analyzer, DataProcessor
 
@@ -356,16 +356,16 @@ class YahooAnalyzer(Analyzer):
 
 
 class KISAnalyzer(Analyzer):
-    """KIS 국내주식 분석기"""
-    
+    """KIS 국내주식 및 해외주식 분석기"""
+
     async def _collect_stock_data(self, stock_name: str, stock_code: str):
         """
         국내 주식 데이터 수집 (OHLCV, 현재가, 기본정보, 분봉)
-        
+
         Args:
             stock_name: 종목명
             stock_code: 종목코드
-            
+
         Returns:
             (df_merged, fundamental_info, minute_candles) 튜플
         """
@@ -373,7 +373,7 @@ class KISAnalyzer(Analyzer):
         df_historical = await kis.kis.inquire_daily_itemchartprice(stock_code)
         df_current = await kis.kis.inquire_price(stock_code)
         fundamental_info = await kis.kis.fetch_fundamental_info(stock_code)
-        
+
         # 분봉 데이터 수집
         minute_candles = {}
         try:
@@ -381,12 +381,54 @@ class KISAnalyzer(Analyzer):
         except Exception as e:
             print(f"분봉 데이터 수집 실패: {e}")
             minute_candles = {}
-        
+
         # 데이터 병합
         df_merged = DataProcessor.merge_historical_and_current(
             df_historical, df_current
         )
-        
+
+        return df_merged, fundamental_info, minute_candles
+
+    async def _collect_overseas_stock_data(self, symbol: str, exchange_code: str):
+        """
+        해외 주식 데이터 수집 (OHLCV, 현재가, 기본정보, 분봉)
+
+        Args:
+            symbol: 주식 심볼 (예: "AAPL")
+            exchange_code: 거래소 코드 (예: "NASD", "NYSE", "AMEX")
+
+        Returns:
+            (df_merged, fundamental_info, minute_candles) 튜플
+        """
+        # 기본 데이터 수집
+        # 일봉 데이터: KIS API에서 일봉을 지원하지 않는 경우를 대비하여 빈 DataFrame 사용
+        try:
+            df_historical = await kis.kis.inquire_overseas_daily_price(symbol, exchange_code)
+        except Exception as e:
+            print(f"일봉 데이터 수집 실패 (Yahoo Finance 방식으로 대체 필요): {e}")
+            # 빈 DataFrame 생성 (Yahoo Finance와 동일한 컬럼)
+            df_historical = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+        df_current = await kis.kis.inquire_overseas_price(symbol, exchange_code)
+        fundamental_info = await kis.kis.fetch_overseas_fundamental_info(symbol, exchange_code)
+
+        # 분봉 데이터 수집
+        minute_candles = {}
+        try:
+            minute_candles = await kis.kis.fetch_overseas_minute_candles(symbol, exchange_code)
+        except Exception as e:
+            print(f"분봉 데이터 수집 실패: {e}")
+            minute_candles = {}
+
+        # 데이터 병합 (일봉이 없어도 현재가만으로 분석 가능)
+        if df_historical.empty:
+            # 일봉 데이터가 없으면 현재가만 사용
+            df_merged = df_current
+        else:
+            df_merged = DataProcessor.merge_historical_and_current(
+                df_historical, df_current
+            )
+
         return df_merged, fundamental_info, minute_candles
     
     def _print_analysis_result(self, result, stock_name: str, use_json: bool = False):
@@ -472,3 +514,75 @@ class KISAnalyzer(Analyzer):
         )
 
         self._print_analysis_result(result, stock_name, use_json=True)
+
+    async def analyze_overseas_stocks(self, stock_symbols: List[str]) -> None:
+        """여러 해외주식을 순차적으로 분석"""
+        for symbol in stock_symbols:
+            await self.analyze_overseas_stock(symbol)
+
+    async def analyze_overseas_stock(self, symbol: str) -> None:
+        """단일 해외주식 분석"""
+        print(f"\n=== {symbol} 해외주식 분석 시작 ===")
+
+        # 거래소 코드 자동 조회
+        exchange_code = get_exchange_by_symbol(symbol)
+        if not exchange_code:
+            print(f"심볼을 찾을 수 없음: {symbol}")
+            return
+
+        print(f"거래소: {exchange_code}")
+
+        # 데이터 수집
+        df_merged, fundamental_info, minute_candles = await self._collect_overseas_stock_data(
+            symbol, exchange_code
+        )
+
+        # 분석 및 저장
+        result, model_name = await self.analyze_and_save(
+            df=df_merged,
+            symbol=symbol,
+            name=symbol,
+            instrument_type="equity_us",
+            currency="$",
+            unit_shares="주",
+            fundamental_info=fundamental_info,
+            minute_candles=minute_candles,
+        )
+
+        self._print_analysis_result(result, symbol, use_json=False)
+
+    async def analyze_overseas_stocks_json(self, stock_symbols: List[str]) -> None:
+        """여러 해외주식을 순차적으로 JSON 형식으로 분석"""
+        for symbol in stock_symbols:
+            await self.analyze_overseas_stock_json(symbol)
+
+    async def analyze_overseas_stock_json(self, symbol: str) -> None:
+        """단일 해외주식을 JSON 형식으로 분석"""
+        print(f"\n=== {symbol} 해외주식 JSON 분석 시작 ===")
+
+        # 거래소 코드 자동 조회
+        exchange_code = get_exchange_by_symbol(symbol)
+        if not exchange_code:
+            print(f"심볼을 찾을 수 없음: {symbol}")
+            return
+
+        print(f"거래소: {exchange_code}")
+
+        # 데이터 수집
+        df_merged, fundamental_info, minute_candles = await self._collect_overseas_stock_data(
+            symbol, exchange_code
+        )
+
+        # JSON 형식으로 분석 및 저장
+        result, model_name = await self.analyze_and_save_json(
+            df=df_merged,
+            symbol=symbol,
+            name=symbol,
+            instrument_type="equity_us",
+            currency="$",
+            unit_shares="주",
+            fundamental_info=fundamental_info,
+            minute_candles=minute_candles,
+        )
+
+        self._print_analysis_result(result, symbol, use_json=True)

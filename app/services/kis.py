@@ -35,6 +35,16 @@ OVERSEAS_BALANCE_URL = "/uapi/overseas-stock/v1/trading/inquire-balance"
 OVERSEAS_BALANCE_TR = "TTTS3012R"  # 실전투자 해외주식 잔고조회
 OVERSEAS_BALANCE_TR_MOCK = "VTTS3012R"  # 모의투자 해외주식 잔고조회
 
+# 해외주식 일봉/분봉 조회 관련 URL 및 TR ID
+OVERSEAS_DAILY_CHART_URL = "/uapi/overseas-price/v1/quotations/dailyprice"
+OVERSEAS_DAILY_CHART_TR = "HHDFS76240000"  # 해외주식 기간별시세 (v1_해외주식-010)
+OVERSEAS_PERIOD_CHART_URL = "/uapi/overseas-price/v1/quotations/inquire-daily-chartprice"
+OVERSEAS_PERIOD_CHART_TR = "FHKST03030100"  # 해외주식 종목/지수/환율 기간별시세 (v1_해외주식-012)
+OVERSEAS_MINUTE_CHART_URL = "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice"
+OVERSEAS_MINUTE_CHART_TR = "FHKST03010200"  # 해외주식 분봉조회 (v1_해외주식-030)
+OVERSEAS_PRICE_URL = "/uapi/overseas-price/v1/quotations/price"
+OVERSEAS_PRICE_TR = "HHDFS00000300"  # 해외주식 현재가 조회
+
 
 class KISClient:
     def __init__(self):
@@ -749,6 +759,446 @@ class KISClient:
                 "1min": empty_df
             }
         
+        return minute_candles
+
+    async def inquire_overseas_daily_price(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD",
+        n: int = 200,
+        period: str = "D",  # D/W/M
+    ) -> pd.DataFrame:
+        """
+        해외주식 일봉/주봉/월봉 조회 (국내주식처럼 충분한 데이터 확보)
+
+        Args:
+            symbol: 종목 심볼 (예: "AAPL")
+            exchange_code: 거래소 코드 (NASD/NYSE/AMEX 등)
+            n: 조회할 캔들 수 (최소 200개 권장, 이동평균선 계산용)
+            period: D(일봉)/W(주봉)/M(월봉)
+
+        Returns:
+            DataFrame with columns: date, open, high, low, close, volume
+        """
+        await self._ensure_token()
+
+        # KIS API는 거래소 코드를 3자리로 사용: NASD -> NAS, NYSE -> NYS, AMEX -> AMS
+        excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        excd = excd_map.get(exchange_code, exchange_code[:3])
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": OVERSEAS_DAILY_CHART_TR,
+        }
+
+        rows: list[dict] = []
+        max_iterations = 5  # 최대 5번 반복 (충분한 데이터 확보)
+        iteration = 0
+
+        # 국내주식처럼 충분한 데이터를 확보할 때까지 반복 조회
+        while len(rows) < n and iteration < max_iterations:
+            # BYMD 파라미터: 빈 값이면 최근, 날짜를 지정하면 해당 날짜부터 과거로
+            if rows:
+                # 이전에 가져온 데이터의 가장 오래된 날짜 찾기
+                oldest_date = min(r.get("xymd", "99999999") for r in rows)
+                # 하루 전으로 설정
+                try:
+                    oldest_dt = datetime.datetime.strptime(oldest_date, "%Y%m%d")
+                    bymd = (oldest_dt - datetime.timedelta(days=1)).strftime("%Y%m%d")
+                except:
+                    bymd = ""
+            else:
+                bymd = ""  # 첫 요청은 최신 데이터부터
+
+            params = {
+                "AUTH": "",
+                "EXCD": excd,  # 거래소코드 (3자리)
+                "SYMB": symbol,  # 심볼
+                "GUBN": "0",  # 0:일, 1:주, 2:월
+                "BYMD": bymd,  # 조회기준일자
+                "MODP": "1",  # 0:수정주가 미반영, 1:수정주가 반영
+            }
+
+            logging.info(f"해외주식 일봉 조회 요청 (반복 {iteration + 1}/{max_iterations}) - symbol: {symbol}, exchange: {excd}, bymd: {bymd}")
+
+            async with httpx.AsyncClient(timeout=10) as cli:
+                r = await cli.get(
+                    f"{BASE}{OVERSEAS_DAILY_CHART_URL}",
+                    headers=hdr,
+                    params=params
+                )
+
+            # 디버깅: 응답 내용 확인
+            if r.status_code != 200:
+                logging.error(f"HTTP 오류: {r.status_code}, 내용: {r.text[:200]}")
+                raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+
+            try:
+                js = r.json()
+            except Exception as e:
+                logging.error(f"JSON 파싱 실패. 응답 내용: {r.text[:200]}")
+                raise
+
+            if js.get("rt_cd") != "0":
+                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                    await self._token_manager.clear_token()
+                    await self._ensure_token()
+                    continue
+                raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+
+            chunk = js.get("output2", [])
+
+            if not chunk:
+                logging.info(f"더 이상 과거 데이터가 없음. 현재까지 수집: {len(rows)}개")
+                break  # 더 이상 과거 데이터 없음
+
+            rows.extend(chunk)
+            iteration += 1
+
+            logging.info(f"누적 데이터: {len(rows)}개 / 목표: {n}개")
+
+        if not rows:
+            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+
+        df = (
+            pd.DataFrame(rows)
+            .rename(columns={
+                "xymd": "date",
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "clos": "close",
+                "tvol": "volume",
+            })
+            .astype({
+                "date": "str",
+                "open": "float",
+                "high": "float",
+                "low": "float",
+                "close": "float",
+                "volume": "int",
+            }, errors="ignore")
+            .assign(date=lambda d: pd.to_datetime(d["date"], format="%Y%m%d"))
+            .drop_duplicates(subset=["date"], keep="first")
+            .sort_values("date")
+            .tail(n)  # 요청한 개수만 반환
+            .reset_index(drop=True)
+        )
+
+        logging.info(f"해외주식 일봉 조회 완료: {len(df)}개 데이터 반환")
+        return df
+
+    async def inquire_overseas_price(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD"
+    ) -> pd.DataFrame:
+        """
+        해외주식 현재가 조회
+
+        Args:
+            symbol: 종목 심볼 (예: "AAPL")
+            exchange_code: 거래소 코드 (NASD/NYSE/AMEX 등)
+
+        Returns:
+            DataFrame with current price info
+        """
+        await self._ensure_token()
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": OVERSEAS_PRICE_TR,
+        }
+
+        # KIS API는 거래소 코드를 3자리로 사용
+        excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        excd = excd_map.get(exchange_code, exchange_code[:3])
+
+        params = {
+            "AUTH": "",
+            "EXCD": excd,  # 거래소코드 (3자리)
+            "SYMB": symbol,
+        }
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(
+                f"{BASE}{OVERSEAS_PRICE_URL}",
+                headers=hdr,
+                params=params
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.inquire_overseas_price(symbol, exchange_code)
+            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+
+        out = js.get("output", {})
+
+        if not out:
+            return pd.DataFrame(columns=["code", "date", "time", "open", "high", "low", "close", "volume"])
+
+        # 현재 시간 정보
+        now = datetime.datetime.now()
+
+        # 빈 문자열을 0으로 변환하는 헬퍼 함수
+        def safe_float(val, default=0.0):
+            if val == '' or val is None:
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        def safe_int(val, default=0):
+            if val == '' or val is None:
+                return default
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return default
+
+        row = {
+            "code": symbol,
+            "date": pd.Timestamp(now.date()),  # Timestamp로 변환하여 일봉 데이터와 타입 일치
+            "time": now.time(),
+            "open": safe_float(out.get("open")),
+            "high": safe_float(out.get("high")),
+            "low": safe_float(out.get("low")),
+            "close": safe_float(out.get("last")),  # 현재가
+            "volume": safe_int(out.get("tvol")),
+            "value": 0,  # 해외주식은 거래대금 정보 없음
+        }
+
+        return pd.DataFrame([row]).set_index("code")
+
+    async def fetch_overseas_fundamental_info(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD"
+    ) -> dict:
+        """
+        해외주식 기본 정보 조회
+
+        Args:
+            symbol: 종목 심볼
+            exchange_code: 거래소 코드
+
+        Returns:
+            기본 정보 딕셔너리
+        """
+        await self._ensure_token()
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": OVERSEAS_PRICE_TR,
+        }
+
+        # KIS API는 거래소 코드를 3자리로 사용
+        excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        excd = excd_map.get(exchange_code, exchange_code[:3])
+
+        params = {
+            "AUTH": "",
+            "EXCD": excd,  # 거래소코드 (3자리)
+            "SYMB": symbol,
+        }
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(
+                f"{BASE}{OVERSEAS_PRICE_URL}",
+                headers=hdr,
+                params=params
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.fetch_overseas_fundamental_info(symbol, exchange_code)
+            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+
+        out = js.get("output", {})
+
+        fundamental_data = {
+            "종목코드": symbol,
+            "종목명": out.get("name", ""),
+            "현재가": out.get("last"),
+            "전일대비": out.get("diff"),
+            "등락률": out.get("rate"),
+            "거래량": out.get("tvol"),
+            "52주최고": out.get("h52p"),
+            "52주최저": out.get("l52p"),
+        }
+
+        return {k: v for k, v in fundamental_data.items() if v is not None}
+
+    async def inquire_overseas_minute_chart(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD",
+        n: int = 200,
+    ) -> pd.DataFrame:
+        """
+        해외주식 분봉 조회
+
+        Args:
+            symbol: 종목 심볼
+            exchange_code: 거래소 코드
+            n: 조회할 캔들 수
+
+        Returns:
+            DataFrame with columns: datetime, date, time, open, high, low, close, volume
+        """
+        await self._ensure_token()
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": OVERSEAS_MINUTE_CHART_TR,
+        }
+
+        # KIS API는 거래소 코드를 3자리로 사용
+        excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        excd = excd_map.get(exchange_code, exchange_code[:3])
+
+        params = {
+            "AUTH": "",
+            "EXCD": excd,  # 거래소코드 (3자리)
+            "SYMB": symbol,
+            "NMIN": "1",  # 1분봉
+            "PINC": "1",  # 1:주가, 2:대비
+            "NEXT": "",  # 연속조회
+            "NREC": str(min(n, 120)),  # 최대 120개
+            "FILL": "",  # 빈값: 장중만, 1:장전/장후 포함
+            "KEYB": "",  # 연속조회키
+        }
+
+        # 디버깅: 요청 파라미터 로깅
+        logging.info(f"해외주식 분봉 조회 요청 - symbol: {symbol}, exchange: {excd}, params: {params}")
+
+        async with httpx.AsyncClient(timeout=10) as cli:
+            r = await cli.get(
+                f"{BASE}{OVERSEAS_MINUTE_CHART_URL}",
+                headers=hdr,
+                params=params
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.inquire_overseas_minute_chart(symbol, exchange_code, n)
+            logging.warning(f"해외주식 분봉 조회 실패: {js.get('msg1')}")
+            return pd.DataFrame(columns=["datetime", "date", "time", "open", "high", "low", "close", "volume"])
+
+        rows = js.get("output2", [])
+
+        if not rows:
+            logging.warning("해외주식 분봉 데이터 없음")
+            return pd.DataFrame(columns=["datetime", "date", "time", "open", "high", "low", "close", "volume"])
+
+        df = (
+            pd.DataFrame(rows)
+            .rename(columns={
+                "kymd": "date",
+                "khms": "time",
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "last": "close",
+                "evol": "volume",
+            })
+            .astype({
+                "date": "str",
+                "time": "str",
+                "open": "float",
+                "high": "float",
+                "low": "float",
+                "close": "float",
+                "volume": "int",
+            }, errors="ignore")
+            .assign(
+                datetime=lambda d: pd.to_datetime(
+                    d["date"] + d["time"],
+                    format="%Y%m%d%H%M%S"
+                ),
+                date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
+                time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
+            )
+            .loc[:, ["datetime", "date", "time", "open", "high", "low", "close", "volume"]]
+            .drop_duplicates(subset=["datetime"], keep="first")
+            .sort_values("datetime")
+            .tail(n)
+            .reset_index(drop=True)
+        )
+
+        return df
+
+    async def fetch_overseas_minute_candles(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD",
+    ) -> dict:
+        """
+        해외주식 분봉 데이터를 가져와서 60분, 5분, 1분 캔들로 반환
+
+        Args:
+            symbol: 종목 심볼
+            exchange_code: 거래소 코드
+
+        Returns:
+            분봉 캔들 데이터 딕셔너리
+        """
+        minute_candles = {}
+
+        try:
+            logging.info(f"해외주식 분봉 데이터 수집 시작: {symbol}")
+
+            # 1분봉 수집 (최대 120개)
+            df_1min = await self.inquire_overseas_minute_chart(symbol, exchange_code, n=120)
+
+            if not df_1min.empty:
+                logging.info(f"1분봉 {len(df_1min)}개 수집 완료")
+
+                minute_candles["1min"] = df_1min.tail(10)  # 최근 10개만
+
+                # 5분봉으로 집계
+                df_5min = self._aggregate_minute_candles(df_1min, 5)
+                minute_candles["5min"] = df_5min.tail(12)  # 최근 12개만
+
+                # 60분봉으로 집계
+                df_60min = self._aggregate_minute_candles(df_1min, 60)
+                minute_candles["60min"] = df_60min.tail(12)  # 최근 12개만
+
+                logging.info(f"집계 완료 - 5분봉: {len(df_5min)}개, 60분봉: {len(df_60min)}개")
+            else:
+                # 빈 DataFrame
+                empty_df = pd.DataFrame(
+                    columns=["datetime", "date", "time", "open", "high", "low", "close", "volume"])
+                minute_candles = {
+                    "60min": empty_df,
+                    "5min": empty_df,
+                    "1min": empty_df
+                }
+                logging.warning("수집된 데이터가 없습니다")
+
+        except Exception as e:
+            logging.warning(f"해외주식 분봉 데이터 수집 실패 ({symbol}): {e}")
+            empty_df = pd.DataFrame(
+                columns=["datetime", "date", "time", "open", "high", "low", "close", "volume"])
+            minute_candles = {
+                "60min": empty_df,
+                "5min": empty_df,
+                "1min": empty_df
+            }
+
         return minute_candles
 
 
