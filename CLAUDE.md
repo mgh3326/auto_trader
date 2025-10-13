@@ -147,6 +147,10 @@ Key variables in `.env` (see `env.example`):
 - Handle token expiration errors (EGW00123, EGW00121) with retry after clearing Redis token
 - Use `inquire_daily_itemchartprice()` for daily/weekly/monthly candles
 - Use `fetch_minute_candles()` for minute-level data (returns dict with 60min/5min/1min keys)
+- Use `fetch_my_stocks()` for stock holdings (supports both domestic and overseas stocks with `is_overseas` parameter)
+  - Domestic: `await kis.fetch_my_stocks(is_mock=False, is_overseas=False)`
+  - Overseas: `await kis.fetch_my_stocks(is_mock=False, is_overseas=True, exchange_code="NASD", currency_code="USD")`
+  - Convenience methods: `fetch_my_us_stocks()`, `fetch_my_overseas_stocks()`
 
 ### JSON Analysis vs Text Analysis
 - JSON analysis: Use `analyze_and_save_json()` → returns `StockAnalysisResponse` → saves to `StockAnalysisResult` table
@@ -154,10 +158,82 @@ Key variables in `.env` (see `env.example`):
 - JSON schema is defined in `app/analysis/models.py` using Pydantic
 
 ### Working with Stock Info
-Static data stored in `data/stocks_info/` and `data/coins_info/`:
-- `KRX_NAME_TO_CODE`: Maps Korean stock names to codes
-- `upbit_pairs.NAME_TO_PAIR_KR`: Maps Korean coin names to trading pairs
-- Use `await upbit_pairs.prime_upbit_constants()` before accessing Upbit coin lists
+Static data uses lazy loading pattern for efficiency:
+
+**KRX Stock Data (KOSPI/KOSDAQ):**
+- `KRX_NAME_TO_CODE`: Lazy-loaded dict mapping Korean stock names to codes
+- `KOSPI_NAME_TO_CODE`, `KOSDAQ_NAME_TO_CODE`: Individual market dicts
+- Data is loaded only when first accessed (no overhead on import)
+- Optional: Call `prime_krx_stock_data()` for explicit initialization
+- Example (synchronous):
+  ```python
+  from data.stocks_info import KRX_NAME_TO_CODE, prime_krx_stock_data
+
+  # Option 1: Implicit loading (on first access)
+  code = KRX_NAME_TO_CODE.get("삼성전자")  # "005930"
+
+  # Option 2: Explicit initialization
+  prime_krx_stock_data()  # Loads all data upfront
+  ```
+
+**US Stocks Data (NASDAQ, NYSE, AMEX):**
+- **Comprehensive Module**: `overseas_us_stocks.py` provides integrated access to all US markets
+- **Key Features**:
+  - Symbol -> Exchange mapping (NASD, NYSE, AMEX)
+  - Name (Korean/English) -> Symbol lookup
+  - Full stock information retrieval
+- **Usage for KIS API Orders**:
+  ```python
+  from data.stocks_info import get_symbol_by_name, get_exchange_by_symbol, get_stock_info
+
+  # 1. Get symbol from name
+  symbol = get_symbol_by_name("애플")  # "AAPL"
+
+  # 2. Get exchange code for KIS API
+  exchange_code = get_exchange_by_symbol(symbol)  # "NASD"
+
+  # 3. Use in KIS order API
+  # OVRS_EXCG_CD = exchange_code  # Required for overseas stock orders
+
+  # 4. Get complete stock info
+  info = get_stock_info("AAPL")
+  # Returns: {'symbol': 'AAPL', 'exchange': 'NASD', 'name_kr': '애플', 'name_en': 'APPLE INC'}
+  ```
+- **Available Dictionaries**:
+  - `US_STOCKS_NAME_TO_SYMBOL`: Name -> Symbol
+  - `US_STOCKS_SYMBOL_TO_EXCHANGE`: Symbol -> Exchange code
+  - `US_STOCKS_SYMBOL_TO_NAME_KR`: Symbol -> Korean name
+  - `US_STOCKS_SYMBOL_TO_NAME_EN`: Symbol -> English name
+- **Data Coverage**: ~11,500 stocks across NASDAQ (4,837), NYSE (2,838), AMEX (3,862)
+- **Initialization**: Call `prime_us_stocks_data()` for explicit initialization
+
+**NASDAQ-Only Data (Legacy):**
+- `NASDAQ_NAME_TO_SYMBOL`: Deprecated in favor of `US_STOCKS_NAME_TO_SYMBOL`
+- Use the US Stocks module for new code to get exchange information
+
+**Upbit Coin Data:**
+- `upbit_pairs.NAME_TO_PAIR_KR`: Maps Korean coin names to trading pairs (KRW market only)
+- `upbit_pairs.COIN_TO_NAME_KR`: Maps coin symbols to Korean names
+- `upbit_pairs.COIN_TO_NAME_EN`: Maps coin symbols to English names
+- `upbit_pairs.KRW_TRADABLE_COINS`: Set of coin symbols tradable in KRW market
+- **Important**: Must call `await upbit_pairs.prime_upbit_constants()` or `await upbit_pairs.get_upbit_maps()` before accessing data
+- Data is lazy-loaded but requires async initialization
+- Example (asynchronous):
+  ```python
+  from data.coins_info import upbit_pairs
+
+  # Required: Explicit initialization in async context
+  await upbit_pairs.prime_upbit_constants()
+
+  # Now you can access the data
+  pair = upbit_pairs.NAME_TO_PAIR_KR.get("비트코인")  # "KRW-BTC"
+  korean_name = upbit_pairs.COIN_TO_NAME_KR.get("BTC")  # "비트코인"
+  is_tradable = "BTC" in upbit_pairs.KRW_TRADABLE_COINS  # True
+
+  # Alternative: Get raw dict data
+  maps = await upbit_pairs.get_upbit_maps()
+  print(maps["COIN_TO_NAME_KR"])  # Direct dict access
+  ```
 
 ## Testing Notes
 

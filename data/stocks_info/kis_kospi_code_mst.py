@@ -150,5 +150,54 @@ def _initialize_kospi_data() -> dict[str, str]:
     return name_to_code
 
 
-# ✅ 모듈 임포트 시점에 상수 초기화
-KOSPI_NAME_TO_CODE: dict[str, str] = _initialize_kospi_data()
+# ✅ Lazy loading: 필요할 때만 초기화되는 전역 변수
+_kospi_name_to_code: dict[str, str] | None = None
+
+
+def get_kospi_name_to_code() -> dict[str, str]:
+    """
+    KOSPI 종목명-코드 매핑을 반환합니다.
+    최초 호출 시에만 초기화되며, 이후 호출에는 캐시된 데이터를 반환합니다.
+
+    Returns:
+        종목명을 키로, 종목코드를 값으로 하는 딕셔너리
+    """
+    global _kospi_name_to_code
+    if _kospi_name_to_code is None:
+        _kospi_name_to_code = _initialize_kospi_data()
+    return _kospi_name_to_code
+
+
+# 하위 호환성을 위한 속성 (lazy evaluation)
+class _LazyKOSPIDict:
+    """Lazy evaluation을 지원하는 KOSPI 딕셔너리 래퍼"""
+    def __getitem__(self, key):
+        return get_kospi_name_to_code()[key]
+
+    def __contains__(self, key):
+        return key in get_kospi_name_to_code()
+
+    def get(self, key, default=None):
+        return get_kospi_name_to_code().get(key, default)
+
+    def keys(self):
+        return get_kospi_name_to_code().keys()
+
+    def values(self):
+        return get_kospi_name_to_code().values()
+
+    def items(self):
+        return get_kospi_name_to_code().items()
+
+    def __iter__(self):
+        return iter(get_kospi_name_to_code())
+
+    def __len__(self):
+        return len(get_kospi_name_to_code())
+
+    def __repr__(self):
+        return repr(get_kospi_name_to_code())
+
+
+# 하위 호환성: 기존 코드가 KOSPI_NAME_TO_CODE를 바로 사용할 수 있도록
+KOSPI_NAME_TO_CODE = _LazyKOSPIDict()

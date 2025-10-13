@@ -7,6 +7,7 @@ import asyncio
 import pprint
 
 from app.services.kis import kis
+from data.stocks_info import KOSPI_NAME_TO_CODE, KRX_NAME_TO_CODE, NASDAQ_NAME_TO_SYMBOL, US_STOCKS_SYMBOL_TO_EXCHANGE
 
 
 async def main():
@@ -70,6 +71,7 @@ async def main():
                 print(f"   외화평가금액: ${float(stock.get('ovrs_stck_evlu_amt', 0)):,.2f}")
                 print(f"   외화평가손익: ${float(stock.get('frcr_evlu_pfls_amt', 0)):,.2f} ({stock.get('evlu_pfls_rt')}%)")
                 print("-" * 70)
+                US_STOCKS_SYMBOL_TO_EXCHANGE
 
         # 4. 전체 응답 구조 확인 (디버깅용)
         print("\n" + "=" * 70)

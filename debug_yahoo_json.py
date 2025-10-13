@@ -69,10 +69,19 @@ async def main():
             "PLTR",
             "PTIR"
         ])
-        stock_symbols = ["INTC",
+        stock_symbols.extend(["INTC",
                          "AMD",
-                         "XXRP"]
+                         "XXRP"])
+        # stock_symbols = ["UPSX","CONL","FIG","NVDL","TSM","GOOGL","VOO","MSTY","AMZN"]
+        # stock_symbols = ["ETHU","PEP"]
+        # stock_symbols = ["MSTU","UPSX","CONL","CRCL"]
+        # stock_symbols = ["SCHD","RGTX","OPEN","CRCA","MSTR"]
+        # stock_symbols = ["UPST","UNH","RGTI","MBOT","AMZN","SMR","PD","YYGH","TANH","KO","AMZU"]
+        stock_symbols.extend(
+            ["UPSX", "CONL", "CRCA"]
+        )
         stock_symbols = list(set(stock_symbols))
+        stock_symbols= ["NVDA","DUOL"]
         print(f"분석할 주식 목록: {stock_symbols}")
         print(f"총 {len(stock_symbols)}개 주식 분석 시작\n")
 

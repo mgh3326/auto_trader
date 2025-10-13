@@ -48,7 +48,7 @@ async def main():
                 # 한국 이름이 없으면 영어 이름 사용
                 english_name = upbit_pairs.COIN_TO_NAME_EN.get(currency, currency)
                 coin_names.append(english_name)
-
+        # coin_names = ["비트코인", "이더리움", "솔라나", "엑스알피(리플)"]
         if not coin_names:
             print("분석 가능한 코인이 없습니다.")
             return
