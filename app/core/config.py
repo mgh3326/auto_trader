@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     kis_app_key: str
     kis_app_secret: str
     kis_access_token: str | None = None  # 최초엔 비워두고 자동 발급
+    kis_account_no: str | None = None  # 계좌번호 (예: "12345678-01")
     # Telegram
     telegram_token: str
     telegram_chat_ids_str: str = ""

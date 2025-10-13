@@ -25,6 +25,11 @@ DAILY_ITEMCHARTPRICE_TR = "FHKST03010100"  # (일봉·주식·실전/모의 공�
 MINUTE_CHART_URL = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
 MINUTE_CHART_TR = "FHKST03010200"  # 분봉 조회 TR ID
 
+# 주식잔고 조회 관련 URL 및 TR ID 추가
+BALANCE_URL = "/uapi/domestic-stock/v1/trading/inquire-balance"
+BALANCE_TR = "TTTC8434R"  # 실전투자 주식잔고조회
+BALANCE_TR_MOCK = "VTTC8434R"  # 모의투자 주식잔고조회
+
 
 class KISClient:
     def __init__(self):
@@ -495,6 +500,90 @@ class KISClient:
         
         # 원본 컬럼 순서로 재정렬
         return df_complete[['datetime', 'date', 'time', 'open', 'high', 'low', 'close', 'volume', 'value']]
+
+    async def fetch_my_stocks(self, is_mock: bool = False) -> list[dict]:
+        """
+        보유 주식 목록 조회 (Upbit의 fetch_my_coins와 유사한 기능)
+
+        Args:
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            보유 주식 목록 (list of dict)
+            각 항목은 다음 정보를 포함:
+            - pdno: 종목코드
+            - prdt_name: 종목명
+            - hldg_qty: 보유수량
+            - ord_psbl_qty: 주문가능수량
+            - pchs_avg_pric: 매입평균가격
+            - pchs_amt: 매입금액
+            - prpr: 현재가
+            - evlu_amt: 평가금액
+            - evlu_pfls_amt: 평가손익금액
+            - evlu_pfls_rt: 평가손익율
+            - evlu_erng_rt: 평가수익률
+        """
+        await self._ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다. 계좌번호를 .env 파일에 추가해주세요.")
+
+        # 계좌번호를 CANO(앞 8자리)와 ACNT_PRDT_CD(뒤 2자리)로 분리
+        # 형식: "12345678-01" 또는 "1234567801"
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+
+        cano = account_no[:8]  # 계좌번호 앞 8자리
+        acnt_prdt_cd = account_no[8:10]  # 계좌상품코드 뒤 2자리
+
+        tr_id = BALANCE_TR_MOCK if is_mock else BALANCE_TR
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+
+        params = {
+            "CANO": cano,  # 계좌번호 앞 8자리
+            "ACNT_PRDT_CD": acnt_prdt_cd,  # 계좌상품코드 뒤 2자리
+            "AFHR_FLPR_YN": "N",  # 시간외단일가여부
+            "OFL_YN": "",  # 오프라인여부
+            "INQR_DVSN": "02",  # 조회구분(01:대출일별, 02:종목별)
+            "UNPR_DVSN": "01",  # 단가구분(01:기본, 02:손익단가)
+            "FUND_STTL_ICLD_YN": "N",  # 펀드결제분포함여부
+            "FNCG_AMT_AUTO_RDPT_YN": "N",  # 융자금액자동상환여부
+            "PRCS_DVSN": "01",  # 처리구분(00:전일매매포함, 01:전일매매미포함)
+            "CTX_AREA_FK100": "",  # 연속조회검색조건100
+            "CTX_AREA_NK100": "",  # 연속조회키100
+        }
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(
+                f"{BASE}{BALANCE_URL}",
+                headers=hdr,
+                params=params,
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:  # 토큰 만료 또는 유효하지 않은 토큰
+                # Redis에서 토큰 삭제 후 새로 발급
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                # 재시도 1회
+                return await self.fetch_my_stocks(is_mock)
+            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+
+        # output1: 종목별 보유 내역
+        stocks = js.get("output1", [])
+
+        # 보유수량이 0인 종목은 제외 (실제 보유 중인 종목만 반환)
+        stocks = [stock for stock in stocks if int(stock.get("hldg_qty", 0)) > 0]
+
+        return stocks
 
     async def fetch_minute_candles(
         self,
