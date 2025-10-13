@@ -9,7 +9,7 @@ import pandas as pd
 from pandas import DataFrame
 
 from app.core.config import settings
-from app.services.token_cache import load_token, save_token
+from app.services.redis_token_manager import redis_token_manager
 
 BASE = "https://openapi.koreainvestment.com:9443"
 VOL_URL = "/uapi/domestic-stock/v1/quotations/volume-rank"
@@ -34,10 +34,11 @@ class KISClient:
             "tr_id": "FHPST01710000",
             "custtype": "P",
         }
-        # ① 시작할 때 캐시 로드
-        settings.kis_access_token = load_token()
+        # Redis 기반 토큰 관리 사용
+        self._token_manager = redis_token_manager
 
     async def _fetch_token(self) -> str:
+        """KIS API에서 새 토큰 발급"""
         async with httpx.AsyncClient() as cli:
             r = await cli.post(
                 f"{BASE}/oauth2/token",
@@ -48,15 +49,30 @@ class KISClient:
                 },
                 timeout=5,
             )
-        token = r.json()["access_token"]
-        save_token(token)  # ② 디스크 캐시 갱신
-        logging.info("KIS 새 토큰 발급 & 캐시")
-        return token
+        response = r.json()
+        access_token = response["access_token"]
+        expires_in = response.get("expires_in", 3600)  # 기본 1시간
+        
+        logging.info("KIS 새 토큰 발급 완료")
+        return access_token, expires_in
 
     async def _ensure_token(self):
-        if settings.kis_access_token:  # 캐시 유효
+        """Redis에서 토큰을 가져오거나 새로 발급"""
+        # Redis에서 토큰 확인
+        token = await self._token_manager.get_token()
+        if token:
+            settings.kis_access_token = token
+            logging.info(f"Redis에서 토큰 사용: {token[:10]}...")
             return
-        settings.kis_access_token = await self._fetch_token()
+        
+        # 토큰이 없거나 만료된 경우 새로 발급 (분산 락 사용)
+        async def token_fetcher():
+            access_token, expires_in = await self._fetch_token()
+            logging.info(f"새 토큰 발급: {access_token[:10]}... (만료: {expires_in}초)")
+            return access_token, expires_in
+        
+        settings.kis_access_token = await self._token_manager.refresh_token_with_lock(token_fetcher)
+        logging.info(f"토큰 설정 완료: {settings.kis_access_token[:10]}...")
 
     async def volume_rank(self):
         await self._ensure_token()
@@ -87,7 +103,14 @@ class KISClient:
         if js["rt_cd"] == "0":
             return js["output"]
         if js["msg_cd"] == "EGW00123":  # 토큰 만료
-            settings.kis_access_token = await self._fetch_token()
+            # Redis에서 토큰 삭제 후 새로 발급
+            await self._token_manager.clear_token()
+            await self._ensure_token()
+            return await self.volume_rank()
+        elif js["msg_cd"] == "EGW00121":  # 유효하지 않은 토큰
+            # Redis에서 토큰 삭제 후 새로 발급
+            await self._token_manager.clear_token()
+            await self._ensure_token()
             return await self.volume_rank()
         raise RuntimeError(js["msg1"])
 
@@ -115,6 +138,12 @@ class KISClient:
             r = await cli.get(f"{BASE}{PRICE_URL}", headers=hdr, params=params)
         js = r.json()
         if js["rt_cd"] != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:  # 토큰 만료 또는 유효하지 않은 토큰
+                # Redis에서 토큰 삭제 후 새로 발급
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                # 재시도 1회
+                return await self.inquire_price(code, market)
             raise RuntimeError(f'{js["msg_cd"]} {js["msg1"]}')
         out = js["output"]  # 단일 dict
         trade_date_str = out.get("stck_bsop_date")  # 예: '20250805'
@@ -166,6 +195,12 @@ class KISClient:
             r = await cli.get(f"{BASE}{PRICE_URL}", headers=hdr, params=params)
         js = r.json()
         if js["rt_cd"] != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:  # 토큰 만료 또는 유효하지 않은 토큰
+                # Redis에서 토큰 삭제 후 새로 발급
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                # 재시도 1회
+                return await self.fetch_fundamental_info(code, market)
             raise RuntimeError(f'{js["msg_cd"]} {js["msg1"]}')
         out = js["output"]  # 단일 dict
 
@@ -230,8 +265,10 @@ class KISClient:
             js = r.json()
 
             if js.get("rt_cd") != "0":
-                if js.get("msg_cd") == "EGW00123":  # 토큰 만료
-                    settings.kis_access_token = await self._fetch_token()
+                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:  # 토큰 만료 또는 유효하지 않은 토큰
+                    # Redis에서 토큰 삭제 후 새로 발급
+                    await self._token_manager.clear_token()
+                    await self._ensure_token()
                     continue
                 raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
 
