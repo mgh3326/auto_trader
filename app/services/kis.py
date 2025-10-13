@@ -30,6 +30,11 @@ BALANCE_URL = "/uapi/domestic-stock/v1/trading/inquire-balance"
 BALANCE_TR = "TTTC8434R"  # 실전투자 주식잔고조회
 BALANCE_TR_MOCK = "VTTC8434R"  # 모의투자 주식잔고조회
 
+# 해외주식 잔고조회 관련 URL 및 TR ID 추가
+OVERSEAS_BALANCE_URL = "/uapi/overseas-stock/v1/trading/inquire-balance"
+OVERSEAS_BALANCE_TR = "TTTS3012R"  # 실전투자 해외주식 잔고조회
+OVERSEAS_BALANCE_TR_MOCK = "VTTS3012R"  # 모의투자 해외주식 잔고조회
+
 
 class KISClient:
     def __init__(self):
@@ -501,16 +506,40 @@ class KISClient:
         # 원본 컬럼 순서로 재정렬
         return df_complete[['datetime', 'date', 'time', 'open', 'high', 'low', 'close', 'volume', 'value']]
 
-    async def fetch_my_stocks(self, is_mock: bool = False) -> list[dict]:
+    async def fetch_my_stocks(
+        self,
+        is_mock: bool = False,
+        is_overseas: bool = False,
+        exchange_code: str = "NASD",
+        currency_code: str = "USD"
+    ) -> list[dict]:
         """
         보유 주식 목록 조회 (Upbit의 fetch_my_coins와 유사한 기능)
 
         Args:
             is_mock: True면 모의투자, False면 실전투자
+            is_overseas: True면 해외주식, False면 국내주식
+            exchange_code: 해외주식 거래소 코드 (is_overseas=True일 때만 사용)
+                - NASD: 나스닥
+                - NYSE: 뉴욕
+                - AMEX: 아멕스
+                - SEHK: 홍콩
+                - SHAA: 중국상해
+                - SZAA: 중국심천
+                - TKSE: 일본
+                - HASE: 베트남하노이
+                - VNSE: 베트남호치민
+            currency_code: 해외주식 결제통화코드 (is_overseas=True일 때만 사용)
+                - USD: 미국 달러
+                - HKD: 홍콩 달러
+                - CNY: 위안화
+                - JPY: 엔화
+                - VND: 베트남 동
 
         Returns:
             보유 주식 목록 (list of dict)
-            각 항목은 다음 정보를 포함:
+
+            국내주식 각 항목:
             - pdno: 종목코드
             - prdt_name: 종목명
             - hldg_qty: 보유수량
@@ -521,7 +550,17 @@ class KISClient:
             - evlu_amt: 평가금액
             - evlu_pfls_amt: 평가손익금액
             - evlu_pfls_rt: 평가손익율
-            - evlu_erng_rt: 평가수익률
+
+            해외주식 각 항목:
+            - ovrs_pdno: 해외종목코드
+            - ovrs_item_name: 종목명
+            - frcr_pchs_amt1: 외화매입금액
+            - ovrs_cblc_qty: 해외잔고수량
+            - ord_psbl_qty: 주문가능수량
+            - frcr_buy_amt_smtl1: 외화매수금액합계
+            - ovrs_stck_evlu_amt: 해외주식평가금액
+            - frcr_evlu_pfls_amt: 외화평가손익금액
+            - evlu_pfls_rt: 평가손익율
         """
         await self._ensure_token()
 
@@ -538,30 +577,46 @@ class KISClient:
         cano = account_no[:8]  # 계좌번호 앞 8자리
         acnt_prdt_cd = account_no[8:10]  # 계좌상품코드 뒤 2자리
 
-        tr_id = BALANCE_TR_MOCK if is_mock else BALANCE_TR
+        if is_overseas:
+            # 해외주식 잔고조회
+            tr_id = OVERSEAS_BALANCE_TR_MOCK if is_mock else OVERSEAS_BALANCE_TR
+            url = OVERSEAS_BALANCE_URL
+
+            params = {
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
+                "OVRS_EXCG_CD": exchange_code,  # 해외거래소코드
+                "TR_CRCY_CD": currency_code,  # 거래통화코드
+                "CTX_AREA_FK200": "",  # 연속조회검색조건200
+                "CTX_AREA_NK200": "",  # 연속조회키200
+            }
+        else:
+            # 국내주식 잔고조회
+            tr_id = BALANCE_TR_MOCK if is_mock else BALANCE_TR
+            url = BALANCE_URL
+
+            params = {
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
+                "AFHR_FLPR_YN": "N",  # 시간외단일가여부
+                "OFL_YN": "",  # 오프라인여부
+                "INQR_DVSN": "02",  # 조회구분(01:대출일별, 02:종목별)
+                "UNPR_DVSN": "01",  # 단가구분(01:기본, 02:손익단가)
+                "FUND_STTL_ICLD_YN": "N",  # 펀드결제분포함여부
+                "FNCG_AMT_AUTO_RDPT_YN": "N",  # 융자금액자동상환여부
+                "PRCS_DVSN": "01",  # 처리구분(00:전일매매포함, 01:전일매매미포함)
+                "CTX_AREA_FK100": "",  # 연속조회검색조건100
+                "CTX_AREA_NK100": "",  # 연속조회키100
+            }
 
         hdr = self._hdr_base | {
             "authorization": f"Bearer {settings.kis_access_token}",
             "tr_id": tr_id,
         }
 
-        params = {
-            "CANO": cano,  # 계좌번호 앞 8자리
-            "ACNT_PRDT_CD": acnt_prdt_cd,  # 계좌상품코드 뒤 2자리
-            "AFHR_FLPR_YN": "N",  # 시간외단일가여부
-            "OFL_YN": "",  # 오프라인여부
-            "INQR_DVSN": "02",  # 조회구분(01:대출일별, 02:종목별)
-            "UNPR_DVSN": "01",  # 단가구분(01:기본, 02:손익단가)
-            "FUND_STTL_ICLD_YN": "N",  # 펀드결제분포함여부
-            "FNCG_AMT_AUTO_RDPT_YN": "N",  # 융자금액자동상환여부
-            "PRCS_DVSN": "01",  # 처리구분(00:전일매매포함, 01:전일매매미포함)
-            "CTX_AREA_FK100": "",  # 연속조회검색조건100
-            "CTX_AREA_NK100": "",  # 연속조회키100
-        }
-
         async with httpx.AsyncClient(timeout=5) as cli:
             r = await cli.get(
-                f"{BASE}{BALANCE_URL}",
+                f"{BASE}{url}",
                 headers=hdr,
                 params=params,
             )
@@ -574,16 +629,61 @@ class KISClient:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 # 재시도 1회
-                return await self.fetch_my_stocks(is_mock)
+                return await self.fetch_my_stocks(is_mock, is_overseas, exchange_code, currency_code)
             raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
 
         # output1: 종목별 보유 내역
         stocks = js.get("output1", [])
 
-        # 보유수량이 0인 종목은 제외 (실제 보유 중인 종목만 반환)
-        stocks = [stock for stock in stocks if int(stock.get("hldg_qty", 0)) > 0]
+        if is_overseas:
+            # 해외주식: 보유수량이 0인 종목 제외
+            stocks = [stock for stock in stocks if int(stock.get("ovrs_cblc_qty", 0)) > 0]
+        else:
+            # 국내주식: 보유수량이 0인 종목 제외
+            stocks = [stock for stock in stocks if int(stock.get("hldg_qty", 0)) > 0]
 
         return stocks
+
+    async def fetch_my_overseas_stocks(
+        self,
+        is_mock: bool = False,
+        exchange_code: str = "NASD",
+        currency_code: str = "USD"
+    ) -> list[dict]:
+        """
+        해외 보유 주식 목록 조회 편의 메서드
+
+        Args:
+            is_mock: True면 모의투자, False면 실전투자
+            exchange_code: 거래소 코드 (NASD, NYSE, AMEX, SEHK, SHAA, SZAA, TKSE, HASE, VNSE)
+            currency_code: 결제통화코드 (USD, HKD, CNY, JPY, VND)
+
+        Returns:
+            해외 보유 주식 목록
+        """
+        return await self.fetch_my_stocks(
+            is_mock=is_mock,
+            is_overseas=True,
+            exchange_code=exchange_code,
+            currency_code=currency_code
+        )
+
+    async def fetch_my_us_stocks(self, is_mock: bool = False, exchange: str = "NASD") -> list[dict]:
+        """
+        미국 보유 주식 목록 조회 편의 메서드
+
+        Args:
+            is_mock: True면 모의투자, False면 실전투자
+            exchange: 거래소 (NASD: 나스닥, NYSE: 뉴욕, AMEX: 아멕스)
+
+        Returns:
+            미국 보유 주식 목록
+        """
+        return await self.fetch_my_overseas_stocks(
+            is_mock=is_mock,
+            exchange_code=exchange,
+            currency_code="USD"
+        )
 
     async def fetch_minute_candles(
         self,
