@@ -45,6 +45,34 @@ OVERSEAS_MINUTE_CHART_TR = "FHKST03010200"  # 해외주식 분봉조회 (v1_해�
 OVERSEAS_PRICE_URL = "/uapi/overseas-price/v1/quotations/price"
 OVERSEAS_PRICE_TR = "HHDFS00000300"  # 해외주식 현재가 조회
 
+# 해외주식 거래 관련 URL 및 TR ID
+OVERSEAS_MARGIN_URL = "/uapi/overseas-stock/v1/trading/foreign-margin"
+OVERSEAS_MARGIN_TR = "TTTC2101R"  # 실전투자 해외증거금 통화별조회
+OVERSEAS_MARGIN_TR_MOCK = "VTTS2101R"  # 모의투자 해외증거금 통화별조회 (추정)
+
+# 통합증거금 조회 (원화 + 외화 예수금)
+INTEGRATED_MARGIN_URL = "/uapi/domestic-stock/v1/trading/intgr-margin"
+INTEGRATED_MARGIN_TR = "TTTC0869R"  # 실전투자 통합증거금 조회
+INTEGRATED_MARGIN_TR_MOCK = "VTTC0869R"  # 모의투자 통합증거금 조회
+
+OVERSEAS_BUYABLE_AMOUNT_URL = "/uapi/overseas-stock/v1/trading/inquire-psamount"
+OVERSEAS_BUYABLE_AMOUNT_TR = "TTTS3007R"  # 실전투자 해외주식 매수가능금액조회
+OVERSEAS_BUYABLE_AMOUNT_TR_MOCK = "VTTS3007R"  # 모의투자 해외주식 매수가능금액조회
+
+OVERSEAS_ORDER_URL = "/uapi/overseas-stock/v1/trading/order"
+OVERSEAS_ORDER_BUY_TR = "TTTT1002U"  # 실전투자 해외주식 매수주문
+OVERSEAS_ORDER_BUY_TR_MOCK = "VTTT1002U"  # 모의투자 해외주식 매수주문
+OVERSEAS_ORDER_SELL_TR = "TTTT1006U"  # 실전투자 해외주식 매도주문
+OVERSEAS_ORDER_SELL_TR_MOCK = "VTTT1006U"  # 모의투자 해외주식 매도주문
+
+# 해외주식 주문 조회 및 취소
+OVERSEAS_ORDER_INQUIRY_URL = "/uapi/overseas-stock/v1/trading/inquire-nccs"
+OVERSEAS_ORDER_INQUIRY_TR = "TTTS3018R"  # 해외주식 미체결내역 조회 (실전/모의 공통)
+
+OVERSEAS_ORDER_CANCEL_URL = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
+OVERSEAS_ORDER_CANCEL_TR = "TTTT1004U"  # 실전투자 해외주식 정정취소주문
+OVERSEAS_ORDER_CANCEL_TR_MOCK = "VTTT1004U"  # 모의투자 해외주식 정정취소주문
+
 
 class KISClient:
     def __init__(self):
@@ -684,7 +712,7 @@ class KISClient:
 
         Args:
             is_mock: True면 모의투자, False면 실전투자
-            exchange: 거래소 (NASD: 나스닥, NYSE: 뉴욕, AMEX: 아멕스)
+            exchange: 거래소 (NASD : 미국전체, NAS : 나스닥, NYSE : 뉴욕, AMEX : 아멕스)
 
         Returns:
             미국 보유 주식 목록
@@ -1200,6 +1228,679 @@ class KISClient:
             }
 
         return minute_candles
+
+    async def inquire_integrated_margin(
+        self,
+        is_mock: bool = False,
+        cma_evlu_amt_icld_yn: str = "N",
+        wcrc_frcr_dvsn_cd: str = "01",
+        fwex_ctrt_frcr_dvsn_cd: str = "01",
+    ) -> dict:
+        """
+        통합증거금 조회 (원화 + 외화 예수금)
+
+        원화와 모든 외화(USD, JPY, HKD 등)의 예수금을 한 번에 조회합니다.
+
+        Args:
+            is_mock: True면 모의투자, False면 실전투자
+            cma_evlu_amt_icld_yn: CMA평가금액포함여부 (Y:포함, N:미포함, 기본값:N)
+            wcrc_frcr_dvsn_cd: 원화외화구분코드 (01:외화기준, 02:원화기준, 기본값:01)
+            fwex_ctrt_frcr_dvsn_cd: 선도환계약외화구분코드 (01:외화기준, 02:원화기준, 기본값:01)
+
+        Returns:
+            통합 증거금 정보 딕셔너리
+            - dnca_tot_amt: 예수금총액 (원화)
+            - nxdy_excc_amt: 익일정산금액 (원화)
+            - prvs_rcdl_excc_amt: 가수도정산금액 (원화)
+            - cma_evlu_amt: CMA평가금액 (원화)
+            - bfdy_buy_amt: 전일매수금액 (원화)
+            - thdt_buy_amt: 금일매수금액 (원화)
+            - nxdy_auto_rdpt_amt: 익일자동상환금액 (원화)
+            - d2_auto_rdpt_amt: D+2자동상환금액 (원화)
+            - currencies: 통화별 정보 리스트
+                - crcy_cd: 통화코드 (KRW, USD, JPY, HKD, CNY, VND 등)
+                - frcr_evlu_tota: 외화평가금액
+                - frcr_dncl_amt_2: 외화예수금액
+        """
+        await self._ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        tr_id = INTEGRATED_MARGIN_TR_MOCK if is_mock else INTEGRATED_MARGIN_TR
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "CMA_EVLU_AMT_ICLD_YN": cma_evlu_amt_icld_yn,
+            "WCRC_FRCR_DVSN_CD": wcrc_frcr_dvsn_cd,
+            "FWEX_CTRT_FRCR_DVSN_CD": fwex_ctrt_frcr_dvsn_cd,
+        }
+
+        logging.info(f"통합증거금 조회 (원화 + 외화)")
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(
+                f"{BASE}{INTEGRATED_MARGIN_URL}",
+                headers=hdr,
+                params=params
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.inquire_integrated_margin(is_mock)
+            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+
+        output1 = js.get("output1", {})  # 원화 정보
+        output2 = js.get("output2", [])  # 통화별 정보
+
+        # 금액 값을 float으로 안전하게 변환
+        def safe_float(val, default=0.0):
+            if val == '' or val is None:
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        # 원화 정보
+        result = {
+            "dnca_tot_amt": safe_float(output1.get("dnca_tot_amt")),  # 예수금총액 (원화)
+            "nxdy_excc_amt": safe_float(output1.get("nxdy_excc_amt")),  # 익일정산금액
+            "prvs_rcdl_excc_amt": safe_float(output1.get("prvs_rcdl_excc_amt")),  # 가수도정산금액
+            "cma_evlu_amt": safe_float(output1.get("cma_evlu_amt")),  # CMA평가금액
+            "bfdy_buy_amt": safe_float(output1.get("bfdy_buy_amt")),  # 전일매수금액
+            "thdt_buy_amt": safe_float(output1.get("thdt_buy_amt")),  # 금일매수금액
+            "nxdy_auto_rdpt_amt": safe_float(output1.get("nxdy_auto_rdpt_amt")),  # 익일자동상환금액
+            "d2_auto_rdpt_amt": safe_float(output1.get("d2_auto_rdpt_amt")),  # D+2자동상환금액
+            "currencies": []
+        }
+
+        # 통화별 정보 (원화 포함)
+        for item in output2:
+            currency_info = {
+                "crcy_cd": item.get("crcy_cd"),  # 통화코드
+                "frcr_evlu_tota": safe_float(item.get("frcr_evlu_tota")),  # 외화평가금액
+                "frcr_dncl_amt_2": safe_float(item.get("frcr_dncl_amt_2")),  # 외화예수금액
+            }
+            result["currencies"].append(currency_info)
+
+            logging.info(f"{currency_info['crcy_cd']}: 예수금 {currency_info['frcr_dncl_amt_2']:,.2f}")
+
+        # 원화와 주요 통화 정보를 빠르게 찾을 수 있도록 추가
+        krw = next((c for c in result["currencies"] if c["crcy_cd"] == "KRW"), None)
+        usd = next((c for c in result["currencies"] if c["crcy_cd"] == "USD"), None)
+
+        if krw:
+            result["krw_balance"] = krw["frcr_dncl_amt_2"]
+            logging.info(f"원화 예수금: {result['krw_balance']:,.0f}원")
+
+        if usd:
+            result["usd_balance"] = usd["frcr_dncl_amt_2"]
+            logging.info(f"달러 예수금: ${result['usd_balance']:,.2f}")
+
+        return result
+
+    async def inquire_overseas_margin(
+        self,
+        is_mock: bool = False,
+    ) -> list[dict]:
+        """
+        해외증거금 통화별 조회 (모든 통화 보유 현금 확인)
+
+        Args:
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            통화별 증거금 정보 리스트
+            각 항목:
+            - crcy_cd: 통화코드 (USD, HKD, JPY 등)
+            - frcr_dncl_amt_2: 외화예수금액 (보유현금)
+            - frcr_ord_psbl_amt: 외화주문가능금액
+            - frcr_buy_amt_smtl: 외화매수금액합계
+            - tot_evlu_pfls_amt: 총평가손익금액
+        """
+        await self._ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        tr_id = OVERSEAS_MARGIN_TR_MOCK if is_mock else OVERSEAS_MARGIN_TR
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+        }
+
+        logging.info(f"해외증거금 통화별 조회")
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(
+                f"{BASE}{OVERSEAS_MARGIN_URL}",
+                headers=hdr,
+                params=params
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.inquire_overseas_margin(is_mock)
+            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+
+        output = js.get("output", [])
+
+        # 금액 값을 float으로 안전하게 변환
+        def safe_float(val, default=0.0):
+            if val == '' or val is None:
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        results = []
+        for item in output:
+            result = {
+                "crcy_cd": item.get("crcy_cd"),  # 통화코드
+                "frcr_dncl_amt_2": safe_float(item.get("frcr_dncl_amt_2")),  # 외화예수금액 (보유현금)
+                "frcr_ord_psbl_amt": safe_float(item.get("frcr_ord_psbl_amt")),  # 외화주문가능금액
+                "frcr_buy_amt_smtl": safe_float(item.get("frcr_buy_amt_smtl")),  # 외화매수금액합계
+                "tot_evlu_pfls_amt": safe_float(item.get("tot_evlu_pfls_amt")),  # 총평가손익금액
+                "ovrs_tot_pfls": safe_float(item.get("ovrs_tot_pfls")),  # 해외총손익금액
+            }
+            results.append(result)
+            logging.info(f"{result['crcy_cd']}: 보유 {result['frcr_dncl_amt_2']:.2f}, 주문가능 {result['frcr_ord_psbl_amt']:.2f}")
+
+        return results
+
+    async def inquire_overseas_buyable_amount(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD",
+        price: float = 0.0,
+        is_mock: bool = False,
+    ) -> dict:
+        """
+        해외주식 매수가능금액 조회
+
+        Args:
+            symbol: 종목 심볼 (예: "AAPL")
+            exchange_code: 거래소 코드 (NASD/NYSE/AMEX 등)
+            price: 매수 희망 가격 (0이면 시장가)
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            매수가능금액 정보 딕셔너리
+            - ord_psbl_frcr_amt: 주문가능외화금액
+            - max_ord_psbl_qty: 최대주문가능수량
+            - ovrs_exchg: 해외거래소명
+        """
+        await self._ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        # KIS API는 거래소 코드를 3자리로 사용
+        excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        excd = excd_map.get(exchange_code, exchange_code[:3])
+
+        tr_id = OVERSEAS_BUYABLE_AMOUNT_TR_MOCK if is_mock else OVERSEAS_BUYABLE_AMOUNT_TR
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "OVRS_EXCG_CD": excd,  # 해외거래소코드 (3자리)
+            "OVRS_ORD_UNPR": str(price),  # 해외주문단가 (0: 시장가)
+            "ITEM_CD": symbol,  # 종목코드
+        }
+
+        logging.info(f"해외주식 매수가능금액 조회 - symbol: {symbol}, exchange: {excd}, price: {price}")
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(
+                f"{BASE}{OVERSEAS_BUYABLE_AMOUNT_URL}",
+                headers=hdr,
+                params=params
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.inquire_overseas_buyable_amount(symbol, exchange_code, price, is_mock)
+            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+
+        output = js.get("output", {})
+
+        result = {
+            "ord_psbl_frcr_amt": output.get("ord_psbl_frcr_amt"),  # 주문가능외화금액
+            "max_ord_psbl_qty": output.get("max_ord_psbl_qty"),  # 최대주문가능수량
+            "ovrs_exchg": output.get("ovrs_exchg_cd_name"),  # 해외거래소명
+            "currency": output.get("tr_crcy_cd"),  # 거래통화코드
+        }
+
+        logging.info(f"매수가능금액: {result['ord_psbl_frcr_amt']} {result.get('currency', 'USD')}, 최대수량: {result['max_ord_psbl_qty']}주")
+
+        return result
+
+    async def order_overseas_stock(
+        self,
+        symbol: str,
+        exchange_code: str,
+        order_type: str,  # "buy" 또는 "sell"
+        quantity: int,
+        price: float = 0.0,  # 0이면 시장가
+        is_mock: bool = False,
+    ) -> dict:
+        """
+        해외주식 주문 (매수/매도)
+
+        Args:
+            symbol: 종목 심볼 (예: "AAPL")
+            exchange_code: 거래소 코드 (NASD/NYSE/AMEX 등)
+            order_type: "buy"(매수) 또는 "sell"(매도)
+            quantity: 주문수량
+            price: 주문가격 (0이면 시장가)
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            주문 결과 딕셔너리
+            - odno: 주문번호
+            - ord_tmd: 주문시각
+        """
+        await self._ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        # KIS API는 거래소 코드를 3자리로 사용
+        # excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        # excd = excd_map.get(exchange_code, exchange_code[:3])
+        excd = exchange_code
+        # TR_ID 선택
+        if order_type.lower() == "buy":
+            tr_id = OVERSEAS_ORDER_BUY_TR_MOCK if is_mock else OVERSEAS_ORDER_BUY_TR
+            order_type_korean = "매수"
+        elif order_type.lower() == "sell":
+            tr_id = OVERSEAS_ORDER_SELL_TR_MOCK if is_mock else OVERSEAS_ORDER_SELL_TR
+            order_type_korean = "매도"
+        else:
+            raise ValueError(f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}")
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+
+        # 주문 구분: 00(지정가), 01(시장가)
+        ord_dvsn = "01" if price == 0 else "00"
+
+        body = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "OVRS_EXCG_CD": excd,  # 해외거래소코드 (3자리)
+            "PDNO": symbol,  # 상품번호(종목코드)
+            "ORD_DVSN": ord_dvsn,  # 주문구분 (00:지정가, 01:시장가)
+            "ORD_QTY": str(quantity),  # 주문수량
+            "OVRS_ORD_UNPR": str(price),  # 해외주문단가 (시장가일 경우 0)
+            "ORD_SVR_DVSN_CD": "0",  # 주문서버구분코드 (0:해외)
+        }
+
+        logging.info(f"해외주식 {order_type_korean} 주문 - symbol: {symbol}, exchange: {excd}, "
+                    f"수량: {quantity}주, 가격: {price if price > 0 else '시장가'}")
+
+        async with httpx.AsyncClient(timeout=10) as cli:
+            r = await cli.post(
+                f"{BASE}{OVERSEAS_ORDER_URL}",
+                headers=hdr,
+                json=body
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.order_overseas_stock(symbol, exchange_code, order_type, quantity, price, is_mock)
+
+            error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+            logging.error(f"해외주식 주문 실패: {error_msg}")
+            raise RuntimeError(error_msg)
+
+        output = js.get("output", {})
+
+        result = {
+            "odno": output.get("ODNO"),  # 주문번호
+            "ord_tmd": output.get("ORD_TMD"),  # 주문시각
+            "msg": js.get("msg1"),  # 응답메시지
+        }
+
+        logging.info(f"{order_type_korean} 주문 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}")
+
+        return result
+
+    async def buy_overseas_stock(
+        self,
+        symbol: str,
+        exchange_code: str,
+        quantity: int,
+        price: float = 0.0,
+        is_mock: bool = False,
+    ) -> dict:
+        """
+        해외주식 매수 주문 편의 메서드
+
+        Args:
+            symbol: 종목 심볼
+            exchange_code: 거래소 코드
+            quantity: 매수 수량
+            price: 매수 가격 (0이면 시장가)
+            is_mock: 모의투자 여부
+
+        Returns:
+            주문 결과
+        """
+        return await self.order_overseas_stock(symbol, exchange_code, "buy", quantity, price, is_mock)
+
+    async def sell_overseas_stock(
+        self,
+        symbol: str,
+        exchange_code: str,
+        quantity: int,
+        price: float = 0.0,
+        is_mock: bool = False,
+    ) -> dict:
+        """
+        해외주식 매도 주문 편의 메서드
+
+        Args:
+            symbol: 종목 심볼
+            exchange_code: 거래소 코드
+            quantity: 매도 수량
+            price: 매도 가격 (0이면 시장가)
+            is_mock: 모의투자 여부
+
+        Returns:
+            주문 결과
+        """
+        return await self.order_overseas_stock(symbol, exchange_code, "sell", quantity, price, is_mock)
+
+    async def inquire_overseas_orders(
+        self,
+        exchange_code: str = "NASD",
+        is_mock: bool = False,
+    ) -> list[dict]:
+        """
+        해외주식 미체결 주문 조회 (모든 페이지 조회)
+
+        Args:
+            exchange_code: 거래소 코드 (NASD/NYSE/AMEX 등)
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            미체결 주문 목록 (list of dict)
+            각 항목:
+            - odno: 주문번호
+            - orgn_odno: 원주문번호
+            - sll_buy_dvsn_cd: 매도매수구분코드 (01:매도, 02:매수)
+            - sll_buy_dvsn_cd_name: 매도매수구분명
+            - rvse_cncl_dvsn: 정정취소구분
+            - rvse_cncl_dvsn_name: 정정취소구분명
+            - pdno: 상품번호(종목코드)
+            - prdt_name: 상품명
+            - ft_ord_qty: 주문수량
+            - ft_ord_unpr3: 주문단가
+            - ft_ccld_qty: 체결수량
+            - nccs_qty: 미체결수량
+            - ft_ccld_unpr3: 체결단가
+            - ft_ccld_amt3: 체결금액
+            - prcs_stat_name: 처리상태명
+            - rjct_rson: 거부사유
+            - ord_dt: 주문일자
+            - ord_tmd: 주문시각
+        """
+        await self._ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        # 미체결 조회는 실전/모의 구분 없이 동일한 TR_ID 사용
+        tr_id = OVERSEAS_ORDER_INQUIRY_TR
+
+        all_orders = []
+        ctx_area_fk200 = ""
+        ctx_area_nk200 = ""
+        tr_cont = ""  # 연속조회 구분: 최초 조회 시 공백, 연속 조회 시 "N"
+        page = 1
+        max_pages = 10  # 최대 페이지 수 제한
+
+        logging.info(f"해외주식 미체결 주문 조회 시작 - exchange: {exchange_code}")
+
+        while page <= max_pages:
+            hdr = self._hdr_base | {
+                "authorization": f"Bearer {settings.kis_access_token}",
+                "tr_id": tr_id,
+                "tr_cont": tr_cont,  # 연속조회 여부 (첫 조회: "", 이후: "N")
+            }
+
+            params = {
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
+                "OVRS_EXCG_CD": exchange_code,  # 해외거래소코드 (NASD는 미국 전체 조회)
+                "SORT_SQN": "DS",  # 정렬순서 (DS:정순, AS:역순)
+                "CTX_AREA_FK200": ctx_area_fk200,  # 연속조회검색조건200
+                "CTX_AREA_NK200": ctx_area_nk200,  # 연속조회키200
+            }
+
+            logging.info(f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK200: '{ctx_area_nk200[:20] if ctx_area_nk200 else 'empty'}...')")
+
+            async with httpx.AsyncClient(timeout=10) as cli:
+                r = await cli.get(
+                    f"{BASE}{OVERSEAS_ORDER_INQUIRY_URL}",
+                    headers=hdr,
+                    params=params
+                )
+
+            js = r.json()
+
+            if js.get("rt_cd") != "0":
+                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                    await self._token_manager.clear_token()
+                    await self._ensure_token()
+                    continue
+
+                error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+                logging.error(f"미체결 주문 조회 실패: {error_msg}")
+                raise RuntimeError(error_msg)
+
+            # output: 미체결 주문 목록
+            orders = js.get("output", [])
+
+            if not orders:
+                logging.info(f"페이지 {page}에서 더 이상 주문이 없음")
+                break
+
+            all_orders.extend(orders)
+            logging.info(f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)")
+
+            # 다음 페이지 키 확인
+            new_ctx_area_fk200 = js.get("ctx_area_fk200", "")
+            new_ctx_area_nk200 = js.get("ctx_area_nk200", "")
+
+            logging.info(f"  반환된 FK200: '{new_ctx_area_fk200[:20] if new_ctx_area_fk200 else 'empty'}...'")
+            logging.info(f"  반환된 NK200: '{new_ctx_area_nk200[:20] if new_ctx_area_nk200 else 'empty'}...'")
+
+            # 연속조회 키가 없거나 이전과 동일하면 마지막 페이지
+            if not new_ctx_area_nk200 or new_ctx_area_nk200 == ctx_area_nk200:
+                logging.info(f"마지막 페이지 도달 (연속조회 키 없음 또는 동일)")
+                break
+
+            # 다음 페이지를 위한 설정
+            ctx_area_fk200 = new_ctx_area_fk200
+            ctx_area_nk200 = new_ctx_area_nk200
+            tr_cont = "N"  # 두 번째 페이지부터는 "N" 설정
+
+            page += 1
+            await asyncio.sleep(0.1)  # API 호출 제한 방지
+
+        logging.info(f"미체결 주문 조회 완료: 총 {len(all_orders)}건")
+
+        return all_orders
+
+    async def cancel_overseas_order(
+        self,
+        order_number: str,
+        symbol: str,
+        exchange_code: str,
+        quantity: int,
+        is_mock: bool = False,
+    ) -> dict:
+        """
+        해외주식 주문 취소
+
+        Args:
+            order_number: 취소할 원주문번호
+            symbol: 종목 심볼
+            exchange_code: 거래소 코드
+            quantity: 주문 수량
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            취소 결과 딕셔너리
+            - odno: 주문번호
+            - ord_tmd: 주문시각
+            - msg: 응답메시지
+        """
+        await self._ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        tr_id = OVERSEAS_ORDER_CANCEL_TR_MOCK if is_mock else OVERSEAS_ORDER_CANCEL_TR
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+
+        body = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "OVRS_EXCG_CD": exchange_code,  # 해외거래소코드
+            "PDNO": symbol,  # 상품번호(종목코드)
+            "ORGN_ODNO": order_number,  # 원주문번호
+            "RVSE_CNCL_DVSN_CD": "02",  # 정정취소구분코드 (01:정정, 02:취소)
+            "ORD_QTY": str(quantity),  # 주문수량
+            "OVRS_ORD_UNPR": "0",  # 해외주문단가 (취소 시 0)
+            "MGCO_APTM_ODNO": "",  # 운용사지정주문번호
+            "ORD_SVR_DVSN_CD": "0",  # 주문서버구분코드
+        }
+
+        logging.info(f"해외주식 주문 취소 - symbol: {symbol}, 주문번호: {order_number}")
+
+        async with httpx.AsyncClient(timeout=10) as cli:
+            r = await cli.post(
+                f"{BASE}{OVERSEAS_ORDER_CANCEL_URL}",
+                headers=hdr,
+                json=body
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.cancel_overseas_order(order_number, symbol, exchange_code, quantity, is_mock)
+
+            error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+            logging.error(f"주문 취소 실패: {error_msg}")
+            raise RuntimeError(error_msg)
+
+        output = js.get("output", {})
+
+        result = {
+            "odno": output.get("ODNO"),  # 주문번호
+            "ord_tmd": output.get("ORD_TMD"),  # 주문시각
+            "msg": js.get("msg1"),  # 응답메시지
+        }
+
+        logging.info(f"주문 취소 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}")
+
+        return result
 
 
 kis = KISClient()  # 싱글턴

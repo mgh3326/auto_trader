@@ -32,11 +32,6 @@ class Settings(BaseSettings):
     @field_validator("google_api_keys", mode='before')
     @classmethod
     def split_google_api_keys(cls, v: any) -> List[str]:
-        # --- 디버깅 코드 추가 ---
-        print(f"Validator for google_api_keys received value: {v!r}")
-        print(f"Type of received value: {type(v)}")
-        # ---------------------
-
         if isinstance(v, str):
             if not v:  # 빈 문자열 처리
                 return []
