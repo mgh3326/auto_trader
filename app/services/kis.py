@@ -73,6 +73,21 @@ OVERSEAS_ORDER_CANCEL_URL = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
 OVERSEAS_ORDER_CANCEL_TR = "TTTT1004U"  # 실전투자 해외주식 정정취소주문
 OVERSEAS_ORDER_CANCEL_TR_MOCK = "VTTT1004U"  # 모의투자 해외주식 정정취소주문
 
+# 국내주식 주문 관련 URL 및 TR ID
+KOREA_ORDER_URL = "/uapi/domestic-stock/v1/trading/order-cash"
+KOREA_ORDER_BUY_TR = "TTTC0802U"  # 실전투자 국내주식 매수주문
+KOREA_ORDER_BUY_TR_MOCK = "VTTC0802U"  # 모의투자 국내주식 매수주문
+KOREA_ORDER_SELL_TR = "TTTC0801U"  # 실전투자 국내주식 매도주문
+KOREA_ORDER_SELL_TR_MOCK = "VTTC0801U"  # 모의투자 국내주식 매도주문
+
+# 국내주식 주문 조회 및 취소
+KOREA_ORDER_INQUIRY_URL = "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
+KOREA_ORDER_INQUIRY_TR = "TTTC8036R"  # 국내주식 정정취소가능주문조회 (실전/모의 공통)
+
+KOREA_ORDER_CANCEL_URL = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
+KOREA_ORDER_CANCEL_TR = "TTTC0803U"  # 실전투자 국내주식 정정취소주문
+KOREA_ORDER_CANCEL_TR_MOCK = "VTTC0803U"  # 모의투자 국내주식 정정취소주문
+
 
 class KISClient:
     def __init__(self):
@@ -1894,6 +1909,346 @@ class KISClient:
 
         result = {
             "odno": output.get("ODNO"),  # 주문번호
+            "ord_tmd": output.get("ORD_TMD"),  # 주문시각
+            "msg": js.get("msg1"),  # 응답메시지
+        }
+
+        logging.info(f"주문 취소 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}")
+
+        return result
+
+    async def inquire_korea_orders(
+        self,
+        is_mock: bool = False,
+    ) -> list[dict]:
+        """
+        국내주식 정정취소가능주문 조회 (모든 페이지 조회)
+
+        Args:
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            미체결 주문 목록 (list of dict)
+            각 항목:
+            - ord_no: 주문번호
+            - orgn_ord_no: 원주문번호
+            - sll_buy_dvsn_cd: 매도매수구분코드 (01:매도, 02:매수)
+            - sll_buy_dvsn_cd_name: 매도매수구분명
+            - rvse_cncl_dvsn_cd: 정정취소구분코드
+            - pdno: 상품번호(종목코드)
+            - prdt_name: 상품명
+            - ord_qty: 주문수량
+            - ord_unpr: 주문단가
+            - ord_tmd: 주문시각
+        """
+        await self._ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        # 정정취소가능주문 조회는 실전/모의 구분 없이 동일한 TR_ID 사용
+        tr_id = KOREA_ORDER_INQUIRY_TR
+
+        all_orders = []
+        ctx_area_fk100 = ""
+        ctx_area_nk100 = ""
+        tr_cont = ""  # 연속조회 구분: 최초 조회 시 공백, 연속 조회 시 "N"
+        page = 1
+        max_pages = 10  # 최대 페이지 수 제한
+
+        logging.info(f"국내주식 미체결 주문 조회 시작")
+
+        while page <= max_pages:
+            hdr = self._hdr_base | {
+                "authorization": f"Bearer {settings.kis_access_token}",
+                "tr_id": tr_id,
+                "tr_cont": tr_cont,  # 연속조회 여부 (첫 조회: "", 이후: "N")
+            }
+
+            params = {
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
+                "CTX_AREA_FK100": ctx_area_fk100,  # 연속조회검색조건100
+                "CTX_AREA_NK100": ctx_area_nk100,  # 연속조회키100
+                "INQR_DVSN_1": "0",  # 조회구분1 (0:조회순서, 1:주문순, 2:종목순)
+                "INQR_DVSN_2": "0",  # 조회구분2 (0:전체, 1:매도, 2:매수)
+            }
+
+            logging.info(f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK100: '{ctx_area_nk100[:20] if ctx_area_nk100 else 'empty'}...')")
+
+            async with httpx.AsyncClient(timeout=10) as cli:
+                r = await cli.get(
+                    f"{BASE}{KOREA_ORDER_INQUIRY_URL}",
+                    headers=hdr,
+                    params=params
+                )
+
+            js = r.json()
+
+            if js.get("rt_cd") != "0":
+                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                    await self._token_manager.clear_token()
+                    await self._ensure_token()
+                    continue
+
+                error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+                logging.error(f"미체결 주문 조회 실패: {error_msg}")
+                raise RuntimeError(error_msg)
+
+            # output: 미체결 주문 목록
+            orders = js.get("output", [])
+
+            if not orders:
+                logging.info(f"페이지 {page}에서 더 이상 주문이 없음")
+                break
+
+            all_orders.extend(orders)
+            logging.info(f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)")
+
+            # 다음 페이지 키 확인
+            new_ctx_area_fk100 = js.get("ctx_area_fk100", "")
+            new_ctx_area_nk100 = js.get("ctx_area_nk100", "")
+
+            logging.info(f"  반환된 FK100: '{new_ctx_area_fk100[:20] if new_ctx_area_fk100 else 'empty'}...'")
+            logging.info(f"  반환된 NK100: '{new_ctx_area_nk100[:20] if new_ctx_area_nk100 else 'empty'}...'")
+
+            # 연속조회 키가 없거나 이전과 동일하면 마지막 페이지
+            if not new_ctx_area_nk100 or new_ctx_area_nk100 == ctx_area_nk100:
+                logging.info(f"마지막 페이지 도달 (연속조회 키 없음 또는 동일)")
+                break
+
+            # 다음 페이지를 위한 설정
+            ctx_area_fk100 = new_ctx_area_fk100
+            ctx_area_nk100 = new_ctx_area_nk100
+            tr_cont = "N"  # 두 번째 페이지부터는 "N" 설정
+
+            page += 1
+            await asyncio.sleep(0.1)  # API 호출 제한 방지
+
+        logging.info(f"미체결 주문 조회 완료: 총 {len(all_orders)}건")
+
+        return all_orders
+
+    async def order_korea_stock(
+        self,
+        stock_code: str,
+        order_type: str,  # "buy" 또는 "sell"
+        quantity: int,
+        price: int = 0,  # 0이면 시장가
+        is_mock: bool = False,
+    ) -> dict:
+        """
+        국내주식 주문 (매수/매도)
+
+        Args:
+            stock_code: 종목코드 (예: "005930")
+            order_type: "buy"(매수) 또는 "sell"(매도)
+            quantity: 주문수량
+            price: 주문가격 (0이면 시장가)
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            주문 결과 딕셔너리
+            - odno: 주문번호
+            - ord_tmd: 주문시각
+        """
+        await self._ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        # TR_ID 선택
+        if order_type.lower() == "buy":
+            tr_id = KOREA_ORDER_BUY_TR_MOCK if is_mock else KOREA_ORDER_BUY_TR
+            order_type_korean = "매수"
+        elif order_type.lower() == "sell":
+            tr_id = KOREA_ORDER_SELL_TR_MOCK if is_mock else KOREA_ORDER_SELL_TR
+            order_type_korean = "매도"
+        else:
+            raise ValueError(f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}")
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+
+        # 주문 구분: 00(지정가), 01(시장가)
+        ord_dvsn = "01" if price == 0 else "00"
+
+        body = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "PDNO": stock_code,  # 종목코드
+            "ORD_DVSN": ord_dvsn,  # 주문구분 (00:지정가, 01:시장가)
+            "ORD_QTY": str(quantity),  # 주문수량
+            "ORD_UNPR": str(price),  # 주문단가 (시장가일 경우 0)
+        }
+
+        logging.info(f"국내주식 {order_type_korean} 주문 - stock_code: {stock_code}, "
+                    f"수량: {quantity}주, 가격: {price if price > 0 else '시장가'}")
+
+        async with httpx.AsyncClient(timeout=10) as cli:
+            r = await cli.post(
+                f"{BASE}{KOREA_ORDER_URL}",
+                headers=hdr,
+                json=body
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.order_korea_stock(stock_code, order_type, quantity, price, is_mock)
+
+            error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+            logging.error(f"국내주식 주문 실패: {error_msg}")
+            raise RuntimeError(error_msg)
+
+        output = js.get("output", {})
+
+        result = {
+            "odno": output.get("ODNO") or output.get("ORD_NO"),  # 주문번호
+            "ord_tmd": output.get("ORD_TMD"),  # 주문시각
+            "msg": js.get("msg1"),  # 응답메시지
+        }
+
+        logging.info(f"국내주식 주문 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}")
+
+        return result
+
+    async def sell_korea_stock(
+        self,
+        stock_code: str,
+        quantity: int,
+        price: int = 0,  # 0이면 시장가
+        is_mock: bool = False,
+    ) -> dict:
+        """
+        국내주식 매도 주문 편의 메서드
+
+        Args:
+            stock_code: 종목코드
+            quantity: 매도 수량
+            price: 매도 가격 (0이면 시장가)
+            is_mock: 모의투자 여부
+
+        Returns:
+            주문 결과
+        """
+        return await self.order_korea_stock(stock_code, "sell", quantity, price, is_mock)
+
+    async def cancel_korea_order(
+        self,
+        order_number: str,
+        stock_code: str,
+        quantity: int,
+        price: int,
+        order_type: str,  # "buy" 또는 "sell"
+        is_mock: bool = False,
+    ) -> dict:
+        """
+        국내주식 주문 취소
+
+        Args:
+            order_number: 취소할 원주문번호
+            stock_code: 종목코드
+            quantity: 주문 수량
+            price: 주문 단가
+            order_type: "buy"(매수) 또는 "sell"(매도)
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            취소 결과 딕셔너리
+            - odno: 주문번호
+            - ord_tmd: 주문시각
+            - msg: 응답메시지
+        """
+        await self._ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        tr_id = KOREA_ORDER_CANCEL_TR_MOCK if is_mock else KOREA_ORDER_CANCEL_TR
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+
+        # 주문구분: 00(지정가)
+        ord_dvsn = "00"
+
+        # 매도매수구분: 매도(01), 매수(02) - 취소할 주문과 동일하게
+        if order_type.lower() == "sell":
+            sll_buy_dvsn_cd = "01"
+        elif order_type.lower() == "buy":
+            sll_buy_dvsn_cd = "02"
+        else:
+            raise ValueError(f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}")
+
+        body = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "KRX_FWDG_ORD_ORGNO": "",  # 한국거래소전송주문조직번호 (공백)
+            "ORGN_ODNO": order_number,  # 원주문번호
+            "ORD_DVSN": ord_dvsn,  # 주문구분
+            "RVSE_CNCL_DVSN_CD": "02",  # 정정취소구분코드 (01:정정, 02:취소)
+            "ORD_QTY": str(quantity),  # 주문수량
+            "ORD_UNPR": str(price),  # 주문단가
+            "QTY_ALL_ORD_YN": "Y",  # 잔량전부주문여부 (Y:전부취소, N:일부취소)
+        }
+
+        logging.info(f"국내주식 주문 취소 - stock_code: {stock_code}, 주문번호: {order_number}")
+
+        async with httpx.AsyncClient(timeout=10) as cli:
+            r = await cli.post(
+                f"{BASE}{KOREA_ORDER_CANCEL_URL}",
+                headers=hdr,
+                json=body
+            )
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.cancel_korea_order(order_number, stock_code, quantity, price, order_type, is_mock)
+
+            error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+            logging.error(f"주문 취소 실패: {error_msg}")
+            raise RuntimeError(error_msg)
+
+        output = js.get("output", {})
+
+        result = {
+            "odno": output.get("ODNO") or output.get("ORD_NO"),  # 주문번호
             "ord_tmd": output.get("ORD_TMD"),  # 주문시각
             "msg": js.get("msg1"),  # 응답메시지
         }
