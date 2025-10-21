@@ -125,18 +125,13 @@ class TestExternalServiceMocking:
         assert mock_yahoo_download.called
 
     @pytest.mark.asyncio
-    @patch(
-        "app.services.kis.load_token", return_value=None
-    )  # 토큰이 없는 상태에서 시작하여 fetch_token 호출 유도
+    @patch("app.services.kis.KISClient._ensure_token", new_callable=AsyncMock)
     @patch("app.services.kis.httpx.AsyncClient")
-    async def test_kis_service_mocking(self, mock_kis_client, mock_load_token):
+    async def test_kis_service_mocking(
+        self, mock_kis_client, mock_ensure_token
+    ):
         """Test KIS service mocking."""
         mock_instance = mock_kis_client.return_value.__aenter__.return_value
-
-        # POST 요청(토큰 발급)에 대한 Mock 응답 설정
-        mock_post_response = MagicMock()
-        mock_post_response.json.return_value = {"access_token": "dummy_token"}
-        mock_instance.post.return_value = mock_post_response
 
         # GET 요청(데이터 조회)에 대한 Mock 응답 설정
         mock_get_response = MagicMock()
@@ -146,7 +141,7 @@ class TestExternalServiceMocking:
         await kis_client.volume_rank()
 
         assert mock_kis_client.called
-        mock_instance.post.assert_called_once()
+        mock_ensure_token.assert_called_once()
         mock_instance.get.assert_called_once()
 
     @pytest.mark.asyncio
