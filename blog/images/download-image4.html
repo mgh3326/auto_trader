@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>이미지4 다운로더</title>
+    <style>
+        body { font-family: Arial; max-width: 900px; margin: 40px auto; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .container { background: white; padding: 40px; border-radius: 15px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); }
+        h1 { color: #333; margin-bottom: 10px; font-size: 28px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 16px; }
+        .settings { background: #fff3cd; padding: 20px; border-radius: 10px; margin-bottom: 25px; border: 2px solid #ffc107; }
+        .settings label { font-weight: bold; font-size: 16px; margin-right: 15px; }
+        select { padding: 10px 15px; font-size: 15px; border: 2px solid #dee2e6; border-radius: 8px; cursor: pointer; }
+        button { width: 100%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; padding: 18px; font-size: 18px; font-weight: bold; border-radius: 10px; cursor: pointer; transition: all 0.3s; margin-bottom: 15px; }
+        button:hover { transform: translateY(-3px); box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4); }
+        .preview { border: 3px solid #dee2e6; padding: 20px; border-radius: 10px; background: #f8f9fa; margin-top: 25px; text-align: center; }
+        .preview h3 { color: #667eea; margin-bottom: 15px; }
+        .preview img { max-width: 100%; border: 2px solid #dee2e6; border-radius: 8px; }
+        canvas { display: none; }
+        .info { background: #e7f1ff; padding: 20px; border-radius: 10px; margin-top: 25px; border-left: 5px solid #0d6efd; line-height: 1.8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖼️ 이미지 4: 통합 아키텍처</h1>
+        <p class="subtitle">KIS API + yfinance 통합 구조</p>
+
+        <div class="settings">
+            <label>🎨 해상도:</label>
+            <select id="scale">
+                <option value="2">2배</option>
+                <option value="3">3배</option>
+                <option value="4" selected>4배 (권장)</option>
+                <option value="5">5배</option>
+            </select>
+        </div>
+
+        <button onclick="dl()">📥 PNG 다운로드</button>
+
+        <div class="preview">
+            <h3>🔍 미리보기</h3>
+            <img id="prev" alt="미리보기">
+        </div>
+
+        <div class="info">
+            <strong>💡 정보</strong><br>
+            • 파일: integrated_data_architecture.png<br>
+            • 크기: 800x600px → 3200x2400px (4배)
+        </div>
+
+        <canvas id="c"></canvas>
+    </div>
+
+    <script>
+const svg=`<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+<rect width="800" height="600" fill="#f8f9fa"/>
+<text x="400" y="30" font-family="Arial" font-size="20" font-weight="bold" text-anchor="middle" fill="#212529">KIS API + yfinance 통합 데이터 수집 아키텍처</text>
+<rect x="325" y="60" width="150" height="50" rx="8" fill="#6f42c1" stroke="#59359a" stroke-width="2"/>
+<text x="400" y="83" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle" fill="white">사용자 요청</text>
+<text x="400" y="100" font-family="Arial" font-size="11" text-anchor="middle" fill="white">"삼성전자, AAPL"</text>
+<line x1="400" y1="110" x2="400" y2="145" stroke="#495057" stroke-width="3"/>
+<polygon points="400,145 395,135 405,135" fill="#495057"/>
+<rect x="300" y="145" width="200" height="60" rx="8" fill="#0d6efd" stroke="#0a58ca" stroke-width="2"/>
+<text x="400" y="170" font-family="Arial" font-size="15" font-weight="bold" text-anchor="middle" fill="white">라우터</text>
+<text x="400" y="190" font-family="Arial" font-size="11" text-anchor="middle" fill="white">KR or US?</text>
+<line x1="300" y1="175" x2="180" y2="235" stroke="#495057" stroke-width="3"/>
+<polygon points="180,235 188,230 185,220" fill="#495057"/>
+<line x1="500" y1="175" x2="620" y2="235" stroke="#495057" stroke-width="3"/>
+<polygon points="620,235 612,230 615,220" fill="#495057"/>
+<rect x="80" y="235" width="200" height="70" rx="8" fill="#198754" stroke="#146c43" stroke-width="2"/>
+<text x="180" y="260" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle" fill="white">KIS API</text>
+<text x="180" y="280" font-family="Arial" font-size="11" text-anchor="middle" fill="white">국내 주식 (KR)</text>
+<text x="180" y="295" font-family="Arial" font-size="10" text-anchor="middle" fill="white">005930 삼성전자</text>
+<rect x="520" y="235" width="200" height="70" rx="8" fill="#dc3545" stroke="#b02a37" stroke-width="2"/>
+<text x="620" y="260" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle" fill="white">yfinance</text>
+<text x="620" y="280" font-family="Arial" font-size="11" text-anchor="middle" fill="white">해외 주식 (US)</text>
+<text x="620" y="295" font-family="Arial" font-size="10" text-anchor="middle" fill="white">AAPL Apple</text>
+<line x1="180" y1="305" x2="180" y2="345" stroke="#495057" stroke-width="3"/>
+<polygon points="180,345 175,335 185,335" fill="#495057"/>
+<line x1="620" y1="305" x2="620" y2="345" stroke="#495057" stroke-width="3"/>
+<polygon points="620,345 615,335 625,335" fill="#495057"/>
+<rect x="80" y="345" width="200" height="70" rx="8" fill="#fd7e14" stroke="#dc6502" stroke-width="2"/>
+<text x="180" y="370" font-family="Arial" font-size="13" font-weight="bold" text-anchor="middle" fill="white">데이터 정규화</text>
+<text x="180" y="390" font-family="Arial" font-size="10" text-anchor="middle" fill="white">date, open, high</text>
+<text x="180" y="405" font-family="Arial" font-size="10" text-anchor="middle" fill="white">low, close, volume</text>
+<rect x="520" y="345" width="200" height="70" rx="8" fill="#fd7e14" stroke="#dc6502" stroke-width="2"/>
+<text x="620" y="370" font-family="Arial" font-size="13" font-weight="bold" text-anchor="middle" fill="white">데이터 정규화</text>
+<text x="620" y="390" font-family="Arial" font-size="10" text-anchor="middle" fill="white">date, open, high</text>
+<text x="620" y="405" font-family="Arial" font-size="10" text-anchor="middle" fill="white">low, close, volume</text>
+<line x1="180" y1="415" x2="320" y2="465" stroke="#495057" stroke-width="3"/>
+<polygon points="320,465 310,462 312,452" fill="#495057"/>
+<line x1="620" y1="415" x2="480" y2="465" stroke="#495057" stroke-width="3"/>
+<polygon points="480,465 490,462 488,452" fill="#495057"/>
+<rect x="300" y="465" width="200" height="60" rx="8" fill="#20c997" stroke="#17a2b8" stroke-width="2"/>
+<text x="400" y="488" font-family="Arial" font-size="14" font-weight="bold" text-anchor="middle" fill="white">통합 DataFrame</text>
+<text x="400" y="510" font-family="Arial" font-size="11" text-anchor="middle" fill="white">공통 구조</text>
+<line x1="400" y1="525" x2="400" y2="555" stroke="#495057" stroke-width="3"/>
+<polygon points="400,555 395,545 405,545" fill="#495057"/>
+<rect x="300" y="555" width="200" height="30" rx="5" fill="#6f42c1" stroke="#59359a" stroke-width="2"/>
+<text x="400" y="577" font-family="Arial" font-size="13" font-weight="bold" text-anchor="middle" fill="white">AI 분석</text>
+<rect x="50" y="60" width="180" height="100" rx="8" fill="#fff3cd" stroke="#ffc107" stroke-width="2"/>
+<text x="140" y="80" font-family="Arial" font-size="12" font-weight="bold" text-anchor="middle" fill="#856404">✨ 통합 장점</text>
+<text x="60" y="100" font-family="Arial" font-size="10" fill="#495057">• 코드 재사용</text>
+<text x="60" y="115" font-family="Arial" font-size="10" fill="#495057">• 동일 분석</text>
+<text x="60" y="130" font-family="Arial" font-size="10" fill="#495057">• 포트폴리오 통합</text>
+<text x="60" y="145" font-family="Arial" font-size="10" fill="#495057">• 유지보수 간편</text>
+<rect x="570" y="60" width="180" height="100" rx="8" fill="#e7f1ff" stroke="#0d6efd" stroke-width="2"/>
+<text x="660" y="80" font-family="Arial" font-size="12" font-weight="bold" text-anchor="middle" fill="#0d6efd">📊 지원 종목</text>
+<text x="580" y="100" font-family="Arial" font-size="10" fill="#495057">• 국내: 삼성, SK</text>
+<text x="580" y="115" font-family="Arial" font-size="10" fill="#495057">• 미국: AAPL, TSLA</text>
+<text x="580" y="130" font-family="Arial" font-size="10" fill="#495057">• ETF: SPY, QQQ</text>
+<text x="580" y="145" font-family="Arial" font-size="10" fill="#495057">• 암호화폐: BTC</text>
+</svg>`;
+
+function dl(){
+const s=+document.getElementById('scale').value;
+const cv=document.getElementById('c');
+const ctx=cv.getContext('2d');
+const img=new Image();
+const blob=new Blob([svg],{type:'image/svg+xml'});
+const url=URL.createObjectURL(blob);
+img.onload=()=>{
+cv.width=img.width*s;
+cv.height=img.height*s;
+ctx.imageSmoothingEnabled=true;
+ctx.imageSmoothingQuality='high';
+ctx.drawImage(img,0,0,cv.width,cv.height);
+cv.toBlob(b=>{
+const a=document.createElement('a');
+a.download='integrated_data_architecture.png';
+a.href=URL.createObjectURL(b);
+a.click();
+URL.revokeObjectURL(url);
+alert('✅ 완료!\\n'+cv.width+'x'+cv.height+'px');
+},'image/png');
+};
+img.src=url;
+}
+window.onload=()=>{
+const blob=new Blob([svg],{type:'image/svg+xml'});
+document.getElementById('prev').src=URL.createObjectURL(blob);
+};
+    </script>
+</body>
+</html>
