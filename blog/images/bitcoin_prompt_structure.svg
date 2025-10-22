@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800">
+  <!-- Background -->
+  <rect width="1200" height="800" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="600" y="50" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" font-weight="bold" fill="#ffffff" text-anchor="middle">비트코인 분석을 위한 AI 프롬프트의 구성 요소</text>
+
+  <!-- Main Container -->
+  <rect x="100" y="100" width="1000" height="650" rx="15" fill="#1e293b" stroke="#3b82f6" stroke-width="3"/>
+
+  <!-- 7 Components -->
+  <!-- 1. Header -->
+  <g id="component1">
+    <rect x="140" y="140" width="920" height="70" rx="8" fill="#1e40af"/>
+    <text x="160" y="170" font-family="Apple SD Gothic Neo, Arial" font-size="18" font-weight="bold" fill="#ffffff">1. 헤더</text>
+    <text x="160" y="195" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#e2e8f0">비트코인(KRW-BTC) • 관측일 2025-10-21</text>
+  </g>
+
+  <!-- 2. Technical Summary -->
+  <g id="component2">
+    <rect x="140" y="225" width="920" height="70" rx="8" fill="#7c3aed"/>
+    <text x="160" y="255" font-family="Apple SD Gothic Neo, Arial" font-size="18" font-weight="bold" fill="#ffffff">2. 기술적 지표 요약</text>
+    <text x="160" y="280" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#e2e8f0">MACD 히스토 -1406343.33 • RSI14 42.5 • BB폭 0.0% • Stoch %K 20.1</text>
+  </g>
+
+  <!-- 3. Fundamental Info -->
+  <g id="component3">
+    <rect x="140" y="310" width="920" height="70" rx="8" fill="#059669"/>
+    <text x="160" y="340" font-family="Apple SD Gothic Neo, Arial" font-size="18" font-weight="bold" fill="#ffffff">3. 기본 정보</text>
+    <text x="160" y="365" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#e2e8f0">24시간 변동률 -1.32% • 거래량 1,437 BTC • 거래대금 2,361억원</text>
+  </g>
+
+  <!-- 4. Price Indicators -->
+  <g id="component4">
+    <rect x="140" y="395" width="450" height="90" rx="8" fill="#dc2626"/>
+    <text x="160" y="425" font-family="Apple SD Gothic Neo, Arial" font-size="18" font-weight="bold" fill="#ffffff">4. 가격 지표</text>
+    <text x="160" y="450" font-family="Apple SD Gothic Neo, Arial" font-size="13" fill="#e2e8f0">MA 5/20/60/120/200</text>
+    <text x="160" y="470" font-family="Apple SD Gothic Neo, Arial" font-size="13" fill="#e2e8f0">현재가 • 전일대비 • RSI(14)</text>
+  </g>
+
+  <!-- 5. Volume Indicators -->
+  <g id="component5">
+    <rect x="610" y="395" width="450" height="90" rx="8" fill="#ea580c"/>
+    <text x="630" y="425" font-family="Apple SD Gothic Neo, Arial" font-size="18" font-weight="bold" fill="#ffffff">5. 거래량 지표</text>
+    <text x="630" y="450" font-family="Apple SD Gothic Neo, Arial" font-size="13" fill="#e2e8f0">VMA 5/20/60/120/200</text>
+    <text x="630" y="470" font-family="Apple SD Gothic Neo, Arial" font-size="13" fill="#e2e8f0">오늘 거래량 • 전일대비</text>
+  </g>
+
+  <!-- 6. Recent Trend -->
+  <g id="component6">
+    <rect x="140" y="500" width="920" height="70" rx="8" fill="#0891b2"/>
+    <text x="160" y="530" font-family="Apple SD Gothic Neo, Arial" font-size="18" font-weight="bold" fill="#ffffff">6. 최근 추세</text>
+    <text x="160" y="555" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#e2e8f0">최근 10거래일 데이터 (날짜·종가·거래량)</text>
+  </g>
+
+  <!-- 7. Question -->
+  <g id="component7">
+    <rect x="140" y="585" width="920" height="130" rx="8" fill="#16a34a"/>
+    <text x="160" y="615" font-family="Apple SD Gothic Neo, Arial" font-size="18" font-weight="bold" fill="#ffffff">7. 질문 (AI에게)</text>
+    <text x="160" y="645" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0">• 매수·관망·매도 중 하나를 선택하고 근거를 3줄 이내로 설명</text>
+    <text x="160" y="670" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0">• 적절한 매수가, 매도가 제시</text>
+    <text x="160" y="695" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0">• 매수 희망가, 매도 목표가 제시</text>
+  </g>
+
+  <!-- Legend -->
+  <text x="600" y="770" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#94a3b8" text-anchor="middle">프롬프트 구조를 통일하면 국내주식/해외주식/암호화폐 모두 동일한 분석 로직 사용 가능</text>
+</svg>

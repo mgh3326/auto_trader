@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Upbit 블로그 이미지 다운로더</title>
+    <style>
+        body {
+            font-family: 'Apple SD Gothic Neo', Arial, sans-serif;
+            max-width: 1000px;
+            margin: 40px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+        h1 { color: #333; margin-bottom: 10px; font-size: 32px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 18px; }
+        .image-card {
+            background: #f8f9fa;
+            border: 2px solid #dee2e6;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .image-card h3 {
+            color: #667eea;
+            margin-top: 0;
+            font-size: 18px;
+        }
+        .settings {
+            background: #fff3cd;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border: 2px solid #ffc107;
+        }
+        .settings label { font-weight: bold; margin-right: 10px; }
+        select {
+            padding: 8px 12px;
+            font-size: 14px;
+            border: 2px solid #dee2e6;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        button {
+            width: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 10px;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+        }
+        .download-all {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            padding: 20px;
+            font-size: 20px;
+            margin-bottom: 30px;
+        }
+        .download-all:hover {
+            box-shadow: 0 8px 20px rgba(16, 185, 129, 0.4);
+        }
+        .preview {
+            border: 2px solid #dee2e6;
+            padding: 15px;
+            border-radius: 8px;
+            background: white;
+            margin-top: 15px;
+            text-align: center;
+            max-height: 300px;
+            overflow: auto;
+        }
+        .preview img {
+            max-width: 100%;
+            border: 1px solid #dee2e6;
+            border-radius: 6px;
+        }
+        canvas { display: none; }
+        .info {
+            background: #e7f1ff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border-left: 4px solid #0d6efd;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .status {
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #28a745;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🖼️ Upbit 블로그 이미지 다운로더</h1>
+        <p class="subtitle">5개 이미지를 고해상도 PNG로 변환</p>
+
+        <div class="settings">
+            <label>🎨 해상도:</label>
+            <select id="globalScale">
+                <option value="2">2배 (2400px)</option>
+                <option value="3">3배 (3600px)</option>
+                <option value="4" selected>4배 (4800px) - 권장</option>
+                <option value="5">5배 (6000px)</option>
+            </select>
+        </div>
+
+        <button class="download-all" onclick="downloadAll()">📥 전체 다운로드 (5개)</button>
+
+        <div class="status" id="status"></div>
+
+        <div class="image-card">
+            <h3>1️⃣ Upbit 시스템 개요</h3>
+            <button onclick="download('upbit_system_overview')">다운로드</button>
+            <div class="preview">
+                <img id="prev_upbit_system_overview" alt="미리보기">
+            </div>
+            <div class="info">
+                <strong>파일명:</strong> upbit_system_overview.png<br>
+                <strong>설명:</strong> 24시간 암호화폐 자동 분석 시스템
+            </div>
+        </div>
+
+        <div class="image-card">
+            <h3>2️⃣ 비트코인 프롬프트 구조</h3>
+            <button onclick="download('bitcoin_prompt_structure')">다운로드</button>
+            <div class="preview">
+                <img id="prev_bitcoin_prompt_structure" alt="미리보기">
+            </div>
+            <div class="info">
+                <strong>파일명:</strong> bitcoin_prompt_structure.png<br>
+                <strong>설명:</strong> AI 프롬프트의 7가지 구성 요소
+            </div>
+        </div>
+
+        <div class="image-card">
+            <h3>3️⃣ 비트코인 차트 분석</h3>
+            <button onclick="download('bitcoin_chart_analysis')">다운로드</button>
+            <div class="preview">
+                <img id="prev_bitcoin_chart_analysis" alt="미리보기">
+            </div>
+            <div class="info">
+                <strong>파일명:</strong> bitcoin_chart_analysis.png<br>
+                <strong>설명:</strong> 차트 + Gemini AI 분석 결과
+            </div>
+        </div>
+
+        <div class="image-card">
+            <h3>4️⃣ 거래소 API 비교</h3>
+            <button onclick="download('exchange_api_comparison')">다운로드</button>
+            <div class="preview">
+                <img id="prev_exchange_api_comparison" alt="미리보기">
+            </div>
+            <div class="info">
+                <strong>파일명:</strong> exchange_api_comparison.png<br>
+                <strong>설명:</strong> Upbit, Bithumb, Coinone, Binance 비교
+            </div>
+        </div>
+
+        <div class="image-card">
+            <h3>5️⃣ 통합 시스템 아키텍처</h3>
+            <button onclick="download('unified_trading_system')">다운로드</button>
+            <div class="preview">
+                <img id="prev_unified_trading_system" alt="미리보기">
+            </div>
+            <div class="info">
+                <strong>파일명:</strong> unified_trading_system.png<br>
+                <strong>설명:</strong> KIS + yfinance + Upbit 통합 구조
+            </div>
+        </div>
+
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script>
+        // SVG 데이터를 fetch로 로드
+        const svgFiles = {
+            'upbit_system_overview': 'upbit_system_overview.svg',
+            'bitcoin_prompt_structure': 'bitcoin_prompt_structure.svg',
+            'bitcoin_chart_analysis': 'bitcoin_chart_analysis.svg',
+            'exchange_api_comparison': 'exchange_api_comparison.svg',
+            'unified_trading_system': 'unified_trading_system.svg'
+        };
+
+        const svgData = {};
+
+        // SVG 파일들을 로드
+        async function loadSVGs() {
+            for (const [key, filename] of Object.entries(svgFiles)) {
+                const response = await fetch(filename);
+                const text = await response.text();
+                svgData[key] = text;
+
+                // 미리보기 표시
+                const blob = new Blob([text], {type: 'image/svg+xml'});
+                document.getElementById('prev_' + key).src = URL.createObjectURL(blob);
+            }
+        }
+
+        function download(name) {
+            const scale = +document.getElementById('globalScale').value;
+            const svg = svgData[name];
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            const img = new Image();
+            const blob = new Blob([svg], {type: 'image/svg+xml'});
+            const url = URL.createObjectURL(blob);
+
+            img.onload = () => {
+                canvas.width = img.width * scale;
+                canvas.height = img.height * scale;
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                canvas.toBlob(b => {
+                    const a = document.createElement('a');
+                    a.download = name + '.png';
+                    a.href = URL.createObjectURL(b);
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    showStatus(`✅ ${name}.png 다운로드 완료! (${canvas.width}x${canvas.height}px)`);
+                }, 'image/png');
+            };
+            img.src = url;
+        }
+
+        async function downloadAll() {
+            const scale = +document.getElementById('globalScale').value;
+            showStatus('⏳ 전체 다운로드 시작... (약 5-10초 소요)');
+
+            for (const name of Object.keys(svgData)) {
+                await new Promise(resolve => {
+                    const svg = svgData[name];
+                    const canvas = document.getElementById('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const img = new Image();
+                    const blob = new Blob([svg], {type: 'image/svg+xml'});
+                    const url = URL.createObjectURL(blob);
+
+                    img.onload = () => {
+                        canvas.width = img.width * scale;
+                        canvas.height = img.height * scale;
+                        ctx.imageSmoothingEnabled = true;
+                        ctx.imageSmoothingQuality = 'high';
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+                        canvas.toBlob(b => {
+                            const a = document.createElement('a');
+                            a.download = name + '.png';
+                            a.href = URL.createObjectURL(b);
+                            a.click();
+                            URL.revokeObjectURL(url);
+                            resolve();
+                        }, 'image/png');
+                    };
+                    img.src = url;
+                });
+
+                // 다운로드 간격 (브라우저가 처리할 시간 제공)
+                await new Promise(r => setTimeout(r, 500));
+            }
+
+            showStatus('✅ 전체 다운로드 완료! (5개 파일)');
+        }
+
+        function showStatus(message) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.style.display = 'block';
+            setTimeout(() => {
+                status.style.display = 'none';
+            }, 5000);
+        }
+
+        // 페이지 로드 시 SVG 파일 로드
+        window.onload = loadSVGs;
+    </script>
+</body>
+</html>

@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700">
+  <!-- Background -->
+  <rect width="1200" height="700" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="600" y="50" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" font-weight="bold" fill="#ffffff" text-anchor="middle">주요 암호화폐 거래소 API 비교</text>
+
+  <!-- Table Header -->
+  <rect x="50" y="100" width="200" height="60" fill="#1e40af"/>
+  <text x="150" y="137" font-family="Apple SD Gothic Neo, Arial" font-size="18" font-weight="bold" fill="#ffffff" text-anchor="middle">항목</text>
+
+  <rect x="250" y="100" width="225" height="60" fill="#7c3aed"/>
+  <circle cx="285" cy="130" r="18" fill="#003c7f"/>
+  <text x="340" y="137" font-family="Apple SD Gothic Neo, Arial" font-size="20" font-weight="bold" fill="#ffffff" text-anchor="middle">Upbit</text>
+
+  <rect x="475" y="100" width="225" height="60" fill="#4b5563"/>
+  <circle cx="510" cy="130" r="18" fill="#1e40af"/>
+  <text x="565" y="137" font-family="Apple SD Gothic Neo, Arial" font-size="20" font-weight="bold" fill="#ffffff" text-anchor="middle">Bithumb</text>
+
+  <rect x="700" y="100" width="225" height="60" fill="#4b5563"/>
+  <circle cx="735" cy="130" r="18" fill="#059669"/>
+  <text x="790" y="137" font-family="Apple SD Gothic Neo, Arial" font-size="20" font-weight="bold" fill="#ffffff" text-anchor="middle">Coinone</text>
+
+  <rect x="925" y="100" width="225" height="60" fill="#4b5563"/>
+  <circle cx="960" cy="130" r="18" fill="#f59e0b"/>
+  <text x="1015" y="137" font-family="Apple SD Gothic Neo, Arial" font-size="20" font-weight="bold" fill="#ffffff" text-anchor="middle">Binance</text>
+
+  <!-- Row 1: API 문서 -->
+  <rect x="50" y="160" width="200" height="55" fill="#1e293b"/>
+  <text x="150" y="192" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0" text-anchor="middle">API 문서</text>
+
+  <rect x="250" y="160" width="225" height="55" fill="#065f46"/>
+  <text x="362" y="192" font-family="Apple SD Gothic Neo, Arial" font-size="16" font-weight="bold" fill="#10b981" text-anchor="middle">⭐⭐⭐⭐⭐</text>
+
+  <rect x="475" y="160" width="225" height="55" fill="#1e293b"/>
+  <text x="587" y="192" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#94a3b8" text-anchor="middle">⭐⭐⭐</text>
+
+  <rect x="700" y="160" width="225" height="55" fill="#1e293b"/>
+  <text x="812" y="192" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#94a3b8" text-anchor="middle">⭐⭐⭐</text>
+
+  <rect x="925" y="160" width="225" height="55" fill="#1e293b"/>
+  <text x="1037" y="192" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#cbd5e1" text-anchor="middle">⭐⭐⭐⭐⭐</text>
+
+  <!-- Row 2: 한글 지원 -->
+  <rect x="50" y="215" width="200" height="55" fill="#1e293b"/>
+  <text x="150" y="247" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0" text-anchor="middle">한글 지원</text>
+
+  <rect x="250" y="215" width="225" height="55" fill="#065f46"/>
+  <text x="362" y="252" font-family="Apple SD Gothic Neo, Arial" font-size="20" font-weight="bold" fill="#10b981" text-anchor="middle">✓</text>
+
+  <rect x="475" y="215" width="225" height="55" fill="#1e293b"/>
+  <text x="587" y="252" font-family="Apple SD Gothic Neo, Arial" font-size="20" fill="#94a3b8" text-anchor="middle">✓</text>
+
+  <rect x="700" y="215" width="225" height="55" fill="#1e293b"/>
+  <text x="812" y="252" font-family="Apple SD Gothic Neo, Arial" font-size="20" fill="#94a3b8" text-anchor="middle">✓</text>
+
+  <rect x="925" y="215" width="225" height="55" fill="#1e293b"/>
+  <text x="1037" y="252" font-family="Apple SD Gothic Neo, Arial" font-size="20" fill="#64748b" text-anchor="middle">✗</text>
+
+  <!-- Row 3: 거래량 -->
+  <rect x="50" y="270" width="200" height="55" fill="#1e293b"/>
+  <text x="150" y="302" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0" text-anchor="middle">거래량</text>
+
+  <rect x="250" y="270" width="225" height="55" fill="#065f46"/>
+  <text x="362" y="302" font-family="Apple SD Gothic Neo, Arial" font-size="14" font-weight="bold" fill="#10b981" text-anchor="middle">국내 1위</text>
+
+  <rect x="475" y="270" width="225" height="55" fill="#1e293b"/>
+  <text x="587" y="302" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#94a3b8" text-anchor="middle">국내 2위</text>
+
+  <rect x="700" y="270" width="225" height="55" fill="#1e293b"/>
+  <text x="812" y="302" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#94a3b8" text-anchor="middle">국내 3위</text>
+
+  <rect x="925" y="270" width="225" height="55" fill="#1e293b"/>
+  <text x="1037" y="302" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#cbd5e1" text-anchor="middle">글로벌 1위</text>
+
+  <!-- Row 4: 코인 수 -->
+  <rect x="50" y="325" width="200" height="55" fill="#1e293b"/>
+  <text x="150" y="357" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0" text-anchor="middle">코인 수</text>
+
+  <rect x="250" y="325" width="225" height="55" fill="#065f46"/>
+  <text x="362" y="357" font-family="Apple SD Gothic Neo, Arial" font-size="16" font-weight="bold" fill="#10b981" text-anchor="middle">200+</text>
+
+  <rect x="475" y="325" width="225" height="55" fill="#1e293b"/>
+  <text x="587" y="357" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#94a3b8" text-anchor="middle">200+</text>
+
+  <rect x="700" y="325" width="225" height="55" fill="#1e293b"/>
+  <text x="812" y="357" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#94a3b8" text-anchor="middle">100+</text>
+
+  <rect x="925" y="325" width="225" height="55" fill="#1e293b"/>
+  <text x="1037" y="357" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#cbd5e1" text-anchor="middle">600+</text>
+
+  <!-- Row 5: WebSocket -->
+  <rect x="50" y="380" width="200" height="55" fill="#1e293b"/>
+  <text x="150" y="412" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0" text-anchor="middle">WebSocket</text>
+
+  <rect x="250" y="380" width="225" height="55" fill="#065f46"/>
+  <text x="362" y="417" font-family="Apple SD Gothic Neo, Arial" font-size="20" font-weight="bold" fill="#10b981" text-anchor="middle">✓</text>
+
+  <rect x="475" y="380" width="225" height="55" fill="#1e293b"/>
+  <text x="587" y="417" font-family="Apple SD Gothic Neo, Arial" font-size="20" fill="#94a3b8" text-anchor="middle">✓</text>
+
+  <rect x="700" y="380" width="225" height="55" fill="#1e293b"/>
+  <text x="812" y="417" font-family="Apple SD Gothic Neo, Arial" font-size="20" fill="#94a3b8" text-anchor="middle">✓</text>
+
+  <rect x="925" y="380" width="225" height="55" fill="#1e293b"/>
+  <text x="1037" y="417" font-family="Apple SD Gothic Neo, Arial" font-size="20" fill="#cbd5e1" text-anchor="middle">✓</text>
+
+  <!-- Row 6: 인증 방식 -->
+  <rect x="50" y="435" width="200" height="55" fill="#1e293b"/>
+  <text x="150" y="467" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0" text-anchor="middle">인증 방식</text>
+
+  <rect x="250" y="435" width="225" height="55" fill="#065f46"/>
+  <text x="362" y="467" font-family="Apple SD Gothic Neo, Arial" font-size="14" font-weight="bold" fill="#10b981" text-anchor="middle">JWT</text>
+
+  <rect x="475" y="435" width="225" height="55" fill="#1e293b"/>
+  <text x="587" y="467" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#94a3b8" text-anchor="middle">API Key</text>
+
+  <rect x="700" y="435" width="225" height="55" fill="#1e293b"/>
+  <text x="812" y="467" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#94a3b8" text-anchor="middle">API Key</text>
+
+  <rect x="925" y="435" width="225" height="55" fill="#1e293b"/>
+  <text x="1037" y="467" font-family="Apple SD Gothic Neo, Arial" font-size="13" fill="#cbd5e1" text-anchor="middle">Key + Secret</text>
+
+  <!-- Row 7: 일봉 데이터 -->
+  <rect x="50" y="490" width="200" height="55" fill="#1e293b"/>
+  <text x="150" y="522" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0" text-anchor="middle">일봉 데이터</text>
+
+  <rect x="250" y="490" width="225" height="55" fill="#065f46"/>
+  <text x="362" y="522" font-family="Apple SD Gothic Neo, Arial" font-size="16" font-weight="bold" fill="#10b981" text-anchor="middle">200개</text>
+
+  <rect x="475" y="490" width="225" height="55" fill="#1e293b"/>
+  <text x="587" y="522" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#94a3b8" text-anchor="middle">90개</text>
+
+  <rect x="700" y="490" width="225" height="55" fill="#1e293b"/>
+  <text x="812" y="522" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#94a3b8" text-anchor="middle">100개</text>
+
+  <rect x="925" y="490" width="225" height="55" fill="#1e293b"/>
+  <text x="1037" y="522" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#cbd5e1" text-anchor="middle">1000개</text>
+
+  <!-- Row 8: 개발 난이도 -->
+  <rect x="50" y="545" width="200" height="55" fill="#1e293b"/>
+  <text x="150" y="577" font-family="Apple SD Gothic Neo, Arial" font-size="15" fill="#e2e8f0" text-anchor="middle">개발 난이도</text>
+
+  <rect x="250" y="545" width="225" height="55" fill="#065f46"/>
+  <text x="362" y="577" font-family="Apple SD Gothic Neo, Arial" font-size="16" font-weight="bold" fill="#10b981" text-anchor="middle">쉬움 ⭐</text>
+
+  <rect x="475" y="545" width="225" height="55" fill="#1e293b"/>
+  <text x="587" y="577" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#94a3b8" text-anchor="middle">보통 ⭐⭐</text>
+
+  <rect x="700" y="545" width="225" height="55" fill="#1e293b"/>
+  <text x="812" y="577" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#94a3b8" text-anchor="middle">보통 ⭐⭐</text>
+
+  <rect x="925" y="545" width="225" height="55" fill="#1e293b"/>
+  <text x="1037" y="577" font-family="Apple SD Gothic Neo, Arial" font-size="16" fill="#cbd5e1" text-anchor="middle">보통 ⭐⭐</text>
+
+  <!-- Conclusion -->
+  <rect x="50" y="620" width="1100" height="60" rx="10" fill="#1e40af"/>
+  <text x="600" y="645" font-family="Apple SD Gothic Neo, Arial" font-size="18" font-weight="bold" fill="#ffffff" text-anchor="middle">결론: 국내 거래는 Upbit 추천 (문서 품질 + 거래량 + 개발 편의성)</text>
+  <text x="600" y="667" font-family="Apple SD Gothic Neo, Arial" font-size="14" fill="#e2e8f0" text-anchor="middle">글로벌 거래는 Binance 추천 (코인 수 + 데이터 양)</text>
+</svg>
