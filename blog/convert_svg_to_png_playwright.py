@@ -94,6 +94,9 @@ async def main():
         "bitcoin_chart_analysis.svg",
         "exchange_api_comparison.svg",
         "unified_trading_system.svg",
+        "stock_db_erd.svg",
+        "analysis_flow.svg",
+        "window_function_query.svg",
     ]
 
     print("🌐 Playwright를 사용한 SVG → PNG 변환 시작...\n")

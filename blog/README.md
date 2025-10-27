@@ -37,6 +37,17 @@
   - WebSocket 실시간 시세 및 자동 주문
   - 국내주식/해외주식/암호화폐 통합 시스템
 
+### 4. AI 분석 결과 DB에 저장하기: 비용 절감과 대시보드 구축
+- **파일**: [blog_db_design.md](blog_db_design.md)
+- **주제**: PostgreSQL 데이터베이스 설계로 AI API 비용 절감 및 대시보드 구축
+- **내용**:
+  - 문제점: 매번 AI API 호출 시 30초~1분 대기 + 비용 증가
+  - 해결책: DB 저장으로 즉시 조회 (밀리초) + 90% 비용 절감
+  - 정규화 설계: `stock_info` (마스터) ↔ `stock_analysis_results` (분석 결과)
+  - Window Function으로 종목별 최신 분석 조회
+  - 웹 대시보드: 통계 카드, 필터링, 히스토리 모달
+  - 실제 API 엔드포인트 구현 (`/stock-latest`)
+
 ## 🧪 예제 코드
 
 ### test_kis_blog_simple.py
@@ -83,6 +94,7 @@ poetry run python blog/test_upbit_blog.py
 - [x] **1편**: 한투 API로 실시간 주식 데이터 수집하기: AI 투자 분석의 시작
 - [x] **2편**: yfinance로 애플·테슬라 분석하기: 해외 주식 데이터 수집 완벽 가이드
 - [x] **3편**: Upbit으로 비트코인 24시간 분석하기: 암호화폐 자동매매의 시작점
+- [x] **4편**: AI 분석 결과 DB에 저장하기: 비용 절감과 대시보드 구축
 
 ## 🔗 참고 링크
 

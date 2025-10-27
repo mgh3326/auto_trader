@@ -1,8 +1,16 @@
 # yfinance로 애플·테슬라 분석하기: 해외 주식 데이터 수집 완벽 가이드
 
+> 이 글은 AI 기반 자동매매 시스템 시리즈의 **2편**입니다.
+>
+> **전체 시리즈:**
+> - [1편: 한투 API로 실시간 주식 데이터 수집하기](https://mgh3326.tistory.com/227)
+> - **2편: yfinance로 애플·테슬라 분석하기** ← 현재 글
+> - [3편: Upbit으로 비트코인 24시간 분석하기](https://mgh3326.tistory.com/229)
+> - 4편: AI 분석 결과 DB에 저장하기 (준비 중)
+
 ## 들어가며
 
-[지난 글](./blog_kis_api.md)에서 한투 API로 삼성전자를 분석하며 실시간 국내 주식 데이터 수집 방법을 알아봤습니다. 이번에는 **yfinance 라이브러리**를 활용하여 애플(AAPL), 테슬라(TSLA) 같은 미국 주식을 분석하는 완벽한 방법을 소개합니다. API 키 없이 무료로 펀더멘털 데이터까지 수집할 수 있는 yfinance의 강력한 기능을 함께 살펴봅시다.
+[지난 글](https://mgh3326.tistory.com/227)에서 한투 API로 삼성전자를 분석하며 실시간 국내 주식 데이터 수집 방법을 알아봤습니다. 이번에는 **yfinance 라이브러리**를 활용하여 애플(AAPL), 테슬라(TSLA) 같은 미국 주식을 분석하는 완벽한 방법을 소개합니다. API 키 없이 무료로 펀더멘털 데이터까지 수집할 수 있는 yfinance의 강력한 기능을 함께 살펴봅시다.
 
 ![yfinance 글로벌 주식 분석](이미지_URL_여기에_입력)
 *yfinance를 활용한 글로벌 주식 시장 데이터 수집*
@@ -523,16 +531,12 @@ results = await analyze_multiple_stocks(
 - 1편에서 만든 `build_prompt`를 그대로 사용 가능
 - Gemini AI는 PER/PBR 등 밸류에이션도 고려하여 분석
 
-**다음 편 예고**: Upbit API로 암호화폐도 자동 분석! 비트코인, 이더리움의 기술적 지표를 AI에게 물어보고, 실시간 WebSocket으로 시세 모니터링까지 구현해보겠습니다.
-
-**시리즈 전체 보기:**
-- [1편: 한투 API로 실시간 주식 데이터 수집하기: AI 투자 분석의 시작](./blog_kis_api.md)
-- 2편: yfinance로 애플·테슬라 분석하기: 해외 주식 데이터 수집 완벽 가이드 (현재 글)
+**다음 편 예고**: Upbit API로 암호화폐도 자동 분석! 비트코인, 이더리움의 기술적 지표를 AI에게 물어보고, 실시간 WebSocket으로 시세 모니터링까지 구현해보겠습니다. → [3편: Upbit으로 비트코인 24시간 분석하기](https://mgh3326.tistory.com/229)
 
 ---
 
 **참고 링크:**
 - [yfinance 공식 문서](https://pypi.org/project/yfinance/)
 - [전체 프로젝트 코드 (GitHub)](https://github.com/mgh3326/auto_trader)
-- [1편: 한투 API로 실시간 주식 데이터 수집하기](./blog_kis_api.md)
+- [1편: 한투 API로 실시간 주식 데이터 수집하기](https://mgh3326.tistory.com/227)
 - [Google Gemini API 문서](https://ai.google.dev/)
