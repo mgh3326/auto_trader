@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800">
+  <!-- Background -->
+  <rect width="1200" height="800" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="600" y="50" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" font-weight="bold" fill="#ffffff" text-anchor="middle">AI 분석 결과 저장 DB 설계</text>
+  <text x="600" y="85" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="18" fill="#94a3b8" text-anchor="middle">StockInfo (마스터) ↔ StockAnalysisResult (분석 결과)</text>
+
+  <!-- StockInfo Table (Left) -->
+  <g transform="translate(100, 150)">
+    <!-- Table Header -->
+    <rect width="400" height="60" rx="10" fill="#1e40af"/>
+    <text x="200" y="40" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">stock_info (마스터 테이블)</text>
+
+    <!-- Primary Key -->
+    <rect y="60" width="400" height="50" fill="#065f46"/>
+    <text x="20" y="90" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="16" font-weight="bold" fill="#10b981">🔑 id</text>
+    <text x="150" y="90" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#d1fae5">INTEGER PRIMARY KEY</text>
+
+    <!-- Unique Column -->
+    <rect y="110" width="400" height="45" fill="#1e293b"/>
+    <text x="20" y="137" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="15" font-weight="bold" fill="#fbbf24">⭐ symbol</text>
+    <text x="150" y="137" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#e2e8f0">VARCHAR(50) UNIQUE</text>
+
+    <!-- Regular Columns -->
+    <rect y="155" width="400" height="45" fill="#1e293b"/>
+    <text x="20" y="182" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="15" fill="#cbd5e1">name</text>
+    <text x="150" y="182" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">VARCHAR(100)</text>
+
+    <rect y="200" width="400" height="45" fill="#1e293b"/>
+    <text x="20" y="227" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="15" fill="#cbd5e1">instrument_type</text>
+    <text x="200" y="227" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">VARCHAR(50)</text>
+
+    <rect y="245" width="400" height="45" fill="#1e293b"/>
+    <text x="20" y="272" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="15" fill="#cbd5e1">exchange</text>
+    <text x="150" y="272" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">VARCHAR(50)</text>
+
+    <rect y="290" width="400" height="45" fill="#1e293b"/>
+    <text x="20" y="317" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="15" fill="#cbd5e1">sector</text>
+    <text x="150" y="317" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">VARCHAR(100)</text>
+
+    <rect y="335" width="400" height="45" fill="#1e293b"/>
+    <text x="20" y="362" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="15" fill="#cbd5e1">is_active</text>
+    <text x="150" y="362" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">BOOLEAN</text>
+
+    <!-- Example Data -->
+    <rect y="390" width="400" height="50" rx="5" fill="#422006"/>
+    <text x="200" y="420" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#fbbf24" text-anchor="middle">예: symbol='005930', name='삼성전자'</text>
+  </g>
+
+  <!-- StockAnalysisResult Table (Right) -->
+  <g transform="translate(700, 150)">
+    <!-- Table Header -->
+    <rect width="450" height="60" rx="10" fill="#7c3aed"/>
+    <text x="225" y="40" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="22" font-weight="bold" fill="#ffffff" text-anchor="middle">stock_analysis_results (분석 결과)</text>
+
+    <!-- Primary Key -->
+    <rect y="60" width="450" height="50" fill="#065f46"/>
+    <text x="20" y="90" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="16" font-weight="bold" fill="#10b981">🔑 id</text>
+    <text x="150" y="90" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#d1fae5">INTEGER PRIMARY KEY</text>
+
+    <!-- Foreign Key -->
+    <rect y="110" width="450" height="50" fill="#991b1b"/>
+    <text x="20" y="140" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="16" font-weight="bold" fill="#fca5a5">🔗 stock_info_id</text>
+    <text x="200" y="140" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#fee2e2">INTEGER FK → stock_info.id</text>
+
+    <!-- Analysis Columns -->
+    <rect y="160" width="450" height="45" fill="#1e293b"/>
+    <text x="20" y="187" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="15" fill="#cbd5e1">decision</text>
+    <text x="180" y="187" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">VARCHAR(20) (buy/hold/sell)</text>
+
+    <rect y="205" width="450" height="45" fill="#1e293b"/>
+    <text x="20" y="232" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="15" fill="#cbd5e1">confidence</text>
+    <text x="180" y="232" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">INTEGER (0-100)</text>
+
+    <!-- Price Range Columns -->
+    <rect y="250" width="450" height="45" fill="#1e293b"/>
+    <text x="20" y="277" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="14" fill="#cbd5e1">appropriate_buy_min/max</text>
+    <text x="280" y="277" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">FLOAT</text>
+
+    <rect y="295" width="450" height="45" fill="#1e293b"/>
+    <text x="20" y="322" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="14" fill="#cbd5e1">appropriate_sell_min/max</text>
+    <text x="280" y="322" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">FLOAT</text>
+
+    <rect y="340" width="450" height="45" fill="#1e293b"/>
+    <text x="20" y="367" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="14" fill="#cbd5e1">buy_hope_min/max</text>
+    <text x="280" y="367" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">FLOAT</text>
+
+    <rect y="385" width="450" height="45" fill="#1e293b"/>
+    <text x="20" y="412" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="14" fill="#cbd5e1">sell_target_min/max</text>
+    <text x="280" y="412" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">FLOAT</text>
+
+    <!-- Other Columns -->
+    <rect y="430" width="450" height="45" fill="#1e293b"/>
+    <text x="20" y="457" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="15" fill="#cbd5e1">reasons</text>
+    <text x="180" y="457" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">TEXT (JSON 배열)</text>
+
+    <rect y="475" width="450" height="45" fill="#1e293b"/>
+    <text x="20" y="502" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="15" fill="#cbd5e1">prompt</text>
+    <text x="180" y="502" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="13" fill="#94a3b8">TEXT (재현용)</text>
+  </g>
+
+  <!-- Relationship Arrow -->
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <polygon points="0 0, 10 3, 0 6" fill="#ef4444"/>
+    </marker>
+  </defs>
+
+  <!-- 1:N Relationship Line -->
+  <line x1="500" y1="290" x2="700" y2="290" stroke="#ef4444" stroke-width="3" marker-end="url(#arrowhead)"/>
+
+  <!-- Relationship Label -->
+  <rect x="520" y="250" width="160" height="35" rx="5" fill="#7c2d12"/>
+  <text x="600" y="273" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="16" font-weight="bold" fill="#fbbf24" text-anchor="middle">1:N 관계</text>
+
+  <!-- Cardinality Labels -->
+  <text x="510" y="280" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="20" font-weight="bold" fill="#ffffff">1</text>
+  <text x="680" y="280" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="20" font-weight="bold" fill="#ffffff">N</text>
+
+  <!-- Benefits Box -->
+  <rect x="100" y="650" width="1000" height="120" rx="10" fill="#1e40af"/>
+
+  <text x="600" y="685" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="20" font-weight="bold" fill="#ffffff" text-anchor="middle">정규화 설계의 장점</text>
+
+  <text x="120" y="715" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="16" fill="#e2e8f0">✓ 종목 정보 중복 방지 (symbol은 stock_info에서만 관리)</text>
+  <text x="120" y="740" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="16" fill="#e2e8f0">✓ 분석 히스토리 추적 용이 (같은 종목을 여러 번 분석 가능)</text>
+  <text x="120" y="765" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="16" fill="#e2e8f0">✓ AI API 비용 절감 (한 번 분석한 결과는 DB에서 재사용)</text>
+</svg>
