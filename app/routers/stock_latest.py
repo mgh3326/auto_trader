@@ -453,3 +453,72 @@ async def get_analyze_task_status(task_id: str):
         response["error"] = str(result.result)
     return response
 
+
+@router.get("/api/stock-symbol/{symbol}/latest")
+async def get_latest_analysis_by_symbol(
+    symbol: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Symbol로 최신 분석 결과 조회 (Holdings 대시보드용)"""
+    # 1. StockInfo 조회
+    stock_info_stmt = select(StockInfo).where(StockInfo.symbol == symbol)
+    stock_info_result = await db.execute(stock_info_stmt)
+    stock_info = stock_info_result.scalar_one_or_none()
+
+    if not stock_info:
+        raise HTTPException(status_code=404, detail="종목을 찾을 수 없습니다")
+
+    # 2. 최신 분석 결과 조회
+    analysis_stmt = (
+        select(StockAnalysisResult)
+        .where(StockAnalysisResult.stock_info_id == stock_info.id)
+        .order_by(StockAnalysisResult.created_at.desc())
+        .limit(1)
+    )
+    analysis_result = await db.execute(analysis_stmt)
+    analysis = analysis_result.scalar_one_or_none()
+
+    if not analysis:
+        raise HTTPException(status_code=404, detail="분석 결과가 없습니다")
+
+    # 3. 근거를 JSON에서 파싱
+    import json
+    reasons = []
+    try:
+        if analysis.reasons:
+            reasons = json.loads(analysis.reasons)
+    except:
+        reasons = []
+
+    # 4. Response 구성
+    return {
+        "id": analysis.id,
+        "symbol": stock_info.symbol,
+        "name": stock_info.name,
+        "instrument_type": stock_info.instrument_type,
+        "exchange": stock_info.exchange,
+        "sector": stock_info.sector,
+        "model_name": analysis.model_name,
+        "decision": analysis.decision,
+        "confidence": analysis.confidence,
+        "appropriate_buy_range": {
+            "min": analysis.appropriate_buy_min,
+            "max": analysis.appropriate_buy_max
+        },
+        "appropriate_sell_range": {
+            "min": analysis.appropriate_sell_min,
+            "max": analysis.appropriate_sell_max
+        },
+        "buy_hope_range": {
+            "min": analysis.buy_hope_min,
+            "max": analysis.buy_hope_max
+        },
+        "sell_target_range": {
+            "min": analysis.sell_target_min,
+            "max": analysis.sell_target_max
+        },
+        "reasons": reasons,
+        "detailed_text": analysis.detailed_text,
+        "created_at": analysis.created_at.isoformat() if analysis.created_at else None
+    }
+

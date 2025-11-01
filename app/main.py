@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.routers import dashboard, health, analysis_json, stock_latest
+from app.routers import dashboard, health, analysis_json, stock_latest, holdings
 
 
 def create_app() -> FastAPI:
@@ -10,6 +10,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(analysis_json.router)
     app.include_router(stock_latest.router)
+    app.include_router(holdings.router)
 
     return app
 
