@@ -1,4 +1,6 @@
 import asyncio
+import json
+import logging
 from asyncio import AbstractEventLoop
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, Query, HTTPException, BackgroundTasks
@@ -13,6 +15,8 @@ from app.models.analysis import StockInfo, StockAnalysisResult
 from app.models.base import Base
 from app.analysis.service_analyzers import KISAnalyzer, YahooAnalyzer, UpbitAnalyzer
 from app.core.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/stock-latest", tags=["Stock Latest Analysis"])
 
@@ -165,12 +169,12 @@ async def get_stock_analysis_history(
     history_results = []
     for analysis in analysis_history:
         # 근거를 JSON에서 파싱
-        import json
         reasons = []
         try:
             if analysis.reasons:
                 reasons = json.loads(analysis.reasons)
-        except:
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            logger.warning(f"Failed to parse reasons JSON for analysis {analysis.id}: {e}")
             reasons = []
 
         history_results.append({
@@ -482,12 +486,12 @@ async def get_latest_analysis_by_symbol(
         raise HTTPException(status_code=404, detail="분석 결과가 없습니다")
 
     # 3. 근거를 JSON에서 파싱
-    import json
     reasons = []
     try:
         if analysis.reasons:
             reasons = json.loads(analysis.reasons)
-    except:
+    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        logger.warning(f"Failed to parse reasons JSON for analysis {analysis.id}: {e}")
         reasons = []
 
     # 4. Response 구성
