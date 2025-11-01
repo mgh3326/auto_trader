@@ -15,16 +15,6 @@ async def main():
         # 분석할 국내 주식명 목록
 
         stock_names = [
-            "TIGER 미국나스닥100",
-            "TIGER 미국S&P500",
-            "RISE 미국나스닥100",
-            "RISE 미국S&P500",
-            "KODEX 미국나스닥100",
-            "TIGER 미국테크TOP10 INDXX",
-            "TIGER 미국필라델피아반도체나스닥",
-            "SOL 미국S&P500",
-        ]
-        stock_names = [
             "펩트론",
             "NAVER",
             "삼양컴텍",
@@ -132,9 +122,6 @@ async def main():
             "LG에너지솔루션",
         ]
 
-
-
-
         stock_names = [
             "현대차",
             "한국타이어앤테크놀로지",
@@ -194,8 +181,8 @@ async def main():
             "LG씨엔에스"
             "삼양식품"
             "효성중공업"
-            
-            
+
+
             "현대차",
             "한국타이어앤테크놀로지",
             "펩트론",
@@ -210,6 +197,21 @@ async def main():
 
         stock_names = [
 
+            "TIGER 미국나스닥100",
+            "TIGER 미국S&P500",
+            "RISE 미국나스닥100",
+            "RISE 미국S&P500",
+            "KODEX 미국나스닥100",
+            "TIGER 미국테크TOP10 INDXX",
+            "TIGER 미국필라델피아반도체나스닥",
+            "SOL 미국S&P500",
+            "ACE 미국S&P500채권혼합액티브",
+            "ACE 미국나스닥100미국채혼합50액티브",
+            "SOL 미국TOP5채권혼합40 Solactive",
+            "KODEX TRF3070"
+        ]
+        stock_names = [
+            "삼성전자우",
             "에이피알",
             "우리기술",
             "현대로템",
@@ -225,7 +227,6 @@ async def main():
             "다날",
             "삼성중공업",
             "종근당",
-            "삼성전자우",
         ]
         print(f"분석할 주식 목록: {stock_names}")
         print(f"총 {len(stock_names)}개 주식 분석 시작\n")
