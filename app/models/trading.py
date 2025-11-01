@@ -69,6 +69,25 @@ class User(Base):
     )
 
 
+class BrokerAccount(Base):
+    __tablename__ = "broker_accounts"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    broker_type: Mapped[str] = mapped_column(Text, nullable=False)  # kis, upbit, miraeasset, etc.
+    broker_name: Mapped[str] = mapped_column(Text, nullable=False)
+    account_no: Mapped[str | None] = mapped_column(Text)
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        TIMESTAMP(timezone=True), server_default="now()"
+    )
+    updated_at: Mapped[str] = mapped_column(
+        TIMESTAMP(timezone=True), server_default="now()", onupdate=None
+    )
+
+
 class UserChannel(Base):
     __tablename__ = "user_channels"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -91,6 +110,9 @@ class UserWatchItem(Base):
     )
     instrument_id: Mapped[int] = mapped_column(
         ForeignKey("instruments.id"), nullable=False
+    )
+    broker_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("broker_accounts.id"), nullable=True
     )
     note: Mapped[str | None] = mapped_column(Text)
     desired_buy_px: Mapped[float | None] = mapped_column(Numeric(18, 8))
