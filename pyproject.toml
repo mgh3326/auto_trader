@@ -28,6 +28,7 @@ dependencies = [
     "pyjwt>=2.8.0,<3.0.0",
     "websockets>=15,<15.1",
     "celery[redis]>=5.4.0,<6.0.0",
+    "flower>=2.0.1",
 ]
 
 [dependency-groups]
