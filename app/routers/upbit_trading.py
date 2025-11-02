@@ -255,12 +255,22 @@ async def execute_buy_orders():
                     from app.services.stock_info_service import process_buy_orders_with_analysis
                     result = await process_buy_orders_with_analysis(market, current_price, avg_buy_price)
 
-                    order_results.append({
-                        "currency": currency,
-                        "market": market,
-                        "success": True,
-                        "message": f"{currency} 매수 주문 완료"
-                    })
+                    # 결과 확인 후 적절한 응답 추가
+                    if result['success']:
+                        order_results.append({
+                            "currency": currency,
+                            "market": market,
+                            "success": True,
+                            "message": result['message'],
+                            "orders_placed": result.get('orders_placed', 0)
+                        })
+                    else:
+                        order_results.append({
+                            "currency": currency,
+                            "market": market,
+                            "success": False,
+                            "message": result['message']
+                        })
 
                 except Exception as e:
                     order_results.append({
@@ -355,19 +365,28 @@ async def execute_sell_orders():
 
                     if sell_prices:
                         # 분할 매도 주문 실행
-                        await place_multiple_sell_orders(market, balance, sell_prices, currency)
-                        order_results.append({
-                            "currency": currency,
-                            "market": market,
-                            "success": True,
-                            "message": f"{currency} {len(sell_prices)}단계 분할 매도 완료"
-                        })
+                        result = await place_multiple_sell_orders(market, balance, sell_prices, currency)
+                        if result['success']:
+                            order_results.append({
+                                "currency": currency,
+                                "market": market,
+                                "success": True,
+                                "message": result['message'],
+                                "orders_placed": result.get('orders_placed', 0)
+                            })
+                        else:
+                            order_results.append({
+                                "currency": currency,
+                                "market": market,
+                                "success": False,
+                                "message": result['message']
+                            })
                     else:
                         order_results.append({
                             "currency": currency,
                             "market": market,
                             "success": False,
-                            "error": "매도 조건에 맞는 가격 없음"
+                            "message": "매도 조건에 맞는 가격 없음"
                         })
 
                 except Exception as e:
@@ -566,15 +585,25 @@ async def get_sell_prices_for_coin(currency: str, avg_buy_price: float, current_
         return []
 
 
-async def place_multiple_sell_orders(market: str, balance: float, sell_prices: List[float], currency: str):
-    """여러 가격으로 분할 매도 주문"""
+async def place_multiple_sell_orders(market: str, balance: float, sell_prices: List[float], currency: str) -> dict:
+    """여러 가격으로 분할 매도 주문
+
+    Returns:
+        dict: {'success': bool, 'message': str, 'orders_placed': int}
+    """
     if not sell_prices:
-        return
+        return {'success': False, 'message': '매도 가격이 없습니다', 'orders_placed': 0}
+
+    orders_placed = 0
 
     if len(sell_prices) == 1:
         # 가격이 1개만 있으면 전량 매도
-        await place_sell_order_single(market, balance, sell_prices[0])
-        return
+        result = await place_sell_order_single(market, balance, sell_prices[0])
+        if result:
+            orders_placed = 1
+            return {'success': True, 'message': '전량 매도 주문 완료', 'orders_placed': orders_placed}
+        else:
+            return {'success': False, 'message': '매도 주문 실패', 'orders_placed': 0}
 
     # 가격 정렬
     sell_prices_sorted = sorted(sell_prices)
@@ -588,8 +617,12 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
     if min_split_volume < 0.00000001 or split_amount < 10000:
         # 분할 불가능 - 최저가에서 전량 매도
         lowest_price = min(sell_prices_sorted)
-        await place_sell_order_single(market, balance, lowest_price)
-        return
+        result = await place_sell_order_single(market, balance, lowest_price)
+        if result:
+            orders_placed = 1
+            return {'success': True, 'message': '분할 불가능하여 전량 매도', 'orders_placed': orders_placed}
+        else:
+            return {'success': False, 'message': '매도 주문 실패 (분할 불가)', 'orders_placed': 0}
 
     # 마지막 가격 제외한 나머지로 분할 매도
     split_prices = sell_prices_sorted[:-1]
@@ -607,8 +640,11 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
             adjusted_sell_price = upbit.adjust_price_to_upbit_unit(sell_price)
             price_str = f"{adjusted_sell_price}"
 
-            await upbit.place_sell_order(market, volume_str, price_str)
-        except:
+            result = await upbit.place_sell_order(market, volume_str, price_str)
+            if result:
+                orders_placed += 1
+        except Exception as e:
+            print(f"분할 매도 주문 실패: {e}")
             continue
 
     # 잔량 전량 매도
@@ -625,18 +661,31 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
             adjusted_highest_price = upbit.adjust_price_to_upbit_unit(highest_price)
             price_str = f"{adjusted_highest_price}"
 
-            await upbit.place_sell_order(market, volume_str, price_str)
-    except:
-        pass
+            result = await upbit.place_sell_order(market, volume_str, price_str)
+            if result:
+                orders_placed += 1
+    except Exception as e:
+        print(f"잔량 매도 주문 실패: {e}")
+
+    if orders_placed > 0:
+        return {'success': True, 'message': f'{orders_placed}단계 분할 매도 완료', 'orders_placed': orders_placed}
+    else:
+        return {'success': False, 'message': '모든 매도 주문 실패', 'orders_placed': 0}
 
 
 async def place_sell_order_single(market: str, balance: float, sell_price: float):
-    """단일 매도 주문"""
+    """단일 매도 주문
+
+    Returns:
+        dict: Order result or None if failed
+    """
     try:
         volume_str = f"{balance:.8f}"
         adjusted_sell_price = upbit.adjust_price_to_upbit_unit(sell_price)
         price_str = f"{adjusted_sell_price}"
 
-        await upbit.place_sell_order(market, volume_str, price_str)
-    except:
-        pass
+        result = await upbit.place_sell_order(market, volume_str, price_str)
+        return result
+    except Exception as e:
+        print(f"매도 주문 실패: {e}")
+        return None

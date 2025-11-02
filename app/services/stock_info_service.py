@@ -336,38 +336,61 @@ async def check_buy_condition_with_analysis(symbol: str, current_price: float, a
         return False, f"현재가 {format_decimal(current_price, '₩')}원이 매수 범위에 포함되지 않음 ({', '.join(range_info)})"
 
 
-async def process_buy_orders_with_analysis(symbol: str, current_price: float, avg_buy_price: float) -> None:
-    """분석 결과를 기반으로 조건 확인 후 매수 주문을 처리합니다."""
+async def process_buy_orders_with_analysis(symbol: str, current_price: float, avg_buy_price: float) -> Dict[str, Any]:
+    """분석 결과를 기반으로 조건 확인 후 매수 주문을 처리합니다.
+
+    Returns
+    -------
+    Dict[str, Any]
+        {
+            'success': bool,
+            'message': str,
+            'orders_placed': int,
+            'total_amount': float
+        }
+    """
     from app.core.db import AsyncSessionLocal
     from app.services import upbit
     from app.core.config import settings
-    
+
     # 1. KRW 잔고 먼저 확인
     print(f"💰 KRW 잔고 확인 중...")
     is_sufficient, krw_balance = await upbit.check_krw_balance_sufficient(settings.upbit_min_krw_balance)
-    
+
     print(f"현재 KRW 잔고: {format_decimal(krw_balance, '₩')}원")
     print(f"최소 필요 잔고: {format_decimal(settings.upbit_min_krw_balance, '₩')}원")
-    
+
     if not is_sufficient:
-        print(f"❌ KRW 잔고 부족: 매수를 위해서는 최소 {format_decimal(settings.upbit_min_krw_balance, '₩')}원이 필요합니다.")
-        return
-    
+        message = f"KRW 잔고 부족: 최소 {format_decimal(settings.upbit_min_krw_balance, '₩')}원 필요"
+        print(f"❌ {message}")
+        return {
+            'success': False,
+            'message': message,
+            'orders_placed': 0,
+            'total_amount': 0.0
+        }
+
     print(f"✅ KRW 잔고 충분: 매수 가능")
-    
+
     async with AsyncSessionLocal() as db:
         service = StockAnalysisService(db)
         analysis = await service.get_latest_analysis_by_symbol(symbol)
-        
+
         # 1. 기본 조건: 현재가가 평균 매수가보다 1% 낮아야 함
         target_price = avg_buy_price * 0.99
 
         # 2. 분석 결과가 없으면 1% 룰만으로 판단
         if not analysis:
-            print("✅ 매수 조건 충족: 분석 결과 없음, 1% 룰만 적용")
-            print("  ⚠️ 분석 결과가 없어 매수를 건너뜁니다.")
-            return
-        
+            message = "분석 결과 없음: 매수를 건너뜁니다"
+            print(f"✅ 매수 조건 충족: 분석 결과 없음, 1% 룰만 적용")
+            print(f"  ⚠️ {message}")
+            return {
+                'success': False,
+                'message': message,
+                'orders_placed': 0,
+                'total_amount': 0.0
+            }
+
         # 3. 분석 결과 확인 (4개 가격 값이 있는지만 확인)
         price_count = 0
         if analysis.appropriate_buy_min is not None:
@@ -378,32 +401,49 @@ async def process_buy_orders_with_analysis(symbol: str, current_price: float, av
             price_count += 1
         if analysis.buy_hope_max is not None:
             price_count += 1
-        
+
         if price_count == 0:
-            print("✅ 기본 매수 조건 충족: 분석 결과에 가격 정보 없음, 1% 룰만 적용")
-            print("  ⚠️ 분석 가격이 없어 매수를 건너뜁니다.")
-            return
-        
+            message = "분석 결과에 가격 정보 없음: 매수를 건너뜁니다"
+            print(f"✅ 기본 매수 조건 충족: 분석 결과에 가격 정보 없음, 1% 룰만 적용")
+            print(f"  ⚠️ {message}")
+            return {
+                'success': False,
+                'message': message,
+                'orders_placed': 0,
+                'total_amount': 0.0
+            }
+
         print(f"✅ 기본 매수 조건 충족: 1% 룰 통과, 분석 결과 {price_count}개 가격 확인 예정")
-        
+
         # 5. 4개 가격 값 중 평균 매수가보다 1% 낮고 현재가보다 낮은 것들을 찾아서 각각 10만원씩 매수
-        await _place_multiple_buy_orders_by_analysis(symbol, current_price, avg_buy_price, analysis)
+        return await _place_multiple_buy_orders_by_analysis(symbol, current_price, avg_buy_price, analysis)
 
 
-async def _place_multiple_buy_orders_by_analysis(market: str, current_price: float, avg_buy_price: float, analysis) -> None:
-    """분석 결과의 4개 가격 값 중 평균 매수가보다 1% 낮고 현재가보다 낮은 것들을 각각 설정된 금액씩 매수합니다."""
+async def _place_multiple_buy_orders_by_analysis(market: str, current_price: float, avg_buy_price: float, analysis) -> Dict[str, Any]:
+    """분석 결과의 4개 가격 값 중 평균 매수가보다 1% 낮고 현재가보다 낮은 것들을 각각 설정된 금액씩 매수합니다.
+
+    Returns
+    -------
+    Dict[str, Any]
+        {
+            'success': bool,
+            'message': str,
+            'orders_placed': int,
+            'total_amount': float
+        }
+    """
     from app.services import upbit
     from app.core.config import settings
-    
+
     print(f"📊 {market} 분석 기반 다중 매수 주문 처리")
     print(f"현재가: {format_decimal(current_price, '₩')}원")
     print(f"평균 매수가: {format_decimal(avg_buy_price, '₩')}원")
     print(f"매수 단위: {format_decimal(settings.upbit_buy_amount, '₩')}원")
-    
+
     # 1% 룰 기준가 계산
     threshold_price = avg_buy_price * 0.99
     print(f"매수 기준가 (99%): {format_decimal(threshold_price, '₩')}원")
-    
+
     # 4개 가격 값 추출
     buy_prices = []
 
@@ -415,23 +455,29 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
         buy_prices.append(("buy_hope_min", analysis.buy_hope_min))
     if analysis.buy_hope_max is not None:
         buy_prices.append(("buy_hope_max", analysis.buy_hope_max))
-    
+
     # 범위 정보 출력
     if analysis.appropriate_buy_min is not None and analysis.appropriate_buy_max is not None:
         print(f"적절한 매수 범위: {format_decimal(analysis.appropriate_buy_min, '₩')}원 ~ {format_decimal(analysis.appropriate_buy_max, '₩')}원")
     if analysis.buy_hope_min is not None and analysis.buy_hope_max is not None:
         print(f"희망 매수 범위: {format_decimal(analysis.buy_hope_min, '₩')}원 ~ {format_decimal(analysis.buy_hope_max, '₩')}원")
-    
+
     if not buy_prices:
-        print("❌ 분석 결과에 매수 가격 정보가 없습니다.")
-        return
-    
+        message = "분석 결과에 매수 가격 정보가 없습니다"
+        print(f"❌ {message}")
+        return {
+            'success': False,
+            'message': message,
+            'orders_placed': 0,
+            'total_amount': 0.0
+        }
+
     # 조건에 맞는 가격들 필터링 (평균 매수가의 99%보다 낮고 현재가보다 낮아야 함)
     valid_prices = []
     for price_name, price_value in buy_prices:
         is_below_threshold = price_value < threshold_price
         is_below_current = price_value < current_price
-        
+
         if is_below_threshold and is_below_current:
             valid_prices.append((price_name, price_value))
             threshold_diff = ((threshold_price - price_value) / threshold_price * 100)
@@ -444,30 +490,51 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
             if not is_below_current:
                 reasons.append("현재가보다 높음")
             print(f"❌ {price_name}: {format_decimal(price_value, '₩')}원 ({', '.join(reasons)})")
-    
+
     if not valid_prices:
-        print("⚠️ 조건에 맞는 매수 가격이 없습니다. (기준가보다 낮고 현재가보다 낮아야 함)")
-        return
-    
+        message = "조건에 맞는 매수 가격이 없습니다 (기준가보다 낮고 현재가보다 낮아야 함)"
+        print(f"⚠️ {message}")
+        return {
+            'success': False,
+            'message': message,
+            'orders_placed': 0,
+            'total_amount': 0.0
+        }
+
     print(f"\n🎯 총 {len(valid_prices)}개 가격에서 매수 주문 실행:")
-    
+
     # 각 가격별로 10만원씩 매수 주문
     success_count = 0
     total_orders = len(valid_prices)
-    
+
     for i, (price_name, buy_price) in enumerate(valid_prices, 1):
         print(f"\n[{i}/{total_orders}] {price_name} - {format_decimal(buy_price, '₩')}원")
-        
+
         result = await _place_single_buy_order(market, settings.upbit_buy_amount, buy_price, price_name)
         if result:
             success_count += 1
-        
+
         # 주문 간 약간의 지연 (API 제한 고려)
         if i < total_orders:
             import asyncio
             await asyncio.sleep(0.5)
-    
+
     print(f"\n📈 매수 주문 완료: {success_count}/{total_orders}개 성공")
+
+    if success_count > 0:
+        return {
+            'success': True,
+            'message': f"{success_count}개 매수 주문 성공",
+            'orders_placed': success_count,
+            'total_amount': success_count * settings.upbit_buy_amount
+        }
+    else:
+        return {
+            'success': False,
+            'message': "모든 매수 주문 실패",
+            'orders_placed': 0,
+            'total_amount': 0.0
+        }
 
 
 async def _place_single_buy_order(market: str, amount: int, buy_price: float, price_name: str):
