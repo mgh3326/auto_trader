@@ -409,7 +409,7 @@ class HoldingsService:
 
         # 메인 쿼리
         stmt = (
-            select(UserWatchItem, Instrument, Exchange, StockInfo, StockAnalysisResult)
+            select(UserWatchItem, Instrument, Exchange, StockAnalysisResult)
             .join(Instrument, UserWatchItem.instrument_id == Instrument.id)
             .join(Exchange, Instrument.exchange_id == Exchange.id)
             .outerjoin(StockInfo, StockInfo.symbol == Instrument.symbol)
@@ -435,7 +435,7 @@ class HoldingsService:
         rows = result.all()
 
         holdings = []
-        for watch_item, instrument, exchange, stock_info, analysis in rows:
+        for watch_item, instrument, exchange, analysis in rows:
             # user_watch_items의 값을 우선 사용, 없으면 분석 결과 사용
             desired_buy_px = watch_item.desired_buy_px
             target_sell_px = watch_item.target_sell_px
@@ -447,13 +447,8 @@ class HoldingsService:
                 if target_sell_px is None and analysis.sell_target_max is not None:
                     target_sell_px = analysis.sell_target_max
 
-            # 현재가는 분석 결과의 current_price 사용 (분석 시점의 가격)
+            # 현재가는 실시간 API에서 가져와야 함 (여기서는 None으로 설정)
             current_price = None
-            if analysis and analysis.current_price:
-                current_price = float(analysis.current_price)
-            elif stock_info and stock_info.current_price:
-                # fallback: stock_info의 current_price (향후 제거 예정)
-                current_price = float(stock_info.current_price)
 
             holdings.append({
                 "id": watch_item.id,
