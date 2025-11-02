@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <!-- Background Gradient -->
+  <defs>
+    <linearGradient id="bgGradient3" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#7c3aed;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#06b6d4;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bgGradient3)"/>
+
+  <!-- Main Title -->
+  <text x="600" y="120" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="52" font-weight="bold" fill="#ffffff" text-anchor="middle">Upbit으로 비트코인 24시간 분석</text>
+
+  <!-- Subtitle -->
+  <text x="600" y="180" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ddd6fe" text-anchor="middle">암호화폐 자동매매의 시작점</text>
+
+  <!-- Main Content Box -->
+  <rect x="150" y="230" width="900" height="320" fill="#1e293b" rx="20" opacity="0.9"/>
+
+  <!-- Icon/Symbol -->
+  <text x="600" y="310" font-family="Arial, sans-serif" font-size="80" text-anchor="middle">₿</text>
+
+  <!-- Key Points -->
+  <g transform="translate(250, 360)">
+    <text x="0" y="0" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#a78bfa" font-weight="bold">✓ 24시간 개장 (빠른 피드백)</text>
+    <text x="0" y="50" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#a78bfa" font-weight="bold">✓ JWT 인증 및 API 사용법</text>
+    <text x="0" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#a78bfa" font-weight="bold">✓ WebSocket 실시간 시세</text>
+    <text x="0" y="150" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#a78bfa" font-weight="bold">✓ 일봉/분봉 + Gemini 분석</text>
+  </g>
+
+  <!-- Bottom Badge -->
+  <rect x="350" y="570" width="500" height="50" fill="#ec4899" rx="25"/>
+  <text x="600" y="603" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">암호화폐 | 24시간 거래 | 비트코인</text>
+</svg>

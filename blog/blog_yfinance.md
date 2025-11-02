@@ -1,12 +1,14 @@
 # yfinance로 애플·테슬라 분석하기: 해외 주식 데이터 수집 완벽 가이드
 
+![yfinance 해외 주식 분석](images/yfinance_thumbnail.png)
+
 > 이 글은 AI 기반 자동매매 시스템 시리즈의 **2편**입니다.
 >
 > **전체 시리즈:**
 > - [1편: 한투 API로 실시간 주식 데이터 수집하기](https://mgh3326.tistory.com/227)
 > - **2편: yfinance로 애플·테슬라 분석하기** ← 현재 글
 > - [3편: Upbit으로 비트코인 24시간 분석하기](https://mgh3326.tistory.com/229)
-> - 4편: AI 분석 결과 DB에 저장하기 (준비 중)
+> - [4편: AI 분석 결과 DB에 저장하기](https://mgh3326.tistory.com/230)
 
 ## 들어가며
 

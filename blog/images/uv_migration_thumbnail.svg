@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <!-- Background Gradient -->
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e293b;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bgGradient)"/>
+
+  <!-- Main Title -->
+  <text x="600" y="120" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="56" font-weight="bold" fill="#ffffff" text-anchor="middle">Poetry → UV 마이그레이션</text>
+
+  <!-- Subtitle -->
+  <text x="600" y="180" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#94a3b8" text-anchor="middle">10배 빠른 의존성 관리로 생산성 향상</text>
+
+  <!-- Before/After Comparison -->
+  <!-- Poetry Box (Left) -->
+  <g transform="translate(100, 250)">
+    <rect width="450" height="300" fill="#7f1d1d" rx="15" stroke="#dc2626" stroke-width="3"/>
+
+    <text x="225" y="50" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="36" font-weight="bold" fill="#fca5a5" text-anchor="middle">Before: Poetry</text>
+
+    <!-- Slow Icon -->
+    <text x="225" y="120" font-family="Arial, sans-serif" font-size="60" text-anchor="middle">🐌</text>
+
+    <text x="225" y="175" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" fill="#fee2e2" text-anchor="middle">로컬 설치: 2분 30초</text>
+    <text x="225" y="210" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" fill="#fee2e2" text-anchor="middle">Docker 빌드: 3분</text>
+    <text x="225" y="245" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" fill="#fee2e2" text-anchor="middle">CI/CD: 4분 40초</text>
+
+    <text x="225" y="285" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="20" fill="#fca5a5" text-anchor="middle">Python 기반 (느림)</text>
+  </g>
+
+  <!-- Arrow -->
+  <g transform="translate(570, 400)">
+    <polygon points="0,0 60,30 0,60" fill="#fbbf24"/>
+    <text x="35" y="-20" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" font-weight="bold" fill="#fbbf24" text-anchor="middle">마이그레이션</text>
+  </g>
+
+  <!-- UV Box (Right) -->
+  <g transform="translate(650, 250)">
+    <rect width="450" height="300" fill="#065f46" rx="15" stroke="#10b981" stroke-width="3"/>
+
+    <text x="225" y="50" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="36" font-weight="bold" fill="#10b981" text-anchor="middle">After: UV</text>
+
+    <!-- Fast Icon -->
+    <text x="225" y="120" font-family="Arial, sans-serif" font-size="60" text-anchor="middle">⚡</text>
+
+    <text x="225" y="175" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" fill="#d1fae5" text-anchor="middle">로컬 설치: 10초 (93% ↓)</text>
+    <text x="225" y="210" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" fill="#d1fae5" text-anchor="middle">Docker 빌드: 35초 (81% ↓)</text>
+    <text x="225" y="245" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" fill="#d1fae5" text-anchor="middle">CI/CD: 1분 20초 (71% ↓)</text>
+
+    <text x="225" y="285" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="20" fill="#10b981" text-anchor="middle">Rust 기반 (10~100배 빠름)</text>
+  </g>
+
+  <!-- Bottom Badge -->
+  <rect x="350" y="570" width="500" height="50" fill="#1e40af" rx="25"/>
+  <text x="600" y="603" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">Python 3.8+ 지원 | PEP 621 표준</text>
+</svg>
