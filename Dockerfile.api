@@ -66,9 +66,9 @@ VOLUME ["/app/tmp"]
 # 환경 변수 설정 (가상환경 경로)
 ENV PATH="/app/.venv/bin:$PATH"
 
-# 헬스체크
+# 헬스체크 (curl 사용으로 Python subprocess 오버헤드 제거)
 HEALTHCHECK --interval=30s --timeout=3s --retries=5 \
-  CMD python -c "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); print('ok')" || exit 1
+  CMD curl -f http://localhost:8000/healthz || exit 1
 
 EXPOSE 8000
 
