@@ -11,16 +11,16 @@ RUN pip install --upgrade pip && pip install uv
 
 WORKDIR /app
 
-# pyproject.toml과 uv.lock 파일만 먼저 복사
+# pyproject.toml, uv.lock, README.md 파일 복사 (hatchling build에 필요)
 # Copy only the project metadata files first
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 
 # UV 캐시를 활용하여 빌드 속도 향상
 # Use build mount for caching to speed up subsequent builds
 # 가장 무거운 작업인 의존성 설치를 이 단계에서 실행합니다.
 # Execute the heaviest task, dependency installation, in this stage.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --no-dev --frozen
+    uv sync --frozen
 
 # ==============================================================================
 # STAGE 2: 'final' - 최종 실행 이미지를 만드는 스테이지

@@ -69,9 +69,11 @@ htmlcov/
 *.p12
 secrets/
 
-# Documentation
+# Documentation (but keep README.md for hatchling build)
 *.md
+!README.md
 README*
+!README.md
 
 # Docker
 Dockerfile*
