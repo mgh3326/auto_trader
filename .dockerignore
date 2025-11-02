@@ -27,6 +27,7 @@ wheels/
 MANIFEST
 
 # Virtual environments & Environment files
+# Note: .venv is excluded because UV creates it inside Docker during build
 .env
 .env.*
 .environment
