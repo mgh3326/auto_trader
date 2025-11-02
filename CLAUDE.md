@@ -240,14 +240,14 @@ class NewServiceAnalyzer(Analyzer):
 ```bash
 # 1. app/models/에서 모델 수정
 # 2. 마이그레이션 자동 생성
-poetry run alembic revision --autogenerate -m "description"
+uv run alembic revision --autogenerate -m "description"
 
 # 3. 생성된 마이그레이션 파일 검토 (alembic/versions/)
 # 4. 적용
-poetry run alembic upgrade head
+uv run alembic upgrade head
 
 # 5. 문제 시 롤백
-poetry run alembic downgrade -1
+uv run alembic downgrade -1
 ```
 
 **중요:** Alembic은 async 엔진 사용 - `alembic/env.py` 참고
@@ -382,13 +382,13 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 ### 데이터베이스 마이그레이션 충돌
 ```bash
 # 현재 버전 확인
-poetry run alembic current
+uv run alembic current
 
 # 특정 버전으로 롤백
-poetry run alembic downgrade <revision>
+uv run alembic downgrade <revision>
 
 # 마이그레이션 히스토리 확인
-poetry run alembic history
+uv run alembic history
 ```
 
 ### Google API 429 에러
