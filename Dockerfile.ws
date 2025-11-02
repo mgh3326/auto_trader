@@ -70,5 +70,9 @@ USER appuser
 # 볼륨 마운트 포인트 (Define volume mount point)
 VOLUME ["/app/tmp"]
 
+# 헬스체크 (Check if Python process is running)
+HEALTHCHECK --interval=30s --timeout=3s --retries=5 \
+  CMD pgrep -f "upbit_websocket_monitor.py" || exit 1
+
 # WebSocket 모니터 실행 (Start the WebSocket monitor)
 CMD ["python", "upbit_websocket_monitor.py"]
