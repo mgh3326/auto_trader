@@ -214,6 +214,14 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // HTML 이스케이프 함수 (XSS 방어)
+        function escapeHtml(text) {
+            if (text === null || text === undefined) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
         // 상품 타입별 배지 색상 함수
         function getInstrumentTypeBadge(type) {
             const badges = {
@@ -221,7 +229,7 @@
                 'equity_us': '<span class="badge bg-info">미국 주식</span>',
                 'crypto': '<span class="badge bg-success">암호화폐</span>'
             };
-            return badges[type] || `<span class="badge bg-secondary">${type}</span>`;
+            return badges[type] || `<span class="badge bg-secondary">${escapeHtml(type)}</span>`;
         }
 
         // 날짜 포맷팅 함수
@@ -406,7 +414,8 @@
                 // 에러가 있으면 표시
                 if (result.data.errors && result.data.errors.length > 0) {
                     const errorMsg = document.getElementById('errorMessage');
-                    errorMsg.innerHTML = '<strong>일부 오류 발생:</strong><br>' + result.data.errors.join('<br>');
+                    const escapedErrors = result.data.errors.map(e => escapeHtml(e)).join('<br>');
+                    errorMsg.innerHTML = '<strong>일부 오류 발생:</strong><br>' + escapedErrors;
                     errorMsg.style.display = 'block';
                 }
 
@@ -450,13 +459,14 @@
 
                 // 성공 메시지 표시
                 const successMsg = document.getElementById('successMessage');
-                successMsg.innerHTML = `<strong>분석 동기화 완료</strong><br>업데이트: ${result.data.updated}건, 스킵: ${result.data.skipped}건`;
+                successMsg.innerHTML = `<strong>분석 동기화 완료</strong><br>업데이트: ${escapeHtml(result.data.updated)}건, 스킵: ${escapeHtml(result.data.skipped)}건`;
                 successMsg.style.display = 'block';
 
                 // 에러가 있으면 표시
                 if (result.data.errors && result.data.errors.length > 0) {
                     const errorMsg = document.getElementById('errorMessage');
-                    errorMsg.innerHTML = '<strong>일부 오류 발생:</strong><br>' + result.data.errors.join('<br>');
+                    const escapedErrors = result.data.errors.map(e => escapeHtml(e)).join('<br>');
+                    errorMsg.innerHTML = '<strong>일부 오류 발생:</strong><br>' + escapedErrors;
                     errorMsg.style.display = 'block';
                 }
 
@@ -501,9 +511,9 @@
                         <div class="col-md-6">
                             <h6>기본 정보</h6>
                             <table class="table table-sm">
-                                <tr><td>종목</td><td><strong>${data.name} (${data.symbol})</strong></td></tr>
+                                <tr><td>종목</td><td><strong>${escapeHtml(data.name)} (${escapeHtml(data.symbol)})</strong></td></tr>
                                 <tr><td>상품타입</td><td>${getInstrumentTypeBadge(data.instrument_type)}</td></tr>
-                                <tr><td>모델명</td><td><code>${data.model_name}</code></td></tr>
+                                <tr><td>모델명</td><td><code>${escapeHtml(data.model_name)}</code></td></tr>
                                 <tr><td>분석일시</td><td>${formatDate(data.created_at)}</td></tr>
                             </table>
                         </div>
@@ -522,7 +532,7 @@
                             <h6>분석 근거</h6>
                             <ol class="mb-3">
                                 ${data.reasons && data.reasons.length > 0
-                                    ? data.reasons.map(r => `<li>${r}</li>`).join('')
+                                    ? data.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join('')
                                     : '<li class="text-muted">근거 정보가 없습니다.</li>'}
                             </ol>
                         </div>
@@ -578,7 +588,7 @@
                         <div class="col-12">
                             <h6>상세 분석 내용</h6>
                             <div class="alert alert-light">
-                                <pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">${data.detailed_text}</pre>
+                                <pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">${escapeHtml(data.detailed_text)}</pre>
                             </div>
                         </div>
                     </div>
