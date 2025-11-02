@@ -34,7 +34,7 @@ cd auto_trader
 
 2. 의존성 설치
 ```bash
-poetry install
+uv sync --all-groups
 ```
 
 3. 환경 변수 설정
@@ -55,12 +55,12 @@ cp env.example .env
 
 4. 데이터베이스 마이그레이션
 ```bash
-poetry run alembic upgrade head
+uv run alembic upgrade head
 ```
 
 5. 애플리케이션 실행
 ```bash
-poetry run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload
 ```
 
 ## 사용법
@@ -112,7 +112,7 @@ await analyzer.analyze_stock("삼성전자")
 
 개발 의존성 설치:
 ```bash
-poetry install --with test
+uv sync --all-groups
 ```
 
 ### 테스트 실행
@@ -121,28 +121,28 @@ poetry install --with test
 ```bash
 make test
 # 또는
-poetry run pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 단위 테스트만 실행:
 ```bash
 make test-unit
 # 또는
-poetry run pytest tests/ -v -m "not integration"
+uv run pytest tests/ -v -m "not integration"
 ```
 
 통합 테스트만 실행:
 ```bash
 make test-integration
 # 또는
-poetry run pytest tests/ -v -m "integration"
+uv run pytest tests/ -v -m "integration"
 ```
 
 커버리지 리포트와 함께 테스트 실행:
 ```bash
 make test-cov
 # 또는
-poetry run pytest tests/ -v --cov=app --cov-report=html
+uv run pytest tests/ -v --cov=app --cov-report=html
 ```
 
 ### 테스트 마커
