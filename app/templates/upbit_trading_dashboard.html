@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upbit 자동 매매 - Auto Trader</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .stats-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 8px;
+            padding: 1.2rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .stats-number {
+            font-size: 1.8rem;
+            font-weight: bold;
+            margin: 0;
+        }
+        .stats-label {
+            font-size: 0.9rem;
+            opacity: 0.9;
+            margin: 0;
+        }
+        .action-card {
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            background: white;
+        }
+        .action-card h5 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 0.8rem;
+        }
+        .action-card p {
+            font-size: 0.9rem;
+            color: #666;
+            margin-bottom: 1rem;
+        }
+        .btn-action {
+            width: 100%;
+            padding: 0.75rem;
+            font-weight: 600;
+        }
+        .coin-card {
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+            background: white;
+        }
+        .coin-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 0.3rem;
+        }
+        .coin-symbol {
+            font-family: monospace;
+            color: #666;
+            font-size: 0.9rem;
+        }
+        .coin-info {
+            font-size: 0.85rem;
+            margin: 0.3rem 0;
+        }
+        .profit-positive {
+            color: #198754;
+            font-weight: 600;
+        }
+        .profit-negative {
+            color: #dc3545;
+            font-weight: 600;
+        }
+        .loading-spinner {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .order-item {
+            border-left: 3px solid #0d6efd;
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 0.5rem;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .order-item.sell {
+            border-left-color: #dc3545;
+        }
+        .alert-custom {
+            padding: 0.75rem 1rem;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-currency-bitcoin"></i> Auto Trader
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        <a class="nav-link" href="/stock-latest/">종목 분석</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" href="/upbit-trading/">Upbit 자동매매</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-4">
+        <div class="row">
+            <!-- 왼쪽: 통계 및 액션 -->
+            <div class="col-md-4">
+                <h4 class="mb-3">
+                    <i class="bi bi-cash-stack"></i> Upbit 자동 매매 대시보드
+                </h4>
+
+                <!-- 통계 -->
+                <div class="stats-card">
+                    <p class="stats-label">KRW 잔고 (사용 가능)</p>
+                    <p class="stats-number" id="krw-balance">-</p>
+                    <p class="stats-label" style="margin-top: 0.5rem; font-size: 0.75rem;">
+                        주문 중: <span id="krw-locked">-</span> | 총: <span id="krw-total">-</span>
+                    </p>
+                </div>
+
+                <div class="stats-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
+                    <p class="stats-label">보유 코인 수</p>
+                    <p class="stats-number" id="coin-count">-</p>
+                </div>
+
+                <!-- 새로고침 버튼 -->
+                <button class="btn btn-outline-primary w-100 mb-3" onclick="loadMyCoins()">
+                    <i class="bi bi-arrow-clockwise"></i> 새로고침
+                </button>
+
+                <!-- 액션 카드 1: AI 분석 -->
+                <div class="action-card">
+                    <h5><i class="bi bi-robot"></i> AI 분석 실행</h5>
+                    <p>보유 코인에 대한 AI 투자 분석을 실행합니다. (백그라운드)</p>
+                    <button class="btn btn-primary btn-action" onclick="analyzeCoins()">
+                        <i class="bi bi-cpu"></i> 분석 시작
+                    </button>
+                </div>
+
+                <!-- 액션 카드 2: 자동 매수 -->
+                <div class="action-card">
+                    <h5><i class="bi bi-cart-plus"></i> 자동 매수 주문</h5>
+                    <p>AI 분석 결과를 기반으로 분할 매수 주문을 실행합니다.</p>
+                    <button class="btn btn-success btn-action" onclick="executeBuyOrders()">
+                        <i class="bi bi-arrow-down-circle"></i> 매수 주문
+                    </button>
+                </div>
+
+                <!-- 액션 카드 3: 자동 매도 -->
+                <div class="action-card">
+                    <h5><i class="bi bi-cart-dash"></i> 자동 매도 주문</h5>
+                    <p>AI 분석 결과를 기반으로 분할 매도 주문을 실행합니다.</p>
+                    <button class="btn btn-danger btn-action" onclick="executeSellOrders()">
+                        <i class="bi bi-arrow-up-circle"></i> 매도 주문
+                    </button>
+                </div>
+
+                <!-- 액션 카드 4: 미체결 주문 취소 -->
+                <div class="action-card">
+                    <h5><i class="bi bi-x-circle"></i> 미체결 주문 관리</h5>
+                    <p>현재 체결 대기 중인 모든 주문을 조회하거나 취소합니다.</p>
+                    <button class="btn btn-outline-secondary btn-action mb-2" onclick="loadOpenOrders()">
+                        <i class="bi bi-list-check"></i> 미체결 조회
+                    </button>
+                    <button class="btn btn-outline-danger btn-action" onclick="cancelAllOrders()">
+                        <i class="bi bi-trash"></i> 전체 취소
+                    </button>
+                </div>
+            </div>
+
+            <!-- 오른쪽: 보유 코인 목록 -->
+            <div class="col-md-8">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5><i class="bi bi-wallet2"></i> 보유 코인 목록</h5>
+                    <span class="badge bg-primary" id="tradable-count">0개</span>
+                </div>
+
+                <!-- 알림 영역 -->
+                <div id="alert-area"></div>
+
+                <!-- 보유 코인 목록 -->
+                <div id="coins-list">
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-wallet2" style="font-size: 3rem;"></i>
+                        <p class="mt-3">새로고침 버튼을 눌러 보유 코인을 불러오세요.</p>
+                    </div>
+                </div>
+
+                <!-- 미체결 주문 영역 -->
+                <div id="open-orders-section" style="display: none;">
+                    <hr class="my-4">
+                    <h5 class="mb-3"><i class="bi bi-hourglass-split"></i> 미체결 주문</h5>
+                    <div id="open-orders-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // 페이지 로드 시 보유 코인 조회
+        document.addEventListener('DOMContentLoaded', function() {
+            loadMyCoins();
+        });
+
+        // 보유 코인 조회
+        async function loadMyCoins() {
+            try {
+                const response = await fetch('/upbit-trading/api/my-coins');
+                const data = await response.json();
+
+                if (data.success) {
+                    // 통계 업데이트
+                    document.getElementById('krw-balance').textContent =
+                        new Intl.NumberFormat('ko-KR').format(data.krw_balance) + '원';
+                    document.getElementById('krw-locked').textContent =
+                        new Intl.NumberFormat('ko-KR').format(data.krw_locked) + '원';
+                    document.getElementById('krw-total').textContent =
+                        new Intl.NumberFormat('ko-KR').format(data.krw_total) + '원';
+                    document.getElementById('coin-count').textContent = data.tradable_coins_count + '개';
+                    document.getElementById('tradable-count').textContent = data.tradable_coins_count + '개';
+
+                    // 코인 목록 렌더링
+                    const coinsList = document.getElementById('coins-list');
+                    if (data.coins.length === 0) {
+                        coinsList.innerHTML = `
+                            <div class="text-center text-muted py-5">
+                                <i class="bi bi-inbox" style="font-size: 3rem;"></i>
+                                <p class="mt-3">거래 가능한 코인이 없습니다.</p>
+                            </div>
+                        `;
+                    } else {
+                        coinsList.innerHTML = data.coins.map(coin => {
+                            const profitRatePercent = (coin.profit_rate * 100).toFixed(2);
+                            const profitClass = coin.profit_rate >= 0 ? 'profit-positive' : 'profit-negative';
+                            const profitSign = coin.profit_rate >= 0 ? '+' : '';
+
+                            return `
+                                <div class="coin-card">
+                                    <div class="d-flex justify-content-between align-items-start">
+                                        <div>
+                                            <div class="coin-name">${coin.korean_name}</div>
+                                            <div class="coin-symbol">${coin.currency} (KRW-${coin.currency})</div>
+                                        </div>
+                                        <div class="text-end">
+                                            <div class="${profitClass}" style="font-size: 1.2rem;">
+                                                ${profitSign}${profitRatePercent}%
+                                            </div>
+                                            <div class="coin-info ${profitClass}">
+                                                ${profitSign}${new Intl.NumberFormat('ko-KR').format(coin.profit_loss)}원
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <hr class="my-2">
+                                    <div class="row coin-info">
+                                        <div class="col-6">보유 수량: ${coin.balance}</div>
+                                        <div class="col-6 text-end">현재가: ${new Intl.NumberFormat('ko-KR').format(coin.current_price)}원</div>
+                                    </div>
+                                    <div class="row coin-info">
+                                        <div class="col-6">평균 단가: ${new Intl.NumberFormat('ko-KR').format(coin.avg_buy_price)}원</div>
+                                        <div class="col-6 text-end">평가금액: ${new Intl.NumberFormat('ko-KR').format(coin.evaluation)}원</div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    }
+                } else {
+                    showAlert('보유 코인 조회 실패: ' + data.error, 'danger');
+                }
+            } catch (error) {
+                showAlert('보유 코인 조회 중 오류 발생: ' + error.message, 'danger');
+            }
+        }
+
+        // AI 분석 실행
+        async function analyzeCoins() {
+            if (!confirm('보유 코인에 대한 AI 분석을 시작하시겠습니까?\n(백그라운드에서 실행됩니다)')) {
+                return;
+            }
+
+            try {
+                showAlert('AI 분석이 백그라운드에서 시작되었습니다...', 'info');
+
+                const response = await fetch('/upbit-trading/api/analyze-coins', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    showAlert('✅ ' + data.message, 'success');
+                } else {
+                    showAlert('❌ 분석 실행 실패', 'danger');
+                }
+            } catch (error) {
+                showAlert('분석 실행 중 오류 발생: ' + error.message, 'danger');
+            }
+        }
+
+        // 자동 매수 주문
+        async function executeBuyOrders() {
+            if (!confirm('보유 코인에 대한 자동 매수 주문을 실행하시겠습니까?\n(기존 매수 주문은 취소됩니다)')) {
+                return;
+            }
+
+            try {
+                showAlert('자동 매수 주문을 실행 중입니다... <span class="loading-spinner"></span>', 'info');
+
+                const response = await fetch('/upbit-trading/api/buy-orders', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    const successCount = data.orders.filter(o => o.success).length;
+                    showAlert(`✅ ${successCount}/${data.orders.length}개 코인 매수 주문 완료`, 'success');
+
+                    // 주문 결과 표시
+                    const resultHtml = data.orders.map(order => {
+                        const icon = order.success ? '✅' : '❌';
+                        const msg = order.success ? order.message : order.error;
+                        return `<div>${icon} ${order.currency}: ${msg}</div>`;
+                    }).join('');
+                    showAlert(resultHtml, 'info');
+
+                    // 보유 코인 새로고침
+                    setTimeout(loadMyCoins, 2000);
+                } else {
+                    showAlert('❌ 매수 주문 실패', 'danger');
+                }
+            } catch (error) {
+                showAlert('매수 주문 중 오류 발생: ' + error.message, 'danger');
+            }
+        }
+
+        // 자동 매도 주문
+        async function executeSellOrders() {
+            if (!confirm('보유 코인에 대한 자동 매도 주문을 실행하시겠습니까?\n(기존 매도 주문은 취소됩니다)')) {
+                return;
+            }
+
+            try {
+                showAlert('자동 매도 주문을 실행 중입니다... <span class="loading-spinner"></span>', 'info');
+
+                const response = await fetch('/upbit-trading/api/sell-orders', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    const successCount = data.orders.filter(o => o.success).length;
+                    showAlert(`✅ ${successCount}/${data.orders.length}개 코인 매도 주문 완료`, 'success');
+
+                    // 주문 결과 표시
+                    const resultHtml = data.orders.map(order => {
+                        const icon = order.success ? '✅' : '❌';
+                        const msg = order.success ? order.message : order.error;
+                        return `<div>${icon} ${order.currency}: ${msg}</div>`;
+                    }).join('');
+                    showAlert(resultHtml, 'info');
+
+                    // 보유 코인 새로고침
+                    setTimeout(loadMyCoins, 2000);
+                } else {
+                    showAlert('❌ 매도 주문 실패', 'danger');
+                }
+            } catch (error) {
+                showAlert('매도 주문 중 오류 발생: ' + error.message, 'danger');
+            }
+        }
+
+        // 미체결 주문 조회
+        async function loadOpenOrders() {
+            try {
+                showAlert('미체결 주문을 조회 중입니다...', 'info');
+
+                const response = await fetch('/upbit-trading/api/open-orders');
+                const data = await response.json();
+
+                if (data.success) {
+                    const section = document.getElementById('open-orders-section');
+                    const list = document.getElementById('open-orders-list');
+
+                    if (data.orders.length === 0) {
+                        showAlert('미체결 주문이 없습니다.', 'info');
+                        section.style.display = 'none';
+                    } else {
+                        showAlert(`미체결 주문 ${data.total_count}개를 찾았습니다.`, 'success');
+                        section.style.display = 'block';
+
+                        list.innerHTML = data.orders.map(order => {
+                            const isBuy = order.side === 'bid';
+                            const sideText = isBuy ? '매수' : '매도';
+                            const sideClass = isBuy ? '' : 'sell';
+                            const sideIcon = isBuy ? 'arrow-down-circle' : 'arrow-up-circle';
+
+                            return `
+                                <div class="order-item ${sideClass}">
+                                    <div class="d-flex justify-content-between">
+                                        <div>
+                                            <i class="bi bi-${sideIcon}"></i>
+                                            <strong>${order.korean_name} (${order.currency})</strong> - ${sideText}
+                                        </div>
+                                        <div class="text-end">
+                                            <span class="badge bg-secondary">${order.state}</span>
+                                        </div>
+                                    </div>
+                                    <div class="mt-1" style="font-size: 0.85rem; color: #666;">
+                                        가격: ${new Intl.NumberFormat('ko-KR').format(order.price)}원 |
+                                        수량: ${order.volume} |
+                                        미체결: ${order.remaining_volume}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    }
+                } else {
+                    showAlert('미체결 주문 조회 실패: ' + data.error, 'danger');
+                }
+            } catch (error) {
+                showAlert('미체결 주문 조회 중 오류 발생: ' + error.message, 'danger');
+            }
+        }
+
+        // 모든 미체결 주문 취소
+        async function cancelAllOrders() {
+            if (!confirm('모든 미체결 주문을 취소하시겠습니까?')) {
+                return;
+            }
+
+            try {
+                showAlert('미체결 주문을 취소 중입니다... <span class="loading-spinner"></span>', 'info');
+
+                const response = await fetch('/upbit-trading/api/cancel-orders', {
+                    method: 'DELETE'
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    const totalCancelled = data.results.reduce((sum, r) => sum + (r.cancelled_count || 0), 0);
+                    showAlert(`✅ 총 ${totalCancelled}개 주문이 취소되었습니다.`, 'success');
+
+                    // 미체결 주문 섹션 숨기기
+                    document.getElementById('open-orders-section').style.display = 'none';
+
+                    // 보유 코인 새로고침
+                    setTimeout(loadMyCoins, 2000);
+                } else {
+                    showAlert('❌ 주문 취소 실패', 'danger');
+                }
+            } catch (error) {
+                showAlert('주문 취소 중 오류 발생: ' + error.message, 'danger');
+            }
+        }
+
+        // 알림 표시
+        function showAlert(message, type) {
+            const alertArea = document.getElementById('alert-area');
+            const alertId = 'alert-' + Date.now();
+
+            const alertHtml = `
+                <div id="${alertId}" class="alert alert-${type} alert-custom alert-dismissible fade show" role="alert">
+                    ${message}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            `;
+
+            alertArea.innerHTML = alertHtml + alertArea.innerHTML;
+
+            // 5초 후 자동 제거
+            setTimeout(() => {
+                const alert = document.getElementById(alertId);
+                if (alert) {
+                    alert.remove();
+                }
+            }, 5000);
+        }
+    </script>
+</body>
+</html>
