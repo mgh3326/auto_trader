@@ -64,7 +64,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     container_name: auto_trader_worker
-    command: bash -lc "poetry run celery -A app.core.celery_app.celery_app worker --loglevel=INFO"
+    command: bash -lc "uv run celery -A app.core.celery_app.celery_app worker --loglevel=INFO"
     env_file:
       - .env
     depends_on:

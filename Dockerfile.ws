@@ -4,7 +4,7 @@
 # STAGE 1: 'builder' - 의존성 설치를 전담하는 스테이지
 # This stage is dedicated to installing dependencies for the target architecture.
 # ==============================================================================
-FROM --platform=$BUILDPLATFORM python:3.12-slim AS builder
+FROM --platform=$TARGETPLATFORM python:3.12-slim AS builder
 
 # UV 설치 (Install UV)
 RUN pip install --upgrade pip && pip install uv

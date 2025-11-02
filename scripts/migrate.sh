@@ -42,10 +42,10 @@ fi
 
 # Python/Alembic 환경 확인
 check_python_env() {
-    if command -v poetry >/dev/null 2>&1; then
-        echo -e "${GREEN}✅ Using Poetry environment${NC}"
-        PYTHON_CMD="poetry run python"
-        ALEMBIC_CMD="poetry run alembic"
+    if command -v uv >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Using UV environment${NC}"
+        PYTHON_CMD="uv run python"
+        ALEMBIC_CMD="uv run alembic"
     elif [ -f "venv/bin/activate" ]; then
         echo -e "${GREEN}✅ Using virtual environment${NC}"
         source venv/bin/activate
