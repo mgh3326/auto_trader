@@ -34,18 +34,14 @@ psql --version
 
 ## 🐍 Python 환경 설정
 
-### Poetry 사용 (권장)
+### UV 사용 (권장)
 ```bash
-# Poetry 설치
-curl -sSL https://install.python-poetry.org | python3 -
-
-# PATH 추가
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
+# UV 설치
+pip install uv
 
 # 프로젝트 의존성 설치
 cd /path/to/auto_trader
-poetry install --only main
+uv sync
 ```
 
 ### Virtual Environment 사용
@@ -141,9 +137,9 @@ sudo -u autotrader psql "postgresql://auto_trader:password@localhost:5432/auto_t
 
 ### 2. Python 환경 테스트
 ```bash
-# Poetry 환경에서 테스트
+# UV 환경에서 테스트
 cd /home/autotrader/auto_trader
-sudo -u autotrader poetry run python -c "import asyncpg, redis; print('✅ Dependencies OK')"
+sudo -u autotrader uv run python -c "import asyncpg, redis; print('✅ Dependencies OK')"
 
 # 또는 가상환경에서 테스트
 sudo -u autotrader bash -c "cd /home/autotrader/auto_trader && source venv/bin/activate && python -c 'import asyncpg, redis; print(\"✅ Dependencies OK\")'"
@@ -246,9 +242,9 @@ sudo systemctl status postgresql
 
 ### 2. Python 의존성 문제
 ```bash
-# Poetry 환경 재설치
+# UV 환경 재설치
 cd /home/autotrader/auto_trader
-sudo -u autotrader poetry install --only main
+sudo -u autotrader uv sync
 
 # 또는 가상환경 재생성
 sudo -u autotrader rm -rf venv

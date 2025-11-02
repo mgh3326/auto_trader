@@ -27,6 +27,7 @@ wheels/
 MANIFEST
 
 # Virtual environments & Environment files
+# Note: .venv is excluded because UV creates it inside Docker during build
 .env
 .env.*
 .environment
@@ -69,9 +70,9 @@ htmlcov/
 *.p12
 secrets/
 
-# Documentation
+# Documentation (but keep README.md for hatchling build)
 *.md
-README*
+!README.md
 
 # Docker
 Dockerfile*

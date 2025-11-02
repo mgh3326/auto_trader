@@ -48,13 +48,28 @@
   - 웹 대시보드: 통계 카드, 필터링, 히스토리 모달
   - 실제 API 엔드포인트 구현 (`/stock-latest`)
 
+### 5. Python 프로젝트를 Poetry에서 UV로 마이그레이션하기: 10배 빠른 의존성 관리
+- **파일**: [blog_uv_migration.md](blog_uv_migration.md)
+- **주제**: Rust 기반 패키지 관리자 UV로 전환하여 개발 생산성 10배 향상
+- **내용**:
+  - Poetry의 문제점과 UV 선택 이유
+  - UV 소개 및 Poetry 대비 장점 (10~100배 빠른 성능)
+  - 마이그레이션 과정:
+    - pyproject.toml 표준화 (PEP 621)
+    - Dockerfile 최적화 (빌드 시간 81% 단축)
+    - GitHub Actions CI/CD 개선 (71% 단축)
+    - Makefile 업데이트
+  - 발생한 이슈와 해결 방법
+  - 성능 비교: 로컬/Docker/CI 모두 10배 이상 개선
+  - 팀원 온보딩 가이드 및 실전 팁
+
 ## 🧪 예제 코드
 
 ### test_kis_blog_simple.py
 독립 실행 가능한 KIS API + Gemini AI 예제
 
 ```bash
-poetry run python blog/test_kis_blog_simple.py
+uv run python blog/test_kis_blog_simple.py
 ```
 
 **주요 기능:**
@@ -67,7 +82,7 @@ poetry run python blog/test_kis_blog_simple.py
 독립 실행 가능한 yfinance + Gemini AI 예제
 
 ```bash
-poetry run python blog/test_yahoo_blog.py
+uv run python blog/test_yahoo_blog.py
 ```
 
 **주요 기능:**
@@ -80,7 +95,7 @@ poetry run python blog/test_yahoo_blog.py
 독립 실행 가능한 Upbit API + Gemini AI 예제
 
 ```bash
-poetry run python blog/test_upbit_blog.py
+uv run python blog/test_upbit_blog.py
 ```
 
 **주요 기능:**
@@ -89,12 +104,16 @@ poetry run python blog/test_upbit_blog.py
 - Gemini AI 분석 요청
 - 24시간 변동률, 거래량 등 정보 포함
 
-## 📚 시리즈 완성
+## 📚 블로그 완성 현황
 
+### AI 자동매매 시리즈
 - [x] **1편**: 한투 API로 실시간 주식 데이터 수집하기: AI 투자 분석의 시작
 - [x] **2편**: yfinance로 애플·테슬라 분석하기: 해외 주식 데이터 수집 완벽 가이드
 - [x] **3편**: Upbit으로 비트코인 24시간 분석하기: 암호화폐 자동매매의 시작점
 - [x] **4편**: AI 분석 결과 DB에 저장하기: 비용 절감과 대시보드 구축
+
+### 개발 인프라 개선
+- [x] **5편**: Python 프로젝트를 Poetry에서 UV로 마이그레이션하기: 10배 빠른 의존성 관리
 
 ## 🔗 참고 링크
 
@@ -103,6 +122,7 @@ poetry run python blog/test_upbit_blog.py
 - [Upbit API 문서](https://docs.upbit.com)
 - [yfinance 문서](https://pypi.org/project/yfinance/)
 - [Google Gemini API](https://ai.google.dev/)
+- [UV 공식 문서](https://github.com/astral-sh/uv)
 
 ## 📄 라이선스
 

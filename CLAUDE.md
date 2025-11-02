@@ -16,25 +16,28 @@ AI 기반 자동 거래 분석 시스템으로, 다양한 금융 데이터를 �
 
 ### 필수 요구사항
 - Python 3.11+
-- Poetry (의존성 관리)
+- UV (의존성 관리)
 - PostgreSQL (데이터베이스)
 - Redis (모델 제한 관리 및 캐싱)
 
 ### 초기 설정
 ```bash
+# UV 설치 (미설치 시)
+pip install uv
+
 # 의존성 설치
-poetry install                    # 프로덕션 의존성만
-poetry install --with test        # 테스트 의존성 포함
+uv sync                           # 프로덕션 의존성만
+uv sync --all-groups              # 모든 의존성 (test, dev 포함)
 
 # 환경 변수 설정
 cp env.example .env
 # .env 파일 편집하여 API 키 설정
 
 # 데이터베이스 마이그레이션
-poetry run alembic upgrade head
+uv run alembic upgrade head
 
 # 개발 서버 실행
-make dev                          # 또는 poetry run uvicorn app.main:app --reload
+make dev                          # 또는 uv run uvicorn app.main:app --reload
 ```
 
 ### Docker 환경
@@ -52,7 +55,7 @@ make test                         # 모든 테스트 실행
 make test-unit                    # 단위 테스트만
 make test-integration             # 통합 테스트만
 make test-cov                     # 커버리지 리포트 포함
-poetry run pytest tests/test_*.py -v -k "test_name"  # 특정 테스트만
+uv run pytest tests/test_*.py -v -k "test_name"  # 특정 테스트만
 ```
 
 ### 코드 품질
@@ -65,14 +68,14 @@ make security                     # bandit, safety 보안 검사
 ### 데이터베이스
 ```bash
 # 마이그레이션 생성 및 적용
-poetry run alembic revision --autogenerate -m "migration message"
-poetry run alembic upgrade head
+uv run alembic revision --autogenerate -m "migration message"
+uv run alembic upgrade head
 
 # 마이그레이션 롤백
-poetry run alembic downgrade -1
+uv run alembic downgrade -1
 
 # 현재 버전 확인
-poetry run alembic current
+uv run alembic current
 ```
 
 ### 개발 도구
@@ -237,14 +240,14 @@ class NewServiceAnalyzer(Analyzer):
 ```bash
 # 1. app/models/에서 모델 수정
 # 2. 마이그레이션 자동 생성
-poetry run alembic revision --autogenerate -m "description"
+uv run alembic revision --autogenerate -m "description"
 
 # 3. 생성된 마이그레이션 파일 검토 (alembic/versions/)
 # 4. 적용
-poetry run alembic upgrade head
+uv run alembic upgrade head
 
 # 5. 문제 시 롤백
-poetry run alembic downgrade -1
+uv run alembic downgrade -1
 ```
 
 **중요:** Alembic은 async 엔진 사용 - `alembic/env.py` 참고
@@ -379,13 +382,13 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 ### 데이터베이스 마이그레이션 충돌
 ```bash
 # 현재 버전 확인
-poetry run alembic current
+uv run alembic current
 
 # 특정 버전으로 롤백
-poetry run alembic downgrade <revision>
+uv run alembic downgrade <revision>
 
 # 마이그레이션 히스토리 확인
-poetry run alembic history
+uv run alembic history
 ```
 
 ### Google API 429 에러

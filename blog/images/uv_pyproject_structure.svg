@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900">
+  <!-- Background -->
+  <rect width="1200" height="900" fill="#0f172a"/>
+
+  <!-- Title -->
+  <text x="600" y="50" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" font-weight="bold" fill="#ffffff" text-anchor="middle">pyproject.toml 구조 변화</text>
+  <text x="600" y="85" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="18" fill="#94a3b8" text-anchor="middle">Poetry 자체 포맷 → PEP 621 표준</text>
+
+  <!-- Before: Poetry -->
+  <g transform="translate(50, 120)">
+    <rect width="540" height="60" fill="#dc2626" rx="10"/>
+    <text x="270" y="40" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="22" font-weight="bold" fill="#ffffff" text-anchor="middle">Before: Poetry 포맷</text>
+
+    <!-- Code Box -->
+    <rect y="70" width="540" height="700" fill="#1e293b" rx="8"/>
+
+    <text x="20" y="100" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#fbbf24">[tool.poetry]</text>
+    <text x="20" y="125" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">name = "auto-trader"</text>
+    <text x="20" y="150" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">version = "0.1.0"</text>
+    <text x="20" y="175" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">authors = ["robin"]</text>
+
+    <text x="20" y="210" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#fbbf24">[tool.poetry.dependencies]</text>
+    <text x="20" y="235" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">python = "^3.11"</text>
+    <text x="20" y="260" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">fastapi = "^0.116.1"</text>
+    <text x="20" y="285" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">pandas = "^2.3.0"</text>
+
+    <text x="20" y="320" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#fbbf24">[tool.poetry.group.test.dependencies]</text>
+    <text x="20" y="345" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">pytest = "^7.4.0"</text>
+    <text x="20" y="370" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">pytest-asyncio = "^0.21.0"</text>
+
+    <text x="20" y="405" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#fbbf24">[tool.poetry.group.dev.dependencies]</text>
+    <text x="20" y="430" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">black = "^23.0.0"</text>
+    <text x="20" y="455" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">mypy = "^1.5.0"</text>
+
+    <text x="20" y="490" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#fbbf24">[build-system]</text>
+    <text x="20" y="515" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">requires = ["poetry-core"]</text>
+    <text x="20" y="540" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#cbd5e1">build-backend = "poetry.core..."</text>
+
+    <!-- Issues -->
+    <rect y="580" width="540" height="180" fill="#7f1d1d" rx="5"/>
+    <text x="270" y="610" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="16" font-weight="bold" fill="#fca5a5" text-anchor="middle">문제점</text>
+    <text x="20" y="640" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#fee2e2">❌ Poetry 전용 포맷 (표준 아님)</text>
+    <text x="20" y="665" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#fee2e2">❌ ^ 버전 표기 (상한 불명확)</text>
+    <text x="20" y="690" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#fee2e2">❌ python = "^3.11" (버전 제약 복잡)</text>
+    <text x="20" y="715" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#fee2e2">❌ poetry-core 빌드 의존성</text>
+    <text x="20" y="740" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#fee2e2">❌ 중첩된 [tool.poetry.group.X]</text>
+  </g>
+
+  <!-- After: UV -->
+  <g transform="translate(610, 120)">
+    <rect width="540" height="60" fill="#10b981" rx="10"/>
+    <text x="270" y="40" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="22" font-weight="bold" fill="#ffffff" text-anchor="middle">After: PEP 621 표준</text>
+
+    <!-- Code Box -->
+    <rect y="70" width="540" height="700" fill="#1e293b" rx="8"/>
+
+    <text x="20" y="100" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#10b981">[project]</text>
+    <text x="20" y="125" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#d1fae5">name = "auto-trader"</text>
+    <text x="20" y="150" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#d1fae5">version = "0.1.0"</text>
+    <text x="20" y="175" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#d1fae5">authors = [{name="robin", ...}]</text>
+
+    <text x="20" y="210" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#10b981">requires-python = ">=3.12"</text>
+    <text x="20" y="235" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#10b981">[project.dependencies]</text>
+    <text x="20" y="260" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#d1fae5">fastapi = ">=0.116.1,&lt;0.117.0"</text>
+    <text x="20" y="285" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#d1fae5">pandas = ">=2.3.0,&lt;3.0.0"</text>
+
+    <text x="20" y="320" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#10b981">[dependency-groups]</text>
+    <text x="20" y="345" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#10b981">test = [</text>
+    <text x="40" y="370" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#d1fae5">"pytest>=7.4.0,&lt;8.0.0",</text>
+    <text x="40" y="395" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#d1fae5">"pytest-asyncio>=0.21.0,&lt;1.0.0",</text>
+    <text x="20" y="420" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#10b981">]</text>
+
+    <text x="20" y="445" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#10b981">dev = [</text>
+    <text x="40" y="470" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#d1fae5">"black>=23.0.0,&lt;24.0.0",</text>
+    <text x="40" y="495" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#d1fae5">"mypy>=1.5.0,&lt;2.0.0",</text>
+    <text x="20" y="520" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#10b981">]</text>
+
+    <text x="20" y="555" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#10b981">[build-system]</text>
+    <text x="20" y="580" font-family="Apple SD Gothic Neo, Courier, monospace" font-size="13" fill="#d1fae5">requires = ["hatchling"]</text>
+
+    <!-- Benefits -->
+    <rect y="620" width="540" height="150" fill="#065f46" rx="5"/>
+    <text x="270" y="650" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="16" font-weight="bold" fill="#10b981" text-anchor="middle">개선 사항</text>
+    <text x="20" y="680" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#d1fae5">✓ PEP 621 표준 ([project])</text>
+    <text x="20" y="705" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#d1fae5">✓ 명확한 버전 범위 (하한~상한)</text>
+    <text x="20" y="730" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#d1fae5">✓ 간결한 [dependency-groups]</text>
+    <text x="20" y="755" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="14" fill="#d1fae5">✓ 경량 hatchling 빌드</text>
+  </g>
+
+  <!-- Arrow -->
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <polygon points="0 0, 10 3, 0 6" fill="#fbbf24"/>
+    </marker>
+  </defs>
+  <line x1="590" y1="500" x2="610" y2="500" stroke="#fbbf24" stroke-width="4" marker-end="url(#arrow)"/>
+  <text x="600" y="490" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="16" font-weight="bold" fill="#fbbf24" text-anchor="middle">표준화</text>
+</svg>

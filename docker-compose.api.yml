@@ -28,7 +28,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     container_name: auto_trader_worker
-    command: bash -lc "poetry run celery -A app.core.celery_app.celery_app worker --loglevel=INFO -c 1 --max-tasks-per-child=100"
+    command: bash -lc "uv run celery -A app.core.celery_app.celery_app worker --loglevel=INFO -c 1 --max-tasks-per-child=100"
     env_file:
       - .env
     restart: unless-stopped
