@@ -84,29 +84,29 @@ class HoldingsService:
             )
             for stock in kr_stocks:
                 try:
-                    await self._upsert_holding(
-                        db=db,
-                        user_id=user_id,
-                        symbol=stock.get("pdno"),  # 종목코드
-                        name=stock.get("prdt_name"),  # 종목명
-                        instrument_type=InstrumentType.equity_kr,
-                        exchange_code="KRX",
-                        quantity=float(stock.get("hldg_qty", 0)),  # 보유수량
-                        current_price=float(stock.get("prpr", 0)),  # 현재가
-                        broker_account_id=kis_broker.id if kis_broker else None,
-                    )
+                    async with db.begin_nested():  # SAVEPOINT 생성
+                        await self._upsert_holding(
+                            db=db,
+                            user_id=user_id,
+                            symbol=stock.get("pdno"),  # 종목코드
+                            name=stock.get("prdt_name"),  # 종목명
+                            instrument_type=InstrumentType.equity_kr,
+                            exchange_code="KRX",
+                            quantity=float(stock.get("hldg_qty", 0)),  # 보유수량
+                            current_price=float(stock.get("prpr", 0)),  # 현재가
+                            broker_account_id=kis_broker.id if kis_broker else None,
+                        )
                     results["kr_stocks"]["items"].append({
                         "symbol": stock.get("pdno"),
                         "name": stock.get("prdt_name"),
                         "quantity": float(stock.get("hldg_qty", 0))
                     })
                 except Exception as e:
-                    await db.rollback()  # 에러 발생 시 롤백
+                    # SAVEPOINT가 자동으로 롤백되므로 여기서는 에러만 기록
                     results["errors"].append(f"국내주식 {stock.get('pdno')}: {str(e)}")
 
             results["kr_stocks"]["count"] = len(kr_stocks)
         except Exception as e:
-            await db.rollback()  # 에러 발생 시 롤백
             results["errors"].append(f"국내주식 조회 실패: {str(e)}")
 
         # 2. 미국주식 조회 및 업데이트 (나스닥 + 뉴욕증권거래소)
@@ -120,38 +120,38 @@ class HoldingsService:
 
             for stock in us_stocks:
                 try:
-                    # 거래소 코드 결정
-                    ovrs_excg_cd = stock.get("ovrs_excg_cd", "NASD")
-                    exchange_map = {
-                        "NASD": "NASDAQ",
-                        "NYSE": "NYSE",
-                        "AMEX": "AMEX"
-                    }
-                    exchange_code = exchange_map.get(ovrs_excg_cd, "NASDAQ")
+                    async with db.begin_nested():  # SAVEPOINT 생성
+                        # 거래소 코드 결정
+                        ovrs_excg_cd = stock.get("ovrs_excg_cd", "NASD")
+                        exchange_map = {
+                            "NASD": "NASDAQ",
+                            "NYSE": "NYSE",
+                            "AMEX": "AMEX"
+                        }
+                        exchange_code = exchange_map.get(ovrs_excg_cd, "NASDAQ")
 
-                    await self._upsert_holding(
-                        db=db,
-                        user_id=user_id,
-                        symbol=stock.get("ovrs_pdno"),  # 해외상품번호
-                        name=stock.get("ovrs_item_name"),  # 종목명
-                        instrument_type=InstrumentType.equity_us,
-                        exchange_code=exchange_code,
-                        quantity=float(stock.get("ord_psbl_qty", 0)),  # 주문가능수량
-                        current_price=float(stock.get("now_pric2", 0)),  # 현재가
-                        broker_account_id=kis_broker.id if kis_broker else None,
-                    )
+                        await self._upsert_holding(
+                            db=db,
+                            user_id=user_id,
+                            symbol=stock.get("ovrs_pdno"),  # 해외상품번호
+                            name=stock.get("ovrs_item_name"),  # 종목명
+                            instrument_type=InstrumentType.equity_us,
+                            exchange_code=exchange_code,
+                            quantity=float(stock.get("ord_psbl_qty", 0)),  # 주문가능수량
+                            current_price=float(stock.get("now_pric2", 0)),  # 현재가
+                            broker_account_id=kis_broker.id if kis_broker else None,
+                        )
                     results["us_stocks"]["items"].append({
                         "symbol": stock.get("ovrs_pdno"),
                         "name": stock.get("ovrs_item_name"),
                         "quantity": float(stock.get("ord_psbl_qty", 0))
                     })
                 except Exception as e:
-                    await db.rollback()  # 에러 발생 시 롤백
+                    # SAVEPOINT가 자동으로 롤백되므로 여기서는 에러만 기록
                     results["errors"].append(f"미국주식 {stock.get('ovrs_pdno')}: {str(e)}")
 
             results["us_stocks"]["count"] = len(us_stocks)
         except Exception as e:
-            await db.rollback()  # 에러 발생 시 롤백
             results["errors"].append(f"미국주식 조회 실패: {str(e)}")
 
         # 3. 암호화폐 조회 및 업데이트
@@ -164,33 +164,33 @@ class HoldingsService:
                     if currency == "KRW":  # 원화는 제외
                         continue
 
-                    # Upbit 마켓 코드 생성 (예: KRW-BTC)
-                    market_code = f"KRW-{currency}"
+                    async with db.begin_nested():  # SAVEPOINT 생성
+                        # Upbit 마켓 코드 생성 (예: KRW-BTC)
+                        market_code = f"KRW-{currency}"
 
-                    await self._upsert_holding(
-                        db=db,
-                        user_id=user_id,
-                        symbol=market_code,
-                        name=currency,
-                        instrument_type=InstrumentType.crypto,
-                        exchange_code="UPBIT",
-                        quantity=float(coin.get("balance", 0)),  # 보유수량
-                        current_price=float(coin.get("avg_buy_price", 0)),  # 평균매수가
-                        broker_account_id=upbit_broker.id if upbit_broker else None,
-                    )
+                        await self._upsert_holding(
+                            db=db,
+                            user_id=user_id,
+                            symbol=market_code,
+                            name=currency,
+                            instrument_type=InstrumentType.crypto,
+                            exchange_code="UPBIT",
+                            quantity=float(coin.get("balance", 0)),  # 보유수량
+                            current_price=float(coin.get("avg_buy_price", 0)),  # 평균매수가
+                            broker_account_id=upbit_broker.id if upbit_broker else None,
+                        )
                     results["crypto"]["items"].append({
                         "symbol": market_code,
                         "name": currency,
                         "quantity": float(coin.get("balance", 0))
                     })
                 except Exception as e:
-                    await db.rollback()  # 에러 발생 시 롤백
+                    # SAVEPOINT가 자동으로 롤백되므로 여기서는 에러만 기록
                     results["errors"].append(f"암호화폐 {coin.get('currency')}: {str(e)}")
 
             # KRW 제외한 개수
             results["crypto"]["count"] = len([c for c in crypto if c.get("currency") != "KRW"])
         except Exception as e:
-            await db.rollback()  # 에러 발생 시 롤백
             results["errors"].append(f"암호화폐 조회 실패: {str(e)}")
 
         await db.commit()
