@@ -7,19 +7,18 @@
 # Build dependencies for the TARGET platform (not the build host)
 FROM --platform=$TARGETPLATFORM python:3.11-slim AS builder
 
-# Poetry 설치
-RUN pip install --upgrade pip && pip install poetry
+# UV 설치
+RUN pip install --upgrade pip && pip install uv
 
 WORKDIR /app
 
-# pyproject.toml과 poetry.lock 파일만 먼저 복사
-COPY pyproject.toml poetry.lock ./
+# pyproject.toml과 uv.lock 파일만 먼저 복사
+COPY pyproject.toml uv.lock ./
 
-# Poetry 캐시를 활용하여 빌드 속도 향상
+# UV 캐시를 활용하여 빌드 속도 향상
 # 가장 무거운 작업인 의존성 설치를 이 단계에서 실행합니다.
-RUN --mount=type=cache,target=/root/.cache \
-    poetry config virtualenvs.create false \
-    && poetry install --only main --no-root --no-interaction --no-ansi
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --no-dev --frozen
 
 # ==============================================================================
 # STAGE 2: 'final' - 최종 실행 이미지를 만드는 스테이지
@@ -43,9 +42,9 @@ WORKDIR /app
 RUN useradd -u 10001 -m appuser
 
 # ✨ 가장 중요한 부분 ✨
-# 'builder' 스테이지에서 설치 완료된 패키지들을 그대로 복사해옵니다.
-# 이렇게 하면 이 단계에서 다시 'poetry install'을 실행할 필요가 없습니다.
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+# 'builder' 스테이지에서 설치 완료된 .venv를 그대로 복사해옵니다.
+# UV는 .venv에 의존성을 설치하므로 이를 복사합니다.
+COPY --from=builder /app/.venv /app/.venv
 
 # 앱 소스 코드 복사
 COPY . .
@@ -63,6 +62,9 @@ USER appuser
 
 # 볼륨 마운트 포인트
 VOLUME ["/app/tmp"]
+
+# 환경 변수 설정 (가상환경 경로)
+ENV PATH="/app/.venv/bin:$PATH"
 
 # 헬스체크
 HEALTHCHECK --interval=30s --timeout=3s --retries=5 \
