@@ -97,6 +97,11 @@ async def main():
         "stock_db_erd.svg",
         "analysis_flow.svg",
         "window_function_query.svg",
+        "uv_performance_comparison.svg",
+        "uv_architecture_comparison.svg",
+        "uv_pyproject_structure.svg",
+        "uv_docker_optimization.svg",
+        "uv_cicd_pipeline.svg",
     ]
 
     print("🌐 Playwright를 사용한 SVG → PNG 변환 시작...\n")
