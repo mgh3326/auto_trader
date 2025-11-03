@@ -36,7 +36,9 @@ async def upbit_trading_dashboard(request: Request):
 
 
 @router.get("/api/my-coins")
-async def get_my_coins():
+async def get_my_coins(
+    db: AsyncSession = Depends(get_db),
+):
     """보유 코인 조회 API"""
     try:
         # Upbit 상수 초기화
@@ -59,6 +61,10 @@ async def get_my_coins():
         if tradable_coins:
             market_codes = [f"KRW-{coin['currency']}" for coin in tradable_coins]
             current_prices = await upbit.fetch_multiple_current_prices(market_codes)
+            analysis_service = StockAnalysisService(db)
+            latest_analysis_map = await analysis_service.get_latest_analysis_results_for_coins(
+                list(dict.fromkeys(market_codes))
+            )
 
             # 수익률 계산
             for coin in tradable_coins:
@@ -98,6 +104,24 @@ async def get_my_coins():
                     coin['evaluation'] = 0
                     coin['profit_loss'] = 0
 
+                analysis = latest_analysis_map.get(market)
+                coin['market'] = market
+                if analysis:
+                    coin['analysis_id'] = analysis.id
+                    coin['stock_info_id'] = analysis.stock_info_id
+                    coin['last_analysis_at'] = (
+                        analysis.created_at.isoformat() if analysis.created_at else None
+                    )
+                    coin['last_analysis_decision'] = analysis.decision
+                    coin['analysis_confidence'] = (
+                        float(analysis.confidence) if analysis.confidence is not None else None
+                    )
+                else:
+                    coin['analysis_id'] = None
+                    coin['stock_info_id'] = None
+                    coin['last_analysis_at'] = None
+                    coin['last_analysis_decision'] = None
+                    coin['analysis_confidence'] = None
         # KRW 잔고
         krw_balance = 0
         krw_locked = 0
