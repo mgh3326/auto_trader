@@ -390,6 +390,13 @@
                             const profitClass = profitRate >= 0 ? 'profit-positive' : 'profit-negative';
                             const profitSign = profitRate >= 0 ? '+' : '';
                             const lastAnalysisText = formatLastAnalysisTime(coin.last_analysis_at);
+                            const balanceDisplay = coin.balance_display
+                                ?? formatCoinAmount(coin.balance_raw ?? coin.balance);
+                            const lockedDisplay = coin.locked_display
+                                ?? formatCoinAmount(coin.locked_raw ?? coin.locked);
+                            const totalDisplay = formatCoinAmount(
+                                Number(coin.balance ?? 0) + Number(coin.locked ?? 0)
+                            );
                             const analysisMeta = coin.last_analysis_decision
                                 ? `<div class="d-flex align-items-center gap-2 flex-wrap mt-1">
                                         ${getDecisionBadge(coin.last_analysis_decision)}
@@ -426,7 +433,11 @@
                                     </div>
                                     <hr class="my-2">
                                     <div class="row coin-info">
-                                        <div class="col-6">보유 수량: ${coin.balance}</div>
+                                        <div class="col-6">매도 가능 수량: ${balanceDisplay}</div>
+                                        <div class="col-6 text-end">주문 중: ${lockedDisplay}</div>
+                                    </div>
+                                    <div class="row coin-info">
+                                        <div class="col-6">총 수량: ${totalDisplay}</div>
                                         <div class="col-6 text-end">현재가: ${new Intl.NumberFormat('ko-KR').format(coin.current_price)}원</div>
                                     </div>
                                     <div class="row coin-info">
@@ -929,6 +940,24 @@
                 return '-';
             }
             return `${Number(confidence).toFixed(1)}%`;
+        }
+
+        function formatCoinAmount(value) {
+            if (value === undefined || value === null || value === '') {
+                return '0';
+            }
+            const numberValue = Number(value);
+            if (!Number.isFinite(numberValue)) {
+                return String(value);
+            }
+            if (Math.abs(numberValue) >= 1) {
+                return numberValue.toLocaleString('ko-KR', {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 8
+                });
+            }
+            const fixed = numberValue.toFixed(8);
+            return fixed.replace(/0+$/, '').replace(/\.$/, '') || '0';
         }
 
         function getDecisionBadge(decision) {

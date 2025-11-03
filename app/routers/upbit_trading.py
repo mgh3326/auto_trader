@@ -7,6 +7,7 @@ Upbit 자동 매매 웹 인터페이스 라우터
 """
 
 import asyncio
+from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -27,6 +28,23 @@ router = APIRouter(prefix="/upbit-trading", tags=["Upbit Trading"])
 
 # 템플릿 설정
 templates = Jinja2Templates(directory="app/templates")
+
+
+def _to_decimal(value) -> Decimal:
+    """입력 값을 Decimal로 안전하게 변환"""
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError):
+        return Decimal("0")
+
+
+def _format_coin_amount(value: Decimal) -> str:
+    """코인 수량 표시용 문자열 반환"""
+    normalized = value.normalize()
+    formatted = format(normalized, 'f')
+    if '.' in formatted:
+        formatted = formatted.rstrip('0').rstrip('.')
+    return formatted or '0'
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -70,13 +88,23 @@ async def get_my_coins(
             for coin in tradable_coins:
                 currency = coin['currency']
                 market = f"KRW-{currency}"
-                balance = float(coin.get('balance', 0))
-                locked = float(coin.get('locked', 0))
+                balance_raw = coin.get('balance', '0')
+                locked_raw = coin.get('locked', '0')
+                balance_decimal = _to_decimal(balance_raw)
+                locked_decimal = _to_decimal(locked_raw)
+                balance = float(balance_decimal)
+                locked = float(locked_decimal)
                 avg_buy_price = float(coin.get('avg_buy_price', 0))
 
                 # 한글 이름 찾기
                 korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency, currency)
                 coin['korean_name'] = korean_name
+                coin['balance_raw'] = str(balance_raw)
+                coin['locked_raw'] = str(locked_raw)
+                coin['balance'] = balance
+                coin['locked'] = locked
+                coin['balance_display'] = _format_coin_amount(balance_decimal)
+                coin['locked_display'] = _format_coin_amount(locked_decimal)
 
                 if market in current_prices:
                     current_price = current_prices[market]
@@ -127,8 +155,10 @@ async def get_my_coins(
         krw_locked = 0
         for coin in my_coins:
             if coin.get("currency") == "KRW":
-                krw_balance = float(coin.get("balance", 0))
-                krw_locked = float(coin.get("locked", 0))
+                balance_decimal = _to_decimal(coin.get("balance", "0"))
+                locked_decimal = _to_decimal(coin.get("locked", "0"))
+                krw_balance = int(balance_decimal)
+                krw_locked = int(locked_decimal)
                 break
 
         return {
