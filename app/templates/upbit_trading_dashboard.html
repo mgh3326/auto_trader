@@ -403,7 +403,7 @@
                                         <span class="small text-muted">신뢰도 ${formatConfidence(coin.analysis_confidence)}</span>
                                    </div>`
                                 : `<div class="small text-muted mt-1">분석 정보가 없습니다.</div>`;
-                            const analysisButton = coin.analysis_id
+                            const analysisDetailButton = coin.analysis_id
                                 ? `<button
                                         class="btn btn-outline-primary btn-sm coin-analysis-btn"
                                         data-analysis-id="${coin.analysis_id}"
@@ -414,6 +414,39 @@
                                 : `<button class="btn btn-outline-secondary btn-sm" disabled>
                                         <i class="bi bi-search"></i> 분석 기록 없음
                                    </button>`;
+                            const analyzeButton = `
+                                <button
+                                    class="btn btn-outline-info btn-sm coin-analyze-btn"
+                                    data-currency="${escapeHtml(coin.currency)}"
+                                    data-korean-name="${escapeHtml(coin.korean_name)}"
+                                >
+                                    <i class="bi bi-robot"></i> 분석 실행
+                                </button>
+                            `;
+                            const buyButton = `
+                                <button
+                                    class="btn btn-outline-success btn-sm coin-buy-btn"
+                                    data-currency="${escapeHtml(coin.currency)}"
+                                >
+                                    <i class="bi bi-cart-plus"></i> 분할 매수
+                                </button>
+                            `;
+                            const sellButton = `
+                                <button
+                                    class="btn btn-outline-danger btn-sm coin-sell-btn"
+                                    data-currency="${escapeHtml(coin.currency)}"
+                                >
+                                    <i class="bi bi-cart-dash"></i> 분할 매도
+                                </button>
+                            `;
+                            const actionButtons = `
+                                <div class="d-flex flex-wrap gap-2 justify-content-lg-end">
+                                    ${analysisDetailButton}
+                                    ${analyzeButton}
+                                    ${buyButton}
+                                    ${sellButton}
+                                </div>
+                            `;
 
                             return `
                                 <div class="coin-card">
@@ -449,12 +482,12 @@
                                             <div class="small text-muted">${lastAnalysisText}</div>
                                             ${analysisMeta}
                                         </div>
-                                        ${analysisButton}
+                                        ${actionButtons}
                                     </div>
                                 </div>
                             `;
                         }).join('');
-                        attachAnalysisButtonHandlers();
+                        attachCoinActionHandlers();
                     }
                 } else {
                     showAlert('보유 코인 조회 실패: ' + data.error, 'danger');
@@ -893,9 +926,8 @@
             }
         }
 
-        function attachAnalysisButtonHandlers() {
-            const buttons = document.querySelectorAll('.coin-analysis-btn');
-            buttons.forEach(button => {
+        function attachCoinActionHandlers() {
+            document.querySelectorAll('.coin-analysis-btn').forEach(button => {
                 button.addEventListener('click', () => {
                     const analysisId = Number(button.dataset.analysisId);
                     const symbol = button.dataset.symbol;
@@ -908,6 +940,127 @@
                     openCoinAnalysisDetail(analysisId, symbol, name);
                 });
             });
+
+            document.querySelectorAll('.coin-analyze-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    const currency = button.dataset.currency;
+                    const koreanName = button.dataset.koreanName;
+                    triggerCoinAnalysis(currency, koreanName, button);
+                });
+            });
+
+            document.querySelectorAll('.coin-buy-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    const currency = button.dataset.currency;
+                    triggerCoinBuy(currency, button);
+                });
+            });
+
+            document.querySelectorAll('.coin-sell-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    const currency = button.dataset.currency;
+                    triggerCoinSell(currency, button);
+                });
+            });
+        }
+
+        async function triggerCoinAnalysis(currency, koreanName, button) {
+            if (!currency) return;
+            const coinCode = currency.toUpperCase();
+            const displayName = koreanName || coinCode;
+
+            if (!confirm(`${displayName} (${coinCode})에 대한 AI 분석을 실행할까요?`)) {
+                return;
+            }
+
+            const originalContent = button.innerHTML;
+            button.disabled = true;
+            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 요청 중...';
+
+            try {
+                const response = await fetch(`/upbit-trading/api/coin/${encodeURIComponent(coinCode)}/analysis`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    showAlert(data.message || `${displayName} 분석이 시작되었습니다.`, 'success');
+                } else {
+                    const errorMessage = data.error || data.message || `${displayName} 분석 요청에 실패했습니다.`;
+                    showAlert(`❌ ${errorMessage}`, 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ ${displayName} 분석 요청 중 오류 발생: ${error.message}`, 'danger');
+            } finally {
+                button.disabled = false;
+                button.innerHTML = originalContent;
+            }
+        }
+
+        async function triggerCoinBuy(currency, button) {
+            if (!currency) return;
+            const coinCode = currency.toUpperCase();
+
+            if (!confirm(`${coinCode}에 대한 분할 매수 주문을 실행할까요? 기존 매수 주문은 취소됩니다.`)) {
+                return;
+            }
+
+            const originalContent = button.innerHTML;
+            button.disabled = true;
+            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 요청 중...';
+
+            try {
+                const response = await fetch(`/upbit-trading/api/coin/${encodeURIComponent(coinCode)}/buy-orders`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    showAlert(data.message || `${coinCode} 분할 매수 주문이 시작되었습니다.`, 'success');
+                    setTimeout(loadMyCoins, 2000);
+                } else {
+                    const errorMessage = data.error || data.message || `${coinCode} 매수 주문 요청에 실패했습니다.`;
+                    showAlert(`❌ ${errorMessage}`, 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ ${coinCode} 매수 주문 요청 중 오류 발생: ${error.message}`, 'danger');
+            } finally {
+                button.disabled = false;
+                button.innerHTML = originalContent;
+            }
+        }
+
+        async function triggerCoinSell(currency, button) {
+            if (!currency) return;
+            const coinCode = currency.toUpperCase();
+
+            if (!confirm(`${coinCode}에 대한 분할 매도 주문을 실행할까요? 기존 매도 주문은 취소됩니다.`)) {
+                return;
+            }
+
+            const originalContent = button.innerHTML;
+            button.disabled = true;
+            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 요청 중...';
+
+            try {
+                const response = await fetch(`/upbit-trading/api/coin/${encodeURIComponent(coinCode)}/sell-orders`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    showAlert(data.message || `${coinCode} 분할 매도 주문이 시작되었습니다.`, 'success');
+                    setTimeout(loadMyCoins, 2000);
+                } else {
+                    const errorMessage = data.error || data.message || `${coinCode} 매도 주문 요청에 실패했습니다.`;
+                    showAlert(`❌ ${errorMessage}`, 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ ${coinCode} 매도 주문 요청 중 오류 발생: ${error.message}`, 'danger');
+            } finally {
+                button.disabled = false;
+                button.innerHTML = originalContent;
+            }
         }
 
         function escapeHtml(value) {

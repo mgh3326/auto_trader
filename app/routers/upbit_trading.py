@@ -269,6 +269,80 @@ async def execute_sell_orders():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/api/coin/{currency}/buy-orders")
+async def execute_coin_buy_orders(currency: str):
+    """특정 코인에 대한 분할 매수 주문 실행 (Celery)"""
+    from app.core.celery_app import celery_app
+
+    currency_code = currency.upper()
+
+    try:
+        if not settings.upbit_access_key or not settings.upbit_secret_key:
+            raise HTTPException(status_code=400, detail="Upbit API 키가 설정되지 않았습니다.")
+
+        async_result = celery_app.send_task("upbit.execute_buy_order_for_coin", args=[currency_code])
+        return {
+            "success": True,
+            "currency": currency_code,
+            "message": f"{currency_code} 분할 매수 주문이 시작되었습니다.",
+            "task_id": async_result.id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/coin/{currency}/analysis")
+async def analyze_coin(currency: str):
+    """특정 코인에 대한 AI 분석 실행 (Celery)"""
+    from app.core.celery_app import celery_app
+
+    currency_code = currency.upper()
+
+    try:
+        await upbit_pairs.prime_upbit_constants()
+
+        if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
+            raise HTTPException(status_code=400, detail=f"{currency_code}는 KRW 마켓 거래 대상이 아닙니다.")
+
+        async_result = celery_app.send_task("analyze.run_for_coin", args=[currency_code])
+        return {
+            "success": True,
+            "currency": currency_code,
+            "message": f"{currency_code} 분석이 시작되었습니다.",
+            "task_id": async_result.id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/coin/{currency}/sell-orders")
+async def execute_coin_sell_orders(currency: str):
+    """특정 코인에 대한 분할 매도 주문 실행 (Celery)"""
+    from app.core.celery_app import celery_app
+
+    currency_code = currency.upper()
+
+    try:
+        if not settings.upbit_access_key or not settings.upbit_secret_key:
+            raise HTTPException(status_code=400, detail="Upbit API 키가 설정되지 않았습니다.")
+
+        async_result = celery_app.send_task("upbit.execute_sell_order_for_coin", args=[currency_code])
+        return {
+            "success": True,
+            "currency": currency_code,
+            "message": f"{currency_code} 분할 매도 주문이 시작되었습니다.",
+            "task_id": async_result.id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/api/open-orders")
 async def get_open_orders():
     """체결 대기 중인 주문 조회"""
