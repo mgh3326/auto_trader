@@ -267,10 +267,72 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // 페이지 로드 시 보유 코인 조회
+        // localStorage 키
+        const STORAGE_KEYS = {
+            ANALYSIS: 'upbit_analysis_task_id',
+            BUY: 'upbit_buy_task_id',
+            SELL: 'upbit_sell_task_id'
+        };
+
+        // 페이지 로드 시 보유 코인 조회 및 진행 중인 작업 복원
         document.addEventListener('DOMContentLoaded', function() {
             loadMyCoins();
+            restoreActiveTasks();
         });
+
+        // 진행 중인 작업 복원
+        async function restoreActiveTasks() {
+            // 분석 작업 복원
+            const storedAnalysisTaskId = localStorage.getItem(STORAGE_KEYS.ANALYSIS);
+            if (storedAnalysisTaskId) {
+                analysisTaskId = storedAnalysisTaskId;
+                // 작업 상태 확인하여 아직 진행 중인지 체크
+                const response = await fetch(`/upbit-trading/api/analyze-task/${analysisTaskId}`);
+                const data = await response.json();
+
+                if (data.state === 'PROGRESS' || data.state === 'PENDING') {
+                    // 프로그레스바 표시 및 체크 시작
+                    document.getElementById('analysis-progress').style.display = 'block';
+                    document.getElementById('analyze-btn').disabled = true;
+                    analysisCheckInterval = setInterval(checkAnalysisProgress, 1000);
+                } else if (data.state === 'SUCCESS' || data.state === 'FAILURE') {
+                    // 이미 완료되었으면 localStorage에서 제거
+                    localStorage.removeItem(STORAGE_KEYS.ANALYSIS);
+                }
+            }
+
+            // 매수 작업 복원
+            const storedBuyTaskId = localStorage.getItem(STORAGE_KEYS.BUY);
+            if (storedBuyTaskId) {
+                buyTaskId = storedBuyTaskId;
+                const response = await fetch(`/upbit-trading/api/analyze-task/${buyTaskId}`);
+                const data = await response.json();
+
+                if (data.state === 'PROGRESS' || data.state === 'PENDING') {
+                    document.getElementById('buy-progress').style.display = 'block';
+                    document.getElementById('buy-btn').disabled = true;
+                    buyCheckInterval = setInterval(checkBuyProgress, 1000);
+                } else if (data.state === 'SUCCESS' || data.state === 'FAILURE') {
+                    localStorage.removeItem(STORAGE_KEYS.BUY);
+                }
+            }
+
+            // 매도 작업 복원
+            const storedSellTaskId = localStorage.getItem(STORAGE_KEYS.SELL);
+            if (storedSellTaskId) {
+                sellTaskId = storedSellTaskId;
+                const response = await fetch(`/upbit-trading/api/analyze-task/${sellTaskId}`);
+                const data = await response.json();
+
+                if (data.state === 'PROGRESS' || data.state === 'PENDING') {
+                    document.getElementById('sell-progress').style.display = 'block';
+                    document.getElementById('sell-btn').disabled = true;
+                    sellCheckInterval = setInterval(checkSellProgress, 1000);
+                } else if (data.state === 'SUCCESS' || data.state === 'FAILURE') {
+                    localStorage.removeItem(STORAGE_KEYS.SELL);
+                }
+            }
+        }
 
         // 보유 코인 조회
         async function loadMyCoins() {
@@ -365,8 +427,9 @@
                     // 프로그레스바 표시
                     document.getElementById('analysis-progress').style.display = 'block';
 
-                    // Task ID 저장
+                    // Task ID 저장 (메모리 및 localStorage)
                     analysisTaskId = data.task_id;
+                    localStorage.setItem(STORAGE_KEYS.ANALYSIS, data.task_id);
 
                     // 주기적으로 상태 확인 (1초마다)
                     analysisCheckInterval = setInterval(checkAnalysisProgress, 1000);
@@ -452,8 +515,9 @@
                 analysisCheckInterval = null;
             }
 
-            // Task ID 초기화
+            // Task ID 초기화 (메모리 및 localStorage)
             analysisTaskId = null;
+            localStorage.removeItem(STORAGE_KEYS.ANALYSIS);
 
             // 프로그레스바 숨기기
             document.getElementById('analysis-progress').style.display = 'none';
@@ -503,6 +567,7 @@
 
                 if (data.success && data.task_id) {
                     buyTaskId = data.task_id;
+                    localStorage.setItem(STORAGE_KEYS.BUY, data.task_id);
                     showAlert('✅ ' + data.message, 'success');
 
                     // 프로그레스 체크 시작
@@ -536,6 +601,9 @@
                     buyStatus.textContent = data.progress.status || '매수 주문 진행 중...';
                 } else if (data.state === 'SUCCESS') {
                     clearInterval(buyCheckInterval);
+                    buyTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.BUY);
+
                     buyProgressBar.style.width = '100%';
                     buyProgressBar.textContent = '100%';
                     buyStatus.textContent = '완료!';
@@ -563,6 +631,9 @@
                     }, 2000);
                 } else if (data.state === 'FAILURE') {
                     clearInterval(buyCheckInterval);
+                    buyTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.BUY);
+
                     showAlert('❌ 매수 주문 실패: ' + (data.result?.error || '알 수 없는 오류'), 'danger');
                     document.getElementById('buy-btn').disabled = false;
                     document.getElementById('buy-progress').style.display = 'none';
@@ -601,6 +672,7 @@
 
                 if (data.success && data.task_id) {
                     sellTaskId = data.task_id;
+                    localStorage.setItem(STORAGE_KEYS.SELL, data.task_id);
                     showAlert('✅ ' + data.message, 'success');
 
                     // 프로그레스 체크 시작
@@ -634,6 +706,9 @@
                     sellStatus.textContent = data.progress.status || '매도 주문 진행 중...';
                 } else if (data.state === 'SUCCESS') {
                     clearInterval(sellCheckInterval);
+                    sellTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.SELL);
+
                     sellProgressBar.style.width = '100%';
                     sellProgressBar.textContent = '100%';
                     sellStatus.textContent = '완료!';
@@ -661,6 +736,9 @@
                     }, 2000);
                 } else if (data.state === 'FAILURE') {
                     clearInterval(sellCheckInterval);
+                    sellTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.SELL);
+
                     showAlert('❌ 매도 주문 실패: ' + (data.result?.error || '알 수 없는 오류'), 'danger');
                     document.getElementById('sell-btn').disabled = false;
                     document.getElementById('sell-progress').style.display = 'none';
