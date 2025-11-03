@@ -58,24 +58,19 @@ async def get_my_coins(
     db: AsyncSession = Depends(get_db),
 ):
     """보유 코인 조회 API"""
+    analyzer: UpbitAnalyzer | None = None
     try:
-        # Upbit 상수 초기화
         await upbit_pairs.prime_upbit_constants()
-
-        # 보유 코인 조회
         my_coins = await upbit.fetch_my_coins()
 
-        # 거래 가능한 코인만 필터링
         analyzer = UpbitAnalyzer()
         tradable_coins = [
             coin for coin in my_coins
-            if coin.get("currency") != "KRW"  # 원화 제외
-               and analyzer._is_tradable(coin)  # 최소 평가액 이상
-               and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
+            if coin.get("currency") != "KRW"
+            and analyzer._is_tradable(coin)
+            and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
         ]
-        await analyzer.close()
 
-        # 현재가 일괄 조회
         if tradable_coins:
             market_codes = [f"KRW-{coin['currency']}" for coin in tradable_coins]
             current_prices = await upbit.fetch_multiple_current_prices(market_codes)
@@ -84,7 +79,6 @@ async def get_my_coins(
                 list(dict.fromkeys(market_codes))
             )
 
-            # 수익률 계산
             for coin in tradable_coins:
                 currency = coin['currency']
                 market = f"KRW-{currency}"
@@ -96,7 +90,6 @@ async def get_my_coins(
                 locked = float(locked_decimal)
                 avg_buy_price = float(coin.get('avg_buy_price', 0))
 
-                # 한글 이름 찾기
                 korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency, currency)
                 coin['korean_name'] = korean_name
                 coin['balance_raw'] = str(balance_raw)
@@ -111,15 +104,12 @@ async def get_my_coins(
                     coin['current_price'] = current_price
 
                     if avg_buy_price > 0:
-                        # 수익률 계산
                         profit_rate = (current_price - avg_buy_price) / avg_buy_price
                         coin['profit_rate'] = profit_rate
 
-                        # 평가금액
                         evaluation = (balance + locked) * current_price
                         coin['evaluation'] = evaluation
 
-                        # 손익금액
                         profit_loss = evaluation - ((balance + locked) * avg_buy_price)
                         coin['profit_loss'] = profit_loss
                     else:
@@ -150,7 +140,7 @@ async def get_my_coins(
                     coin['last_analysis_at'] = None
                     coin['last_analysis_decision'] = None
                     coin['analysis_confidence'] = None
-        # KRW 잔고
+
         krw_balance = 0
         krw_locked = 0
         for coin in my_coins:
@@ -171,11 +161,13 @@ async def get_my_coins(
             "coins": tradable_coins
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if analyzer is not None:
+            await analyzer.close()
 
 
 @router.post("/api/analyze-coins")

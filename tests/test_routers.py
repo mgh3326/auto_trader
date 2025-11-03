@@ -2,6 +2,7 @@
 Tests for API routers.
 """
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.main import api
@@ -54,3 +55,45 @@ class TestRouterIntegration:
         assert any("/healthz" in route for route in routes)
         assert any("/dashboard" in route for route in routes)
         assert any("/analysis" in route for route in routes)
+
+
+class TestUpbitTradingRouter:
+    """Test Upbit trading router behaviours."""
+
+    @pytest.mark.asyncio
+    async def test_get_my_coins_raises_http_exception_on_failure(self, monkeypatch):
+        """get_my_coins는 내부 오류 시 HTTPException을 일관되게 전달해야 한다."""
+        from app.routers import upbit_trading
+
+        async def fake_prime():
+            return None
+
+        async def fake_fetch_my_coins():
+            raise RuntimeError("boom")
+
+        class DummyAnalyzer:
+            def _is_tradable(self, coin):
+                return True
+
+            async def close(self):
+                return None
+
+        monkeypatch.setattr(
+            "data.coins_info.upbit_pairs.prime_upbit_constants",
+            fake_prime,
+        )
+        monkeypatch.setattr(
+            "app.services.upbit.fetch_my_coins",
+            fake_fetch_my_coins,
+        )
+        monkeypatch.setattr(
+            upbit_trading,
+            "UpbitAnalyzer",
+            DummyAnalyzer,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await upbit_trading.get_my_coins(db=object())
+
+        assert exc_info.value.status_code == 500
+        assert "boom" in exc_info.value.detail

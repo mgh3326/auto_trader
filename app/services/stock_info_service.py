@@ -378,6 +378,19 @@ async def process_buy_orders_with_analysis(symbol: str, current_price: float, av
 
         # 1. 기본 조건: 현재가가 평균 매수가보다 1% 낮아야 함
         target_price = avg_buy_price * 0.99
+        if current_price >= target_price:
+            message = (
+                "1% 매수 조건을 충족하지 않습니다: "
+                f"현재가 {format_decimal(current_price, '₩')}원, "
+                f"목표가 {format_decimal(target_price, '₩')}원"
+            )
+            print(f"❌ {message}")
+            return {
+                'success': False,
+                'message': message,
+                'orders_placed': 0,
+                'total_amount': 0.0
+            }
 
         # 2. 분석 결과가 없으면 1% 룰만으로 판단
         if not analysis:
