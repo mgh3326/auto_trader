@@ -248,7 +248,8 @@ async def get_open_orders():
                     order['currency'] = currency
                     order['korean_name'] = upbit_pairs.COIN_TO_NAME_KR.get(currency, currency)
                     all_orders.append(order)
-            except:
+            except Exception as e:
+                print(f"⚠️ {market} 미체결 주문 조회 실패: {e}")
                 continue
 
         return {
@@ -333,8 +334,8 @@ async def cancel_existing_buy_orders(market: str):
         if buy_orders:
             order_uuids = [order['uuid'] for order in buy_orders]
             await upbit.cancel_orders(order_uuids)
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ {market} 매수 주문 취소 실패: {e}")
 
 
 async def cancel_existing_sell_orders(market: str):
@@ -346,8 +347,8 @@ async def cancel_existing_sell_orders(market: str):
         if sell_orders:
             order_uuids = [order['uuid'] for order in sell_orders]
             await upbit.cancel_orders(order_uuids)
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️ {market} 매도 주문 취소 실패: {e}")
 
 
 async def get_sell_prices_for_coin(currency: str, avg_buy_price: float, current_price: float) -> List[float]:
