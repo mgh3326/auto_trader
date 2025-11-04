@@ -326,19 +326,24 @@ class Analyzer:
         instrument_type: str,
         model_name: str,
     ) -> None:
-        """JSON 분석 결과를 DB에 저장"""
-        async with AsyncSessionLocal() as db:
-            # 1. 주식 정보가 없으면 생성 (또는 기존 정보 조회)
-            stock_info = await create_stock_if_not_exists(
-                symbol=symbol,
-                name=name,
-                instrument_type=instrument_type
-            )
+        """JSON 분석 결과를 DB에 저장
 
-            # 2. 근거를 JSON 문자열로 변환
+        Note: create_stock_if_not_exists는 자체 세션을 생성하므로 별도 세션이 필요
+        """
+        # 1. 주식 정보가 없으면 생성 (또는 기존 정보 조회)
+        # Note: create_stock_if_not_exists는 내부에서 AsyncSessionLocal()을 사용
+        stock_info = await create_stock_if_not_exists(
+            symbol=symbol,
+            name=name,
+            instrument_type=instrument_type
+        )
+
+        # 2. 분석 결과 저장을 위한 새로운 세션
+        async with AsyncSessionLocal() as db:
+            # 근거를 JSON 문자열로 변환
             reasons_json = json.dumps(result.reasons, ensure_ascii=False)
 
-            # 3. 분석 결과 저장
+            # 분석 결과 저장
             record = StockAnalysisResult(
                 stock_info_id=stock_info.id,  # 주식 정보와 연결
                 prompt=prompt,

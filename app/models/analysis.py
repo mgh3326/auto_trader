@@ -8,7 +8,7 @@ from app.models.base import Base
 class StockInfo(Base):
     """주식 종목 기본 정보 테이블 (마스터 데이터)"""
     __tablename__ = "stock_info"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String(50), unique=True, nullable=False, index=True, comment="종목 코드/심볼")
     name = Column(String(100), nullable=False, comment="종목명")
@@ -38,10 +38,10 @@ class StockAnalysisResult(Base):
     
     # 분석 결과
     model_name = Column(String(100), nullable=False, comment="사용된 AI 모델명")
-    
+
     decision = Column(String(20), nullable=False, comment="투자 결정 (buy, hold, sell)")
     confidence = Column(Integer, nullable=False, comment="분석 신뢰도 (0-100)")
-    
+
     # 가격 분석
     appropriate_buy_min = Column(Float, nullable=True, comment="적절한 매수 범위 최소값")
     appropriate_buy_max = Column(Float, nullable=True, comment="적절한 매수 범위 최대값")
