@@ -1,17 +1,5 @@
-"""
-Tests for Celery tasks defined in app.tasks.analyze.
-"""
+"""Tests for Celery tasks defined in app.tasks.analyze."""
 import pytest
-
-
-class DummyTask:
-    """Lightweight stand-in for a Celery task instance."""
-
-    def __init__(self):
-        self.states = []
-
-    def update_state(self, **kwargs):
-        self.states.append(kwargs)
 
 
 def _patch_upbit_analyzer(monkeypatch, *, tradable: bool):
@@ -60,27 +48,42 @@ def test_run_analysis_for_my_coins_no_tradable(monkeypatch):
         fake_fetch_my_coins,
     )
     monkeypatch.setattr(
-        analyze.upbit_pairs,
-        "KRW_TRADABLE_COINS",
+        "data.coins_info.upbit_pairs.KRW_TRADABLE_COINS",
         {"BTC"},
+        raising=False,
     )
     monkeypatch.setattr(
-        analyze.upbit_pairs,
-        "COIN_TO_NAME_KR",
+        "data.coins_info.upbit_pairs.COIN_TO_NAME_KR",
         {"BTC": "비트코인"},
+        raising=False,
     )
     analyzers = _patch_upbit_analyzer(monkeypatch, tradable=False)
 
-    task = DummyTask()
-    raw = analyze.run_analysis_for_my_coins.__wrapped__.__func__
-    result = raw(task)
+    progress_updates = []
+
+    def record_update(*_, **kwargs):
+        progress_updates.append(
+            {
+                "state": kwargs.get("state"),
+                "meta": kwargs.get("meta"),
+            }
+        )
+
+    monkeypatch.setattr(
+        analyze.run_analysis_for_my_coins,
+        "update_state",
+        record_update,
+        raising=False,
+    )
+
+    result = analyze.run_analysis_for_my_coins.apply().result
 
     assert result["status"] == "completed"
     assert result["analyzed_count"] == 0
     assert result["total_count"] == 0
     assert result["results"] == []
     assert analyzers and analyzers[0].closed is True
-    assert any(state["state"] == "PROGRESS" for state in task.states)
+    assert any(update["state"] == "PROGRESS" for update in progress_updates)
 
 
 def test_execute_buy_orders_task_no_tradable(monkeypatch):
@@ -102,27 +105,42 @@ def test_execute_buy_orders_task_no_tradable(monkeypatch):
         fake_fetch_my_coins,
     )
     monkeypatch.setattr(
-        analyze.upbit_pairs,
-        "KRW_TRADABLE_COINS",
+        "data.coins_info.upbit_pairs.KRW_TRADABLE_COINS",
         {"BTC"},
+        raising=False,
     )
     monkeypatch.setattr(
-        analyze.upbit_pairs,
-        "COIN_TO_NAME_KR",
+        "data.coins_info.upbit_pairs.COIN_TO_NAME_KR",
         {"BTC": "비트코인"},
+        raising=False,
     )
     analyzers = _patch_upbit_analyzer(monkeypatch, tradable=False)
 
-    task = DummyTask()
-    raw = analyze.execute_buy_orders_task.__wrapped__.__func__
-    result = raw(task)
+    progress_updates = []
+
+    def record_update(*_, **kwargs):
+        progress_updates.append(
+            {
+                "state": kwargs.get("state"),
+                "meta": kwargs.get("meta"),
+            }
+        )
+
+    monkeypatch.setattr(
+        analyze.execute_buy_orders_task,
+        "update_state",
+        record_update,
+        raising=False,
+    )
+
+    result = analyze.execute_buy_orders_task.apply().result
 
     assert result["status"] == "completed"
     assert result["success_count"] == 0
     assert result["total_count"] == 0
     assert result["results"] == []
     assert analyzers and analyzers[0].closed is True
-    assert any(state["state"] == "PROGRESS" for state in task.states)
+    assert any(update["state"] == "PROGRESS" for update in progress_updates)
 
 
 def test_run_per_coin_automation_no_tradable(monkeypatch):
@@ -138,15 +156,30 @@ def test_run_per_coin_automation_no_tradable(monkeypatch):
     monkeypatch.setattr(analyze, "_fetch_tradable_coins", fake_fetch)
     monkeypatch.setattr(analyze.asyncio, "sleep", fake_sleep)
 
-    task = DummyTask()
-    raw = analyze.run_per_coin_automation_task.__wrapped__.__func__
-    result = raw(task)
+    progress_updates = []
+
+    def record_update(*_, **kwargs):
+        progress_updates.append(
+            {
+                "state": kwargs.get("state"),
+                "meta": kwargs.get("meta"),
+            }
+        )
+
+    monkeypatch.setattr(
+        analyze.run_per_coin_automation_task,
+        "update_state",
+        record_update,
+        raising=False,
+    )
+
+    result = analyze.run_per_coin_automation_task.apply().result
 
     assert result["status"] == "completed"
     assert result["total_coins"] == 0
     assert result["success_coins"] == 0
     assert result["results"] == []
-    assert task.states == []
+    assert progress_updates == []
 
 
 def test_run_per_coin_automation_success(monkeypatch):
@@ -179,9 +212,24 @@ def test_run_per_coin_automation_success(monkeypatch):
     monkeypatch.setattr(analyze, "_execute_sell_order_for_coin_async", fake_sell)
     monkeypatch.setattr(analyze.asyncio, "sleep", fake_sleep)
 
-    task = DummyTask()
-    raw = analyze.run_per_coin_automation_task.__wrapped__.__func__
-    result = raw(task)
+    progress_updates = []
+
+    def record_update(*_, **kwargs):
+        progress_updates.append(
+            {
+                "state": kwargs.get("state"),
+                "meta": kwargs.get("meta"),
+            }
+        )
+
+    monkeypatch.setattr(
+        analyze.run_per_coin_automation_task,
+        "update_state",
+        record_update,
+        raising=False,
+    )
+
+    result = analyze.run_per_coin_automation_task.apply().result
 
     assert result["status"] == "completed"
     assert result["total_coins"] == 1
@@ -190,3 +238,4 @@ def test_run_per_coin_automation_success(monkeypatch):
     coin_steps = result["results"][0]["steps"]
     assert [step["step"] for step in coin_steps] == ["analysis", "buy", "sell"]
     assert all(step["result"]["status"] == "completed" for step in coin_steps)
+    assert any(update["meta"]["current_step"] == "analysis" for update in progress_updates)
