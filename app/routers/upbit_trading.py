@@ -59,6 +59,7 @@ async def get_my_coins(
 ):
     """보유 코인 조회 API"""
     analyzer: UpbitAnalyzer | None = None
+    tradable_coins: list[dict] = []
     try:
         await upbit_pairs.prime_upbit_constants()
         my_coins = await upbit.fetch_my_coins()
@@ -67,7 +68,7 @@ async def get_my_coins(
         tradable_coins = [
             coin for coin in my_coins
             if coin.get("currency") != "KRW"
-            and analyzer._is_tradable(coin)
+            and analyzer.is_tradable(coin)
             and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
         ]
 
@@ -188,6 +189,8 @@ async def analyze_my_coins():
             "task_id": async_result.id
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -359,6 +362,7 @@ async def execute_coin_sell_orders(currency: str):
 @router.get("/api/open-orders")
 async def get_open_orders():
     """체결 대기 중인 주문 조회"""
+    analyzer: UpbitAnalyzer | None = None
     try:
         # Upbit 상수 초기화
         await upbit_pairs.prime_upbit_constants()
@@ -368,13 +372,15 @@ async def get_open_orders():
 
         # 거래 가능한 코인 필터링
         analyzer = UpbitAnalyzer()
-        tradable_coins = [
-            coin for coin in my_coins
-            if coin.get("currency") != "KRW"
-               and analyzer._is_tradable(coin)
-               and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
-        ]
-        await analyzer.close()
+        try:
+            tradable_coins = [
+                coin for coin in my_coins
+                if coin.get("currency") != "KRW"
+                   and analyzer.is_tradable(coin)
+                   and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
+            ]
+        finally:
+            await analyzer.close()
 
         # 각 코인의 미체결 주문 조회
         all_orders = []
@@ -399,16 +405,16 @@ async def get_open_orders():
             "total_count": len(all_orders)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/api/cancel-orders")
 async def cancel_all_orders():
     """모든 미체결 주문 취소"""
+    analyzer: UpbitAnalyzer | None = None
     try:
         # Upbit 상수 초기화
         await upbit_pairs.prime_upbit_constants()
@@ -418,13 +424,15 @@ async def cancel_all_orders():
 
         # 거래 가능한 코인 필터링
         analyzer = UpbitAnalyzer()
-        tradable_coins = [
-            coin for coin in my_coins
-            if coin.get("currency") != "KRW"
-               and analyzer._is_tradable(coin)
-               and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
-        ]
-        await analyzer.close()
+        try:
+            tradable_coins = [
+                coin for coin in my_coins
+                if coin.get("currency") != "KRW"
+                   and analyzer.is_tradable(coin)
+                   and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
+            ]
+        finally:
+            await analyzer.close()
 
         # 각 코인의 미체결 주문 취소
         cancel_results = []
@@ -460,6 +468,8 @@ async def cancel_all_orders():
             "results": cancel_results
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

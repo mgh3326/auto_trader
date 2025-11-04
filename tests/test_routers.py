@@ -75,6 +75,9 @@ class TestUpbitTradingRouter:
             def _is_tradable(self, coin):
                 return True
 
+            def is_tradable(self, coin):
+                return self._is_tradable(coin)
+
             async def close(self):
                 return None
 

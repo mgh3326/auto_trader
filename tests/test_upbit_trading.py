@@ -38,6 +38,9 @@ async def test_get_my_coins_success(monkeypatch):
         def _is_tradable(self, coin):
             return coin.get("currency") != "KRW"
 
+        def is_tradable(self, coin):
+            return self._is_tradable(coin)
+
         async def close(self):
             self.closed = True
 

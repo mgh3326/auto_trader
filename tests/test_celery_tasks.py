@@ -28,6 +28,9 @@ def _patch_upbit_analyzer(monkeypatch, *, tradable: bool):
         def _is_tradable(self, coin):
             return tradable
 
+        def is_tradable(self, coin):
+            return self._is_tradable(coin)
+
         async def analyze_coins_json(self, names):
             return {"status": "ok"}, "model"
 
