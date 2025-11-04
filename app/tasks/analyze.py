@@ -345,7 +345,7 @@ def run_analysis_for_my_coins(self) -> dict:
 
                 # 개별 코인 분석
                 try:
-                    result, model = await analyzer.analyze_coins_json([coin_name])
+                    _, model = await analyzer.analyze_coins_json([coin_name])
                     results.append({
                         'coin_name': coin_name,
                         'success': True,
