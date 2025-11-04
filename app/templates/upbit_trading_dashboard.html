@@ -813,13 +813,19 @@
                         showAlert('✅ ' + message, 'success');
 
                         // 결과 상세 표시
-                        if (data.result.results && data.result.results.length > 0) {
-                            const resultHtml = data.result.results.map(r => {
-                                const icon = r.success ? '✅' : '❌';
-                                const msg = r.success ? r.message : r.error;
-                                return `<div>${icon} ${r.currency}: ${msg}</div>`;
-                            }).join('');
-                            showAlert(resultHtml, 'info');
+                        if (Array.isArray(data.result.results) && data.result.results.length > 0) {
+                            data.result.results.forEach((resultItem) => {
+                                const icon = resultItem.success ? '✅' : '❌';
+                                const rawMessage = resultItem.success ? resultItem.message : resultItem.error;
+                                const message = [
+                                    icon,
+                                    escapeHtml(resultItem.currency || '-'),
+                                    ':',
+                                    escapeHtml(rawMessage || (resultItem.success ? '주문 성공' : '주문 실패')),
+                                ].join(' ');
+                                const alertType = resultItem.success ? 'success' : 'danger';
+                                showAlert(message, alertType, { duration: 7000 });
+                            });
                         }
                     }
 
@@ -918,13 +924,19 @@
                         showAlert('✅ ' + message, 'success');
 
                         // 결과 상세 표시
-                        if (data.result.results && data.result.results.length > 0) {
-                            const resultHtml = data.result.results.map(r => {
-                                const icon = r.success ? '✅' : '❌';
-                                const msg = r.success ? r.message : r.error;
-                                return `<div>${icon} ${r.currency}: ${msg}</div>`;
-                            }).join('');
-                            showAlert(resultHtml, 'info');
+                        if (Array.isArray(data.result.results) && data.result.results.length > 0) {
+                            data.result.results.forEach((resultItem) => {
+                                const icon = resultItem.success ? '✅' : '❌';
+                                const rawMessage = resultItem.success ? resultItem.message : resultItem.error;
+                                const message = [
+                                    icon,
+                                    escapeHtml(resultItem.currency || '-'),
+                                    ':',
+                                    escapeHtml(rawMessage || (resultItem.success ? '주문 성공' : '주문 실패')),
+                                ].join(' ');
+                                const alertType = resultItem.success ? 'success' : 'danger';
+                                showAlert(message, alertType, { duration: 7000 });
+                            });
                         }
                     }
 
