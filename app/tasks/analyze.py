@@ -5,6 +5,12 @@ from celery import shared_task
 
 from app.analysis.service_analyzers import KISAnalyzer, YahooAnalyzer, UpbitAnalyzer
 from app.services import upbit
+from app.services.order_service import (
+    cancel_existing_buy_orders,
+    cancel_existing_sell_orders,
+    get_sell_prices_for_coin,
+    place_multiple_sell_orders,
+)
 from data.coins_info import upbit_pairs
 
 
@@ -87,7 +93,6 @@ async def _execute_buy_order_for_coin_async(currency: str) -> Dict[str, object]:
         }
 
     from app.services.stock_info_service import process_buy_orders_with_analysis
-    from app.routers.upbit_trading import cancel_existing_buy_orders
 
     currency_code = currency.upper()
 
@@ -144,12 +149,6 @@ async def _execute_sell_order_for_coin_async(currency: str) -> Dict[str, object]
             "status": "failed",
             "error": "코인 코드가 필요합니다."
         }
-
-    from app.routers.upbit_trading import (
-        cancel_existing_sell_orders,
-        get_sell_prices_for_coin,
-        place_multiple_sell_orders,
-    )
 
     currency_code = currency.upper()
 
@@ -475,7 +474,6 @@ def execute_buy_orders_task(self) -> dict:
                     current_price = float(current_price_df.iloc[0]['close'])
 
                     # 기존 매수 주문 취소
-                    from app.routers.upbit_trading import cancel_existing_buy_orders
                     await cancel_existing_buy_orders(market)
                     await asyncio.sleep(1)
 
@@ -533,12 +531,6 @@ def execute_sell_orders_task(self) -> dict:
     """보유 코인 자동 매도 주문 실행 with progress tracking"""
 
     async def _run() -> dict:
-        from app.routers.upbit_trading import (
-            cancel_existing_sell_orders,
-            get_sell_prices_for_coin,
-            place_multiple_sell_orders
-        )
-
         # Upbit 상수 초기화
         await upbit_pairs.prime_upbit_constants()
 
