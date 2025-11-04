@@ -67,14 +67,14 @@ async def test_get_my_coins_success(monkeypatch):
         fake_fetch_prices,
     )
     monkeypatch.setattr(
-        upbit_trading.upbit_pairs,
-        "KRW_TRADABLE_COINS",
+        "data.coins_info.upbit_pairs.KRW_TRADABLE_COINS",
         {"BTC"},
+        raising=False,
     )
     monkeypatch.setattr(
-        upbit_trading.upbit_pairs,
-        "COIN_TO_NAME_KR",
+        "data.coins_info.upbit_pairs.COIN_TO_NAME_KR",
         {"BTC": "비트코인"},
+        raising=False,
     )
     monkeypatch.setattr(
         upbit_trading,
