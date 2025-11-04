@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ request.state.csrf_token | default('', true) }}">
     <title>Upbit 자동 매매 - Auto Trader</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
@@ -323,6 +324,34 @@
         let coinAutomationTaskId = null;
         let coinAutomationInterval = null;
 
+        function getCsrfToken() {
+            const metaTag = document.querySelector('meta[name="csrf-token"]');
+            if (metaTag && metaTag.content) {
+                return metaTag.content;
+            }
+            const cookieMatch = document.cookie.match(/(?:^|;\s*)(?:csrftoken|csrf_token)=([^;]+)/);
+            if (cookieMatch) {
+                try {
+                    return decodeURIComponent(cookieMatch[1]);
+                } catch (error) {
+                    console.warn('Failed to decode CSRF token cookie', error);
+                    return cookieMatch[1];
+                }
+            }
+            return '';
+        }
+
+        function csrfFetch(url, options = {}) {
+            const opts = { ...options };
+            const headers = new Headers(opts.headers || {});
+            const csrfToken = getCsrfToken();
+            if (csrfToken) {
+                headers.set('X-CSRF-Token', csrfToken);
+            }
+            opts.headers = headers;
+            return fetch(url, opts);
+        }
+
         // 페이지 로드 시 보유 코인 조회 및 진행 중인 작업 복원
         document.addEventListener('DOMContentLoaded', async function() {
             const refreshButton = document.getElementById('refresh-coins-btn');
@@ -589,7 +618,7 @@
                 analyzeBtn.disabled = true;
                 analyzeBtn.innerHTML = '<span class="loading-spinner"></span> 시작 중...';
 
-                const response = await fetch('/upbit-trading/api/analyze-coins', {
+                const response = await csrfFetch('/upbit-trading/api/analyze-coins', {
                     method: 'POST'
                 });
                 const data = await response.json();
@@ -731,7 +760,7 @@
                 buyProgressBar.textContent = '0%';
                 buyStatus.textContent = '매수 주문 시작 중...';
 
-                const response = await fetch('/upbit-trading/api/buy-orders', {
+                const response = await csrfFetch('/upbit-trading/api/buy-orders', {
                     method: 'POST'
                 });
                 const data = await response.json();
@@ -836,7 +865,7 @@
                 sellProgressBar.textContent = '0%';
                 sellStatus.textContent = '매도 주문 시작 중...';
 
-                const response = await fetch('/upbit-trading/api/sell-orders', {
+                const response = await csrfFetch('/upbit-trading/api/sell-orders', {
                     method: 'POST'
                 });
                 const data = await response.json();
@@ -943,22 +972,37 @@
                             const sideText = isBuy ? '매수' : '매도';
                             const sideClass = isBuy ? '' : 'sell';
                             const sideIcon = isBuy ? 'arrow-down-circle' : 'arrow-up-circle';
+                            const name = escapeHtml(order.korean_name || order.currency || '');
+                            const currency = escapeHtml(order.currency || '');
+                            const state = escapeHtml(order.state || '');
+                            const volume = (order.volume === undefined || order.volume === null)
+                                ? '-'
+                                : escapeHtml(String(order.volume));
+                            const remaining = (order.remaining_volume === undefined || order.remaining_volume === null)
+                                ? '-'
+                                : escapeHtml(String(order.remaining_volume));
+                            let priceDisplay = '-';
+                            const numericPrice = Number(order.price);
+                            if (Number.isFinite(numericPrice)) {
+                                const truncatedPrice = Math.trunc(numericPrice);
+                                priceDisplay = `${new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(truncatedPrice)}원`;
+                            } else if (order.price !== undefined && order.price !== null) {
+                                priceDisplay = escapeHtml(String(order.price));
+                            }
 
                             return `
                                 <div class="order-item ${sideClass}">
                                     <div class="d-flex justify-content-between">
                                         <div>
                                             <i class="bi bi-${sideIcon}"></i>
-                                            <strong>${order.korean_name} (${order.currency})</strong> - ${sideText}
+                                            <strong>${name} (${currency})</strong> - ${sideText}
                                         </div>
                                         <div class="text-end">
-                                            <span class="badge bg-secondary">${order.state}</span>
+                                            <span class="badge bg-secondary">${state}</span>
                                         </div>
                                     </div>
                                     <div class="mt-1" style="font-size: 0.85rem; color: #666;">
-                                        가격: ${new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(order.price)}원 |
-                                        수량: ${order.volume} |
-                                        미체결: ${order.remaining_volume}
+                                        가격: ${priceDisplay} | 수량: ${volume} | 미체결: ${remaining}
                                     </div>
                                 </div>
                             `;
@@ -979,9 +1023,9 @@
             }
 
             try {
-                showAlert('미체결 주문을 취소 중입니다... <span class="loading-spinner"></span>', 'info');
+                showAlert('미체결 주문을 취소 중입니다...', 'info', { showSpinner: true });
 
-                const response = await fetch('/upbit-trading/api/cancel-orders', {
+                const response = await csrfFetch('/upbit-trading/api/cancel-orders', {
                     method: 'DELETE'
                 });
                 const data = await response.json();
@@ -1055,7 +1099,7 @@
             button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 요청 중...';
 
             try {
-                const response = await fetch(`/upbit-trading/api/coin/${encodeURIComponent(coinCode)}/analysis`, {
+                const response = await csrfFetch(`/upbit-trading/api/coin/${encodeURIComponent(coinCode)}/analysis`, {
                     method: 'POST'
                 });
                 const data = await response.json();
@@ -1087,7 +1131,7 @@
             button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 요청 중...';
 
             try {
-                const response = await fetch(`/upbit-trading/api/coin/${encodeURIComponent(coinCode)}/buy-orders`, {
+                const response = await csrfFetch(`/upbit-trading/api/coin/${encodeURIComponent(coinCode)}/buy-orders`, {
                     method: 'POST'
                 });
                 const data = await response.json();
@@ -1120,7 +1164,7 @@
             button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 요청 중...';
 
             try {
-                const response = await fetch(`/upbit-trading/api/coin/${encodeURIComponent(coinCode)}/sell-orders`, {
+                const response = await csrfFetch(`/upbit-trading/api/coin/${encodeURIComponent(coinCode)}/sell-orders`, {
                     method: 'POST'
                 });
                 const data = await response.json();
@@ -1171,7 +1215,7 @@
             button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 실행 중...';
 
             try {
-                const response = await fetch('/upbit-trading/api/automation/per-coin', {
+                const response = await csrfFetch('/upbit-trading/api/automation/per-coin', {
                     method: 'POST'
                 });
                 const data = await response.json();
@@ -1335,7 +1379,8 @@
                 showAlert(`❌ 코인별 자동 실행 상태 확인 중 오류 발생: ${error.message}`, 'danger');
             }
         }
-function escapeHtml(value) {
+
+        function escapeHtml(value) {
             if (value === undefined || value === null) {
                 return '';
             }
@@ -1523,26 +1568,49 @@ function escapeHtml(value) {
         }
 
         // 알림 표시
-        function showAlert(message, type) {
+        function showAlert(message, type, options = {}) {
             const alertArea = document.getElementById('alert-area');
-            const alertId = 'alert-' + Date.now();
+            if (!alertArea) {
+                console.warn('Alert area element not found');
+                return;
+            }
 
-            const alertHtml = `
-                <div id="${alertId}" class="alert alert-${type} alert-custom alert-dismissible fade show" role="alert">
-                    ${message}
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                </div>
-            `;
+            const alertElement = document.createElement('div');
+            const alertId = `alert-${Date.now()}`;
+            alertElement.id = alertId;
+            alertElement.className = `alert alert-${type} alert-custom alert-dismissible fade show`;
+            alertElement.setAttribute('role', 'alert');
 
-            alertArea.innerHTML = alertHtml + alertArea.innerHTML;
+            if (options.showSpinner) {
+                const spinner = document.createElement('span');
+                spinner.className = 'loading-spinner me-2';
+                spinner.setAttribute('aria-hidden', 'true');
+                alertElement.appendChild(spinner);
+            }
 
-            // 5초 후 자동 제거
-            setTimeout(() => {
-                const alert = document.getElementById(alertId);
-                if (alert) {
-                    alert.remove();
-                }
-            }, 5000);
+            const messageNode = document.createElement('span');
+            messageNode.textContent = String(message ?? '');
+            alertElement.appendChild(messageNode);
+
+            const closeButton = document.createElement('button');
+            closeButton.type = 'button';
+            closeButton.className = 'btn-close';
+            closeButton.setAttribute('data-bs-dismiss', 'alert');
+            closeButton.setAttribute('aria-label', '닫기');
+            alertElement.appendChild(closeButton);
+
+            if (typeof alertArea.prepend === 'function') {
+                alertArea.prepend(alertElement);
+            } else {
+                alertArea.insertBefore(alertElement, alertArea.firstChild);
+            }
+
+            const duration = typeof options.duration === 'number' ? options.duration : 5000;
+            if (duration > 0) {
+                setTimeout(() => {
+                    alertElement.remove();
+                }, duration);
+            }
         }
     </script>
 </body>
