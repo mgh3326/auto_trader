@@ -1,11 +1,13 @@
 """
 Tests for service modules.
 """
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
 
+from app.services import stock_info_service
 from app.services.upbit import fetch_ohlcv, fetch_price
 
 
@@ -193,6 +195,79 @@ class TestYahooService:
         # 'code'는 index로 설정되므로 columns에는 없음
         assert "date" in result.columns
         assert "close" in result.columns
+
+
+class TestStockInfoServiceGuard:
+    """Test guard conditions for stock info service."""
+
+    @pytest.mark.asyncio
+    async def test_process_buy_orders_enforces_one_percent_guard(self, monkeypatch):
+        """process_buy_orders_with_analysis should stop when 1% 조건을 충족하지 못할 때."""
+
+        async def fake_check(required_amount):
+            return True, Decimal("200000")
+
+        class DummyAsyncSession:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class DummyAnalysis:
+            appropriate_buy_min = Decimal("90")
+            appropriate_buy_max = Decimal("95")
+            buy_hope_min = Decimal("92")
+            buy_hope_max = Decimal("94")
+
+        class DummyService:
+            def __init__(self, db):
+                self.db = db
+
+            async def get_latest_analysis_by_symbol(self, symbol):
+                return DummyAnalysis()
+
+        from app.core.config import settings
+
+        monkeypatch.setattr(
+            "app.services.upbit.check_krw_balance_sufficient",
+            fake_check,
+        )
+        monkeypatch.setattr("app.core.db.AsyncSessionLocal", lambda: DummyAsyncSession())
+        monkeypatch.setattr(
+            stock_info_service,
+            "StockAnalysisService",
+            DummyService,
+        )
+        monkeypatch.setattr(settings, "upbit_min_krw_balance", Decimal("10000"), raising=False)
+        monkeypatch.setattr(settings, "upbit_buy_amount", Decimal("10000"), raising=False)
+
+        calls = []
+
+        async def fake_place(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {
+                "success": True,
+                "message": "should not be returned",
+                "orders_placed": 1,
+                "total_amount": 10000.0,
+            }
+
+        monkeypatch.setattr(
+            stock_info_service,
+            "_place_multiple_buy_orders_by_analysis",
+            fake_place,
+        )
+
+        result = await stock_info_service.process_buy_orders_with_analysis(
+            symbol="KRW-ABC",
+            current_price=100.0,
+            avg_buy_price=100.0,
+        )
+
+        assert result["success"] is False
+        assert "목표가" in result["message"]
+        assert calls == []
 
 
 class TestGeminiService:

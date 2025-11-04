@@ -19,7 +19,7 @@ class UpbitAnalyzer(Analyzer):
         self._tradable_coins_map = None  # 캐시용 인스턴스 변수
 
     @staticmethod
-    def _is_tradable(coin: dict) -> bool:
+    def is_tradable(coin: dict) -> bool:
         """
         코인의 평가액이 최소 거래 금액 이상인지 확인하는 내부 유틸리티 메서드.
         (self를 사용하지 않으므로 @staticmethod로 선언)
@@ -50,7 +50,7 @@ class UpbitAnalyzer(Analyzer):
                 self._tradable_coins_map = {
                     f"KRW-{coin['currency']}": coin for coin in my_coins
                     if coin.get("currency") != "KRW"  # 원화 제외
-                    and self._is_tradable(coin)  # 최소 평가액 이상
+                    and self.is_tradable(coin)  # 최소 평가액 이상
                     and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS  # KRW 마켓에서 거래 가능
                 }
             except Exception as e:

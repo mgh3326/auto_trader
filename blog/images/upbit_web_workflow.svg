@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2560 2000">
+  <!-- Background -->
+  <rect width="2560" height="2000" fill="#f8f9fa"/>
+
+  <!-- Title -->
+  <text x="1280" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="64" font-weight="bold" fill="#212529" text-anchor="middle">작업 흐름도: 코인별 자동 실행</text>
+
+  <!-- Step 1: Button Click -->
+  <g transform="translate(800, 250)">
+    <rect width="960" height="160" fill="#0d6efd" rx="15"/>
+    <text x="480" y="65" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="44" font-weight="bold" fill="#ffffff" text-anchor="middle">1. 사용자: 버튼 클릭</text>
+    <text x="480" y="120" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">"코인별 자동 실행" 버튼 클릭</text>
+  </g>
+
+  <!-- Step 2: POST Request -->
+  <g transform="translate(800, 490)">
+    <rect width="960" height="160" fill="#009688" rx="15"/>
+    <text x="480" y="65" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="44" font-weight="bold" fill="#ffffff" text-anchor="middle">2. FastAPI: Task 생성</text>
+    <text x="480" y="120" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">POST /api/automation/per-coin → Task ID 반환</text>
+  </g>
+
+  <!-- Step 3: localStorage Save -->
+  <g transform="translate(800, 730)">
+    <rect width="960" height="160" fill="#f39c12" rx="15"/>
+    <text x="480" y="65" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="44" font-weight="bold" fill="#ffffff" text-anchor="middle">3. 브라우저: Task ID 저장</text>
+    <text x="480" y="120" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">localStorage에 Task ID 저장 (새로고침 대비)</text>
+  </g>
+
+  <!-- Step 4: Polling -->
+  <g transform="translate(800, 970)">
+    <rect width="960" height="160" fill="#6c757d" rx="15"/>
+    <text x="480" y="65" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="44" font-weight="bold" fill="#ffffff" text-anchor="middle">4. 브라우저: 2초마다 진행 상황 확인</text>
+    <text x="480" y="120" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">GET /api/analyze-task/{task_id}</text>
+  </g>
+
+  <!-- Step 5: Celery Processing -->
+  <g transform="translate(800, 1210)">
+    <rect width="960" height="240" fill="#37a779" rx="15"/>
+    <text x="480" y="60" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="44" font-weight="bold" fill="#ffffff" text-anchor="middle">5. Celery Worker: 작업 처리</text>
+    <text x="480" y="110" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">for each 코인:</text>
+    <text x="480" y="155" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">  • AI 분석 실행</text>
+    <text x="480" y="200" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">  • 분할 매수 주문</text>
+    <text x="480" y="245" font-family="Apple SD Gothic Neo, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">  • 분할 매도 주문</text>
+  </g>
+
+  <!-- Step 6: Progress Update -->
+  <g transform="translate(800, 1530)">
+    <rect width="960" height="160" fill="#17a2b8" rx="15"/>
+    <text x="480" y="65" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="44" font-weight="bold" fill="#ffffff" text-anchor="middle">6. 브라우저: UI 업데이트</text>
+    <text x="480" y="120" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">프로그레스 바 & 로그 실시간 표시</text>
+  </g>
+
+  <!-- Step 7: Complete -->
+  <g transform="translate(800, 1770)">
+    <rect width="960" height="160" fill="#198754" rx="15"/>
+    <text x="480" y="65" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="44" font-weight="bold" fill="#ffffff" text-anchor="middle">7. 완료: localStorage 정리</text>
+    <text x="480" y="120" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">state: SUCCESS → Task ID 삭제 → 완료 알림</text>
+  </g>
+
+  <!-- Arrows -->
+  <defs>
+    <marker id="arrowhead3" markerWidth="15" markerHeight="15" refX="10" refY="7" orient="auto">
+      <polygon points="0 0, 15 7, 0 14" fill="#495057"/>
+    </marker>
+  </defs>
+
+  <line x1="1280" y1="410" x2="1280" y2="490" stroke="#495057" stroke-width="6" marker-end="url(#arrowhead3)"/>
+  <line x1="1280" y1="650" x2="1280" y2="730" stroke="#495057" stroke-width="6" marker-end="url(#arrowhead3)"/>
+  <line x1="1280" y1="890" x2="1280" y2="970" stroke="#495057" stroke-width="6" marker-end="url(#arrowhead3)"/>
+  <line x1="1280" y1="1130" x2="1280" y2="1210" stroke="#495057" stroke-width="6" marker-end="url(#arrowhead3)"/>
+  <line x1="1280" y1="1450" x2="1280" y2="1530" stroke="#495057" stroke-width="6" marker-end="url(#arrowhead3)"/>
+  <line x1="1280" y1="1690" x2="1280" y2="1770" stroke="#495057" stroke-width="6" marker-end="url(#arrowhead3)"/>
+
+  <!-- Polling Loop Arrow -->
+  <path d="M 1800 1050 Q 2000 1050, 2000 1330 Q 2000 1450, 1800 1450" fill="none" stroke="#dc3545" stroke-width="6" stroke-dasharray="15,10" marker-end="url(#arrowhead3)"/>
+  <text x="2050" y="1250" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" font-weight="bold" fill="#dc3545">2초마다</text>
+  <text x="2050" y="1295" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" font-weight="bold" fill="#dc3545">반복</text>
+</svg>

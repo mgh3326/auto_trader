@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <!-- Background Gradient -->
+  <defs>
+    <linearGradient id="bgGradient5" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4158d0;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#c850c0;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#ffcc70;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bgGradient5)"/>
+
+  <!-- Main Title -->
+  <text x="600" y="120" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="52" font-weight="bold" fill="#ffffff" text-anchor="middle">CLI에서 웹으로의 진화</text>
+
+  <!-- Subtitle -->
+  <text x="600" y="180" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffe5b4" text-anchor="middle">터미널 3개 → 브라우저 1개</text>
+
+  <!-- Main Content Box -->
+  <rect x="150" y="230" width="900" height="320" fill="#1e293b" rx="20" opacity="0.95"/>
+
+  <!-- Icon/Symbol -->
+  <text x="600" y="310" font-family="Arial, sans-serif" font-size="80" text-anchor="middle">🚀</text>
+
+  <!-- Key Points -->
+  <g transform="translate(250, 360)">
+    <text x="0" y="0" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#fbbf24" font-weight="bold">✓ 원클릭 자동매매</text>
+    <text x="0" y="50" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#fbbf24" font-weight="bold">✓ 실시간 프로그레스 바</text>
+    <text x="0" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#fbbf24" font-weight="bold">✓ 모바일 반응형 지원</text>
+    <text x="0" y="150" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#fbbf24" font-weight="bold">✓ localStorage 상태 유지</text>
+  </g>
+
+  <!-- Bottom Badge -->
+  <rect x="300" y="570" width="600" height="50" fill="#059669" rx="25"/>
+  <text x="600" y="603" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">Upbit | Celery | FastAPI | Bootstrap</text>
+</svg>

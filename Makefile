@@ -55,6 +55,12 @@ clean: ## Clean up generated files
 dev: ## Start development server
 	uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
+celery-worker: ## Start Celery worker
+	uv run celery -A app.core.celery_app worker --loglevel=info
+
+celery-flower: ## Start Celery Flower (monitoring UI)
+	uv run celery -A app.core.celery_app flower --port=5555
+
 docker-build: ## Build Docker image
 	docker build -t auto-trader .
 
