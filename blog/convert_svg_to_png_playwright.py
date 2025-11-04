@@ -107,6 +107,13 @@ async def main():
         "yfinance_thumbnail.svg",
         "upbit_thumbnail.svg",
         "db_design_thumbnail.svg",
+        "upbit_web_tech_stack.svg",
+        "upbit_web_architecture.svg",
+        "upbit_web_workflow.svg",
+        "upbit_web_individual_actions.svg",
+        "upbit_web_responsive.svg",
+        "upbit_web_flower_monitoring.svg",
+        "upbit_web_trading_thumbnail.svg",
     ]
 
     print("🌐 Playwright를 사용한 SVG → PNG 변환 시작...\n")

@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2560 1400">
+  <!-- Background -->
+  <rect width="2560" height="1400" fill="#f8f9fa"/>
+
+  <!-- Title -->
+  <text x="1280" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="64" font-weight="bold" fill="#212529" text-anchor="middle">기술 스택 아키텍처</text>
+
+  <!-- Backend Section -->
+  <g transform="translate(200, 200)">
+    <rect width="1000" height="900" fill="#ffffff" stroke="#dee2e6" stroke-width="3" rx="15"/>
+    <text x="500" y="60" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="48" font-weight="bold" fill="#0d6efd" text-anchor="middle">Backend</text>
+
+    <!-- FastAPI -->
+    <g transform="translate(100, 150)">
+      <rect width="800" height="140" fill="#009688" rx="10"/>
+      <text x="400" y="55" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="40" font-weight="bold" fill="#ffffff" text-anchor="middle">FastAPI</text>
+      <text x="400" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#ffffff" text-anchor="middle">비동기 웹 프레임워크 | 고성능 API</text>
+    </g>
+
+    <!-- Celery -->
+    <g transform="translate(100, 330)">
+      <rect width="800" height="140" fill="#37a779" rx="10"/>
+      <text x="400" y="55" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="40" font-weight="bold" fill="#ffffff" text-anchor="middle">Celery</text>
+      <text x="400" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#ffffff" text-anchor="middle">백그라운드 작업 큐 | 진행 상황 추적</text>
+    </g>
+
+    <!-- Redis -->
+    <g transform="translate(100, 510)">
+      <rect width="800" height="140" fill="#dc382c" rx="10"/>
+      <text x="400" y="55" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="40" font-weight="bold" fill="#ffffff" text-anchor="middle">Redis</text>
+      <text x="400" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#ffffff" text-anchor="middle">Celery 브로커 | 작업 결과 저장</text>
+    </g>
+
+    <!-- PostgreSQL -->
+    <g transform="translate(100, 690)">
+      <rect width="800" height="140" fill="#336791" rx="10"/>
+      <text x="400" y="55" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="40" font-weight="bold" fill="#ffffff" text-anchor="middle">PostgreSQL</text>
+      <text x="400" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#ffffff" text-anchor="middle">분석 결과 영구 저장 | JSON 타입 지원</text>
+    </g>
+  </g>
+
+  <!-- Frontend Section -->
+  <g transform="translate(1360, 200)">
+    <rect width="1000" height="900" fill="#ffffff" stroke="#dee2e6" stroke-width="3" rx="15"/>
+    <text x="500" y="60" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="48" font-weight="bold" fill="#dc3545" text-anchor="middle">Frontend</text>
+
+    <!-- Bootstrap 5 -->
+    <g transform="translate(100, 150)">
+      <rect width="800" height="140" fill="#7952b3" rx="10"/>
+      <text x="400" y="55" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="40" font-weight="bold" fill="#ffffff" text-anchor="middle">Bootstrap 5</text>
+      <text x="400" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#ffffff" text-anchor="middle">반응형 UI 프레임워크 | 모바일 최적화</text>
+    </g>
+
+    <!-- Vanilla JavaScript -->
+    <g transform="translate(100, 330)">
+      <rect width="800" height="140" fill="#f7df1e" rx="10"/>
+      <text x="400" y="55" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">Vanilla JavaScript</text>
+      <text x="400" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#000000" text-anchor="middle">프레임워크 없음 | 가벼운 구현</text>
+    </g>
+
+    <!-- localStorage -->
+    <g transform="translate(100, 510)">
+      <rect width="800" height="140" fill="#f39c12" rx="10"/>
+      <text x="400" y="55" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="40" font-weight="bold" fill="#ffffff" text-anchor="middle">localStorage</text>
+      <text x="400" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#ffffff" text-anchor="middle">작업 상태 로컬 저장 | 새로고침 복원</text>
+    </g>
+
+    <!-- Polling -->
+    <g transform="translate(100, 690)">
+      <rect width="800" height="140" fill="#6c757d" rx="10"/>
+      <text x="400" y="55" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="40" font-weight="bold" fill="#ffffff" text-anchor="middle">Polling (2초)</text>
+      <text x="400" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#ffffff" text-anchor="middle">실시간 진행 상황 확인 | 서버 부하 균형</text>
+    </g>
+  </g>
+
+  <!-- Connection Arrow -->
+  <g>
+    <line x1="1200" y1="650" x2="1360" y2="650" stroke="#495057" stroke-width="8" marker-end="url(#arrowhead)"/>
+    <text x="1280" y="640" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" font-weight="bold" fill="#495057" text-anchor="middle">HTTP/JSON</text>
+  </g>
+
+  <defs>
+    <marker id="arrowhead" markerWidth="20" markerHeight="20" refX="10" refY="10" orient="auto">
+      <polygon points="0 0, 20 10, 0 20" fill="#495057"/>
+    </marker>
+  </defs>
+</svg>

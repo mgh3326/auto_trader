@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2560 1600">
+  <!-- Background -->
+  <rect width="2560" height="1600" fill="#f8f9fa"/>
+
+  <!-- Title -->
+  <text x="1280" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="64" font-weight="bold" fill="#212529" text-anchor="middle">Flower 모니터링 대시보드</text>
+
+  <!-- Browser Window -->
+  <g transform="translate(200, 200)">
+    <!-- Window Frame -->
+    <rect width="2160" height="1280" fill="#ffffff" stroke="#212529" stroke-width="4" rx="10"/>
+
+    <!-- Window Title Bar -->
+    <rect width="2160" height="80" fill="#343a40" rx="10"/>
+    <circle cx="40" cy="40" r="15" fill="#dc3545"/>
+    <circle cx="90" cy="40" r="15" fill="#ffc107"/>
+    <circle cx="140" cy="40" r="15" fill="#28a745"/>
+    <text x="1080" y="55" font-family="Courier New, monospace" font-size="32" fill="#ffffff" text-anchor="middle">localhost:5555 - Flower: Celery management</text>
+
+    <!-- Navigation -->
+    <rect y="80" width="2160" height="70" fill="#495057"/>
+    <text x="100" y="130" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" font-weight="bold" fill="#ffffff">Workers</text>
+    <text x="350" y="130" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#dee2e6">Tasks</text>
+    <text x="550" y="130" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#dee2e6">Monitor</text>
+    <text x="800" y="130" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#dee2e6">Broker</text>
+
+    <!-- Stats Cards Row -->
+    <g transform="translate(60, 200)">
+      <!-- Active Tasks -->
+      <rect width="480" height="180" fill="#0d6efd" rx="10"/>
+      <text x="240" y="60" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">실행 중인 작업</text>
+      <text x="240" y="130" font-family="Arial, sans-serif" font-size="72" font-weight="bold" fill="#ffffff" text-anchor="middle">3</text>
+
+      <!-- Completed Tasks -->
+      <g transform="translate(540, 0)">
+        <rect width="480" height="180" fill="#198754" rx="10"/>
+        <text x="240" y="60" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">완료된 작업</text>
+        <text x="240" y="130" font-family="Arial, sans-serif" font-size="72" font-weight="bold" fill="#ffffff" text-anchor="middle">127</text>
+      </g>
+
+      <!-- Failed Tasks -->
+      <g transform="translate(1080, 0)">
+        <rect width="480" height="180" fill="#dc3545" rx="10"/>
+        <text x="240" y="60" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">실패한 작업</text>
+        <text x="240" y="130" font-family="Arial, sans-serif" font-size="72" font-weight="bold" fill="#ffffff" text-anchor="middle">5</text>
+      </g>
+
+      <!-- Workers -->
+      <g transform="translate(1620, 0)">
+        <rect width="420" height="180" fill="#6610f2" rx="10"/>
+        <text x="210" y="60" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">Workers</text>
+        <text x="210" y="130" font-family="Arial, sans-serif" font-size="72" font-weight="bold" fill="#ffffff" text-anchor="middle">2</text>
+      </g>
+    </g>
+
+    <!-- Tasks Table -->
+    <g transform="translate(60, 440)">
+      <!-- Table Header -->
+      <rect width="2040" height="60" fill="#e9ecef"/>
+      <text x="40" y="40" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" font-weight="bold" fill="#495057">작업 이름</text>
+      <text x="700" y="40" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" font-weight="bold" fill="#495057">상태</text>
+      <text x="1000" y="40" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" font-weight="bold" fill="#495057">진행률</text>
+      <text x="1500" y="40" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" font-weight="bold" fill="#495057">시작 시간</text>
+
+      <!-- Task 1 -->
+      <g transform="translate(0, 60)">
+        <rect width="2040" height="80" fill="#ffffff" stroke="#dee2e6" stroke-width="1"/>
+        <text x="40" y="50" font-family="Courier New, monospace" font-size="26" fill="#212529">automation.per_coin</text>
+        <rect x="700" y="20" width="180" height="40" fill="#0d6efd" rx="5"/>
+        <text x="790" y="48" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">PROGRESS</text>
+
+        <!-- Progress Bar -->
+        <rect x="1000" y="20" width="400" height="40" fill="#e9ecef" rx="5"/>
+        <rect x="1000" y="20" width="280" height="40" fill="#0dcaf0" rx="5"/>
+        <text x="1200" y="48" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#000000" text-anchor="middle">70%</text>
+
+        <text x="1500" y="50" font-family="Courier New, monospace" font-size="26" fill="#6c757d">14:32:15</text>
+      </g>
+
+      <!-- Task 2 -->
+      <g transform="translate(0, 140)">
+        <rect width="2040" height="80" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1"/>
+        <text x="40" y="50" font-family="Courier New, monospace" font-size="26" fill="#212529">analyze.single_coin</text>
+        <rect x="700" y="20" width="180" height="40" fill="#198754" rx="5"/>
+        <text x="790" y="48" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">SUCCESS</text>
+
+        <!-- Progress Bar (완료) -->
+        <rect x="1000" y="20" width="400" height="40" fill="#198754" rx="5"/>
+        <text x="1200" y="48" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">100%</text>
+
+        <text x="1500" y="50" font-family="Courier New, monospace" font-size="26" fill="#6c757d">14:31:08</text>
+      </g>
+
+      <!-- Task 3 -->
+      <g transform="translate(0, 220)">
+        <rect width="2040" height="80" fill="#ffffff" stroke="#dee2e6" stroke-width="1"/>
+        <text x="40" y="50" font-family="Courier New, monospace" font-size="26" fill="#212529">upbit.execute_buy_orders</text>
+        <rect x="700" y="20" width="180" height="40" fill="#17a2b8" rx="5"/>
+        <text x="790" y="48" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">PENDING</text>
+
+        <!-- Progress Bar (대기) -->
+        <rect x="1000" y="20" width="400" height="40" fill="#e9ecef" rx="5"/>
+        <text x="1200" y="48" font-family="Arial, sans-serif" font-size="24" fill="#6c757d" text-anchor="middle">0%</text>
+
+        <text x="1500" y="50" font-family="Courier New, monospace" font-size="26" fill="#6c757d">14:32:42</text>
+      </g>
+
+      <!-- Task 4 -->
+      <g transform="translate(0, 300)">
+        <rect width="2040" height="80" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1"/>
+        <text x="40" y="50" font-family="Courier New, monospace" font-size="26" fill="#212529">analyze.run_for_my_coins</text>
+        <rect x="700" y="20" width="180" height="40" fill="#dc3545" rx="5"/>
+        <text x="790" y="48" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">FAILURE</text>
+
+        <!-- Progress Bar (실패) -->
+        <rect x="1000" y="20" width="400" height="40" fill="#dc3545" rx="5"/>
+        <text x="1200" y="48" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff" text-anchor="middle">ERROR</text>
+
+        <text x="1500" y="50" font-family="Courier New, monospace" font-size="26" fill="#6c757d">14:30:15</text>
+      </g>
+    </g>
+
+    <!-- Worker Info -->
+    <g transform="translate(60, 980)">
+      <text x="0" y="30" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="36" font-weight="bold" fill="#212529">Worker 상태</text>
+
+      <!-- Worker 1 -->
+      <g transform="translate(0, 60)">
+        <rect width="1000" height="100" fill="#ffffff" stroke="#198754" stroke-width="3" rx="8"/>
+        <circle cx="50" cy="50" r="15" fill="#198754"/>
+        <text x="90" y="60" font-family="Courier New, monospace" font-size="28" font-weight="bold" fill="#212529">celery@worker1</text>
+        <text x="800" y="40" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" fill="#6c757d" text-anchor="end">CPU: 45%</text>
+        <text x="800" y="75" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" fill="#6c757d" text-anchor="end">메모리: 512MB</text>
+      </g>
+
+      <!-- Worker 2 -->
+      <g transform="translate(1040, 60)">
+        <rect width="1000" height="100" fill="#ffffff" stroke="#198754" stroke-width="3" rx="8"/>
+        <circle cx="50" cy="50" r="15" fill="#198754"/>
+        <text x="90" y="60" font-family="Courier New, monospace" font-size="28" font-weight="bold" fill="#212529">celery@worker2</text>
+        <text x="800" y="40" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" fill="#6c757d" text-anchor="end">CPU: 23%</text>
+        <text x="800" y="75" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="24" fill="#6c757d" text-anchor="end">메모리: 384MB</text>
+      </g>
+    </g>
+  </g>
+</svg>

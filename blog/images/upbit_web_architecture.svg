@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2560 1800">
+  <!-- Background -->
+  <rect width="2560" height="1800" fill="#f8f9fa"/>
+
+  <!-- Title -->
+  <text x="1280" y="100" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="64" font-weight="bold" fill="#212529" text-anchor="middle">시스템 아키텍처</text>
+
+  <!-- Browser -->
+  <g transform="translate(1030, 250)">
+    <rect width="500" height="180" fill="#0d6efd" rx="15"/>
+    <text x="250" y="70" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="48" font-weight="bold" fill="#ffffff" text-anchor="middle">브라우저</text>
+    <text x="250" y="130" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">사용자 인터페이스</text>
+  </g>
+
+  <!-- FastAPI Router -->
+  <g transform="translate(1030, 600)">
+    <rect width="500" height="180" fill="#009688" rx="15"/>
+    <text x="250" y="70" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="48" font-weight="bold" fill="#ffffff" text-anchor="middle">FastAPI</text>
+    <text x="250" y="130" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">웹 서버 / 라우터</text>
+  </g>
+
+  <!-- Celery Worker -->
+  <g transform="translate(300, 950)">
+    <rect width="500" height="180" fill="#37a779" rx="15"/>
+    <text x="250" y="70" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="48" font-weight="bold" fill="#ffffff" text-anchor="middle">Celery Worker</text>
+    <text x="250" y="130" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">백그라운드 작업</text>
+  </g>
+
+  <!-- Redis -->
+  <g transform="translate(1030, 950)">
+    <rect width="500" height="180" fill="#dc382c" rx="15"/>
+    <text x="250" y="70" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="48" font-weight="bold" fill="#ffffff" text-anchor="middle">Redis</text>
+    <text x="250" y="130" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">작업 큐 & 결과 저장</text>
+  </g>
+
+  <!-- Upbit API -->
+  <g transform="translate(300, 1450)">
+    <rect width="500" height="180" fill="#6610f2" rx="15"/>
+    <text x="250" y="70" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="48" font-weight="bold" fill="#ffffff" text-anchor="middle">Upbit API</text>
+    <text x="250" y="130" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">거래소 API</text>
+  </g>
+
+  <!-- PostgreSQL -->
+  <g transform="translate(1030, 1450)">
+    <rect width="500" height="180" fill="#336791" rx="15"/>
+    <text x="250" y="70" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="48" font-weight="bold" fill="#ffffff" text-anchor="middle">PostgreSQL</text>
+    <text x="250" y="130" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">분석 결과 저장</text>
+  </g>
+
+  <!-- Arrows -->
+  <defs>
+    <marker id="arrow1" markerWidth="15" markerHeight="15" refX="10" refY="7" orient="auto">
+      <polygon points="0 0, 15 7, 0 14" fill="#495057"/>
+    </marker>
+    <marker id="arrow2" markerWidth="15" markerHeight="15" refX="10" refY="7" orient="auto">
+      <polygon points="0 0, 15 7, 0 14" fill="#198754"/>
+    </marker>
+  </defs>
+
+  <!-- Browser <-> FastAPI -->
+  <line x1="1280" y1="430" x2="1280" y2="600" stroke="#495057" stroke-width="6" marker-end="url(#arrow1)"/>
+  <text x="1400" y="520" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#495057">HTTP Request</text>
+  <line x1="1240" y1="600" x2="1240" y2="430" stroke="#198754" stroke-width="6" marker-end="url(#arrow2)"/>
+  <text x="1050" y="520" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#198754">JSON Response</text>
+
+  <!-- FastAPI -> Celery Worker -->
+  <line x1="1030" y1="730" x2="800" y2="950" stroke="#495057" stroke-width="6" marker-end="url(#arrow1)"/>
+  <text x="850" y="840" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#495057">Task 생성</text>
+
+  <!-- FastAPI <-> Redis -->
+  <line x1="1280" y1="780" x2="1280" y2="950" stroke="#495057" stroke-width="6" marker-end="url(#arrow1)"/>
+  <line x1="1240" y1="950" x2="1240" y2="780" stroke="#198754" stroke-width="6" marker-end="url(#arrow2)"/>
+  <text x="1350" y="865" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#495057">상태 조회</text>
+
+  <!-- Celery Worker <-> Redis -->
+  <line x1="800" y1="1040" x2="1030" y2="1040" stroke="#495057" stroke-width="6" marker-end="url(#arrow1)"/>
+  <line x1="1030" y1="1000" x2="800" y2="1000" stroke="#198754" stroke-width="6" marker-end="url(#arrow2)"/>
+  <text x="850" y="1020" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#495057">진행률 업데이트</text>
+
+  <!-- Celery Worker -> Upbit API -->
+  <line x1="550" y1="1130" x2="550" y2="1450" stroke="#495057" stroke-width="6" marker-end="url(#arrow1)"/>
+  <text x="600" y="1290" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#495057">주문/조회</text>
+
+  <!-- Celery Worker -> PostgreSQL -->
+  <line x1="800" y1="1090" x2="1030" y2="1450" stroke="#495057" stroke-width="6" marker-end="url(#arrow1)"/>
+  <text x="870" y="1270" font-family="Apple SD Gothic Neo, Arial, sans-serif" font-size="28" fill="#495057">분석 결과 저장</text>
+
+  <!-- Step Numbers -->
+  <circle cx="1280" cy="340" r="35" fill="#ffc107" stroke="#212529" stroke-width="3"/>
+  <text x="1280" y="358" font-family="Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">1</text>
+
+  <circle cx="1030" cy="690" r="35" fill="#ffc107" stroke="#212529" stroke-width="3"/>
+  <text x="1030" y="708" font-family="Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">2</text>
+
+  <circle cx="550" cy="870" r="35" fill="#ffc107" stroke="#212529" stroke-width="3"/>
+  <text x="550" y="888" font-family="Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">3</text>
+
+  <circle cx="1280" cy="870" r="35" fill="#ffc107" stroke="#212529" stroke-width="3"/>
+  <text x="1280" y="888" font-family="Arial, sans-serif" font-size="40" font-weight="bold" fill="#000000" text-anchor="middle">4</text>
+</svg>
