@@ -737,9 +737,9 @@ def run_per_coin_automation_task(self) -> dict:
             }
 
             step_definitions = [
-                ("analysis", lambda: _analyze_coin_async(currency)),
-                ("buy", lambda: _execute_buy_order_for_coin_async(currency)),
-                ("sell", lambda: _execute_sell_order_for_coin_async(currency)),
+                ("analysis", lambda c=currency: _analyze_coin_async(c)),
+                ("buy", lambda c=currency: _execute_buy_order_for_coin_async(c)),
+                ("sell", lambda c=currency: _execute_sell_order_for_coin_async(c)),
             ]
 
             continue_steps = True
