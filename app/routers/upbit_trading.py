@@ -417,58 +417,69 @@ async def get_open_orders():
 @router.delete("/api/cancel-orders")
 async def cancel_all_orders():
     """모든 미체결 주문 취소"""
-    analyzer: UpbitAnalyzer | None = None
     try:
-        # Upbit 상수 초기화
         await upbit_pairs.prime_upbit_constants()
 
-        # 보유 코인 조회
-        my_coins = await upbit.fetch_my_coins()
+        open_orders = await upbit.fetch_open_orders()
 
-        # 거래 가능한 코인 필터링
-        analyzer = UpbitAnalyzer()
-        try:
-            tradable_coins = [
-                coin for coin in my_coins
-                if coin.get("currency") != "KRW"
-                   and analyzer.is_tradable(coin)
-                   and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
-            ]
-        finally:
-            await analyzer.close()
+        if not open_orders:
+            return {
+                "success": True,
+                "results": [],
+                "total_count": 0,
+                "message": "미체결 주문이 없습니다.",
+            }
 
-        # 각 코인의 미체결 주문 취소
+        grouped_orders: dict[str, list[dict]] = {}
+        for order in open_orders:
+            market = order.get("market") or ""
+            grouped_orders.setdefault(market, []).append(order)
+
         cancel_results = []
-        for coin in tradable_coins:
-            currency = coin['currency']
-            market = f"KRW-{currency}"
+
+        for market, orders in grouped_orders.items():
+            currency = ""
+            if "-" in market:
+                _, currency = market.split("-", 1)
+            elif market:
+                currency = market
 
             try:
-                open_orders = await upbit.fetch_open_orders(market)
-
-                if open_orders:
-                    order_uuids = [order['uuid'] for order in open_orders]
-                    results = await upbit.cancel_orders(order_uuids)
-
-                    success_count = sum(1 for r in results if 'error' not in r)
+                order_uuids = [order["uuid"] for order in orders if order.get("uuid")]
+                if not order_uuids:
                     cancel_results.append({
                         "currency": currency,
                         "market": market,
-                        "success": True,
-                        "cancelled_count": success_count,
-                        "total_count": len(order_uuids)
+                        "success": False,
+                        "cancelled_count": 0,
+                        "total_count": len(orders),
+                        "error": "취소할 주문 UUID가 없습니다.",
                     })
-            except Exception as e:
+                    continue
+
+                results = await upbit.cancel_orders(order_uuids)
+                success_count = sum(1 for item in results if "error" not in item)
+                cancel_results.append({
+                    "currency": currency,
+                    "market": market,
+                    "success": success_count == len(order_uuids),
+                    "cancelled_count": success_count,
+                    "total_count": len(order_uuids),
+                })
+            except Exception as exc:
                 cancel_results.append({
                     "currency": currency,
                     "market": market,
                     "success": False,
-                    "error": str(e)
+                    "cancelled_count": 0,
+                    "total_count": len(orders),
+                    "error": str(exc),
                 })
 
         return {
             "success": True,
-            "results": cancel_results
+            "results": cancel_results,
+            "total_count": sum(len(orders) for orders in grouped_orders.values()),
         }
 
     except HTTPException:
