@@ -22,7 +22,7 @@ async def _fetch_tradable_coins() -> Tuple[List[dict], List[dict]]:
         tradable_coins = [
             coin for coin in my_coins
             if coin.get("currency") != "KRW"
-            and analyzer._is_tradable(coin)
+            and analyzer.is_tradable(coin)
             and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
         ]
     finally:
@@ -306,7 +306,7 @@ def run_analysis_for_my_coins(self) -> dict:
             tradable_coins = [
                 coin for coin in my_coins
                 if coin.get("currency") != "KRW"
-                   and analyzer._is_tradable(coin)
+                   and analyzer.is_tradable(coin)
                    and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
             ]
 
@@ -416,7 +416,7 @@ def execute_buy_orders_task(self) -> dict:
             tradable_coins = [
                 coin for coin in my_coins
                 if coin.get("currency") != "KRW"
-                   and analyzer._is_tradable(coin)
+                   and analyzer.is_tradable(coin)
                    and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
             ]
 
@@ -563,7 +563,7 @@ def execute_sell_orders_task(self) -> dict:
             tradable_coins = [
                 coin for coin in my_coins
                 if coin.get("currency") != "KRW"
-                   and analyzer._is_tradable(coin)
+                   and analyzer.is_tradable(coin)
                    and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
             ]
 
