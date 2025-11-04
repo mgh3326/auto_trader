@@ -261,6 +261,27 @@ async def execute_sell_orders():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/api/automation/per-coin")
+async def execute_per_coin_automation():
+    """보유 코인별 자동 실행 (분석 → 분할 매수 → 분할 매도)"""
+    from app.core.celery_app import celery_app
+
+    try:
+        if not settings.upbit_access_key or not settings.upbit_secret_key:
+            raise HTTPException(status_code=400, detail="Upbit API 키가 설정되지 않았습니다.")
+
+        async_result = celery_app.send_task("upbit.run_per_coin_automation")
+        return {
+            "success": True,
+            "message": "코인별 자동 실행이 시작되었습니다.",
+            "task_id": async_result.id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/api/coin/{currency}/buy-orders")
 async def execute_coin_buy_orders(currency: str):
     """특정 코인에 대한 분할 매수 주문 실행 (Celery)"""
@@ -512,68 +533,70 @@ async def get_sell_prices_for_coin(currency: str, avg_buy_price: float, current_
 
 
 async def place_multiple_sell_orders(market: str, balance: float, sell_prices: List[float], currency: str) -> dict:
-    """여러 가격으로 분할 매도 주문
+    """여러 가격으로 분할 매도 주문을 실행하고 진행 상황을 로그로 출력합니다."""
 
-    Returns:
-        dict: {'success': bool, 'message': str, 'orders_placed': int}
-    """
+    def format_price(value: float) -> str:
+        return f"{value:,.0f}"
+
     if not sell_prices:
         return {'success': False, 'message': '매도 가격이 없습니다', 'orders_placed': 0}
 
     orders_placed = 0
 
     if len(sell_prices) == 1:
-        # 가격이 1개만 있으면 전량 매도
-        result = await place_sell_order_single(market, balance, sell_prices[0])
+        target_price = sell_prices[0]
+        print(f"💰 전량 매도 주문 시도: {format_price(target_price)}원, 수량 {balance:.8f}")
+        result = await place_sell_order_single(market, balance, target_price)
         if result:
             orders_placed = 1
+            print("✅ 전량 매도 주문 성공")
             return {'success': True, 'message': '전량 매도 주문 완료', 'orders_placed': orders_placed}
-        else:
-            return {'success': False, 'message': '매도 주문 실패', 'orders_placed': 0}
+        print("❌ 전량 매도 주문 실패")
+        return {'success': False, 'message': '매도 주문 실패', 'orders_placed': 0}
 
-    # 가격 정렬
     sell_prices_sorted = sorted(sell_prices)
 
-    # 분할 수량 체크
-    split_ratio = 1.0 / len(sell_prices)
+    split_ratio = 1.0 / len(sell_prices_sorted)
     min_split_volume = balance * split_ratio
     first_sell_price = sell_prices_sorted[0]
     split_amount = (balance * split_ratio) * first_sell_price
 
     if min_split_volume < 0.00000001 or split_amount < 10000:
-        # 분할 불가능 - 최저가에서 전량 매도
         lowest_price = min(sell_prices_sorted)
+        print("⚠️ 분할 매도 불가: 최소 분할 수량/금액 미충족, 전량 매도로 전환")
+        print(f"💰 전량 매도 주문 시도: {format_price(lowest_price)}원, 수량 {balance:.8f}")
         result = await place_sell_order_single(market, balance, lowest_price)
         if result:
             orders_placed = 1
+            print("✅ 전량 매도 주문 성공")
             return {'success': True, 'message': '분할 불가능하여 전량 매도', 'orders_placed': orders_placed}
-        else:
-            return {'success': False, 'message': '매도 주문 실패 (분할 불가)', 'orders_placed': 0}
+        print("❌ 전량 매도 주문 실패 (분할 불가)")
+        return {'success': False, 'message': '매도 주문 실패 (분할 불가)', 'orders_placed': 0}
 
-    # 마지막 가격 제외한 나머지로 분할 매도
     split_prices = sell_prices_sorted[:-1]
     highest_price = sell_prices_sorted[-1]
 
-    # 분할 매도
-    for sell_price in split_prices:
+    print(f"🎯 총 {len(sell_prices_sorted)}개 가격에서 매도 주문 실행:")
+    for index, sell_price in enumerate(split_prices, 1):
         try:
             split_volume = balance * split_ratio
-            volume_str = f"{split_volume:.8f}"
-
             if split_volume < 0.00000001:
                 continue
 
             adjusted_sell_price = upbit.adjust_price_to_upbit_unit(sell_price)
+            volume_str = f"{split_volume:.8f}"
             price_str = f"{adjusted_sell_price}"
 
+            print(f"[{index}/{len(sell_prices_sorted)}] {format_price(adjusted_sell_price)}원 매도 주문, 수량 {split_volume:.8f}")
             result = await upbit.place_sell_order(market, volume_str, price_str)
             if result:
                 orders_placed += 1
+                print("    ✅ 매도 주문 성공")
+            else:
+                print("    ❌ 매도 주문 실패")
         except Exception as e:
-            print(f"분할 매도 주문 실패: {e}")
-            continue
+            print(f"    ❌ 분할 매도 주문 실패: {e}")
 
-    # 잔량 전량 매도
     try:
         current_coins = await upbit.fetch_my_coins()
         current_balance = 0.0
@@ -583,20 +606,23 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
                 break
 
         if current_balance >= 0.00000001:
-            volume_str = f"{current_balance:.8f}"
             adjusted_highest_price = upbit.adjust_price_to_upbit_unit(highest_price)
+            volume_str = f"{current_balance:.8f}"
             price_str = f"{adjusted_highest_price}"
 
+            print(f"[마지막] 잔량 전량 매도: {format_price(adjusted_highest_price)}원, 수량 {current_balance:.8f}")
             result = await upbit.place_sell_order(market, volume_str, price_str)
             if result:
                 orders_placed += 1
+                print("    ✅ 잔량 매도 주문 성공")
+            else:
+                print("    ❌ 잔량 매도 주문 실패")
     except Exception as e:
-        print(f"잔량 매도 주문 실패: {e}")
+        print(f"❌ 잔량 매도 주문 실패: {e}")
 
     if orders_placed > 0:
         return {'success': True, 'message': f'{orders_placed}단계 분할 매도 완료', 'orders_placed': orders_placed}
-    else:
-        return {'success': False, 'message': '모든 매도 주문 실패', 'orders_placed': 0}
+    return {'success': False, 'message': '모든 매도 주문 실패', 'orders_placed': 0}
 
 
 async def place_sell_order_single(market: str, balance: float, sell_price: float):

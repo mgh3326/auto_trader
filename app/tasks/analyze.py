@@ -1,11 +1,239 @@
 import asyncio
-from typing import Optional, List
+from typing import Callable, Dict, List, Optional, Tuple
 
 from celery import shared_task
 
 from app.analysis.service_analyzers import KISAnalyzer, YahooAnalyzer, UpbitAnalyzer
 from app.services import upbit
 from data.coins_info import upbit_pairs
+
+
+ProgressCallback = Optional[Callable[[Dict[str, str]], None]]
+
+
+async def _fetch_tradable_coins() -> Tuple[List[dict], List[dict]]:
+    """보유 중인 코인과 거래 가능한 코인을 동시에 조회."""
+    await upbit_pairs.prime_upbit_constants()
+
+    my_coins = await upbit.fetch_my_coins()
+
+    analyzer = UpbitAnalyzer()
+    try:
+        tradable_coins = [
+            coin for coin in my_coins
+            if coin.get("currency") != "KRW"
+            and analyzer._is_tradable(coin)
+            and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
+        ]
+    finally:
+        await analyzer.close()
+
+    return my_coins, tradable_coins
+
+
+async def _analyze_coin_async(currency: str, progress_cb: ProgressCallback = None) -> Dict[str, object]:
+    """단일 코인 분석을 수행하는 비동기 헬퍼."""
+    if not currency:
+        return {
+            "status": "failed",
+            "error": "코인 코드가 필요합니다."
+        }
+
+    await upbit_pairs.prime_upbit_constants()
+    currency_code = currency.upper()
+
+    if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
+        return {
+            "status": "failed",
+            "currency": currency_code,
+            "message": f"{currency_code}는 KRW 마켓 거래 대상이 아닙니다."
+        }
+
+    korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency_code, currency_code)
+
+    if progress_cb:
+        progress_cb({
+            "status": f"{korean_name} 분석 중...",
+            "currency": currency_code,
+            "step": "analysis",
+        })
+
+    analyzer = UpbitAnalyzer()
+    try:
+        await analyzer.analyze_coin_json(korean_name)
+        return {
+            "status": "completed",
+            "currency": currency_code,
+            "korean_name": korean_name,
+            "message": f"{korean_name} 분석이 완료되었습니다."
+        }
+    except Exception as exc:  # pragma: no cover - defensive logging
+        return {
+            "status": "failed",
+            "currency": currency_code,
+            "korean_name": korean_name,
+            "error": str(exc)
+        }
+    finally:
+        await analyzer.close()
+
+
+async def _execute_buy_order_for_coin_async(currency: str) -> Dict[str, object]:
+    """단일 코인 분할 매수 실행 헬퍼."""
+    if not currency:
+        return {
+            "status": "failed",
+            "error": "코인 코드가 필요합니다."
+        }
+
+    from app.services.stock_info_service import process_buy_orders_with_analysis
+    from app.routers.upbit_trading import cancel_existing_buy_orders
+
+    currency_code = currency.upper()
+
+    await upbit_pairs.prime_upbit_constants()
+
+    if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
+        return {
+            "status": "failed",
+            "currency": currency_code,
+            "message": f"{currency_code}는 KRW 마켓에서 거래할 수 없습니다."
+        }
+
+    market = f"KRW-{currency_code}"
+
+    try:
+        my_coins = await upbit.fetch_my_coins()
+        target_coin = next((coin for coin in my_coins if coin.get('currency') == currency_code), None)
+
+        if not target_coin:
+            return {
+                "status": "failed",
+                "currency": currency_code,
+                "message": f"{currency_code} 보유 내역을 찾을 수 없습니다."
+            }
+
+        avg_buy_price = float(target_coin.get('avg_buy_price', 0))
+
+        current_price_df = await upbit.fetch_price(market)
+        current_price = float(current_price_df.iloc[0]['close'])
+
+        await cancel_existing_buy_orders(market)
+        await asyncio.sleep(1)
+
+        result = await process_buy_orders_with_analysis(market, current_price, avg_buy_price)
+
+        return {
+            "status": "completed" if result.get("success") else "failed",
+            "currency": currency_code,
+            "message": result.get("message"),
+            "result": result,
+        }
+    except Exception as exc:  # pragma: no cover - defensive logging
+        return {
+            "status": "failed",
+            "currency": currency_code,
+            "error": str(exc),
+        }
+
+
+async def _execute_sell_order_for_coin_async(currency: str) -> Dict[str, object]:
+    """단일 코인 분할 매도 실행 헬퍼."""
+    if not currency:
+        return {
+            "status": "failed",
+            "error": "코인 코드가 필요합니다."
+        }
+
+    from app.routers.upbit_trading import (
+        cancel_existing_sell_orders,
+        get_sell_prices_for_coin,
+        place_multiple_sell_orders,
+    )
+
+    currency_code = currency.upper()
+
+    await upbit_pairs.prime_upbit_constants()
+
+    if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
+        return {
+            "status": "failed",
+            "currency": currency_code,
+            "message": f"{currency_code}는 KRW 마켓에서 거래할 수 없습니다."
+        }
+
+    market = f"KRW-{currency_code}"
+
+    try:
+        my_coins = await upbit.fetch_my_coins()
+        target_coin = next((coin for coin in my_coins if coin.get('currency') == currency_code), None)
+
+        if not target_coin:
+            return {
+                "status": "failed",
+                "currency": currency_code,
+                "message": f"{currency_code} 보유 내역을 찾을 수 없습니다."
+            }
+
+        balance = float(target_coin.get('balance', 0))
+        avg_buy_price = float(target_coin.get('avg_buy_price', 0))
+
+        await cancel_existing_sell_orders(market)
+        await asyncio.sleep(1)
+
+        refreshed = await upbit.fetch_my_coins()
+        for coin in refreshed:
+            if coin.get('currency') == currency_code:
+                balance = float(coin.get('balance', 0))
+                break
+
+        if balance < 0.00000001:
+            return {
+                "status": "failed",
+                "currency": currency_code,
+                "message": "보유 수량이 너무 적습니다."
+            }
+
+        current_price_df = await upbit.fetch_price(market)
+        current_price = float(current_price_df.iloc[0]['close'])
+
+        sell_prices = await get_sell_prices_for_coin(currency_code, avg_buy_price, current_price)
+        if not sell_prices:
+            return {
+                "status": "failed",
+                "currency": currency_code,
+                "message": "매도 조건에 맞는 가격이 없습니다."
+            }
+
+        def format_price(value: float) -> str:
+            return f"{value:,.0f}"
+
+        print(f"📊 {market} 분석 기반 분할 매도 주문 처리")
+        print(f"현재가: {format_price(current_price)}원")
+        print(f"평균 매수가: {format_price(avg_buy_price)}원")
+        print(f"보유 수량: {balance:.8f}")
+        prices_preview = ', '.join(f"{format_price(price)}원" for price in sell_prices)
+        print(f"매도 후보 가격: {prices_preview}")
+
+        result = await place_multiple_sell_orders(market, balance, sell_prices, currency_code)
+
+        if result.get("success"):
+            print(f"📈 매도 주문 완료: {result.get('orders_placed', 0)}건 성공")
+        else:
+            print(f"⚠️ 매도 주문 실패: {result.get('message')}")
+
+        return {
+            "status": "completed" if result.get("success") else "failed",
+            "currency": currency_code,
+            "message": result.get("message"),
+            "result": result,
+        }
+    except Exception as exc:  # pragma: no cover - defensive logging
+        return {
+            "status": "failed",
+            "currency": currency_code,
+            "error": str(exc),
+        }
 
 
 @shared_task(name="analyze.run_for_stock")
@@ -455,215 +683,126 @@ def execute_sell_orders_task(self) -> dict:
 
 @shared_task(name="upbit.execute_buy_order_for_coin", bind=True)
 def execute_buy_order_for_coin_task(self, currency: str) -> dict:
-    """특정 코인에 대한 분할 매수 주문 실행"""
+    """특정 코인에 대한 분할 매수 주문 실행."""
 
-    async def _run() -> dict:
-        if not currency:
-            return {
-                'status': 'failed',
-                'error': '코인 코드가 필요합니다.'
-            }
-
-        from app.services.stock_info_service import process_buy_orders_with_analysis
-        from app.routers.upbit_trading import cancel_existing_buy_orders
-
-        currency_code = currency.upper()
-
-        # Upbit 상수 초기화
-        await upbit_pairs.prime_upbit_constants()
-
-        if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
-            return {
-                'status': 'failed',
-                'currency': currency_code,
-                'message': f"{currency_code}는 KRW 마켓에서 거래할 수 없습니다."
-            }
-
-        market = f"KRW-{currency_code}"
-
-        try:
-            my_coins = await upbit.fetch_my_coins()
-            target_coin = next((coin for coin in my_coins if coin.get('currency') == currency_code), None)
-
-            if not target_coin:
-                return {
-                    'status': 'failed',
-                    'currency': currency_code,
-                    'message': f"{currency_code} 보유 내역을 찾을 수 없습니다."
-                }
-
-            avg_buy_price = float(target_coin.get('avg_buy_price', 0))
-
-            # 현재가 조회
-            current_price_df = await upbit.fetch_price(market)
-            current_price = float(current_price_df.iloc[0]['close'])
-
-            # 기존 매수 주문 취소 후 잠시 대기
-            await cancel_existing_buy_orders(market)
-            await asyncio.sleep(1)
-
-            result = await process_buy_orders_with_analysis(market, current_price, avg_buy_price)
-
-            return {
-                'status': 'completed' if result.get('success') else 'failed',
-                'currency': currency_code,
-                'message': result.get('message'),
-                'result': result
-            }
-        except Exception as exc:
-            return {
-                'status': 'failed',
-                'currency': currency_code,
-                'error': str(exc)
-            }
-
-    return asyncio.run(_run())
+    return asyncio.run(_execute_buy_order_for_coin_async(currency))
 
 
 @shared_task(name="upbit.execute_sell_order_for_coin", bind=True)
 def execute_sell_order_for_coin_task(self, currency: str) -> dict:
-    """특정 코인에 대한 분할 매도 주문 실행"""
+    """특정 코인에 대한 분할 매도 주문 실행."""
 
-    async def _run() -> dict:
-        if not currency:
-            return {
-                'status': 'failed',
-                'error': '코인 코드가 필요합니다.'
-            }
-
-        from app.routers.upbit_trading import (
-            cancel_existing_sell_orders,
-            get_sell_prices_for_coin,
-            place_multiple_sell_orders
-        )
-
-        currency_code = currency.upper()
-
-        # Upbit 상수 초기화
-        await upbit_pairs.prime_upbit_constants()
-
-        if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
-            return {
-                'status': 'failed',
-                'currency': currency_code,
-                'message': f"{currency_code}는 KRW 마켓에서 거래할 수 없습니다."
-            }
-
-        market = f"KRW-{currency_code}"
-
-        try:
-            my_coins = await upbit.fetch_my_coins()
-            target_coin = next((coin for coin in my_coins if coin.get('currency') == currency_code), None)
-
-            if not target_coin:
-                return {
-                    'status': 'failed',
-                    'currency': currency_code,
-                    'message': f"{currency_code} 보유 내역을 찾을 수 없습니다."
-                }
-
-            balance = float(target_coin.get('balance', 0))
-            avg_buy_price = float(target_coin.get('avg_buy_price', 0))
-
-            # 기존 매도 주문 취소 후 잠시 대기
-            await cancel_existing_sell_orders(market)
-            await asyncio.sleep(1)
-
-            # 보유 수량 재확인 (취소된 주문 반영)
-            refreshed = await upbit.fetch_my_coins()
-            for coin in refreshed:
-                if coin.get('currency') == currency_code:
-                    balance = float(coin.get('balance', 0))
-                    break
-
-            if balance < 0.00000001:
-                return {
-                    'status': 'failed',
-                    'currency': currency_code,
-                    'message': '매도 가능한 수량이 없습니다.'
-                }
-
-            # 현재가 조회
-            current_price_df = await upbit.fetch_price(market)
-            current_price = float(current_price_df.iloc[0]['close'])
-
-            sell_prices = await get_sell_prices_for_coin(currency_code, avg_buy_price, current_price)
-
-            if not sell_prices:
-                return {
-                    'status': 'failed',
-                    'currency': currency_code,
-                    'message': '매도 조건에 맞는 가격이 없습니다.'
-                }
-
-            result = await place_multiple_sell_orders(market, balance, sell_prices, currency_code)
-
-            return {
-                'status': 'completed' if result.get('success') else 'failed',
-                'currency': currency_code,
-                'message': result.get('message'),
-                'result': result
-            }
-        except Exception as exc:
-            return {
-                'status': 'failed',
-                'currency': currency_code,
-                'error': str(exc)
-            }
-
-    return asyncio.run(_run())
+    return asyncio.run(_execute_sell_order_for_coin_async(currency))
 
 
 @shared_task(name="analyze.run_for_coin", bind=True)
 def run_analysis_for_coin_task(self, currency: str) -> dict:
-    """단일 코인에 대한 AI 분석을 실행"""
+    """단일 코인에 대한 AI 분석 실행."""
+
+    def progress(meta: Dict[str, str]) -> None:
+        self.update_state(state="PROGRESS", meta=meta)
+
+    return asyncio.run(_analyze_coin_async(currency, progress_cb=progress))
+
+
+@shared_task(name="upbit.run_per_coin_automation", bind=True)
+def run_per_coin_automation_task(self) -> dict:
+    """보유 코인 각각에 대해 분석 → 분할 매수 → 분할 매도를 순차 실행."""
 
     async def _run() -> dict:
-        if not currency:
-            return {
-                "status": "failed",
-                "error": "코인 코드가 필요합니다."
-            }
+        _, tradable_coins = await _fetch_tradable_coins()
 
-        await upbit_pairs.prime_upbit_constants()
-
-        currency_code = currency.upper()
-        if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
-            return {
-                "status": "failed",
-                "currency": currency_code,
-                "message": f"{currency_code}는 KRW 마켓에서 거래할 수 없습니다."
-            }
-
-        korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency_code, currency_code)
-        analyzer = UpbitAnalyzer()
-
-        try:
-            self.update_state(
-                state="PROGRESS",
-                meta={
-                    "status": f"{korean_name} 분석 중...",
-                    "currency": currency_code
-                }
-            )
-
-            await analyzer.analyze_coin_json(korean_name)
-
+        if not tradable_coins:
             return {
                 "status": "completed",
-                "currency": currency_code,
-                "korean_name": korean_name,
-                "message": f"{korean_name} 분석이 완료되었습니다."
+                "total_coins": 0,
+                "success_coins": 0,
+                "results": [],
+                "message": "거래 가능한 코인이 없습니다.",
             }
-        except Exception as exc:
-            return {
-                "status": "failed",
-                "currency": currency_code,
+
+        total_coins = len(tradable_coins)
+        steps_per_coin = 3
+        total_steps = total_coins * steps_per_coin
+        processed_steps = 0
+        results: List[Dict[str, object]] = []
+
+        for index, coin in enumerate(tradable_coins, 1):
+            currency = (coin.get("currency") or "").upper()
+            korean_name = coin.get("korean_name") or upbit_pairs.COIN_TO_NAME_KR.get(currency, currency)
+            coin_summary = {
+                "currency": currency,
                 "korean_name": korean_name,
-                "error": str(exc)
+                "steps": [],
             }
-        finally:
-            await analyzer.close()
+
+            step_definitions = [
+                ("analysis", lambda: _analyze_coin_async(currency)),
+                ("buy", lambda: _execute_buy_order_for_coin_async(currency)),
+                ("sell", lambda: _execute_sell_order_for_coin_async(currency)),
+            ]
+
+            continue_steps = True
+
+            for step_name, step_fn in step_definitions:
+                if not continue_steps:
+                    break
+
+                processed_steps += 1
+                self.update_state(
+                    state="PROGRESS",
+                    meta={
+                        "current_coin_index": index,
+                        "total_coins": total_coins,
+                        "current_currency": currency,
+                        "current_name": korean_name,
+                        "current_step": step_name,
+                        "processed_steps": processed_steps,
+                        "total_steps": total_steps,
+                    },
+                )
+
+                result = await step_fn()
+                coin_summary["steps"].append({
+                    "step": step_name,
+                    "result": result,
+                })
+
+                message = result.get("message") or result.get("error") or ""
+
+                self.update_state(
+                    state="PROGRESS",
+                    meta={
+                        "current_coin_index": index,
+                        "total_coins": total_coins,
+                        "current_currency": currency,
+                        "current_name": korean_name,
+                        "current_step": step_name,
+                        "processed_steps": processed_steps,
+                        "total_steps": total_steps,
+                        "last_message": message,
+                        "step_status": result.get("status"),
+                    },
+                )
+
+                if result.get("status") != "completed":
+                    continue_steps = False
+
+                if processed_steps < total_steps:
+                    await asyncio.sleep(0.5)
+
+            results.append(coin_summary)
+
+        success_coins = sum(
+            1 for item in results
+            if all(step["result"].get("status") == "completed" for step in item["steps"])
+        )
+
+        return {
+            "status": "completed",
+            "total_coins": total_coins,
+            "success_coins": success_coins,
+            "results": results,
+        }
 
     return asyncio.run(_run())
-

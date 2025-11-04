@@ -151,9 +151,30 @@
                 </div>
 
                 <!-- 새로고침 버튼 -->
-                <button class="btn btn-outline-primary w-100 mb-3" onclick="loadMyCoins()">
+                <button id="refresh-coins-btn" class="btn btn-outline-primary w-100 mb-3">
                     <i class="bi bi-arrow-clockwise"></i> 새로고침
                 </button>
+
+                <!-- 액션 카드 0: 코인별 자동 실행 -->
+                <div class="action-card">
+                    <h5><i class="bi bi-collection-play"></i> 코인별 자동 실행</h5>
+                    <p>보유 중인 각 코인에 대해 순서대로 <strong>분석 → 분할 매수 → 분할 매도</strong> 요청을 전송합니다. 요청은 코인 단위로 순차 처리되어 API 쿼터를 절약합니다.</p>
+
+                    <div id="per-coin-automation-progress" style="display: none; margin-bottom: 1rem;">
+                        <div class="progress" style="height: 25px;">
+                            <div id="per-coin-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-info"
+                                 role="progressbar" style="width: 0%">
+                                0%
+                            </div>
+                        </div>
+                        <div id="per-coin-automation-status" class="small text-muted mt-2">준비 중...</div>
+                        <div id="per-coin-automation-log" class="small mt-2 text-break" style="max-height: 160px; overflow-y: auto;"></div>
+                    </div>
+
+                    <button id="per-coin-automation-btn" class="btn btn-outline-primary btn-action">
+                        <i class="bi bi-collection-play"></i> 코인별 분석→매수→매도
+                    </button>
+                </div>
 
                 <!-- 액션 카드 1: AI 분석 -->
                 <div class="action-card">
@@ -294,13 +315,41 @@
         const STORAGE_KEYS = {
             ANALYSIS: 'upbit_analysis_task_id',
             BUY: 'upbit_buy_task_id',
-            SELL: 'upbit_sell_task_id'
+            SELL: 'upbit_sell_task_id',
+            COIN_AUTOMATION: 'upbit_coin_automation_task_id'
         };
+        let cachedTradableCoins = [];
+        let perCoinAutomationRunning = false;
+        let coinAutomationTaskId = null;
+        let coinAutomationInterval = null;
 
         // 페이지 로드 시 보유 코인 조회 및 진행 중인 작업 복원
-        document.addEventListener('DOMContentLoaded', function() {
-            loadMyCoins();
-            restoreActiveTasks();
+        document.addEventListener('DOMContentLoaded', async function() {
+            const refreshButton = document.getElementById('refresh-coins-btn');
+            if (refreshButton) {
+                refreshButton.addEventListener('click', () => {
+                    loadMyCoins().catch((error) => console.error('loadMyCoins failed', error));
+                });
+            }
+
+            const automationButton = document.getElementById('per-coin-automation-btn');
+            if (automationButton) {
+                automationButton.addEventListener('click', () => {
+                    runPerCoinAutomation().catch((error) => console.error('runPerCoinAutomation failed', error));
+                });
+            }
+
+            try {
+                await loadMyCoins();
+            } catch (error) {
+                console.error('loadMyCoins failed', error);
+            }
+
+            try {
+                await restoreActiveTasks();
+            } catch (error) {
+                console.error('restoreActiveTasks failed', error);
+            }
         });
 
         // 진행 중인 작업 복원
@@ -309,17 +358,14 @@
             const storedAnalysisTaskId = localStorage.getItem(STORAGE_KEYS.ANALYSIS);
             if (storedAnalysisTaskId) {
                 analysisTaskId = storedAnalysisTaskId;
-                // 작업 상태 확인하여 아직 진행 중인지 체크
                 const response = await fetch(`/upbit-trading/api/analyze-task/${analysisTaskId}`);
                 const data = await response.json();
 
                 if (data.state === 'PROGRESS' || data.state === 'PENDING') {
-                    // 프로그레스바 표시 및 체크 시작
                     document.getElementById('analysis-progress').style.display = 'block';
                     document.getElementById('analyze-btn').disabled = true;
                     analysisCheckInterval = setInterval(checkAnalysisProgress, 1000);
                 } else if (data.state === 'SUCCESS' || data.state === 'FAILURE') {
-                    // 이미 완료되었으면 localStorage에서 제거
                     localStorage.removeItem(STORAGE_KEYS.ANALYSIS);
                 }
             }
@@ -355,6 +401,34 @@
                     localStorage.removeItem(STORAGE_KEYS.SELL);
                 }
             }
+
+            // 코인별 자동 실행 복원
+            const storedCoinAutomationTaskId = localStorage.getItem(STORAGE_KEYS.COIN_AUTOMATION);
+            if (storedCoinAutomationTaskId) {
+                coinAutomationTaskId = storedCoinAutomationTaskId;
+                perCoinAutomationRunning = true;
+
+                const progressWrapper = document.getElementById('per-coin-automation-progress');
+                const statusEl = document.getElementById('per-coin-automation-status');
+                const button = document.getElementById('per-coin-automation-btn');
+
+                if (progressWrapper) {
+                    progressWrapper.style.display = 'block';
+                }
+                if (statusEl) {
+                    statusEl.textContent = '작업 상태를 확인하는 중입니다...';
+                }
+                if (button) {
+                    button.disabled = true;
+                    button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 실행 중...';
+                }
+
+                if (coinAutomationInterval) {
+                    clearInterval(coinAutomationInterval);
+                }
+                await checkCoinAutomationProgress();
+                coinAutomationInterval = setInterval(checkCoinAutomationProgress, 2000);
+            }
         }
 
         // 보유 코인 조회
@@ -366,13 +440,15 @@
                 if (data.success) {
                     // 통계 업데이트
                     document.getElementById('krw-balance').textContent =
-                        new Intl.NumberFormat('ko-KR').format(data.krw_balance) + '원';
+                        new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(data.krw_balance) + '원';
                     document.getElementById('krw-locked').textContent =
-                        new Intl.NumberFormat('ko-KR').format(data.krw_locked) + '원';
+                        new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(data.krw_locked) + '원';
                     document.getElementById('krw-total').textContent =
-                        new Intl.NumberFormat('ko-KR').format(data.krw_total) + '원';
+                        new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(data.krw_total) + '원';
                     document.getElementById('coin-count').textContent = data.tradable_coins_count + '개';
                     document.getElementById('tradable-count').textContent = data.tradable_coins_count + '개';
+
+                    cachedTradableCoins = data.coins || [];
 
                     // 코인 목록 렌더링
                     const coinsList = document.getElementById('coins-list');
@@ -460,7 +536,7 @@
                                                 ${profitSign}${profitRatePercent}%
                                             </div>
                                             <div class="coin-info ${profitClass}">
-                                                ${profitSign}${new Intl.NumberFormat('ko-KR').format(coin.profit_loss)}원
+                        ${profitSign}${new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(Math.trunc(coin.profit_loss))}원
                                             </div>
                                         </div>
                                     </div>
@@ -471,11 +547,11 @@
                                     </div>
                                     <div class="row coin-info">
                                         <div class="col-6">총 수량: ${totalDisplay}</div>
-                                        <div class="col-6 text-end">현재가: ${new Intl.NumberFormat('ko-KR').format(coin.current_price)}원</div>
+                                        <div class="col-6 text-end">현재가: ${new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(Math.trunc(coin.current_price))}원</div>
                                     </div>
                                     <div class="row coin-info">
-                                        <div class="col-6">평균 단가: ${new Intl.NumberFormat('ko-KR').format(coin.avg_buy_price)}원</div>
-                                        <div class="col-6 text-end">평가금액: ${new Intl.NumberFormat('ko-KR').format(coin.evaluation)}원</div>
+                                        <div class="col-6">평균 단가: ${new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(Math.trunc(coin.avg_buy_price))}원</div>
+                                        <div class="col-6 text-end">평가금액: ${new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(Math.trunc(coin.evaluation))}원</div>
                                     </div>
                                     <div class="coin-info mt-3 d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-2">
                                         <div>
@@ -490,13 +566,14 @@
                         attachCoinActionHandlers();
                     }
                 } else {
+                    cachedTradableCoins = [];
                     showAlert('보유 코인 조회 실패: ' + data.error, 'danger');
                 }
             } catch (error) {
+                cachedTradableCoins = [];
                 showAlert('보유 코인 조회 중 오류 발생: ' + error.message, 'danger');
             }
         }
-
         // AI 분석 실행
         let analysisTaskId = null;
         let analysisCheckInterval = null;
@@ -879,7 +956,7 @@
                                         </div>
                                     </div>
                                     <div class="mt-1" style="font-size: 0.85rem; color: #666;">
-                                        가격: ${new Intl.NumberFormat('ko-KR').format(order.price)}원 |
+                                        가격: ${new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(order.price)}원 |
                                         수량: ${order.volume} |
                                         미체결: ${order.remaining_volume}
                                     </div>
@@ -1063,7 +1140,202 @@
             }
         }
 
-        function escapeHtml(value) {
+        async function runPerCoinAutomation() {
+            if (perCoinAutomationRunning || coinAutomationTaskId) {
+                showAlert('이미 코인별 자동 실행이 진행 중입니다.', 'warning');
+                return;
+            }
+
+            if (!confirm('보유 중인 각 코인에 대해 분석 → 분할 매수 → 분할 매도 요청을 백그라운드에서 실행할까요?')) {
+                return;
+            }
+
+            perCoinAutomationRunning = true;
+
+            const button = document.getElementById('per-coin-automation-btn');
+            const progressWrapper = document.getElementById('per-coin-automation-progress');
+            const progressBar = document.getElementById('per-coin-progress-bar');
+            const statusEl = document.getElementById('per-coin-automation-status');
+            const logEl = document.getElementById('per-coin-automation-log');
+
+            progressWrapper.style.display = 'block';
+            progressBar.style.width = '0%';
+            progressBar.textContent = '0%';
+            statusEl.textContent = '요청을 준비 중입니다...';
+            logEl.innerHTML = '';
+            if (logEl) {
+                delete logEl.dataset.lastMessage;
+            }
+
+            button.disabled = true;
+            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 실행 중...';
+
+            try {
+                const response = await fetch('/upbit-trading/api/automation/per-coin', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.success && data.task_id) {
+                    coinAutomationTaskId = data.task_id;
+                    localStorage.setItem(STORAGE_KEYS.COIN_AUTOMATION, data.task_id);
+                    statusEl.textContent = '코인별 자동 실행이 시작되었습니다.';
+
+                    if (coinAutomationInterval) {
+                        clearInterval(coinAutomationInterval);
+                    }
+                    coinAutomationInterval = setInterval(checkCoinAutomationProgress, 2000);
+
+                    showAlert(data.message || '코인별 자동 실행이 시작되었습니다.', 'success');
+                } else {
+                    const message = data.error || data.message || '코인별 자동 실행을 시작하지 못했습니다.';
+                    showAlert(`❌ ${message}`, 'danger');
+                    resetPerCoinAutomationUI({ clearTask: false });
+                }
+            } catch (error) {
+                showAlert(`❌ 코인별 자동 실행 요청 중 오류 발생: ${error.message}`, 'danger');
+                resetPerCoinAutomationUI({ clearTask: false });
+            }
+        }
+
+        function resetPerCoinAutomationUI(options = {}) {
+            const { clearTask = true } = options;
+
+            perCoinAutomationRunning = false;
+
+            if (coinAutomationInterval) {
+                clearInterval(coinAutomationInterval);
+                coinAutomationInterval = null;
+            }
+
+            if (clearTask && coinAutomationTaskId) {
+                localStorage.removeItem(STORAGE_KEYS.COIN_AUTOMATION);
+                coinAutomationTaskId = null;
+            }
+
+            const button = document.getElementById('per-coin-automation-btn');
+            if (button) {
+                button.disabled = false;
+                button.innerHTML = '<i class="bi bi-collection-play"></i> 코인별 분석→매수→매도';
+            }
+
+            const logEl = document.getElementById('per-coin-automation-log');
+            if (logEl) {
+                delete logEl.dataset.lastMessage;
+            }
+        }
+
+        function updatePerCoinAutomationProgress(progress = {}) {
+            const progressBar = document.getElementById('per-coin-progress-bar');
+            const statusEl = document.getElementById('per-coin-automation-status');
+            const logEl = document.getElementById('per-coin-automation-log');
+
+            if (progressBar && progress.total_steps) {
+                const percent = Math.min(
+                    100,
+                    Math.round(((progress.processed_steps || 0) / progress.total_steps) * 100)
+                );
+                progressBar.style.width = percent + '%';
+                progressBar.textContent = percent + '%';
+            }
+
+            if (statusEl) {
+                const parts = [];
+                if (progress.current_name) {
+                    parts.push(progress.current_name);
+                }
+                if (progress.current_currency) {
+                    parts.push(`(${progress.current_currency})`);
+                }
+                if (progress.current_step) {
+                    parts.push(`- ${progress.current_step}`);
+                }
+                if (progress.step_status) {
+                    parts.push(`[${progress.step_status}]`);
+                }
+                if (parts.length > 0) {
+                    statusEl.textContent = parts.join(' ');
+                }
+            }
+
+            if (logEl && progress.last_message) {
+                if (logEl.dataset.lastMessage !== progress.last_message) {
+                    logEl.insertAdjacentHTML(
+                        'afterbegin',
+                        `<div class="mb-2">${escapeHtml(progress.last_message)}</div>`
+                    );
+                    logEl.dataset.lastMessage = progress.last_message;
+                }
+            }
+        }
+
+        async function checkCoinAutomationProgress() {
+            if (!coinAutomationTaskId) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/upbit-trading/api/analyze-task/${encodeURIComponent(coinAutomationTaskId)}`);
+                const data = await response.json();
+
+                if (data.state === 'PROGRESS') {
+                    updatePerCoinAutomationProgress(data.progress || {});
+                    return;
+                }
+
+                if (data.state === 'PENDING') {
+                    return;
+                }
+
+                if (data.state === 'SUCCESS') {
+                    const result = data.result || {};
+                    const totalCoins = result.total_coins || 0;
+
+                    updatePerCoinAutomationProgress({
+                        processed_steps: totalCoins * 3,
+                        total_steps: totalCoins * 3,
+                        last_message: '모든 작업이 완료되었습니다.',
+                        step_status: 'completed'
+                    });
+
+                    const logEl = document.getElementById('per-coin-automation-log');
+                    if (logEl && Array.isArray(result.results)) {
+                        result.results.forEach((item) => {
+                            const coinName = escapeHtml(item.korean_name || item.currency || '-');
+                            const stepMessages = (item.steps || [])
+                                .map((step) => {
+                                    const stepLabel = step.step || '';
+                                    const message = step.result?.message || step.result?.error || step.result?.status || '';
+                                    return `${stepLabel}: ${escapeHtml(message)}`;
+                                })
+                                .join('<br>');
+
+                            logEl.insertAdjacentHTML(
+                                'afterbegin',
+                                `<div class="mb-2"><strong>${coinName}</strong><br>${stepMessages}</div>`
+                            );
+                        });
+                    }
+
+                    showAlert('코인별 자동 실행이 완료되었습니다.', 'success');
+                    resetPerCoinAutomationUI();
+                    setTimeout(loadMyCoins, 2000);
+                    return;
+                }
+
+                if (data.state === 'FAILURE') {
+                    const errorMessage = data.error || '코인별 자동 실행이 실패했습니다.';
+                    showAlert(`❌ ${errorMessage}`, 'danger');
+                    resetPerCoinAutomationUI();
+                    return;
+                }
+
+                resetPerCoinAutomationUI();
+            } catch (error) {
+                showAlert(`❌ 코인별 자동 실행 상태 확인 중 오류 발생: ${error.message}`, 'danger');
+            }
+        }
+function escapeHtml(value) {
             if (value === undefined || value === null) {
                 return '';
             }
@@ -1074,6 +1346,9 @@
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#039;');
         }
+
+        window.loadMyCoins = loadMyCoins;
+        window.runPerCoinAutomation = runPerCoinAutomation;
 
         function formatLastAnalysisTime(isoString) {
             if (!isoString) {
@@ -1113,6 +1388,7 @@
             return fixed.replace(/0+$/, '').replace(/\.$/, '') || '0';
         }
 
+        
         function getDecisionBadge(decision) {
             const badges = {
                 buy: '<span class="badge bg-success">매수</span>',
