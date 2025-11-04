@@ -361,48 +361,51 @@ async def execute_coin_sell_orders(currency: str):
 
 @router.get("/api/open-orders")
 async def get_open_orders():
-    """체결 대기 중인 주문 조회"""
-    analyzer: UpbitAnalyzer | None = None
+    """체결 대기 중인 모든 주문 조회"""
     try:
-        # Upbit 상수 초기화
         await upbit_pairs.prime_upbit_constants()
 
-        # 보유 코인 조회
+        # 현재 보유 자산 정보는 보조 메타데이터로 활용
         my_coins = await upbit.fetch_my_coins()
+        holdings = {
+            coin.get("currency"): coin
+            for coin in my_coins
+            if coin.get("currency")
+        }
 
-        # 거래 가능한 코인 필터링
-        analyzer = UpbitAnalyzer()
-        try:
-            tradable_coins = [
-                coin for coin in my_coins
-                if coin.get("currency") != "KRW"
-                   and analyzer.is_tradable(coin)
-                   and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
-            ]
-        finally:
-            await analyzer.close()
+        open_orders = await upbit.fetch_open_orders()
+        enriched_orders = []
 
-        # 각 코인의 미체결 주문 조회
-        all_orders = []
-        for coin in tradable_coins:
-            currency = coin['currency']
-            market = f"KRW-{currency}"
+        for order in open_orders:
+            market = order.get("market", "")
+            currency = ""
+            if "-" in market:
+                _, currency = market.split("-", 1)
+            elif market:
+                currency = market
 
-            try:
-                open_orders = await upbit.fetch_open_orders(market)
+            korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency, currency) if currency else ""
+            holding = holdings.get(currency)
 
-                for order in open_orders:
-                    order['currency'] = currency
-                    order['korean_name'] = upbit_pairs.COIN_TO_NAME_KR.get(currency, currency)
-                    all_orders.append(order)
-            except Exception as e:
-                print(f"⚠️ {market} 미체결 주문 조회 실패: {e}")
-                continue
+            enriched_order = dict(order)
+            enriched_order["currency"] = currency
+            enriched_order["korean_name"] = korean_name
+
+            if holding:
+                enriched_order["holding_balance"] = holding.get("balance")
+                enriched_order["holding_locked"] = holding.get("locked")
+                enriched_order["holding_avg_buy_price"] = holding.get("avg_buy_price")
+            else:
+                enriched_order["holding_balance"] = None
+                enriched_order["holding_locked"] = None
+                enriched_order["holding_avg_buy_price"] = None
+
+            enriched_orders.append(enriched_order)
 
         return {
             "success": True,
-            "orders": all_orders,
-            "total_count": len(all_orders)
+            "orders": enriched_orders,
+            "total_count": len(enriched_orders),
         }
 
     except HTTPException:
