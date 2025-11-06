@@ -37,6 +37,7 @@ while IFS= read -r line; do
     # KEY=value 형태의 라인 파싱
     if [[ "$line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)= ]]; then
         key="${BASH_REMATCH[1]}"
+        value="${line#*=}"
         
         # 테스트용 값 설정
         case "$key" in
@@ -54,6 +55,9 @@ while IFS= read -r line; do
                 ;;
             "TELEGRAM_TOKEN")
                 echo "TELEGRAM_TOKEN=DUMMY_TELEGRAM_TOKEN" >> "$OUTPUT_TARGET"
+                ;;
+            "TELEGRAM_CHAT_IDS")
+                echo "TELEGRAM_CHAT_IDS=123456789,987654321" >> "$OUTPUT_TARGET"
                 ;;
             "TELEGRAM_CHAT_IDS_STR")
                 echo "TELEGRAM_CHAT_IDS_STR=123456789,987654321" >> "$OUTPUT_TARGET"
@@ -97,9 +101,33 @@ while IFS= read -r line; do
             "REDIS_SOCKET_CONNECT_TIMEOUT")
                 echo "REDIS_SOCKET_CONNECT_TIMEOUT=5" >> "$OUTPUT_TARGET"
                 ;;
+            "SIGNOZ_ENDPOINT")
+                echo "SIGNOZ_ENDPOINT=localhost:4317" >> "$OUTPUT_TARGET"
+                ;;
+            "SIGNOZ_ENABLED")
+                echo "SIGNOZ_ENABLED=false" >> "$OUTPUT_TARGET"
+                ;;
+            "OTEL_SERVICE_NAME")
+                echo "OTEL_SERVICE_NAME=auto-trader-test" >> "$OUTPUT_TARGET"
+                ;;
+            "OTEL_SERVICE_VERSION")
+                echo "OTEL_SERVICE_VERSION=0.1.0-test" >> "$OUTPUT_TARGET"
+                ;;
+            "OTEL_ENVIRONMENT")
+                echo "OTEL_ENVIRONMENT=test" >> "$OUTPUT_TARGET"
+                ;;
+            "ERROR_REPORTING_ENABLED")
+                echo "ERROR_REPORTING_ENABLED=false" >> "$OUTPUT_TARGET"
+                ;;
+            "ERROR_REPORTING_CHAT_ID")
+                echo "ERROR_REPORTING_CHAT_ID=123456789" >> "$OUTPUT_TARGET"
+                ;;
+            "ERROR_DUPLICATE_WINDOW")
+                echo "ERROR_DUPLICATE_WINDOW=300" >> "$OUTPUT_TARGET"
+                ;;
             *)
-                # 기타 변수들은 기본값이나 테스트용 값으로 설정
-                echo "${key}=test_value" >> "$OUTPUT_TARGET"
+                # 기타 변수들은 env.example에 정의된 값을 사용
+                echo "${key}=${value}" >> "$OUTPUT_TARGET"
                 ;;
         esac
     fi
@@ -114,4 +142,3 @@ else
     echo "테스트용 환경 변수가 .env.test 파일에 저장되었습니다."
     echo "생성된 파일을 확인하려면: cat .env.test"
 fi
-

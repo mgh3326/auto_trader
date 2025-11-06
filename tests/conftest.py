@@ -2,11 +2,85 @@
 Pytest configuration and common fixtures for auto-trader tests.
 """
 import asyncio
+import os
+from pathlib import Path
 from typing import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
+
+
+def _load_env_file(env_path: Path) -> None:
+    """Load environment variables from a simple KEY=VALUE file."""
+    if not env_path.is_file():
+        return
+
+    with env_path.open(encoding="utf-8") as env_file:
+        for raw_line in env_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            os.environ.setdefault(key, value)
+
+
+def _ensure_test_env() -> None:
+    """Ensure required environment variables exist for tests."""
+    project_root = Path(__file__).resolve().parents[1]
+    env_example_path = project_root / "env.example"
+    env_test_path = project_root / ".env.test"
+
+    # 1) 기본값: env.example에 정의된 항목을 그대로 불러온다.
+    _load_env_file(env_example_path)
+
+    # Allow developers to provide a .env.test with custom overrides.
+    if env_test_path.exists():
+        _load_env_file(env_test_path)
+
+    default_env_values = {
+        "KIS_APP_KEY": "DUMMY_KIS_APP_KEY",
+        "KIS_APP_SECRET": "DUMMY_KIS_APP_SECRET",
+        "KIS_ACCESS_TOKEN": "",
+        "KIS_ACCOUNT_NO": "00000000-00",
+        "TELEGRAM_TOKEN": "DUMMY_TELEGRAM_TOKEN",
+        "TELEGRAM_CHAT_IDS": "123456789,987654321",
+        "TELEGRAM_CHAT_IDS_STR": "123456789,987654321",
+        "GOOGLE_API_KEY": "DUMMY_GOOGLE_API_KEY",
+        "GOOGLE_API_KEYS": "DUMMY_GOOGLE_API_KEY_1,DUMMY_GOOGLE_API_KEY_2",
+        "OPENDART_API_KEY": "DUMMY_OPENDART_API_KEY",
+        "UPBIT_ACCESS_KEY": "DUMMY_UPBIT_ACCESS_KEY",
+        "UPBIT_SECRET_KEY": "DUMMY_UPBIT_SECRET_KEY",
+        "UPBIT_BUY_AMOUNT": "100000",
+        "UPBIT_MIN_KRW_BALANCE": "100000",
+        "TOP_N": "30",
+        "DROP_PCT": "-3.0",
+        "CRON": "0 * * * *",
+        "DATABASE_URL": "postgresql+asyncpg://postgres:postgres@localhost:5432/test_db",
+        "REDIS_URL": "redis://localhost:6379/0",
+        "REDIS_MAX_CONNECTIONS": "10",
+        "REDIS_SOCKET_TIMEOUT": "5",
+        "REDIS_SOCKET_CONNECT_TIMEOUT": "5",
+        "SIGNOZ_ENDPOINT": "localhost:4317",
+        "SIGNOZ_ENABLED": "false",
+        "OTEL_SERVICE_NAME": "auto-trader-test",
+        "OTEL_SERVICE_VERSION": "0.1.0-test",
+        "OTEL_ENVIRONMENT": "test",
+        "ERROR_REPORTING_ENABLED": "false",
+        "ERROR_REPORTING_CHAT_ID": "123456789",
+        "ERROR_DUPLICATE_WINDOW": "300",
+        "ENVIRONMENT": "test",
+    }
+
+    for key, value in default_env_values.items():
+        os.environ.setdefault(key, value)
+
+
+_ensure_test_env()
 
 from app.core.config import settings
 
