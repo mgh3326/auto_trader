@@ -38,6 +38,7 @@ def setup_telemetry(
     environment: str,
     otlp_endpoint: str,
     enabled: bool = True,
+    insecure: bool = True,
 ) -> None:
     """
     Initialize OpenTelemetry with SigNoz OTLP exporter.
@@ -48,6 +49,7 @@ def setup_telemetry(
         environment: Deployment environment (e.g., "development", "production")
         otlp_endpoint: OTLP gRPC endpoint (e.g., "localhost:4317")
         enabled: Whether telemetry is enabled
+        insecure: Use insecure connection (True for development, False for production)
 
     Example:
         setup_telemetry(
@@ -55,7 +57,8 @@ def setup_telemetry(
             service_version="0.1.0",
             environment="development",
             otlp_endpoint="localhost:4317",
-            enabled=True
+            enabled=True,
+            insecure=True
         )
     """
     global _telemetry_initialized
@@ -81,7 +84,7 @@ def setup_telemetry(
         # Setup trace provider with OTLP exporter
         trace_exporter = OTLPSpanExporter(
             endpoint=otlp_endpoint,
-            insecure=True,  # Use insecure for local development
+            insecure=insecure,
         )
         trace_provider = TracerProvider(resource=resource)
         trace_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
@@ -90,7 +93,7 @@ def setup_telemetry(
         # Setup metrics provider with OTLP exporter
         metric_exporter = OTLPMetricExporter(
             endpoint=otlp_endpoint,
-            insecure=True,  # Use insecure for local development
+            insecure=insecure,
         )
         metric_reader = PeriodicExportingMetricReader(metric_exporter)
         meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])

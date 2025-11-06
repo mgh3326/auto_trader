@@ -67,6 +67,7 @@ async def setup_monitoring() -> None:
                 environment=settings.OTEL_ENVIRONMENT,
                 otlp_endpoint=settings.SIGNOZ_ENDPOINT,
                 enabled=True,
+                insecure=settings.SIGNOZ_INSECURE,
             )
             logger.info(
                 f"Telemetry initialized: {settings.OTEL_SERVICE_NAME} "

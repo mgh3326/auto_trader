@@ -67,6 +67,7 @@ def _ensure_test_env() -> None:
         "REDIS_SOCKET_CONNECT_TIMEOUT": "5",
         "SIGNOZ_ENDPOINT": "localhost:4317",
         "SIGNOZ_ENABLED": "false",
+        "SIGNOZ_INSECURE": "true",
         "OTEL_SERVICE_NAME": "auto-trader-test",
         "OTEL_SERVICE_VERSION": "0.1.0-test",
         "OTEL_ENVIRONMENT": "test",
