@@ -1,0 +1,11 @@
+# Prometheus configuration for SigNoz query service
+# This is a minimal configuration for the query service
+
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: 'signoz-query-service'
+    static_configs:
+      - targets: ['localhost:8080']

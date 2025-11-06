@@ -1,0 +1,132 @@
+# Docker Compose for SigNoz monitoring stack
+# This file adds SigNoz observability platform to the auto_trader project
+#
+# Usage:
+#   # Start all services (DB, Redis, SigNoz)
+#   docker-compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#
+#   # Start only monitoring stack
+#   docker-compose -f docker-compose.monitoring.yml up -d
+#
+# SigNoz UI: http://localhost:3301
+# OTLP Endpoint: localhost:4317
+
+services:
+  # ClickHouse for storing traces and metrics
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.7.3-alpine
+    container_name: signoz_clickhouse
+    hostname: clickhouse
+    ports:
+      - "9000:9000"  # ClickHouse native protocol
+      - "8123:8123"  # ClickHouse HTTP interface
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse/
+    environment:
+      - CLICKHOUSE_DB=signoz
+      - CLICKHOUSE_USER=signoz
+      - CLICKHOUSE_PASSWORD=signoz
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - signoz
+
+  # Query Service - SigNoz backend
+  query-service:
+    image: signoz/query-service:0.38.0
+    container_name: signoz_query_service
+    command: ["-config=/root/config/prometheus.yml"]
+    ports:
+      - "8080:8080"  # Query service HTTP
+    volumes:
+      - ./signoz-config:/root/config
+    environment:
+      - ClickHouseUrl=tcp://clickhouse:9000
+      - STORAGE=clickhouse
+      - GODEBUG=netdns=go
+      - TELEMETRY_ENABLED=true
+      - DEPLOYMENT_TYPE=docker-compose
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - signoz
+
+  # OpenTelemetry Collector - receives telemetry data
+  otel-collector:
+    image: signoz/signoz-otel-collector:0.88.11
+    container_name: signoz_otel_collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8888:8888"   # Prometheus metrics
+    volumes:
+      - ./signoz-config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    environment:
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=signoz-host,os.type=linux
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - signoz
+      - local_dev  # Connect to app network for receiving telemetry
+
+  # Frontend - SigNoz UI
+  frontend:
+    image: signoz/frontend:0.38.0
+    container_name: signoz_frontend
+    ports:
+      - "3301:3301"  # SigNoz UI
+    environment:
+      - FRONTEND_API_ENDPOINT=http://query-service:8080
+    depends_on:
+      query-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3301/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - signoz
+
+  # AlertManager - for alerting (optional)
+  alertmanager:
+    image: signoz/alertmanager:0.23.4
+    container_name: signoz_alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - alertmanager_data:/data
+    command:
+      - --queryService.url=http://query-service:8080
+      - --storage.path=/data
+    depends_on:
+      query-service:
+        condition: service_healthy
+    networks:
+      - signoz
+
+volumes:
+  clickhouse_data:
+  alertmanager_data:
+
+networks:
+  signoz:
+    driver: bridge
+  local_dev:
+    external: true  # Connect to existing local_dev network from docker-compose.yml

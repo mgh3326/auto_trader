@@ -11,7 +11,7 @@ from app.monitoring.telemetry import (
     setup_telemetry,
     shutdown_telemetry,
 )
-from app.routers import analysis_json, dashboard, health, stock_latest, upbit_trading
+from app.routers import analysis_json, dashboard, health, stock_latest, test, upbit_trading
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(analysis_json.router)
     app.include_router(stock_latest.router)
     app.include_router(upbit_trading.router)
+    app.include_router(test.router)  # Test endpoints for monitoring
 
     # Add monitoring middleware (must be added after startup event)
     app.add_middleware(MonitoringMiddleware)
