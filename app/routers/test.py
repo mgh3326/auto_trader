@@ -7,6 +7,7 @@ These endpoints are used to test:
 - Custom span creation
 """
 
+import asyncio
 import logging
 import time
 from typing import Dict
@@ -54,7 +55,9 @@ async def test_critical_error() -> Dict[str, str]:
         RuntimeError: Critical test error
     """
     logger.critical("Critical test error endpoint called")
-    raise RuntimeError("CRITICAL: This is a critical test error - immediate attention required!")
+    raise RuntimeError(
+        "CRITICAL: This is a critical test error - immediate attention required!"
+    )
 
 
 @router.get("/trace")
@@ -85,20 +88,20 @@ async def test_trace() -> Dict[str, str]:
         with tracer.start_as_current_span("simulate_db_query") as db_span:
             db_span.set_attribute("db.operation", "SELECT")
             db_span.set_attribute("db.table", "test_table")
-            time.sleep(0.05)  # 50ms
+            await asyncio.sleep(0.05)  # 50ms
             db_span.set_attribute("db.rows_returned", 42)
 
         # Nested span 2: External API call simulation
         with tracer.start_as_current_span("simulate_api_call") as api_span:
             api_span.set_attribute("http.method", "GET")
             api_span.set_attribute("http.url", "https://api.example.com/data")
-            time.sleep(0.1)  # 100ms
+            await asyncio.sleep(0.1)  # 100ms
             api_span.set_attribute("http.status_code", 200)
 
         # Nested span 3: Data processing simulation
         with tracer.start_as_current_span("simulate_data_processing") as process_span:
             process_span.set_attribute("processing.items", 100)
-            time.sleep(0.03)  # 30ms
+            await asyncio.sleep(0.03)  # 30ms
             process_span.set_attribute("processing.completed", True)
 
         total_time = time.time() - start_time
@@ -160,7 +163,7 @@ async def test_slow_endpoint() -> Dict[str, str]:
         span.set_attribute("operation.type", "slow")
 
         # Simulate slow operation (2 seconds)
-        time.sleep(2.0)
+        await asyncio.sleep(2.0)
 
         span.set_attribute("operation.duration_ms", 2000)
 
