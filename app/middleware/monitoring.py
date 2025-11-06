@@ -11,7 +11,7 @@ import logging
 import time
 from typing import Callable
 
-from fastapi import Request, Response
+from fastapi import HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -95,6 +95,16 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
             return response
 
         except Exception as exc:
+            if isinstance(exc, HTTPException):
+                status_code = exc.status_code
+                span.set_attribute("http.status_code", status_code)
+                if status_code >= 500:
+                    span.record_exception(exc)
+                    span.set_attribute("error", True)
+                duration_ms = (time.time() - start_time) * 1000
+                self._record_metrics(request, status_code, duration_ms)
+                raise
+
             # Record exception in span
             span.record_exception(exc)
             span.set_attribute("error", True)
@@ -122,6 +132,11 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
             return response
 
         except Exception as exc:
+            if isinstance(exc, HTTPException):
+                duration_ms = (time.time() - start_time) * 1000
+                self._record_metrics(request, exc.status_code, duration_ms)
+                raise
+
             # Handle error
             return await self._handle_error(
                 request, exc, start_time, request_id
