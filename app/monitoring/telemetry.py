@@ -5,7 +5,7 @@ This module provides:
 - setup_telemetry() function for OpenTelemetry initialization
 - SigNoz OTLP exporter configuration (gRPC)
 - Resource attributes setup
-- Auto-instrumentation for FastAPI, requests, httpx, psycopg2, redis
+- Auto-instrumentation for FastAPI, requests, httpx, SQLAlchemy (asyncpg), redis
 - Custom tracer/meter helper functions
 """
 
@@ -17,9 +17,9 @@ from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExp
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
@@ -122,13 +122,13 @@ def _instrument_libraries() -> None:
         HTTPXClientInstrumentor().instrument()
         logger.debug("httpx instrumented")
 
-        # Instrument psycopg2 for PostgreSQL tracing
-        # Note: This works with asyncpg through SQLAlchemy
+        # Instrument SQLAlchemy for database tracing (works with asyncpg)
+        # Note: This will automatically trace all SQLAlchemy operations
         try:
-            Psycopg2Instrumentor().instrument()
-            logger.debug("psycopg2 instrumented")
+            SQLAlchemyInstrumentor().instrument()
+            logger.debug("sqlalchemy instrumented")
         except Exception as e:
-            logger.debug(f"psycopg2 instrumentation skipped: {e}")
+            logger.debug(f"sqlalchemy instrumentation skipped: {e}")
 
         # Instrument Redis for Redis operation tracing
         RedisInstrumentor().instrument()
