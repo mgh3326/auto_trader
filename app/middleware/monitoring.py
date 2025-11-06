@@ -7,6 +7,7 @@ Provides:
 - Error reporting to Telegram via ErrorReporter
 """
 
+import asyncio
 import logging
 import time
 from typing import Callable
@@ -34,6 +35,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
         self._request_counter = None
         self._error_counter = None
         self._instruments_ready = False
+        self._instrument_lock: asyncio.Lock | None = None
         logger.debug("MonitoringMiddleware initialized; waiting for telemetry")
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
@@ -49,7 +51,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
         """
         start_time = time.time()
         request_id = request.headers.get("X-Request-ID", "unknown")
-        self._ensure_instruments()
+        await self._ensure_instruments()
 
         # Start custom span if telemetry is enabled
         if self._tracer:
@@ -142,39 +144,48 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
                 request, exc, start_time, request_id
             )
 
-    def _ensure_instruments(self) -> None:
+    async def _ensure_instruments(self) -> None:
         """
         Lazily initialize tracer and metrics once telemetry is ready.
         """
         if self._instruments_ready or not is_telemetry_initialized():
             return
 
-        try:
-            self._tracer = get_tracer(__name__)
-            self._meter = get_meter(__name__)
+        if self._instrument_lock is None:
+            self._instrument_lock = asyncio.Lock()
 
-            self._request_duration_histogram = self._meter.create_histogram(
-                name="http.server.request.duration",
-                description="HTTP request duration in milliseconds",
-                unit="ms",
-            )
+        lock = self._instrument_lock
 
-            self._request_counter = self._meter.create_counter(
-                name="http.server.request.count",
-                description="Total HTTP requests",
-                unit="1",
-            )
+        async with lock:
+            if self._instruments_ready:
+                return
 
-            self._error_counter = self._meter.create_counter(
-                name="http.server.error.count",
-                description="Total HTTP errors",
-                unit="1",
-            )
+            try:
+                self._tracer = get_tracer(__name__)
+                self._meter = get_meter(__name__)
 
-            self._instruments_ready = True
-            logger.debug("MonitoringMiddleware telemetry instruments configured")
-        except Exception as exc:
-            logger.warning("Failed to configure telemetry instruments: %s", exc)
+                self._request_duration_histogram = self._meter.create_histogram(
+                    name="http.server.request.duration",
+                    description="HTTP request duration in milliseconds",
+                    unit="ms",
+                )
+
+                self._request_counter = self._meter.create_counter(
+                    name="http.server.request.count",
+                    description="Total HTTP requests",
+                    unit="1",
+                )
+
+                self._error_counter = self._meter.create_counter(
+                    name="http.server.error.count",
+                    description="Total HTTP errors",
+                    unit="1",
+                )
+
+                self._instruments_ready = True
+                logger.debug("MonitoringMiddleware telemetry instruments configured")
+            except Exception as exc:
+                logger.warning("Failed to configure telemetry instruments: %s", exc)
 
     def _record_metrics(
         self, request: Request, status_code: int, duration_ms: float
