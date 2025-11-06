@@ -321,11 +321,13 @@ class UpbitAnalyzer(Analyzer):
 
                 if hasattr(result, 'decision'):
                     attributes["decision"] = result.decision
-                    attributes["confidence_range"] = (
-                        "high" if result.confidence >= 70
-                        else "medium" if result.confidence >= 40
-                        else "low"
-                    )
+                    if result.confidence >= 70:
+                        confidence_range = "high"
+                    elif result.confidence >= 40:
+                        confidence_range = "medium"
+                    else:
+                        confidence_range = "low"
+                    attributes["confidence_range"] = confidence_range
                     span.set_attribute("decision", result.decision)
                     span.set_attribute("confidence", result.confidence)
 
@@ -517,11 +519,13 @@ class YahooAnalyzer(Analyzer):
 
                 if hasattr(result, 'decision'):
                     attributes["decision"] = result.decision
-                    attributes["confidence_range"] = (
-                        "high" if result.confidence >= 70
-                        else "medium" if result.confidence >= 40
-                        else "low"
-                    )
+                    if result.confidence >= 70:
+                        confidence_range = "high"
+                    elif result.confidence >= 40:
+                        confidence_range = "medium"
+                    else:
+                        confidence_range = "low"
+                    attributes["confidence_range"] = confidence_range
                     span.set_attribute("decision", result.decision)
                     span.set_attribute("confidence", result.confidence)
 
