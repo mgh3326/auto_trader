@@ -96,6 +96,18 @@ class Settings(BaseSettings):
     redis_max_connections: int = 10
     redis_socket_timeout: int = 5
     redis_socket_connect_timeout: int = 5
+
+    # Monitoring and Observability
+    # OpenTelemetry / SigNoz
+    otlp_endpoint: str = "localhost:4317"  # SigNoz OTLP gRPC endpoint
+    telemetry_enabled: bool = False  # 기본적으로 비활성화
+    service_name: str = "auto-trader"
+    environment: str = "development"
+
+    # Telegram Error Reporting
+    telegram_error_reporting_enabled: bool = False  # 기본적으로 비활성화
+    telegram_error_dedup_minutes: int = 5  # 중복 에러 방지 시간 (분)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
