@@ -109,7 +109,7 @@ class ErrorReporter:
 
         # Create unique signature
         signature = f"{error_type}:{error_message[:200]}:{first_frame}"
-        error_hash = hashlib.md5(signature.encode()).hexdigest()
+        error_hash = hashlib.sha256(signature.encode()).hexdigest()
 
         return f"error_rate_limit:{error_hash}"
 
