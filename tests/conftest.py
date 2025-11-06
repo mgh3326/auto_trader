@@ -73,6 +73,7 @@ def _ensure_test_env() -> None:
         "ERROR_REPORTING_ENABLED": "false",
         "ERROR_REPORTING_CHAT_ID": "123456789",
         "ERROR_DUPLICATE_WINDOW": "300",
+        "EXPOSE_MONITORING_TEST_ROUTES": "false",
         "ENVIRONMENT": "test",
     }
 

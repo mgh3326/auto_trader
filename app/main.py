@@ -39,7 +39,10 @@ def create_app() -> FastAPI:
     app.include_router(analysis_json.router)
     app.include_router(stock_latest.router)
     app.include_router(upbit_trading.router)
-    app.include_router(test.router)  # Test endpoints for monitoring
+    if settings.EXPOSE_MONITORING_TEST_ROUTES:
+        app.include_router(test.router)
+    else:
+        logger.debug("Monitoring test routes are disabled")
 
     # Add monitoring middleware (must be added after startup event)
     app.add_middleware(MonitoringMiddleware)

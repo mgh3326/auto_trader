@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     ERROR_REPORTING_CHAT_ID: str = ""  # Telegram chat ID (단일)
     ERROR_DUPLICATE_WINDOW: int = 300  # 중복 에러 방지 시간 (초, 기본 5분)
 
+    # Monitoring test route exposure
+    EXPOSE_MONITORING_TEST_ROUTES: bool = False
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
