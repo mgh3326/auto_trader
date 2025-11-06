@@ -98,15 +98,17 @@ class Settings(BaseSettings):
     redis_socket_connect_timeout: int = 5
 
     # Monitoring and Observability
-    # OpenTelemetry / SigNoz
-    otlp_endpoint: str = "localhost:4317"  # SigNoz OTLP gRPC endpoint
-    telemetry_enabled: bool = False  # 기본적으로 비활성화
-    service_name: str = "auto-trader"
-    environment: str = "development"
+    # SigNoz - OpenTelemetry settings
+    SIGNOZ_ENDPOINT: str = "localhost:4317"  # SigNoz OTLP gRPC endpoint
+    SIGNOZ_ENABLED: bool = False  # 기본적으로 비활성화
+    OTEL_SERVICE_NAME: str = "auto-trader"
+    OTEL_SERVICE_VERSION: str = "0.1.0"
+    OTEL_ENVIRONMENT: str = "development"
 
     # Telegram Error Reporting
-    telegram_error_reporting_enabled: bool = False  # 기본적으로 비활성화
-    telegram_error_dedup_minutes: int = 5  # 중복 에러 방지 시간 (분)
+    ERROR_REPORTING_ENABLED: bool = False  # 기본적으로 비활성화
+    ERROR_REPORTING_CHAT_ID: str = ""  # Telegram chat ID (단일)
+    ERROR_DUPLICATE_WINDOW: int = 300  # 중복 에러 방지 시간 (초, 기본 5분)
 
     model_config = SettingsConfigDict(
         env_file=".env",

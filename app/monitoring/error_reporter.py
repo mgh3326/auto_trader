@@ -1,127 +1,150 @@
 """
-Telegram error reporting for critical errors.
+Telegram error reporting with duplicate prevention using Redis.
 
 Features:
-- Global exception handler integration
-- ERROR/CRITICAL level filtering
-- Duplicate error prevention (5-minute window)
-- Rich error context (timestamp, type, message, stack trace, request info)
+- Singleton pattern for ErrorReporter
+- Redis-based duplicate error filtering
+- Rich error formatting with markdown
+- Rate limiting per error type
 """
 
 import hashlib
 import logging
 import traceback
-from datetime import datetime, timedelta
-from typing import Dict, Optional, Set
+from datetime import datetime
+from typing import Dict, Optional
 
 import httpx
 from fastapi import Request
+from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
 
-class TelegramErrorReporter:
-    """Reports critical errors to Telegram with deduplication."""
+class ErrorReporter:
+    """
+    Singleton error reporter with Telegram integration and Redis-based deduplication.
+    """
 
-    def __init__(
+    _instance: Optional["ErrorReporter"] = None
+    _initialized: bool = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        """Initialize ErrorReporter (only once due to singleton pattern)."""
+        if not self._initialized:
+            self._bot_token: Optional[str] = None
+            self._chat_id: Optional[str] = None
+            self._enabled: bool = False
+            self._duplicate_window: int = 300  # 5 minutes
+            self._redis: Optional[Redis] = None
+            self._http_client: Optional[httpx.AsyncClient] = None
+            ErrorReporter._initialized = True
+
+    def configure(
         self,
         bot_token: str,
-        chat_ids: list[str],
+        chat_id: str,
+        redis_client: Redis,
         enabled: bool = True,
-        dedup_window_minutes: int = 5,
-        min_level: int = logging.ERROR,
-    ):
+        duplicate_window: int = 300,
+    ) -> None:
         """
-        Initialize Telegram error reporter.
+        Configure the error reporter.
 
         Args:
             bot_token: Telegram bot token
-            chat_ids: List of chat IDs to send errors to
+            chat_id: Telegram chat ID to send errors to
+            redis_client: Redis client for duplicate detection
             enabled: Whether error reporting is enabled
-            dedup_window_minutes: Time window for deduplication (default: 5 minutes)
-            min_level: Minimum logging level to report (default: ERROR)
+            duplicate_window: Time window in seconds for duplicate detection (default: 300)
         """
-        self.bot_token = bot_token
-        self.chat_ids = chat_ids
-        self.enabled = enabled
-        self.dedup_window_minutes = dedup_window_minutes
-        self.min_level = min_level
+        self._bot_token = bot_token
+        self._chat_id = chat_id
+        self._redis = redis_client
+        self._enabled = enabled
+        self._duplicate_window = duplicate_window
 
-        # Deduplication tracking: {error_hash: last_sent_timestamp}
-        self._sent_errors: Dict[str, datetime] = {}
-        self._http_client: Optional[httpx.AsyncClient] = None
-
-    async def initialize(self) -> None:
-        """Initialize HTTP client."""
-        if not self.enabled:
-            logger.info("Telegram error reporting is disabled")
-            return
-
-        if not self.bot_token or not self.chat_ids:
-            logger.warning(
-                "Telegram bot token or chat IDs not configured, "
-                "error reporting disabled"
+        if enabled and not self._http_client:
+            self._http_client = httpx.AsyncClient(timeout=10.0)
+            logger.info(
+                f"ErrorReporter configured: chat_id={chat_id}, "
+                f"duplicate_window={duplicate_window}s"
             )
-            self.enabled = False
-            return
-
-        self._http_client = httpx.AsyncClient(timeout=10.0)
-        logger.info(
-            f"Telegram error reporter initialized "
-            f"(chat_ids: {len(self.chat_ids)}, dedup: {self.dedup_window_minutes}m)"
-        )
 
     async def shutdown(self) -> None:
         """Shutdown HTTP client."""
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
+            logger.info("ErrorReporter shutdown complete")
 
-    def _compute_error_hash(
+    def _generate_rate_limit_key(
         self, error_type: str, error_message: str, stack_trace: str
     ) -> str:
         """
-        Compute hash for error deduplication.
+        Generate Redis key for rate limiting duplicate errors.
 
-        Hash is based on error type, message (first 200 chars), and
-        the first stack frame to avoid minor variations.
+        Uses error type, first 200 chars of message, and first stack frame
+        to create a unique identifier for the error.
+
+        Args:
+            error_type: Type of the error (e.g., "ValueError")
+            error_message: Error message
+            stack_trace: Full stack trace
+
+        Returns:
+            Redis key for rate limiting
         """
-        # Get first stack frame (most specific location)
+        # Extract first stack frame for better deduplication
         first_frame = ""
         for line in stack_trace.split("\n"):
             if line.strip().startswith("File "):
                 first_frame = line.strip()
                 break
 
-        # Create hash from error signature
+        # Create unique signature
         signature = f"{error_type}:{error_message[:200]}:{first_frame}"
-        return hashlib.md5(signature.encode()).hexdigest()
+        error_hash = hashlib.md5(signature.encode()).hexdigest()
 
-    def _should_send_error(self, error_hash: str) -> bool:
+        return f"error_rate_limit:{error_hash}"
+
+    async def _should_send_error(self, rate_limit_key: str) -> bool:
         """
-        Check if error should be sent based on deduplication window.
+        Check if error should be sent based on rate limiting.
+
+        Args:
+            rate_limit_key: Redis key for rate limiting
 
         Returns:
             True if error should be sent, False if it's a duplicate
         """
-        now = datetime.utcnow()
+        if not self._redis:
+            # If Redis is not available, always send
+            return True
 
-        # Clean up old entries
-        expired_hashes = [
-            h
-            for h, ts in self._sent_errors.items()
-            if now - ts > timedelta(minutes=self.dedup_window_minutes)
-        ]
-        for h in expired_hashes:
-            del self._sent_errors[h]
+        try:
+            # Check if key exists
+            exists = await self._redis.exists(rate_limit_key)
 
-        # Check if we've sent this error recently
-        if error_hash in self._sent_errors:
-            return False
+            if exists:
+                logger.debug(f"Duplicate error detected: {rate_limit_key}")
+                return False
 
-        # Mark error as sent
-        self._sent_errors[error_hash] = now
-        return True
+            # Set key with expiration
+            await self._redis.setex(
+                rate_limit_key, self._duplicate_window, "1"
+            )
+            return True
+
+        except Exception as e:
+            logger.warning(f"Failed to check rate limit in Redis: {e}")
+            # On Redis error, send the error to be safe
+            return True
 
     def _format_error_message(
         self,
@@ -131,7 +154,7 @@ class TelegramErrorReporter:
         request_info: Optional[Dict] = None,
     ) -> str:
         """
-        Format error message for Telegram.
+        Format error message in markdown for Telegram.
 
         Args:
             error_type: Type of error
@@ -140,67 +163,74 @@ class TelegramErrorReporter:
             request_info: Optional request context
 
         Returns:
-            Formatted message (max 4096 chars for Telegram)
+            Markdown-formatted error message
         """
         timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        # Build message
+        # Build message parts
         parts = [
-            "🚨 <b>Error Alert</b>",
-            f"⏰ {timestamp}",
+            "🚨 *Error Alert*",
+            f"🕒 {timestamp}",
             "",
-            f"<b>Type:</b> <code>{error_type}</code>",
-            f"<b>Message:</b> {error_message}",
+            f"*Type:* `{error_type}`",
+            f"*Message:* {error_message}",
         ]
 
         # Add request info if available
         if request_info:
             parts.append("")
-            parts.append("<b>Request Info:</b>")
+            parts.append("*Request Info:*")
             if "method" in request_info:
-                parts.append(f"  Method: {request_info['method']}")
+                parts.append(f"  • Method: `{request_info['method']}`")
             if "url" in request_info:
-                parts.append(f"  URL: {request_info['url']}")
+                parts.append(f"  • URL: `{request_info['url']}`")
             if "client" in request_info:
-                parts.append(f"  Client: {request_info['client']}")
+                parts.append(f"  • Client: `{request_info['client']}`")
             if "user_agent" in request_info:
-                parts.append(f"  User-Agent: {request_info['user_agent']}")
+                user_agent = request_info["user_agent"][:100]  # Truncate
+                parts.append(f"  • User-Agent: `{user_agent}`")
 
-        # Add stack trace (truncated if necessary)
+        # Add stack trace (truncated if too long)
         parts.append("")
-        parts.append("<b>Stack Trace:</b>")
-        parts.append(f"<pre>{stack_trace}</pre>")
+        parts.append("*Stack Trace:*")
+        parts.append("```")
+
+        # Telegram message limit is 4096 characters
+        # Reserve ~1000 chars for metadata, use rest for stack trace
+        max_trace_length = 3000
+        if len(stack_trace) > max_trace_length:
+            stack_trace = stack_trace[:max_trace_length] + "\n... (truncated)"
+
+        parts.append(stack_trace)
+        parts.append("```")
 
         message = "\n".join(parts)
 
-        # Telegram message limit is 4096 characters
+        # Final check for Telegram limit
         if len(message) > 4000:
             message = message[:3900] + "\n\n... (truncated)"
 
         return message
 
-    async def report_error(
+    async def send_error_to_telegram(
         self,
         error: Exception,
-        level: int = logging.ERROR,
         request: Optional[Request] = None,
         additional_context: Optional[Dict] = None,
-    ) -> None:
+    ) -> bool:
         """
-        Report an error to Telegram.
+        Send error to Telegram with duplicate prevention.
 
         Args:
             error: Exception to report
-            level: Logging level (default: ERROR)
             request: Optional FastAPI request for context
             additional_context: Optional additional context dict
-        """
-        if not self.enabled or not self._http_client:
-            return
 
-        # Check level threshold
-        if level < self.min_level:
-            return
+        Returns:
+            True if error was sent, False if it was filtered or failed
+        """
+        if not self._enabled or not self._http_client or not self._bot_token:
+            return False
 
         try:
             # Extract error information
@@ -210,16 +240,14 @@ class TelegramErrorReporter:
                 traceback.format_exception(type(error), error, error.__traceback__)
             )
 
-            # Check deduplication
-            error_hash = self._compute_error_hash(
+            # Check rate limiting
+            rate_limit_key = self._generate_rate_limit_key(
                 error_type, error_message, stack_trace
             )
-            if not self._should_send_error(error_hash):
-                logger.debug(
-                    f"Skipping duplicate error: {error_type} "
-                    f"(hash: {error_hash[:8]}...)"
-                )
-                return
+
+            if not await self._should_send_error(rate_limit_key):
+                logger.debug(f"Skipping duplicate error: {error_type}")
+                return False
 
             # Extract request info
             request_info = None
@@ -240,46 +268,26 @@ class TelegramErrorReporter:
                 error_type, error_message, stack_trace, request_info
             )
 
-            # Send to all chat IDs
-            await self._send_to_telegram(message)
+            # Send to Telegram
+            url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
+            response = await self._http_client.post(
+                url,
+                json={
+                    "chat_id": self._chat_id,
+                    "text": message,
+                    "parse_mode": "Markdown",
+                    "disable_web_page_preview": True,
+                },
+            )
+            response.raise_for_status()
 
             logger.info(f"Error reported to Telegram: {error_type}")
+            return True
 
         except Exception as e:
             # Don't let error reporting break the application
-            logger.error(f"Failed to report error to Telegram: {e}", exc_info=True)
-
-    async def _send_to_telegram(self, message: str) -> None:
-        """
-        Send message to all configured Telegram chat IDs.
-
-        Args:
-            message: Message to send (HTML formatted)
-        """
-        if not self._http_client:
-            return
-
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-
-        for chat_id in self.chat_ids:
-            try:
-                response = await self._http_client.post(
-                    url,
-                    json={
-                        "chat_id": chat_id,
-                        "text": message,
-                        "parse_mode": "HTML",
-                        "disable_web_page_preview": True,
-                    },
-                )
-                response.raise_for_status()
-                logger.debug(f"Error message sent to Telegram chat {chat_id}")
-
-            except httpx.HTTPError as e:
-                logger.warning(
-                    f"Failed to send error to Telegram chat {chat_id}: {e}",
-                    exc_info=True,
-                )
+            logger.error(f"Failed to send error to Telegram: {e}", exc_info=True)
+            return False
 
     async def test_connection(self) -> bool:
         """
@@ -288,18 +296,28 @@ class TelegramErrorReporter:
         Returns:
             True if successful, False otherwise
         """
-        if not self.enabled or not self._http_client:
-            logger.warning("Telegram error reporter is not enabled")
+        if not self._enabled or not self._http_client or not self._bot_token:
+            logger.warning("ErrorReporter is not configured")
             return False
 
         try:
             test_message = (
-                "✅ <b>Telegram Error Reporter Test</b>\n\n"
+                "✅ *Telegram Error Reporter Test*\n\n"
                 f"Connection successful at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
                 "Error reporting is working correctly."
             )
 
-            await self._send_to_telegram(test_message)
+            url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
+            response = await self._http_client.post(
+                url,
+                json={
+                    "chat_id": self._chat_id,
+                    "text": test_message,
+                    "parse_mode": "Markdown",
+                },
+            )
+            response.raise_for_status()
+
             logger.info("Telegram connection test successful")
             return True
 
@@ -308,16 +326,12 @@ class TelegramErrorReporter:
             return False
 
 
-# Global error reporter instance
-_error_reporter: Optional[TelegramErrorReporter] = None
+# Singleton instance getter
+def get_error_reporter() -> ErrorReporter:
+    """
+    Get the singleton ErrorReporter instance.
 
-
-def get_error_reporter() -> Optional[TelegramErrorReporter]:
-    """Get the global error reporter instance."""
-    return _error_reporter
-
-
-def set_error_reporter(reporter: TelegramErrorReporter) -> None:
-    """Set the global error reporter instance."""
-    global _error_reporter
-    _error_reporter = reporter
+    Returns:
+        ErrorReporter instance
+    """
+    return ErrorReporter()
