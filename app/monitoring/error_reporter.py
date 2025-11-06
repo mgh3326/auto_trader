@@ -77,11 +77,18 @@ class ErrorReporter:
             )
 
     async def shutdown(self) -> None:
-        """Shutdown HTTP client."""
+        """Shutdown HTTP client and Redis connection."""
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
-            logger.info("ErrorReporter shutdown complete")
+            logger.debug("HTTP client closed")
+
+        if self._redis:
+            await self._redis.aclose()
+            self._redis = None
+            logger.debug("Redis connection closed")
+
+        logger.info("ErrorReporter shutdown complete")
 
     def _generate_rate_limit_key(
         self, error_type: str, error_message: str, stack_trace: str
