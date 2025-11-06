@@ -28,36 +28,13 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
-
-        # Initialize tracer and meter if telemetry is enabled
-        if is_telemetry_initialized():
-            self._tracer = get_tracer(__name__)
-            self._meter = get_meter(__name__)
-
-            # Create metrics
-            self._request_duration_histogram = self._meter.create_histogram(
-                name="http.server.request.duration",
-                description="HTTP request duration in milliseconds",
-                unit="ms",
-            )
-
-            self._request_counter = self._meter.create_counter(
-                name="http.server.request.count",
-                description="Total HTTP requests",
-                unit="1",
-            )
-
-            self._error_counter = self._meter.create_counter(
-                name="http.server.error.count",
-                description="Total HTTP errors",
-                unit="1",
-            )
-
-            logger.debug("MonitoringMiddleware initialized with telemetry")
-        else:
-            self._tracer = None
-            self._meter = None
-            logger.debug("MonitoringMiddleware initialized without telemetry")
+        self._tracer = None
+        self._meter = None
+        self._request_duration_histogram = None
+        self._request_counter = None
+        self._error_counter = None
+        self._instruments_ready = False
+        logger.debug("MonitoringMiddleware initialized; waiting for telemetry")
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """
@@ -72,6 +49,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
         """
         start_time = time.time()
         request_id = request.headers.get("X-Request-ID", "unknown")
+        self._ensure_instruments()
 
         # Start custom span if telemetry is enabled
         if self._tracer:
@@ -149,6 +127,40 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
                 request, exc, start_time, request_id
             )
 
+    def _ensure_instruments(self) -> None:
+        """
+        Lazily initialize tracer and metrics once telemetry is ready.
+        """
+        if self._instruments_ready or not is_telemetry_initialized():
+            return
+
+        try:
+            self._tracer = get_tracer(__name__)
+            self._meter = get_meter(__name__)
+
+            self._request_duration_histogram = self._meter.create_histogram(
+                name="http.server.request.duration",
+                description="HTTP request duration in milliseconds",
+                unit="ms",
+            )
+
+            self._request_counter = self._meter.create_counter(
+                name="http.server.request.count",
+                description="Total HTTP requests",
+                unit="1",
+            )
+
+            self._error_counter = self._meter.create_counter(
+                name="http.server.error.count",
+                description="Total HTTP errors",
+                unit="1",
+            )
+
+            self._instruments_ready = True
+            logger.debug("MonitoringMiddleware telemetry instruments configured")
+        except Exception as exc:
+            logger.warning("Failed to configure telemetry instruments: %s", exc)
+
     def _record_metrics(
         self, request: Request, status_code: int, duration_ms: float
     ) -> None:
@@ -160,7 +172,11 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
             status_code: HTTP status code
             duration_ms: Request duration in milliseconds
         """
-        if not self._meter:
+        if not (
+            self._meter
+            and self._request_duration_histogram
+            and self._request_counter
+        ):
             return
 
         attributes = {
@@ -218,7 +234,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
             logger.warning(f"Failed to send error to Telegram: {e}")
 
         # Record error metric
-        if self._meter:
+        if self._error_counter:
             attributes = {
                 "http.method": request.method,
                 "http.route": request.url.path,
