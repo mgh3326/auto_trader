@@ -104,7 +104,8 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
                     span.record_exception(exc)
                     span.set_attribute("error", True)
                 duration_ms = (time.time() - start_time) * 1000
-                self._record_metrics(request, status_code, duration_ms)
+                # Mark as error for 5xx status codes
+                self._record_metrics(request, status_code, duration_ms, is_error=(status_code >= 500))
                 raise
 
             # Record exception in span
@@ -136,7 +137,8 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
         except Exception as exc:
             if isinstance(exc, HTTPException):
                 duration_ms = (time.time() - start_time) * 1000
-                self._record_metrics(request, exc.status_code, duration_ms)
+                # Mark as error for 5xx status codes
+                self._record_metrics(request, exc.status_code, duration_ms, is_error=(exc.status_code >= 500))
                 raise
 
             # Handle error
@@ -188,7 +190,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
                 logger.warning("Failed to configure telemetry instruments: %s", exc)
 
     def _record_metrics(
-        self, request: Request, status_code: int, duration_ms: float
+        self, request: Request, status_code: int, duration_ms: float, is_error: bool = False
     ) -> None:
         """
         Record request metrics.
@@ -197,6 +199,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
             request: FastAPI request
             status_code: HTTP status code
             duration_ms: Request duration in milliseconds
+            is_error: Whether this is an error response (for error counter)
         """
         if not (
             self._meter
@@ -216,6 +219,10 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
 
         # Increment request counter
         self._request_counter.add(1, attributes)
+
+        # Increment error counter for 5xx errors
+        if is_error and status_code >= 500 and self._error_counter:
+            self._error_counter.add(1, attributes)
 
     async def _handle_error(
         self, request: Request, exc: Exception, start_time: float, request_id: str
