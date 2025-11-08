@@ -13,6 +13,16 @@
 > - **6편: 실전 운영을 위한 모니터링 시스템 구축** ← 현재 글
 > - 7편: 라즈베리파이 홈서버에 Docker 배포하기 (예정)
 
+> **📌 업데이트 이력:**
+> - **2025-11-08**: 초기 작성
+> - **2025-11-08 (최신)**: 프로덕션 배포 경험 반영
+>   - SQLAlchemy instrumentation으로 asyncpg 지원 개선
+>   - FastAPI lifespan 패턴으로 리소스 관리 현대화
+>   - SHA-256 해시로 보안 강화 (기존 MD5 대체)
+>   - Redis/HTTP 연결 누수 수정으로 안정성 향상
+>   - HTTPException 처리 및 5xx 에러 메트릭 추적 개선
+>   - 실전 트러블슈팅 사례 추가
+
 ## 들어가며
 
 ### 지금까지의 여정
@@ -188,9 +198,11 @@ opentelemetry-sdk = "^1.27.0"
 opentelemetry-exporter-otlp = "^1.27.0"
 opentelemetry-instrumentation-fastapi = "^0.48b0"
 opentelemetry-instrumentation-httpx = "^0.48b0"
-opentelemetry-instrumentation-sqlalchemy = "^0.48b0"
+opentelemetry-instrumentation-sqlalchemy = "^0.48b0"  # asyncpg 지원
 opentelemetry-instrumentation-redis = "^0.48b0"
 ```
+
+**중요:** 이 프로젝트는 PostgreSQL에 asyncpg를 사용하므로 `opentelemetry-instrumentation-sqlalchemy`가 필요합니다. (psycopg2가 아닌 SQLAlchemy instrumentation 사용)
 
 ```bash
 uv sync
@@ -491,11 +503,13 @@ class ErrorReporter:
         logger.info(f"ErrorReporter configured: chat_id={chat_id}")
 
     async def shutdown(self) -> None:
-        """리소스 정리"""
+        """리소스 정리 (중요: 메모리 누수 방지)"""
         if self._http_client:
             await self._http_client.aclose()
+            logger.debug("HTTP client closed")
         if self._redis:
             await self._redis.aclose()
+            logger.debug("Redis connection closed")
 
     def _generate_rate_limit_key(
         self, error_type: str, error_message: str, stack_trace: str
@@ -629,8 +643,9 @@ def get_error_reporter() -> ErrorReporter:
 
 1. **Singleton 패턴**: 앱 전체에서 하나의 인스턴스만 사용
 2. **Redis 중복 제거**: 5분 내 같은 에러는 한 번만 전송
-3. **SHA-256 해시**: 에러 타입 + 메시지 + 스택 위치로 고유 키 생성
+3. **SHA-256 해시**: 에러 타입 + 메시지 + 스택 위치로 고유 키 생성 (보안 강화)
 4. **Markdown 포맷**: Telegram에서 가독성 높은 메시지
+5. **안전한 리소스 정리**: `shutdown()` 메서드로 HTTP/Redis 연결 누수 방지
 
 ### 4. 환경 변수 설정
 
@@ -644,13 +659,20 @@ ERROR_DUPLICATE_WINDOW=300
 
 ### 5. 실제 사용 예시
 
+FastAPI 3.x부터는 `@app.on_event("startup/shutdown")`가 deprecated되었으므로 `lifespan` 패턴을 사용합니다:
+
 ```python
 # app/main.py
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from app.monitoring.error_reporter import get_error_reporter
 from app.core.redis import get_redis
 
-@app.on_event("startup")
-async def setup_error_reporting():
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """애플리케이션 생명주기 관리"""
+    # Startup: 모니터링 설정
     if settings.ERROR_REPORTING_ENABLED:
         redis = await get_redis()
         error_reporter = get_error_reporter()
@@ -662,12 +684,21 @@ async def setup_error_reporting():
         )
         print("✅ Error reporting enabled")
 
+    yield  # 애플리케이션 실행
 
-@app.on_event("shutdown")
-async def cleanup_error_reporting():
+    # Shutdown: 리소스 정리
     error_reporter = get_error_reporter()
     await error_reporter.shutdown()
+    print("✅ Error reporting shutdown complete")
+
+
+app = FastAPI(title="Auto Trader", lifespan=lifespan)
 ```
+
+**왜 lifespan을 사용하나요?**
+- FastAPI 최신 버전에서 권장하는 방식
+- 리소스 관리가 더 명확하고 안전함
+- startup/shutdown 이벤트는 deprecated 예정
 
 ### 6. Telegram 알림 예시
 
@@ -871,10 +902,11 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
 
 **핵심 포인트:**
 
-1. **Lazy Initialization**: Telemetry가 준비될 때까지 대기
+1. **Async Lazy Initialization**: Telemetry가 준비될 때까지 대기 (`asyncio.Lock`으로 thread-safe)
 2. **Span 생성**: 모든 요청을 분산 추적
-3. **메트릭 수집**: 요청 횟수, 응답 시간, 에러 카운트
+3. **메트릭 수집**: 요청 횟수, 응답 시간, 에러 카운트 (5xx 에러 자동 추적)
 4. **에러 리포팅**: 500+ 에러는 Telegram으로 즉시 알림
+5. **HTTPException 처리**: FastAPI의 HTTPException도 정확히 추적 및 기록
 
 ### 2. 미들웨어 등록
 
@@ -1399,6 +1431,59 @@ class Analyzer:
         self._counter.add(1)  # 재사용
 ```
 
+### 문제 5: asyncpg 사용 시 DB 쿼리가 추적되지 않음
+
+**증상:**
+- PostgreSQL 쿼리가 SigNoz Trace에 나타나지 않음
+- `psycopg2` instrumentation 사용 시 ModuleNotFoundError
+
+**원인:**
+- 이 프로젝트는 asyncpg를 사용하지만 psycopg2 instrumentation을 설정함
+
+**해결:**
+
+```bash
+# 1. 올바른 패키지 설치
+uv add opentelemetry-instrumentation-sqlalchemy
+
+# 2. psycopg2 instrumentation 제거 (사용하지 않음)
+uv remove opentelemetry-instrumentation-psycopg2
+
+# 3. telemetry.py에서 SQLAlchemy instrumentation 사용
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+# AsyncEngine과 sync_engine 모두 계측
+SQLAlchemyInstrumentor().instrument(engine=sync_engine)
+```
+
+**참고:** SQLAlchemyInstrumentor는 asyncpg 백엔드와 함께 작동합니다.
+
+### 문제 6: startup/shutdown 이벤트 deprecated 경고
+
+**증상:**
+```
+DeprecationWarning: on_event is deprecated, use lifespan event handlers instead
+```
+
+**원인:**
+- FastAPI 3.x부터 `@app.on_event()` 방식이 deprecated
+
+**해결:**
+
+```python
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await setup_monitoring()
+    yield
+    # Shutdown
+    await cleanup_monitoring()
+
+app = FastAPI(lifespan=lifespan)
+```
+
 ## 마치며
 
 ### 배운 교훈
@@ -1418,6 +1503,16 @@ class Analyzer:
 - 문제를 즉시 알고
 - 빠르게 대응하고
 - 안심하고 잠들 수 있게 되었습니다
+
+**그리고 실제 프로덕션 배포 후 발견한 것들:**
+
+초기 구현 후 며칠 운영하면서 다음 이슈들을 발견하고 수정했습니다:
+- ✅ **Redis 연결 누수**: ErrorReporter shutdown에서 Redis 연결이 닫히지 않아 메모리 누수 발생 → `aclose()` 추가로 해결
+- ✅ **DB 쿼리 추적 실패**: psycopg2 instrumentation 사용으로 asyncpg 쿼리가 추적되지 않음 → SQLAlchemy instrumentation으로 변경
+- ✅ **Deprecated 경고 폭주**: startup/shutdown 이벤트 사용으로 경고 발생 → lifespan 패턴으로 마이그레이션
+- ✅ **보안 취약점**: MD5 해시 사용 → SHA-256으로 강화
+
+**교훈:** 모니터링 시스템 자체도 계속 모니터링하고 개선해야 합니다! 🔄
 
 ### 실전에서 체감한 효과
 
@@ -1846,12 +1941,14 @@ networks:
 1. ✅ **OpenTelemetry + SigNoz**
    - 분산 추적으로 전체 요청 흐름 파악
    - 메트릭으로 시스템 성능 정량화
-   - 자동 계측으로 코드 수정 최소화
+   - SQLAlchemy instrumentation으로 asyncpg DB 쿼리 추적
+   - `lifespan` context로 안전한 리소스 관리
 
 2. ✅ **Telegram 에러 리포팅 (ErrorReporter)**
    - Redis 기반 중복 제거 (5분 윈도우)
+   - SHA-256 해시로 보안 강화 (기존 MD5 대체)
    - 실시간 알림으로 즉각 대응
-   - 컨텍스트 정보로 빠른 디버깅
+   - 안전한 HTTP/Redis 연결 정리로 메모리 누수 방지
 
 3. ✅ **Telegram 거래 알림 (TradeNotifier)** 🆕
    - 매수/매도 주문 체결 알림
