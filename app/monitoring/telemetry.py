@@ -148,11 +148,25 @@ def _instrument_libraries() -> None:
         HTTPXClientInstrumentor().instrument()
         logger.debug("httpx instrumented")
 
-        # Instrument SQLAlchemy for database tracing (works with asyncpg)
-        # Note: This will automatically trace all SQLAlchemy operations
+        # Instrument SQLAlchemy for database tracing
+        # For async SQLAlchemy, we need to instrument the sync_engine
         try:
-            SQLAlchemyInstrumentor().instrument()
-            logger.debug("sqlalchemy instrumented")
+            from app.core.db import engine
+
+            # For async engines (create_async_engine), instrument sync_engine
+            if hasattr(engine, 'sync_engine'):
+                SQLAlchemyInstrumentor().instrument(
+                    engine=engine.sync_engine,
+                    enable_commenter=True,
+                )
+                logger.debug("async sqlalchemy instrumented via sync_engine")
+            else:
+                # For regular sync engines
+                SQLAlchemyInstrumentor().instrument(
+                    engine=engine,
+                    enable_commenter=True,
+                )
+                logger.debug("sqlalchemy instrumented")
         except Exception as e:
             logger.debug(f"sqlalchemy instrumentation skipped: {e}")
 

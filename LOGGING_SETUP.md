@@ -68,7 +68,9 @@ if root_logger.level > logging.INFO:
 - 비즈니스 로직 로그
 
 #### 라이브러리 로그 (Auto-instrumentation)
-- **SQLAlchemy**: 모든 SQL 쿼리 자동 로깅
+- **SQLAlchemy**: 모든 SQL 쿼리 자동 로깅 및 트레이싱
+  - Async SQLAlchemy (`create_async_engine`) 지원
+  - `engine.sync_engine`을 통한 계측으로 trace span 생성
 - **HTTPx/Requests**: HTTP 클라이언트 요청
 - **Redis**: Redis 명령어
 - **FastAPI**: API 요청/응답
@@ -132,9 +134,25 @@ GROUP BY severity_text
 ORDER BY count DESC
 ```
 
-## 🐛 SQL 쿼리 로깅
+## 🐛 SQL 쿼리 로깅 및 트레이싱
 
-SQLAlchemy instrumentation이 활성화되어 있어 모든 DB 쿼리가 자동으로 로깅됩니다.
+SQLAlchemy instrumentation이 활성화되어 있어 모든 DB 쿼리가 자동으로 로깅되고 trace span으로 기록됩니다.
+
+### Async SQLAlchemy 지원
+
+이 프로젝트는 `create_async_engine`을 사용하는 async SQLAlchemy를 사용합니다.
+OpenTelemetry는 `engine.sync_engine`을 통해 async 엔진을 계측합니다:
+
+```python
+# app/monitoring/telemetry.py
+from app.core.db import engine
+
+if hasattr(engine, 'sync_engine'):
+    SQLAlchemyInstrumentor().instrument(
+        engine=engine.sync_engine,  # async 엔진의 내부 sync 엔진 사용
+        enable_commenter=True,
+    )
+```
 
 ### 로그 예시
 ```
@@ -307,6 +325,7 @@ logger.info(
 
 ## 📚 관련 문서
 
+- [SQLALCHEMY_TRACING_FIX.md](SQLALCHEMY_TRACING_FIX.md) - Async SQLAlchemy 트레이싱 수정 가이드
 - [ERROR_REPORTING_README.md](ERROR_REPORTING_README.md) - Telegram 에러 리포팅
 - [CLAUDE.md](CLAUDE.md) - 전체 프로젝트 가이드
 - [OpenTelemetry Python Docs](https://opentelemetry.io/docs/instrumentation/python/)
