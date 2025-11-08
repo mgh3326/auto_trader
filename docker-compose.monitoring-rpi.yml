@@ -29,7 +29,7 @@ services:
 
   # Zookeeper for ClickHouse cluster coordination (메모리 제한)
   zookeeper:
-    image: zookeeper:3.8
+    image: zookeeper:3.9
     container_name: signoz_zookeeper
     hostname: zookeeper
     ports:

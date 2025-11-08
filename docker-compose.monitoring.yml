@@ -30,7 +30,7 @@ services:
 
   # Zookeeper for ClickHouse cluster coordination
   zookeeper:
-    image: zookeeper:3.8
+    image: zookeeper:3.9
     container_name: signoz_zookeeper
     hostname: zookeeper
     ports:
