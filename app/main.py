@@ -51,10 +51,6 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """Log all unhandled exceptions with full traceback"""
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"[GLOBAL ERROR] {request.method} {request.url.path}: {str(exc)}", flush=True)
-        print(f"[GLOBAL ERROR] Traceback:\n{error_details}", flush=True)
         logger.error(
             f"Unhandled exception on {request.method} {request.url.path}: {str(exc)}",
             exc_info=True,
