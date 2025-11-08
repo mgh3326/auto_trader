@@ -1,7 +1,3 @@
-# OpenTelemetry Collector Configuration for SigNoz
-# This configuration receives telemetry data from the auto_trader application
-# and forwards it to ClickHouse for storage
-
 receivers:
   otlp:
     protocols:
@@ -20,70 +16,72 @@ receivers:
             - targets: ['localhost:8888']
 
 processors:
-  # Batch processor to reduce network calls
   batch:
-    send_batch_size: 10000
+    send_batch_size: 1000
     timeout: 10s
 
   # Memory limiter to prevent OOM
   memory_limiter:
-    check_interval: 1s
-    limit_mib: 1000
-    spike_limit_mib: 200
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
 
-  # Resource processor to add additional attributes
-  resource:
-    attributes:
-      - key: service.instance.id
-        from_attribute: host.name
-        action: upsert
+  # Resource detection
+  resourcedetection:
+    detectors: [env, system, docker]
+    timeout: 5s
 
 exporters:
-  # ClickHouse exporter for traces
+  # ClickHouse exporter for traces (SigNoz format)
   clickhousetraces:
-    datasource: tcp://clickhouse:9000/?database=signoz
+    datasource: tcp://clickhouse:9000/?database=signoz_traces
     docker_multi_node_cluster: false
     low_cardinal_exception_grouping: false
 
-  # ClickHouse exporter for metrics
-  clickhousemetricsv2:
-    endpoint: tcp://clickhouse:9000/?database=signoz
+  # ClickHouse exporter for metrics (SigNoz format)
+  clickhousemetricswrite:
+    endpoint: tcp://clickhouse:9000/?database=signoz_metrics
     resource_to_telemetry_conversion:
       enabled: true
 
-  # ClickHouse exporter for logs
-  clickhouselogsv2:
-    endpoint: tcp://clickhouse:9000/?database=signoz
-    docker_multi_node_cluster: false
-    resource_to_telemetry_conversion:
-      enabled: true
+  # ClickHouse exporter for logs (SigNoz format)
+  clickhouselogsexporter:
+    dsn: tcp://clickhouse:9000/?database=signoz_logs
+    timeout: 5s
 
-  # Logging exporter for debugging (optional)
+  # Prometheus exporter for metrics
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+
+  # Logging exporter for debugging
   logging:
-    loglevel: info
+    verbosity: normal
 
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133
-  pprof:
-    endpoint: 0.0.0.0:1777
   zpages:
     endpoint: 0.0.0.0:55679
+  pprof:
+    endpoint: 0.0.0.0:1777
 
 service:
-  extensions: [health_check, pprof, zpages]
+  extensions: [health_check, zpages, pprof]
   pipelines:
+    # Traces pipeline
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
-      exporters: [clickhousetraces]
+      processors: [memory_limiter, batch, resourcedetection]
+      exporters: [clickhousetraces, logging]
 
+    # Metrics pipeline
     metrics:
       receivers: [otlp, prometheus]
-      processors: [memory_limiter, batch, resource]
-      exporters: [clickhousemetricsv2]
+      processors: [memory_limiter, batch, resourcedetection]
+      exporters: [clickhousemetricswrite, logging]
 
+    # Logs pipeline
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
-      exporters: [clickhouselogsv2]
+      processors: [memory_limiter, batch, resourcedetection]
+      exporters: [clickhouselogsexporter, logging]
