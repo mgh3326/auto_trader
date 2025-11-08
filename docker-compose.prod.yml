@@ -60,8 +60,17 @@ services:
       - ./logs:/app/logs
     restart: unless-stopped
     network_mode: host  # Host 네트워크 사용으로 localhost DB/Redis 접근
-    command: >
-      bash -lc "uv run celery -A app.core.celery_app.celery_app worker --loglevel=INFO -c 1 --max-tasks-per-child=100"
+    command:
+      - /app/.venv/bin/python
+      - -m
+      - celery
+      - -A
+      - app.core.celery_app.celery_app
+      - worker
+      - --loglevel=INFO
+      - -c
+      - "1"
+      - --max-tasks-per-child=100
     deploy:
       resources:
         limits:
