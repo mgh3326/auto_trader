@@ -122,6 +122,13 @@ def setup_telemetry(
         if root_logger.level > logging.INFO:
             root_logger.setLevel(logging.INFO)
 
+        # Also attach to uvicorn loggers explicitly
+        for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "app"]:
+            app_logger = logging.getLogger(logger_name)
+            app_logger.addHandler(handler)
+            if app_logger.level > logging.INFO:
+                app_logger.setLevel(logging.INFO)
+
         # Auto-instrument libraries
         _instrument_libraries()
 
