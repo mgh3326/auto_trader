@@ -2,7 +2,7 @@
 # This file adds SigNoz observability platform optimized for ARM64/Raspberry Pi
 #
 # Usage:
-#   docker-compose -f docker-compose.monitoring-rpi.yml up -d
+#   docker compose -f docker-compose.monitoring-rpi.yml up -d
 #
 # SigNoz UI: http://localhost:3301
 # OTLP Endpoint: localhost:4317 (gRPC), localhost:4318 (HTTP)
@@ -10,6 +10,9 @@
 # To enable in your app, set in .env:
 #   SIGNOZ_ENABLED=true
 #   SIGNOZ_ENDPOINT=localhost:4317
+
+# 프로젝트 이름 지정 (orphan 경고 방지)
+name: signoz
 
 services:
   # OTEL Migrator - Initialize ClickHouse schema for SigNoz
