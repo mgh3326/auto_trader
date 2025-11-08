@@ -1,5 +1,5 @@
 import time
-from typing import List
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -233,7 +233,7 @@ class UpbitAnalyzer(Analyzer):
             else:
                 print(f"결과: {result[:100]}...")
 
-    async def analyze_coin_json(self, coin_name: str) -> None:
+    async def analyze_coin_json(self, coin_name: str) -> Tuple[Optional[object], str]:
         """단일 코인을 JSON 형식으로 분석"""
         start_time = time.time()
 
@@ -259,7 +259,7 @@ class UpbitAnalyzer(Analyzer):
                             "market": "upbit",
                         },
                     )
-                    return
+                    return None, ""
 
                 span.set_attribute("coin.symbol", stock_symbol)
 
@@ -340,6 +340,8 @@ class UpbitAnalyzer(Analyzer):
                     print(f"매수 범위: {result.price_analysis.appropriate_buy_range.min:,.0f}원 ~ {result.price_analysis.appropriate_buy_range.max:,.0f}원")
                 else:
                     print(f"결과: {result[:100]}...")
+
+                return result, model_name
 
             except Exception as e:
                 # Record failure metrics
@@ -458,7 +460,7 @@ class YahooAnalyzer(Analyzer):
 
             self._print_analysis_result(result, stock_symbol, use_json=True)
 
-    async def analyze_stock_json(self, stock_symbol: str) -> None:
+    async def analyze_stock_json(self, stock_symbol: str) -> Tuple[Optional[object], str]:
         """단일 주식을 JSON 형식으로 분석"""
         start_time = time.time()
 
@@ -533,6 +535,8 @@ class YahooAnalyzer(Analyzer):
                 analysis_duration.record(total_duration, attributes)
 
                 self._print_analysis_result(result, stock_symbol, use_json=True)
+
+                return result, model_name
 
             except Exception as e:
                 # Record failure metrics
@@ -693,7 +697,7 @@ class KISAnalyzer(Analyzer):
         for stock_name in stock_names:
             await self.analyze_stock_json(stock_name)
 
-    async def analyze_stock_json(self, stock_name: str) -> None:
+    async def analyze_stock_json(self, stock_name: str) -> Tuple[Optional[object], str]:
         """단일 국내주식을 JSON 형식으로 분석"""
         print(f"\n=== {stock_name} JSON 분석 시작 ===")
 
@@ -701,7 +705,7 @@ class KISAnalyzer(Analyzer):
         stock_code = KRX_NAME_TO_CODE.get(stock_name)
         if not stock_code:
             print(f"종목명을 찾을 수 없음: {stock_name}")
-            return
+            return None, ""
 
         # 데이터 수집
         df_merged, fundamental_info, minute_candles = await self._collect_stock_data(stock_name, stock_code)
@@ -719,6 +723,8 @@ class KISAnalyzer(Analyzer):
         )
 
         self._print_analysis_result(result, stock_name, use_json=True)
+
+        return result, model_name
 
     async def analyze_overseas_stocks(self, stock_symbols: List[str]) -> None:
         """여러 해외주식을 순차적으로 분석"""

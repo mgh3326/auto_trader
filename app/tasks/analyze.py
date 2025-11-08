@@ -69,6 +69,15 @@ async def _analyze_coin_async(currency: str, progress_cb: ProgressCallback = Non
     try:
         result, model = await analyzer.analyze_coin_json(korean_name)
 
+        # Check if analysis failed (result is None)
+        if result is None:
+            return {
+                "status": "failed",
+                "currency": currency_code,
+                "korean_name": korean_name,
+                "error": "분석 결과를 가져올 수 없습니다."
+            }
+
         # Send Telegram notification if analysis completed successfully
         if hasattr(result, 'decision'):
             try:
@@ -312,15 +321,19 @@ def run_analysis_for_stock(symbol: str, name: str, instrument_type: str) -> dict
         try:
             if instrument_type == "equity_kr":
                 analyzer = KISAnalyzer()
-                await analyzer.analyze_stock_json(name)
+                result, model = await analyzer.analyze_stock_json(name)
             elif instrument_type == "equity_us":
                 analyzer = YahooAnalyzer()
-                await analyzer.analyze_stock_json(symbol)
+                result, model = await analyzer.analyze_stock_json(symbol)
             elif instrument_type == "crypto":
                 analyzer = UpbitAnalyzer()
-                await analyzer.analyze_coin_json(name)
+                result, model = await analyzer.analyze_coin_json(name)
             else:
                 return {"status": "ignored", "reason": f"unsupported type: {instrument_type}"}
+
+            # Check if analysis succeeded
+            if result is None:
+                return {"status": "failed", "symbol": symbol, "name": name, "reason": "analysis returned None"}
 
             return {"status": "ok", "symbol": symbol, "name": name, "instrument_type": instrument_type}
         finally:
