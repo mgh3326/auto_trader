@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     kis_account_no: str | None = None  # 계좌번호 (예: "12345678-01")
     # Telegram
     telegram_token: str
-    telegram_chat_ids_str: str = ""
+    telegram_chat_id: str = ""
     # Strategy
     top_n: int = 30
     drop_pct: float = -3.0  # '-3'은 -3 %
@@ -24,10 +24,10 @@ class Settings(BaseSettings):
 
     @property
     def telegram_chat_ids(self) -> List[str]:
-        """콤마로 구분된 문자열을 리스트로 변환"""
-        if not self.telegram_chat_ids_str:
+        """단일 chat_id를 리스트로 변환 (하위 호환성 유지)"""
+        if not self.telegram_chat_id:
             return []
-        return [chat_id.strip() for chat_id in self.telegram_chat_ids_str.split(',') if chat_id.strip()]
+        return [self.telegram_chat_id.strip()]
 
     @field_validator("google_api_keys", mode='before')
     @classmethod

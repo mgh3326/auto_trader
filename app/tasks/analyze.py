@@ -4,6 +4,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from celery import shared_task
 
 from app.analysis.service_analyzers import KISAnalyzer, YahooAnalyzer, UpbitAnalyzer
+from app.monitoring.trade_notifier import get_trade_notifier
 from app.services import upbit
 from app.services.order_service import (
     cancel_existing_buy_orders,
@@ -66,7 +67,23 @@ async def _analyze_coin_async(currency: str, progress_cb: ProgressCallback = Non
 
     analyzer = UpbitAnalyzer()
     try:
-        await analyzer.analyze_coin_json(korean_name)
+        result, model = await analyzer.analyze_coin_json(korean_name)
+
+        # Send Telegram notification if analysis completed successfully
+        if hasattr(result, 'decision'):
+            try:
+                notifier = get_trade_notifier()
+                await notifier.notify_analysis_complete(
+                    symbol=currency_code,
+                    korean_name=korean_name,
+                    decision=result.decision,
+                    confidence=float(result.confidence) if result.confidence else 0.0,
+                    reasons=result.reasons if hasattr(result, 'reasons') and result.reasons else [],
+                    market_type="암호화폐",
+                )
+            except Exception as notify_error:  # pragma: no cover
+                print(f"⚠️ 텔레그램 알림 전송 실패: {notify_error}")
+
         return {
             "status": "completed",
             "currency": currency_code,
@@ -127,6 +144,30 @@ async def _execute_buy_order_for_coin_async(currency: str) -> Dict[str, object]:
         await asyncio.sleep(1)
 
         result = await process_buy_orders_with_analysis(market, current_price, avg_buy_price)
+
+        # Send Telegram notification if orders were placed
+        if result.get("success") and result.get("orders_placed", 0) > 0:
+            try:
+                notifier = get_trade_notifier()
+                korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency_code, currency_code)
+
+                # Extract order details from result if available
+                orders_placed = result.get("orders_placed", 0)
+                total_amount = result.get("total_amount", 0.0)
+
+                # Note: We don't have individual prices/volumes from process_buy_orders_with_analysis
+                # For now, send summary notification
+                await notifier.notify_buy_order(
+                    symbol=currency_code,
+                    korean_name=korean_name,
+                    order_count=orders_placed,
+                    total_amount=total_amount,
+                    prices=[],  # Individual prices not available from result
+                    volumes=[],  # Individual volumes not available from result
+                    market_type="암호화폐",
+                )
+            except Exception as notify_error:  # pragma: no cover
+                print(f"⚠️ 텔레그램 알림 전송 실패: {notify_error}")
 
         return {
             "status": "completed" if result.get("success") else "failed",
@@ -218,6 +259,29 @@ async def _execute_sell_order_for_coin_async(currency: str) -> Dict[str, object]
 
         if result.get("success"):
             print(f"📈 매도 주문 완료: {result.get('orders_placed', 0)}건 성공")
+
+            # Send Telegram notification if orders were placed
+            if result.get("orders_placed", 0) > 0:
+                try:
+                    notifier = get_trade_notifier()
+                    korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency_code, currency_code)
+
+                    orders_placed = result.get("orders_placed", 0)
+                    # Estimate expected amount from sell_prices and balance
+                    expected_amount = sum(sell_prices) * balance / len(sell_prices) if sell_prices else 0
+
+                    await notifier.notify_sell_order(
+                        symbol=currency_code,
+                        korean_name=korean_name,
+                        order_count=orders_placed,
+                        total_volume=balance,
+                        prices=sell_prices,  # Use the sell_prices we calculated
+                        volumes=[],  # Don't have exact volumes per order
+                        expected_amount=expected_amount,
+                        market_type="암호화폐",
+                    )
+                except Exception as notify_error:  # pragma: no cover
+                    print(f"⚠️ 텔레그램 알림 전송 실패: {notify_error}")
         else:
             print(f"⚠️ 매도 주문 실패: {result.get('message')}")
 
