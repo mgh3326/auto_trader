@@ -7,6 +7,7 @@ Upbit 자동 매매 웹 인터페이스 라우터
 """
 
 import asyncio
+import logging
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks
@@ -24,6 +25,7 @@ from app.services.stock_info_service import (
 )
 from data.coins_info import upbit_pairs
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/upbit-trading", tags=["Upbit Trading"])
 
 # 템플릿 설정
@@ -61,8 +63,12 @@ async def get_my_coins(
     analyzer: UpbitAnalyzer | None = None
     tradable_coins: list[dict] = []
     try:
+        logger.info("Starting get_my_coins request")
         await upbit_pairs.prime_upbit_constants()
+        logger.info("Upbit constants primed successfully")
+
         my_coins = await upbit.fetch_my_coins()
+        logger.info(f"Fetched {len(my_coins)} coins from Upbit")
 
         analyzer = UpbitAnalyzer()
         tradable_coins = [
@@ -165,6 +171,7 @@ async def get_my_coins(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error in get_my_coins: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if analyzer is not None:

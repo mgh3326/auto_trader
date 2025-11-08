@@ -2,7 +2,8 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
 from app.core.config import settings
@@ -45,6 +46,24 @@ def create_app() -> FastAPI:
             await cleanup_monitoring()
 
     app = FastAPI(title="KIS Auto Screener", version="0.1.0", lifespan=lifespan)
+
+    # Add global exception handler for detailed error logging
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        """Log all unhandled exceptions with full traceback"""
+        logger.error(
+            f"Unhandled exception on {request.method} {request.url.path}: {str(exc)}",
+            exc_info=True,
+            extra={
+                "method": request.method,
+                "url": str(request.url),
+                "client": request.client.host if request.client else None,
+            }
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": str(exc)}
+        )
 
     # Include routers
     app.include_router(dashboard.router)
