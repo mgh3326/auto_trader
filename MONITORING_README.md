@@ -81,13 +81,13 @@
 
 ```bash
 # 애플리케이션 스택 + SigNoz
-docker-compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 
 # SigNoz만 실행
-docker-compose -f docker-compose.monitoring.yml up -d
+docker compose -f docker-compose.monitoring.yml up -d
 
 # 상태 확인
-docker-compose -f docker-compose.monitoring.yml ps
+docker compose -f docker-compose.monitoring.yml ps
 ```
 
 ### 2. SigNoz 접속
@@ -329,8 +329,8 @@ TELEGRAM_ERROR_REPORTING_ENABLED=false
 2. **SigNoz 컨테이너 상태 확인**:
    ```bash
    cd signoz/deploy/
-   docker-compose -f docker/clickhouse-setup/docker-compose.yaml ps
-   docker-compose -f docker/clickhouse-setup/docker-compose.yaml logs
+   docker compose -f docker/clickhouse-setup/docker-compose.yaml ps
+   docker compose -f docker/clickhouse-setup/docker-compose.yaml logs
    ```
 
 3. **애플리케이션 로그 확인**:

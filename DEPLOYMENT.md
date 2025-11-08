@@ -53,8 +53,8 @@ sudo sh get-docker.sh
 sudo usermod -aG docker $USER
 
 # Docker Compose 설치
-sudo curl -L "https://github.com/docker/compose/releases/download/v2.24.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
+sudo curl -L "https://github.com/docker/compose/releases/download/v2.24.0/docker compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker compose
+sudo chmod +x /usr/local/bin/docker compose
 
 # 네이티브 PostgreSQL 및 Redis 설치
 # 자세한 설치 방법은 NATIVE_SETUP.md 참고
@@ -93,13 +93,13 @@ nano .env.prod
 echo $GITHUB_TOKEN | docker login ghcr.io -u your-username --password-stdin
 
 # 이미지 Pull
-docker-compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml pull
 
 # 서비스 실행
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml up -d
 
 # 로그 확인
-docker-compose -f docker-compose.prod.yml logs -f
+docker compose -f docker-compose.prod.yml logs -f
 ```
 
 ## 🔐 보안 설정
@@ -136,8 +136,8 @@ Type=oneshot
 RemainAfterExit=yes
 User=autotrader
 WorkingDirectory=/home/autotrader/auto_trader
-ExecStart=/usr/local/bin/docker-compose -f docker-compose.prod.yml up -d
-ExecStop=/usr/local/bin/docker-compose -f docker-compose.prod.yml down
+ExecStart=/usr/local/bin/docker compose -f docker-compose.prod.yml up -d
+ExecStop=/usr/local/bin/docker compose -f docker-compose.prod.yml down
 TimeoutStartSec=0
 
 [Install]
@@ -166,10 +166,10 @@ git fetch origin
 git reset --hard origin/production
 
 # 이미지 업데이트
-docker-compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml pull
 
 # 서비스 재시작
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml up -d
 
 echo "✅ 업데이트 완료!"
 EOF
@@ -181,16 +181,16 @@ chmod +x update-auto-trader.sh
 
 ```bash
 # 1. 서비스 중지
-docker-compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.prod.yml down
 
 # 2. 최신 코드 가져오기
 git pull origin production
 
 # 3. 최신 이미지 가져오기
-docker-compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml pull
 
 # 4. 서비스 재시작
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml up -d
 ```
 
 ## 📊 모니터링
@@ -202,11 +202,11 @@ docker-compose -f docker-compose.prod.yml up -d
 curl http://localhost:8000/healthz
 
 # 컨테이너 상태 확인
-docker-compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml ps
 
 # 로그 확인
-docker-compose -f docker-compose.prod.yml logs api
-docker-compose -f docker-compose.prod.yml logs websocket
+docker compose -f docker-compose.prod.yml logs api
+docker compose -f docker-compose.prod.yml logs websocket
 ```
 
 ### 리소스 모니터링
@@ -245,9 +245,9 @@ docker system df
 4. **네트워크 문제**
    ```bash
    # Docker 네트워크 재생성
-   docker-compose -f docker-compose.prod.yml down
+   docker compose -f docker-compose.prod.yml down
    docker network prune
-   docker-compose -f docker-compose.prod.yml up -d
+   docker compose -f docker-compose.prod.yml up -d
    ```
 
 ## 📈 성능 최적화

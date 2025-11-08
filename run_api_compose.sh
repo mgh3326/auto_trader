@@ -23,13 +23,13 @@ echo "🔍 DB/Redis 컨테이너 상태 확인 중..."
 if ! docker ps --format "table {{.Names}}" | grep -q "auto_trader_pg\|auto_trader_redis"; then
     echo "⚠️  DB/Redis 컨테이너가 실행되지 않았습니다."
     echo "먼저 다음 명령어로 DB/Redis를 실행해주세요:"
-    echo "  docker-compose up -d"
+    echo "  docker compose up -d"
     echo ""
     read -p "지금 DB/Redis를 실행하시겠습니까? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo "🗄️  DB/Redis 실행 중..."
-        docker-compose up -d
+        docker compose up -d
         echo "⏳ DB/Redis 초기화 대기 중..."
         sleep 10
     else
@@ -40,15 +40,15 @@ fi
 
 # API Docker Compose 실행
 echo "🏃 API Docker Compose 실행 중..."
-docker-compose -f docker-compose.api.yml up -d --build
+docker compose -f docker-compose.api.yml up -d --build
 
 echo "✅ Auto Trader API가 실행되었습니다!"
 echo "📍 API 주소: http://localhost:8001"
 echo "📍 Health Check: http://localhost:8001/health"
 echo ""
 echo "📋 유용한 명령어:"
-echo "  - 로그 확인: docker-compose -f docker-compose.api.yml logs -f"
-echo "  - API 중지: docker-compose -f docker-compose.api.yml down"
-echo "  - 전체 중지: docker-compose down && docker-compose -f docker-compose.api.yml down"
+echo "  - 로그 확인: docker compose -f docker-compose.api.yml logs -f"
+echo "  - API 중지: docker compose -f docker-compose.api.yml down"
+echo "  - 전체 중지: docker compose down && docker compose -f docker-compose.api.yml down"
 
 

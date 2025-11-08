@@ -128,7 +128,7 @@ fi
 
 # 최신 이미지 가져오기
 echo -e "${YELLOW}📦 Pulling latest Docker images...${NC}"
-docker-compose -f $COMPOSE_FILE pull
+docker compose -f $COMPOSE_FILE pull
 
 # 마이그레이션 처리
 if [ "$SKIP_MIGRATE" = true ]; then
@@ -159,7 +159,7 @@ elif [ "$AUTO_MIGRATE" = true ]; then
         ./scripts/migrate.sh
     else
         echo -e "${YELLOW}⚠️  Host migration script not found, using Docker...${NC}"
-        docker-compose -f $COMPOSE_FILE --profile migration up migration
+        docker compose -f $COMPOSE_FILE --profile migration up migration
     fi
     
 elif [ "$MANUAL_MIGRATE" = true ]; then
@@ -193,7 +193,7 @@ elif [ "$MANUAL_MIGRATE" = true ]; then
             ;;
         2)
             echo -e "${YELLOW}🔄 Running Docker-based migration...${NC}"
-            docker-compose -f $COMPOSE_FILE --profile migration up migration
+            docker compose -f $COMPOSE_FILE --profile migration up migration
             ;;
         3)
             echo -e "${YELLOW}⏭️  Skipping migrations${NC}"
@@ -212,7 +212,7 @@ fi
 # 롤백 처리
 if [ "$ROLLBACK" = true ]; then
     echo -e "${YELLOW}🔄 Rolling back services...${NC}"
-    docker-compose -f $COMPOSE_FILE down
+    docker compose -f $COMPOSE_FILE down
     
     # 이전 이미지로 롤백 (수동으로 태그 지정 필요)
     echo "Rollback requires manual image tag specification."
@@ -224,10 +224,10 @@ fi
 echo -e "${YELLOW}🚀 Deploying services...${NC}"
 
 # 기존 서비스 중지
-docker-compose -f $COMPOSE_FILE down
+docker compose -f $COMPOSE_FILE down
 
 # 새 서비스 시작
-docker-compose -f $COMPOSE_FILE up -d
+docker compose -f $COMPOSE_FILE up -d
 
 echo -e "${GREEN}✅ Services deployed successfully${NC}"
 
@@ -253,8 +253,8 @@ echo ""
 echo -e "${GREEN}🎉 Deployment completed successfully!${NC}"
 echo ""
 echo "📋 Useful commands:"
-echo "  docker-compose -f $COMPOSE_FILE logs -f    # View logs"
-echo "  docker-compose -f $COMPOSE_FILE ps         # Check status"
+echo "  docker compose -f $COMPOSE_FILE logs -f    # View logs"
+echo "  docker compose -f $COMPOSE_FILE ps         # Check status"
 echo "  ./scripts/healthcheck.sh                   # Run health check"
 echo ""
 echo "🌐 API URL: http://localhost:8000"

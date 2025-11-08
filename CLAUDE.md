@@ -42,9 +42,9 @@ make dev                          # 또는 uv run uvicorn app.main:app --reload
 
 ### Docker 환경
 ```bash
-docker-compose up -d              # PostgreSQL, Redis, Adminer 시작
-docker-compose ps                 # 서비스 상태 확인
-docker-compose down               # 서비스 중지
+docker compose up -d              # PostgreSQL, Redis, Adminer 시작
+docker compose ps                 # 서비스 상태 확인
+docker compose down               # 서비스 중지
 ```
 
 ## 핵심 명령어
@@ -375,9 +375,9 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 - **대응:** 분봉 수집 실패 시에도 일봉 데이터로 분석 진행
 
 ### Redis 연결 실패
-- Docker Compose로 Redis 실행: `docker-compose up -d redis`
-- 연결 테스트: `docker-compose exec redis redis-cli ping`
-- 로그 확인: `docker-compose logs redis`
+- Docker Compose로 Redis 실행: `docker compose up -d redis`
+- 연결 테스트: `docker compose exec redis redis-cli ping`
+- 로그 확인: `docker compose logs redis`
 
 ### 데이터베이스 마이그레이션 충돌
 ```bash

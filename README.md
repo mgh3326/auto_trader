@@ -217,13 +217,13 @@ GitHub Actions를 통해 자동으로 다음을 실행합니다:
 
 ```bash
 # 애플리케이션 스택 + SigNoz
-docker-compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 
 # SigNoz만 실행
-docker-compose -f docker-compose.monitoring.yml up -d
+docker compose -f docker-compose.monitoring.yml up -d
 
 # 상태 확인
-docker-compose -f docker-compose.monitoring.yml ps
+docker compose -f docker-compose.monitoring.yml ps
 ```
 
 **SigNoz 서비스 접속:**
@@ -428,7 +428,7 @@ ERROR_REPORTING_ENABLED=false
 2. SigNoz 컨테이너 상태 확인:
    ```bash
    cd signoz/deploy/
-   docker-compose -f docker/clickhouse-setup/docker-compose.yaml logs
+   docker compose -f docker/clickhouse-setup/docker-compose.yaml logs
    ```
 
 3. 애플리케이션 로그 확인:
@@ -451,7 +451,7 @@ ERROR_REPORTING_ENABLED=false
 
 3. Redis 연결 확인 (에러 중복 방지용):
    ```bash
-   docker-compose exec redis redis-cli ping
+   docker compose exec redis redis-cli ping
    ```
 
 ### 추가 문서

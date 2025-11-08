@@ -185,8 +185,8 @@ Type=oneshot
 RemainAfterExit=yes
 User=autotrader
 WorkingDirectory=/home/autotrader/auto_trader
-ExecStart=/usr/local/bin/docker-compose -f docker-compose.prod.yml up -d
-ExecStop=/usr/local/bin/docker-compose -f docker-compose.prod.yml down
+ExecStart=/usr/local/bin/docker compose -f docker-compose.prod.yml up -d
+ExecStop=/usr/local/bin/docker compose -f docker-compose.prod.yml down
 TimeoutStartSec=300
 
 [Install]

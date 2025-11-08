@@ -164,31 +164,31 @@ REDIS_URL=redis://:your_password@your-elasticache-endpoint.cache.amazonaws.com:6
 **1. 서비스 시작**
 ```bash
 # 모든 서비스 시작 (PostgreSQL, Redis, Adminer)
-docker-compose up -d
+docker compose up -d
 
 # 특정 서비스만 시작
-docker-compose up -d redis
+docker compose up -d redis
 ```
 
 **2. 서비스 상태 확인**
 ```bash
 # 모든 서비스 상태 확인
-docker-compose ps
+docker compose ps
 
 # Redis 로그 확인
-docker-compose logs redis
+docker compose logs redis
 
 # Redis 상태 확인
-docker-compose exec redis redis-cli -a redis_password ping
+docker compose exec redis redis-cli -a redis_password ping
 ```
 
 **3. 서비스 중지**
 ```bash
 # 모든 서비스 중지
-docker-compose down
+docker compose down
 
 # 볼륨까지 삭제 (데이터 손실 주의!)
-docker-compose down -v
+docker compose down -v
 ```
 
 **4. 환경 변수 설정**
@@ -200,7 +200,7 @@ REDIS_URL=redis://auto_trader_redis:6379/0
 **5. Redis 연결 테스트**
 ```bash
 # Redis 컨테이너에 접속하여 연결 테스트
-docker-compose exec auto_trader_redis redis-cli ping
+docker compose exec auto_trader_redis redis-cli ping
 # 응답: PONG
 ```
 

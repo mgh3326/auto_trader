@@ -27,10 +27,10 @@ Auto Trader 프로젝트는 여러 Docker 구성을 제공합니다:
 
 ```bash
 # 실행
-docker-compose up -d
+docker compose up -d
 
 # 중지
-docker-compose down
+docker compose down
 ```
 
 - PostgreSQL: `localhost:5432`
@@ -46,7 +46,7 @@ docker-compose down
 ./run_api_compose.sh
 
 # 또는 직접 실행
-docker-compose -f docker-compose.api.yml up -d --build
+docker compose -f docker-compose.api.yml up -d --build
 ```
 
 - API 서버: `http://localhost:8001`
@@ -56,7 +56,7 @@ docker-compose -f docker-compose.api.yml up -d --build
 모든 서비스를 한번에 실행:
 
 ```bash
-docker-compose -f docker-compose.full.yml up -d --build
+docker compose -f docker-compose.full.yml up -d --build
 ```
 
 ### 4. 단일 API 컨테이너 실행
@@ -121,7 +121,7 @@ chmod 755 tmp logs
 ```bash
 # 네트워크 재생성
 docker network rm auto_trader_local_dev
-docker-compose up -d
+docker compose up -d
 ```
 
 ### 컨테이너 정리
@@ -138,18 +138,18 @@ docker volume rm auto_trader_pg_data auto_trader_redis_data
 
 ```bash
 # 로그 확인
-docker-compose logs -f api
+docker compose logs -f api
 docker logs -f auto_trader_api
 
 # 컨테이너 상태 확인
-docker-compose ps
+docker compose ps
 docker ps --filter "name=auto_trader"
 
 # 컨테이너 접속
 docker exec -it auto_trader_api bash
 
 # 이미지 재빌드
-docker-compose -f docker-compose.api.yml up -d --build --force-recreate
+docker compose -f docker-compose.api.yml up -d --build --force-recreate
 ```
 
 
