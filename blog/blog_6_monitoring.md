@@ -1459,26 +1459,417 @@ class Analyzer:
 
 **지금 2일 투자하면, 앞으로 20일 절약됩니다.**
 
+## 보너스: Telegram 거래 알림 시스템
+
+에러 알림만으로는 부족합니다. **실제 거래 이벤트**(매수/매도)도 실시간으로 알림받고 싶지 않으신가요?
+
+### TradeNotifier 구현
+
+ErrorReporter와 별도로 **TradeNotifier**를 구현하여 거래 알림을 전송합니다.
+
+```python
+# app/monitoring/trade_notifier.py
+class TradeNotifier:
+    """Telegram 거래 알림 (Singleton)"""
+
+    _instance: Optional["TradeNotifier"] = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    async def notify_buy_order(
+        self,
+        symbol: str,
+        korean_name: str,
+        order_count: int,
+        total_amount: float,
+        prices: List[float],
+        volumes: List[float],
+        market_type: str = "암호화폐"
+    ) -> bool:
+        """매수 주문 알림"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        message = f"""💰 *매수 주문 체결*
+🕒 {timestamp}
+
+*종목:* {korean_name} ({symbol})
+*시장:* {market_type}
+*주문 수:* {order_count}건
+*총 금액:* {total_amount:,.0f}원
+
+"""
+        for i, (price, volume) in enumerate(zip(prices, volumes), 1):
+            message += f"  {i}. 가격: {price:,.0f}원 × 수량: {volume:.4f}\n"
+
+        return await self._send_to_telegram(message)
+
+    async def notify_analysis_complete(
+        self,
+        symbol: str,
+        korean_name: str,
+        decision: str,
+        confidence: int,
+        model: str,
+        market_type: str = "암호화폐"
+    ) -> bool:
+        """AI 분석 완료 알림"""
+        emoji_map = {"buy": "📈", "hold": "🤚", "sell": "📉"}
+        decision_emoji = emoji_map.get(decision, "❓")
+
+        decision_korean = {"buy": "매수", "hold": "관망", "sell": "매도"}.get(
+            decision, decision
+        )
+
+        # 신뢰도에 따른 등급
+        if confidence >= 70:
+            confidence_grade = "높음 🔥"
+        elif confidence >= 40:
+            confidence_grade = "보통 💡"
+        else:
+            confidence_grade = "낮음 ⚠️"
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        message = f"""{decision_emoji} *AI 분석 완료*
+🕒 {timestamp}
+
+*종목:* {korean_name} ({symbol})
+*시장:* {market_type}
+*모델:* {model}
+
+*투자 판단:* {decision_korean}
+*신뢰도:* {confidence}% ({confidence_grade})
+"""
+        return await self._send_to_telegram(message)
+```
+
+### 실제 알림 예시
+
+**매수 주문 알림:**
+```
+💰 매수 주문 체결
+🕒 2025-11-08 15:30:42
+
+종목: 비트코인 (BTC)
+시장: 암호화폐
+주문 수: 3건
+총 금액: 300,000원
+
+  1. 가격: 100,000원 × 수량: 0.3333
+  2. 가격: 99,500원 × 수량: 0.3350
+  3. 가격: 99,000원 × 수량: 0.3367
+```
+
+**AI 분석 완료 알림:**
+```
+📈 AI 분석 완료
+🕒 2025-11-08 15:25:10
+
+종목: 비트코인 (BTC)
+시장: 암호화폐
+모델: gemini-2.0-flash-exp
+
+투자 판단: 매수
+신뢰도: 85% (높음 🔥)
+```
+
+### 환경 변수 설정
+
+```.env
+# Telegram 봇 토큰 (에러 알림과 거래 알림 공통)
+TELEGRAM_TOKEN=your_bot_token
+
+# 거래 알림용 채팅방 ID
+TELEGRAM_CHAT_ID=123456789
+
+# 에러 알림용 채팅방 ID (분리하고 싶으면 다르게 설정)
+ERROR_REPORTING_CHAT_ID=987654321
+```
+
+### 통합 예시
+
+```python
+# app/tasks/analyze.py
+from app.monitoring.trade_notifier import get_trade_notifier
+
+@celery_app.task(bind=True)
+def analyze_and_trade_task(self, coin_name: str):
+    """분석 + 거래 + 알림"""
+
+    # 1. AI 분석
+    result, model = await analyzer.analyze_coin_json(coin_name)
+
+    # 2. 분석 완료 알림
+    trade_notifier = get_trade_notifier()
+    await trade_notifier.notify_analysis_complete(
+        symbol=coin_name,
+        korean_name=coin_name,
+        decision=result.decision,
+        confidence=result.confidence,
+        model=model,
+        market_type="암호화폐"
+    )
+
+    # 3. 매수 판단이면 주문 실행
+    if result.decision == "buy":
+        orders = await execute_buy_orders(coin_name, prices, volumes)
+
+        # 4. 매수 주문 알림
+        await trade_notifier.notify_buy_order(
+            symbol=coin_name,
+            korean_name=coin_name,
+            order_count=len(orders),
+            total_amount=sum(o['amount'] for o in orders),
+            prices=[o['price'] for o in orders],
+            volumes=[o['volume'] for o in orders],
+            market_type="암호화폐"
+        )
+```
+
+**핵심 포인트:**
+- ErrorReporter와 TradeNotifier를 분리하여 관심사 분리
+- 에러 알림과 거래 알림을 다른 채팅방으로 전송 가능
+- 매수/매도/분석 완료 등 다양한 이벤트 지원
+- Markdown 포맷으로 가독성 높은 메시지
+
+## 프로덕션 환경 설정
+
+### Docker Compose 고급 설정
+
+실제 운영 환경에서는 SigNoz의 안정성이 중요합니다. Zookeeper와 ClickHouse 클러스터를 추가하겠습니다.
+
+```yaml
+# docker-compose.monitoring.yml (프로덕션 버전)
+version: "3.8"
+
+services:
+  # OTEL Migrator - ClickHouse 스키마 자동 초기화
+  otel-migrator:
+    image: signoz/signoz-schema-migrator:0.88.11
+    container_name: signoz_otel_migrator
+    command:
+      - "--dsn=tcp://clickhouse:9000"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - signoz
+
+  # Zookeeper - ClickHouse 클러스터 코디네이션
+  zookeeper:
+    image: zookeeper:3.8
+    container_name: signoz_zookeeper
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      - ZOO_LOG4J_PROP=ERROR,CONSOLE
+    healthcheck:
+      test: ["CMD", "zkServer.sh", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - signoz
+    restart: unless-stopped
+
+  # ClickHouse (클러스터 설정 포함)
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.7.3-alpine
+    container_name: signoz_clickhouse
+    hostname: clickhouse
+    ports:
+      - "9000:9000"
+      - "8123:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse/
+      - ./signoz-config/clickhouse-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./signoz-config/clickhouse-config.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+    environment:
+      - CLICKHOUSE_DB=default
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - signoz
+    restart: unless-stopped
+
+  # OTLP Collector
+  otel-collector:
+    image: signoz/signoz-otel-collector:0.88.11
+    container_name: signoz_otel_collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    user: root
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Prometheus metrics
+      - "13133:13133" # Health check
+    volumes:
+      - ./signoz-config/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    environment:
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=signoz-host,os.type=linux
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      otel-migrator:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - signoz
+      - local_dev
+    restart: unless-stopped
+
+  # Query Service
+  query-service:
+    image: signoz/query-service:0.38.0
+    container_name: signoz_query_service
+    ports:
+      - "8081:8080"  # Adminer와 충돌 방지
+    volumes:
+      - query_service_data:/var/lib/signoz
+    environment:
+      - ClickHouseUrl=tcp://clickhouse:9000
+      - STORAGE=clickhouse
+      - GODEBUG=netdns=go
+      - TELEMETRY_ENABLED=true
+      - DEPLOYMENT_TYPE=docker-compose
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      otel-migrator:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/v1/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - signoz
+    restart: unless-stopped
+
+  # Frontend
+  frontend:
+    image: signoz/frontend:0.38.0
+    container_name: signoz_frontend
+    ports:
+      - "3301:3301"
+    environment:
+      - FRONTEND_API_ENDPOINT=http://query-service:8080
+    depends_on:
+      query-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3301/api/v1/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - signoz
+    restart: unless-stopped
+
+volumes:
+  clickhouse_data:
+    name: signoz_clickhouse_data
+  query_service_data:
+    name: signoz_query_service_data
+
+networks:
+  signoz:
+    name: signoz
+    driver: bridge
+  local_dev:
+    name: local_dev
+    driver: bridge
+```
+
+### ClickHouse 클러스터 설정
+
+```xml
+<!-- signoz-config/clickhouse-config.xml -->
+<yandex>
+    <zookeeper>
+        <node>
+            <host>zookeeper</host>
+            <port>2181</port>
+        </node>
+    </zookeeper>
+
+    <remote_servers>
+        <signoz_cluster>
+            <shard>
+                <replica>
+                    <host>clickhouse</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </signoz_cluster>
+    </remote_servers>
+
+    <macros>
+        <cluster>signoz_cluster</cluster>
+        <shard>01</shard>
+        <replica>01</replica>
+    </macros>
+</yandex>
+```
+
+**프로덕션 설정의 장점:**
+
+1. **OTEL Migrator**: ClickHouse 스키마를 자동으로 초기화하여 수동 마이그레이션 불필요
+2. **Zookeeper**: ClickHouse 클러스터 코디네이션, 분산 락, 메타데이터 관리
+3. **Health Check**: 모든 서비스의 상태를 자동 모니터링
+4. **Restart Policy**: `unless-stopped`로 장애 시 자동 재시작
+5. **Service Dependencies**: 올바른 순서로 컨테이너 시작 (otel-migrator → clickhouse → collector → query-service)
+
 ### 핵심 정리
 
-이번 글에서 구축한 모니터링 시스템:
+이번 글에서 구축한 완전한 모니터링 시스템:
 
 1. ✅ **OpenTelemetry + SigNoz**
    - 분산 추적으로 전체 요청 흐름 파악
    - 메트릭으로 시스템 성능 정량화
    - 자동 계측으로 코드 수정 최소화
 
-2. ✅ **Telegram 에러 리포팅**
+2. ✅ **Telegram 에러 리포팅 (ErrorReporter)**
    - Redis 기반 중복 제거 (5분 윈도우)
    - 실시간 알림으로 즉각 대응
    - 컨텍스트 정보로 빠른 디버깅
 
-3. ✅ **커스텀 비즈니스 메트릭**
+3. ✅ **Telegram 거래 알림 (TradeNotifier)** 🆕
+   - 매수/매도 주문 체결 알림
+   - AI 분석 완료 알림 (투자 판단 + 신뢰도)
+   - 에러 알림과 분리된 채팅방 지원
+
+4. ✅ **커스텀 비즈니스 메트릭**
    - 분석 실행 횟수, 소요 시간
    - API 호출 성공률
    - 투자 결정 분포
 
-4. ✅ **대시보드 & 알림**
+5. ✅ **프로덕션 환경 설정** 🆕
+   - Zookeeper + ClickHouse 클러스터
+   - OTEL Migrator로 스키마 자동 초기화
+   - Health Check + Restart Policy
+   - Service Dependency 관리
+
+6. ✅ **대시보드 & 알림**
    - SigNoz UI로 실시간 모니터링
    - Alert Rule로 자동 알림
    - PromQL로 복잡한 쿼리
