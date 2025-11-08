@@ -1,6 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI
 from redis.asyncio import Redis
@@ -17,6 +17,9 @@ from app.monitoring.telemetry import (
 from app.routers import analysis_json, dashboard, health, stock_latest, test, upbit_trading
 
 logger = logging.getLogger(__name__)
+
+# Module-level Redis client for proper cleanup
+_redis_client: Optional[Redis] = None
 
 
 def create_app() -> FastAPI:
@@ -91,8 +94,10 @@ async def setup_monitoring() -> None:
     # 2. Initialize Telegram error reporter
     if settings.ERROR_REPORTING_ENABLED:
         try:
+            global _redis_client
+
             # Get Redis client for error deduplication
-            redis_client = Redis.from_url(
+            _redis_client = Redis.from_url(
                 settings.get_redis_url(),
                 decode_responses=True,
                 max_connections=settings.redis_max_connections,
@@ -105,7 +110,7 @@ async def setup_monitoring() -> None:
                 chat_id=settings.ERROR_REPORTING_CHAT_ID or (
                     settings.telegram_chat_ids[0] if settings.telegram_chat_ids else ""
                 ),
-                redis_client=redis_client,
+                redis_client=_redis_client,
                 enabled=True,
                 duplicate_window=settings.ERROR_DUPLICATE_WINDOW,
             )
@@ -150,6 +155,8 @@ async def setup_monitoring() -> None:
 
 async def cleanup_monitoring() -> None:
     """Cleanup monitoring resources."""
+    global _redis_client
+
     # Shutdown telemetry
     try:
         shutdown_telemetry()
@@ -172,6 +179,15 @@ async def cleanup_monitoring() -> None:
         logger.info("Trade notifier shutdown complete")
     except Exception as e:
         logger.error(f"Error during trade notifier shutdown: {e}", exc_info=True)
+
+    # Explicitly close Redis client (backup safety measure)
+    if _redis_client:
+        try:
+            await _redis_client.aclose()
+            _redis_client = None
+            logger.info("Redis client closed")
+        except Exception as e:
+            logger.error(f"Error closing Redis client: {e}", exc_info=True)
 
 
 # Create app instance
