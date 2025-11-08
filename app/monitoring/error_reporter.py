@@ -159,6 +159,7 @@ class ErrorReporter:
         error_message: str,
         stack_trace: str,
         request_info: Optional[Dict] = None,
+        additional_context: Optional[Dict] = None,
     ) -> str:
         """
         Format error message in markdown for Telegram.
@@ -168,6 +169,7 @@ class ErrorReporter:
             error_message: Error message
             stack_trace: Full stack trace
             request_info: Optional request context
+            additional_context: Optional additional context (e.g., request_id, duration_ms)
 
         Returns:
             Markdown-formatted error message
@@ -196,6 +198,20 @@ class ErrorReporter:
             if "user_agent" in request_info:
                 user_agent = request_info["user_agent"][:100]  # Truncate
                 parts.append(f"  • User-Agent: `{user_agent}`")
+
+        # Add additional context if available
+        if additional_context:
+            parts.append("")
+            parts.append("*Additional Context:*")
+            for key, value in additional_context.items():
+                # Format specific keys nicely
+                if key == "request_id":
+                    parts.append(f"  • Request ID: `{value}`")
+                elif key == "duration_ms":
+                    parts.append(f"  • Duration: `{value:.2f}ms`")
+                else:
+                    # Generic key-value pair
+                    parts.append(f"  • {key}: `{value}`")
 
         # Add stack trace (truncated if too long)
         parts.append("")
@@ -267,12 +283,10 @@ class ErrorReporter:
                     else "unknown",
                     "user_agent": request.headers.get("user-agent", "unknown"),
                 }
-                if additional_context:
-                    request_info.update(additional_context)
 
-            # Format message
+            # Format message with both request_info and additional_context
             message = self._format_error_message(
-                error_type, error_message, stack_trace, request_info
+                error_type, error_message, stack_trace, request_info, additional_context
             )
 
             # Send to Telegram
