@@ -40,10 +40,11 @@
     <max_ast_elements>50000</max_ast_elements>
 
     <!-- 백그라운드 작업 제한 -->
-    <background_pool_size>4</background_pool_size>
-    <background_schedule_pool_size>4</background_schedule_pool_size>
-    <background_fetches_pool_size>2</background_fetches_pool_size>
-    <background_move_pool_size>2</background_move_pool_size>
+    <background_pool_size>16</background_pool_size>
+    <background_schedule_pool_size>8</background_schedule_pool_size>
+    <background_fetches_pool_size>4</background_fetches_pool_size>
+    <background_move_pool_size>4</background_move_pool_size>
+    <background_merges_mutations_concurrency_ratio>2</background_merges_mutations_concurrency_ratio>
 
     <!-- 로그 레벨 낮추기 (I/O 절약) -->
     <logger>
