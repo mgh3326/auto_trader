@@ -26,6 +26,9 @@
         </cluster>
     </remote_servers>
 
+    <!-- 설정 검증 스킵 (사용자 레벨 설정을 위해) -->
+    <skip_check_for_incorrect_settings>1</skip_check_for_incorrect_settings>
+
     <!-- Raspberry Pi 메모리 최적화 설정 -->
     <max_memory_usage>1610612736</max_memory_usage> <!-- 1.5GB -->
     <max_bytes_before_external_group_by>1073741824</max_bytes_before_external_group_by> <!-- 1GB -->
