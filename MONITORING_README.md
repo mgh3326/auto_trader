@@ -77,18 +77,17 @@
 
 ### 1. SigNoz 설치 (로컬)
 
-Docker Compose를 사용하여 SigNoz를 설치합니다:
+프로젝트에 포함된 `docker-compose.monitoring.yml`을 사용합니다:
 
 ```bash
-# SigNoz 저장소 클론
-git clone -b main https://github.com/SigNoz/signoz.git
-cd signoz/deploy/
+# 애플리케이션 스택 + SigNoz
+docker-compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 
-# Docker Compose로 실행
-docker-compose -f docker/clickhouse-setup/docker-compose.yaml up -d
+# SigNoz만 실행
+docker-compose -f docker-compose.monitoring.yml up -d
 
 # 상태 확인
-docker-compose -f docker/clickhouse-setup/docker-compose.yaml ps
+docker-compose -f docker-compose.monitoring.yml ps
 ```
 
 ### 2. SigNoz 접속
