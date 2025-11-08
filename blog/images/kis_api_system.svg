@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500">
+  <!-- Background -->
+  <rect width="800" height="500" fill="#f8f9fa"/>
+
+  <!-- Title -->
+  <text x="400" y="40" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#2c3e50">
+    KIS API를 통한 주식 데이터 수집 및 AI 분석 프로세스
+  </text>
+
+  <!-- Step 1: KIS API -->
+  <rect x="50" y="100" width="180" height="120" rx="10" fill="#3498db" stroke="#2980b9" stroke-width="2"/>
+  <text x="140" y="130" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="white">
+    KIS API
+  </text>
+  <text x="140" y="155" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    일봉 데이터 (200개)
+  </text>
+  <text x="140" y="175" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    현재가 정보
+  </text>
+  <text x="140" y="195" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    분봉 (60분/5분/1분)
+  </text>
+
+  <!-- Arrow 1 -->
+  <path d="M 230 160 L 280 160" stroke="#34495e" stroke-width="3" fill="none" marker-end="url(#arrowhead)"/>
+  <text x="255" y="155" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#34495e">
+    수집
+  </text>
+
+  <!-- Step 2: Data Processing -->
+  <rect x="280" y="100" width="180" height="120" rx="10" fill="#27ae60" stroke="#229954" stroke-width="2"/>
+  <text x="370" y="130" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="white">
+    데이터 전처리
+  </text>
+  <text x="370" y="155" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    병합 및 정렬
+  </text>
+  <text x="370" y="175" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    기술적 지표 계산
+  </text>
+  <text x="370" y="195" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    MA, RSI, MACD, BB
+  </text>
+
+  <!-- Arrow 2 -->
+  <path d="M 460 160 L 510 160" stroke="#34495e" stroke-width="3" fill="none" marker-end="url(#arrowhead)"/>
+  <text x="485" y="155" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#34495e">
+    변환
+  </text>
+
+  <!-- Step 3: Prompt Generation -->
+  <rect x="510" y="100" width="180" height="120" rx="10" fill="#e67e22" stroke="#d35400" stroke-width="2"/>
+  <text x="600" y="130" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="white">
+    프롬프트 생성
+  </text>
+  <text x="600" y="155" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    구조화된 텍스트
+  </text>
+  <text x="600" y="175" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    가격/거래량 지표
+  </text>
+  <text x="600" y="195" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    최근 추세 데이터
+  </text>
+
+  <!-- Arrow 3 (down) -->
+  <path d="M 600 220 L 600 280" stroke="#34495e" stroke-width="3" fill="none" marker-end="url(#arrowhead)"/>
+  <text x="620" y="255" text-anchor="start" font-family="Arial, sans-serif" font-size="11" fill="#34495e">
+    전송
+  </text>
+
+  <!-- Step 4: AI Analysis -->
+  <rect x="510" y="280" width="180" height="120" rx="10" fill="#9b59b6" stroke="#8e44ad" stroke-width="2"/>
+  <text x="600" y="310" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="white">
+    Gemini AI 분석
+  </text>
+  <text x="600" y="335" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    매수/관망/매도 결정
+  </text>
+  <text x="600" y="355" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    신뢰도 (0-100%)
+  </text>
+  <text x="600" y="375" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    가격 범위 제시
+  </text>
+
+  <!-- Arrow 4 (left) -->
+  <path d="M 510 340 L 460 340" stroke="#34495e" stroke-width="3" fill="none" marker-end="url(#arrowhead)"/>
+  <text x="485" y="335" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#34495e">
+    결과
+  </text>
+
+  <!-- Step 5: Database -->
+  <rect x="280" y="280" width="180" height="120" rx="10" fill="#e74c3c" stroke="#c0392b" stroke-width="2"/>
+  <text x="370" y="310" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="white">
+    PostgreSQL
+  </text>
+  <text x="370" y="335" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    분석 결과 저장
+  </text>
+  <text x="370" y="355" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    히스토리 관리
+  </text>
+  <text x="370" y="375" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    종목 정보 정규화
+  </text>
+
+  <!-- Arrow 5 (left) -->
+  <path d="M 280 340 L 230 340" stroke="#34495e" stroke-width="3" fill="none" marker-end="url(#arrowhead)"/>
+  <text x="255" y="335" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#34495e">
+    활용
+  </text>
+
+  <!-- Step 6: Dashboard -->
+  <rect x="50" y="280" width="180" height="120" rx="10" fill="#16a085" stroke="#138d75" stroke-width="2"/>
+  <text x="140" y="310" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="white">
+    대시보드
+  </text>
+  <text x="140" y="335" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    실시간 모니터링
+  </text>
+  <text x="140" y="355" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    필터링/검색
+  </text>
+  <text x="140" y="375" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="white">
+    통계 분석
+  </text>
+
+  <!-- Bottom note -->
+  <text x="400" y="460" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="#7f8c8d" font-style="italic">
+    자동화된 AI 투자 분석 파이프라인
+  </text>
+
+  <!-- Arrow marker definition -->
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <polygon points="0 0, 10 3, 0 6" fill="#34495e"/>
+    </marker>
+  </defs>
+</svg>

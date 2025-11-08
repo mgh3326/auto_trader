@@ -29,7 +29,9 @@ async def main():
     async def analyze_coin_callback(coin_name: str):
         """코인 분석 콜백 함수"""
         try:
-            await analyzer.analyze_coin_json(coin_name)
+            result, model = await analyzer.analyze_coin_json(coin_name)
+            if result is None:
+                logger.warning(f"코인 분석 실패: {coin_name}")
         except Exception as e:
             logger.error(f"코인 분석 오류 ({coin_name}): {e}")
     

@@ -1,0 +1,202 @@
+# Docker Compose for SigNoz monitoring stack (Raspberry Pi 5 optimized)
+# This file adds SigNoz observability platform optimized for ARM64/Raspberry Pi
+#
+# Usage:
+#   docker-compose -f docker-compose.monitoring-rpi.yml up -d
+#
+# SigNoz UI: http://localhost:3301
+# OTLP Endpoint: localhost:4317 (gRPC), localhost:4318 (HTTP)
+#
+# To enable in your app, set in .env:
+#   SIGNOZ_ENABLED=true
+#   SIGNOZ_ENDPOINT=localhost:4317
+
+services:
+  # OTEL Migrator - Initialize ClickHouse schema for SigNoz
+  otel-migrator:
+    image: signoz/signoz-schema-migrator:0.88.11
+    container_name: signoz_otel_migrator
+    command:
+      - "--dsn=tcp://clickhouse:9000"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - signoz
+
+  # Zookeeper for ClickHouse cluster coordination (메모리 제한)
+  zookeeper:
+    image: zookeeper:3.8
+    container_name: signoz_zookeeper
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      - ZOO_LOG4J_PROP=ERROR,CONSOLE
+      # 메모리 제한 (기본 1GB → 256MB)
+      - JVMFLAGS=-Xmx256m -Xms128m
+    mem_limit: 384m
+    mem_reservation: 256m
+    healthcheck:
+      test: ["CMD", "zkServer.sh", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - signoz
+    restart: unless-stopped
+
+  # ClickHouse for storing traces, metrics, and logs (메모리 최적화)
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.7.3-alpine
+    container_name: signoz_clickhouse
+    hostname: clickhouse
+    ports:
+      - "9000:9000"  # Native protocol
+      - "8123:8123"  # HTTP interface
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse/
+      - ./signoz-config/clickhouse-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./signoz-config/clickhouse-config-rpi.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+    environment:
+      - CLICKHOUSE_DB=default
+      # 메모리 제한 (기본 자동 → 1.5GB 최대)
+      - MAX_MEMORY_USAGE=1610612736  # 1.5GB in bytes
+    mem_limit: 2g
+    mem_reservation: 1g
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - signoz
+    restart: unless-stopped
+
+  # OpenTelemetry Collector (메모리 제한)
+  otel-collector:
+    image: signoz/signoz-otel-collector:0.88.11
+    container_name: signoz_otel_collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    user: root
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Prometheus metrics exposed by the collector
+      - "8889:8889"   # Prometheus exporter
+      - "13133:13133" # Health check
+    volumes:
+      - ./signoz-config/otel-collector-config-rpi.yaml:/etc/otel-collector-config.yaml:ro
+    environment:
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=raspberrypi5,os.type=linux
+    mem_limit: 512m
+    mem_reservation: 256m
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      otel-migrator:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - signoz
+    restart: unless-stopped
+
+  # Query Service (SigNoz backend API) - 메모리 최적화
+  query-service:
+    image: signoz/query-service:0.38.0
+    container_name: signoz_query_service
+    ports:
+      - "8081:8080"  # Changed from 8080 to avoid conflict
+    volumes:
+      - query_service_data:/var/lib/signoz
+    environment:
+      - ClickHouseUrl=tcp://clickhouse:9000
+      - STORAGE=clickhouse
+      - GODEBUG=netdns=go
+      - TELEMETRY_ENABLED=true
+      - DEPLOYMENT_TYPE=docker-compose
+    mem_limit: 768m
+    mem_reservation: 512m
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      otel-migrator:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/api/v1/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      signoz:
+        aliases:
+          - signoz-query-service
+    restart: unless-stopped
+
+  # Frontend (SigNoz UI) - 경량화
+  frontend:
+    image: signoz/frontend:0.38.0
+    container_name: signoz_frontend
+    ports:
+      - "3301:3301"
+    environment:
+      - FRONTEND_API_ENDPOINT=http://query-service:8080
+    mem_limit: 256m
+    mem_reservation: 128m
+    depends_on:
+      query-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3301/api/v1/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - signoz
+    restart: unless-stopped
+
+  # AlertManager (optional, 메모리 절약을 위해 제외 가능)
+  # 필요하면 주석 해제
+  # alertmanager:
+  #   image: signoz/alertmanager:0.23.4
+  #   container_name: signoz_alertmanager
+  #   ports:
+  #     - "9093:9093"
+  #   volumes:
+  #     - alertmanager_data:/data
+  #   command:
+  #     - --queryService.url=http://query-service:8080
+  #     - --storage.path=/data
+  #   mem_limit: 256m
+  #   mem_reservation: 128m
+  #   depends_on:
+  #     query-service:
+  #       condition: service_healthy
+  #   networks:
+  #     - signoz
+  #   restart: unless-stopped
+
+volumes:
+  clickhouse_data:
+    name: signoz_clickhouse_data
+  query_service_data:
+    name: signoz_query_service_data
+  # alertmanager_data:
+  #   name: signoz_alertmanager_data
+
+networks:
+  signoz:
+    name: signoz
+    driver: bridge

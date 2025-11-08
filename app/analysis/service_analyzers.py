@@ -1,12 +1,43 @@
-from typing import List
+import time
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
-from app.services import upbit, yahoo, kis
+from app.monitoring.telemetry import get_meter, get_tracer
+from app.services import kis, upbit, yahoo
 from data.coins_info import upbit_pairs
 from data.stocks_info import KRX_NAME_TO_CODE, get_exchange_by_symbol
 
 from .analyzer import Analyzer, DataProcessor
+
+# Initialize telemetry
+_meter = get_meter(__name__)
+_tracer = get_tracer(__name__)
+
+# Create custom metrics
+analysis_counter = _meter.create_counter(
+    name="analysis.executions",
+    description="Number of analysis executions",
+    unit="1",
+)
+
+analysis_duration = _meter.create_histogram(
+    name="analysis.duration",
+    description="Analysis execution duration",
+    unit="ms",
+)
+
+api_call_counter = _meter.create_counter(
+    name="api.calls",
+    description="External API call count",
+    unit="1",
+)
+
+api_call_duration = _meter.create_histogram(
+    name="api.call.duration",
+    description="External API call duration",
+    unit="ms",
+)
 
 
 class UpbitAnalyzer(Analyzer):
@@ -202,44 +233,140 @@ class UpbitAnalyzer(Analyzer):
             else:
                 print(f"결과: {result[:100]}...")
 
-    async def analyze_coin_json(self, coin_name: str) -> None:
+    async def analyze_coin_json(self, coin_name: str) -> Tuple[Optional[object], str]:
         """단일 코인을 JSON 형식으로 분석"""
-        await upbit_pairs.prime_upbit_constants()
-        
-        stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
-        if not stock_symbol:
-            print(f"코인명을 찾을 수 없음: {coin_name}")
-            return
-        
-        # 보유 코인 정보 가져오기 (캐시 사용)
-        tradable_coins_map = await self._get_tradable_coins_map()
-        my_coin = tradable_coins_map.get(stock_symbol)
-        position_info = self._create_position_info(my_coin)
+        start_time = time.time()
 
-        print(f"\n=== {coin_name} ({stock_symbol}) JSON 분석 시작 ===")
+        with _tracer.start_as_current_span("analyze_coin_json") as span:
+            span.set_attribute("coin.name", coin_name)
+            span.set_attribute("analysis.type", "crypto")
+            span.set_attribute("analysis.format", "json")
 
-        # 데이터 수집
-        df_merged, fundamental_info, minute_candles = await self._collect_coin_data(stock_symbol)
+            try:
+                await upbit_pairs.prime_upbit_constants()
 
-        # JSON 형식으로 분석 및 저장
-        result, model_name = await self.analyze_and_save_json(
-            df=df_merged,
-            symbol=stock_symbol,
-            name=coin_name,
-            instrument_type="crypto",
-            currency="₩",
-            unit_shares="개",
-            fundamental_info=fundamental_info,
-            position_info=position_info,
-            minute_candles=minute_candles,
-        )
+                stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
+                if not stock_symbol:
+                    print(f"코인명을 찾을 수 없음: {coin_name}")
+                    span.set_attribute("error", "symbol_not_found")
+                    # Record failure metric
+                    analysis_counter.add(
+                        1,
+                        {
+                            "status": "failed",
+                            "reason": "symbol_not_found",
+                            "asset_type": "crypto",
+                            "market": "upbit",
+                        },
+                    )
+                    return None, ""
 
-        print(f"JSON 분석 완료: {coin_name}")
-        if hasattr(result, 'decision'):
-            print(f"결정: {result.decision}, 신뢰도: {result.confidence}%")
-            print(f"매수 범위: {result.price_analysis.appropriate_buy_range.min:,.0f}원 ~ {result.price_analysis.appropriate_buy_range.max:,.0f}원")
-        else:
-            print(f"결과: {result[:100]}...")
+                span.set_attribute("coin.symbol", stock_symbol)
+
+                # 보유 코인 정보 가져오기 (캐시 사용)
+                tradable_coins_map = await self._get_tradable_coins_map()
+                my_coin = tradable_coins_map.get(stock_symbol)
+                position_info = self._create_position_info(my_coin)
+                span.set_attribute("has_position", position_info is not None)
+
+                print(f"\n=== {coin_name} ({stock_symbol}) JSON 분석 시작 ===")
+
+                # 데이터 수집 with metrics
+                data_start = time.time()
+                df_merged, fundamental_info, minute_candles = await self._collect_coin_data(stock_symbol)
+                data_duration = (time.time() - data_start) * 1000
+
+                # Record API call metrics
+                api_call_counter.add(
+                    1,
+                    {
+                        "service": "upbit",
+                        "operation": "collect_data",
+                        "status": "success",
+                    },
+                )
+                api_call_duration.record(
+                    data_duration, {"service": "upbit", "operation": "collect_data"}
+                )
+                span.set_attribute("data.collection.duration_ms", data_duration)
+                span.set_attribute("data.rows", len(df_merged) if df_merged is not None else 0)
+
+                # JSON 형식으로 분석 및 저장
+                analysis_start = time.time()
+                result, model_name = await self.analyze_and_save_json(
+                    df=df_merged,
+                    symbol=stock_symbol,
+                    name=coin_name,
+                    instrument_type="crypto",
+                    currency="₩",
+                    unit_shares="개",
+                    fundamental_info=fundamental_info,
+                    position_info=position_info,
+                    minute_candles=minute_candles,
+                )
+                analysis_duration_ms = (time.time() - analysis_start) * 1000
+                span.set_attribute("analysis.duration_ms", analysis_duration_ms)
+                span.set_attribute("model", model_name)
+
+                # Record success metrics
+                total_duration = (time.time() - start_time) * 1000
+
+                attributes = {
+                    "status": "success",
+                    "asset_type": "crypto",
+                    "asset_name": coin_name,
+                    "market": "upbit",
+                    "model": model_name,
+                }
+
+                if hasattr(result, 'decision'):
+                    attributes["decision"] = result.decision
+                    if result.confidence >= 70:
+                        confidence_range = "high"
+                    elif result.confidence >= 40:
+                        confidence_range = "medium"
+                    else:
+                        confidence_range = "low"
+                    attributes["confidence_range"] = confidence_range
+                    span.set_attribute("decision", result.decision)
+                    span.set_attribute("confidence", result.confidence)
+
+                analysis_counter.add(1, attributes)
+                analysis_duration.record(total_duration, attributes)
+
+                print(f"JSON 분석 완료: {coin_name}")
+                if hasattr(result, 'decision'):
+                    print(f"결정: {result.decision}, 신뢰도: {result.confidence}%")
+                    print(f"매수 범위: {result.price_analysis.appropriate_buy_range.min:,.0f}원 ~ {result.price_analysis.appropriate_buy_range.max:,.0f}원")
+                else:
+                    print(f"결과: {result[:100]}...")
+
+                return result, model_name
+
+            except Exception as e:
+                # Record failure metrics
+                total_duration = (time.time() - start_time) * 1000
+                span.record_exception(e)
+                span.set_attribute("error", True)
+
+                analysis_counter.add(
+                    1,
+                    {
+                        "status": "error",
+                        "error_type": type(e).__name__,
+                        "asset_type": "crypto",
+                        "market": "upbit",
+                    },
+                )
+                analysis_duration.record(
+                    total_duration,
+                    {
+                        "status": "error",
+                        "asset_type": "crypto",
+                        "market": "upbit",
+                    },
+                )
+                raise
 
 
 class YahooAnalyzer(Analyzer):
@@ -333,26 +460,108 @@ class YahooAnalyzer(Analyzer):
 
             self._print_analysis_result(result, stock_symbol, use_json=True)
 
-    async def analyze_stock_json(self, stock_symbol: str) -> None:
+    async def analyze_stock_json(self, stock_symbol: str) -> Tuple[Optional[object], str]:
         """단일 주식을 JSON 형식으로 분석"""
-        print(f"\n=== {stock_symbol} JSON 분석 시작 ===")
+        start_time = time.time()
 
-        # 데이터 수집
-        df_merged, fundamental_info = await self._collect_stock_data(stock_symbol)
+        with _tracer.start_as_current_span("analyze_stock_json") as span:
+            span.set_attribute("stock.symbol", stock_symbol)
+            span.set_attribute("analysis.type", "equity_us")
+            span.set_attribute("analysis.format", "json")
 
-        # JSON 형식으로 분석 및 저장
-        result, model_name = await self.analyze_and_save_json(
-            df=df_merged,
-            symbol=stock_symbol,
-            name=stock_symbol,
-            instrument_type="equity_us",
-            currency="$",
-            unit_shares="주",
-            fundamental_info=fundamental_info,
-            minute_candles=None,  # Yahoo는 분봉 데이터를 지원하지 않음
-        )
+            try:
+                print(f"\n=== {stock_symbol} JSON 분석 시작 ===")
 
-        self._print_analysis_result(result, stock_symbol, use_json=True)
+                # 데이터 수집 with metrics
+                data_start = time.time()
+                df_merged, fundamental_info = await self._collect_stock_data(stock_symbol)
+                data_duration = (time.time() - data_start) * 1000
+
+                # Record API call metrics
+                api_call_counter.add(
+                    1,
+                    {
+                        "service": "yahoo",
+                        "operation": "collect_data",
+                        "status": "success",
+                    },
+                )
+                api_call_duration.record(
+                    data_duration, {"service": "yahoo", "operation": "collect_data"}
+                )
+                span.set_attribute("data.collection.duration_ms", data_duration)
+                span.set_attribute("data.rows", len(df_merged) if df_merged is not None else 0)
+
+                # JSON 형식으로 분석 및 저장
+                analysis_start = time.time()
+                result, model_name = await self.analyze_and_save_json(
+                    df=df_merged,
+                    symbol=stock_symbol,
+                    name=stock_symbol,
+                    instrument_type="equity_us",
+                    currency="$",
+                    unit_shares="주",
+                    fundamental_info=fundamental_info,
+                    minute_candles=None,  # Yahoo는 분봉 데이터를 지원하지 않음
+                )
+                analysis_duration_ms = (time.time() - analysis_start) * 1000
+                span.set_attribute("analysis.duration_ms", analysis_duration_ms)
+                span.set_attribute("model", model_name)
+
+                # Record success metrics
+                total_duration = (time.time() - start_time) * 1000
+
+                attributes = {
+                    "status": "success",
+                    "asset_type": "equity_us",
+                    "asset_name": stock_symbol,
+                    "market": "yahoo",
+                    "model": model_name,
+                }
+
+                if hasattr(result, 'decision'):
+                    attributes["decision"] = result.decision
+                    if result.confidence >= 70:
+                        confidence_range = "high"
+                    elif result.confidence >= 40:
+                        confidence_range = "medium"
+                    else:
+                        confidence_range = "low"
+                    attributes["confidence_range"] = confidence_range
+                    span.set_attribute("decision", result.decision)
+                    span.set_attribute("confidence", result.confidence)
+
+                analysis_counter.add(1, attributes)
+                analysis_duration.record(total_duration, attributes)
+
+                self._print_analysis_result(result, stock_symbol, use_json=True)
+
+                return result, model_name
+
+            except Exception as e:
+                # Record failure metrics
+                total_duration = (time.time() - start_time) * 1000
+                span.record_exception(e)
+                span.set_attribute("error", True)
+
+                analysis_counter.add(
+                    1,
+                    {
+                        "status": "error",
+                        "error_type": type(e).__name__,
+                        "asset_type": "equity_us",
+                        "market": "yahoo",
+                    },
+                )
+                analysis_duration.record(
+                    total_duration,
+                    {
+                        "status": "error",
+                        "asset_type": "equity_us",
+                        "market": "yahoo",
+                    },
+                )
+                raise
 
 
 class KISAnalyzer(Analyzer):
@@ -488,7 +697,7 @@ class KISAnalyzer(Analyzer):
         for stock_name in stock_names:
             await self.analyze_stock_json(stock_name)
 
-    async def analyze_stock_json(self, stock_name: str) -> None:
+    async def analyze_stock_json(self, stock_name: str) -> Tuple[Optional[object], str]:
         """단일 국내주식을 JSON 형식으로 분석"""
         print(f"\n=== {stock_name} JSON 분석 시작 ===")
 
@@ -496,7 +705,7 @@ class KISAnalyzer(Analyzer):
         stock_code = KRX_NAME_TO_CODE.get(stock_name)
         if not stock_code:
             print(f"종목명을 찾을 수 없음: {stock_name}")
-            return
+            return None, ""
 
         # 데이터 수집
         df_merged, fundamental_info, minute_candles = await self._collect_stock_data(stock_name, stock_code)
@@ -514,6 +723,8 @@ class KISAnalyzer(Analyzer):
         )
 
         self._print_analysis_result(result, stock_name, use_json=True)
+
+        return result, model_name
 
     async def analyze_overseas_stocks(self, stock_symbols: List[str]) -> None:
         """여러 해외주식을 순차적으로 분석"""

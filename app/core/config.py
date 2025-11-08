@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     kis_account_no: str | None = None  # 계좌번호 (예: "12345678-01")
     # Telegram
     telegram_token: str
-    telegram_chat_ids_str: str = ""
+    telegram_chat_id: str = ""
     # Strategy
     top_n: int = 30
     drop_pct: float = -3.0  # '-3'은 -3 %
@@ -24,10 +24,10 @@ class Settings(BaseSettings):
 
     @property
     def telegram_chat_ids(self) -> List[str]:
-        """콤마로 구분된 문자열을 리스트로 변환"""
-        if not self.telegram_chat_ids_str:
+        """단일 chat_id를 리스트로 변환 (하위 호환성 유지)"""
+        if not self.telegram_chat_id:
             return []
-        return [chat_id.strip() for chat_id in self.telegram_chat_ids_str.split(',') if chat_id.strip()]
+        return [self.telegram_chat_id.strip()]
 
     @field_validator("google_api_keys", mode='before')
     @classmethod
@@ -96,6 +96,24 @@ class Settings(BaseSettings):
     redis_max_connections: int = 10
     redis_socket_timeout: int = 5
     redis_socket_connect_timeout: int = 5
+
+    # Monitoring and Observability
+    # SigNoz - OpenTelemetry settings
+    SIGNOZ_ENDPOINT: str = "localhost:4317"  # SigNoz OTLP gRPC endpoint
+    SIGNOZ_ENABLED: bool = False  # 기본적으로 비활성화
+    SIGNOZ_INSECURE: bool = True  # OTLP gRPC insecure 연결 (개발 환경용, 프로덕션에서는 False)
+    OTEL_SERVICE_NAME: str = "auto-trader"
+    OTEL_SERVICE_VERSION: str = "0.1.0"
+    OTEL_ENVIRONMENT: str = "development"
+
+    # Telegram Error Reporting
+    ERROR_REPORTING_ENABLED: bool = False  # 기본적으로 비활성화
+    ERROR_REPORTING_CHAT_ID: str = ""  # Telegram chat ID (단일)
+    ERROR_DUPLICATE_WINDOW: int = 300  # 중복 에러 방지 시간 (초, 기본 5분)
+
+    # Monitoring test route exposure
+    EXPOSE_MONITORING_TEST_ROUTES: bool = False
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
