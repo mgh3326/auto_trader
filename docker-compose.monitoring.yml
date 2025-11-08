@@ -160,7 +160,7 @@ services:
 
   # AlertManager (optional, for alerting)
   alertmanager:
-    image: signoz/alertmanager:0.23.4
+    image: signoz/alertmanager:0.23.9
     container_name: signoz_alertmanager
     ports:
       - "9093:9093"
