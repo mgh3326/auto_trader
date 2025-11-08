@@ -1,4 +1,6 @@
 import logging
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 from redis.asyncio import Redis
@@ -19,19 +21,27 @@ logger = logging.getLogger(__name__)
 
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
-    app = FastAPI(title="KIS Auto Screener", version="0.1.0")
 
-    # Setup monitoring on startup
-    @app.on_event("startup")
-    async def on_startup():
-        """Initialize monitoring components on startup."""
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        """Handle startup/shutdown lifecycle without deprecated hooks."""
         await setup_monitoring()
+        if settings.SIGNOZ_ENABLED:
+            try:
+                # Instrument after telemetry is configured during setup.
+                instrument_fastapi(app)
+                logger.info("FastAPI instrumented for telemetry")
+            except Exception as e:
+                logger.error(
+                    f"Failed to setup FastAPI instrumentation: {e}",
+                    exc_info=True,
+                )
+        try:
+            yield
+        finally:
+            await cleanup_monitoring()
 
-    # Cleanup on shutdown
-    @app.on_event("shutdown")
-    async def on_shutdown():
-        """Cleanup monitoring resources on shutdown."""
-        await cleanup_monitoring()
+    app = FastAPI(title="KIS Auto Screener", version="0.1.0", lifespan=lifespan)
 
     # Include routers
     app.include_router(dashboard.router)
@@ -166,17 +176,3 @@ async def cleanup_monitoring() -> None:
 
 # Create app instance
 api = create_app()
-
-# Instrument FastAPI for telemetry (after app creation, before startup)
-if settings.SIGNOZ_ENABLED:
-    try:
-        # Note: This will be called after setup_telemetry() in startup event
-        # We need to instrument after telemetry is initialized
-        # So we do it in a separate startup event that runs after
-        @api.on_event("startup")
-        async def instrument_app():
-            """Instrument FastAPI app for telemetry."""
-            instrument_fastapi(api)
-            logger.info("FastAPI instrumented for telemetry")
-    except Exception as e:
-        logger.error(f"Failed to setup FastAPI instrumentation: {e}", exc_info=True)
