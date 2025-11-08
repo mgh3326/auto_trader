@@ -63,11 +63,14 @@ async def get_my_coins(
     analyzer: UpbitAnalyzer | None = None
     tradable_coins: list[dict] = []
     try:
+        print("[DEBUG] Starting get_my_coins request", flush=True)
         logger.info("Starting get_my_coins request")
         await upbit_pairs.prime_upbit_constants()
+        print("[DEBUG] Upbit constants primed successfully", flush=True)
         logger.info("Upbit constants primed successfully")
 
         my_coins = await upbit.fetch_my_coins()
+        print(f"[DEBUG] Fetched {len(my_coins)} coins from Upbit", flush=True)
         logger.info(f"Fetched {len(my_coins)} coins from Upbit")
 
         analyzer = UpbitAnalyzer()
@@ -171,6 +174,10 @@ async def get_my_coins(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[ERROR] Exception in get_my_coins: {str(e)}", flush=True)
+        print(f"[ERROR] Traceback:\n{error_details}", flush=True)
         logger.error(f"Error in get_my_coins: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
