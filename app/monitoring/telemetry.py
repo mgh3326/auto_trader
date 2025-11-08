@@ -6,6 +6,7 @@ This module provides:
 - SigNoz OTLP exporter configuration (gRPC)
 - Resource attributes setup
 - Auto-instrumentation for FastAPI, requests, httpx, SQLAlchemy (asyncpg), redis
+- Logging integration with OpenTelemetry
 - Custom tracer/meter helper functions
 """
 
@@ -13,6 +14,8 @@ import logging
 from typing import Optional
 
 from opentelemetry import metrics, trace
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -20,6 +23,8 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
@@ -98,6 +103,24 @@ def setup_telemetry(
         metric_reader = PeriodicExportingMetricReader(metric_exporter)
         meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
         metrics.set_meter_provider(meter_provider)
+
+        # Setup logging provider with OTLP exporter
+        log_exporter = OTLPLogExporter(
+            endpoint=otlp_endpoint,
+            insecure=insecure,
+        )
+        logger_provider = LoggerProvider(resource=resource)
+        logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
+        set_logger_provider(logger_provider)
+
+        # Attach OTEL handler to root logger
+        handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+
+        # Ensure root logger level allows INFO and above
+        if root_logger.level > logging.INFO:
+            root_logger.setLevel(logging.INFO)
 
         # Auto-instrument libraries
         _instrument_libraries()
@@ -238,6 +261,15 @@ def shutdown_telemetry() -> None:
         meter_provider = metrics.get_meter_provider()
         if hasattr(meter_provider, "shutdown"):
             meter_provider.shutdown()
+
+        # Flush logger provider
+        try:
+            from opentelemetry._logs import get_logger_provider
+            logger_provider = get_logger_provider()
+            if hasattr(logger_provider, "shutdown"):
+                logger_provider.shutdown()
+        except Exception as e:
+            logger.debug(f"Logger provider shutdown skipped: {e}")
 
         logger.info("Telemetry shutdown complete")
         _telemetry_initialized = False
