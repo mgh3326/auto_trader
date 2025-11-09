@@ -52,7 +52,7 @@ services:
 
   # ClickHouse for storing traces, metrics, and logs (메모리 최적화)
   clickhouse:
-    image: clickhouse/clickhouse-server:24.1.8-alpine
+    image: clickhouse/clickhouse-server:24.12.6-alpine
     container_name: signoz_clickhouse
     hostname: clickhouse
     ports:
