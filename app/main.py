@@ -30,16 +30,6 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Handle startup/shutdown lifecycle without deprecated hooks."""
         await setup_monitoring()
-        if settings.SIGNOZ_ENABLED:
-            try:
-                # Instrument after telemetry is configured during setup.
-                instrument_fastapi(app)
-                logger.info("FastAPI instrumented for telemetry")
-            except Exception as e:
-                logger.error(
-                    f"Failed to setup FastAPI instrumentation: {e}",
-                    exc_info=True,
-                )
         try:
             yield
         finally:
@@ -78,6 +68,17 @@ def create_app() -> FastAPI:
 
     # Add monitoring middleware (must be added after startup event)
     app.add_middleware(MonitoringMiddleware)
+
+    # Instrument FastAPI for telemetry (after all routes are added)
+    if settings.SIGNOZ_ENABLED:
+        try:
+            instrument_fastapi(app)
+            logger.info("FastAPI instrumented for telemetry")
+        except Exception as e:
+            logger.error(
+                f"Failed to setup FastAPI instrumentation: {e}",
+                exc_info=True,
+            )
 
     return app
 
