@@ -76,6 +76,12 @@ services:
     cpus: '1.0'  # Limit to 1 CPU core
     networks:
       - observability
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3200 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   # Grafana Loki - Log aggregation system
@@ -94,6 +100,12 @@ services:
     cpus: '1.0'  # Limit to 1 CPU core
     networks:
       - observability
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3100 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   # Promtail - Log collector for Loki
@@ -109,7 +121,8 @@ services:
     networks:
       - observability
     depends_on:
-      - loki
+      loki:
+        condition: service_healthy
     restart: unless-stopped
 
   # Prometheus - Metrics collection and storage
@@ -131,6 +144,12 @@ services:
     cpus: '1.0'  # Limit to 1 CPU core
     networks:
       - observability
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9090 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   # Grafana - Visualization and dashboards
@@ -158,9 +177,18 @@ services:
     mem_reservation: 256m
     cpus: '1.0'  # Limit to 1 CPU core
     depends_on:
-      - tempo
-      - loki
-      - prometheus
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       - observability
     restart: unless-stopped
