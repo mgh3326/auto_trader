@@ -77,7 +77,7 @@ services:
     networks:
       - observability
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3200/ready"]
+      test: ["CMD-SHELL", "timeout 5 sh -c ':> /dev/tcp/localhost/3200' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -101,7 +101,7 @@ services:
     networks:
       - observability
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready"]
+      test: ["CMD-SHELL", "timeout 5 sh -c ':> /dev/tcp/localhost/3100' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -145,7 +145,7 @@ services:
     networks:
       - observability
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      test: ["CMD-SHELL", "timeout 5 sh -c ':> /dev/tcp/localhost/9090' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
