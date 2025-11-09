@@ -235,9 +235,10 @@ docker compose -f docker-compose.monitoring.yml ps
 `.env` 파일에 다음 설정을 추가:
 
 ```bash
-# SigNoz - OpenTelemetry 설정
-SIGNOZ_ENABLED=true
-SIGNOZ_ENDPOINT=localhost:4317
+# OpenTelemetry 설정 (Grafana Stack)
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+OTEL_INSECURE=true
 OTEL_SERVICE_NAME=auto-trader
 OTEL_SERVICE_VERSION=0.1.0
 OTEL_ENVIRONMENT=development
@@ -326,22 +327,25 @@ curl http://localhost:8000/api/test/http-error
 
 #### 7. 프로덕션 환경 설정
 
-**원격 SigNoz 사용 (SigNoz Cloud):**
+**원격 Grafana Stack 사용 (Grafana Cloud 또는 자체 호스팅):**
 
 ```bash
 # .env
-SIGNOZ_ENABLED=true
-SIGNOZ_ENDPOINT=ingest.signoz.io:443  # SigNoz Cloud endpoint
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=your-tempo-host:443  # Grafana Cloud 또는 자체 호스팅 Tempo
+OTEL_INSECURE=false  # TLS 사용
 OTEL_SERVICE_NAME=auto-trader
 OTEL_ENVIRONMENT=production
 ```
 
-**자체 호스팅 SigNoz:**
+**자체 호스팅 Grafana Stack:**
 
 ```bash
 # .env
-SIGNOZ_ENABLED=true
-SIGNOZ_ENDPOINT=your-signoz-server:4317
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=your-tempo-server:4317
+OTEL_INSECURE=false  # TLS 권장
+OTEL_SERVICE_NAME=auto-trader
 OTEL_ENVIRONMENT=production
 ```
 
@@ -412,7 +416,7 @@ histogram.record(100000, {"market": "upbit"})
 
 ```bash
 # .env
-SIGNOZ_ENABLED=false
+OTEL_ENABLED=false
 ERROR_REPORTING_ENABLED=false
 ```
 
