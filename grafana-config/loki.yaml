@@ -34,3 +34,4 @@ limits_config:
   ingestion_rate_mb: 10
   ingestion_burst_size_mb: 20
   allow_structured_metadata: true
+  retention_period: 168h  # 7 days (adjust based on storage capacity)
