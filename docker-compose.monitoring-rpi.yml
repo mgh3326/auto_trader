@@ -12,6 +12,11 @@
 #   - Loki HTTP: http://localhost:3100
 #   - Prometheus: http://localhost:9090
 #
+# Resource Limits (optimized for Raspberry Pi 5 - 8GB RAM):
+#   - Memory: ~2GB total (512MB per service)
+#   - CPU: ~4.5 cores total (1.0 for main services, 0.5 for Promtail)
+#   - Tested on: Raspberry Pi 5 with 8GB RAM
+#
 # Security Note:
 #   Tempo and Loki run as root (user: "0:0") to avoid Docker volume permission
 #   issues on Raspberry Pi. This is acceptable for local/dev environments but
@@ -68,6 +73,7 @@ services:
       - "4318:4318"   # OTLP HTTP
     mem_limit: 512m
     mem_reservation: 256m
+    cpus: '1.0'  # Limit to 1 CPU core
     networks:
       - observability
     healthcheck:
@@ -91,6 +97,7 @@ services:
       - "3100:3100"   # Loki HTTP
     mem_limit: 512m
     mem_reservation: 256m
+    cpus: '1.0'  # Limit to 1 CPU core
     networks:
       - observability
     healthcheck:
@@ -110,6 +117,7 @@ services:
       - ./grafana-config/promtail.yaml:/etc/promtail/config.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    cpus: '0.5'  # Limit to 0.5 CPU core (lightweight)
     networks:
       - observability
     depends_on:
@@ -133,6 +141,7 @@ services:
       - "9090:9090"
     mem_limit: 512m
     mem_reservation: 256m
+    cpus: '1.0'  # Limit to 1 CPU core
     networks:
       - observability
     healthcheck:
@@ -166,6 +175,7 @@ services:
       - "3000:3000"
     mem_limit: 512m
     mem_reservation: 256m
+    cpus: '1.0'  # Limit to 1 CPU core
     depends_on:
       tempo:
         condition: service_healthy
