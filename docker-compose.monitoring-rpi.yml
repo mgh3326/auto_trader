@@ -39,8 +39,9 @@
 #      - Verify logs appear with matching service/container labels
 #
 # To enable in your app, set in .env:
-#   SIGNOZ_ENABLED=true
-#   SIGNOZ_ENDPOINT=localhost:4317
+#   OTEL_ENABLED=true
+#   OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+#   OTEL_INSECURE=true
 
 name: grafana-observability
 
@@ -62,6 +63,12 @@ services:
     mem_reservation: 256m
     networks:
       - observability
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # Grafana Loki - Log aggregation system
@@ -79,6 +86,12 @@ services:
     mem_reservation: 256m
     networks:
       - observability
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # Promtail - Log collector for Loki
@@ -93,7 +106,8 @@ services:
     networks:
       - observability
     depends_on:
-      - loki
+      loki:
+        condition: service_healthy
     restart: unless-stopped
 
   # Prometheus - Metrics collection and storage
@@ -114,6 +128,12 @@ services:
     mem_reservation: 256m
     networks:
       - observability
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # Grafana - Visualization and dashboards
@@ -121,6 +141,12 @@ services:
     image: grafana/grafana:latest
     container_name: grafana
     environment:
+      # ⚠️  SECURITY WARNING: These settings are for LOCAL DEVELOPMENT ONLY
+      # For production, change these settings:
+      # - Set strong password: GF_SECURITY_ADMIN_PASSWORD=<strong_password>
+      # - Disable anonymous access: GF_AUTH_ANONYMOUS_ENABLED=false
+      # - Enable TLS/HTTPS
+      # - Use environment-specific secrets management
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=false
@@ -134,9 +160,18 @@ services:
     mem_limit: 512m
     mem_reservation: 256m
     depends_on:
-      - tempo
-      - loki
-      - prometheus
+      tempo:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     networks:
       - observability
     restart: unless-stopped
