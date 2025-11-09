@@ -76,12 +76,6 @@ services:
     cpus: '1.0'  # Limit to 1 CPU core
     networks:
       - observability
-    healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 3200 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
     restart: unless-stopped
 
   # Grafana Loki - Log aggregation system
@@ -101,7 +95,7 @@ services:
     networks:
       - observability
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 3100 || exit 1"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -145,7 +139,7 @@ services:
     networks:
       - observability
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 9090 || exit 1"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -178,13 +172,13 @@ services:
     cpus: '1.0'  # Limit to 1 CPU core
     depends_on:
       tempo:
-        condition: service_healthy
+        condition: service_started
       loki:
         condition: service_healthy
       prometheus:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
       interval: 10s
       timeout: 5s
       retries: 3
