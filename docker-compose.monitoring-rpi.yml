@@ -50,6 +50,21 @@ services:
       - observability
     restart: unless-stopped
 
+  # Promtail - Log collector for Loki
+  promtail:
+    image: grafana/promtail:latest
+    container_name: promtail
+    command: ["-config.file=/etc/promtail/config.yaml"]
+    volumes:
+      - ./grafana-config/promtail.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - observability
+    depends_on:
+      - loki
+    restart: unless-stopped
+
   # Prometheus - Metrics collection and storage
   prometheus:
     image: prom/prometheus:latest
