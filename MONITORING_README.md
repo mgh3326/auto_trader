@@ -6,7 +6,7 @@
 
 1. [개요](#개요)
 2. [아키텍처](#아키텍처)
-3. [OpenTelemetry & SigNoz 설정](#opentelemetry--signoz-설정)
+3. [OpenTelemetry & Grafana 관찰성 스택 설정](#opentelemetry--grafana-관찰성-스택-설정)
 4. [Telegram 에러 리포팅](#telegram-에러-리포팅)
 5. [사용 방법](#사용-방법)
 6. [트러블슈팅](#트러블슈팅)
@@ -15,11 +15,14 @@
 
 이 프로젝트는 다음과 같은 모니터링 기능을 제공합니다:
 
-### OpenTelemetry & SigNoz
-- **분산 추적(Distributed Tracing)**: HTTP 요청, DB 쿼리, Redis 작업 자동 추적
-- **메트릭(Metrics)**: 요청 처리 시간, 에러 카운트, 커스텀 메트릭
+### OpenTelemetry & Grafana 관찰성 스택
+- **분산 추적(Distributed Tracing)**: Tempo를 통한 HTTP 요청, DB 쿼리, Redis 작업 자동 추적
+- **로그 수집(Logs)**: Loki + Promtail을 통한 Docker 컨테이너 로그 수집 및 검색
+- **메트릭(Metrics)**: Prometheus를 통한 요청 처리 시간, 에러 카운트, 커스텀 메트릭
+- **통합 시각화**: Grafana를 통한 Traces, Logs, Metrics 통합 대시보드
 - **자동 계측(Auto-instrumentation)**: FastAPI, httpx, SQLAlchemy, Redis
 - **커스텀 스팬**: 비즈니스 로직의 세부 추적
+- **Trace-to-Log 연동**: 트레이스에서 관련 로그로 바로 이동
 
 ### Telegram 에러 리포팅
 - **실시간 에러 알림**: ERROR/CRITICAL 레벨 에러를 Telegram으로 즉시 전송
@@ -48,12 +51,36 @@
 │  └─────────────────┘          └─────────────────────────┘   │
 │          │                              │                    │
 └──────────┼──────────────────────────────┼────────────────────┘
-           │                              │
+           │ (OTLP gRPC/HTTP)             │
            ▼                              ▼
-    ┌─────────────┐              ┌──────────────┐
-    │   SigNoz    │              │  Telegram    │
-    │  (OTLP)     │              │   Bot API    │
-    └─────────────┘              └──────────────┘
+  ┌─────────────────────┐        ┌──────────────┐
+  │  Grafana Stack      │        │  Telegram    │
+  │  ┌──────────────┐   │        │   Bot API    │
+  │  │   Grafana    │   │        └──────────────┘
+  │  │ (Dashboards) │   │
+  │  └──────────────┘   │
+  │  ┌──────────────┐   │
+  │  │    Tempo     │◄──┼─── Traces (OTLP)
+  │  │   (Traces)   │   │
+  │  └──────────────┘   │
+  │  ┌──────────────┐   │
+  │  │     Loki     │◄──┼─── Logs (Promtail)
+  │  │    (Logs)    │   │
+  │  └──────────────┘   │
+  │  ┌──────────────┐   │
+  │  │  Prometheus  │◄──┼─── Metrics (OTLP)
+  │  │  (Metrics)   │   │
+  │  └──────────────┘   │
+  └─────────────────────┘
+           ▲
+           │
+  ┌────────┴─────────┐
+  │    Promtail      │
+  │ (Log Collector)  │
+  └──────────────────┘
+           ▲
+           │
+    Docker Container Logs
 ```
 
 ### 핵심 컴포넌트
@@ -73,39 +100,45 @@
    - 전역 예외 핸들러
    - 메트릭 수집
 
-## OpenTelemetry & SigNoz 설정
+## OpenTelemetry & Grafana 관찰성 스택 설정
 
-### 1. SigNoz 설치 (로컬)
+### 1. Grafana 스택 설치 (로컬 - Raspberry Pi 5 최적화)
 
-프로젝트에 포함된 `docker-compose.monitoring.yml`을 사용합니다:
+프로젝트에 포함된 `docker-compose.monitoring-rpi.yml`을 사용합니다:
 
 ```bash
-# 애플리케이션 스택 + SigNoz
-docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
-
-# SigNoz만 실행
-docker compose -f docker-compose.monitoring.yml up -d
+# Grafana 관찰성 스택 실행 (Tempo, Loki, Promtail, Prometheus, Grafana)
+docker compose -f docker-compose.monitoring-rpi.yml up -d
 
 # 상태 확인
-docker compose -f docker-compose.monitoring.yml ps
+docker compose -f docker-compose.monitoring-rpi.yml ps
+
+# 로그 확인
+docker compose -f docker-compose.monitoring-rpi.yml logs -f
 ```
 
-### 2. SigNoz 접속
+### 2. 접속 포인트
 
 브라우저에서 다음 주소로 접속:
-- **UI**: http://localhost:3301
+- **Grafana UI**: http://localhost:3000 (admin/admin)
+- **Tempo HTTP**: http://localhost:3200
+- **Loki HTTP**: http://localhost:3100
+- **Prometheus**: http://localhost:9090
 - **OTLP gRPC endpoint**: localhost:4317
+- **OTLP HTTP endpoint**: localhost:4318
 
 ### 3. 환경 변수 설정
 
 `.env` 파일에 다음 설정을 추가:
 
 ```bash
-# OpenTelemetry / SigNoz
-TELEMETRY_ENABLED=true
-OTLP_ENDPOINT=localhost:4317
-SERVICE_NAME=auto-trader
-ENVIRONMENT=development
+# OpenTelemetry / Grafana Stack
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+OTEL_INSECURE=true
+OTEL_SERVICE_NAME=auto-trader
+OTEL_SERVICE_VERSION=0.1.0
+OTEL_ENVIRONMENT=development
 ```
 
 ### 4. 의존성 설치
@@ -123,12 +156,18 @@ make dev
 uv run uvicorn app.main:app --reload
 ```
 
-### 6. SigNoz에서 데이터 확인
+### 6. Grafana에서 데이터 확인
 
-1. http://localhost:3301 접속
-2. **Services** 탭에서 `auto-trader` 서비스 확인
-3. **Traces** 탭에서 HTTP 요청 추적 확인
-4. **Metrics** 탭에서 메트릭 확인
+1. http://localhost:3000 접속 (admin/admin)
+2. **Configuration > Data Sources**에서 Tempo, Loki, Prometheus 연결 확인
+3. **Explore** 탭 선택:
+   - **Tempo**: 분산 추적(Traces) 확인, `auto-trader` 서비스의 HTTP 요청 추적
+   - **Loki**: 로그 확인, 컨테이너별 로그 검색
+   - **Prometheus**: 메트릭 확인, HTTP 요청 카운트, 응답 시간 등
+4. **Trace-to-Log 연동 테스트**:
+   - Tempo에서 트레이스 선택
+   - "Logs for this span" 버튼 클릭
+   - 관련 로그가 자동으로 표시되는지 확인
 
 ## Telegram 에러 리포팅
 
@@ -281,16 +320,18 @@ async def process_request(request_data: dict):
 
 ## 프로덕션 환경 설정
 
-### 1. 원격 SigNoz 사용
+### 1. 원격 Grafana 스택 사용
 
-SigNoz Cloud 또는 자체 호스팅 SigNoz:
+Grafana Cloud 또는 자체 호스팅 Grafana 스택:
 
 ```bash
 # .env
-TELEMETRY_ENABLED=true
-OTLP_ENDPOINT=your-signoz-host:4317  # 또는 ingest.signoz.io:443 (Cloud)
-SERVICE_NAME=auto-trader
-ENVIRONMENT=production
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=your-tempo-host:4317  # OTLP 엔드포인트
+OTEL_INSECURE=false                               # TLS 사용
+OTEL_SERVICE_NAME=auto-trader
+OTEL_SERVICE_VERSION=0.1.0
+OTEL_ENVIRONMENT=production
 ```
 
 ### 2. 보안 설정
@@ -298,11 +339,23 @@ ENVIRONMENT=production
 프로덕션 환경에서는 TLS를 사용하는 것을 권장합니다:
 
 ```bash
-# TLS/SSL을 사용하는 SigNoz Cloud
-OTLP_ENDPOINT=ingest.signoz.io:443
+# TLS/SSL을 사용하는 원격 엔드포인트
+OTEL_EXPORTER_OTLP_ENDPOINT=your-tempo-host:443
+OTEL_INSECURE=false
 ```
 
-### 3. 샘플링 설정
+### 3. Grafana 인증 강화
+
+프로덕션에서는 반드시 기본 admin/admin 비밀번호를 변경하고 익명 접근을 비활성화하세요:
+
+```yaml
+# docker-compose.monitoring-rpi.yml에서 수정
+environment:
+  - GF_SECURITY_ADMIN_PASSWORD=strong_password_here
+  - GF_AUTH_ANONYMOUS_ENABLED=false
+```
+
+### 4. 샘플링 설정
 
 고트래픽 환경에서는 샘플링 비율 조정이 필요할 수 있습니다. 현재는 모든 트레이스를 수집하지만, 필요시 `app/monitoring/telemetry.py`에서 샘플링 설정을 추가할 수 있습니다.
 
@@ -312,32 +365,59 @@ OTLP_ENDPOINT=ingest.signoz.io:443
 
 ```bash
 # .env
-TELEMETRY_ENABLED=false
-TELEGRAM_ERROR_REPORTING_ENABLED=false
+OTEL_ENABLED=false
+ERROR_REPORTING_ENABLED=false
 ```
 
 ## 트러블슈팅
 
-### SigNoz에 데이터가 보이지 않음
+### Grafana에 데이터가 보이지 않음
 
 1. **OTLP endpoint 확인**:
    ```bash
-   # 포트가 열려있는지 확인
-   telnet localhost 4317
+   # Tempo 포트가 열려있는지 확인
+   curl http://localhost:3200/status
+   curl http://localhost:4317  # OTLP gRPC (연결 확인)
    ```
 
-2. **SigNoz 컨테이너 상태 확인**:
+2. **Grafana 스택 컨테이너 상태 확인**:
    ```bash
-   cd signoz/deploy/
-   docker compose -f docker/clickhouse-setup/docker-compose.yaml ps
-   docker compose -f docker/clickhouse-setup/docker-compose.yaml logs
+   docker compose -f docker-compose.monitoring-rpi.yml ps
+   docker compose -f docker-compose.monitoring-rpi.yml logs tempo
+   docker compose -f docker-compose.monitoring-rpi.yml logs loki
+   docker compose -f docker-compose.monitoring-rpi.yml logs promtail
    ```
 
-3. **애플리케이션 로그 확인**:
+3. **데이터소스 연결 확인**:
+   - Grafana (http://localhost:3000) 접속
+   - Configuration > Data Sources
+   - Tempo, Loki, Prometheus 상태 확인
+   - "Save & test" 버튼으로 연결 테스트
+
+4. **애플리케이션 로그 확인**:
    ```bash
    # 텔레메트리 초기화 로그 확인
    uv run uvicorn app.main:app --reload
+   # "Telemetry initialized" 메시지 확인
    ```
+
+### Trace-to-Log 연동이 작동하지 않음
+
+1. **Promtail 로그 확인**:
+   ```bash
+   docker compose -f docker-compose.monitoring-rpi.yml logs promtail
+   # Docker 소켓 접근 및 Loki 연결 확인
+   ```
+
+2. **Loki 쿼리 테스트**:
+   ```bash
+   # Loki에서 로그 확인
+   curl 'http://localhost:3100/loki/api/v1/query?query={container="auto-trader"}'
+   ```
+
+3. **Grafana datasource 설정 확인**:
+   - `grafana-config/grafana-datasources.yaml` 파일의 `tracesToLogs.tags` 확인
+   - `['service', 'container']` 태그가 설정되어 있는지 확인
 
 ### Telegram 메시지가 전송되지 않음
 
@@ -391,7 +471,10 @@ TELEGRAM_ERROR_DEDUP_MINUTES=10  # 10분으로 증가
 ## 추가 리소스
 
 - [OpenTelemetry Python 문서](https://opentelemetry.io/docs/instrumentation/python/)
-- [SigNoz 문서](https://signoz.io/docs/)
+- [Grafana 문서](https://grafana.com/docs/)
+- [Grafana Tempo 문서](https://grafana.com/docs/tempo/latest/)
+- [Grafana Loki 문서](https://grafana.com/docs/loki/latest/)
+- [Prometheus 문서](https://prometheus.io/docs/)
 - [FastAPI 계측 가이드](https://opentelemetry.io/docs/instrumentation/python/automatic/fastapi/)
 - [Telegram Bot API](https://core.telegram.org/bots/api)
 
@@ -399,5 +482,7 @@ TELEGRAM_ERROR_DEDUP_MINUTES=10  # 10분으로 증가
 
 - 모니터링 기능은 기본적으로 비활성화되어 있습니다
 - 프로덕션 환경에서는 텔레메트리와 에러 리포팅 모두 활성화를 권장합니다
-- SigNoz는 리소스를 많이 사용하므로 로컬 개발 시 필요할 때만 실행하세요
+- Grafana 스택은 Raspberry Pi 5에 최적화되어 있으며 메모리 제한이 설정되어 있습니다
+- 로컬 개발 시에는 필요할 때만 스택을 실행하세요
 - Telegram 에러 리포팅은 중요한 에러만 전송하도록 설계되었습니다 (ERROR/CRITICAL)
+- Trace-to-Log 연동을 통해 트레이스에서 관련 로그를 바로 확인할 수 있습니다
