@@ -1,11 +1,42 @@
 # Docker Compose for Grafana Observability Stack (Raspberry Pi 5 optimized)
-# Grafana + Loki (logs) + Tempo (traces) + Prometheus (metrics)
+# Grafana + Loki (logs) + Tempo (traces) + Prometheus (metrics) + Promtail (log collector)
 #
 # Usage:
 #   docker compose -f docker-compose.monitoring-rpi.yml up -d
 #
-# Grafana UI: http://localhost:3000 (admin/admin)
-# OTLP Endpoint: localhost:4317 (gRPC), localhost:4318 (HTTP)
+# Access Points:
+#   - Grafana UI: http://localhost:3000 (admin/admin)
+#   - Tempo HTTP: http://localhost:3200
+#   - OTLP gRPC: localhost:4317
+#   - OTLP HTTP: localhost:4318
+#   - Loki HTTP: http://localhost:3100
+#   - Prometheus: http://localhost:9090
+#
+# Verification Steps:
+#   1. Start the stack:
+#      docker compose -f docker-compose.monitoring-rpi.yml up -d
+#
+#   2. Check all services are running:
+#      docker compose -f docker-compose.monitoring-rpi.yml ps
+#      (Expected: tempo, loki, promtail, prometheus, grafana all "Up")
+#
+#   3. Verify Tempo is receiving traces:
+#      curl http://localhost:3200/status
+#
+#   4. Verify Loki is ready:
+#      curl http://localhost:3100/ready
+#
+#   5. Access Grafana and verify datasources:
+#      - Open http://localhost:3000
+#      - Go to Configuration > Data Sources
+#      - Verify Tempo, Loki, and Prometheus are connected (green checkmark)
+#
+#   6. Test trace-to-log correlation:
+#      - In Grafana, go to Explore
+#      - Select Tempo datasource
+#      - Search for traces
+#      - Click on a trace and look for "Logs for this span" button
+#      - Verify logs appear with matching service/container labels
 #
 # To enable in your app, set in .env:
 #   SIGNOZ_ENABLED=true
