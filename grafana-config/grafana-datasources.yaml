@@ -10,7 +10,7 @@ datasources:
     jsonData:
       tracesToLogs:
         datasourceUid: 'loki'
-        tags: ['service_name']
+        tags: ['service', 'container']
       serviceMap:
         datasourceUid: 'prometheus'
       nodeGraph:
