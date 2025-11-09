@@ -141,14 +141,30 @@ OTEL_SERVICE_VERSION=0.1.0
 OTEL_ENVIRONMENT=development
 ```
 
-### 4. 의존성 설치
+### 4. 스택 검증 (Smoke Test)
+
+스택이 올바르게 실행되는지 자동으로 확인:
+
+```bash
+# 자동화된 smoke test 실행
+bash scripts/test-monitoring-stack.sh
+
+# 또는 수동 검증
+docker compose -f docker-compose.monitoring-rpi.yml ps  # 모든 컨테이너 Up 확인
+curl http://localhost:3200/ready  # Tempo 확인
+curl http://localhost:3100/ready  # Loki 확인
+curl http://localhost:9090/-/healthy  # Prometheus 확인
+curl http://localhost:3000/api/health  # Grafana 확인
+```
+
+### 5. 의존성 설치
 
 ```bash
 # pyproject.toml에 이미 추가되어 있음
 uv sync
 ```
 
-### 5. 애플리케이션 실행
+### 6. 애플리케이션 실행
 
 ```bash
 make dev
@@ -156,7 +172,7 @@ make dev
 uv run uvicorn app.main:app --reload
 ```
 
-### 6. Grafana에서 데이터 확인
+### 7. Grafana에서 데이터 확인
 
 1. http://localhost:3000 접속 (admin/admin)
 2. **Configuration > Data Sources**에서 Tempo, Loki, Prometheus 연결 확인
