@@ -6,10 +6,12 @@
 
 1. [개요](#개요)
 2. [아키텍처](#아키텍처)
-3. [OpenTelemetry & Grafana 관찰성 스택 설정](#opentelemetry--grafana-관찰성-스택-설정)
-4. [Telegram 에러 리포팅](#telegram-에러-리포팅)
-5. [사용 방법](#사용-방법)
-6. [트러블슈팅](#트러블슈팅)
+3. [SigNoz에서 Grafana 스택으로 마이그레이션](#signoz에서-grafana-스택으로-마이그레이션)
+4. [OpenTelemetry & Grafana 관찰성 스택 설정](#opentelemetry--grafana-관찰성-스택-설정)
+5. [Telegram 에러 리포팅](#telegram-에러-리포팅)
+6. [사용 방법](#사용-방법)
+7. [Raspberry Pi 리소스 최적화](#raspberry-pi-리소스-최적화)
+8. [트러블슈팅](#트러블슈팅)
 
 ## 개요
 
@@ -99,6 +101,85 @@
    - `MonitoringMiddleware`: 요청/응답 모니터링
    - 전역 예외 핸들러
    - 메트릭 수집
+
+## SigNoz에서 Grafana 스택으로 마이그레이션
+
+이전에 SigNoz를 사용하고 있었다면 다음 단계를 따라 Grafana 스택으로 마이그레이션하세요:
+
+### 1. 기존 SigNoz 스택 중지 및 정리
+
+```bash
+# SigNoz 컨테이너 중지
+docker compose -f docker-compose.signoz.yml down
+
+# (선택사항) SigNoz 데이터 백업
+# 필요한 경우 트레이스/로그 데이터 백업
+
+# (선택사항) SigNoz 볼륨 삭제
+docker volume rm signoz_data
+```
+
+### 2. 환경 변수 업데이트
+
+`.env` 파일에서 환경 변수 이름 변경:
+
+```bash
+# 기존 (SigNoz)
+SIGNOZ_ENDPOINT=localhost:4317
+SIGNOZ_ENABLED=true
+SIGNOZ_INSECURE=true
+
+# 변경 후 (Grafana Stack - vendor-neutral)
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+OTEL_ENABLED=true
+OTEL_INSECURE=true
+OTEL_SERVICE_NAME=auto-trader
+OTEL_SERVICE_VERSION=0.1.0
+OTEL_ENVIRONMENT=development
+```
+
+### 3. Grafana 스택 시작
+
+```bash
+docker compose -f docker-compose.monitoring-rpi.yml up -d
+```
+
+### 4. 검증
+
+```bash
+# 자동 검증
+bash scripts/test-monitoring-stack.sh
+
+# Grafana 접속 확인
+open http://localhost:3000  # admin/admin
+```
+
+### 주요 차이점
+
+| 항목 | SigNoz | Grafana Stack |
+|------|--------|---------------|
+| **UI** | 통합 UI | Grafana (별도) |
+| **Traces** | SigNoz | Tempo |
+| **Logs** | SigNoz | Loki + Promtail |
+| **Metrics** | SigNoz | Prometheus |
+| **포트** | 4317 (OTLP) | 4317 (OTLP) - 동일 |
+| **데이터 상관관계** | 자동 | Grafana에서 설정 필요 |
+| **리소스 사용량** | 높음 | 중간 (Pi 최적화) |
+
+### 롤백 방법
+
+문제가 발생하면 SigNoz로 롤백:
+
+```bash
+# Grafana 스택 중지
+docker compose -f docker-compose.monitoring-rpi.yml down
+
+# 환경 변수 원복
+# OTEL_* → SIGNOZ_*
+
+# SigNoz 재시작
+docker compose -f docker-compose.signoz.yml up -d
+```
 
 ## OpenTelemetry & Grafana 관찰성 스택 설정
 
@@ -384,6 +465,106 @@ environment:
 OTEL_ENABLED=false
 ERROR_REPORTING_ENABLED=false
 ```
+
+## Raspberry Pi 리소스 최적화
+
+### 현재 리소스 설정
+
+Raspberry Pi 5에서 안정적으로 실행되도록 최적화된 설정:
+
+| 서비스 | 메모리 제한 | 메모리 예약 | 비고 |
+|--------|-------------|-------------|------|
+| Tempo | 512MB | 256MB | 트레이스 저장 (7일) |
+| Loki | 512MB | 256MB | 로그 저장 (7일) |
+| Promtail | - | - | 경량 로그 수집기 |
+| Prometheus | 512MB | 256MB | 메트릭 저장 |
+| Grafana | 512MB | 256MB | 시각화 대시보드 |
+| **총합** | **~2GB** | **~1GB** | 최소 권장: 4GB RAM |
+
+### 권장 시스템 요구사항
+
+**최소 사양 (개발):**
+- RAM: 4GB
+- CPU: 4 cores
+- 디스크: 10GB (로그/트레이스 저장용)
+
+**권장 사양 (프로덕션):**
+- RAM: 8GB
+- CPU: 4 cores
+- 디스크: 50GB+ (retention 기간에 따라)
+
+### 리소스 부족 시 조정 방법
+
+#### 1. 메모리 제한 줄이기
+
+`docker-compose.monitoring-rpi.yml` 수정:
+
+```yaml
+services:
+  tempo:
+    mem_limit: 256m      # 512m → 256m
+    mem_reservation: 128m  # 256m → 128m
+
+  loki:
+    mem_limit: 256m
+    mem_reservation: 128m
+```
+
+#### 2. Retention 기간 단축
+
+**Tempo** (`grafana-config/tempo.yaml`):
+```yaml
+compactor:
+  compaction:
+    block_retention: 48h  # 168h → 48h (2일)
+```
+
+**Loki** (`grafana-config/loki.yaml`):
+```yaml
+limits_config:
+  retention_period: 48h  # 168h → 48h (2일)
+```
+
+#### 3. 불필요한 서비스 비활성화
+
+Prometheus만 필요한 경우:
+
+```bash
+# Tempo, Loki, Promtail 제외하고 실행
+docker compose -f docker-compose.monitoring-rpi.yml up -d prometheus grafana
+```
+
+#### 4. 샘플링 비율 조정
+
+고트래픽 시 모든 트레이스를 수집하지 않도록 샘플링:
+
+`app/monitoring/telemetry.py`에서:
+```python
+# 10%만 샘플링
+sampler = TraceIdRatioBased(0.1)
+```
+
+### 리소스 모니터링
+
+Docker 컨테이너 리소스 사용량 확인:
+
+```bash
+# 실시간 모니터링
+docker stats
+
+# 특정 컨테이너만 확인
+docker stats tempo loki prometheus grafana
+
+# 메모리 사용량만 확인
+docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}"
+```
+
+### 성능 최적화 팁
+
+1. **로그 필터링**: Promtail에서 불필요한 로그 제외
+2. **메트릭 간격**: Prometheus scrape interval 증가 (15s → 30s)
+3. **트레이스 샘플링**: 전체 대신 10-20% 샘플링
+4. **디스크 I/O**: SSD 사용 권장 (SD 카드보다 성능 향상)
 
 ## 트러블슈팅
 
