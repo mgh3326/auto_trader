@@ -70,8 +70,9 @@ def create_app() -> FastAPI:
     app.add_middleware(MonitoringMiddleware)
 
     # Instrument FastAPI for telemetry (after all routes are added)
-    if settings.SIGNOZ_ENABLED:
+    if settings.OTEL_ENABLED:
         try:
+            # Instrument after telemetry is configured during setup.
             instrument_fastapi(app)
             logger.info("FastAPI instrumented for telemetry")
         except Exception as e:
@@ -79,7 +80,6 @@ def create_app() -> FastAPI:
                 f"Failed to setup FastAPI instrumentation: {e}",
                 exc_info=True,
             )
-
     return app
 
 
@@ -91,16 +91,16 @@ async def setup_monitoring() -> None:
     - OpenTelemetry / SigNoz integration
     - Telegram error reporting with Redis deduplication
     """
-    # 1. Initialize OpenTelemetry / SigNoz
-    if settings.SIGNOZ_ENABLED:
+    # 1. Initialize OpenTelemetry
+    if settings.OTEL_ENABLED:
         try:
             setup_telemetry(
                 service_name=settings.OTEL_SERVICE_NAME,
                 service_version=settings.OTEL_SERVICE_VERSION,
                 environment=settings.OTEL_ENVIRONMENT,
-                otlp_endpoint=settings.SIGNOZ_ENDPOINT,
+                otlp_endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT,
                 enabled=True,
-                insecure=settings.SIGNOZ_INSECURE,
+                insecure=settings.OTEL_INSECURE,
             )
             logger.info(
                 f"Telemetry initialized: {settings.OTEL_SERVICE_NAME} "
