@@ -116,7 +116,7 @@ services:
 
   # Query Service (SigNoz backend API) - 메모리 최적화
   query-service:
-    image: signoz/query-service:0.51.0
+    image: signoz/query-service:0.76.2
     container_name: signoz_query_service
     ports:
       - "8081:8080"  # Changed from 8080 to avoid conflict

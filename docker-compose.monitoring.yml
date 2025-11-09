@@ -108,7 +108,7 @@ services:
 
   # Query Service (SigNoz backend API)
   query-service:
-    image: signoz/query-service:0.38.0
+    image: signoz/query-service:0.76.2
     container_name: signoz_query_service
     ports:
       - "8081:8080"  # Changed from 8080 to avoid conflict with adminer
