@@ -149,7 +149,7 @@ services:
 
   # Frontend (SigNoz UI) - 경량화
   frontend:
-    image: signoz/frontend:0.51.0
+    image: signoz/frontend:1.1.0
     container_name: signoz_frontend
     ports:
       - "3301:3301"
