@@ -29,7 +29,9 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Handle startup/shutdown lifecycle without deprecated hooks."""
+        # Initialize monitoring (sets up telemetry providers)
         await setup_monitoring()
+
         try:
             yield
         finally:
@@ -69,17 +71,19 @@ def create_app() -> FastAPI:
     # Add monitoring middleware (must be added after startup event)
     app.add_middleware(MonitoringMiddleware)
 
-    # Instrument FastAPI for telemetry (after all routes are added)
+    # Instrument FastAPI for telemetry (after all routes/middleware are added)
+    # Note: This is safe because instrument_fastapi() only registers the app
+    # for instrumentation. Actual telemetry setup happens in lifespan's setup_monitoring()
     if settings.OTEL_ENABLED:
         try:
-            # Instrument after telemetry is configured during setup.
             instrument_fastapi(app)
-            logger.info("FastAPI instrumented for telemetry")
+            logger.debug("FastAPI registered for telemetry instrumentation")
         except Exception as e:
             logger.error(
-                f"Failed to setup FastAPI instrumentation: {e}",
+                f"Failed to register FastAPI for instrumentation: {e}",
                 exc_info=True,
             )
+
     return app
 
 
