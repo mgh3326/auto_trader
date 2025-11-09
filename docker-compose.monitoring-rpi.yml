@@ -17,7 +17,7 @@ name: signoz
 services:
   # OTEL Migrator - Initialize ClickHouse schema for SigNoz
   otel-migrator:
-    image: signoz/signoz-schema-migrator:0.88.11
+    image: signoz/signoz-schema-migrator:0.102.4
     container_name: signoz_otel_migrator
     command:
       - "--dsn=tcp://clickhouse:9000"
@@ -83,7 +83,7 @@ services:
 
   # OpenTelemetry Collector (메모리 제한)
   otel-collector:
-    image: signoz/signoz-otel-collector:0.88.11
+    image: signoz/signoz-otel-collector:0.102.4
     container_name: signoz_otel_collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     user: root
@@ -116,7 +116,7 @@ services:
 
   # Query Service (SigNoz backend API) - 메모리 최적화
   query-service:
-    image: signoz/query-service:0.38.0
+    image: signoz/query-service:0.51.0
     container_name: signoz_query_service
     ports:
       - "8081:8080"  # Changed from 8080 to avoid conflict
@@ -149,7 +149,7 @@ services:
 
   # Frontend (SigNoz UI) - 경량화
   frontend:
-    image: signoz/frontend:0.38.0
+    image: signoz/frontend:0.51.0
     container_name: signoz_frontend
     ports:
       - "3301:3301"
