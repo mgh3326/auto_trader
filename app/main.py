@@ -92,7 +92,7 @@ async def setup_monitoring() -> None:
     Setup monitoring and observability for the application.
 
     This includes:
-    - OpenTelemetry / SigNoz integration
+    - OpenTelemetry / Grafana stack integration (Tempo, Loki, Prometheus)
     - Telegram error reporting with Redis deduplication
     """
     # 1. Initialize OpenTelemetry
