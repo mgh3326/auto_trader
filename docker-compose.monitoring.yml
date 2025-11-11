@@ -49,7 +49,7 @@ services:
 
   # ClickHouse for storing traces, metrics, and logs
   clickhouse:
-    image: clickhouse/clickhouse-server:23.12.6-alpine
+    image: clickhouse/clickhouse-server:25.10.2-alpine
     container_name: signoz_clickhouse
     hostname: clickhouse
     ports:
