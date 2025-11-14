@@ -18,7 +18,7 @@
 services:
   # OTEL Migrator - Initialize ClickHouse schema for SigNoz
   otel-migrator:
-    image: signoz/signoz-schema-migrator:0.88.11
+    image: signoz/signoz-schema-migrator:v0.129.9
     container_name: signoz_otel_migrator
     command:
       - "--dsn=tcp://clickhouse:9000"
