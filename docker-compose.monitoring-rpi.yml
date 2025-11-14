@@ -83,7 +83,7 @@ services:
 
   # OpenTelemetry Collector (메모리 제한)
   otel-collector:
-    image: signoz/signoz-otel-collector:0.102.4
+    image: signoz/signoz-otel-collector:v0.129.9
     container_name: signoz_otel_collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     user: root

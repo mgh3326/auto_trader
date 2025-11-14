@@ -76,7 +76,7 @@ services:
 
   # OpenTelemetry Collector
   otel-collector:
-    image: signoz/signoz-otel-collector:0.88.11
+    image: signoz/signoz-otel-collector:v0.129.9
     container_name: signoz_otel_collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     user: root
