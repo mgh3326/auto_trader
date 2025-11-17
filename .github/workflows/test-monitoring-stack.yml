@@ -54,20 +54,20 @@ jobs:
           TEMPO_STATUS=$(docker inspect --format='{{.State.Status}}' tempo 2>/dev/null || echo "not_found")
           LOKI_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' loki 2>/dev/null || echo "not_found")
           PROMETHEUS_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' prometheus 2>/dev/null || echo "not_found")
-          OTEL_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' otel-collector 2>/dev/null || echo "not_found")
+          OTEL_STATUS=$(docker inspect --format='{{.State.Status}}' otel-collector 2>/dev/null || echo "not_found")
           GRAFANA_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' grafana 2>/dev/null || echo "not_found")
 
           echo "  Tempo: $TEMPO_STATUS (no healthcheck)"
           echo "  Loki: $LOKI_HEALTH"
           echo "  Prometheus: $PROMETHEUS_HEALTH"
-          echo "  OTEL Collector: $OTEL_HEALTH"
+          echo "  OTEL Collector: $OTEL_STATUS (no healthcheck)"
           echo "  Grafana: $GRAFANA_HEALTH"
 
-          # Check if critical services are healthy
+          # Check if critical services are healthy/running
           if [ "$TEMPO_STATUS" = "running" ] && \
              [ "$LOKI_HEALTH" = "healthy" ] && \
              [ "$PROMETHEUS_HEALTH" = "healthy" ] && \
-             [ "$OTEL_HEALTH" = "healthy" ] && \
+             [ "$OTEL_STATUS" = "running" ] && \
              [ "$GRAFANA_HEALTH" = "healthy" ]; then
             echo "All critical services are healthy!"
             break
