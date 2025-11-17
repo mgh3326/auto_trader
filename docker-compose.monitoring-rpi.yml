@@ -1,20 +1,26 @@
 # Docker Compose for Grafana Observability Stack (Raspberry Pi 5 optimized)
-# Grafana + Loki (logs) + Tempo (traces) + Prometheus (metrics) + Promtail (log collector)
+# Grafana + Loki (logs) + Tempo (traces) + Prometheus (metrics) + OTEL Collector + Promtail
 #
 # Usage:
 #   docker compose -f docker-compose.monitoring-rpi.yml up -d
 #
 # Access Points:
 #   - Grafana UI: http://localhost:3000 (admin/admin)
+#   - OTLP gRPC: localhost:4317 (send traces/metrics/logs here)
+#   - OTLP HTTP: localhost:4318 (send traces/metrics/logs here)
 #   - Tempo HTTP: http://localhost:3200
-#   - OTLP gRPC: localhost:4317
-#   - OTLP HTTP: localhost:4318
 #   - Loki HTTP: http://localhost:3100
 #   - Prometheus: http://localhost:9090
 #
+# Architecture:
+#   Application → OTEL Collector (4317/4318) → {Tempo, Prometheus, Loki}
+#   - Traces routed to Tempo
+#   - Metrics routed to Prometheus
+#   - Logs routed to Loki
+#
 # Resource Limits (optimized for Raspberry Pi 5 - 8GB RAM):
-#   - Memory: ~2GB total (512MB per service)
-#   - CPU: ~4.5 cores total (1.0 for main services, 0.5 for Promtail)
+#   - Memory: ~2.5GB total (512MB × 5 services)
+#   - CPU: ~5 cores total (1.0 for main services, 0.5 for Collector/Promtail)
 #   - Tested on: Raspberry Pi 5 with 8GB RAM
 #
 # Security:
@@ -60,6 +66,30 @@
 name: grafana-observability
 
 services:
+  # OpenTelemetry Collector - Central telemetry router
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector.yaml"]
+    volumes:
+      - ./grafana-config/otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC (application sends here)
+      - "4318:4318"   # OTLP HTTP (application sends here)
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: '0.5'  # Limit to 0.5 CPU core
+    depends_on:
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    networks:
+      - observability
+    restart: unless-stopped
+
   # Grafana Tempo - Distributed tracing backend
   tempo:
     image: grafana/tempo:latest
@@ -71,8 +101,6 @@ services:
       - tempo_data:/var/tempo
     ports:
       - "3200:3200"   # Tempo HTTP
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
     mem_limit: 512m
     mem_reservation: 256m
     cpus: '1.0'  # Limit to 1 CPU core
