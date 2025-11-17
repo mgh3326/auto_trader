@@ -78,13 +78,6 @@ services:
     cpus: '1.0'  # Limit to 1 CPU core
     security_opt:
       - no-new-privileges:true  # Prevent privilege escalation
-    cap_drop:
-      - ALL  # Drop all capabilities
-    cap_add:
-      - CHOWN  # Only add necessary capabilities
-      - DAC_OVERRIDE
-      - SETUID
-      - SETGID
     networks:
       - observability
     restart: unless-stopped
@@ -105,13 +98,6 @@ services:
     cpus: '1.0'  # Limit to 1 CPU core
     security_opt:
       - no-new-privileges:true  # Prevent privilege escalation
-    cap_drop:
-      - ALL  # Drop all capabilities
-    cap_add:
-      - CHOWN  # Only add necessary capabilities
-      - DAC_OVERRIDE
-      - SETUID
-      - SETGID
     networks:
       - observability
     healthcheck:
