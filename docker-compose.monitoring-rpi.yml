@@ -95,8 +95,8 @@ services:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133/"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 30s  # Increased to allow Tempo to fully start
+      retries: 3
+      start_period: 45s  # Increased to allow Tempo to fully start
     networks:
       - observability
     restart: unless-stopped

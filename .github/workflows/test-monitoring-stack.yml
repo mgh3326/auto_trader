@@ -41,8 +41,49 @@ jobs:
       run: |
         docker compose -f docker-compose.monitoring-rpi.yml up -d
         echo "Waiting for services to be ready..."
-        sleep 60
-        echo "Checking service status..."
+
+        # Wait up to 120 seconds for critical services to be healthy
+        TIMEOUT=120
+        ELAPSED=0
+        INTERVAL=5
+
+        while [ $ELAPSED -lt $TIMEOUT ]; do
+          echo "Checking service health... ($ELAPSED/$TIMEOUT seconds)"
+
+          # Get health status of all services
+          TEMPO_STATUS=$(docker inspect --format='{{.State.Status}}' tempo 2>/dev/null || echo "not_found")
+          LOKI_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' loki 2>/dev/null || echo "not_found")
+          PROMETHEUS_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' prometheus 2>/dev/null || echo "not_found")
+          OTEL_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' otel-collector 2>/dev/null || echo "not_found")
+          GRAFANA_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' grafana 2>/dev/null || echo "not_found")
+
+          echo "  Tempo: $TEMPO_STATUS (no healthcheck)"
+          echo "  Loki: $LOKI_HEALTH"
+          echo "  Prometheus: $PROMETHEUS_HEALTH"
+          echo "  OTEL Collector: $OTEL_HEALTH"
+          echo "  Grafana: $GRAFANA_HEALTH"
+
+          # Check if critical services are healthy
+          if [ "$TEMPO_STATUS" = "running" ] && \
+             [ "$LOKI_HEALTH" = "healthy" ] && \
+             [ "$PROMETHEUS_HEALTH" = "healthy" ] && \
+             [ "$OTEL_HEALTH" = "healthy" ] && \
+             [ "$GRAFANA_HEALTH" = "healthy" ]; then
+            echo "All critical services are healthy!"
+            break
+          fi
+
+          sleep $INTERVAL
+          ELAPSED=$((ELAPSED + INTERVAL))
+        done
+
+        if [ $ELAPSED -ge $TIMEOUT ]; then
+          echo "WARNING: Services did not become healthy within $TIMEOUT seconds"
+          echo "Continuing with tests anyway..."
+        fi
+
+        echo ""
+        echo "Final service status:"
         docker compose -f docker-compose.monitoring-rpi.yml ps
 
     - name: Check service status
