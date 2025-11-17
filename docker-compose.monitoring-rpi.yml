@@ -17,12 +17,15 @@
 #   - CPU: ~4.5 cores total (1.0 for main services, 0.5 for Promtail)
 #   - Tested on: Raspberry Pi 5 with 8GB RAM
 #
-# Security Note:
-#   Tempo and Loki run as root (user: "0:0") to avoid Docker volume permission
-#   issues on Raspberry Pi. This is acceptable for local/dev environments but
-#   should be improved for production by:
-#   - Using host-mounted volumes with proper ownership (chown 10001:10001)
-#   - Or using security-focused orchestration (Kubernetes with SecurityContext)
+# Security:
+#   - All services run as non-root users (10001:10001)
+#   - Security hardening applied:
+#     * no-new-privileges: Prevent privilege escalation
+#     * cap_drop: ALL - Drop all Linux capabilities
+#     * cap_add: Only essential capabilities (CHOWN, DAC_OVERRIDE, SETUID, SETGID)
+#     * read_only: true (Tempo only) - Read-only root filesystem
+#   - Named volumes automatically get correct ownership from container user
+#   - If permission issues occur on Raspberry Pi, see troubleshooting in README
 #
 # Verification Steps:
 #   1. Start the stack:
@@ -62,7 +65,7 @@ services:
   tempo:
     image: grafana/tempo:latest
     container_name: tempo
-    user: "0:0"  # Run as root to avoid permission issues with volume mounts
+    user: "10001:10001"  # Non-root user (default tempo user)
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./grafana-config/tempo.yaml:/etc/tempo.yaml:ro
@@ -74,6 +77,18 @@ services:
     mem_limit: 512m
     mem_reservation: 256m
     cpus: '1.0'  # Limit to 1 CPU core
+    security_opt:
+      - no-new-privileges:true  # Prevent privilege escalation
+    cap_drop:
+      - ALL  # Drop all capabilities
+    cap_add:
+      - CHOWN  # Only add necessary capabilities
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
+    read_only: true  # Read-only root filesystem
+    tmpfs:
+      - /tmp  # Writable tmp directory
     networks:
       - observability
     restart: unless-stopped
@@ -82,7 +97,7 @@ services:
   loki:
     image: grafana/loki:latest
     container_name: loki
-    user: "0:0"  # Run as root to avoid permission issues with volume mounts
+    user: "10001:10001"  # Non-root user (default loki user)
     command: ["-config.file=/etc/loki/local-config.yaml"]
     volumes:
       - ./grafana-config/loki.yaml:/etc/loki/local-config.yaml:ro
@@ -92,6 +107,15 @@ services:
     mem_limit: 512m
     mem_reservation: 256m
     cpus: '1.0'  # Limit to 1 CPU core
+    security_opt:
+      - no-new-privileges:true  # Prevent privilege escalation
+    cap_drop:
+      - ALL  # Drop all capabilities
+    cap_add:
+      - CHOWN  # Only add necessary capabilities
+      - DAC_OVERRIDE
+      - SETUID
+      - SETGID
     networks:
       - observability
     healthcheck:
