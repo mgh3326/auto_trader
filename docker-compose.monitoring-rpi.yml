@@ -184,6 +184,7 @@ services:
       - '--storage.tsdb.retention.time=7d'  # 7 days retention (aligned with Tempo/Loki)
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-remote-write-receiver'  # Enable OTLP remote write from Collector
     volumes:
       - ./grafana-config/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
