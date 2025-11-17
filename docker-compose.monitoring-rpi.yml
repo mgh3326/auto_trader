@@ -5,12 +5,16 @@
 #   docker compose -f docker-compose.monitoring-rpi.yml up -d
 #
 # Access Points:
-#   - Grafana UI: http://localhost:3000 (admin/admin)
-#   - OTLP gRPC: localhost:4317 (send traces/metrics/logs here)
-#   - OTLP HTTP: localhost:4318 (send traces/metrics/logs here)
+#   - Grafana UI: http://localhost:3000 (credentials from .env or default: admin/admin)
+#   - OTLP gRPC: localhost:4317 (send traces/metrics here)
+#   - OTLP HTTP: localhost:4318 (send traces/metrics here)
 #   - Tempo HTTP: http://localhost:3200
 #   - Loki HTTP: http://localhost:3100
 #   - Prometheus: http://localhost:9090
+#
+# Configuration:
+#   Set GRAFANA_ADMIN_PASSWORD in .env for production (default: admin)
+#   Set GRAFANA_ANONYMOUS_ENABLED=false in .env for production security
 #
 # Architecture:
 #   Application → OTEL Collector (4317/4318) → {Tempo, Prometheus}
@@ -185,17 +189,13 @@ services:
     image: grafana/grafana:latest
     container_name: grafana
     environment:
-      # ⚠️  SECURITY WARNING: These settings are for LOCAL DEVELOPMENT ONLY
-      # For production, change these settings:
-      # - Set strong password: GF_SECURITY_ADMIN_PASSWORD=<strong_password>
-      # - Disable anonymous access: GF_AUTH_ANONYMOUS_ENABLED=false
-      # - Enable TLS/HTTPS
-      # - Use environment-specific secrets management
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
-      - GF_AUTH_DISABLE_LOGIN_FORM=false
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Authentication settings (can be overridden via .env file)
+      # For production: set GRAFANA_ADMIN_PASSWORD in .env with a strong password
+      - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS_ENABLED:-true}
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=${GRAFANA_ANONYMOUS_ORG_ROLE:-Admin}
+      - GF_AUTH_DISABLE_LOGIN_FORM=${GRAFANA_DISABLE_LOGIN_FORM:-false}
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
     volumes:
       - ./grafana-config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
       - grafana_data:/var/lib/grafana
