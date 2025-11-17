@@ -91,12 +91,9 @@ services:
         condition: service_healthy
       prometheus:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133/"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 45s  # Increased to allow Tempo to fully start
+    # Note: OTEL Collector uses minimal base image without wget/curl
+    # Healthcheck removed - service readiness verified by port availability
+    # The collector starts quickly and exports readiness via :13133 (health_check extension)
     networks:
       - observability
     restart: unless-stopped
