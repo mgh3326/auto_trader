@@ -19,11 +19,10 @@
 #
 # Security:
 #   - All services run as non-root users (10001:10001)
-#   - Security hardening applied:
+#   - Security hardening applied to Tempo and Loki:
 #     * no-new-privileges: Prevent privilege escalation
 #     * cap_drop: ALL - Drop all Linux capabilities
 #     * cap_add: Only essential capabilities (CHOWN, DAC_OVERRIDE, SETUID, SETGID)
-#     * read_only: true (Tempo only) - Read-only root filesystem
 #   - Named volumes automatically get correct ownership from container user
 #   - If permission issues occur on Raspberry Pi, see troubleshooting in README
 #
@@ -86,9 +85,6 @@ services:
       - DAC_OVERRIDE
       - SETUID
       - SETGID
-    read_only: true  # Read-only root filesystem
-    tmpfs:
-      - /tmp  # Writable tmp directory
     networks:
       - observability
     restart: unless-stopped
