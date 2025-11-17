@@ -41,7 +41,9 @@ jobs:
       run: |
         docker compose -f docker-compose.monitoring-rpi.yml up -d
         echo "Waiting for services to be ready..."
-        sleep 45
+        sleep 60
+        echo "Checking service status..."
+        docker compose -f docker-compose.monitoring-rpi.yml ps
 
     - name: Check service status
       run: |
