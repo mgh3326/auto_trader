@@ -118,7 +118,7 @@ services:
     security_opt:
       - no-new-privileges:true  # Prevent privilege escalation
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3200/status"]
+      test: ["CMD-SHELL", "timeout 5 sh -c '</dev/tcp/localhost/3200' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
