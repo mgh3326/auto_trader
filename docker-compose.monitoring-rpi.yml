@@ -86,7 +86,7 @@ services:
     cpus: '0.5'  # Limit to 0.5 CPU core
     depends_on:
       tempo:
-        condition: service_healthy
+        condition: service_started  # Tempo has no healthcheck (distroless image)
       loki:
         condition: service_healthy
       prometheus:
@@ -96,7 +96,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 30s  # Increased to allow Tempo to fully start
     networks:
       - observability
     restart: unless-stopped
@@ -117,12 +117,8 @@ services:
     cpus: '1.0'  # Limit to 1 CPU core
     security_opt:
       - no-new-privileges:true  # Prevent privilege escalation
-    healthcheck:
-      test: ["CMD-SHELL", "timeout 5 sh -c '</dev/tcp/localhost/3200' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+    # Note: Tempo uses distroless image without wget/curl/sh
+    # Healthcheck removed - service readiness checked by otel-collector startup delay
     networks:
       - observability
     restart: unless-stopped
