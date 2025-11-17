@@ -47,7 +47,8 @@ service:
   # Enable telemetry for self-monitoring
   telemetry:
     metrics:
-      address: 0.0.0.0:8888
+      level: detailed
+      address: :8888
 
   pipelines:
     traces:
