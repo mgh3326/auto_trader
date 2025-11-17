@@ -1,0 +1,89 @@
+name: Monitoring Stack Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'docker-compose.monitoring-rpi.yml'
+      - 'grafana-config/**'
+      - 'tests/integration/test_monitoring_stack.py'
+      - 'scripts/test-monitoring-integration.sh'
+      - '.github/workflows/test-monitoring-stack.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'docker-compose.monitoring-rpi.yml'
+      - 'grafana-config/**'
+      - 'tests/integration/test_monitoring_stack.py'
+      - 'scripts/test-monitoring-integration.sh'
+      - '.github/workflows/test-monitoring-stack.yml'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  test-monitoring-stack:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Install dependencies
+      run: uv sync --all-groups
+
+    - name: Start monitoring stack
+      run: |
+        docker compose -f docker-compose.monitoring-rpi.yml up -d
+        echo "Waiting for services to be ready..."
+        sleep 45
+
+    - name: Check service status
+      run: |
+        docker compose -f docker-compose.monitoring-rpi.yml ps
+        echo "---"
+        echo "Service logs:"
+        docker compose -f docker-compose.monitoring-rpi.yml logs --tail=20
+
+    - name: Run shell-based smoke tests
+      run: |
+        chmod +x scripts/test-monitoring-integration.sh
+        ./scripts/test-monitoring-integration.sh
+
+    - name: Run Python integration tests
+      run: |
+        uv run pytest tests/integration/test_monitoring_stack.py -v --run-integration
+
+    - name: Collect logs on failure
+      if: failure()
+      run: |
+        echo "=== Docker Compose Status ==="
+        docker compose -f docker-compose.monitoring-rpi.yml ps
+        echo ""
+        echo "=== Tempo Logs ==="
+        docker compose -f docker-compose.monitoring-rpi.yml logs tempo
+        echo ""
+        echo "=== Loki Logs ==="
+        docker compose -f docker-compose.monitoring-rpi.yml logs loki
+        echo ""
+        echo "=== Prometheus Logs ==="
+        docker compose -f docker-compose.monitoring-rpi.yml logs prometheus
+        echo ""
+        echo "=== OTEL Collector Logs ==="
+        docker compose -f docker-compose.monitoring-rpi.yml logs otel-collector
+        echo ""
+        echo "=== Grafana Logs ==="
+        docker compose -f docker-compose.monitoring-rpi.yml logs grafana
+        echo ""
+        echo "=== Promtail Logs ==="
+        docker compose -f docker-compose.monitoring-rpi.yml logs promtail
+
+    - name: Cleanup
+      if: always()
+      run: |
+        docker compose -f docker-compose.monitoring-rpi.yml down -v
