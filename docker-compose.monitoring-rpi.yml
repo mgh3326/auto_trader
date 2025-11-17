@@ -13,10 +13,10 @@
 #   - Prometheus: http://localhost:9090
 #
 # Architecture:
-#   Application → OTEL Collector (4317/4318) → {Tempo, Prometheus, Loki}
-#   - Traces routed to Tempo
-#   - Metrics routed to Prometheus
-#   - Logs routed to Loki
+#   Application → OTEL Collector (4317/4318) → {Tempo, Prometheus}
+#   - Traces: OTEL Collector → Tempo
+#   - Metrics: OTEL Collector → Prometheus
+#   - Logs: Promtail scrapes Docker containers → Loki
 #
 # Resource Limits (optimized for Raspberry Pi 5 - 8GB RAM):
 #   - Memory: ~2.5GB total (512MB × 5 services)

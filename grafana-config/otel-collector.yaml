@@ -2,7 +2,7 @@
 # Routes OTLP telemetry to appropriate backends:
 # - Traces → Tempo
 # - Metrics → Prometheus
-# - Logs → Loki
+# Note: Logs are handled by Promtail (not OTEL Collector)
 
 receivers:
   otlp:
@@ -30,29 +30,18 @@ exporters:
     tls:
       insecure: true
 
-  # Export logs to Loki
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
-    tls:
-      insecure: true
-
-  # Logging for debugging
-  logging:
-    loglevel: info
+  # Debug output for troubleshooting
+  debug:
+    verbosity: detailed
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp/tempo, logging]
+      exporters: [otlp/tempo]
 
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [prometheusremotewrite, logging]
-
-    logs:
-      receivers: [otlp]
-      processors: [batch]
-      exporters: [loki, logging]
+      exporters: [prometheusremotewrite]
