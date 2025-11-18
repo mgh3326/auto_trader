@@ -34,7 +34,7 @@ mgh3326.iptime.org {
 
 	# Root path → Auto-trader main application
 	handle / {
-		reverse_proxy auto-trader:8000 {
+		reverse_proxy localhost:8000 {
 			# Health check
 			health_uri /health
 			health_interval 10s
@@ -43,14 +43,12 @@ mgh3326.iptime.org {
 			# Headers
 			header_up Host {host}
 			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
-			header_up X-Forwarded-Proto {scheme}
 		}
 	}
 
 	# Handle all other paths for auto-trader
 	handle /* {
-		reverse_proxy auto-trader:8000 {
+		reverse_proxy localhost:8000 {
 			# Health check
 			health_uri /health
 			health_interval 10s
@@ -59,14 +57,12 @@ mgh3326.iptime.org {
 			# Headers
 			header_up Host {host}
 			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
-			header_up X-Forwarded-Proto {scheme}
 		}
 	}
 
 	# Grafana subpath → Grafana service
 	handle /grafana* {
-		reverse_proxy grafana:3000 {
+		reverse_proxy localhost:3000 {
 			# Health check
 			health_uri /api/health
 			health_interval 10s
@@ -75,8 +71,6 @@ mgh3326.iptime.org {
 			# Headers for proper subpath handling
 			header_up Host {host}
 			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-For {remote_host}
-			header_up X-Forwarded-Proto {scheme}
 		}
 	}
 
