@@ -2,7 +2,9 @@
 # Integration test for Grafana Observability Stack
 # Tests OTEL traces/metrics flow and datasource connectivity
 
-set -e
+# Do not exit on first failure; we aggregate all results below.
+# shellcheck disable=SC3040
+set +e
 
 echo "=========================================="
 echo "Grafana Observability Stack Integration Test"
