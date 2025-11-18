@@ -1,16 +1,19 @@
 # Docker Compose for Grafana Observability Stack (Raspberry Pi 5 optimized)
-# Grafana + Loki (logs) + Tempo (traces) + Prometheus (metrics) + OTEL Collector + Promtail
+# Caddy + Grafana + Loki (logs) + Tempo (traces) + Prometheus (metrics) + OTEL Collector + Promtail
 #
 # Usage:
 #   docker compose -f docker-compose.monitoring-rpi.yml up -d
 #
-# Access Points:
-#   - Grafana UI: http://localhost:3000 (credentials from .env or default: admin/admin)
-#   - OTLP gRPC: localhost:4317 (send traces/metrics here)
-#   - OTLP HTTP: localhost:4318 (send traces/metrics here)
-#   - Tempo HTTP: http://localhost:3200
-#   - Loki HTTP: http://localhost:3100
-#   - Prometheus: http://localhost:9090
+# Access Points (via Caddy reverse proxy):
+#   - HTTPS: https://mgh3326.iptime.org (auto-trader app)
+#   - HTTPS: https://mgh3326.iptime.org/grafana (Grafana UI)
+#   - Direct access (internal only):
+#     - Grafana UI: http://localhost:3000 (credentials from .env or default: admin/admin)
+#     - OTLP gRPC: localhost:4317 (send traces/metrics here)
+#     - OTLP HTTP: localhost:4318 (send traces/metrics here)
+#     - Tempo HTTP: http://localhost:3200
+#     - Loki HTTP: http://localhost:3100
+#     - Prometheus: http://localhost:9090 (NOT exposed via Caddy for security)
 #
 # Configuration:
 #   Set GRAFANA_ADMIN_PASSWORD in .env for production (default: admin)
@@ -202,6 +205,32 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # Caddy - Reverse proxy with automatic HTTPS
+  caddy:
+    image: caddy:2.8.4-alpine
+    container_name: caddy
+    ports:
+      - "80:80"     # HTTP (auto-redirects to HTTPS)
+      - "443:443"   # HTTPS
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/data/logs
+    networks:
+      - observability
+    restart: unless-stopped
+    depends_on:
+      grafana:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   # Grafana - Visualization and dashboards
   grafana:
     image: grafana/grafana:11.3.1
@@ -214,6 +243,9 @@ services:
       - GF_AUTH_DISABLE_LOGIN_FORM=${GRAFANA_DISABLE_LOGIN_FORM:-false}
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Subpath configuration for reverse proxy
+      - GF_SERVER_ROOT_URL=https://mgh3326.iptime.org/grafana
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
     volumes:
       - ./grafana-config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
       - grafana_data:/var/lib/grafana
@@ -250,6 +282,12 @@ volumes:
     name: grafana_data
   promtail_data:
     name: promtail_data
+  caddy_data:
+    name: caddy_data
+  caddy_config:
+    name: caddy_config
+  caddy_logs:
+    name: caddy_logs
 
 networks:
   observability:

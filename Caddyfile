@@ -1,0 +1,92 @@
+# Caddyfile for mgh3326.iptime.org
+# Automatic HTTPS with Let's Encrypt
+# Only exposes necessary services to the internet
+
+{
+	# Global options
+	email mgh3326@naver.com  # Change this to your email for Let's Encrypt notifications
+
+	# JSON access logs
+	log {
+		output file /data/logs/access.log
+		format json
+	}
+}
+
+mgh3326.iptime.org {
+	# Security headers
+	header {
+		# HTTP Strict Transport Security (HSTS)
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+		# Prevent MIME type sniffing
+		X-Content-Type-Options "nosniff"
+
+		# Allow framing from same origin (Grafana needs this for dashboards)
+		X-Frame-Options "SAMEORIGIN"
+
+		# XSS Protection
+		X-XSS-Protection "1; mode=block"
+
+		# Referrer Policy
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	# Root path → Auto-trader main application
+	handle / {
+		reverse_proxy auto-trader:8000 {
+			# Health check
+			health_uri /health
+			health_interval 10s
+			health_timeout 5s
+
+			# Headers
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Handle all other paths for auto-trader
+	handle /* {
+		reverse_proxy auto-trader:8000 {
+			# Health check
+			health_uri /health
+			health_interval 10s
+			health_timeout 5s
+
+			# Headers
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Grafana subpath → Grafana service
+	handle /grafana* {
+		reverse_proxy grafana:3000 {
+			# Health check
+			health_uri /api/health
+			health_interval 10s
+			health_timeout 5s
+
+			# Headers for proper subpath handling
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Access logs for this site
+	log {
+		output file /data/logs/mgh3326_access.log {
+			roll_size 100mb
+			roll_keep 10
+			roll_keep_for 720h  # Keep for 30 days
+		}
+		format json
+	}
+}
