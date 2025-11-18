@@ -4,7 +4,10 @@
 
 {
 	# Global options
-	email mgh3326@naver.com  # Change this to your email for Let's Encrypt notifications
+	email mgh3326@naver.com
+
+	# Use Let's Encrypt production (not staging)
+	acme_ca https://acme-v02.api.letsencrypt.org/directory
 
 	# JSON access logs
 	log {
@@ -14,7 +17,7 @@
 }
 
 mgh3326.iptime.org {
-	# Security headers
+	# Security headers (applied to HTTPS responses only)
 	header {
 		# HTTP Strict Transport Security (HSTS)
 		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
@@ -32,43 +35,19 @@ mgh3326.iptime.org {
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
 
-	# Root path → Auto-trader main application
-	handle / {
-		reverse_proxy localhost:8000 {
-			# Health check
-			health_uri /health
-			health_interval 10s
-			health_timeout 5s
-
-			# Headers
-			header_up Host {host}
-			header_up X-Real-IP {remote_host}
-		}
-	}
-
-	# Handle all other paths for auto-trader
-	handle /* {
-		reverse_proxy localhost:8000 {
-			# Health check
-			health_uri /health
-			health_interval 10s
-			health_timeout 5s
-
-			# Headers
-			header_up Host {host}
-			header_up X-Real-IP {remote_host}
-		}
-	}
-
-	# Grafana subpath → Grafana service
+	# Grafana subpath → Grafana service (must come first - more specific)
 	handle /grafana* {
 		reverse_proxy localhost:3000 {
-			# Health check
-			health_uri /api/health
-			health_interval 10s
-			health_timeout 5s
-
 			# Headers for proper subpath handling
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# Root path → Auto-trader main application (catch-all)
+	handle {
+		reverse_proxy localhost:8000 {
+			# Headers
 			header_up Host {host}
 			header_up X-Real-IP {remote_host}
 		}
