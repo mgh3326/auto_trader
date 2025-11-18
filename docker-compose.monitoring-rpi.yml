@@ -5,8 +5,8 @@
 #   docker compose -f docker-compose.monitoring-rpi.yml up -d
 #
 # Access Points (via Caddy reverse proxy):
-#   - HTTPS: https://mgh3326.iptime.org (auto-trader app)
-#   - HTTPS: https://mgh3326.iptime.org/grafana (Grafana UI)
+#   - HTTPS: https://mgh3326.duckdns.org (auto-trader app)
+#   - HTTPS: https://mgh3326.duckdns.org/grafana (Grafana UI)
 #   - Direct access (internal only):
 #     - Grafana UI: http://localhost:3000 (credentials from .env or default: admin/admin)
 #     - OTLP gRPC: localhost:4317 (send traces/metrics here)
@@ -239,7 +239,7 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       # Subpath configuration for reverse proxy
-      - GF_SERVER_ROOT_URL=https://mgh3326.iptime.org/grafana
+      - GF_SERVER_ROOT_URL=https://mgh3326.duckdns.org/grafana
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
     volumes:
       - ./grafana-config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
