@@ -55,7 +55,9 @@ class TestMonitoringStack:
             "loki": f"{self.BASE_URLS['loki']}/ready",
             "prometheus": f"{self.BASE_URLS['prometheus']}/-/healthy",
             "grafana": f"{self.BASE_URLS['grafana']}/api/health",
-            "otel_collector": self.BASE_URLS["otel_collector"],
+            # Note: OTEL Collector port 13133 is not exposed in docker-compose
+            # We check its metrics endpoint instead
+            "otel_collector": "http://localhost:8888/metrics",
             "promtail": f"{self.BASE_URLS['promtail']}/ready",
         }
 
@@ -149,10 +151,30 @@ class TestMonitoringStack:
 
     def test_loki_query_api(self):
         """Test that Loki query API is working."""
-        url = f"{self.BASE_URLS['loki']}/loki/api/v1/query"
-        params = {"query": '{job="dockerlogs"}', "limit": 10}
+        # First check that Loki labels API works
+        labels_url = f"{self.BASE_URLS['loki']}/loki/api/v1/labels"
+        response = requests.get(labels_url, timeout=5)
+        assert response.status_code == 200
 
-        response = requests.get(url, params=params, timeout=5)
+        data = response.json()
+        assert data["status"] == "success"
+        assert len(data["data"]) > 0, "No labels found in Loki"
+
+        # Now test query_range with a simple query
+        query_url = f"{self.BASE_URLS['loki']}/loki/api/v1/query_range"
+
+        # Use current time range (last 5 minutes)
+        now = int(time.time() * 1e9)  # nanoseconds
+        five_min_ago = int(now - (5 * 60 * 1e9))  # Must be int, not float
+
+        params = {
+            "query": '{service=~".+"}',  # Match any service
+            "start": str(five_min_ago),  # Convert to string to avoid scientific notation
+            "end": str(now),
+            "limit": 10,
+        }
+
+        response = requests.get(query_url, params=params, timeout=5)
         assert response.status_code == 200
 
         data = response.json()
@@ -210,10 +232,10 @@ class TestMonitoringStack:
 
         assert response.status_code == 200
         runtime_info = response.json()
-        # Check storage retention (should be 7d)
+        # Check storage retention (should be 7d, 168h, or 1w - all equivalent)
         storage_retention = runtime_info["data"].get("storageRetention", "")
         assert (
-            "7d" in storage_retention or "168h" in storage_retention
+            "7d" in storage_retention or "168h" in storage_retention or "1w" in storage_retention
         ), f"Unexpected retention: {storage_retention}"
 
 
