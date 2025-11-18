@@ -68,22 +68,26 @@ jobs:
           PROMETHEUS_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' prometheus 2>/dev/null || echo "not_found")
           OTEL_STATUS=$(docker inspect --format='{{.State.Status}}' otel-collector 2>/dev/null || echo "not_found")
           GRAFANA_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' grafana 2>/dev/null || echo "not_found")
+          PROMTAIL_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' promtail 2>/dev/null || echo "not_found")
           LOKI_HTTP=$(check_http_health "http://localhost:3100/ready")
           PROMETHEUS_HTTP=$(check_http_health "http://localhost:9090/-/healthy")
           GRAFANA_HTTP=$(check_http_health "http://localhost:3000/api/health")
+          PROMTAIL_HTTP=$(check_http_health "http://localhost:9080/ready")
 
           echo "  ├─ Tempo: $TEMPO_STATUS"
           echo "  ├─ Loki: $LOKI_HEALTH (HTTP: $LOKI_HTTP)"
           echo "  ├─ Prometheus: $PROMETHEUS_HEALTH (HTTP: $PROMETHEUS_HTTP)"
           echo "  ├─ OTEL Collector: $OTEL_STATUS"
-          echo "  └─ Grafana: $GRAFANA_HEALTH (HTTP: $GRAFANA_HTTP)"
+          echo "  ├─ Grafana: $GRAFANA_HEALTH (HTTP: $GRAFANA_HTTP)"
+          echo "  └─ Promtail: $PROMTAIL_HEALTH (HTTP: $PROMTAIL_HTTP)"
 
           # Check if critical services are healthy/running
           if [ "$TEMPO_STATUS" = "running" ] && \
              [ "$LOKI_HTTP" = "ready" ] && \
              [ "$PROMETHEUS_HTTP" = "ready" ] && \
              [ "$OTEL_STATUS" = "running" ] && \
-             [ "$GRAFANA_HTTP" = "ready" ]; then
+             [ "$GRAFANA_HTTP" = "ready" ] && \
+             [ "$PROMTAIL_HTTP" = "ready" ]; then
             echo ""
             echo "✅ All critical services are ready!"
             ALL_READY=true
