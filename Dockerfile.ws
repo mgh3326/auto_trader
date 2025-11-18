@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.19
+# syntax=docker/dockerfile:1.20
 
 # ==============================================================================
 # STAGE 1: 'builder' - 의존성 설치를 전담하는 스테이지
