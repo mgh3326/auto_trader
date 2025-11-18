@@ -6,8 +6,8 @@
 	# Global options
 	email mgh3326@naver.com
 
-	# Use Let's Encrypt production (not staging)
-	acme_ca https://acme-v02.api.letsencrypt.org/directory
+	# Use ZeroSSL instead of Let's Encrypt (iptime.org CAA blocks Let's Encrypt)
+	acme_ca https://acme.zerossl.com/v2/DV90
 
 	# JSON access logs
 	log {
