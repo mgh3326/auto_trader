@@ -1,14 +1,14 @@
 # Docker Compose override for CI environments
 # Usage: docker compose -f docker-compose.monitoring-rpi.yml -f docker-compose.monitoring-ci.yml up -d
 #
-# This override removes non-root user directives that cause permission issues in CI
+# This override sets root user (0:0) to fix permission issues in CI
 # where Docker volumes are created as root and non-root users cannot write to them.
 
 services:
   tempo:
-    # Override: Remove user directive for CI compatibility
-    user: null
+    # Override: Use root user for CI compatibility
+    user: "0:0"
 
   loki:
-    # Override: Remove user directive for CI compatibility
-    user: null
+    # Override: Use root user for CI compatibility
+    user: "0:0"
