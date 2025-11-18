@@ -176,9 +176,10 @@ SigNoz Traces에서 각 쿼리의 실행 시간을 확인할 수 있습니다:
 ### .env 파일
 
 ```bash
-# SigNoz 활성화
-SIGNOZ_ENABLED=true
-SIGNOZ_ENDPOINT=localhost:4317
+# OpenTelemetry (Grafana Stack) 활성화
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+OTEL_INSECURE=true
 
 # 서비스 정보
 OTEL_SERVICE_NAME=auto-trader
@@ -335,7 +336,7 @@ logger.info(
 
 설정이 완료되었는지 확인:
 
-- [ ] `SIGNOZ_ENABLED=true` in .env
+- [ ] `OTEL_ENABLED=true` in .env
 - [ ] SigNoz 컨테이너 실행 중 (`docker compose ps`)
 - [ ] OTEL Collector healthy (`docker compose ps | grep otel-collector`)
 - [ ] ClickHouse에 로그 저장 확인 (`SELECT count(*) FROM signoz_logs.logs`)

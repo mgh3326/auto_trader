@@ -145,10 +145,12 @@ DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/auto_trader
 # Redis (네이티브, Docker host 네트워크로 localhost 접근)
 REDIS_URL=redis://localhost:6379/0
 
-# SigNoz (Docker 컨테이너, localhost로 접근 가능)
-SIGNOZ_ENABLED=true
-SIGNOZ_ENDPOINT=localhost:4317
+# OpenTelemetry (Grafana Stack via docker-compose.monitoring-rpi.yml)
+OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+OTEL_INSECURE=true
 OTEL_SERVICE_NAME=auto-trader-rpi5
+OTEL_SERVICE_VERSION=0.1.0
 OTEL_ENVIRONMENT=production
 
 # Telegram 알림

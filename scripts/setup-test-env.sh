@@ -101,11 +101,14 @@ while IFS= read -r line; do
             "REDIS_SOCKET_CONNECT_TIMEOUT")
                 echo "REDIS_SOCKET_CONNECT_TIMEOUT=5" >> "$OUTPUT_TARGET"
                 ;;
-            "SIGNOZ_ENDPOINT")
-                echo "SIGNOZ_ENDPOINT=localhost:4317" >> "$OUTPUT_TARGET"
+            "OTEL_EXPORTER_OTLP_ENDPOINT")
+                echo "OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317" >> "$OUTPUT_TARGET"
                 ;;
-            "SIGNOZ_ENABLED")
-                echo "SIGNOZ_ENABLED=false" >> "$OUTPUT_TARGET"
+            "OTEL_ENABLED")
+                echo "OTEL_ENABLED=false" >> "$OUTPUT_TARGET"
+                ;;
+            "OTEL_INSECURE")
+                echo "OTEL_INSECURE=true" >> "$OUTPUT_TARGET"
                 ;;
             "OTEL_SERVICE_NAME")
                 echo "OTEL_SERVICE_NAME=auto-trader-test" >> "$OUTPUT_TARGET"
