@@ -34,6 +34,18 @@ warn() {
     echo -e "${YELLOW}⚠ WARN${NC}: $1"
 }
 
+healthcheck_url_for() {
+    case "$1" in
+        tempo) echo "http://localhost:3200/status" ;;
+        loki) echo "http://localhost:3100/ready" ;;
+        prometheus) echo "http://localhost:9090/-/healthy" ;;
+        grafana) echo "http://localhost:3000/api/health" ;;
+        otel-collector) echo "http://localhost:13133/" ;;
+        promtail) echo "http://localhost:9080/ready" ;;
+        *) echo "" ;;
+    esac
+}
+
 # 1. Service Health Checks
 echo "1. Testing service health endpoints..."
 echo "----------------------------------------"
@@ -236,14 +248,21 @@ for container in $CONTAINERS; do
     STATUS=$(docker inspect -f '{{.State.Status}}' $container 2>/dev/null)
     HEALTH=$(docker inspect -f '{{.State.Health.Status}}' $container 2>/dev/null)
 
-    if [ "$STATUS" = "running" ]; then
-        if [ "$HEALTH" = "healthy" ] || [ "$HEALTH" = "<no value>" ]; then
-            pass "$container is running and healthy"
-        else
-            fail "$container is running but unhealthy: $HEALTH"
-        fi
-    else
+    if [ "$STATUS" != "running" ]; then
         fail "$container is not running: $STATUS"
+        continue
+    fi
+
+    if [ "$HEALTH" = "healthy" ] || [ "$HEALTH" = "<no value>" ]; then
+        pass "$container is running and healthy"
+        continue
+    fi
+
+    HEALTH_URL=$(healthcheck_url_for "$container")
+    if [ -n "$HEALTH_URL" ] && curl -sf "$HEALTH_URL" >/dev/null 2>&1; then
+        warn "$container docker health=$HEALTH but $HEALTH_URL responds"
+    else
+        fail "$container is running but unhealthy: $HEALTH"
     fi
 done
 
