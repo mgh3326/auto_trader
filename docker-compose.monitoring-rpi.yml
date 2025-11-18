@@ -162,7 +162,7 @@ services:
       - observability
     depends_on:
       loki:
-        condition: service_healthy
+        condition: service_started  # Start immediately, Promtail will retry connection
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9080/ready"]
       interval: 10s
@@ -224,9 +224,9 @@ services:
       tempo:
         condition: service_started
       loki:
-        condition: service_healthy
+        condition: service_started  # Start immediately, Grafana will retry datasource connection
       prometheus:
-        condition: service_healthy
+        condition: service_started  # Start immediately, Grafana will retry datasource connection
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
       interval: 10s
