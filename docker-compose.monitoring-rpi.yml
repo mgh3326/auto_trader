@@ -81,6 +81,7 @@ services:
       - "4317:4317"   # OTLP gRPC (application sends here)
       - "4318:4318"   # OTLP HTTP (application sends here)
       - "8888:8888"   # Prometheus metrics endpoint
+      - "13133:13133" # OTEL health check endpoint
     mem_limit: 512m
     mem_reservation: 256m
     cpus: '0.5'  # Limit to 0.5 CPU core
