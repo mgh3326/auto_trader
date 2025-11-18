@@ -1,4 +1,136 @@
-<?xml version="1.0" encoding="UTF-8"?>
+#!/usr/bin/env python3
+"""
+모니터링 시스템 블로그 SVG 이미지 생성 스크립트
+
+SVG 형식으로 이미지를 생성한 후 convert_monitoring_svg_to_png.py로 PNG 변환
+
+사용법:
+    python blog/generate_monitoring_svg.py
+    python blog/convert_monitoring_svg_to_png.py
+
+생성되는 SVG:
+    - blog/images/monitoring_thumbnail.svg (1200x630)
+    - blog/images/before_after_monitoring.svg (1200x800)
+    - blog/images/monitoring_architecture.svg (1400x1000)
+"""
+
+from pathlib import Path
+
+
+def create_thumbnail_svg() -> str:
+    """썸네일 이미지 SVG 생성 (1200x630)"""
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bgGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" style="stop-color:#0f3460;stop-opacity:1" />
+            <stop offset="50%" style="stop-color:#16213e;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#1a1a2e;stop-opacity:1" />
+        </linearGradient>
+    </defs>
+
+    <!-- 배경 -->
+    <rect width="1200" height="630" fill="url(#bgGradient)"/>
+
+    <!-- 제목 -->
+    <text x="600" y="150" font-family="Arial, sans-serif" font-size="60" font-weight="bold" fill="#ffffff" text-anchor="middle">
+        실전 운영을 위한
+    </text>
+    <text x="600" y="240" font-family="Arial, sans-serif" font-size="60" font-weight="bold" fill="#ffffff" text-anchor="middle">
+        모니터링 시스템 구축
+    </text>
+
+    <!-- 부제목 -->
+    <text x="600" y="340" font-family="Arial, sans-serif" font-size="35" fill="#00d4ff" text-anchor="middle">
+        OpenTelemetry + Grafana 관찰성 스택
+    </text>
+
+    <!-- 하단 텍스트 -->
+    <text x="600" y="480" font-family="Arial, sans-serif" font-size="25" fill="#a8dadc" text-anchor="middle">
+        Grafana • Tempo • Loki • Prometheus
+    </text>
+
+    <!-- 아이콘 원들 -->
+    <circle cx="250" cy="540" r="25" fill="#F46800"/>
+    <circle cx="450" cy="540" r="25" fill="#E91E63"/>
+    <circle cx="650" cy="540" r="25" fill="#00ACC1"/>
+    <circle cx="850" cy="540" r="25" fill="#E6522C"/>
+</svg>"""
+
+
+def create_before_after_svg() -> str:
+    """모니터링 전후 비교 SVG 생성 (1200x800)"""
+    return """<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="800" xmlns="http://www.w3.org/2000/svg">
+    <!-- 배경 -->
+    <rect width="1200" height="800" fill="#f8f9fa"/>
+
+    <!-- 제목 -->
+    <text x="600" y="60" font-family="Arial, sans-serif" font-size="50" font-weight="bold" fill="#1a1a2e" text-anchor="middle">
+        모니터링 시스템 구축 전 vs 후
+    </text>
+
+    <!-- Before 섹션 -->
+    <text x="300" y="160" font-family="Arial, sans-serif" font-size="40" font-weight="bold" fill="#e63946" text-anchor="middle">
+        ❌ Before
+    </text>
+    <rect x="50" y="200" width="500" height="550" fill="none" stroke="#e63946" stroke-width="3"/>
+
+    <text x="300" y="260" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 에러 발견: 6시간 후
+    </text>
+    <text x="300" y="330" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 서버 접속해서 로그 확인
+    </text>
+    <text x="300" y="400" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 성능 저하 인지 불가
+    </text>
+    <text x="300" y="470" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 문제 원인 파악 어려움
+    </text>
+    <text x="300" y="540" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 불안한 운영
+    </text>
+    <text x="300" y="610" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 수동 모니터링 필요
+    </text>
+    <text x="300" y="680" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 커피 마시며 불안 😰
+    </text>
+
+    <!-- After 섹션 -->
+    <text x="900" y="160" font-family="Arial, sans-serif" font-size="40" font-weight="bold" fill="#06d6a0" text-anchor="middle">
+        ✅ After
+    </text>
+    <rect x="650" y="200" width="500" height="550" fill="none" stroke="#06d6a0" stroke-width="3"/>
+
+    <text x="900" y="260" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 에러 발견: 1초 이내
+    </text>
+    <text x="900" y="330" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • Telegram 즉시 알림
+    </text>
+    <text x="900" y="400" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • Grafana로 실시간 확인
+    </text>
+    <text x="900" y="470" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • Trace로 원인 즉시 파악
+    </text>
+    <text x="900" y="540" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 안심하고 운영
+    </text>
+    <text x="900" y="610" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 자동 모니터링
+    </text>
+    <text x="900" y="680" font-family="Arial, sans-serif" font-size="22" fill="#333333" text-anchor="middle">
+        • 커피 마시며 여유 ☕
+    </text>
+</svg>"""
+
+
+def create_architecture_svg() -> str:
+    """아키텍처 다이어그램 SVG 생성 (1400x1000)"""
+    return """<?xml version="1.0" encoding="UTF-8"?>
 <svg width="1400" height="1000" xmlns="http://www.w3.org/2000/svg">
     <defs>
         <!-- 화살표 마커 -->
@@ -136,4 +268,43 @@
     <text x="700" y="950" font-family="Arial, sans-serif" font-size="16" fill="#999999" text-anchor="middle">
         SigNoz에서 Grafana Stack으로 마이그레이션 (환경 변수만 변경)
     </text>
-</svg>
+</svg>"""
+
+
+def main():
+    """메인 함수"""
+    # images 디렉토리 확인
+    images_dir = Path(__file__).parent / 'images'
+    images_dir.mkdir(exist_ok=True)
+
+    print("🎨 모니터링 시스템 SVG 이미지 생성 중...\n")
+
+    # 1. 썸네일 생성
+    print("  1/3 썸네일 SVG 생성 중...")
+    thumbnail_path = images_dir / 'monitoring_thumbnail.svg'
+    thumbnail_path.write_text(create_thumbnail_svg(), encoding='utf-8')
+    print(f"  ✅ 저장: {thumbnail_path}")
+
+    # 2. Before/After 비교 생성
+    print("  2/3 Before/After 비교 SVG 생성 중...")
+    before_after_path = images_dir / 'before_after_monitoring.svg'
+    before_after_path.write_text(create_before_after_svg(), encoding='utf-8')
+    print(f"  ✅ 저장: {before_after_path}")
+
+    # 3. 아키텍처 다이어그램 생성
+    print("  3/3 아키텍처 다이어그램 SVG 생성 중...")
+    architecture_path = images_dir / 'monitoring_architecture.svg'
+    architecture_path.write_text(create_architecture_svg(), encoding='utf-8')
+    print(f"  ✅ 저장: {architecture_path}")
+
+    print("\n✨ 모든 SVG 이미지 생성 완료!")
+    print("\n생성된 SVG:")
+    print(f"  - {thumbnail_path}")
+    print(f"  - {before_after_path}")
+    print(f"  - {architecture_path}")
+    print("\n다음 단계:")
+    print("  python blog/convert_monitoring_svg_to_png.py")
+
+
+if __name__ == '__main__':
+    main()

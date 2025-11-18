@@ -1,71 +1,37 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
-  <!-- Background gradient -->
-  <defs>
-    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#2c3e50;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#3498db;stop-opacity:1" />
-    </linearGradient>
-  </defs>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bgGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" style="stop-color:#0f3460;stop-opacity:1" />
+            <stop offset="50%" style="stop-color:#16213e;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#1a1a2e;stop-opacity:1" />
+        </linearGradient>
+    </defs>
 
-  <rect width="1200" height="630" fill="url(#bgGradient)"/>
+    <!-- 배경 -->
+    <rect width="1200" height="630" fill="url(#bgGradient)"/>
 
-  <!-- Title -->
-  <text x="600" y="140" text-anchor="middle" font-family="Arial, sans-serif" font-size="52" font-weight="bold" fill="white">
-    실전 운영을 위한
-  </text>
-  <text x="600" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="52" font-weight="bold" fill="white">
-    모니터링 시스템 구축
-  </text>
-
-  <!-- Subtitle -->
-  <text x="600" y="270" text-anchor="middle" font-family="Arial, sans-serif" font-size="28" fill="#ecf0f1">
-    OpenTelemetry + SigNoz + Telegram
-  </text>
-
-  <!-- Icons Row -->
-  <g id="icons">
-    <!-- SigNoz Logo -->
-    <rect x="200" y="320" width="180" height="180" rx="15" fill="#27ae60" stroke="#229954" stroke-width="4"/>
-    <text x="290" y="400" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="white">
-      SigNoz
+    <!-- 제목 -->
+    <text x="600" y="150" font-family="Arial, sans-serif" font-size="60" font-weight="bold" fill="#ffffff" text-anchor="middle">
+        실전 운영을 위한
     </text>
-    <text x="290" y="435" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="white">
-      📊 Traces
-    </text>
-    <text x="290" y="465" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="white">
-      📈 Metrics
+    <text x="600" y="240" font-family="Arial, sans-serif" font-size="60" font-weight="bold" fill="#ffffff" text-anchor="middle">
+        모니터링 시스템 구축
     </text>
 
-    <!-- OpenTelemetry Logo -->
-    <rect x="510" y="320" width="180" height="180" rx="15" fill="#9b59b6" stroke="#8e44ad" stroke-width="4"/>
-    <text x="600" y="395" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="white">
-      OpenTelemetry
-    </text>
-    <text x="600" y="435" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="white">
-      🔍 Tracing
-    </text>
-    <text x="600" y="465" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="white">
-      📡 Auto-Instr
+    <!-- 부제목 -->
+    <text x="600" y="340" font-family="Arial, sans-serif" font-size="35" fill="#00d4ff" text-anchor="middle">
+        OpenTelemetry + Grafana 관찰성 스택
     </text>
 
-    <!-- Telegram Logo -->
-    <rect x="820" y="320" width="180" height="180" rx="15" fill="#3498db" stroke="#2980b9" stroke-width="4"/>
-    <text x="910" y="400" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="white">
-      Telegram
+    <!-- 하단 텍스트 -->
+    <text x="600" y="480" font-family="Arial, sans-serif" font-size="25" fill="#a8dadc" text-anchor="middle">
+        Grafana • Tempo • Loki • Prometheus
     </text>
-    <text x="910" y="435" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="white">
-      🚨 실시간 알림
-    </text>
-    <text x="910" y="465" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="white">
-      🔁 중복 제거
-    </text>
-  </g>
 
-  <!-- Bottom text -->
-  <text x="600" y="560" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" fill="#ecf0f1">
-    문제 발견 시간: 6시간 → 1초
-  </text>
-  <text x="600" y="595" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" fill="#95a5a6">
-    AI 자동매매 시스템 시리즈 6편
-  </text>
+    <!-- 아이콘 원들 -->
+    <circle cx="250" cy="540" r="25" fill="#F46800"/>
+    <circle cx="450" cy="540" r="25" fill="#E91E63"/>
+    <circle cx="650" cy="540" r="25" fill="#00ACC1"/>
+    <circle cx="850" cy="540" r="25" fill="#E6522C"/>
 </svg>
