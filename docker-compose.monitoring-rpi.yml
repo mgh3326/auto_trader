@@ -88,9 +88,9 @@ services:
       tempo:
         condition: service_started  # Tempo has no healthcheck (distroless image)
       loki:
-        condition: service_healthy
+        condition: service_started  # Start immediately, OTEL has retry logic
       prometheus:
-        condition: service_healthy
+        condition: service_started  # Start immediately, OTEL has retry logic
     # Note: OTEL Collector uses minimal base image without wget/curl
     # Healthcheck removed - service readiness verified by port availability
     # The collector starts quickly and exports readiness via :13133 (health_check extension)
