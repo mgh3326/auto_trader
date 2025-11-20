@@ -15,6 +15,7 @@ from app.monitoring.telemetry import (
     setup_telemetry,
     shutdown_telemetry,
 )
+from app.auth.router import router as auth_router
 from app.routers import analysis_json, dashboard, health, stock_latest, test, upbit_trading
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
         )
 
     # Include routers
+    app.include_router(auth_router)
     app.include_router(dashboard.router)
     app.include_router(health.router)
     app.include_router(analysis_json.router)

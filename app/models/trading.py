@@ -61,9 +61,12 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     email: Mapped[str | None] = mapped_column(Text, unique=True)
+    username: Mapped[str | None] = mapped_column(Text, unique=True)
+    hashed_password: Mapped[str | None] = mapped_column(Text)
     nickname: Mapped[str | None] = mapped_column(Text)
     tz: Mapped[str] = mapped_column(Text, default="Asia/Seoul", nullable=False)
     base_currency: Mapped[str] = mapped_column(Text, default="KRW", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[str] = mapped_column(
         TIMESTAMP(timezone=True), server_default="now()"
     )
