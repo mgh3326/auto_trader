@@ -227,7 +227,8 @@ OTEL_ENVIRONMENT=development
 스택이 올바르게 실행되는지 자동으로 확인:
 
 ```bash
-# 자동화된 smoke test 실행
+# 자동화된 smoke test 실행 (실행 권한 부여 필요)
+chmod +x scripts/test-monitoring-stack.sh
 bash scripts/test-monitoring-stack.sh
 
 # 또는 수동 검증
@@ -274,7 +275,18 @@ uv run uvicorn app.main:app --reload
 2. `/newbot` 명령으로 새 봇 생성
 3. Bot Token 저장 (예: `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
 
-### 2. Chat ID 확인
+### 2. ZeroSSL 가이드 (Caddyfile 설정)
+
+- Let's Encrypt 속도 제한 → ZeroSSL로 전환
+  - `Caddyfile`의 `global options` 블록에 다음 설정 추가:
+    ```caddyfile
+    {
+        email {$ACME_EMAIL}
+        acme_ca https://acme.zerossl.com/v2/DV90
+    }
+    ```
+
+### 3. Chat ID 확인
 
 1. 봇에게 메시지 전송 (아무 메시지나)
 2. 다음 URL 접속:
@@ -283,7 +295,7 @@ uv run uvicorn app.main:app --reload
    ```
 3. 응답에서 `chat.id` 값 확인
 
-### 3. 환경 변수 설정
+### 4. 환경 변수 설정
 
 `.env` 파일에 다음 설정을 추가:
 
