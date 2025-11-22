@@ -52,6 +52,8 @@ Auto Trader의 사용자 권한 관리 시스템 사용 방법입니다.
 
 ### 방법 2: CLI 도구
 
+#### 로컬 개발 환경
+
 ```bash
 # 모든 사용자 조회
 python manage_users.py list
@@ -72,7 +74,38 @@ python manage_users.py activate <username>
 python manage_users.py deactivate <username>
 ```
 
+#### 실서버 (Docker Compose 환경)
+
+```bash
+# api 컨테이너에서 실행 (권장)
+docker exec -it auto_trader_api_prod python manage_users.py list
+docker exec -it auto_trader_api_prod python manage_users.py admin <username>
+docker exec -it auto_trader_api_prod python manage_users.py promote <username>
+docker exec -it auto_trader_api_prod python manage_users.py demote <username>
+docker exec -it auto_trader_api_prod python manage_users.py activate <username>
+docker exec -it auto_trader_api_prod python manage_users.py deactivate <username>
+
+# 또는 worker 컨테이너 사용
+docker exec -it auto_trader_worker_prod python manage_users.py list
+```
+
+<details>
+<summary>대체 방법 (참고용)</summary>
+
+```bash
+# docker-compose run 사용
+docker compose -f docker-compose.prod.yml run --rm api python manage_users.py list
+
+# docker run 직접 사용
+docker run --rm --env-file .env.prod --network host \
+  ghcr.io/${GITHUB_REPOSITORY}:production \
+  python manage_users.py list
+```
+</details>
+
 #### 예시
+
+**로컬 개발 환경:**
 
 ```bash
 # bob을 admin으로 승격
@@ -86,6 +119,22 @@ python manage_users.py demote john
 
 # 사용자 목록 확인
 python manage_users.py list
+```
+
+**실서버 (가장 간단한 방법):**
+
+```bash
+# bob을 admin으로 승격
+docker exec -it auto_trader_api_prod python manage_users.py admin bob
+
+# alice를 trader로 승격
+docker exec -it auto_trader_api_prod python manage_users.py promote alice
+
+# john을 viewer로 강등
+docker exec -it auto_trader_api_prod python manage_users.py demote john
+
+# 사용자 목록 확인
+docker exec -it auto_trader_api_prod python manage_users.py list
 ```
 
 ### 방법 3: REST API
