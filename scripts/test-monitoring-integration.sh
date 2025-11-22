@@ -36,6 +36,45 @@ warn() {
     echo -e "${YELLOW}⚠ WARN${NC}: $1"
 }
 
+# Helper to check URL with docker exec fallback
+check_url() {
+    local url=$1
+    local container=$2
+    local internal_url=$3
+
+    if curl -sf "$url" > /dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ -n "$container" ] && [ -n "$internal_url" ]; then
+        if docker exec "$container" wget -q --spider "$internal_url" > /dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Helper to fetch content with docker exec fallback
+fetch_url() {
+    local url=$1
+    local container=$2
+    local internal_url=$3
+    local content
+
+    if content=$(curl -sf "$url" 2>/dev/null); then
+        echo "$content"
+        return 0
+    fi
+
+    if [ -n "$container" ] && [ -n "$internal_url" ]; then
+        if content=$(docker exec "$container" wget -qO- "$internal_url" 2>/dev/null); then
+            echo "$content"
+            return 0
+        fi
+    fi
+    return 1
+}
+
 healthcheck_url_for() {
     case "$1" in
         tempo) echo "http://localhost:3200/status" ;;
@@ -67,7 +106,7 @@ else
 fi
 
 # Prometheus
-if curl -sf http://localhost:9090/-/healthy > /dev/null 2>&1; then
+if check_url "http://localhost:9090/-/healthy" "prometheus" "http://localhost:9090/-/healthy"; then
     pass "Prometheus /-/healthy endpoint responding"
 else
     fail "Prometheus /-/healthy endpoint not responding"
@@ -185,7 +224,7 @@ echo "5. Testing Prometheus metrics..."
 echo "----------------------------------------"
 
 # Check if Prometheus is scraping targets
-TARGETS=$(curl -sf http://localhost:9090/api/v1/targets 2>/dev/null)
+TARGETS=$(fetch_url "http://localhost:9090/api/v1/targets" "prometheus" "http://localhost:9090/api/v1/targets")
 
 if echo "$TARGETS" | grep -q "tempo"; then
     pass "Prometheus scraping Tempo metrics"
@@ -221,7 +260,7 @@ else
 fi
 
 # Query Prometheus metrics
-PROM_QUERY=$(curl -sf "http://localhost:9090/api/v1/query?query=up" 2>/dev/null)
+PROM_QUERY=$(fetch_url "http://localhost:9090/api/v1/query?query=up" "prometheus" "http://localhost:9090/api/v1/query?query=up")
 
 if echo "$PROM_QUERY" | grep -q "success"; then
     pass "Prometheus query API responding"
