@@ -1,4 +1,5 @@
 """Admin router for user management."""
+from pathlib import Path
 from typing import Annotated, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -13,7 +14,8 @@ from app.core.db import get_db
 from app.models.trading import User, UserRole
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-templates = Jinja2Templates(directory="app/templates")
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 class RoleUpdateRequest(BaseModel):

@@ -1,4 +1,5 @@
 """Web authentication router with HTML pages and session management."""
+from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Form, Request, Response, status
@@ -16,7 +17,8 @@ from app.core.db import get_db
 from app.models.trading import User, UserRole
 
 router = APIRouter(prefix="/web-auth", tags=["web-authentication"])
-templates = Jinja2Templates(directory="app/templates")
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Session serializer for secure cookie-based sessions
 session_serializer = URLSafeTimedSerializer(
@@ -92,9 +94,9 @@ async def require_role(
 
     if role_hierarchy.get(user.role, 0) < role_hierarchy.get(min_role, 0):
         return templates.TemplateResponse(
-            "error.html",
-            {
-                "request": request,
+            request=request,
+            name="error.html",
+            context={
                 "error": "권한이 부족합니다.",
                 "message": f"이 페이지에 접근하려면 {min_role.value} 이상의 권한이 필요합니다.",
             },
@@ -116,9 +118,9 @@ async def login_page(request: Request, next: Optional[str] = None):
             return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
 
     return templates.TemplateResponse(
-        "login.html",
-        {
-            "request": request,
+        request=request,
+        name="login.html",
+        context={
             "next": next,
         },
     )
@@ -140,9 +142,9 @@ async def login(
     # Verify credentials
     if not user or not user.hashed_password:
         return templates.TemplateResponse(
-            "login.html",
-            {
-                "request": request,
+            request=request,
+            name="login.html",
+            context={
                 "error": "사용자명 또는 비밀번호가 올바르지 않습니다.",
                 "next": next,
             },
@@ -151,9 +153,9 @@ async def login(
 
     if not verify_password(password, user.hashed_password):
         return templates.TemplateResponse(
-            "login.html",
-            {
-                "request": request,
+            request=request,
+            name="login.html",
+            context={
                 "error": "사용자명 또는 비밀번호가 올바르지 않습니다.",
                 "next": next,
             },
@@ -162,9 +164,9 @@ async def login(
 
     if not user.is_active:
         return templates.TemplateResponse(
-            "login.html",
-            {
-                "request": request,
+            request=request,
+            name="login.html",
+            context={
                 "error": "비활성화된 계정입니다.",
                 "next": next,
             },
@@ -192,10 +194,9 @@ async def login(
 async def register_page(request: Request):
     """Display registration page."""
     return templates.TemplateResponse(
-        "register.html",
-        {
-            "request": request,
-        },
+        request=request,
+        name="register.html",
+        context={},
     )
 
 
@@ -212,9 +213,9 @@ async def register(
     # Validate password confirmation
     if password != password_confirm:
         return templates.TemplateResponse(
-            "register.html",
-            {
-                "request": request,
+            request=request,
+            name="register.html",
+            context={
                 "error": "비밀번호가 일치하지 않습니다.",
                 "email": email,
                 "username": username,
@@ -226,9 +227,9 @@ async def register(
     result = await db.execute(select(User).where(User.username == username))
     if result.scalar_one_or_none():
         return templates.TemplateResponse(
-            "register.html",
-            {
-                "request": request,
+            request=request,
+            name="register.html",
+            context={
                 "error": "이미 사용 중인 사용자명입니다.",
                 "email": email,
                 "username": username,
@@ -240,9 +241,9 @@ async def register(
     result = await db.execute(select(User).where(User.email == email))
     if result.scalar_one_or_none():
         return templates.TemplateResponse(
-            "register.html",
-            {
-                "request": request,
+            request=request,
+            name="register.html",
+            context={
                 "error": "이미 사용 중인 이메일입니다.",
                 "email": email,
                 "username": username,
@@ -267,9 +268,9 @@ async def register(
     except IntegrityError:
         await db.rollback()
         return templates.TemplateResponse(
-            "register.html",
-            {
-                "request": request,
+            request=request,
+            name="register.html",
+            context={
                 "error": "계정을 생성할 수 없습니다. 다시 시도해주세요.",
                 "email": email,
                 "username": username,
@@ -279,9 +280,9 @@ async def register(
 
     # Show success message and redirect to login
     return templates.TemplateResponse(
-        "register.html",
-        {
-            "request": request,
+        request=request,
+        name="register.html",
+        context={
             "success": "회원가입이 완료되었습니다! 로그인해주세요.",
         },
         status_code=status.HTTP_201_CREATED,

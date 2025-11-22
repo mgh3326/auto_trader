@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -38,7 +39,8 @@ db_query_duration = _meter.create_histogram(
 )
 
 # 템플릿 설정
-templates = Jinja2Templates(directory="app/templates")
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 @router.get("/", response_class=HTMLResponse)

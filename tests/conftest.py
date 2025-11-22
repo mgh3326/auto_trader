@@ -208,6 +208,15 @@ def mock_redis_service():
     return mock_redis
 
 
+@pytest.fixture(autouse=True)
+def mock_auth_middleware_db():
+    """Mock AsyncSessionLocal in AuthMiddleware to prevent DB connection attempts."""
+    with patch("app.middleware.auth.AsyncSessionLocal") as mock:
+        mock_session = AsyncMock()
+        mock.return_value.__aenter__.return_value = mock_session
+        yield mock_session
+
+
 @pytest.fixture
 def sample_stock_data():
     """Sample stock data for testing."""

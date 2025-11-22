@@ -8,6 +8,7 @@ Upbit 자동 매매 웹 인터페이스 라우터
 
 import asyncio
 import logging
+from pathlib import Path
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks
@@ -31,7 +32,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/upbit-trading", tags=["Upbit Trading"])
 
 # 템플릿 설정
-templates = Jinja2Templates(directory="app/templates")
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _to_decimal(value) -> Decimal:

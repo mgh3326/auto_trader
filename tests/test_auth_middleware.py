@@ -1,0 +1,71 @@
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.testclient import TestClient
+from app.middleware.auth import AuthMiddleware
+from app.models.trading import User
+from app.auth.web_router import create_session_token
+
+# Create a separate app for middleware testing to avoid side effects
+app = FastAPI()
+app.add_middleware(AuthMiddleware)
+
+@app.get("/test-protected", response_class=HTMLResponse)
+async def protected_route(request: Request):
+    return "Protected Content"
+
+@app.get("/web-auth/login", response_class=HTMLResponse)
+async def login_page():
+    return "Login Page"
+
+@app.get("/api/data")
+async def api_data():
+    return {"data": "ok"}
+
+client = TestClient(app)
+
+@pytest.fixture
+def mock_db_session():
+    return AsyncMock()
+
+@pytest.fixture
+def mock_session_local(mock_db_session):
+    with patch("app.middleware.auth.AsyncSessionLocal") as mock:
+        mock.return_value.__aenter__.return_value = mock_db_session
+        yield mock
+
+def test_public_path_access(mock_session_local):
+    response = client.get("/web-auth/login")
+    assert response.status_code == 200
+    assert response.text == "Login Page"
+
+def test_api_path_access(mock_session_local):
+    response = client.get("/api/data")
+    assert response.status_code == 200
+    assert response.json() == {"data": "ok"}
+
+def test_protected_route_no_auth(mock_session_local):
+    # Should redirect to login
+    response = client.get("/test-protected", follow_redirects=False)
+    assert response.status_code == 303
+    assert "/web-auth/login" in response.headers["location"]
+
+def test_protected_route_with_auth(mock_session_local, mock_db_session):
+    # Setup mock user
+    user = User(id=1, username="testuser", is_active=True)
+    
+    # Mock database query
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = user
+    mock_db_session.execute.return_value = mock_result
+
+    # Create session token
+    token = create_session_token(1)
+    
+    # Set cookie
+    client.cookies.set("session", token)
+    
+    response = client.get("/test-protected")
+    assert response.status_code == 200
+    assert response.text == "Protected Content"

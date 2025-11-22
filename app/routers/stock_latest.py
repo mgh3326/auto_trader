@@ -1,5 +1,6 @@
 import asyncio
 from asyncio import AbstractEventLoop
+from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, Query, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse
@@ -17,7 +18,8 @@ from app.core.celery_app import celery_app
 router = APIRouter(prefix="/stock-latest", tags=["Stock Latest Analysis"])
 
 # 템플릿 설정
-templates = Jinja2Templates(directory="app/templates")
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -452,4 +454,3 @@ async def get_analyze_task_status(task_id: str):
     elif result.failed():
         response["error"] = str(result.result)
     return response
-
