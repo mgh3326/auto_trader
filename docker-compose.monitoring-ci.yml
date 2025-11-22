@@ -12,3 +12,8 @@ services:
   loki:
     # Override: Use root user for CI compatibility
     user: "0:0"
+
+  prometheus:
+    # Override: Expose port for integration tests
+    ports:
+      - "9090:9090"
