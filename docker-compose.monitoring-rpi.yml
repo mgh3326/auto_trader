@@ -77,24 +77,24 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.114.0
     container_name: otel-collector
-    command: ["--config=/etc/otel-collector.yaml"]
+    command: [ "--config=/etc/otel-collector.yaml" ]
     volumes:
       - ./grafana-config/otel-collector.yaml:/etc/otel-collector.yaml:ro
     ports:
-      - "4317:4317"   # OTLP gRPC (application sends here)
-      - "4318:4318"   # OTLP HTTP (application sends here)
-      - "8888:8888"   # Prometheus metrics endpoint
+      - "4317:4317" # OTLP gRPC (application sends here)
+      - "4318:4318" # OTLP HTTP (application sends here)
+      - "8888:8888" # Prometheus metrics endpoint
       - "13133:13133" # OTEL health check endpoint
     mem_limit: 512m
     mem_reservation: 256m
-    cpus: '0.5'  # Limit to 0.5 CPU core
+    cpus: '0.5' # Limit to 0.5 CPU core
     depends_on:
       tempo:
-        condition: service_started  # Tempo has no healthcheck (distroless image)
+        condition: service_started # Tempo has no healthcheck (distroless image)
       loki:
-        condition: service_started  # Start immediately, OTEL has retry logic
+        condition: service_started # Start immediately, OTEL has retry logic
       prometheus:
-        condition: service_started  # Start immediately, OTEL has retry logic
+        condition: service_started # Start immediately, OTEL has retry logic
     # Note: OTEL Collector uses minimal base image without wget/curl
     # Healthcheck removed - service readiness verified by port availability
     # The collector starts quickly and exports readiness via :13133 (health_check extension)
@@ -106,18 +106,18 @@ services:
   tempo:
     image: grafana/tempo:2.6.1
     container_name: tempo
-    user: "10001:10001"  # Non-root user (default tempo user)
-    command: ["-config.file=/etc/tempo.yaml"]
+    user: "10001:10001" # Non-root user (default tempo user)
+    command: [ "-config.file=/etc/tempo.yaml" ]
     volumes:
       - ./grafana-config/tempo.yaml:/etc/tempo.yaml:ro
       - tempo_data:/var/tempo
     ports:
-      - "3200:3200"   # Tempo HTTP
+      - "3200:3200" # Tempo HTTP
     mem_limit: 512m
     mem_reservation: 256m
-    cpus: '1.0'  # Limit to 1 CPU core
+    cpus: '1.0' # Limit to 1 CPU core
     security_opt:
-      - no-new-privileges:true  # Prevent privilege escalation
+      - no-new-privileges:true # Prevent privilege escalation
     # Note: Tempo uses distroless image without wget/curl/sh
     # Healthcheck removed - service readiness checked by otel-collector startup delay
     networks:
@@ -128,22 +128,22 @@ services:
   loki:
     image: grafana/loki:3.2.1
     container_name: loki
-    user: "10001:10001"  # Non-root user (default loki user)
-    command: ["-config.file=/etc/loki/local-config.yaml"]
+    user: "10001:10001" # Non-root user (default loki user)
+    command: [ "-config.file=/etc/loki/local-config.yaml" ]
     volumes:
       - ./grafana-config/loki.yaml:/etc/loki/local-config.yaml:ro
       - loki_data:/loki
     ports:
-      - "3100:3100"   # Loki HTTP
+      - "3100:3100" # Loki HTTP
     mem_limit: 512m
     mem_reservation: 256m
-    cpus: '1.0'  # Limit to 1 CPU core
+    cpus: '1.0' # Limit to 1 CPU core
     security_opt:
-      - no-new-privileges:true  # Prevent privilege escalation
+      - no-new-privileges:true # Prevent privilege escalation
     networks:
       - observability
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -154,22 +154,22 @@ services:
   promtail:
     image: grafana/promtail:3.2.1
     container_name: promtail
-    command: ["-config.file=/etc/promtail/config.yaml"]
+    command: [ "-config.file=/etc/promtail/config.yaml" ]
     volumes:
       - ./grafana-config/promtail.yaml:/etc/promtail/config.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - promtail_data:/data/promtail
     ports:
-      - "9080:9080"   # Promtail HTTP for healthcheck
-    cpus: '0.5'  # Limit to 0.5 CPU core (lightweight)
+      - "9080:9080" # Promtail HTTP for healthcheck
+    cpus: '0.5' # Limit to 0.5 CPU core (lightweight)
     networks:
       - observability
     depends_on:
       loki:
-        condition: service_started  # Start immediately, Promtail will retry connection
+        condition: service_started # Start immediately, Promtail will retry connection
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9080/ready"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9080/ready" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -183,22 +183,22 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=7d'  # 7 days retention (aligned with Tempo/Loki)
+      - '--storage.tsdb.retention.time=7d' # 7 days retention (aligned with Tempo/Loki)
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
-      - '--web.enable-remote-write-receiver'  # Enable OTLP remote write from Collector
+      - '--web.enable-remote-write-receiver' # Enable OTLP remote write from Collector
     volumes:
       - ./grafana-config/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
-    ports:
-      - "9090:9090"
+    # ports:
+    #   - "9090:9090"  # Not exposed for security, only accessible via internal network
     mem_limit: 512m
     mem_reservation: 256m
-    cpus: '1.0'  # Limit to 1 CPU core
+    cpus: '1.0' # Limit to 1 CPU core
     networks:
       - observability
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -226,13 +226,13 @@ services:
       - caddy_logs:/data/logs
     mem_limit: 256m
     mem_reservation: 128m
-    cpus: '0.5'  # Limit to 0.5 CPU core (lightweight reverse proxy)
+    cpus: '0.5' # Limit to 0.5 CPU core (lightweight reverse proxy)
     restart: unless-stopped
     depends_on:
       grafana:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      test: [ "CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile" ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -251,7 +251,7 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       # Subpath configuration for reverse proxy
-      - GF_SERVER_ROOT_URL=https://${DOMAIN_NAME:-mgh3326.duckdns.org}/grafana
+      - GF_SERVER_ROOT_URL=https://${DOMAIN_NAME:-localhost}/grafana
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
     volumes:
       - ./grafana-config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
@@ -260,16 +260,16 @@ services:
       - "3000:3000"
     mem_limit: 512m
     mem_reservation: 256m
-    cpus: '1.0'  # Limit to 1 CPU core
+    cpus: '1.0' # Limit to 1 CPU core
     depends_on:
       tempo:
         condition: service_started
       loki:
-        condition: service_started  # Start immediately, Grafana will retry datasource connection
+        condition: service_started # Start immediately, Grafana will retry datasource connection
       prometheus:
-        condition: service_started  # Start immediately, Grafana will retry datasource connection
+        condition: service_started # Start immediately, Grafana will retry datasource connection
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health" ]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -290,7 +290,7 @@ volumes:
   promtail_data:
     name: promtail_data
   caddy_data:
-    name: caddy_data  # IMPORTANT: Back up this volume to preserve Let's Encrypt certificates
+    name: caddy_data # IMPORTANT: Back up this volume to preserve Let's Encrypt certificates
   caddy_config:
     name: caddy_config
   caddy_logs:

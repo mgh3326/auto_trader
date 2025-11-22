@@ -48,6 +48,8 @@
 			# Headers for proper subpath handling
 			header_up Host {host}
 			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
 		}
 	}
 
@@ -57,12 +59,14 @@
 			# Headers
 			header_up Host {host}
 			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
 		}
 	}
 
 	# Access logs for this site
 	log {
-		output file /data/logs/mgh3326_access.log {
+		output file /data/logs/domain_access.log {
 			roll_size 100mb
 			roll_keep 10
 			roll_keep_for 720h  # Keep for 30 days
