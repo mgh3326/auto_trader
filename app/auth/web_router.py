@@ -1,6 +1,6 @@
 """Web authentication router with HTML pages and session management."""
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Optional, Union
 
 from fastapi import APIRouter, Depends, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -10,7 +10,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.schemas import UserCreate
 from app.auth.security import get_password_hash, verify_password
 from app.core.config import settings
 from app.core.db import get_db
@@ -66,7 +65,7 @@ async def get_current_user_from_session(
 
 async def require_login(
     request: Request, db: Annotated[AsyncSession, Depends(get_db)]
-) -> User:
+) -> Union[User, Response]:
     """Dependency to require login for routes."""
     user = await get_current_user_from_session(request, db)
     if not user:
@@ -82,7 +81,7 @@ async def require_role(
     min_role: UserRole,
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> User:
+) -> Union[User, Response]:
     """Dependency to require specific role for routes."""
     user = await get_current_user_from_session(request, db)
     if not user:

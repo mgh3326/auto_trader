@@ -1,4 +1,6 @@
 """Authentication middleware for protecting web routes."""
+from typing import ClassVar
+
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -20,7 +22,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     All other HTML routes require authentication.
     """
 
-    PUBLIC_PATHS = [
+    PUBLIC_PATHS: ClassVar[list[str]] = [
         "/web-auth/login",
         "/web-auth/register",
         "/web-auth/logout",
@@ -40,7 +42,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Allow API endpoints (JSON responses) - they have their own auth
-        if path.startswith("/api/") or "/api/" in path:
+        if path.startswith("/api/"):
             return await call_next(request)
 
         # For HTML pages, check if user is authenticated

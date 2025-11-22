@@ -48,14 +48,14 @@ async def get_current_user(
             raise credentials_exception
 
         token_data = TokenData(username=username)
-    except jwt.ExpiredSignatureError:
+    except jwt.ExpiredSignatureError as err:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired",
             headers={"WWW-Authenticate": "Bearer"},
-        )
-    except jwt.InvalidTokenError:
-        raise credentials_exception
+        ) from err
+    except jwt.InvalidTokenError as err:
+        raise credentials_exception from err
 
     # Query user from database
     result = await db.execute(select(User).where(User.username == token_data.username))
@@ -67,7 +67,7 @@ async def get_current_user(
     return user
 
 
-async def get_current_active_user(
+def get_current_active_user(
     current_user: Annotated[User, Depends(get_current_user)]
 ) -> User:
     """

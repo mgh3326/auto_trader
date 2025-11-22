@@ -47,6 +47,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url="/docs" if settings.DOCS_ENABLED else None,
         redoc_url="/redoc" if settings.DOCS_ENABLED else None,
+        openapi_url="/openapi.json" if settings.DOCS_ENABLED else None,
     )
 
     # Add global exception handler for detailed error logging
