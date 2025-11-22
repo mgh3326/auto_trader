@@ -9,7 +9,7 @@
 > - [2편: yfinance로 애플·테슬라 분석하기](https://mgh3326.tistory.com/228)
 > - [3편: Upbit으로 비트코인 24시간 분석하기](https://mgh3326.tistory.com/229)
 > - [4편: AI 분석 결과 DB에 저장하기](https://mgh3326.tistory.com/230)
-> - [5편: 웹 대시보드로 분석 결과 시각화하기](https://mgh3326.tistory.com/231)
+> - [5편: Upbit 웹 트레이딩 대시보드 구축하기](https://mgh3326.tistory.com/232)
 > - [6편: 실전 운영을 위한 모니터링 시스템 구축](https://mgh3326.tistory.com/233)
 > - **7편: 라즈베리파이 홈서버에 자동 HTTPS로 안전하게 배포하기** ← 현재 글
 
