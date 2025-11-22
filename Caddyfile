@@ -1,0 +1,79 @@
+# Caddyfile for {$DOMAIN_NAME}
+# Automatic HTTPS with Let's Encrypt
+# Only exposes necessary services to the internet
+
+{
+	# Global options
+	email {$ACME_EMAIL}
+
+	# JSON access logs
+	log {
+		output file /data/logs/access.log
+		format json
+	}
+}
+
+{$DOMAIN_NAME} {
+
+	# Rate limiting - Prevent DDoS and brute force attacks
+	# Allows 500 requests per minute per IP address
+	rate_limit {
+		zone dynamic {
+			key {remote_host}
+			events 500
+			window 1m
+		}
+	}
+
+	# Security headers
+	header {
+		# HTTP Strict Transport Security (HSTS)
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+		# Prevent MIME type sniffing
+		X-Content-Type-Options "nosniff"
+
+		# Allow framing from same origin (Grafana needs this for dashboards)
+		X-Frame-Options "SAMEORIGIN"
+
+		# Content Security Policy (CSP)
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net;"
+
+		# Referrer Policy
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	# Serve favicon.ico
+	handle /favicon.ico {
+		root * /srv
+		file_server
+	}
+
+	# Grafana subpath → Grafana service (must come first - more specific)
+	handle /grafana* {
+		reverse_proxy grafana:3000 {
+			# Headers for proper subpath handling
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# Root path → Auto-trader main application (catch-all)
+	handle {
+		reverse_proxy host.docker.internal:8000 {
+			# Headers
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# Access logs for this site
+	log {
+		output file /data/logs/domain_access.log {
+			roll_size 100mb
+			roll_keep 10
+			roll_keep_for 720h  # Keep for 30 days
+		}
+		format json
+	}
+}

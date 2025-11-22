@@ -367,6 +367,8 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 - URL: `http://localhost:8000/stock-latest/`
 - 기능: 종목별 최신 분석 결과 조회
 
+
+
 ## 문제 해결
 
 ### KIS 분봉 API 문제
