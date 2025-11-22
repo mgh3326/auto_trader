@@ -75,7 +75,7 @@ name: grafana-observability
 services:
   # OpenTelemetry Collector - Central telemetry router
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.114.0
+    image: otel/opentelemetry-collector-contrib:0.140.1
     container_name: otel-collector
     command: [ "--config=/etc/otel-collector.yaml" ]
     volumes:
