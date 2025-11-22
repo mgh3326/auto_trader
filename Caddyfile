@@ -15,6 +15,16 @@
 
 {$DOMAIN_NAME} {
 
+	# Rate limiting - Prevent DDoS and brute force attacks
+	# Allows 500 requests per minute per IP address
+	rate_limit {
+		zone dynamic {
+			key {remote_host}
+			events 500
+			window 1m
+		}
+	}
+
 	# Security headers
 	header {
 		# HTTP Strict Transport Security (HSTS)

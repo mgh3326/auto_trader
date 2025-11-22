@@ -1,0 +1,13 @@
+# Dockerfile for Caddy with rate limiting plugin
+# This builds a custom Caddy image with the caddy-ratelimit plugin
+
+FROM caddy:2.8.4-builder AS builder
+
+# Build Caddy with rate limiting plugin
+RUN xcaddy build \
+    --with github.com/mholt/caddy-ratelimit
+
+FROM caddy:2.8.4-alpine
+
+# Copy the custom-built Caddy binary
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy
