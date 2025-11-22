@@ -83,8 +83,12 @@ nano .env.prod
 - `DATABASE_URL`: 네이티브 PostgreSQL 연결 URL
 - `REDIS_URL`: 네이티브 Redis 연결 URL
 - API 키들 (KIS, Upbit, Telegram, Google, OpenDART)
+- `DOCS_ENABLED=false`: **프로덕션에서는 반드시 `false`로 설정** (API 문서 비활성화)
 
 **네이티브 DB/Redis 설정 참고**: [NATIVE_SETUP.md](NATIVE_SETUP.md)
+
+> [!WARNING]
+> **API 문서 보안**: 프로덕션 환경에서는 반드시 `DOCS_ENABLED=false`로 설정하여 `/docs`, `/redoc` 엔드포인트를 비활성화해야 합니다. 이 엔드포인트들은 API 구조를 노출하므로 보안 위험이 있습니다.
 
 ### 4. 이미지 Pull 및 실행
 

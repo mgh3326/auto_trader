@@ -38,7 +38,13 @@ def create_app() -> FastAPI:
         finally:
             await cleanup_monitoring()
 
-    app = FastAPI(title="KIS Auto Screener", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="KIS Auto Screener",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/docs" if settings.DOCS_ENABLED else None,
+        redoc_url="/redoc" if settings.DOCS_ENABLED else None,
+    )
 
     # Add global exception handler for detailed error logging
     @app.exception_handler(Exception)

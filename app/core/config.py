@@ -120,6 +120,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # API Documentation
+    DOCS_ENABLED: bool = True  # 개발 환경: True, 프로덕션: False
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

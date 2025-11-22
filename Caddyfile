@@ -58,6 +58,14 @@
 		}
 	}
 
+	# Block API documentation in production
+	handle /docs* {
+		abort
+	}
+	handle /redoc* {
+		abort
+	}
+
 	# Root path → Auto-trader main application (catch-all)
 	handle {
 		reverse_proxy host.docker.internal:8000 {
