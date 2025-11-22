@@ -466,6 +466,58 @@ class TradeNotifier:
             logger.error(f"Failed to send summary notification: {e}")
             return False
 
+    def _format_failure_notification(
+        self,
+        symbol: str,
+        korean_name: str,
+        reason: str,
+        market_type: str = "암호화폐",
+    ) -> str:
+        """
+        Format trade failure notification.
+
+        Args:
+            symbol: Trading symbol
+            korean_name: Korean name of asset
+            reason: Failure reason
+            market_type: Type of market
+
+        Returns:
+            Markdown-formatted notification message
+        """
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        parts = [
+            "⚠️ *거래 실패 알림*",
+            f"🕒 {timestamp}",
+            "",
+            f"*종목:* {korean_name} ({symbol})",
+            f"*시장:* {market_type}",
+            f"*사유:* {reason}",
+        ]
+
+        return "\n".join(parts)
+
+    async def notify_trade_failure(
+        self,
+        symbol: str,
+        korean_name: str,
+        reason: str,
+        market_type: str = "암호화폐",
+    ) -> bool:
+        """Send trade failure notification."""
+        if not self._enabled:
+            return False
+
+        try:
+            message = self._format_failure_notification(
+                symbol, korean_name, reason, market_type
+            )
+            return await self._send_to_telegram(message)
+        except Exception as e:
+            logger.error(f"Failed to send failure notification: {e}")
+            return False
+
     async def test_connection(self) -> bool:
         """
         Test Telegram connection by sending a test message.

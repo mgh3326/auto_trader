@@ -177,6 +177,21 @@ async def _execute_buy_order_for_coin_async(currency: str) -> Dict[str, object]:
                 )
             except Exception as notify_error:  # pragma: no cover
                 print(f"⚠️ 텔레그램 알림 전송 실패: {notify_error}")
+        
+        # Send failure notification for insufficient balance
+        elif not result.get("success") and "KRW 잔고 부족" in result.get("message", ""):
+            try:
+                notifier = get_trade_notifier()
+                korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency_code, currency_code)
+                
+                await notifier.notify_trade_failure(
+                    symbol=currency_code,
+                    korean_name=korean_name,
+                    reason=result.get("message"),
+                    market_type="암호화폐",
+                )
+            except Exception as notify_error:  # pragma: no cover
+                print(f"⚠️ 텔레그램 알림 전송 실패: {notify_error}")
 
         return {
             "status": "completed" if result.get("success") else "failed",
