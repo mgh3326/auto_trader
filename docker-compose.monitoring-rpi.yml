@@ -209,12 +209,24 @@ services:
   caddy:
     image: caddy:2.8.4-alpine
     container_name: caddy
-    network_mode: host
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - observability
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - ACME_EMAIL=${ACME_EMAIL}
+      - DOMAIN_NAME=${DOMAIN_NAME}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
       - caddy_logs:/data/logs
+    mem_limit: 256m
+    mem_reservation: 128m
+    cpus: '0.5'  # Limit to 0.5 CPU core (lightweight reverse proxy)
     restart: unless-stopped
     depends_on:
       grafana:
@@ -239,7 +251,7 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       # Subpath configuration for reverse proxy
-      - GF_SERVER_ROOT_URL=https://mgh3326.duckdns.org/grafana
+      - GF_SERVER_ROOT_URL=https://${DOMAIN_NAME:-mgh3326.duckdns.org}/grafana
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
     volumes:
       - ./grafana-config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
@@ -278,7 +290,7 @@ volumes:
   promtail_data:
     name: promtail_data
   caddy_data:
-    name: caddy_data
+    name: caddy_data  # IMPORTANT: Back up this volume to preserve Let's Encrypt certificates
   caddy_config:
     name: caddy_config
   caddy_logs:

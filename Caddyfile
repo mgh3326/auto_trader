@@ -1,10 +1,10 @@
-# Caddyfile for mgh3326.duckdns.org
+# Caddyfile for {$DOMAIN_NAME}
 # Automatic HTTPS with Let's Encrypt
 # Only exposes necessary services to the internet
 
 {
 	# Global options
-	email mgh3326@naver.com
+	email {$ACME_EMAIL}
 
 	# JSON access logs
 	log {
@@ -13,7 +13,17 @@
 	}
 }
 
-mgh3326.duckdns.org {
+{$DOMAIN_NAME} {
+	# Rate limiting - Prevent DDoS and brute force attacks
+	# Allows 100 requests per minute per IP address
+	rate_limit {
+		zone dynamic {
+			key {remote_host}
+			events 100
+			window 1m
+		}
+	}
+
 	# Security headers
 	header {
 		# HTTP Strict Transport Security (HSTS)
@@ -34,7 +44,7 @@ mgh3326.duckdns.org {
 
 	# Grafana subpath → Grafana service (must come first - more specific)
 	handle /grafana* {
-		reverse_proxy localhost:3000 {
+		reverse_proxy grafana:3000 {
 			# Headers for proper subpath handling
 			header_up Host {host}
 			header_up X-Real-IP {remote_host}
@@ -43,7 +53,7 @@ mgh3326.duckdns.org {
 
 	# Root path → Auto-trader main application (catch-all)
 	handle {
-		reverse_proxy localhost:8000 {
+		reverse_proxy host.docker.internal:8000 {
 			# Headers
 			header_up Host {host}
 			header_up X-Real-IP {remote_host}
