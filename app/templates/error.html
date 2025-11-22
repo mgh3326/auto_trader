@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}오류 - Auto Trader{% endblock %}
+
+{% block styles %}
+.error-container {
+    background: white;
+    padding: 3rem;
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    max-width: 500px;
+    text-align: center;
+}
+
+.error-icon {
+    font-size: 4rem;
+    margin-bottom: 1rem;
+}
+
+.error-container h1 {
+    color: #dc3545;
+    margin-bottom: 1rem;
+}
+
+.error-container p {
+    color: #666;
+    margin-bottom: 2rem;
+}
+
+.btn-back {
+    display: inline-block;
+    padding: 0.875rem 2rem;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    text-decoration: none;
+    border-radius: 8px;
+    font-weight: 600;
+    transition: transform 0.2s;
+}
+
+.btn-back:hover {
+    transform: translateY(-2px);
+}
+{% endblock %}
+
+{% block content %}
+<div class="error-container">
+    <div class="error-icon">⚠️</div>
+    <h1>{{ error }}</h1>
+    <p>{{ message }}</p>
+    <a href="/" class="btn-back">홈으로 돌아가기</a>
+</div>
+{% endblock %}

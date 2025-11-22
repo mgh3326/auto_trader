@@ -1,0 +1,382 @@
+{% extends "base.html" %}
+
+{% block title %}사용자 관리 - Auto Trader{% endblock %}
+
+{% block styles %}
+.admin-container {
+    max-width: 1200px;
+    width: 100%;
+    background: white;
+    padding: 2rem;
+    border-radius: 20px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.admin-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 2px solid #e0e0e0;
+}
+
+.admin-header h1 {
+    color: #333;
+    margin: 0;
+}
+
+.admin-header .stats {
+    display: flex;
+    gap: 2rem;
+}
+
+.stat-item {
+    text-align: center;
+}
+
+.stat-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: #667eea;
+}
+
+.stat-label {
+    color: #999;
+    font-size: 0.875rem;
+}
+
+.users-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+}
+
+.users-table th {
+    background: #f5f5f5;
+    padding: 1rem;
+    text-align: left;
+    font-weight: 600;
+    color: #333;
+    border-bottom: 2px solid #e0e0e0;
+}
+
+.users-table td {
+    padding: 1rem;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.users-table tr:hover {
+    background: #fafafa;
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.875rem;
+    font-weight: 600;
+}
+
+.badge-admin {
+    background: #dc3545;
+    color: white;
+}
+
+.badge-trader {
+    background: #28a745;
+    color: white;
+}
+
+.badge-viewer {
+    background: #6c757d;
+    color: white;
+}
+
+.badge-active {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.badge-inactive {
+    background: #ffebee;
+    color: #c62828;
+}
+
+.role-select {
+    padding: 0.5rem;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: white;
+    cursor: pointer;
+    font-size: 0.875rem;
+}
+
+.role-select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-toggle {
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.875rem;
+    transition: all 0.3s;
+}
+
+.btn-toggle.active {
+    background: #28a745;
+    color: white;
+}
+
+.btn-toggle.inactive {
+    background: #dc3545;
+    color: white;
+}
+
+.btn-toggle:hover {
+    opacity: 0.8;
+}
+
+.btn-toggle:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.message {
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+}
+
+.message-success {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.message-error {
+    background: #ffebee;
+    color: #c62828;
+}
+
+.loading {
+    display: none;
+    text-align: center;
+    padding: 2rem;
+    color: #999;
+}
+
+.loading.show {
+    display: block;
+}
+{% endblock %}
+
+{% block content %}
+<div class="admin-container">
+    <div class="admin-header">
+        <h1>👥 사용자 관리</h1>
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-value" id="total-users">{{ users|length }}</div>
+                <div class="stat-label">총 사용자</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="active-users">{{ users|selectattr('is_active')|list|length }}</div>
+                <div class="stat-label">활성 사용자</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="message-container"></div>
+
+    <div class="loading" id="loading">
+        <p>처리 중...</p>
+    </div>
+
+    <table class="users-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>사용자명</th>
+                <th>이메일</th>
+                <th>권한</th>
+                <th>상태</th>
+                <th>가입일</th>
+                <th>관리</th>
+            </tr>
+        </thead>
+        <tbody id="users-tbody">
+            {% for u in users %}
+            <tr data-user-id="{{ u.id }}">
+                <td>{{ u.id }}</td>
+                <td>{{ u.username }}</td>
+                <td>{{ u.email }}</td>
+                <td>
+                    <select class="role-select" data-user-id="{{ u.id }}"
+                            {% if u.id == user.id %}disabled{% endif %}>
+                        <option value="viewer" {% if u.role.value == 'viewer' %}selected{% endif %}>Viewer</option>
+                        <option value="trader" {% if u.role.value == 'trader' %}selected{% endif %}>Trader</option>
+                        <option value="admin" {% if u.role.value == 'admin' %}selected{% endif %}>Admin</option>
+                    </select>
+                </td>
+                <td>
+                    <span class="badge {% if u.is_active %}badge-active{% else %}badge-inactive{% endif %}">
+                        {% if u.is_active %}활성{% else %}비활성{% endif %}
+                    </span>
+                </td>
+                <td>{{ u.created_at[:10] if u.created_at else 'N/A' }}</td>
+                <td>
+                    <button class="btn-toggle {% if u.is_active %}active{% else %}inactive{% endif %}"
+                            data-user-id="{{ u.id }}"
+                            {% if u.id == user.id %}disabled{% endif %}>
+                        {% if u.is_active %}비활성화{% else %}활성화{% endif %}
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Role change handler
+document.querySelectorAll('.role-select').forEach(select => {
+    select.addEventListener('change', async (e) => {
+        const userId = e.target.dataset.userId;
+        const newRole = e.target.value;
+
+        if (!confirm(`사용자 권한을 ${newRole}(으)로 변경하시겠습니까?`)) {
+            e.target.value = e.target.dataset.originalValue || 'viewer';
+            return;
+        }
+
+        showLoading();
+
+        try {
+            const response = await fetch(`/admin/users/${userId}/role`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ role: newRole })
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                showMessage('권한이 변경되었습니다.', 'success');
+                e.target.dataset.originalValue = newRole;
+            } else {
+                showMessage(data.detail || '권한 변경에 실패했습니다.', 'error');
+                e.target.value = e.target.dataset.originalValue || 'viewer';
+            }
+        } catch (error) {
+            showMessage('네트워크 오류가 발생했습니다.', 'error');
+            e.target.value = e.target.dataset.originalValue || 'viewer';
+        } finally {
+            hideLoading();
+        }
+    });
+
+    // Store original value
+    select.dataset.originalValue = select.value;
+});
+
+// Active/Inactive toggle handler
+document.querySelectorAll('.btn-toggle').forEach(button => {
+    button.addEventListener('click', async (e) => {
+        const userId = e.target.dataset.userId;
+        const isActive = e.target.classList.contains('active');
+        const action = isActive ? '비활성화' : '활성화';
+
+        if (!confirm(`사용자를 ${action}하시겠습니까?`)) {
+            return;
+        }
+
+        showLoading();
+
+        try {
+            const response = await fetch(`/admin/users/${userId}/toggle`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                showMessage(`사용자가 ${action}되었습니다.`, 'success');
+
+                // Update UI
+                const row = button.closest('tr');
+                const badge = row.querySelector('.badge');
+
+                if (data.is_active) {
+                    button.classList.remove('inactive');
+                    button.classList.add('active');
+                    button.textContent = '비활성화';
+                    badge.classList.remove('badge-inactive');
+                    badge.classList.add('badge-active');
+                    badge.textContent = '활성';
+                } else {
+                    button.classList.remove('active');
+                    button.classList.add('inactive');
+                    button.textContent = '활성화';
+                    badge.classList.remove('badge-active');
+                    badge.classList.add('badge-inactive');
+                    badge.textContent = '비활성';
+                }
+
+                // Update active users count
+                updateStats();
+            } else {
+                showMessage(data.detail || '상태 변경에 실패했습니다.', 'error');
+            }
+        } catch (error) {
+            showMessage('네트워크 오류가 발생했습니다.', 'error');
+        } finally {
+            hideLoading();
+        }
+    });
+});
+
+function showMessage(text, type) {
+    const container = document.getElementById('message-container');
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message message-${type}`;
+    messageDiv.textContent = text;
+    container.appendChild(messageDiv);
+
+    setTimeout(() => {
+        messageDiv.remove();
+    }, 3000);
+}
+
+function showLoading() {
+    document.getElementById('loading').classList.add('show');
+}
+
+function hideLoading() {
+    document.getElementById('loading').classList.remove('show');
+}
+
+function updateStats() {
+    const rows = document.querySelectorAll('#users-tbody tr');
+    let activeCount = 0;
+
+    rows.forEach(row => {
+        const badge = row.querySelector('.badge');
+        if (badge.classList.contains('badge-active')) {
+            activeCount++;
+        }
+    });
+
+    document.getElementById('active-users').textContent = activeCount;
+}
+</script>
+{% endblock %}

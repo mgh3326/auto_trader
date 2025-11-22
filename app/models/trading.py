@@ -29,6 +29,13 @@ class NotifyChannel(str, enum.Enum):
     webhook = "webhook"
 
 
+class UserRole(str, enum.Enum):
+    """User roles for permission management."""
+    admin = "admin"  # 관리자: 모든 권한
+    trader = "trader"  # 트레이더: 거래 및 분석 기능
+    viewer = "viewer"  # 뷰어: 읽기 전용
+
+
 class Exchange(Base):
     __tablename__ = "exchanges"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -64,6 +71,9 @@ class User(Base):
     username: Mapped[str | None] = mapped_column(Text, unique=True)
     hashed_password: Mapped[str | None] = mapped_column(Text)
     nickname: Mapped[str | None] = mapped_column(Text)
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole, name="user_role"), default=UserRole.viewer, nullable=False
+    )
     tz: Mapped[str] = mapped_column(Text, default="Asia/Seoul", nullable=False)
     base_currency: Mapped[str] = mapped_column(Text, default="KRW", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

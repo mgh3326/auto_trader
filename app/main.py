@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
 from app.core.config import settings
+from app.middleware.auth import AuthMiddleware
 from app.middleware.monitoring import MonitoringMiddleware
 from app.monitoring.error_reporter import get_error_reporter
 from app.monitoring.trade_notifier import get_trade_notifier
@@ -16,6 +17,8 @@ from app.monitoring.telemetry import (
     shutdown_telemetry,
 )
 from app.auth.router import router as auth_router
+from app.auth.web_router import router as web_auth_router
+from app.auth.admin_router import router as admin_router
 from app.routers import analysis_json, dashboard, health, stock_latest, test, upbit_trading
 
 logger = logging.getLogger(__name__)
@@ -66,6 +69,8 @@ def create_app() -> FastAPI:
 
     # Include routers
     app.include_router(auth_router)
+    app.include_router(web_auth_router)
+    app.include_router(admin_router)
     app.include_router(dashboard.router)
     app.include_router(health.router)
     app.include_router(analysis_json.router)
@@ -76,8 +81,9 @@ def create_app() -> FastAPI:
     else:
         logger.debug("Monitoring test routes are disabled")
 
-    # Add monitoring middleware (must be added after startup event)
+    # Add middlewares (order matters: last added = first executed)
     app.add_middleware(MonitoringMiddleware)
+    app.add_middleware(AuthMiddleware)
 
     # Instrument FastAPI for telemetry (after all routes/middleware are added)
     # Note: This is safe because instrument_fastapi() only registers the app
