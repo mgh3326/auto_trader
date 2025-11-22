@@ -324,6 +324,12 @@
         let coinAutomationTaskId = null;
         let coinAutomationInterval = null;
 
+        // Pending counters
+        let analysisPendingCount = 0;
+        let buyPendingCount = 0;
+        let sellPendingCount = 0;
+        let coinAutomationPendingCount = 0;
+
         function getCsrfToken() {
             const metaTag = document.querySelector('meta[name="csrf-token"]');
             if (metaTag && metaTag.content) {
@@ -653,6 +659,20 @@
                 const response = await fetch(`/upbit-trading/api/analyze-task/${analysisTaskId}`);
                 const data = await response.json();
 
+                if (data.state === 'PENDING') {
+                    analysisPendingCount++;
+                    const statusEl = document.getElementById('analysis-status');
+                    if (statusEl) {
+                        if (analysisPendingCount > 5) {
+                            statusEl.innerHTML = '대기 시간이 길어지고 있습니다. <a href="#" onclick="resetAnalysisUI(); return false;">상태 초기화</a>';
+                        } else {
+                            statusEl.textContent = '작업 대기 중... (서버 응답 대기)';
+                        }
+                    }
+                    return;
+                }
+                analysisPendingCount = 0;
+
                 if (data.state === 'PROGRESS' && data.progress) {
                     // 진행 중
                     const progress = data.progress;
@@ -794,6 +814,19 @@
                 const buyProgressBar = document.getElementById('buy-progress-bar');
                 const buyStatus = document.getElementById('buy-status');
 
+                if (data.state === 'PENDING') {
+                    buyPendingCount++;
+                    if (buyStatus) {
+                        if (buyPendingCount > 5) {
+                            buyStatus.innerHTML = '대기 시간이 길어지고 있습니다. <a href="#" onclick="localStorage.removeItem(STORAGE_KEYS.BUY); location.reload(); return false;">상태 초기화</a>';
+                        } else {
+                            buyStatus.textContent = '작업 대기 중... (서버 응답 대기)';
+                        }
+                    }
+                    return;
+                }
+                buyPendingCount = 0;
+
                 if (data.state === 'PROGRESS' && data.progress) {
                     const percentage = data.progress.percentage || 0;
                     buyProgressBar.style.width = percentage + '%';
@@ -904,6 +937,19 @@
 
                 const sellProgressBar = document.getElementById('sell-progress-bar');
                 const sellStatus = document.getElementById('sell-status');
+
+                if (data.state === 'PENDING') {
+                    sellPendingCount++;
+                    if (sellStatus) {
+                        if (sellPendingCount > 5) {
+                            sellStatus.innerHTML = '대기 시간이 길어지고 있습니다. <a href="#" onclick="localStorage.removeItem(STORAGE_KEYS.SELL); location.reload(); return false;">상태 초기화</a>';
+                        } else {
+                            sellStatus.textContent = '작업 대기 중... (서버 응답 대기)';
+                        }
+                    }
+                    return;
+                }
+                sellPendingCount = 0;
 
                 if (data.state === 'PROGRESS' && data.progress) {
                     const percentage = data.progress.percentage || 0;
@@ -1334,12 +1380,22 @@
                 const response = await fetch(`/upbit-trading/api/analyze-task/${encodeURIComponent(coinAutomationTaskId)}`);
                 const data = await response.json();
 
-                if (data.state === 'PROGRESS') {
-                    updatePerCoinAutomationProgress(data.progress || {});
+                if (data.state === 'PENDING') {
+                    coinAutomationPendingCount++;
+                    const statusEl = document.getElementById('per-coin-automation-status');
+                    if (statusEl) {
+                        if (coinAutomationPendingCount > 5) {
+                             statusEl.innerHTML = '작업 대기 시간이 길어지고 있습니다. <a href="#" onclick="resetPerCoinAutomationUI(); return false;">상태 초기화</a>';
+                        } else {
+                             statusEl.textContent = '작업 대기 중... (서버 응답 대기)';
+                        }
+                    }
                     return;
                 }
+                coinAutomationPendingCount = 0;
 
-                if (data.state === 'PENDING') {
+                if (data.state === 'PROGRESS') {
+                    updatePerCoinAutomationProgress(data.progress || {});
                     return;
                 }
 
@@ -1406,6 +1462,8 @@
 
         window.loadMyCoins = loadMyCoins;
         window.runPerCoinAutomation = runPerCoinAutomation;
+        window.resetAnalysisUI = resetAnalysisUI;
+        window.resetPerCoinAutomationUI = resetPerCoinAutomationUI;
 
         function formatLastAnalysisTime(isoString) {
             if (!isoString) {
