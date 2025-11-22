@@ -1,14 +1,13 @@
 import time
-from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
+from app.core.templates import templates
 from app.models.analysis import StockAnalysisResult, StockInfo
 from app.models.base import Base
 from app.monitoring.telemetry import get_meter, get_tracer
@@ -37,10 +36,6 @@ db_query_duration = _meter.create_histogram(
     description="Database query duration for analysis API",
     unit="ms",
 )
-
-# 템플릿 설정
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 @router.get("/", response_class=HTMLResponse)

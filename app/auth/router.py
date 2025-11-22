@@ -13,7 +13,6 @@ from app.auth.schemas import (
     RefreshTokenRequest,
     Token,
     UserCreate,
-    UserInDB,
     UserResponse,
 )
 from app.auth.security import (
@@ -76,12 +75,12 @@ async def register(
         db.add(db_user)
         await db.commit()
         await db.refresh(db_user)
-    except IntegrityError:
+    except IntegrityError as err:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User could not be created",
-        )
+        ) from err
 
     return UserResponse.model_validate(db_user)
 
@@ -177,14 +176,14 @@ async def refresh_token(
         if username is None or token_type != "refresh":
             raise credentials_exception
 
-    except jwt.ExpiredSignatureError:
+    except jwt.ExpiredSignatureError as err:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token has expired",
             headers={"WWW-Authenticate": "Bearer"},
-        )
-    except jwt.InvalidTokenError:
-        raise credentials_exception
+        ) from err
+    except jwt.InvalidTokenError as err:
+        raise credentials_exception from err
 
     # Verify user exists and is active
     result = await db.execute(select(User).where(User.username == username))

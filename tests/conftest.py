@@ -217,6 +217,46 @@ def mock_auth_middleware_db():
         yield mock_session
 
 
+@pytest.fixture(scope="module")
+def auth_mock_session():
+    """Shared mock database session for auth tests."""
+    return AsyncMock()
+
+
+@pytest.fixture
+def auth_test_client(auth_mock_session):
+    """FastAPI test client with mocked database for auth tests."""
+    from app.main import api
+    from app.core.db import get_db
+    from fastapi.testclient import TestClient
+
+    async def override_get_db():
+        yield auth_mock_session
+
+    api.dependency_overrides[get_db] = override_get_db
+    yield TestClient(api)
+    del api.dependency_overrides[get_db]
+
+
+@pytest.fixture(autouse=True)
+def reset_auth_mock_db(auth_mock_session):
+    """Reset auth mock database before each test."""
+    auth_mock_session.reset_mock()
+
+    # Default behavior for execute: return a mock result
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    auth_mock_session.execute.return_value = mock_result
+    auth_mock_session.add = MagicMock()
+    auth_mock_session.commit.return_value = None
+
+    def side_effect_refresh(instance):
+        instance.id = 1
+
+    auth_mock_session.refresh.side_effect = side_effect_refresh
+    return auth_mock_session
+
+
 @pytest.fixture
 def sample_stock_data():
     """Sample stock data for testing."""

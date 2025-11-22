@@ -1,10 +1,8 @@
 """Web authentication router with HTML pages and session management."""
-from pathlib import Path
 from typing import Annotated, Optional, Union
 
 from fastapi import APIRouter, Depends, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -13,11 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.security import get_password_hash, verify_password
 from app.core.config import settings
 from app.core.db import get_db
+from app.core.templates import templates
 from app.models.trading import User, UserRole
 
 router = APIRouter(prefix="/web-auth", tags=["web-authentication"])
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # Session serializer for secure cookie-based sessions
 session_serializer = URLSafeTimedSerializer(

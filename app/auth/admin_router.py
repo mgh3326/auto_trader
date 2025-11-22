@@ -1,21 +1,18 @@
 """Admin router for user management."""
-from pathlib import Path
 from typing import Annotated, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.web_router import get_current_user_from_session
 from app.core.db import get_db
+from app.core.templates import templates
 from app.models.trading import User, UserRole
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 class RoleUpdateRequest(BaseModel):

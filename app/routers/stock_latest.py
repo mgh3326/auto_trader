@@ -1,25 +1,20 @@
 import asyncio
 from asyncio import AbstractEventLoop
-from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, Query, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.db import get_db
+from app.core.templates import templates
 from app.models.analysis import StockInfo, StockAnalysisResult
 from app.models.base import Base
 from app.analysis.service_analyzers import KISAnalyzer, YahooAnalyzer, UpbitAnalyzer
 from app.core.celery_app import celery_app
 
 router = APIRouter(prefix="/stock-latest", tags=["Stock Latest Analysis"])
-
-# 템플릿 설정
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 @router.get("/", response_class=HTMLResponse)

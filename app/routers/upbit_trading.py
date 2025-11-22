@@ -8,17 +8,16 @@ Upbit 자동 매매 웹 인터페이스 라우터
 
 import asyncio
 import logging
-from pathlib import Path
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.web_router import get_current_user_from_session
 from app.core.db import get_db
 from app.core.config import settings
+from app.core.templates import templates
 from app.analysis.service_analyzers import UpbitAnalyzer
 from app.models.trading import User
 from app.services import upbit
@@ -30,10 +29,6 @@ from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/upbit-trading", tags=["Upbit Trading"])
-
-# 템플릿 설정
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 def _to_decimal(value) -> Decimal:
