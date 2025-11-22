@@ -14,15 +14,7 @@
 }
 
 {$DOMAIN_NAME} {
-	# Rate limiting - Prevent DDoS and brute force attacks
-	# Allows 100 requests per minute per IP address
-	rate_limit {
-		zone dynamic {
-			key {remote_host}
-			events 100
-			window 1m
-		}
-	}
+
 
 	# Security headers
 	header {
