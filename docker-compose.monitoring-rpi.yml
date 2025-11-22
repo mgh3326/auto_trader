@@ -224,6 +224,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
       - caddy_logs:/data/logs
+      - ./static:/srv
     mem_limit: 256m
     mem_reservation: 128m
     cpus: '0.5' # Limit to 0.5 CPU core (lightweight reverse proxy)

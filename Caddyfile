@@ -33,6 +33,12 @@
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
 
+	# Serve favicon.ico
+	handle /favicon.ico {
+		root * /srv
+		file_server
+	}
+
 	# Grafana subpath → Grafana service (must come first - more specific)
 	handle /grafana* {
 		reverse_proxy grafana:3000 {
