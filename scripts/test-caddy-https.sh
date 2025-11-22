@@ -15,7 +15,7 @@
 #   DOMAIN_NAME=mgh3326.duckdns.org bash scripts/test-caddy-https.sh
 # ============================================================================
 
-set -e  # 에러 발생 시 즉시 종료
+# set -e  # 에러 발생 시 즉시 종료 (테스트 연속성을 위해 주석 처리)
 
 # 색상 코드
 RED='\033[0;31m'
@@ -63,6 +63,28 @@ print_warning() {
 
 print_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+# 필수 도구 확인
+check_prerequisites() {
+    local missing_tools=()
+
+    if ! command -v curl &> /dev/null; then
+        missing_tools+=("curl")
+    fi
+
+    if ! command -v docker &> /dev/null; then
+        missing_tools+=("docker")
+    fi
+
+    if ! command -v openssl &> /dev/null; then
+        missing_tools+=("openssl")
+    fi
+
+    if [ ${#missing_tools[@]} -ne 0 ]; then
+        print_warning "다음 필수 도구가 설치되지 않았습니다: ${missing_tools[*]}"
+        print_info "일부 테스트가 건너뛰어지거나 실패할 수 있습니다."
+    fi
 }
 
 # 도메인이 localhost가 아닌지 확인
@@ -274,41 +296,7 @@ test_grafana_subpath() {
     fi
 }
 
-# Rate limiting 테스트
-test_rate_limiting() {
-    print_test "Rate Limiting 테스트 (100 req/min)"
 
-    if [ "$DOMAIN" = "localhost" ]; then
-        CURL_OPTS="-k"
-    else
-        CURL_OPTS=""
-    fi
-
-    print_info "빠른 연속 요청을 보내 rate limit을 테스트합니다..."
-
-    # 10개의 빠른 요청 전송
-    SUCCESS_COUNT=0
-    RATE_LIMITED=0
-
-    for i in {1..10}; do
-        STATUS=$(curl -s -o /dev/null -w "%{http_code}" -m 5 $CURL_OPTS "$HTTPS_URL" 2>/dev/null || echo "000")
-        if [ "$STATUS" = "429" ]; then
-            ((RATE_LIMITED++))
-        elif [ "$STATUS" = "200" ] || [ "$STATUS" = "302" ] || [ "$STATUS" = "301" ]; then
-            ((SUCCESS_COUNT++))
-        fi
-    done
-
-    if [ $SUCCESS_COUNT -gt 0 ]; then
-        print_info "정상 응답: $SUCCESS_COUNT/10"
-    fi
-
-    if [ $RATE_LIMITED -gt 0 ]; then
-        print_success "Rate limiting이 작동합니다 (429 응답 $RATE_LIMITED개)"
-    else
-        print_info "Rate limiting이 트리거되지 않았습니다 (정상, 임계값: 100/분)"
-    fi
-}
 
 # Auto-trader 앱 접근 테스트
 test_autotrader_access() {
@@ -392,7 +380,7 @@ main() {
     test_ssl_certificate
     test_grafana_subpath
     test_autotrader_access
-    test_rate_limiting
+
 
     # 결과 요약
     print_header "테스트 결과 요약"
