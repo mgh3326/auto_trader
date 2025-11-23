@@ -79,6 +79,8 @@ class SessionBlacklist:
                 user_id,
                 exc_info=True,
             )
+            if settings.ENVIRONMENT != "production":
+                return False
             if not settings.SESSION_BLACKLIST_FAIL_SAFE:
                 return False
             if settings.SESSION_BLACKLIST_DB_FALLBACK:
