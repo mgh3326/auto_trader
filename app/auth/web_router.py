@@ -151,7 +151,7 @@ async def get_current_user_from_session(
                 if user.is_active:
                     return user
                 return None
-        elif settings.ENVIRONMENT == "test":
+        elif settings.ENVIRONMENT != "production":
             redis_error = True
         else:
             return None
