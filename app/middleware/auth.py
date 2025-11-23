@@ -67,16 +67,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         """Check authentication for protected routes."""
         path = request.url.path
+        is_api_request = path.startswith("/api/")
 
         # Allow public paths
         if self._is_public_path(path):
             return await call_next(request)
 
-        # Handle API endpoints with explicit public allowlist
-        if path.startswith("/api"):
-            if self._is_public_api_path(path):
-                return await call_next(request)
+        # Allow explicitly public API paths without extra DB work
+        if is_api_request and self._is_public_api_path(path):
+            return await call_next(request)
 
+        # Handle API endpoints with explicit public allowlist
+        if is_api_request:
             async with AsyncSessionLocal() as db:
                 user = await get_current_user_from_session(request, db)
 

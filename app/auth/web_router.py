@@ -1,4 +1,5 @@
 """Web authentication router with HTML pages and session management."""
+import hashlib
 import logging
 from typing import Annotated, Optional, Union
 
@@ -238,6 +239,8 @@ async def login(
     db: Annotated[AsyncSession, Depends(get_db)] = None,
 ):
     """Handle login form submission with rate limiting (5 attempts/minute)."""
+    username_hash = hashlib.sha256(username.encode()).hexdigest()[:16]
+
     # Get user by username
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
@@ -247,7 +250,7 @@ async def login(
         logger.warning(
             "Web login failed: user not found or password missing",
             extra=_security_log_extra(
-                request, username=username, event="web_login_failure"
+                request, username_hash=username_hash, event="web_login_failure"
             ),
         )
         return templates.TemplateResponse(
@@ -264,7 +267,7 @@ async def login(
         logger.warning(
             "Web login failed: invalid password",
             extra=_security_log_extra(
-                request, username=username, event="web_login_failure"
+                request, username_hash=username_hash, event="web_login_failure"
             ),
         )
         return templates.TemplateResponse(
@@ -281,7 +284,7 @@ async def login(
         logger.warning(
             "Web login failed: inactive user",
             extra=_security_log_extra(
-                request, username=username, event="web_login_failure"
+                request, username_hash=username_hash, event="web_login_failure"
             ),
         )
         return templates.TemplateResponse(
@@ -312,7 +315,7 @@ async def login(
     logger.info(
         "Web login succeeded",
         extra=_security_log_extra(
-            request, username=username, event="web_login_success"
+            request, username_hash=username_hash, event="web_login_success"
         ),
     )
 

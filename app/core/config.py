@@ -135,6 +135,13 @@ class Settings(BaseSettings):
                 "SECRET_KEY는 최소 32자 이상이어야 합니다. "
                 "openssl rand -hex 32 명령으로 생성하세요."
             )
+        has_upper = any(c.isupper() for c in v)
+        has_lower = any(c.islower() for c in v)
+        has_digit = any(c.isdigit() for c in v)
+        if not (has_upper and has_lower and has_digit):
+            raise ValueError(
+                "SECRET_KEY must contain uppercase, lowercase, and digits for security"
+            )
         # 약한 기본값 차단
         weak_keys = [
             "your_secret_key_here",

@@ -1,4 +1,5 @@
 """Authentication router for FastAPI."""
+import hashlib
 import logging
 from typing import Annotated
 
@@ -122,6 +123,8 @@ async def login(
     Raises:
         HTTPException: If credentials are invalid
     """
+    username_hash = hashlib.sha256(form_data.username.encode()).hexdigest()[:16]
+
     # Get user by username
     result = await db.execute(select(User).where(User.username == form_data.username))
     user = result.scalar_one_or_none()
@@ -130,7 +133,7 @@ async def login(
         logger.warning(
             "Login failed: unknown user or missing password",
             extra=_security_log_extra(
-                request, username=form_data.username, event="login_failure"
+                request, username_hash=username_hash, event="login_failure"
             ),
         )
         raise HTTPException(
@@ -144,7 +147,7 @@ async def login(
         logger.warning(
             "Login failed: invalid password",
             extra=_security_log_extra(
-                request, username=form_data.username, event="login_failure"
+                request, username_hash=username_hash, event="login_failure"
             ),
         )
         raise HTTPException(
@@ -158,7 +161,7 @@ async def login(
         logger.warning(
             "Login failed: inactive user",
             extra=_security_log_extra(
-                request, username=form_data.username, event="login_failure"
+                request, username_hash=username_hash, event="login_failure"
             ),
         )
         raise HTTPException(
@@ -181,7 +184,7 @@ async def login(
             "Login failed during token persistence",
             exc_info=True,
             extra=_security_log_extra(
-                request, username=form_data.username, event="login_error"
+                request, username_hash=username_hash, event="login_error"
             ),
         )
         raise HTTPException(
@@ -192,7 +195,7 @@ async def login(
     logger.info(
         "Login succeeded",
         extra=_security_log_extra(
-            request, username=user.username, event="login_success"
+            request, username_hash=username_hash, event="login_success"
         ),
     )
 
@@ -239,7 +242,6 @@ async def refresh_token(
 
         if username is None or token_type != "refresh":
             raise credentials_exception
-
     except jwt.ExpiredSignatureError as err:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -248,6 +250,8 @@ async def refresh_token(
         ) from err
     except jwt.InvalidTokenError as err:
         raise credentials_exception from err
+
+    username_hash = hashlib.sha256(username.encode()).hexdigest()[:16]
 
     # Verify user exists and is active
     result = await db.execute(select(User).where(User.username == username))
@@ -264,16 +268,17 @@ async def refresh_token(
         logger.warning(
             "Refresh token reuse or invalid token detected",
             extra=_security_log_extra(
-                request, username=user.username, event="refresh_failure"
+                request, username_hash=username_hash, event="refresh_failure"
             ),
         )
         raise credentials_exception
 
     try:
-        await revoke_refresh_token(db, stored_token)
-        access_token = create_access_token(data={"sub": user.username})
-        new_refresh_token = create_refresh_token(data={"sub": user.username})
-        await save_refresh_token(db, user.id, new_refresh_token)
+        async with db.begin_nested():
+            await revoke_refresh_token(db, stored_token)
+            access_token = create_access_token(data={"sub": user.username})
+            new_refresh_token = create_refresh_token(data={"sub": user.username})
+            await save_refresh_token(db, user.id, new_refresh_token)
         await db.commit()
     except Exception as err:
         await db.rollback()
@@ -281,7 +286,7 @@ async def refresh_token(
             "Failed to rotate refresh token",
             exc_info=True,
             extra=_security_log_extra(
-                request, username=user.username, event="refresh_error"
+                request, username_hash=username_hash, event="refresh_error"
             ),
         )
         raise HTTPException(
@@ -292,7 +297,7 @@ async def refresh_token(
     logger.info(
         "Refresh token rotated successfully",
         extra=_security_log_extra(
-            request, username=user.username, event="refresh_success"
+            request, username_hash=username_hash, event="refresh_success"
         ),
     )
 
@@ -327,7 +332,6 @@ async def logout(
 
         if username is None or token_type != "refresh":
             raise credentials_exception
-
     except jwt.ExpiredSignatureError as err:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -336,6 +340,8 @@ async def logout(
         ) from err
     except jwt.InvalidTokenError as err:
         raise credentials_exception from err
+
+    username_hash = hashlib.sha256(username.encode()).hexdigest()[:16]
 
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
@@ -350,7 +356,7 @@ async def logout(
         logger.warning(
             "Logout failed: token not found or already revoked",
             extra=_security_log_extra(
-                request, username=username, event="logout_failure"
+                request, username_hash=username_hash, event="logout_failure"
             ),
         )
         raise credentials_exception
@@ -361,7 +367,7 @@ async def logout(
     logger.info(
         "User logged out (refresh token revoked)",
         extra=_security_log_extra(
-            request, username=username, event="logout_success"
+            request, username_hash=username_hash, event="logout_success"
         ),
     )
 
