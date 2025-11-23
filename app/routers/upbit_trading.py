@@ -12,12 +12,14 @@ from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.web_router import get_current_user_from_session
 from app.core.db import get_db
 from app.core.config import settings
+from app.core.templates import templates
 from app.analysis.service_analyzers import UpbitAnalyzer
+from app.models.trading import User
 from app.services import upbit
 from app.services.stock_info_service import (
     process_buy_orders_with_analysis,
@@ -27,9 +29,6 @@ from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/upbit-trading", tags=["Upbit Trading"])
-
-# 템플릿 설정
-templates = Jinja2Templates(directory="app/templates")
 
 
 def _to_decimal(value) -> Decimal:
@@ -52,7 +51,15 @@ def _format_coin_amount(value: Decimal) -> str:
 @router.get("/", response_class=HTMLResponse)
 async def upbit_trading_dashboard(request: Request):
     """Upbit 자동 매매 대시보드 페이지"""
-    return templates.TemplateResponse("upbit_trading_dashboard.html", {"request": request})
+    # User is already authenticated by AuthMiddleware and available in request.state.user
+    user = getattr(request.state, "user", None)
+    return templates.TemplateResponse(
+        "upbit_trading_dashboard.html",
+        {
+            "request": request,
+            "user": user,
+        }
+    )
 
 
 @router.get("/api/my-coins")

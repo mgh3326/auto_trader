@@ -5,8 +5,11 @@ from typing import AsyncIterator, Optional
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
+from app.middleware.auth import AuthMiddleware
 from app.middleware.monitoring import MonitoringMiddleware
 from app.monitoring.error_reporter import get_error_reporter
 from app.monitoring.trade_notifier import get_trade_notifier
@@ -15,7 +18,17 @@ from app.monitoring.telemetry import (
     setup_telemetry,
     shutdown_telemetry,
 )
-from app.routers import analysis_json, dashboard, health, stock_latest, test, upbit_trading
+from app.auth.router import router as auth_router
+from app.auth.web_router import limiter, router as web_auth_router
+from app.auth.admin_router import router as admin_router
+from app.routers import (
+    analysis_json,
+    dashboard,
+    health,
+    stock_latest,
+    test,
+    upbit_trading,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +50,26 @@ def create_app() -> FastAPI:
         finally:
             await cleanup_monitoring()
 
-    app = FastAPI(title="KIS Auto Screener", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="KIS Auto Screener",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/docs" if settings.DOCS_ENABLED else None,
+        redoc_url="/redoc" if settings.DOCS_ENABLED else None,
+        openapi_url="/openapi.json" if settings.DOCS_ENABLED else None,
+    )
+
+    # Add slowapi state for rate limiting
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     # Add global exception handler for detailed error logging
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """Log all unhandled exceptions with full traceback"""
         logger.error(
-            f"Unhandled exception on {request.method} {request.url.path}: {str(exc)}",
+            f"Unhandled exception on {request.method} "
+            f"{request.url.path}: {str(exc)}",
             exc_info=True,
             extra={
                 "method": request.method,
@@ -58,6 +83,9 @@ def create_app() -> FastAPI:
         )
 
     # Include routers
+    app.include_router(auth_router)
+    app.include_router(web_auth_router)
+    app.include_router(admin_router)
     app.include_router(dashboard.router)
     app.include_router(health.router)
     app.include_router(analysis_json.router)
@@ -68,8 +96,9 @@ def create_app() -> FastAPI:
     else:
         logger.debug("Monitoring test routes are disabled")
 
-    # Add monitoring middleware (must be added after startup event)
+    # Add middlewares (order matters: last added = first executed)
     app.add_middleware(MonitoringMiddleware)
+    app.add_middleware(AuthMiddleware)
 
     # Instrument FastAPI for telemetry (after all routes/middleware are added)
     # Note: This is safe because instrument_fastapi() only registers the app

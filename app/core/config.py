@@ -1,5 +1,5 @@
 import random
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,6 +37,7 @@ class Settings(BaseSettings):
                 return []
             return [key.strip() for key in v.split(',') if key.strip()]
         return v
+
     def _ensure_key_index(self):
         """API 키 인덱스 초기화 (필요시에만)"""
         if not hasattr(self, "_current_key_index"):
@@ -71,9 +72,11 @@ class Settings(BaseSettings):
         if self.redis_password:
             auth_part = f":{self.redis_password}@"
 
-        return (
-            f"{protocol}{auth_part}{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        url = (
+            f"{protocol}{auth_part}{self.redis_host}:"
+            f"{self.redis_port}/{self.redis_db}"
         )
+        return url
 
     opendart_api_key: str
     DATABASE_URL: str
@@ -113,6 +116,71 @@ class Settings(BaseSettings):
 
     # Monitoring test route exposure
     EXPOSE_MONITORING_TEST_ROUTES: bool = False
+
+    # JWT Authentication settings
+    SECRET_KEY: str
+    ALGORITHM: Literal["HS256", "HS384", "HS512"] = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    SESSION_BLACKLIST_FAIL_SAFE: bool = True
+    SESSION_BLACKLIST_DB_FALLBACK: bool = True
+    PUBLIC_API_PATHS: List[str] = []
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        """SECRET_KEY 보안 검증"""
+        if len(v) < 32:
+            raise ValueError(
+                "SECRET_KEY는 최소 32자 이상이어야 합니다. "
+                "openssl rand -hex 32 명령으로 생성하세요."
+            )
+        has_upper = any(c.isupper() for c in v)
+        has_lower = any(c.islower() for c in v)
+        has_digit = any(c.isdigit() for c in v)
+        if not (has_upper and has_lower and has_digit):
+            raise ValueError(
+                "SECRET_KEY must contain uppercase, lowercase, and digits for security"
+            )
+        # 약한 기본값 차단
+        weak_keys = [
+            "your_secret_key_here",
+            "changeme",
+            "secret",
+            "your_secret_key_here_use_openssl_rand_hex_32",
+            "test",
+            "password",
+            "12345",
+        ]
+        if v.lower() in weak_keys:
+            raise ValueError(
+                f"보안 경고: '{v}'는 약한 SECRET_KEY입니다. "
+                "프로덕션에서는 강력한 랜덤 키를 사용하세요. "
+                "생성 방법: openssl rand -hex 32"
+            )
+        unique_chars = set(v)
+        unique_ratio = len(unique_chars) / len(v)
+        # 허용 가능한 강도: openssl rand -hex 32 결과(64자, ~0.25 고유도)도 통과해야 함
+        if len(unique_chars) < 10 or unique_ratio < 0.2:
+            raise ValueError(
+                "SECRET_KEY의 엔트로피가 너무 낮습니다. "
+                "openssl rand -hex 32 등으로 생성한 충분히 랜덤한 값을 사용하세요."
+            )
+        return v
+
+    @field_validator("PUBLIC_API_PATHS", mode="before")
+    @classmethod
+    def validate_public_api_paths(cls, v: List[str] | str) -> List[str]:
+        """Ensure PUBLIC_API_PATHS is parsed consistently from env strings."""
+        if isinstance(v, str):
+            return [path.strip() for path in v.split(",") if path.strip()]
+        return v or []
+
+    # Environment setting for cookie security
+    ENVIRONMENT: str = "development"  # development, production
+
+    # API Documentation
+    DOCS_ENABLED: bool = True  # 개발 환경: True, 프로덕션: False
 
     model_config = SettingsConfigDict(
         env_file=".env",

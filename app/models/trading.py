@@ -1,4 +1,5 @@
 import enum
+from datetime import datetime
 
 from sqlalchemy import (
     TIMESTAMP,
@@ -27,6 +28,13 @@ class NotifyChannel(str, enum.Enum):
     telegram = "telegram"
     email = "email"
     webhook = "webhook"
+
+
+class UserRole(str, enum.Enum):
+    """User roles for permission management."""
+    admin = "admin"  # 관리자: 모든 권한
+    trader = "trader"  # 트레이더: 거래 및 분석 기능
+    viewer = "viewer"  # 뷰어: 읽기 전용
 
 
 class Exchange(Base):
@@ -61,12 +69,37 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     email: Mapped[str | None] = mapped_column(Text, unique=True)
+    username: Mapped[str | None] = mapped_column(Text, unique=True)
+    hashed_password: Mapped[str | None] = mapped_column(Text)
     nickname: Mapped[str | None] = mapped_column(Text)
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole, name="user_role"), default=UserRole.viewer, nullable=False
+    )
     tz: Mapped[str] = mapped_column(Text, default="Asia/Seoul", nullable=False)
     base_currency: Mapped[str] = mapped_column(Text, default="KRW", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[str] = mapped_column(
         TIMESTAMP(timezone=True), server_default="now()"
     )
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default="now()", nullable=False
+    )
+
+    user: Mapped["User"] = relationship("User", backref="refresh_tokens")
 
 
 class UserChannel(Base):
