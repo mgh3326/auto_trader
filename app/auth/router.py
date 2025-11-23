@@ -23,6 +23,7 @@ from app.auth.security import (
     get_password_hash,
     verify_password,
 )
+from app.auth.web_router import limiter
 from app.auth.token_repository import (
     get_valid_refresh_token,
     revoke_all_refresh_tokens,
@@ -47,7 +48,9 @@ def _security_log_extra(request: Request, **kwargs) -> dict:
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 async def register(
+    request: Request,
     user_data: UserCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> UserResponse:
@@ -105,6 +108,7 @@ async def register(
 
 
 @router.post("/login", response_model=Token)
+@limiter.limit("5/minute")
 async def login(
     request: Request,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
@@ -130,6 +134,7 @@ async def login(
     user = result.scalar_one_or_none()
 
     if not user or not user.hashed_password:
+        get_password_hash("dummy_password_to_prevent_timing_attack")
         logger.warning(
             "Login failed: unknown user or missing password",
             extra=_security_log_extra(

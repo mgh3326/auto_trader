@@ -1,4 +1,5 @@
 """Pydantic schemas for authentication."""
+import string
 from datetime import datetime
 from typing import Optional
 
@@ -31,7 +32,7 @@ class UserCreate(BaseModel):
     @field_validator("password")
     @classmethod
     def validate_password_strength(cls, v: str) -> str:
-        """비밀번호 강도 검증: 최소 8자, 대문자, 숫자 포함."""
+        """비밀번호 강도 검증: 최소 8자, 대문자, 숫자, 특수문자 포함."""
         if len(v) < 8:
             raise ValueError("비밀번호는 최소 8자 이상이어야 합니다.")
 
@@ -40,6 +41,9 @@ class UserCreate(BaseModel):
 
         if not any(c.isdigit() for c in v):
             raise ValueError("비밀번호에 숫자가 최소 1개 이상 포함되어야 합니다.")
+
+        if not any(c in string.punctuation for c in v):
+            raise ValueError("비밀번호에 특수문자가 최소 1개 이상 포함되어야 합니다.")
 
         return v
 

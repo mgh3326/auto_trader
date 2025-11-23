@@ -1,6 +1,9 @@
 """Web authentication router with HTML pages and session management."""
 import hashlib
+import hmac
+import json
 import logging
+import string
 from typing import Annotated, Optional, Union
 
 from fastapi import APIRouter, Depends, Form, Request, Response, status
@@ -33,7 +36,22 @@ session_serializer = URLSafeTimedSerializer(
 
 # Session cookie settings
 SESSION_COOKIE_NAME = "session"
-SESSION_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
+SESSION_TTL = 60 * 60 * 24 * 7  # 7 days
+USER_CACHE_TTL = 300  # 5 minutes
+SESSION_HASH_KEY_PREFIX = "user_session"
+USER_CACHE_KEY_PREFIX = "user_cache"
+
+
+def _session_hash_key(user_id: int) -> str:
+    return f"{SESSION_HASH_KEY_PREFIX}:{user_id}"
+
+
+def _user_cache_key(user_id: int) -> str:
+    return f"{USER_CACHE_KEY_PREFIX}:{user_id}"
+
+
+def _hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def create_session_token(user_id: int) -> str:
@@ -41,7 +59,7 @@ def create_session_token(user_id: int) -> str:
     return session_serializer.dumps({"user_id": user_id})
 
 
-def verify_session_token(token: str, max_age: int = SESSION_MAX_AGE) -> Optional[int]:
+def verify_session_token(token: str, max_age: int = SESSION_TTL) -> Optional[int]:
     """Verify session token and return user_id if valid."""
     try:
         data = session_serializer.loads(token, max_age=max_age)
@@ -60,10 +78,10 @@ async def invalidate_user_cache(user_id: int) -> None:
             settings.get_redis_url(),
             decode_responses=True,
         )
-        await redis_client.delete(f"user_session:{user_id}")
-    except Exception:
-        # Cache invalidation failure is non-fatal; caller handles auth state.
-        pass
+        await redis_client.delete(
+            _session_hash_key(user_id),
+            _user_cache_key(user_id),
+        )
     finally:
         if redis_client:
             await redis_client.aclose()
@@ -95,23 +113,32 @@ async def get_current_user_from_session(
     if await blacklist.is_blacklisted(user_id):
         return None
 
-    # Try to get user from cache first
-    import json
+    session_hash = _hash_session_token(session_token)
 
+    # Try to validate session and get user from cache
     import redis.asyncio as redis
 
     redis_client = None
-    cache_key = f"user_session:{user_id}"
+    session_hash_key = _session_hash_key(user_id)
+    user_cache_key = _user_cache_key(user_id)
+    session_hash_verified = False
 
     try:
         redis_client = redis.from_url(
             settings.get_redis_url(),
             decode_responses=True,
         )
-        cached_user = await redis_client.get(cache_key)
+        stored_session_hash = await redis_client.get(session_hash_key)
+        if not stored_session_hash or not hmac.compare_digest(
+            stored_session_hash, session_hash
+        ):
+            return None
+
+        session_hash_verified = True
+
+        cached_user = await redis_client.get(user_cache_key)
 
         if cached_user:
-            # User found in cache
             user_data = json.loads(cached_user)
             user = User(
                 id=user_data["id"],
@@ -125,17 +152,23 @@ async def get_current_user_from_session(
                 return user
             return None
     except Exception:
-        # Cache miss or error, continue to DB query
-        pass
+        logger.warning(
+            "Session cache lookup failed for user_id=%s", user_id, exc_info=True
+        )
+        return None
     finally:
         if redis_client:
             await redis_client.aclose()
+
+    if not session_hash_verified:
+        return None
 
     # Cache miss - query database
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
     if user and user.is_active:
+        redis_client = None
         # Store in cache for 5 minutes
         try:
             redis_client = redis.from_url(
@@ -151,11 +184,17 @@ async def get_current_user_from_session(
                 "hashed_password": user.hashed_password,
             }
             await redis_client.set(
-                cache_key, json.dumps(user_data), ex=300  # 5 minutes
+                user_cache_key, json.dumps(user_data), ex=USER_CACHE_TTL
+            )
+            await redis_client.set(
+                session_hash_key, session_hash, ex=SESSION_TTL
             )
         except Exception:
-            # Cache write failure is not critical
-            pass
+            logger.warning(
+                "Failed to refresh session cache for user_id=%s",
+                user_id,
+                exc_info=True,
+            )
         finally:
             if redis_client:
                 await redis_client.aclose()
@@ -299,6 +338,50 @@ async def login(
 
     # Create session token
     session_token = create_session_token(user.id)
+    session_hash = _hash_session_token(session_token)
+
+    import redis.asyncio as redis
+
+    redis_client = None
+    try:
+        redis_client = redis.from_url(
+            settings.get_redis_url(),
+            decode_responses=True,
+        )
+        user_data = {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "role": user.role.name,
+            "is_active": user.is_active,
+            "hashed_password": user.hashed_password,
+        }
+        await redis_client.set(
+            _session_hash_key(user.id), session_hash, ex=SESSION_TTL
+        )
+        await redis_client.set(
+            _user_cache_key(user.id), json.dumps(user_data), ex=USER_CACHE_TTL
+        )
+    except Exception:
+        logger.error(
+            "Web login failed to persist session cache",
+            exc_info=True,
+            extra=_security_log_extra(
+                request, username_hash=username_hash, event="web_login_error"
+            ),
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "error": "로그인 세션을 생성하는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
+                "next": next,
+            },
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    finally:
+        if redis_client:
+            await redis_client.aclose()
 
     # Redirect to next page or home
     redirect_url = next or "/"
@@ -306,7 +389,7 @@ async def login(
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_token,
-        max_age=SESSION_MAX_AGE,
+        max_age=SESSION_TTL,
         httponly=True,
         secure=settings.ENVIRONMENT == "production",
         samesite="lax",
@@ -373,6 +456,18 @@ async def register(
             name="register.html",
             context={
                 "error": "비밀번호에 숫자가 최소 1개 이상 포함되어야 합니다.",
+                "email": email,
+                "username": username,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not any(c in string.punctuation for c in password):
+        return templates.TemplateResponse(
+            request=request,
+            name="register.html",
+            context={
+                "error": "비밀번호에 특수문자가 최소 1개 이상 포함되어야 합니다.",
                 "email": email,
                 "username": username,
             },
@@ -462,6 +557,33 @@ async def register(
 @router.get("/logout")
 async def logout(request: Request):
     """Handle logout."""
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+
+    if session_token:
+        user_id = verify_session_token(session_token)
+        if user_id:
+            import redis.asyncio as redis
+
+            redis_client = None
+            try:
+                redis_client = redis.from_url(
+                    settings.get_redis_url(),
+                    decode_responses=True,
+                )
+                await redis_client.delete(
+                    _session_hash_key(user_id),
+                    _user_cache_key(user_id),
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to invalidate session cache during logout for user_id=%s",
+                    user_id,
+                    exc_info=True,
+                )
+            finally:
+                if redis_client:
+                    await redis_client.aclose()
+
     response = RedirectResponse(
         url="/web-auth/login", status_code=status.HTTP_303_SEE_OTHER
     )

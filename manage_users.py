@@ -11,13 +11,40 @@
     python manage_users.py deactivate <username>   # 사용자 비활성화
 """
 import asyncio
+import logging
 import sys
 
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.session_blacklist import get_session_blacklist
 from app.models.trading import User, UserRole
+
+logger = logging.getLogger(__name__)
+
+
+async def invalidate_user_cache(user_id: int) -> None:
+    """Invalidate cached session and user data in Redis."""
+    import redis.asyncio as redis
+
+    redis_client = None
+    try:
+        redis_client = redis.from_url(
+            settings.get_redis_url(),
+            decode_responses=True,
+        )
+        await redis_client.delete(
+            f"user_session:{user_id}",
+            f"user_cache:{user_id}",
+        )
+    except Exception:
+        logger.warning(
+            "Failed to invalidate cache for user_id=%s", user_id, exc_info=True
+        )
+    finally:
+        if redis_client:
+            await redis_client.aclose()
 
 
 async def list_users():
@@ -73,21 +100,7 @@ async def change_role(username: str, new_role: UserRole):
             )
 
             # 캐시 무효화
-            import redis.asyncio as redis
-
-            from app.core.config import settings
-
-            try:
-                redis_client = redis.from_url(
-                    settings.get_redis_url(),
-                    decode_responses=True,
-                )
-                cache_key = f"user_session:{user.id}"
-                await redis_client.delete(cache_key)
-                await redis_client.aclose()
-            except Exception:
-                # 캐시 무효화 실패는 치명적이지 않음
-                pass
+            await invalidate_user_cache(user.id)
     except Exception as e:
         print(f"❌ 권한 변경 중 오류 발생: {e}")
         try:
@@ -126,21 +139,7 @@ async def toggle_active(username: str, active: bool):
                 print(f"✅ {username}이(가) 활성화되었습니다.")
 
             # 캐시 무효화
-            import redis.asyncio as redis
-
-            from app.core.config import settings
-
-            try:
-                redis_client = redis.from_url(
-                    settings.get_redis_url(),
-                    decode_responses=True,
-                )
-                cache_key = f"user_session:{user.id}"
-                await redis_client.delete(cache_key)
-                await redis_client.aclose()
-            except Exception:
-                # 캐시 무효화 실패는 치명적이지 않음
-                pass
+            await invalidate_user_cache(user.id)
     except Exception as e:
         print(f"❌ 사용자 상태 변경 중 오류 발생: {e}")
         try:
