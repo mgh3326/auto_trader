@@ -122,6 +122,9 @@ class Settings(BaseSettings):
     ALGORITHM: Literal["HS256", "HS384", "HS512"] = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    SESSION_BLACKLIST_FAIL_SAFE: bool = True
+    SESSION_BLACKLIST_DB_FALLBACK: bool = True
+    PUBLIC_API_PATHS: List[str] = []
 
     @field_validator("SECRET_KEY")
     @classmethod
@@ -148,7 +151,23 @@ class Settings(BaseSettings):
                 "프로덕션에서는 강력한 랜덤 키를 사용하세요. "
                 "생성 방법: openssl rand -hex 32"
             )
+        unique_chars = set(v)
+        unique_ratio = len(unique_chars) / len(v)
+        # 허용 가능한 강도: openssl rand -hex 32 결과(64자, ~0.25 고유도)도 통과해야 함
+        if len(unique_chars) < 10 or unique_ratio < 0.2:
+            raise ValueError(
+                "SECRET_KEY의 엔트로피가 너무 낮습니다. "
+                "openssl rand -hex 32 등으로 생성한 충분히 랜덤한 값을 사용하세요."
+            )
         return v
+
+    @field_validator("PUBLIC_API_PATHS", mode="before")
+    @classmethod
+    def validate_public_api_paths(cls, v: List[str] | str) -> List[str]:
+        """Ensure PUBLIC_API_PATHS is parsed consistently from env strings."""
+        if isinstance(v, str):
+            return [path.strip() for path in v.split(",") if path.strip()]
+        return v or []
 
     # Environment setting for cookie security
     ENVIRONMENT: str = "development"  # development, production

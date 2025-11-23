@@ -2,7 +2,7 @@
 from typing import ClassVar
 
 from fastapi import Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.auth.web_router import get_current_user_from_session
@@ -20,7 +20,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     - /health
     - /docs, /redoc, /openapi.json (only if DOCS_ENABLED=True)
 
-    All other HTML routes require authentication.
+    All other routes require authentication unless explicitly whitelisted.
     """
 
     # Base public paths (always accessible)
@@ -39,6 +39,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/openapi.json",
     ]
 
+    # Public API paths (explicit whitelist)
+    PUBLIC_API_PATHS: ClassVar[list[str]] = []
+
     def __init__(self, app):
         """Initialize middleware with dynamic public paths."""
         super().__init__(app)
@@ -46,19 +49,44 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.public_paths = self.BASE_PUBLIC_PATHS.copy()
         if settings.DOCS_ENABLED:
             self.public_paths.extend(self.DOCS_PATHS)
+        # Build API public paths list from settings override
+        self.public_api_paths = self.PUBLIC_API_PATHS.copy()
+        if settings.PUBLIC_API_PATHS:
+            self.public_api_paths.extend(settings.PUBLIC_API_PATHS)
+
+    def _is_public_path(self, path: str) -> bool:
+        """Check if path is in public (non-authenticated) list."""
+        return any(path.startswith(public_path) for public_path in self.public_paths)
+
+    def _is_public_api_path(self, path: str) -> bool:
+        """Check if API path is explicitly public."""
+        return any(
+            path.startswith(public_api_path) for public_api_path in self.public_api_paths
+        )
 
     async def dispatch(self, request: Request, call_next):
         """Check authentication for protected routes."""
         path = request.url.path
 
         # Allow public paths
-        if any(
-            path.startswith(public_path) for public_path in self.public_paths
-        ):
+        if self._is_public_path(path):
             return await call_next(request)
 
-        # Allow API endpoints (JSON responses) - they have their own auth
-        if path.startswith("/api/"):
+        # Handle API endpoints with explicit public allowlist
+        if path.startswith("/api"):
+            if self._is_public_api_path(path):
+                return await call_next(request)
+
+            async with AsyncSessionLocal() as db:
+                user = await get_current_user_from_session(request, db)
+
+            if not user:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Authentication required for this endpoint."},
+                )
+
+            request.state.user = user
             return await call_next(request)
 
         # For HTML pages, check if user is authenticated

@@ -1,9 +1,15 @@
 """Redis-based session blacklist for user deactivation."""
+import logging
 from typing import Optional
 
 import redis.asyncio as redis
+from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
+from app.models.trading import User
+
+logger = logging.getLogger(__name__)
 
 
 class SessionBlacklist:
@@ -66,9 +72,18 @@ class SessionBlacklist:
             key = f"{self._blacklist_key_prefix}{user_id}"
             result = await client.get(key)
             return result is not None
-        except Exception:
-            # Redis 장애 시 보수적으로 False 반환 (차단하지 않음)
-            return False
+        except Exception as err:
+            logger.warning(
+                "Redis session blacklist check failed; "
+                "applying fail-safe policy for user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+            if not settings.SESSION_BLACKLIST_FAIL_SAFE:
+                return False
+            if settings.SESSION_BLACKLIST_DB_FALLBACK:
+                return await self._fallback_to_db(user_id)
+            return True
 
     async def remove_from_blacklist(self, user_id: int) -> bool:
         """
@@ -87,6 +102,29 @@ class SessionBlacklist:
             return True
         except Exception:
             return False
+
+    async def _fallback_to_db(self, user_id: int) -> bool:
+        """
+        Redis 장애 시 DB를 조회하여 보수적으로 차단 여부 판단.
+
+        Returns True when user is inactive or missing to minimize risk.
+        """
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(User.is_active).where(User.id == user_id)
+                )
+                is_active = result.scalar_one_or_none()
+                if is_active is None:
+                    return True
+                return not bool(is_active)
+        except Exception:
+            logger.error(
+                "Session blacklist DB fallback failed for user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+            return True
 
 
 # 싱글톤 인스턴스

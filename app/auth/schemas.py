@@ -4,6 +4,8 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.models.trading import UserRole
+
 
 class Token(BaseModel):
     """Token response schema."""
@@ -61,6 +63,7 @@ class UserResponse(BaseModel):
     email: str
     username: str
     is_active: bool
+    role: UserRole
 
     class Config:
         from_attributes = True

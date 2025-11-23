@@ -1,4 +1,5 @@
 import enum
+from datetime import datetime
 
 from sqlalchemy import (
     TIMESTAMP,
@@ -80,6 +81,25 @@ class User(Base):
     created_at: Mapped[str] = mapped_column(
         TIMESTAMP(timezone=True), server_default="now()"
     )
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default="now()", nullable=False
+    )
+
+    user: Mapped["User"] = relationship("User", backref="refresh_tokens")
 
 
 class UserChannel(Base):

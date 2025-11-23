@@ -1,5 +1,6 @@
 """Admin router for user management."""
-from typing import Annotated, List
+import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
@@ -7,12 +8,25 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.web_router import get_current_user_from_session
+from app.auth.role_hierarchy import has_min_role
+from app.auth.token_repository import revoke_all_refresh_tokens
+from app.auth.web_router import get_current_user_from_session, invalidate_user_cache
 from app.core.db import get_db
+from app.core.session_blacklist import get_session_blacklist
 from app.core.templates import templates
 from app.models.trading import User, UserRole
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+logger = logging.getLogger(__name__)
+
+
+def _security_log_extra(request: Request, **kwargs) -> dict:
+    """Structured metadata for security logs."""
+    return {
+        "client_ip": request.client.host if request.client else None,
+        "user_agent": request.headers.get("user-agent"),
+        **kwargs,
+    }
 
 
 class RoleUpdateRequest(BaseModel):
@@ -27,12 +41,25 @@ async def require_admin(
     """Dependency to require admin role."""
     user = await get_current_user_from_session(request, db)
     if not user:
+        logger.warning(
+            "Admin access denied: unauthenticated",
+            extra=_security_log_extra(request, event="admin_access_denied"),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="인증이 필요합니다.",
         )
 
-    if user.role != UserRole.admin:
+    if not has_min_role(user.role, UserRole.admin):
+        logger.warning(
+            "Admin access denied: insufficient role",
+            extra=_security_log_extra(
+                request,
+                user_id=user.id,
+                user_role=user.role.value if user else None,
+                event="admin_access_denied",
+            ),
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="관리자 권한이 필요합니다.",
@@ -115,6 +142,7 @@ async def get_all_users(
 async def update_user_role(
     user_id: int,
     role_data: RoleUpdateRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     admin_user: Annotated[User, Depends(require_admin)] = None,
 ):
@@ -137,9 +165,45 @@ async def update_user_role(
         )
 
     # Update role
-    user.role = role_data.role
-    await db.commit()
-    await db.refresh(user)
+    try:
+        user.role = role_data.role
+        revoked_count = await revoke_all_refresh_tokens(db, user.id)
+        await db.commit()
+        await db.refresh(user)
+    except Exception as err:
+        await db.rollback()
+        logger.error(
+            "Failed to update user role",
+            exc_info=True,
+            extra=_security_log_extra(
+                request,
+                admin_id=admin_user.id if admin_user else None,
+                target_user_id=user.id,
+                event="admin_update_role_error",
+            ),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="역할을 변경하는 중 오류가 발생했습니다.",
+        ) from err
+
+    logger.info(
+        "User role updated by admin",
+        extra=_security_log_extra(
+            request,
+            admin_id=admin_user.id if admin_user else None,
+            target_user_id=user.id,
+            new_role=user.role.value,
+            revoked_tokens=revoked_count,
+            event="admin_update_role",
+        ),
+    )
+
+    # Invalidate cached sessions to enforce new role
+    try:
+        await invalidate_user_cache(user.id)
+    except Exception:
+        logger.warning("Failed to invalidate cache for user_id=%s", user.id, exc_info=True)
 
     return {
         "id": user.id,
@@ -152,6 +216,7 @@ async def update_user_role(
 @router.put("/users/{user_id}/toggle")
 async def toggle_user_active(
     user_id: int,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     admin_user: Annotated[User, Depends(require_admin)] = None,
 ):
@@ -174,9 +239,55 @@ async def toggle_user_active(
         )
 
     # Toggle active status
-    user.is_active = not user.is_active
-    await db.commit()
-    await db.refresh(user)
+    try:
+        user.is_active = not user.is_active
+        revoked_count = await revoke_all_refresh_tokens(db, user.id)
+        await db.commit()
+        await db.refresh(user)
+    except Exception as err:
+        await db.rollback()
+        logger.error(
+            "Failed to toggle user active status",
+            exc_info=True,
+            extra=_security_log_extra(
+                request,
+                admin_id=admin_user.id if admin_user else None,
+                target_user_id=user.id,
+                event="admin_toggle_user_error",
+            ),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="사용자 상태를 변경할 수 없습니다.",
+        ) from err
+
+    blacklist = get_session_blacklist()
+    try:
+        if user.is_active:
+            await blacklist.remove_from_blacklist(user.id)
+        else:
+            await blacklist.blacklist_user(user.id)
+    except Exception:
+        logger.warning(
+            "Failed to update session blacklist for user_id=%s", user.id, exc_info=True
+        )
+
+    try:
+        await invalidate_user_cache(user.id)
+    except Exception:
+        logger.warning("Failed to invalidate cache for user_id=%s", user.id, exc_info=True)
+
+    logger.info(
+        "User active status toggled by admin",
+        extra=_security_log_extra(
+            request,
+            admin_id=admin_user.id if admin_user else None,
+            target_user_id=user.id,
+            is_active=user.is_active,
+            revoked_tokens=revoked_count,
+            event="admin_toggle_user",
+        ),
+    )
 
     return {
         "id": user.id,

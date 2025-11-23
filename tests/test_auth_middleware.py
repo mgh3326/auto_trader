@@ -3,9 +3,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
+
+from app.core.config import settings
 from app.middleware.auth import AuthMiddleware
 from app.models.trading import User
 from app.auth.web_router import create_session_token
+
+# Allow /api/data as a public API path for testing the allowlist behavior
+settings.PUBLIC_API_PATHS = ["/api/data"]
 
 # Create a separate app for middleware testing to avoid side effects
 app = FastAPI()

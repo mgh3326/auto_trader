@@ -1,4 +1,5 @@
 """Web authentication router with HTML pages and session management."""
+import logging
 from typing import Annotated, Optional, Union
 
 from fastapi import APIRouter, Depends, Form, Request, Response, status
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.role_hierarchy import has_min_role
 from app.auth.security import get_password_hash, verify_password
 from app.core.config import settings
 from app.core.db import get_db
@@ -18,6 +20,7 @@ from app.core.templates import templates
 from app.models.trading import User, UserRole
 
 router = APIRouter(prefix="/web-auth", tags=["web-authentication"])
+logger = logging.getLogger(__name__)
 
 # Rate limiter for brute-force protection
 limiter = Limiter(key_func=get_remote_address)
@@ -44,6 +47,34 @@ def verify_session_token(token: str, max_age: int = SESSION_MAX_AGE) -> Optional
         return data.get("user_id")
     except (BadSignature, SignatureExpired):
         return None
+
+
+async def invalidate_user_cache(user_id: int) -> None:
+    """Remove cached session data for the given user."""
+    import redis.asyncio as redis
+
+    redis_client = None
+    try:
+        redis_client = redis.from_url(
+            settings.get_redis_url(),
+            decode_responses=True,
+        )
+        await redis_client.delete(f"user_session:{user_id}")
+    except Exception:
+        # Cache invalidation failure is non-fatal; caller handles auth state.
+        pass
+    finally:
+        if redis_client:
+            await redis_client.aclose()
+
+
+def _security_log_extra(request: Request, **kwargs) -> dict:
+    """Structured metadata for auth security logs."""
+    return {
+        "client_ip": request.client.host if request.client else None,
+        "user_agent": request.headers.get("user-agent"),
+        **kwargs,
+    }
 
 
 async def get_current_user_from_session(
@@ -158,9 +189,7 @@ async def require_role(
             url="/web-auth/login", status_code=status.HTTP_303_SEE_OTHER
         )
 
-    role_hierarchy = {UserRole.viewer: 0, UserRole.trader: 1, UserRole.admin: 2}
-
-    if role_hierarchy.get(user.role, 0) < role_hierarchy.get(min_role, 0):
+    if not has_min_role(user.role, min_role):
         return templates.TemplateResponse(
             request=request,
             name="error.html",
@@ -215,6 +244,12 @@ async def login(
 
     # Verify credentials
     if not user or not user.hashed_password:
+        logger.warning(
+            "Web login failed: user not found or password missing",
+            extra=_security_log_extra(
+                request, username=username, event="web_login_failure"
+            ),
+        )
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -226,6 +261,12 @@ async def login(
         )
 
     if not verify_password(password, user.hashed_password):
+        logger.warning(
+            "Web login failed: invalid password",
+            extra=_security_log_extra(
+                request, username=username, event="web_login_failure"
+            ),
+        )
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -237,6 +278,12 @@ async def login(
         )
 
     if not user.is_active:
+        logger.warning(
+            "Web login failed: inactive user",
+            extra=_security_log_extra(
+                request, username=username, event="web_login_failure"
+            ),
+        )
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -260,6 +307,13 @@ async def login(
         httponly=True,
         secure=settings.ENVIRONMENT == "production",
         samesite="lax",
+    )
+
+    logger.info(
+        "Web login succeeded",
+        extra=_security_log_extra(
+            request, username=username, event="web_login_success"
+        ),
     )
 
     return response
