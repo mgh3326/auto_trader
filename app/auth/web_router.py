@@ -572,6 +572,11 @@ async def logout(request: Request):
                     settings.get_redis_url(),
                     decode_responses=True,
                 )
+                # Add to blacklist to invalidate all sessions for this user (optional but safer)
+                blacklist = get_session_blacklist()
+                await blacklist.blacklist_user(user_id)
+
+                # Delete session key from Redis
                 await redis_client.delete(
                     _session_hash_key(user_id),
                     _user_cache_key(user_id),

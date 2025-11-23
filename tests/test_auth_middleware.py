@@ -28,7 +28,9 @@ async def login_page():
 async def api_data():
     return {"data": "ok"}
 
-client = TestClient(app)
+@pytest.fixture
+def client():
+    return TestClient(app)
 
 @pytest.fixture
 def mock_db_session():
@@ -40,23 +42,23 @@ def mock_session_local(mock_db_session):
         mock.return_value.__aenter__.return_value = mock_db_session
         yield mock
 
-def test_public_path_access(mock_session_local):
+def test_public_path_access(client, mock_session_local):
     response = client.get("/web-auth/login")
     assert response.status_code == 200
     assert response.text == "Login Page"
 
-def test_api_path_access(mock_session_local):
+def test_api_path_access(client, mock_session_local):
     response = client.get("/api/data")
     assert response.status_code == 200
     assert response.json() == {"data": "ok"}
 
-def test_protected_route_no_auth(mock_session_local):
+def test_protected_route_no_auth(client, mock_session_local):
     # Should redirect to login
     response = client.get("/test-protected", follow_redirects=False)
     assert response.status_code == 303
     assert "/web-auth/login" in response.headers["location"]
 
-def test_protected_route_with_auth(mock_session_local, mock_db_session):
+def test_protected_route_with_auth(client, mock_session_local, mock_db_session):
     # Setup mock user
     user = User(id=1, username="testuser", is_active=True)
     
