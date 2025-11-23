@@ -213,7 +213,6 @@ async def execute_trade(
     db: AsyncSession = Depends(get_db),
 ):
     # require_role을 사용하여 권한 체크
-    from app.auth.admin_router import require_admin
     user = await require_role(UserRole.trader, request, db)
     # 거래 로직...
     return {"message": "Trade executed"}

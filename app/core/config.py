@@ -1,5 +1,5 @@
 import random
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,6 +37,7 @@ class Settings(BaseSettings):
                 return []
             return [key.strip() for key in v.split(',') if key.strip()]
         return v
+
     def _ensure_key_index(self):
         """API 키 인덱스 초기화 (필요시에만)"""
         if not hasattr(self, "_current_key_index"):
@@ -71,9 +72,11 @@ class Settings(BaseSettings):
         if self.redis_password:
             auth_part = f":{self.redis_password}@"
 
-        return (
-            f"{protocol}{auth_part}{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        url = (
+            f"{protocol}{auth_part}{self.redis_host}:"
+            f"{self.redis_port}/{self.redis_db}"
         )
+        return url
 
     opendart_api_key: str
     DATABASE_URL: str
@@ -116,7 +119,7 @@ class Settings(BaseSettings):
 
     # JWT Authentication settings
     SECRET_KEY: str
-    ALGORITHM: str = "HS256"
+    ALGORITHM: Literal["HS256", "HS384", "HS512"] = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 

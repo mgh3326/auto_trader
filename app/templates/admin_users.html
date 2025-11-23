@@ -246,11 +246,12 @@
 // Role change handler
 document.querySelectorAll('.role-select').forEach(select => {
     select.addEventListener('change', async (e) => {
-        const userId = e.target.dataset.userId;
-        const newRole = e.target.value;
+        const target = e.currentTarget;
+        const userId = target.dataset.userId;
+        const newRole = target.value;
 
         if (!confirm(`사용자 권한을 ${newRole}(으)로 변경하시겠습니까?`)) {
-            e.target.value = e.target.dataset.originalValue || 'viewer';
+            target.value = target.dataset.originalValue || 'viewer';
             return;
         }
 
@@ -269,14 +270,14 @@ document.querySelectorAll('.role-select').forEach(select => {
 
             if (response.ok) {
                 showMessage('권한이 변경되었습니다.', 'success');
-                e.target.dataset.originalValue = newRole;
+                target.dataset.originalValue = newRole;
             } else {
                 showMessage(data.detail || '권한 변경에 실패했습니다.', 'error');
-                e.target.value = e.target.dataset.originalValue || 'viewer';
+                target.value = target.dataset.originalValue || 'viewer';
             }
         } catch (error) {
             showMessage('네트워크 오류가 발생했습니다.', 'error');
-            e.target.value = e.target.dataset.originalValue || 'viewer';
+            target.value = target.dataset.originalValue || 'viewer';
         } finally {
             hideLoading();
         }
@@ -289,8 +290,9 @@ document.querySelectorAll('.role-select').forEach(select => {
 // Active/Inactive toggle handler
 document.querySelectorAll('.btn-toggle').forEach(button => {
     button.addEventListener('click', async (e) => {
-        const userId = e.target.dataset.userId;
-        const isActive = e.target.classList.contains('active');
+        const target = e.currentTarget;
+        const userId = target.dataset.userId;
+        const isActive = target.classList.contains('active');
         const action = isActive ? '비활성화' : '활성화';
 
         if (!confirm(`사용자를 ${action}하시겠습니까?`)) {
@@ -313,20 +315,20 @@ document.querySelectorAll('.btn-toggle').forEach(button => {
                 showMessage(`사용자가 ${action}되었습니다.`, 'success');
 
                 // Update UI
-                const row = button.closest('tr');
+                const row = target.closest('tr');
                 const badge = row.querySelector('.badge');
 
                 if (data.is_active) {
-                    button.classList.remove('inactive');
-                    button.classList.add('active');
-                    button.textContent = '비활성화';
+                    target.classList.remove('inactive');
+                    target.classList.add('active');
+                    target.textContent = '비활성화';
                     badge.classList.remove('badge-inactive');
                     badge.classList.add('badge-active');
                     badge.textContent = '활성';
                 } else {
-                    button.classList.remove('active');
-                    button.classList.add('inactive');
-                    button.textContent = '활성화';
+                    target.classList.remove('active');
+                    target.classList.add('inactive');
+                    target.textContent = '활성화';
                     badge.classList.remove('badge-active');
                     badge.classList.add('badge-inactive');
                     badge.textContent = '비활성';

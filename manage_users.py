@@ -53,7 +53,9 @@ async def change_role(username: str, new_role: UserRole):
     """사용자 권한 변경"""
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(select(User).where(User.username == username))
+            result = await db.execute(
+                select(User).where(User.username == username)
+            )
             user = result.scalar_one_or_none()
 
             if not user:
@@ -64,7 +66,10 @@ async def change_role(username: str, new_role: UserRole):
             user.role = new_role
             await db.commit()
 
-            print(f"✅ {username}의 권한이 {old_role} → {new_role.value}(으)로 변경되었습니다.")
+            print(
+                f"✅ {username}의 권한이 {old_role} → "
+                f"{new_role.value}(으)로 변경되었습니다."
+            )
     except Exception as e:
         print(f"❌ 권한 변경 중 오류 발생: {e}")
         try:
@@ -77,7 +82,9 @@ async def toggle_active(username: str, active: bool):
     """사용자 활성화/비활성화"""
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(select(User).where(User.username == username))
+            result = await db.execute(
+                select(User).where(User.username == username)
+            )
             user = result.scalar_one_or_none()
 
             if not user:
@@ -102,6 +109,16 @@ def print_usage():
     print(__doc__)
 
 
+async def handle_role_command(username: str, role: UserRole):
+    """권한 변경 명령 처리"""
+    await change_role(username, role)
+
+
+async def handle_toggle_command(username: str, active: bool):
+    """활성화/비활성화 명령 처리"""
+    await toggle_active(username, active)
+
+
 async def main():
     """메인 함수"""
     if len(sys.argv) < 2:
@@ -110,44 +127,26 @@ async def main():
 
     command = sys.argv[1]
 
+    # 명령어 디스패치 매핑
+    commands_with_args = {
+        "promote": (handle_role_command, UserRole.trader),
+        "admin": (handle_role_command, UserRole.admin),
+        "demote": (handle_role_command, UserRole.viewer),
+        "activate": (handle_toggle_command, True),
+        "deactivate": (handle_toggle_command, False),
+    }
+
     if command == "list":
         await list_users()
-
-    elif command == "promote":
+    elif command in commands_with_args:
         if len(sys.argv) < 3:
-            print("❌ 사용자명을 입력하세요: python manage_users.py promote <username>")
+            print(
+                f"❌ 사용자명을 입력하세요: "
+                f"python manage_users.py {command} <username>"
+            )
             return
-        username = sys.argv[2]
-        await change_role(username, UserRole.trader)
-
-    elif command == "admin":
-        if len(sys.argv) < 3:
-            print("❌ 사용자명을 입력하세요: python manage_users.py admin <username>")
-            return
-        username = sys.argv[2]
-        await change_role(username, UserRole.admin)
-
-    elif command == "demote":
-        if len(sys.argv) < 3:
-            print("❌ 사용자명을 입력하세요: python manage_users.py demote <username>")
-            return
-        username = sys.argv[2]
-        await change_role(username, UserRole.viewer)
-
-    elif command == "activate":
-        if len(sys.argv) < 3:
-            print("❌ 사용자명을 입력하세요: python manage_users.py activate <username>")
-            return
-        username = sys.argv[2]
-        await toggle_active(username, True)
-
-    elif command == "deactivate":
-        if len(sys.argv) < 3:
-            print("❌ 사용자명을 입력하세요: python manage_users.py deactivate <username>")
-            return
-        username = sys.argv[2]
-        await toggle_active(username, False)
-
+        handler, arg = commands_with_args[command]
+        await handler(sys.argv[2], arg)
     else:
         print(f"❌ 알 수 없는 명령어: {command}")
         print_usage()

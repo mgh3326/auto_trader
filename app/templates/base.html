@@ -105,12 +105,12 @@
                 <a href="/analysis-json/">분석 결과</a>
                 <a href="/stock-latest/">최신 종목</a>
                 <a href="/upbit-trading/">Upbit 거래</a>
-                {% if user.role.value == 'admin' %}
+                {% if user and user.role and user.role.value == 'admin' %}
                 <a href="/admin/users" style="color: #dc3545; font-weight: bold;">👥 관리자</a>
                 {% endif %}
                 <div class="user-info">
                     <span>{{ user.username }}</span>
-                    <span class="user-role">{{ user.role.value }}</span>
+                    <span class="user-role">{{ user.role.value if user.role else 'N/A' }}</span>
                     <a href="/web-auth/logout" class="btn-logout">로그아웃</a>
                 </div>
             </div>
