@@ -82,6 +82,10 @@ def _ensure_test_env() -> None:
     for key, value in default_env_values.items():
         os.environ.setdefault(key, value)
 
+    # Force overwrite SECRET_KEY to ensure it passes validation during tests
+    # regardless of what's in env.example or .env
+    os.environ["SECRET_KEY"] = "Test_Secret_Key_12345_Test_Secret_Key_12345"
+
 
 _ensure_test_env()
 
