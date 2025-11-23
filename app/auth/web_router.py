@@ -4,11 +4,13 @@ import hmac
 import json
 import logging
 import string
+from urllib.parse import urlparse
 from typing import Annotated, Optional, Union
 
 from fastapi import APIRouter, Depends, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from pydantic import ValidationError
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import select
@@ -16,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.role_hierarchy import has_min_role
+from app.auth.schemas import UserCreate
 from app.auth.security import get_password_hash, verify_password
 from app.core.config import settings
 from app.core.db import get_db
@@ -94,6 +97,25 @@ def _security_log_extra(request: Request, **kwargs) -> dict:
         "user_agent": request.headers.get("user-agent"),
         **kwargs,
     }
+
+
+def _sanitize_next(next_value: Optional[str]) -> Optional[str]:
+    """Allow only internal paths for `next` to prevent open redirects."""
+    if not next_value:
+        return None
+    try:
+        parsed = urlparse(next_value)
+        # Disallow absolute URLs (scheme/netloc)
+        if parsed.scheme or parsed.netloc:
+            return None
+        if not parsed.path.startswith("/"):
+            return None
+        # Optionally keep query string
+        if parsed.query:
+            return f"{parsed.path}?{parsed.query}"
+        return parsed.path
+    except Exception:
+        return None
 
 
 async def get_current_user_from_session(
@@ -214,7 +236,8 @@ async def require_login(
     user = await get_current_user_from_session(request, db)
     if not user:
         # Redirect to login page with next parameter
-        next_url = str(request.url)
+        # Use relative path to avoid open redirect issues
+        next_url = f"{request.url.path}?{request.url.query}" if request.url.query else request.url.path
         return RedirectResponse(
             url=f"/web-auth/login?next={next_url}", status_code=status.HTTP_303_SEE_OTHER
         )
@@ -258,7 +281,7 @@ async def login_page(
     if db:
         user = await get_current_user_from_session(request, db)
         if user:
-            redirect_url = next or "/"
+            redirect_url = _sanitize_next(next) or "/"
             return RedirectResponse(
                 url=redirect_url, status_code=status.HTTP_303_SEE_OTHER
             )
@@ -381,7 +404,7 @@ async def login(
             await redis_client.aclose()
 
     # Redirect to next page or home
-    redirect_url = next or "/"
+    redirect_url = _sanitize_next(next) or "/"
     response = RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
@@ -430,56 +453,7 @@ async def register(
     db: Annotated[AsyncSession, Depends(get_db)] = None,
 ):
     """Handle registration form submission."""
-    # Validate password strength
-    if len(password) < 8:
-        return templates.TemplateResponse(
-            request=request,
-            name="register.html",
-            context={
-                "error": "비밀번호는 최소 8자 이상이어야 합니다.",
-                "email": email,
-                "username": username,
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not any(c.isupper() for c in password):
-        return templates.TemplateResponse(
-            request=request,
-            name="register.html",
-            context={
-                "error": "비밀번호에 대문자가 최소 1개 이상 포함되어야 합니다.",
-                "email": email,
-                "username": username,
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not any(c.isdigit() for c in password):
-        return templates.TemplateResponse(
-            request=request,
-            name="register.html",
-            context={
-                "error": "비밀번호에 숫자가 최소 1개 이상 포함되어야 합니다.",
-                "email": email,
-                "username": username,
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not any(c in string.punctuation for c in password):
-        return templates.TemplateResponse(
-            request=request,
-            name="register.html",
-            context={
-                "error": "비밀번호에 특수문자가 최소 1개 이상 포함되어야 합니다.",
-                "email": email,
-                "username": username,
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    # Validate password confirmation
+    # Validate password confirmation first
     if password != password_confirm:
         return templates.TemplateResponse(
             request=request,
@@ -492,8 +466,31 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
+    # Use UserCreate schema for validation
+    try:
+        user_data = UserCreate(email=email, username=username, password=password)
+    except ValidationError as e:
+        # Extract the first error message
+        error_msg = "입력값이 올바르지 않습니다."
+        if e.errors():
+            error_msg = e.errors()[0].get("msg", error_msg)
+            # Remove "Value error, " prefix if present
+            if error_msg.startswith("Value error, "):
+                error_msg = error_msg[13:]
+
+        return templates.TemplateResponse(
+            request=request,
+            name="register.html",
+            context={
+                "error": error_msg,
+                "email": email,
+                "username": username,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
     # Check if username already exists
-    result = await db.execute(select(User).where(User.username == username))
+    result = await db.execute(select(User).where(User.username == user_data.username))
     if result.scalar_one_or_none():
         return templates.TemplateResponse(
             request=request,

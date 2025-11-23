@@ -20,7 +20,7 @@ class SessionBlacklist:
         self.redis_client: Optional[redis.Redis] = None
         self._blacklist_key_prefix = "session_blacklist:user:"
 
-    async def _get_redis_client(self) -> redis.Redis:
+    def _get_redis_client(self) -> redis.Redis:
         """Redis 클라이언트를 가져오거나 생성."""
         if self.redis_client is None:
             self.redis_client = redis.from_url(
@@ -50,7 +50,7 @@ class SessionBlacklist:
             성공 여부
         """
         try:
-            client = await self._get_redis_client()
+            client = self._get_redis_client()
             key = f"{self._blacklist_key_prefix}{user_id}"
             await client.set(key, "1", ex=ttl)
             return True
@@ -68,7 +68,7 @@ class SessionBlacklist:
             블랙리스트 여부
         """
         try:
-            client = await self._get_redis_client()
+            client = self._get_redis_client()
             key = f"{self._blacklist_key_prefix}{user_id}"
             result = await client.get(key)
             return result is not None
@@ -98,7 +98,7 @@ class SessionBlacklist:
             성공 여부
         """
         try:
-            client = await self._get_redis_client()
+            client = self._get_redis_client()
             key = f"{self._blacklist_key_prefix}{user_id}"
             await client.delete(key)
             return True
