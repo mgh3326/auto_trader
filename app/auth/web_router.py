@@ -4,6 +4,8 @@ from typing import Annotated, Optional, Union
 from fastapi import APIRouter, Depends, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,10 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.security import get_password_hash, verify_password
 from app.core.config import settings
 from app.core.db import get_db
+from app.core.session_blacklist import get_session_blacklist
 from app.core.templates import templates
 from app.models.trading import User, UserRole
 
 router = APIRouter(prefix="/web-auth", tags=["web-authentication"])
+
+# Rate limiter for brute-force protection
+limiter = Limiter(key_func=get_remote_address)
 
 # Session serializer for secure cookie-based sessions
 session_serializer = URLSafeTimedSerializer(
@@ -43,7 +49,7 @@ def verify_session_token(token: str, max_age: int = SESSION_MAX_AGE) -> Optional
 async def get_current_user_from_session(
     request: Request, db: Annotated[AsyncSession, Depends(get_db)]
 ) -> Optional[User]:
-    """Get current user from session cookie."""
+    """Get current user from session cookie with Redis caching."""
     session_token = request.cookies.get(SESSION_COOKIE_NAME)
     if not session_token:
         return None
@@ -52,10 +58,76 @@ async def get_current_user_from_session(
     if not user_id:
         return None
 
+    # Check if user is blacklisted (session invalidated)
+    blacklist = get_session_blacklist()
+    if await blacklist.is_blacklisted(user_id):
+        return None
+
+    # Try to get user from cache first
+    import json
+
+    import redis.asyncio as redis
+
+    redis_client = None
+    cache_key = f"user_session:{user_id}"
+
+    try:
+        redis_client = redis.from_url(
+            settings.get_redis_url(),
+            decode_responses=True,
+        )
+        cached_user = await redis_client.get(cache_key)
+
+        if cached_user:
+            # User found in cache
+            user_data = json.loads(cached_user)
+            user = User(
+                id=user_data["id"],
+                username=user_data["username"],
+                email=user_data["email"],
+                role=UserRole[user_data["role"]],
+                is_active=user_data["is_active"],
+                hashed_password=user_data.get("hashed_password"),
+            )
+            if user.is_active:
+                return user
+            return None
+    except Exception:
+        # Cache miss or error, continue to DB query
+        pass
+    finally:
+        if redis_client:
+            await redis_client.aclose()
+
+    # Cache miss - query database
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
     if user and user.is_active:
+        # Store in cache for 5 minutes
+        try:
+            redis_client = redis.from_url(
+                settings.get_redis_url(),
+                decode_responses=True,
+            )
+            user_data = {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "role": user.role.name,
+                "is_active": user.is_active,
+                "hashed_password": user.hashed_password,
+            }
+            await redis_client.set(
+                cache_key, json.dumps(user_data), ex=300  # 5 minutes
+            )
+        except Exception:
+            # Cache write failure is not critical
+            pass
+        finally:
+            if redis_client:
+                await redis_client.aclose()
+
         return user
     return None
 
@@ -128,6 +200,7 @@ async def login_page(
 
 
 @router.post("/login")
+@limiter.limit("5/minute")
 async def login(
     request: Request,
     username: Annotated[str, Form()],
@@ -135,7 +208,7 @@ async def login(
     next: Optional[str] = Form(None),
     db: Annotated[AsyncSession, Depends(get_db)] = None,
 ):
-    """Handle login form submission."""
+    """Handle login form submission with rate limiting (5 attempts/minute)."""
     # Get user by username
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
@@ -212,6 +285,43 @@ async def register(
     db: Annotated[AsyncSession, Depends(get_db)] = None,
 ):
     """Handle registration form submission."""
+    # Validate password strength
+    if len(password) < 8:
+        return templates.TemplateResponse(
+            request=request,
+            name="register.html",
+            context={
+                "error": "비밀번호는 최소 8자 이상이어야 합니다.",
+                "email": email,
+                "username": username,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not any(c.isupper() for c in password):
+        return templates.TemplateResponse(
+            request=request,
+            name="register.html",
+            context={
+                "error": "비밀번호에 대문자가 최소 1개 이상 포함되어야 합니다.",
+                "email": email,
+                "username": username,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not any(c.isdigit() for c in password):
+        return templates.TemplateResponse(
+            request=request,
+            name="register.html",
+            context={
+                "error": "비밀번호에 숫자가 최소 1개 이상 포함되어야 합니다.",
+                "email": email,
+                "username": username,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
     # Validate password confirmation
     if password != password_confirm:
         return templates.TemplateResponse(

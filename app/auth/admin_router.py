@@ -64,28 +64,51 @@ async def users_management_page(
     )
 
 
-@router.get("/users/api", response_model=List[dict])
+@router.get("/users/api")
 async def get_all_users(
     db: Annotated[AsyncSession, Depends(get_db)],
     admin_user: Annotated[User, Depends(require_admin)] = None,
+    skip: int = 0,
+    limit: int = 100,
 ):
-    """Get all users (API endpoint)."""
+    """
+    Get all users with pagination (API endpoint).
+
+    Args:
+        skip: Number of records to skip (offset)
+        limit: Maximum number of records to return (max 1000)
+    """
+    # Limit maximum to prevent abuse
+    if limit > 1000:
+        limit = 1000
+
+    # Get total count
+    from sqlalchemy import func
+    count_result = await db.execute(select(func.count(User.id)))
+    total = count_result.scalar()
+
+    # Get paginated users
     result = await db.execute(
-        select(User).order_by(User.created_at.desc())
+        select(User).order_by(User.created_at.desc()).offset(skip).limit(limit)
     )
     users = result.scalars().all()
 
-    return [
-        {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "role": user.role.value,
-            "is_active": user.is_active,
-            "created_at": str(user.created_at) if user.created_at else None,
-        }
-        for user in users
-    ]
+    return {
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "users": [
+            {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "role": user.role.value,
+                "is_active": user.is_active,
+                "created_at": str(user.created_at) if user.created_at else None,
+            }
+            for user in users
+        ],
+    }
 
 
 @router.put("/users/{user_id}/role")

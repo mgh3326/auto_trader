@@ -16,6 +16,7 @@ import sys
 from sqlalchemy import select
 
 from app.core.db import AsyncSessionLocal
+from app.core.session_blacklist import get_session_blacklist
 from app.models.trading import User, UserRole
 
 
@@ -70,6 +71,23 @@ async def change_role(username: str, new_role: UserRole):
                 f"✅ {username}의 권한이 {old_role} → "
                 f"{new_role.value}(으)로 변경되었습니다."
             )
+
+            # 캐시 무효화
+            import redis.asyncio as redis
+
+            from app.core.config import settings
+
+            try:
+                redis_client = redis.from_url(
+                    settings.get_redis_url(),
+                    decode_responses=True,
+                )
+                cache_key = f"user_session:{user.id}"
+                await redis_client.delete(cache_key)
+                await redis_client.aclose()
+            except Exception:
+                # 캐시 무효화 실패는 치명적이지 않음
+                pass
     except Exception as e:
         print(f"❌ 권한 변경 중 오류 발생: {e}")
         try:
@@ -94,8 +112,35 @@ async def toggle_active(username: str, active: bool):
             user.is_active = active
             await db.commit()
 
-            status = "활성화" if active else "비활성화"
-            print(f"✅ {username}이(가) {status}되었습니다.")
+            # 비활성화 시 세션 블랙리스트에 추가
+            blacklist = get_session_blacklist()
+            if not active:
+                await blacklist.blacklist_user(user.id)
+                print(
+                    f"✅ {username}이(가) 비활성화되었습니다. "
+                    "모든 활성 세션이 무효화되었습니다."
+                )
+            else:
+                # 활성화 시 블랙리스트에서 제거
+                await blacklist.remove_from_blacklist(user.id)
+                print(f"✅ {username}이(가) 활성화되었습니다.")
+
+            # 캐시 무효화
+            import redis.asyncio as redis
+
+            from app.core.config import settings
+
+            try:
+                redis_client = redis.from_url(
+                    settings.get_redis_url(),
+                    decode_responses=True,
+                )
+                cache_key = f"user_session:{user.id}"
+                await redis_client.delete(cache_key)
+                await redis_client.aclose()
+            except Exception:
+                # 캐시 무효화 실패는 치명적이지 않음
+                pass
     except Exception as e:
         print(f"❌ 사용자 상태 변경 중 오류 발생: {e}")
         try:

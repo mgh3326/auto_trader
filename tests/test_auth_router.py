@@ -14,7 +14,7 @@ def test_register_user_success(auth_test_client, auth_mock_session):
         json={
             "email": "test@example.com",
             "username": "testuser",
-            "password": "password123"
+            "password": "Password123"
         }
     )
     assert response.status_code == 201
@@ -36,7 +36,7 @@ def test_register_user_duplicate_username(auth_test_client, auth_mock_session):
         json={
             "email": "test@example.com",
             "username": "testuser",
-            "password": "password123"
+            "password": "Password123"
         }
     )
     assert response.status_code == 400

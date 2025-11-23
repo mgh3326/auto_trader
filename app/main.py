@@ -5,6 +5,8 @@ from typing import AsyncIterator, Optional
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.middleware.auth import AuthMiddleware
@@ -17,9 +19,16 @@ from app.monitoring.telemetry import (
     shutdown_telemetry,
 )
 from app.auth.router import router as auth_router
-from app.auth.web_router import router as web_auth_router
+from app.auth.web_router import limiter, router as web_auth_router
 from app.auth.admin_router import router as admin_router
-from app.routers import analysis_json, dashboard, health, stock_latest, test, upbit_trading
+from app.routers import (
+    analysis_json,
+    dashboard,
+    health,
+    stock_latest,
+    test,
+    upbit_trading,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +59,17 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json" if settings.DOCS_ENABLED else None,
     )
 
+    # Add slowapi state for rate limiting
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
     # Add global exception handler for detailed error logging
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """Log all unhandled exceptions with full traceback"""
         logger.error(
-            f"Unhandled exception on {request.method} {request.url.path}: {str(exc)}",
+            f"Unhandled exception on {request.method} "
+            f"{request.url.path}: {str(exc)}",
             exc_info=True,
             extra={
                 "method": request.method,
