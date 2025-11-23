@@ -73,6 +73,17 @@ def test_protected_route_with_auth(client, mock_session_local, mock_db_session):
     # Set cookie
     client.cookies.set("session", token)
     
-    response = client.get("/test-protected")
-    assert response.status_code == 200
-    assert response.text == "Protected Content"
+    # Mock Redis and Blacklist to ensure fallback to DB
+    with patch("app.auth.web_router.get_session_blacklist") as mock_blacklist, \
+         patch("app.auth.web_router.redis.from_url") as mock_redis:
+        
+        # Blacklist check returns False (not blacklisted)
+        mock_blacklist.return_value.is_blacklisted = AsyncMock(return_value=False)
+        
+        # Redis raises exception to trigger "redis_error = True" path
+        # which allows fallback to DB in non-production environment
+        mock_redis.side_effect = Exception("Redis connection failed")
+        
+        response = client.get("/test-protected")
+        assert response.status_code == 200
+        assert response.text == "Protected Content"

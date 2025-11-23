@@ -7,6 +7,7 @@ import string
 from urllib.parse import urlparse
 from typing import Annotated, Optional, Union
 
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, Form, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -138,7 +139,6 @@ async def get_current_user_from_session(
     session_hash = _hash_session_token(session_token)
 
     # Try to validate session and get user from cache
-    import redis.asyncio as redis
 
     redis_client = None
     session_hash_key = _session_hash_key(user_id)

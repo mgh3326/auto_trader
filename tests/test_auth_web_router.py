@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from app.auth.security import get_password_hash
 from app.models.trading import User
 
@@ -93,14 +93,25 @@ def test_web_logout(auth_test_client, auth_mock_session, mock_auth_middleware_db
     auth_mock_session.execute.return_value = mock_result
     mock_auth_middleware_db.execute.return_value = mock_result
 
-    # Login first
-    auth_test_client.post(
-        "/web-auth/login",
-        data={"username": "testuser", "password": "password123"}
-    )
+    # Mock Redis and Blacklist to ensure fallback to DB
+    with patch("app.auth.web_router.get_session_blacklist") as mock_blacklist, \
+         patch("app.auth.web_router.redis.from_url") as mock_redis:
+        
+        # Blacklist check returns False (not blacklisted)
+        mock_blacklist.return_value.is_blacklisted = AsyncMock(return_value=False)
+        
+        # Redis raises exception to trigger "redis_error = True" path
+        mock_redis.side_effect = Exception("Redis connection failed")
 
-    # Then logout
-    response = auth_test_client.get("/web-auth/logout", follow_redirects=False)
-    assert response.status_code == 303
-    # Check if session cookie is deleted (expired)
-    assert "session" not in response.cookies or response.cookies["session"] == ""
+        # Login first
+        auth_test_client.post(
+            "/web-auth/login",
+            data={"username": "testuser", "password": "password123"},
+            follow_redirects=False
+        )
+
+        # Then logout
+        response = auth_test_client.get("/web-auth/logout", follow_redirects=False)
+        assert response.status_code == 303
+        # Check if session cookie is deleted (expired)
+        assert "session" not in response.cookies or response.cookies["session"] == ""
