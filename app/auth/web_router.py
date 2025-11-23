@@ -103,15 +103,20 @@ async def require_role(
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request, next: Optional[str] = None):
+async def login_page(
+    request: Request,
+    next: Optional[str] = None,
+    db: Annotated[AsyncSession, Depends(get_db)] = None,
+):
     """Display login page."""
     # Check if already logged in
-    db = request.state._state.get("db")  # Get db from request state if available
     if db:
         user = await get_current_user_from_session(request, db)
         if user:
             redirect_url = next or "/"
-            return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+            return RedirectResponse(
+                url=redirect_url, status_code=status.HTTP_303_SEE_OTHER
+            )
 
     return templates.TemplateResponse(
         request=request,
