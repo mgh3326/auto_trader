@@ -40,7 +40,7 @@ def test_register_user_duplicate_username(auth_test_client, auth_mock_session):
         },
     )
     assert response.status_code == 400
-    assert response.json()["detail"] == "Username already registered"
+    assert response.json()["detail"] == "Registration failed"
 
 
 def test_login_success(auth_test_client, auth_mock_session):

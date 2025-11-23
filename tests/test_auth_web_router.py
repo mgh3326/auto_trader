@@ -76,7 +76,7 @@ def test_web_login_failure(auth_test_client, auth_mock_session):
     assert "사용자명 또는 비밀번호가 올바르지 않습니다" in response.text
 
 
-def test_web_logout(auth_test_client, auth_mock_session):
+def test_web_logout(auth_test_client, auth_mock_session, mock_auth_middleware_db):
     # Setup mock user for login
     hashed_password = get_password_hash("password123")
     user = User(
@@ -88,7 +88,10 @@ def test_web_logout(auth_test_client, auth_mock_session):
     )
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = user
+    
+    # Configure BOTH the route dependency DB and the middleware DB
     auth_mock_session.execute.return_value = mock_result
+    mock_auth_middleware_db.execute.return_value = mock_result
 
     # Login first
     auth_test_client.post(
