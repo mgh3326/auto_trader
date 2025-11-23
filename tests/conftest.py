@@ -76,6 +76,7 @@ def _ensure_test_env() -> None:
         "ERROR_DUPLICATE_WINDOW": "300",
         "EXPOSE_MONITORING_TEST_ROUTES": "false",
         "ENVIRONMENT": "test",
+        "SECRET_KEY": "Test_Secret_Key_12345_Test_Secret_Key_12345",  # Valid complex key for tests
     }
 
     for key, value in default_env_values.items():
