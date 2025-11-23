@@ -123,6 +123,36 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def validate_secret_key(cls, v: str) -> str:
+        """SECRET_KEY 보안 검증"""
+        if len(v) < 32:
+            raise ValueError(
+                "SECRET_KEY는 최소 32자 이상이어야 합니다. "
+                "openssl rand -hex 32 명령으로 생성하세요."
+            )
+        # 약한 기본값 차단
+        weak_keys = [
+            "your_secret_key_here",
+            "changeme",
+            "secret",
+            "your_secret_key_here_use_openssl_rand_hex_32",
+            "test",
+            "password",
+            "12345",
+        ]
+        if v.lower() in weak_keys:
+            raise ValueError(
+                f"보안 경고: '{v}'는 약한 SECRET_KEY입니다. "
+                "프로덕션에서는 강력한 랜덤 키를 사용하세요. "
+                "생성 방법: openssl rand -hex 32"
+            )
+        return v
+
+    # Environment setting for cookie security
+    ENVIRONMENT: str = "development"  # development, production
+
     # API Documentation
     DOCS_ENABLED: bool = True  # 개발 환경: True, 프로덕션: False
 

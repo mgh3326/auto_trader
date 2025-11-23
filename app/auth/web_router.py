@@ -180,6 +180,7 @@ async def login(
         value=session_token,
         max_age=SESSION_MAX_AGE,
         httponly=True,
+        secure=settings.ENVIRONMENT == "production",
         samesite="lax",
     )
 
