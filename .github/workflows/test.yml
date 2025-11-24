@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.13"]
 
     services:
       postgres:
@@ -42,7 +42,7 @@ jobs:
     - uses: actions/checkout@v4
     
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
 
@@ -81,13 +81,13 @@ jobs:
   security:
     runs-on: ubuntu-latest
     env:
-      PYTHON_VERSION: "3.12"
+      PYTHON_VERSION: "3.13"
 
     steps:
     - uses: actions/checkout@v4
 
     - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ env.PYTHON_VERSION }}
 

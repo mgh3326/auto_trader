@@ -4,7 +4,7 @@
 # STAGE 1: 'builder' - 의존성 설치를 전담하는 스테이지
 # This stage is dedicated to installing dependencies for the target architecture.
 # ==============================================================================
-FROM --platform=$TARGETPLATFORM python:3.12-slim AS builder
+FROM --platform=$TARGETPLATFORM python:3.13-slim AS builder
 
 # UV 설치 (Install UV)
 RUN pip install --upgrade pip && pip install uv
@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # STAGE 2: 'final' - 최종 실행 이미지를 만드는 스테이지
 # This stage builds the final, lean production image.
 # ==============================================================================
-FROM python:3.12-slim AS final
+FROM python:3.13-slim AS final
 
 # 환경 변수 설정 (Set environment variables)
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -36,7 +36,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # 필수 OS 패키지 설치 (Install essential OS packages)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -72,7 +72,7 @@ VOLUME ["/app/tmp"]
 
 # 헬스체크 (Check if Python process is running)
 HEALTHCHECK --interval=30s --timeout=3s --retries=5 \
-  CMD pgrep -f "upbit_websocket_monitor.py" || exit 1
+    CMD pgrep -f "upbit_websocket_monitor.py" || exit 1
 
 # WebSocket 모니터 실행 (Start the WebSocket monitor)
 CMD ["python", "upbit_websocket_monitor.py"]
