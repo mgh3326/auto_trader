@@ -12,7 +12,7 @@ services:
     command: >
       sh -c "
         echo '🔍 Checking database connection...' &&
-        python -c 'import asyncio; import asyncpg; import os; dsn = os.environ[\"DATABASE_URL\"].replace(\"postgresql+asyncpg://\", \"postgresql://\"); asyncio.run(asyncpg.connect(dsn))' &&
+        python -c 'import asyncio; import asyncpg; import os; dsn = os.environ[\"DATABASE_URL\"].replace(\"postgresql+asyncpg\", \"postgresql\"); asyncio.run(asyncpg.connect(dsn))' &&
         echo '✅ Database connection successful' &&
         echo '📊 Current migration status:' &&
         alembic current &&
@@ -21,12 +21,12 @@ services:
         echo '✅ Migrations completed successfully'
       "
     profiles:
-      - migration  # --profile migration으로만 실행
+      - migration # --profile migration으로만 실행
 
   api:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
     container_name: auto_trader_api_prod
-    ports: 
+    ports:
       - "${API_PORT:-8000}:8000"
     env_file:
       - .env.prod
@@ -34,9 +34,9 @@ services:
       - ./tmp:/app/tmp
       - ./logs:/app/logs
     restart: unless-stopped
-    network_mode: host  # Host 네트워크 사용으로 localhost DB/Redis 접근
+    network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); print('ok')"]
+      test: [ "CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); print('ok')" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -59,7 +59,7 @@ services:
       - ./tmp:/app/tmp
       - ./logs:/app/logs
     restart: unless-stopped
-    network_mode: host  # Host 네트워크 사용으로 localhost DB/Redis 접근
+    network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
     command: >
       /app/.venv/bin/celery -A app.core.celery_app.celery_app worker --loglevel=INFO -c 1 --max-tasks-per-child=100
     deploy:
@@ -74,7 +74,7 @@ services:
   websocket:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
     container_name: auto_trader_ws_prod
-    command: ["python", "upbit_websocket_monitor.py"]
+    command: [ "python", "upbit_websocket_monitor.py" ]
     env_file:
       - .env.prod
     volumes:
@@ -83,7 +83,7 @@ services:
     depends_on:
       - api
     restart: unless-stopped
-    network_mode: host  # Host 네트워크 사용으로 localhost DB/Redis 접근
+    network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
     deploy:
       resources:
         limits:
