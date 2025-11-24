@@ -12,7 +12,7 @@ services:
     command: >
       sh -c "
         echo '🔍 Checking database connection...' &&
-        python -c 'import asyncio; import asyncpg; import os; asyncio.run(asyncpg.connect(os.environ[\"DATABASE_URL\"]))' &&
+        python -c 'import asyncio; import asyncpg; import os; dsn = os.environ[\"DATABASE_URL\"].replace(\"postgresql+asyncpg://\", \"postgresql://\"); asyncio.run(asyncpg.connect(dsn))' &&
         echo '✅ Database connection successful' &&
         echo '📊 Current migration status:' &&
         alembic current &&
