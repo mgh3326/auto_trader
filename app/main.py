@@ -77,6 +77,15 @@ def create_app() -> FastAPI:
                 "client": request.client.host if request.client else None,
             }
         )
+        
+        # Send error to Telegram
+        if settings.ERROR_REPORTING_ENABLED:
+            try:
+                error_reporter = get_error_reporter()
+                await error_reporter.send_error_to_telegram(exc, request=request)
+            except Exception as e:
+                logger.error(f"Failed to report error to Telegram: {e}")
+
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": str(exc)}
