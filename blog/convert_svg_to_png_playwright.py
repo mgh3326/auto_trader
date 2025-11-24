@@ -85,7 +85,7 @@ async def convert_svg_to_png(svg_path: Path, png_path: Path, scale: float = 2.0)
 
 
 async def main():
-    images_dir = Path("blog/images")
+    images_dir = Path("images")
 
     # 변환할 SVG 파일 목록
     svg_files = [
@@ -114,6 +114,10 @@ async def main():
         "upbit_web_responsive.svg",
         "upbit_web_flower_monitoring.svg",
         "upbit_web_trading_thumbnail.svg",
+        "python313_upgrade_thumbnail.svg",
+        "python313_version_timeline.svg",
+        "python313_ci_success.svg",
+        "python313_performance_comparison.svg",
     ]
 
     print("🌐 Playwright를 사용한 SVG → PNG 변환 시작...\n")

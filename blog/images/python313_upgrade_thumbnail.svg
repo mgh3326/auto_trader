@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#16213e;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="python312Gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#FFD43B;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#FFE873;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="python313Gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#4B8BBE;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#646B9E;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="arrowGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00a8ff;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bgGradient)"/>
+
+  <!-- Grid Pattern -->
+  <g opacity="0.05">
+    <line x1="0" y1="105" x2="1200" y2="105" stroke="#fff" stroke-width="1"/>
+    <line x1="0" y1="210" x2="1200" y2="210" stroke="#fff" stroke-width="1"/>
+    <line x1="0" y1="315" x2="1200" y2="315" stroke="#fff" stroke-width="1"/>
+    <line x1="0" y1="420" x2="1200" y2="420" stroke="#fff" stroke-width="1"/>
+    <line x1="0" y1="525" x2="1200" y2="525" stroke="#fff" stroke-width="1"/>
+    <line x1="200" y1="0" x2="200" y2="630" stroke="#fff" stroke-width="1"/>
+    <line x1="400" y1="0" x2="400" y2="630" stroke="#fff" stroke-width="1"/>
+    <line x1="600" y1="0" x2="600" y2="630" stroke="#fff" stroke-width="1"/>
+    <line x1="800" y1="0" x2="800" y2="630" stroke="#fff" stroke-width="1"/>
+    <line x1="1000" y1="0" x2="1000" y2="630" stroke="#fff" stroke-width="1"/>
+  </g>
+
+  <!-- Python 3.12 Logo (Left) -->
+  <g transform="translate(200, 250)">
+    <!-- Python Snake Icon -->
+    <circle cx="0" cy="0" r="80" fill="url(#python312Gradient)" opacity="0.2"/>
+    <path d="M -30,-40 Q -30,-60 -10,-60 L 10,-60 Q 30,-60 30,-40 L 30,0 Q 30,20 10,20 L -10,20 Q -30,20 -30,0 Z"
+          fill="url(#python312Gradient)"/>
+    <circle cx="-10" cy="-40" r="5" fill="#1a1a2e"/>
+
+    <!-- Version Text -->
+    <text x="0" y="65" font-family="Arial, sans-serif" font-size="48" font-weight="bold"
+          fill="url(#python312Gradient)" text-anchor="middle">3.12</text>
+  </g>
+
+  <!-- Arrow (Center) -->
+  <g transform="translate(600, 315)">
+    <line x1="-150" y1="0" x2="100" y2="0" stroke="url(#arrowGradient)" stroke-width="8" stroke-linecap="round"/>
+    <polygon points="100,0 70,-20 70,20" fill="url(#arrowGradient)"/>
+
+    <!-- Upgrade Badge -->
+    <rect x="-50" y="-35" width="100" height="70" rx="35" fill="#00d4ff" opacity="0.2"/>
+    <rect x="-45" y="-30" width="90" height="60" rx="30" fill="#00d4ff"/>
+    <text x="0" y="-5" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+          fill="#1a1a2e" text-anchor="middle">UPGRADE</text>
+    <text x="0" y="15" font-family="Arial, sans-serif" font-size="14" font-weight="bold"
+          fill="#1a1a2e" text-anchor="middle">+3% Faster</text>
+  </g>
+
+  <!-- Python 3.13 Logo (Right) -->
+  <g transform="translate(1000, 250)">
+    <!-- Python Snake Icon -->
+    <circle cx="0" cy="0" r="80" fill="url(#python313Gradient)" opacity="0.2"/>
+    <path d="M -30,-40 Q -30,-60 -10,-60 L 10,-60 Q 30,-60 30,-40 L 30,0 Q 30,20 10,20 L -10,20 Q -30,20 -30,0 Z"
+          fill="url(#python313Gradient)"/>
+    <circle cx="-10" cy="-40" r="5" fill="#fff"/>
+
+    <!-- Version Text -->
+    <text x="0" y="65" font-family="Arial, sans-serif" font-size="48" font-weight="bold"
+          fill="url(#python313Gradient)" text-anchor="middle">3.13</text>
+
+    <!-- NEW Badge -->
+    <circle cx="50" cy="-30" r="25" fill="#00ff88"/>
+    <text x="50" y="-23" font-family="Arial, sans-serif" font-size="14" font-weight="bold"
+          fill="#1a1a2e" text-anchor="middle">NEW</text>
+  </g>
+
+  <!-- Title -->
+  <text x="600" y="80" font-family="Arial, sans-serif" font-size="56" font-weight="bold"
+        fill="#ffffff" text-anchor="middle">Python 3.13 업그레이드</text>
+
+  <!-- Subtitle -->
+  <text x="600" y="135" font-family="Arial, sans-serif" font-size="32"
+        fill="#00d4ff" text-anchor="middle">새로운 기능과 성능 개선 도입하기</text>
+
+  <!-- Feature Tags -->
+  <g transform="translate(600, 530)">
+    <rect x="-280" y="0" width="130" height="40" rx="20" fill="#00ff88" opacity="0.3"/>
+    <text x="-215" y="27" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+          fill="#00ff88" text-anchor="middle">JIT Compiler</text>
+
+    <rect x="-130" y="0" width="120" height="40" rx="20" fill="#00d4ff" opacity="0.3"/>
+    <text x="-70" y="27" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+          fill="#00d4ff" text-anchor="middle">GIL 개선</text>
+
+    <rect x="10" y="0" width="140" height="40" rx="20" fill="#FFD43B" opacity="0.3"/>
+    <text x="80" y="27" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+          fill="#FFD43B" text-anchor="middle">타입 힌팅 강화</text>
+
+    <rect x="170" y="0" width="110" height="40" rx="20" fill="#ff6b6b" opacity="0.3"/>
+    <text x="225" y="27" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+          fill="#ff6b6b" text-anchor="middle">보안 개선</text>
+  </g>
+</svg>

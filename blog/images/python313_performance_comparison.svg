@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800">
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#16213e;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="py312Gradient" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#FFD43B;stop-opacity:0.3" />
+      <stop offset="100%" style="stop-color:#FFD43B;stop-opacity:0.8" />
+    </linearGradient>
+    <linearGradient id="py313Gradient" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#00ff88;stop-opacity:0.3" />
+      <stop offset="100%" style="stop-color:#00ff88;stop-opacity:0.8" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="800" fill="url(#bgGradient)"/>
+
+  <!-- Title -->
+  <text x="600" y="70" font-family="Arial, sans-serif" font-size="48" font-weight="bold"
+        fill="#ffffff" text-anchor="middle">Python 3.12 vs 3.13 성능 비교</text>
+  <text x="600" y="110" font-family="Arial, sans-serif" font-size="24"
+        fill="#00d4ff" text-anchor="middle">실제 프로젝트 벤치마크 결과</text>
+
+  <!-- Chart Area -->
+  <g transform="translate(150, 200)">
+    <!-- Y-axis -->
+    <line x1="0" y1="0" x2="0" y2="500" stroke="#ffffff" stroke-width="2"/>
+    <text x="-20" y="5" font-family="Arial, sans-serif" font-size="18" fill="#ffffff" text-anchor="end">100</text>
+    <text x="-20" y="130" font-family="Arial, sans-serif" font-size="18" fill="#ffffff" text-anchor="end">75</text>
+    <text x="-20" y="255" font-family="Arial, sans-serif" font-size="18" fill="#ffffff" text-anchor="end">50</text>
+    <text x="-20" y="380" font-family="Arial, sans-serif" font-size="18" fill="#ffffff" text-anchor="end">25</text>
+    <text x="-20" y="505" font-family="Arial, sans-serif" font-size="18" fill="#ffffff" text-anchor="end">0</text>
+
+    <!-- Y-axis Label -->
+    <text x="-70" y="250" font-family="Arial, sans-serif" font-size="20" font-weight="bold"
+          fill="#ffffff" text-anchor="middle" transform="rotate(-90, -70, 250)">시간 (초 / MB)</text>
+
+    <!-- X-axis -->
+    <line x1="0" y1="500" x2="900" y2="500" stroke="#ffffff" stroke-width="2"/>
+
+    <!-- Grid Lines -->
+    <g opacity="0.2">
+      <line x1="0" y1="125" x2="900" y2="125" stroke="#ffffff" stroke-width="1"/>
+      <line x1="0" y1="250" x2="900" y2="250" stroke="#ffffff" stroke-width="1"/>
+      <line x1="0" y1="375" x2="900" y2="375" stroke="#ffffff" stroke-width="1"/>
+    </g>
+
+    <!-- Bar Chart 1: Startup Time -->
+    <g transform="translate(100, 0)">
+      <!-- Python 3.12 Bar -->
+      <rect x="-50" y="466" width="80" height="34" rx="5" fill="url(#py312Gradient)"/>
+      <text x="-10" y="450" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#FFD43B" text-anchor="middle">2.34s</text>
+
+      <!-- Python 3.13 Bar -->
+      <rect x="50" y="474" width="80" height="26" rx="5" fill="url(#py313Gradient)"/>
+      <text x="90" y="458" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#00ff88" text-anchor="middle">2.30s</text>
+
+      <!-- Label -->
+      <text x="40" y="535" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#ffffff" text-anchor="middle">앱 시작</text>
+      <text x="40" y="555" font-family="Arial, sans-serif" font-size="14"
+            fill="#00d4ff" text-anchor="middle">-2%</text>
+    </g>
+
+    <!-- Bar Chart 2: Test Execution -->
+    <g transform="translate(330, 0)">
+      <!-- Python 3.12 Bar -->
+      <rect x="-50" y="408" width="80" height="92" rx="5" fill="url(#py312Gradient)"/>
+      <text x="-10" y="392" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#FFD43B" text-anchor="middle">18.42s</text>
+
+      <!-- Python 3.13 Bar -->
+      <rect x="50" y="421" width="80" height="79" rx="5" fill="url(#py313Gradient)"/>
+      <text x="90" y="405" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#00ff88" text-anchor="middle">17.91s</text>
+
+      <!-- Label -->
+      <text x="40" y="535" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#ffffff" text-anchor="middle">테스트 실행</text>
+      <text x="40" y="555" font-family="Arial, sans-serif" font-size="14"
+            fill="#00ff88" text-anchor="middle">-3%</text>
+    </g>
+
+    <!-- Bar Chart 3: API Response Time -->
+    <g transform="translate(560, 0)">
+      <!-- Python 3.12 Bar -->
+      <rect x="-50" y="95" width="80" height="405" rx="5" fill="url(#py312Gradient)"/>
+      <text x="-10" y="79" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#FFD43B" text-anchor="middle">81.03ms</text>
+
+      <!-- Python 3.13 Bar -->
+      <rect x="50" y="107" width="80" height="393" rx="5" fill="url(#py313Gradient)"/>
+      <text x="90" y="91" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#00ff88" text-anchor="middle">78.67ms</text>
+
+      <!-- Label -->
+      <text x="40" y="535" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#ffffff" text-anchor="middle">API 응답</text>
+      <text x="40" y="555" font-family="Arial, sans-serif" font-size="14"
+            fill="#00ff88" text-anchor="middle">-3%</text>
+    </g>
+
+    <!-- Bar Chart 4: Memory Usage -->
+    <g transform="translate(790, 0)">
+      <!-- Python 3.12 Bar -->
+      <rect x="-50" y="71" width="80" height="429" rx="5" fill="url(#py312Gradient)"/>
+      <text x="-10" y="55" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#FFD43B" text-anchor="middle">142MB</text>
+
+      <!-- Python 3.13 Bar -->
+      <rect x="50" y="82" width="80" height="418" rx="5" fill="url(#py313Gradient)"/>
+      <text x="90" y="66" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#00ff88" text-anchor="middle">139MB</text>
+
+      <!-- Label -->
+      <text x="40" y="535" font-family="Arial, sans-serif" font-size="18" font-weight="bold"
+            fill="#ffffff" text-anchor="middle">메모리 사용</text>
+      <text x="40" y="555" font-family="Arial, sans-serif" font-size="14"
+            fill="#00ff88" text-anchor="middle">-2.5%</text>
+    </g>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(400, 720)">
+    <rect x="0" y="0" width="30" height="30" rx="5" fill="url(#py312Gradient)"/>
+    <text x="40" y="22" font-family="Arial, sans-serif" font-size="20" fill="#FFD43B">Python 3.12</text>
+
+    <rect x="200" y="0" width="30" height="30" rx="5" fill="url(#py313Gradient)"/>
+    <text x="240" y="22" font-family="Arial, sans-serif" font-size="20" fill="#00ff88">Python 3.13</text>
+  </g>
+
+  <!-- Summary Box -->
+  <rect x="150" y="170" width="900" height="60" rx="10" fill="#00ff88" opacity="0.1"/>
+  <text x="600" y="200" font-family="Arial, sans-serif" font-size="22" font-weight="bold"
+        fill="#00ff88" text-anchor="middle">⚡ Python 3.13이 평균 2.6% 빠르고, 메모리는 2.5% 절감</text>
+</svg>
