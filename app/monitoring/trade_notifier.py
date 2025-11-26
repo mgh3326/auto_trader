@@ -9,10 +9,13 @@ Features:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
 import httpx
+
+# KST (한국 표준시, UTC+9)
+KST = timezone(timedelta(hours=9))
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +100,7 @@ class TradeNotifier:
         Returns:
             Markdown-formatted notification message
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
         parts = [
             "💰 *매수 주문 체결*",
@@ -150,7 +153,7 @@ class TradeNotifier:
         Returns:
             Markdown-formatted notification message
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
         parts = [
             "💸 *매도 주문 체결*",
@@ -198,7 +201,7 @@ class TradeNotifier:
         Returns:
             Markdown-formatted notification message
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
         parts = [
             "🚫 *주문 취소*",
@@ -235,7 +238,7 @@ class TradeNotifier:
         Returns:
             Markdown-formatted notification message
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
         # Decision emoji mapping
         decision_emoji = {
@@ -293,7 +296,7 @@ class TradeNotifier:
         Returns:
             Markdown-formatted summary message
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
         parts = [
             "🤖 *자동 거래 실행 완료*",
@@ -485,7 +488,7 @@ class TradeNotifier:
         Returns:
             Markdown-formatted notification message
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
 
         parts = [
             "⚠️ *거래 실패 알림*",
@@ -532,7 +535,7 @@ class TradeNotifier:
         try:
             test_message = (
                 "✅ *거래 알림 테스트*\n\n"
-                f"연결 성공: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"연결 성공: {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')}\n"
                 "거래 알림 시스템이 정상 작동 중입니다."
             )
 

@@ -11,10 +11,13 @@ Features:
 import hashlib
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional
 
 import httpx
+
+# KST (한국 표준시, UTC+9)
+KST = timezone(timedelta(hours=9))
 from fastapi import Request
 from redis.asyncio import Redis
 
@@ -174,7 +177,7 @@ class ErrorReporter:
         Returns:
             Markdown-formatted error message
         """
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST")
 
         # Build message parts
         parts = [
@@ -324,7 +327,7 @@ class ErrorReporter:
         try:
             test_message = (
                 "✅ *Telegram Error Reporter Test*\n\n"
-                f"Connection successful at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                f"Connection successful at {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST')}\n"
                 "Error reporting is working correctly."
             )
 
