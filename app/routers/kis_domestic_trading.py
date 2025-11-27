@@ -163,15 +163,28 @@ async def execute_sell_orders():
 
 
 @router.post("/api/automation/per-stock")
-async def execute_per_stock_automation():
-    """보유 국내 주식별 자동 실행"""
-    try:
-        from app.core.celery_app import celery_app
-        async_result = celery_app.send_task("kis.run_per_domestic_stock_automation")
-        return {
-            "success": True,
-            "message": "종목별 자동 실행이 시작되었습니다.",
-            "task_id": async_result.id,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+async def run_per_stock_automation(request: Request):
+    """보유 종목별 자동 실행 (분석 -> 매수 -> 매도)"""
+    task = celery_app.send_task("kis.run_per_domestic_stock_automation")
+    return {"success": True, "message": "종목별 자동 실행이 시작되었습니다.", "task_id": task.id}
+
+
+@router.post("/api/analyze-stock/{symbol}")
+async def analyze_stock(symbol: str, request: Request):
+    """단일 종목 분석 요청"""
+    task = celery_app.send_task("kis.analyze_domestic_stock_task", args=[symbol])
+    return {"success": True, "message": f"{symbol} 분석 요청 완료", "task_id": task.id}
+
+
+@router.post("/api/buy-order/{symbol}")
+async def buy_order(symbol: str, request: Request):
+    """단일 종목 매수 요청"""
+    task = celery_app.send_task("kis.execute_domestic_buy_order_task", args=[symbol])
+    return {"success": True, "message": f"{symbol} 매수 요청 완료", "task_id": task.id}
+
+
+@router.post("/api/sell-order/{symbol}")
+async def sell_order(symbol: str, request: Request):
+    """단일 종목 매도 요청"""
+    task = celery_app.send_task("kis.execute_domestic_sell_order_task", args=[symbol])
+    return {"success": True, "message": f"{symbol} 매도 요청 완료", "task_id": task.id}

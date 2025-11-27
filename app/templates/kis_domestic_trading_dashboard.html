@@ -680,23 +680,44 @@
                     if (analysisId) {
                         openStockAnalysisDetail(analysisId, symbol, name);
                     } else {
-                        // 분석 결과가 없으면 전체 분석 요청 유도 또는 개별 분석 실행 (추후 구현)
-                        if (confirm(`${name} (${symbol})에 대한 분석 결과가 없습니다. 전체 분석을 실행하시겠습니까?`)) {
-                            analyzeStocks();
+                        if (confirm(`${name} (${symbol})에 대한 개별 AI 분석을 실행하시겠습니까?`)) {
+                            triggerIndividualStockTask('analyze-stock', symbol, name);
                         }
                     }
                 });
             });
             document.querySelectorAll('.stock-buy-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
-                    alert('개별 매수 기능은 준비 중입니다.');
+                    const symbol = btn.dataset.code;
+                    if (confirm(`${symbol} 종목에 대한 매수 주문을 실행하시겠습니까? (AI 분석 기반)`)) {
+                        triggerIndividualStockTask('buy-order', symbol, symbol);
+                    }
                 });
             });
             document.querySelectorAll('.stock-sell-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
-                    alert('개별 매도 기능은 준비 중입니다.');
+                    const symbol = btn.dataset.code;
+                    if (confirm(`${symbol} 종목에 대한 매도 주문을 실행하시겠습니까? (AI 분석 기반)`)) {
+                        triggerIndividualStockTask('sell-order', symbol, symbol);
+                    }
                 });
             });
+        }
+
+        async function triggerIndividualStockTask(action, symbol, name) {
+            try {
+                const response = await csrfFetch(`/kis-domestic-trading/api/${action}/${symbol}`, { method: 'POST' });
+                const data = await response.json();
+
+                if (data.success) {
+                    showAlert(`✅ ${name} ${action} 요청 완료. (Task ID: ${data.task_id})`, 'success');
+                    // Optional: Poll for individual task status or just let the user refresh
+                } else {
+                    showAlert(`❌ ${name} ${action} 요청 실패: ${data.message || 'Unknown error'}`, 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ 요청 중 오류 발생: ${error.message}`, 'danger');
+            }
         }
 
         // --- Helper Functions for Analysis Modal ---

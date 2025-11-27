@@ -314,6 +314,63 @@ def run_per_domestic_stock_automation(self) -> dict:
     return asyncio.run(_run())
 
 
+@shared_task(name="kis.analyze_domestic_stock_task", bind=True)
+def analyze_domestic_stock_task(self, symbol: str) -> dict:
+    """단일 국내 주식 분석 실행"""
+    return asyncio.run(_analyze_domestic_stock_async(symbol))
+
+
+@shared_task(name="kis.execute_domestic_buy_order_task", bind=True)
+def execute_domestic_buy_order_task(self, symbol: str) -> dict:
+    """단일 국내 주식 매수 주문 실행"""
+    async def _run() -> dict:
+        kis = KISClient()
+        try:
+            # 현재가 및 평단가 조회
+            my_stocks = await kis.fetch_my_stocks()
+            target_stock = next((s for s in my_stocks if s['pdno'] == symbol), None)
+            
+            if target_stock:
+                avg_price = float(target_stock['pchs_avg_pric'])
+                current_price = float(target_stock['prpr'])
+            else:
+                # 보유 중이 아니면 현재가 조회 필요
+                price_info = await kis.fetch_price(symbol)
+                current_price = float(price_info['output']['stck_prpr'])
+                avg_price = 0 # 신규 매수
+            
+            res = await process_kis_domestic_buy_orders_with_analysis(kis, symbol, current_price, avg_price)
+            return res
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    return asyncio.run(_run())
+
+
+@shared_task(name="kis.execute_domestic_sell_order_task", bind=True)
+def execute_domestic_sell_order_task(self, symbol: str) -> dict:
+    """단일 국내 주식 매도 주문 실행"""
+    async def _run() -> dict:
+        kis = KISClient()
+        try:
+            my_stocks = await kis.fetch_my_stocks()
+            target_stock = next((s for s in my_stocks if s['pdno'] == symbol), None)
+            
+            if not target_stock:
+                return {'success': False, 'message': '보유 중인 주식이 아닙니다.'}
+                
+            avg_price = float(target_stock['pchs_avg_pric'])
+            current_price = float(target_stock['prpr'])
+            qty = int(target_stock['hldg_qty'])
+            
+            res = await process_kis_domestic_sell_orders_with_analysis(kis, symbol, current_price, avg_price, qty)
+            return res
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    return asyncio.run(_run())
+
+
 @shared_task(name="kis.analyze_overseas_stock_task", bind=True)
 def analyze_overseas_stock_task(self, symbol: str) -> dict:
     """단일 해외 주식 분석 실행"""
