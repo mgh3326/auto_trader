@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.templates import templates
 from app.services.kis import KISClient
 from app.analysis.service_analyzers import KISAnalyzer
+from app.services.stock_info_service import StockAnalysisService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/kis-domestic-trading", tags=["KIS Domestic Trading"])

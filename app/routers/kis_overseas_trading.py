@@ -15,6 +15,7 @@ from app.core.db import get_db
 from app.core.config import settings
 from app.core.templates import templates
 from app.services.kis import KISClient
+from app.services.stock_info_service import StockAnalysisService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/kis-overseas-trading", tags=["KIS Overseas Trading"])
@@ -48,7 +49,6 @@ async def get_my_overseas_stocks(
         usd_balance = margin.get("usd_balance", 0)
         
         # 2. DB에서 최신 분석 결과 조회
-        from app.services.stock_info_service import StockAnalysisService
         stock_service = StockAnalysisService(db)
         
         # 종목 코드 리스트 추출
