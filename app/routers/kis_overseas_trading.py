@@ -87,11 +87,12 @@ async def get_my_overseas_stocks(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+from app.core.celery_app import celery_app
+
 @router.post("/api/analyze-stocks")
 async def analyze_my_overseas_stocks():
     """보유 해외 주식 AI 분석 실행 (Celery)"""
     try:
-        from app.core.celery_app import celery_app
         async_result = celery_app.send_task("kis.run_analysis_for_my_overseas_stocks")
 
         return {
@@ -106,7 +107,6 @@ async def analyze_my_overseas_stocks():
 @router.get("/api/analyze-task/{task_id}")
 async def get_analyze_task_status(task_id: str):
     """Celery 작업 상태 조회 API"""
-    from app.core.celery_app import celery_app
 
     result = celery_app.AsyncResult(task_id)
 
@@ -133,7 +133,6 @@ async def get_analyze_task_status(task_id: str):
 async def execute_buy_orders():
     """보유 해외 주식 자동 매수 주문 실행 (Celery)"""
     try:
-        from app.core.celery_app import celery_app
         async_result = celery_app.send_task("kis.execute_overseas_buy_orders")
         return {
             "success": True,
@@ -148,7 +147,6 @@ async def execute_buy_orders():
 async def execute_sell_orders():
     """보유 해외 주식 자동 매도 주문 실행 (Celery)"""
     try:
-        from app.core.celery_app import celery_app
         async_result = celery_app.send_task("kis.execute_overseas_sell_orders")
         return {
             "success": True,

@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, Any, List, Optional, Tuple
 from app.services.kis import KISClient
 from app.models.analysis import StockAnalysisResult
@@ -24,7 +25,7 @@ async def process_kis_domestic_buy_orders_with_analysis(
     # For now, let's assume the caller might have checked, or we check here.
     # Fetching balance is an API call.
     
-    balance_info = await kis_client.get_balance()
+    # balance_info = await kis_client.get_balance()
     # output2[0]['dnca_tot_amt'] is usually the deposit (pre-calculated in get_balance wrapper if exists)
     # But KISClient.get_balance implementation details:
     # It returns raw response usually. Let's check KISClient.get_balance in kis.py
@@ -110,7 +111,6 @@ async def process_kis_domestic_buy_orders_with_analysis(
             if res and res.get('rt_cd') == '0':
                 success_count += 1
             
-            import asyncio
             await asyncio.sleep(0.2) # Rate limit
 
         return {
@@ -156,12 +156,7 @@ async def process_kis_overseas_buy_orders_with_analysis(
 
         success_count = 0
         for price in valid_prices:
-            quantity = int(KIS_BUY_AMOUNT / price) # USD conversion needed? 
-            # KIS_BUY_AMOUNT is in KRW. We need to convert to USD or set USD amount.
-            # For simplicity, let's assume KIS_BUY_AMOUNT is KRW and we convert roughly or use a fixed USD amount.
-            # Let's use a fixed USD amount for overseas for now, e.g., $100
-            usd_amount = 100 
-            quantity = int(usd_amount / price)
+            quantity = int(KIS_BUY_AMOUNT / price)
             if quantity < 1: continue
 
             res = await kis_client.order_overseas_stock(
@@ -174,7 +169,6 @@ async def process_kis_overseas_buy_orders_with_analysis(
             if res and res.get('rt_cd') == '0':
                 success_count += 1
             
-            import asyncio
             await asyncio.sleep(0.2)
 
         return {
@@ -264,7 +258,6 @@ async def process_kis_domestic_sell_orders_with_analysis(
                 success_count += 1
                 remaining_qty -= qty
             
-            import asyncio
             await asyncio.sleep(0.2)
 
         return {
@@ -357,7 +350,6 @@ async def process_kis_overseas_sell_orders_with_analysis(
                 success_count += 1
                 remaining_qty -= qty
             
-            import asyncio
             await asyncio.sleep(0.2)
 
         return {

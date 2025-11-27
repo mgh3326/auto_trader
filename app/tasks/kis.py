@@ -143,7 +143,6 @@ def execute_domestic_buy_orders(self) -> dict:
             
             # 보유 주식 조회 (평단가 확인용)
             my_stocks = await kis.fetch_my_stocks()
-            stock_map = {s['pdno']: float(s['pchs_avg_pric']) for s in my_stocks}
             
             # 분석된 종목이 있어야 매수 가능 (DB에서 최근 분석 조회 필요)
             # 여기서는 보유 종목에 대해서만 매수 시도 (추가 매수)
