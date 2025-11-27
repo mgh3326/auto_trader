@@ -28,6 +28,8 @@ from app.routers import (
     stock_latest,
     test,
     upbit_trading,
+    kis_domestic_trading,
+    kis_overseas_trading,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +102,8 @@ def create_app() -> FastAPI:
     app.include_router(analysis_json.router)
     app.include_router(stock_latest.router)
     app.include_router(upbit_trading.router)
+    app.include_router(kis_domestic_trading.router)
+    app.include_router(kis_overseas_trading.router)
     if settings.EXPOSE_MONITORING_TEST_ROUTES:
         app.include_router(test.router)
     else:

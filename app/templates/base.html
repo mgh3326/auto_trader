@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ko">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -93,30 +94,18 @@
             padding: 2rem;
         }
 
-        {% block styles %}{% endblock %}
+            {
+            % block styles %
+        }
+
+            {
+            % endblock %
+        }
     </style>
 </head>
+
 <body>
-    {% if user %}
-    <nav class="navbar">
-        <div class="navbar-content">
-            <a href="/" class="navbar-brand">🚀 Auto Trader</a>
-            <div class="navbar-menu">
-                <a href="/analysis-json/">분석 결과</a>
-                <a href="/stock-latest/">최신 종목</a>
-                <a href="/upbit-trading/">Upbit 거래</a>
-                {% if user and user.role and user.role.value == 'admin' %}
-                <a href="/admin/users" style="color: #dc3545; font-weight: bold;">👥 관리자</a>
-                {% endif %}
-                <div class="user-info">
-                    <span>{{ user.username }}</span>
-                    <span class="user-role">{{ user.role.value if user.role else 'N/A' }}</span>
-                    <a href="/web-auth/logout" class="btn-logout">로그아웃</a>
-                </div>
-            </div>
-        </div>
-    </nav>
-    {% endif %}
+    {% include 'nav.html' %}
 
     <div class="container">
         {% block content %}{% endblock %}
@@ -124,4 +113,5 @@
 
     {% block scripts %}{% endblock %}
 </body>
+
 </html>

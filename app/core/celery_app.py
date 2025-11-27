@@ -12,7 +12,7 @@ celery_app = Celery(
     "auto_trader",
     broker=_get_broker_url(),
     backend=_get_broker_url(),
-    include=["app.tasks.analyze"],
+    include=["app.tasks.analyze", "app.tasks.kis"],
 )
 
 # Reasonable defaults
