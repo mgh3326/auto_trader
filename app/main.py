@@ -26,6 +26,7 @@ from app.routers import (
     dashboard,
     health,
     stock_latest,
+    symbol_settings,
     test,
     upbit_trading,
     kis_domestic_trading,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(upbit_trading.router)
     app.include_router(kis_domestic_trading.router)
     app.include_router(kis_overseas_trading.router)
+    app.include_router(symbol_settings.router)
     if settings.EXPOSE_MONITORING_TEST_ROUTES:
         app.include_router(test.router)
     else:

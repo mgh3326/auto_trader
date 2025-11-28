@@ -433,7 +433,7 @@ async def process_buy_orders_with_analysis(symbol: str, current_price: float, av
 
 
 async def _place_multiple_buy_orders_by_analysis(market: str, current_price: float, avg_buy_price: float, analysis) -> Dict[str, Any]:
-    """분석 결과의 4개 가격 값 중 평균 매수가보다 1% 낮고 현재가보다 낮은 것들을 각각 설정된 금액씩 매수합니다.
+    """분석 결과의 4개 가격 값 중 평균 매수가보다 1% 낮고 현재가보다 낮은 것들을 각각 설정된 금액/수량씩 매수합니다.
 
     Returns
     -------
@@ -447,11 +447,27 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
     """
     from app.services import upbit
     from app.core.config import settings
+    from app.core.db import AsyncSessionLocal
+    from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
+
+    # 코인 코드 추출 (KRW-BTC -> BTC)
+    currency = market.replace("KRW-", "")
+
+    # 종목 설정 조회
+    async with AsyncSessionLocal() as db:
+        settings_service = SymbolTradeSettingsService(db)
+        symbol_settings = await settings_service.get_by_symbol(currency)
+
+    use_quantity_mode = symbol_settings and symbol_settings.is_active
+    buy_quantity = float(symbol_settings.buy_quantity_per_order) if use_quantity_mode else None
 
     print(f"📊 {market} 분석 기반 다중 매수 주문 처리")
     print(f"현재가: {format_decimal(current_price, '₩')}원")
     print(f"평균 매수가: {format_decimal(avg_buy_price, '₩')}원")
-    print(f"매수 단위: {format_decimal(settings.upbit_buy_amount, '₩')}원")
+    if use_quantity_mode:
+        print(f"매수 수량: {buy_quantity} (설정된 수량)")
+    else:
+        print(f"매수 단위: {format_decimal(settings.upbit_buy_amount, '₩')}원")
 
     # 1% 룰 기준가 계산
     threshold_price = avg_buy_price * 0.99
@@ -516,16 +532,30 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
 
     print(f"\n🎯 총 {len(valid_prices)}개 가격에서 매수 주문 실행:")
 
-    # 각 가격별로 10만원씩 매수 주문
+    # 각 가격별로 매수 주문 (수량 모드 또는 금액 모드)
     success_count = 0
     total_orders = len(valid_prices)
+    total_amount = 0.0
 
     for i, (price_name, buy_price) in enumerate(valid_prices, 1):
         print(f"\n[{i}/{total_orders}] {price_name} - {format_decimal(buy_price, '₩')}원")
 
-        result = await _place_single_buy_order(market, settings.upbit_buy_amount, buy_price, price_name)
-        if result:
-            success_count += 1
+        if use_quantity_mode:
+            # 수량 기반 매수
+            result = await _place_single_buy_order_by_quantity(
+                market, buy_quantity, buy_price, price_name
+            )
+            if result:
+                success_count += 1
+                total_amount += buy_quantity * buy_price
+        else:
+            # 금액 기반 매수 (기존 방식)
+            result = await _place_single_buy_order(
+                market, settings.upbit_buy_amount, buy_price, price_name
+            )
+            if result:
+                success_count += 1
+                total_amount += settings.upbit_buy_amount
 
         # 주문 간 약간의 지연 (API 제한 고려)
         if i < total_orders:
@@ -539,7 +569,7 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
             'success': True,
             'message': f"{success_count}개 매수 주문 성공",
             'orders_placed': success_count,
-            'total_amount': success_count * settings.upbit_buy_amount
+            'total_amount': total_amount
         }
     else:
         return {
@@ -584,6 +614,42 @@ async def _place_single_buy_order(market: str, amount: int, buy_price: float, pr
         
         return order_result
         
+    except Exception as e:
+        print(f"    ❌ {price_name} 매수 주문 실패: {e}")
+        return None
+
+
+async def _place_single_buy_order_by_quantity(market: str, quantity: float, buy_price: float, price_name: str):
+    """수량 기반으로 단일 가격 매수 주문을 실행합니다."""
+    from app.services import upbit
+
+    try:
+        # 업비트 가격 단위에 맞게 조정
+        adjusted_price = upbit.adjust_price_to_upbit_unit(buy_price)
+        estimated_amount = adjusted_price * quantity
+
+        print(f"  💰 {quantity} 개 지정가 매수 주문")
+        print(f"    - 원본 가격: {buy_price:,.2f}원")
+        print(f"    - 조정 가격: {adjusted_price:,.5f}원 (업비트 단위)")
+        print(f"    - 주문 수량: {quantity:.8f}")
+        print(f"    - 예상 금액: {format_decimal(estimated_amount, '₩')}원")
+
+        # 지정가 매수 주문
+        order_result = await upbit.place_buy_order(
+            market=market,
+            price=str(adjusted_price),
+            volume=str(quantity),
+            ord_type="limit"
+        )
+
+        print(f"    ✅ 주문 성공:")
+        print(f"      - 주문 ID: {order_result.get('uuid')}")
+        print(f"      - 실제 주문가: {adjusted_price:,.5f}원")
+        print(f"      - 예상 금액: {format_decimal(estimated_amount, '₩')}원")
+        print(f"      - 주문 시간: {order_result.get('created_at')}")
+
+        return order_result
+
     except Exception as e:
         print(f"    ❌ {price_name} 매수 주문 실패: {e}")
         return None

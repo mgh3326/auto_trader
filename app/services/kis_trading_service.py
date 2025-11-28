@@ -4,37 +4,22 @@ from app.services.kis import KISClient
 from app.models.analysis import StockAnalysisResult
 from app.core.config import settings
 
-# KIS 매수 설정 (추후 설정 파일로 이동 가능)
+# KIS 매수 설정 (폴백용 - 종목 설정이 없을 때 사용)
 KIS_BUY_AMOUNT = 100000  # 국내 주식 매수 금액 (KRW)
 KIS_OVERSEAS_BUY_AMOUNT_USD = 100  # 해외 주식 매수 금액 (USD)
 KIS_MIN_BALANCE = 100000  # 최소 예수금
 
 async def process_kis_domestic_buy_orders_with_analysis(
     kis_client: KISClient,
-    symbol: str, 
-    current_price: float, 
+    symbol: str,
+    current_price: float,
     avg_buy_price: float
 ) -> Dict[str, Any]:
     """분석 결과를 기반으로 KIS 국내 주식 매수 주문 처리"""
     from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
+    from app.services.symbol_trade_settings_service import get_buy_quantity_for_symbol
 
-    # 1. 예수금 확인
-    # KISClient.get_balance returns dict with 'output2' list usually containing balance info
-    # We need a simpler balance check. 
-    # For now, let's assume the caller might have checked, or we check here.
-    # Fetching balance is an API call.
-    
-    # balance_info = await kis_client.get_balance()
-    # output2[0]['dnca_tot_amt'] is usually the deposit (pre-calculated in get_balance wrapper if exists)
-    # But KISClient.get_balance implementation details:
-    # It returns raw response usually. Let's check KISClient.get_balance in kis.py
-    # Actually, let's trust the task to handle balance check or do it here if simple.
-    # KISClient.get_balance returns the full response.
-    # Let's skip strict balance check for this MVP step or implement a simple one.
-    
-    # Assuming we have enough balance for now or handle error on order.
-    
     async with AsyncSessionLocal() as db:
         service = StockAnalysisService(db)
         analysis = await service.get_latest_analysis_by_symbol(symbol)
@@ -48,7 +33,7 @@ async def process_kis_domestic_buy_orders_with_analysis(
                     'message': f"1% 매수 조건 미충족: 현재가 {current_price} >= 목표가 {target_price}",
                     'orders_placed': 0
                 }
-        
+
         # 2. 분석 결과 확인
         if not analysis:
             return {
@@ -78,7 +63,7 @@ async def process_kis_domestic_buy_orders_with_analysis(
         # 4. 조건에 맞는 가격 필터링
         # 평균 매수가의 99%보다 낮고(평단가 있을시), 현재가보다 낮은 가격
         threshold_price = avg_buy_price * 0.99 if avg_buy_price > 0 else float('inf')
-        
+
         valid_prices = []
         for name, price in buy_prices:
             if price < threshold_price and price < current_price:
@@ -94,28 +79,24 @@ async def process_kis_domestic_buy_orders_with_analysis(
         # 5. 주문 실행
         success_count = 0
         for name, price in valid_prices:
-            # 수량 계산: 금액 / 가격
-            quantity = int(KIS_BUY_AMOUNT / price)
+            # 수량 계산: 종목 설정이 있으면 설정된 수량 사용, 없으면 금액 기반 계산
+            quantity = await get_buy_quantity_for_symbol(
+                db, symbol, price, KIS_BUY_AMOUNT
+            )
             if quantity < 1:
                 continue
-                
-            # 호가 단위 맞추기 (KIS는 보통 시장가나 지정가. 지정가 시 호가 단위 중요)
-            # 여기서는 단순화를 위해 계산된 가격 그대로 시도하거나, 
-            # 시장가(0)가 아닌 지정가 주문이므로 호가 단위를 맞춰야 함.
-            # KISClient doesn't have adjust_price yet?
-            # We will use the price from analysis directly. If it fails, it fails.
-            
+
             res = await kis_client.order_korea_stock(
                 symbol=symbol,
                 order_type="buy",
                 quantity=quantity,
-                price=int(price) # Domestic stocks are integers usually
+                price=int(price)
             )
-            
+
             if res and res.get('rt_cd') == '0':
                 success_count += 1
-            
-            await asyncio.sleep(0.2) # Rate limit
+
+            await asyncio.sleep(0.2)
 
         return {
             'success': success_count > 0,
@@ -125,14 +106,15 @@ async def process_kis_domestic_buy_orders_with_analysis(
 
 async def process_kis_overseas_buy_orders_with_analysis(
     kis_client: KISClient,
-    symbol: str, 
-    current_price: float, 
+    symbol: str,
+    current_price: float,
     avg_buy_price: float,
-    exchange_code: str = "NASD" # Default to NASD, but should be passed
+    exchange_code: str = "NASD"
 ) -> Dict[str, Any]:
     """분석 결과를 기반으로 KIS 해외 주식 매수 주문 처리"""
     from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
+    from app.services.symbol_trade_settings_service import get_buy_quantity_for_symbol
 
     async with AsyncSessionLocal() as db:
         service = StockAnalysisService(db)
@@ -142,7 +124,7 @@ async def process_kis_overseas_buy_orders_with_analysis(
             target_price = avg_buy_price * 0.99
             if current_price >= target_price:
                 return {'success': False, 'message': "1% 매수 조건 미충족", 'orders_placed': 0}
-        
+
         if not analysis:
             return {'success': False, 'message': "분석 결과 없음", 'orders_placed': 0}
 
@@ -164,7 +146,10 @@ async def process_kis_overseas_buy_orders_with_analysis(
 
         success_count = 0
         for price in valid_prices:
-            quantity = int(KIS_OVERSEAS_BUY_AMOUNT_USD / price)
+            # 수량 계산: 종목 설정이 있으면 설정된 수량 사용, 없으면 금액 기반 계산
+            quantity = await get_buy_quantity_for_symbol(
+                db, symbol, price, KIS_OVERSEAS_BUY_AMOUNT_USD
+            )
             if quantity < 1:
                 continue
 
@@ -177,7 +162,7 @@ async def process_kis_overseas_buy_orders_with_analysis(
             )
             if res and res.get('rt_cd') == '0':
                 success_count += 1
-            
+
             await asyncio.sleep(0.2)
 
         return {

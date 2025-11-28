@@ -29,23 +29,24 @@ def mock_analysis_service():
 async def test_process_kis_domestic_buy_orders_with_analysis_success(mock_kis_client):
     # Mock dependencies
     with patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
-         patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls:
-        
+         patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls, \
+         patch('app.services.symbol_trade_settings_service.get_buy_quantity_for_symbol') as mock_get_qty:
+
         # Configure AsyncSessionLocal to work with async with
         mock_session_instance = MagicMock()
         mock_session_instance.__aenter__ = AsyncMock(return_value=AsyncMock())
         mock_session_instance.__aexit__ = AsyncMock(return_value=None)
         mock_session_cls.return_value = mock_session_instance
-        
+
         mock_service = AsyncMock()
         mock_service_cls.return_value = mock_service
-        
+
+        # Mock get_buy_quantity_for_symbol to return 2 shares
+        mock_get_qty.return_value = 2
+
         # Mock analysis result
         analysis = StockAnalysisResult(
-            # symbol="005930", # Not a column
             decision="buy",
-            # percentage=100, # Not a column
-            # reason="Good", # Not a column
             appropriate_buy_min=50000,
             appropriate_buy_max=52000,
             buy_hope_min=48000,
@@ -71,6 +72,10 @@ async def test_process_kis_domestic_buy_orders_with_analysis_success(mock_kis_cl
         # Verify
         assert result['success'] is True
         assert result['orders_placed'] > 0
+        # 4 prices below threshold and current: appropriate_buy_min, appropriate_buy_max, buy_hope_min, buy_hope_max
+        # But only 3 are below current_price (51000): 50000, 48000, 49000 (52000 is above)
+        # Actually all 4 are below current 51000: 50000, 52000 (no, 52000 > 51000), 48000, 49000
+        # So 3 orders should be placed
         assert mock_kis_client.order_korea_stock.call_count == 3
 
 @pytest.mark.asyncio
@@ -124,8 +129,9 @@ async def test_process_kis_domestic_buy_orders_price_condition_fail(mock_kis_cli
 @pytest.mark.asyncio
 async def test_process_kis_overseas_buy_orders_success(mock_kis_client):
     with patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
-         patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls:
-        
+         patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls, \
+         patch('app.services.symbol_trade_settings_service.get_buy_quantity_for_symbol') as mock_get_qty:
+
         mock_session_instance = MagicMock()
         mock_session_instance.__aenter__ = AsyncMock(return_value=AsyncMock())
         mock_session_instance.__aexit__ = AsyncMock(return_value=None)
@@ -133,7 +139,10 @@ async def test_process_kis_overseas_buy_orders_success(mock_kis_client):
 
         mock_service = AsyncMock()
         mock_service_cls.return_value = mock_service
-        
+
+        # Mock get_buy_quantity_for_symbol to return 2 shares
+        mock_get_qty.return_value = 2
+
         analysis = StockAnalysisResult(
             decision="buy",
             appropriate_buy_min=50,
