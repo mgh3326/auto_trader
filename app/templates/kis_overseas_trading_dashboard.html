@@ -18,6 +18,28 @@
         }
 
         /* 해외주식도 하락은 파랑 (한국 기준) */
+        .settings-badge {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .settings-badge:hover {
+            transform: scale(1.05);
+        }
+
+        .settings-configured {
+            background-color: #198754 !important;
+        }
+
+        .settings-not-configured {
+            background-color: #6c757d !important;
+        }
+
+        .estimated-cost-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
         .loading-spinner {
             width: 1rem;
             height: 1rem;
@@ -180,12 +202,13 @@
                                         <th class="text-end">평가금액</th>
                                         <th class="text-end">평가손익 (수익률)</th>
                                         <th class="text-center">AI 분석</th>
+                                        <th class="text-center">매수설정</th>
                                         <th class="text-center">관리</th>
                                     </tr>
                                 </thead>
                                 <tbody id="stocks-list">
                                     <tr>
-                                        <td colspan="8" class="text-center py-4">
+                                        <td colspan="9" class="text-center py-4">
                                             <div class="spinner-border text-primary" role="status">
                                                 <span class="visually-hidden">Loading...</span>
                                             </div>
@@ -214,6 +237,75 @@
                 <div class="modal-footer">
                     <a href="#" id="stockAnalysisLink" class="btn btn-outline-primary d-none" target="_blank">차트 보기</a>
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">닫기</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Symbol Settings Modal -->
+    <div class="modal fade" id="symbolSettingsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-gear"></i> 매수 수량 설정
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="settings-symbol">
+                    <input type="hidden" id="settings-id">
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">종목</label>
+                        <div id="settings-stock-info" class="form-control-plaintext"></div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="settings-quantity" class="form-label fw-bold">
+                            주문당 매수 수량 <span class="text-danger">*</span>
+                        </label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="settings-quantity"
+                                   min="1" step="1" placeholder="예: 2">
+                            <span class="input-group-text">주</span>
+                        </div>
+                        <div class="form-text">
+                            AI 분석 결과의 매수 가격대에 각각 이 수량만큼 주문합니다.
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="settings-note" class="form-label">메모 (선택)</label>
+                        <input type="text" class="form-control" id="settings-note"
+                               placeholder="예: 장기 보유 목적">
+                    </div>
+
+                    <!-- 예상 비용 표시 -->
+                    <div id="estimated-cost-section" class="mb-3" style="display: none;">
+                        <div class="card estimated-cost-card">
+                            <div class="card-body">
+                                <h6 class="card-title mb-3">
+                                    <i class="bi bi-calculator"></i> 예상 매수 비용
+                                </h6>
+                                <div id="estimated-cost-details"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="settings-active" checked>
+                        <label class="form-check-label" for="settings-active">설정 활성화</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-danger" id="settings-delete-btn" style="display: none;">
+                        <i class="bi bi-trash"></i> 삭제
+                    </button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+                    <button type="button" class="btn btn-primary" id="settings-save-btn">
+                        <i class="bi bi-check-lg"></i> 저장
+                    </button>
                 </div>
             </div>
         </div>
@@ -294,7 +386,7 @@
                     const list = document.getElementById('stocks-list');
 
                     if (data.stocks.length === 0) {
-                        list.innerHTML = '<tr><td colspan="8" class="text-center py-4">보유 중인 해외 주식이 없습니다.</td></tr>';
+                        list.innerHTML = '<tr><td colspan="9" class="text-center py-4">보유 중인 해외 주식이 없습니다.</td></tr>';
                         document.getElementById('total-evaluation').textContent = '0 USD';
                         return;
                     }
@@ -317,13 +409,38 @@
                         }
 
                         let analysisButton = `
-                            <button class="btn btn-sm btn-outline-primary stock-analyze-btn" 
-                                data-id="${stock.analysis_id || ''}" 
-                                data-code="${stock.code}" 
+                            <button class="btn btn-sm btn-outline-primary stock-analyze-btn"
+                                data-id="${stock.analysis_id || ''}"
+                                data-code="${stock.code}"
                                 data-name="${stock.name}">
                                 <i class="bi bi-cpu"></i> 분석
                             </button>
                         `;
+
+                        // Settings badge
+                        let settingsBadge;
+                        if (stock.settings_quantity) {
+                            settingsBadge = `
+                                <span class="badge settings-badge settings-configured"
+                                      data-code="${stock.code}"
+                                      data-name="${stock.name}"
+                                      data-quantity="${stock.settings_quantity}"
+                                      data-note="${stock.settings_note || ''}"
+                                      data-active="${stock.settings_active}"
+                                      title="클릭하여 수정">
+                                    ${stock.settings_quantity}주
+                                </span>
+                            `;
+                        } else {
+                            settingsBadge = `
+                                <span class="badge settings-badge settings-not-configured"
+                                      data-code="${stock.code}"
+                                      data-name="${stock.name}"
+                                      title="클릭하여 설정">
+                                    <i class="bi bi-plus-lg"></i> 설정
+                                </span>
+                            `;
+                        }
 
                         return `
                             <tr>
@@ -341,6 +458,9 @@
                                 </td>
                                 <td class="text-center">
                                     ${analysisBadge}
+                                </td>
+                                <td class="text-center">
+                                    ${settingsBadge}
                                 </td>
                                 <td class="text-center">
                                     <div class="btn-group btn-group-sm">
@@ -652,6 +772,19 @@
         }
 
         function attachStockActionHandlers() {
+            // Settings badge handlers
+            document.querySelectorAll('.settings-badge').forEach(badge => {
+                badge.addEventListener('click', () => {
+                    const symbol = badge.dataset.code;
+                    const name = badge.dataset.name;
+                    const quantity = badge.dataset.quantity || '';
+                    const note = badge.dataset.note || '';
+                    const active = badge.dataset.active !== 'false';
+
+                    openSettingsModal(symbol, name, quantity, note, active);
+                });
+            });
+
             document.querySelectorAll('.stock-analyze-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     const analysisId = btn.dataset.id;
@@ -862,6 +995,152 @@
                 linkElement.classList.add('d-none');
             }
         }
+
+        // ===== Symbol Settings Modal Functions =====
+
+        function openSettingsModal(symbol, name, quantity, note, active) {
+            const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('symbolSettingsModal'));
+
+            document.getElementById('settings-symbol').value = symbol;
+            document.getElementById('settings-stock-info').innerHTML = `<strong>${name}</strong> <small class="text-muted">(${symbol})</small>`;
+            document.getElementById('settings-quantity').value = quantity || '';
+            document.getElementById('settings-note').value = note || '';
+            document.getElementById('settings-active').checked = active;
+
+            // Show/hide delete button based on whether settings exist
+            const deleteBtn = document.getElementById('settings-delete-btn');
+            if (quantity) {
+                deleteBtn.style.display = 'block';
+            } else {
+                deleteBtn.style.display = 'none';
+            }
+
+            // Hide estimated cost section initially
+            document.getElementById('estimated-cost-section').style.display = 'none';
+
+            // Load estimated cost if analysis exists
+            loadEstimatedCost(symbol);
+
+            modal.show();
+        }
+
+        async function loadEstimatedCost(symbol) {
+            try {
+                const response = await fetch(`/api/symbol-settings/${symbol}/estimated-cost`);
+                if (response.ok) {
+                    const data = await response.json();
+                    displayEstimatedCost(data);
+                }
+            } catch (error) {
+                console.log('No estimated cost available:', error);
+            }
+        }
+
+        function displayEstimatedCost(data) {
+            const section = document.getElementById('estimated-cost-section');
+            const details = document.getElementById('estimated-cost-details');
+
+            let pricesHtml = data.buy_prices.map(p => `
+                <div class="d-flex justify-content-between small mb-1">
+                    <span>${p.price_name.replace(/_/g, ' ')}</span>
+                    <span>$${p.price.toFixed(2)} × ${p.quantity}주 = $${p.cost.toFixed(2)}</span>
+                </div>
+            `).join('');
+
+            details.innerHTML = `
+                ${pricesHtml}
+                <hr class="my-2" style="border-color: rgba(255,255,255,0.3);">
+                <div class="d-flex justify-content-between fw-bold">
+                    <span>총 예상 비용</span>
+                    <span>$${data.total_cost.toFixed(2)} (${data.total_quantity}주)</span>
+                </div>
+            `;
+
+            section.style.display = 'block';
+        }
+
+        async function saveSettings() {
+            const symbol = document.getElementById('settings-symbol').value;
+            const quantity = parseFloat(document.getElementById('settings-quantity').value);
+            const note = document.getElementById('settings-note').value;
+            const isActive = document.getElementById('settings-active').checked;
+
+            if (!quantity || quantity < 1) {
+                showAlert('매수 수량을 1 이상 입력해주세요.', 'warning');
+                return;
+            }
+
+            try {
+                const checkResponse = await fetch(`/api/symbol-settings/${symbol}`);
+                const settingsExist = checkResponse.ok;
+
+                let response;
+                if (settingsExist) {
+                    response = await fetch(`/api/symbol-settings/${symbol}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            buy_quantity_per_order: quantity,
+                            note: note || null,
+                            is_active: isActive
+                        })
+                    });
+                } else {
+                    response = await fetch('/api/symbol-settings/', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            symbol: symbol,
+                            instrument_type: 'equity_us',
+                            buy_quantity_per_order: quantity,
+                            exchange_code: 'NASD',
+                            note: note || null
+                        })
+                    });
+                }
+
+                if (response.ok) {
+                    showAlert(`✅ ${symbol} 설정이 저장되었습니다.`, 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('symbolSettingsModal')).hide();
+                    loadMyStocks();
+                } else {
+                    const error = await response.json();
+                    showAlert(`❌ 저장 실패: ${error.detail || '알 수 없는 오류'}`, 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ 저장 중 오류 발생: ${error.message}`, 'danger');
+            }
+        }
+
+        async function deleteSettings() {
+            const symbol = document.getElementById('settings-symbol').value;
+
+            if (!confirm(`${symbol} 종목의 매수 설정을 삭제하시겠습니까?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/symbol-settings/${symbol}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok || response.status === 204) {
+                    showAlert(`✅ ${symbol} 설정이 삭제되었습니다.`, 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('symbolSettingsModal')).hide();
+                    loadMyStocks();
+                } else {
+                    showAlert('❌ 삭제 실패', 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ 삭제 중 오류 발생: ${error.message}`, 'danger');
+            }
+        }
+
+        // Attach modal button handlers
+        document.getElementById('settings-save-btn').addEventListener('click', saveSettings);
+        document.getElementById('settings-delete-btn').addEventListener('click', deleteSettings);
+
+        // ===== Alert Function =====
 
         function showAlert(message, type) {
             const alertArea = document.getElementById('alert-area');

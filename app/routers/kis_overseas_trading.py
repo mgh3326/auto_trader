@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.templates import templates
 from app.services.kis import KISClient
 from app.services.stock_info_service import StockAnalysisService
+from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/kis-overseas-trading", tags=["KIS Overseas Trading"])
@@ -50,16 +51,25 @@ async def get_my_overseas_stocks(
         
         # 2. DB에서 최신 분석 결과 조회
         stock_service = StockAnalysisService(db)
-        
+        settings_service = SymbolTradeSettingsService(db)
+
         # 종목 코드 리스트 추출
         codes = [stock.get("ovrs_pdno") for stock in my_stocks]
         analysis_map = await stock_service.get_latest_analysis_results_for_coins(codes)
-        
+
+        # 3. 종목별 설정 조회
+        settings_map = {}
+        for code in codes:
+            settings_obj = await settings_service.get_by_symbol(code)
+            if settings_obj and settings_obj.is_active:
+                settings_map[code] = settings_obj
+
         processed_stocks = []
         for stock in my_stocks:
             code = stock.get("ovrs_pdno")
             analysis = analysis_map.get(code)
-            
+            symbol_settings = settings_map.get(code)
+
             processed_stocks.append({
                 "code": code,
                 "name": stock.get("ovrs_item_name"),
@@ -73,6 +83,10 @@ async def get_my_overseas_stocks(
                 "last_analysis_at": analysis.created_at.isoformat() if analysis and analysis.created_at else None,
                 "last_analysis_decision": analysis.decision if analysis else None,
                 "analysis_confidence": analysis.confidence if analysis else None,
+                # Symbol trade settings
+                "settings_quantity": float(symbol_settings.buy_quantity_per_order) if symbol_settings else None,
+                "settings_note": symbol_settings.note if symbol_settings else None,
+                "settings_active": symbol_settings.is_active if symbol_settings else None,
             })
 
         return {
