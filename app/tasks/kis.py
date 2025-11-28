@@ -17,6 +17,10 @@ from app.services.kis_trading_service import (
 ProgressCallback = Optional[Callable[[Dict[str, str]], None]]
 logger = logging.getLogger(__name__)
 
+STATUS_FETCHING_HOLDINGS = "보유 주식 조회 중..."
+NO_DOMESTIC_STOCKS_MESSAGE = "보유 중인 국내 주식이 없습니다."
+NO_OVERSEAS_STOCKS_MESSAGE = "보유 중인 해외 주식이 없습니다."
+
 
 # --- Domestic Stocks Tasks ---
 
@@ -89,11 +93,11 @@ def run_analysis_for_my_domestic_stocks(self) -> dict:
         analyzer = KISAnalyzer()
         
         try:
-            self.update_state(state='PROGRESS', meta={'status': '보유 주식 조회 중...', 'current': 0, 'total': 0})
+            self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
             
             my_stocks = await kis.fetch_my_stocks()
             if not my_stocks:
-                return {'status': 'completed', 'analyzed_count': 0, 'total_count': 0, 'message': '보유 중인 국내 주식이 없습니다.', 'results': []}
+                return {'status': 'completed', 'analyzed_count': 0, 'total_count': 0, 'message': NO_DOMESTIC_STOCKS_MESSAGE, 'results': []}
 
             total_count = len(my_stocks)
             results = []
@@ -114,8 +118,8 @@ def run_analysis_for_my_domestic_stocks(self) -> dict:
                 )
                 
                 try:
-                    _, model = await analyzer.analyze_stock_json(name)
-                    results.append({'name': name, 'code': code, 'success': True, 'model': model})
+                    await analyzer.analyze_stock_json(name)
+                    results.append({'name': name, 'code': code, 'success': True})
                 except Exception as e:
                     results.append({'name': name, 'code': code, 'success': False, 'error': str(e)})
 
@@ -141,7 +145,7 @@ def execute_domestic_buy_orders(self) -> dict:
     async def _run() -> dict:
         kis = KISClient()
         try:
-            self.update_state(state='PROGRESS', meta={'status': '보유 주식 조회 중...', 'current': 0, 'total': 0})
+            self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
             
             # 보유 주식 조회 (평단가 확인용)
             my_stocks = await kis.fetch_my_stocks()
@@ -151,7 +155,7 @@ def execute_domestic_buy_orders(self) -> dict:
             # 신규 매수는 별도 로직 필요 (관심 종목 등). 현재는 보유 종목 추가 매수만 구현.
             
             if not my_stocks:
-                return {'status': 'completed', 'success_count': 0, 'total_count': 0, 'message': '보유 중인 국내 주식이 없습니다.', 'results': []}
+                return {'status': 'completed', 'success_count': 0, 'total_count': 0, 'message': NO_DOMESTIC_STOCKS_MESSAGE, 'results': []}
 
             total_count = len(my_stocks)
             results = []
@@ -199,11 +203,11 @@ def execute_domestic_sell_orders(self) -> dict:
     async def _run() -> dict:
         kis = KISClient()
         try:
-            self.update_state(state='PROGRESS', meta={'status': '보유 주식 조회 중...', 'current': 0, 'total': 0})
+            self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
             
             my_stocks = await kis.fetch_my_stocks()
             if not my_stocks:
-                return {'status': 'completed', 'success_count': 0, 'total_count': 0, 'message': '보유 중인 국내 주식이 없습니다.', 'results': []}
+                return {'status': 'completed', 'success_count': 0, 'total_count': 0, 'message': NO_DOMESTIC_STOCKS_MESSAGE, 'results': []}
 
             total_count = len(my_stocks)
             results = []
@@ -254,11 +258,11 @@ def run_per_domestic_stock_automation(self) -> dict:
         analyzer = KISAnalyzer() # For analysis step
         
         try:
-            self.update_state(state='PROGRESS', meta={'status': '보유 주식 조회 중...', 'current': 0, 'total': 0})
+            self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
             
             my_stocks = await kis.fetch_my_stocks()
             if not my_stocks:
-                return {'status': 'completed', 'message': '보유 중인 국내 주식이 없습니다.', 'results': []}
+                return {'status': 'completed', 'message': NO_DOMESTIC_STOCKS_MESSAGE, 'results': []}
 
             total_count = len(my_stocks)
             results = []
@@ -495,11 +499,11 @@ def run_analysis_for_my_overseas_stocks(self) -> dict:
         analyzer = YahooAnalyzer()
         
         try:
-            self.update_state(state='PROGRESS', meta={'status': '보유 주식 조회 중...', 'current': 0, 'total': 0})
+            self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
             
             my_stocks = await kis.fetch_my_overseas_stocks()
             if not my_stocks:
-                return {'status': 'completed', 'analyzed_count': 0, 'total_count': 0, 'message': '보유 중인 해외 주식이 없습니다.', 'results': []}
+                return {'status': 'completed', 'analyzed_count': 0, 'total_count': 0, 'message': NO_OVERSEAS_STOCKS_MESSAGE, 'results': []}
 
             total_count = len(my_stocks)
             results = []
@@ -521,8 +525,8 @@ def run_analysis_for_my_overseas_stocks(self) -> dict:
                 
                 try:
                     # 해외주식은 심볼로 분석
-                    _, model = await analyzer.analyze_stock_json(symbol)
-                    results.append({'name': name, 'symbol': symbol, 'success': True, 'model': model})
+                    await analyzer.analyze_stock_json(symbol)
+                    results.append({'name': name, 'symbol': symbol, 'success': True})
                 except Exception as e:
                     results.append({'name': name, 'symbol': symbol, 'success': False, 'error': str(e)})
 
@@ -548,11 +552,11 @@ def execute_overseas_buy_orders(self) -> dict:
     async def _run() -> dict:
         kis = KISClient()
         try:
-            self.update_state(state='PROGRESS', meta={'status': '보유 주식 조회 중...', 'current': 0, 'total': 0})
+            self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
             
             my_stocks = await kis.fetch_my_overseas_stocks()
             if not my_stocks:
-                return {'status': 'completed', 'success_count': 0, 'total_count': 0, 'message': '보유 중인 해외 주식이 없습니다.', 'results': []}
+                return {'status': 'completed', 'success_count': 0, 'total_count': 0, 'message': NO_OVERSEAS_STOCKS_MESSAGE, 'results': []}
 
             total_count = len(my_stocks)
             results = []
@@ -600,11 +604,11 @@ def execute_overseas_sell_orders(self) -> dict:
     async def _run() -> dict:
         kis = KISClient()
         try:
-            self.update_state(state='PROGRESS', meta={'status': '보유 주식 조회 중...', 'current': 0, 'total': 0})
+            self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
             
             my_stocks = await kis.fetch_my_overseas_stocks()
             if not my_stocks:
-                return {'status': 'completed', 'success_count': 0, 'total_count': 0, 'message': '보유 중인 해외 주식이 없습니다.', 'results': []}
+                return {'status': 'completed', 'success_count': 0, 'total_count': 0, 'message': NO_OVERSEAS_STOCKS_MESSAGE, 'results': []}
 
             total_count = len(my_stocks)
             results = []
@@ -656,11 +660,11 @@ def run_per_overseas_stock_automation(self) -> dict:
         analyzer = YahooAnalyzer()
         
         try:
-            self.update_state(state='PROGRESS', meta={'status': '보유 주식 조회 중...', 'current': 0, 'total': 0})
+            self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
             
             my_stocks = await kis.fetch_my_overseas_stocks()
             if not my_stocks:
-                return {'status': 'completed', 'message': '보유 중인 해외 주식이 없습니다.', 'results': []}
+                return {'status': 'completed', 'message': NO_OVERSEAS_STOCKS_MESSAGE, 'results': []}
 
             total_count = len(my_stocks)
             results = []

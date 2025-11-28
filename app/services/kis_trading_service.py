@@ -5,8 +5,9 @@ from app.models.analysis import StockAnalysisResult
 from app.core.config import settings
 
 # KIS 매수 설정 (추후 설정 파일로 이동 가능)
-KIS_BUY_AMOUNT = 100000  # 10만원
-KIS_MIN_BALANCE = 100000 # 최소 예수금
+KIS_BUY_AMOUNT = 100000  # 국내 주식 매수 금액 (KRW)
+KIS_OVERSEAS_BUY_AMOUNT_USD = 100  # 해외 주식 매수 금액 (USD)
+KIS_MIN_BALANCE = 100000  # 최소 예수금
 
 async def process_kis_domestic_buy_orders_with_analysis(
     kis_client: KISClient,
@@ -163,7 +164,7 @@ async def process_kis_overseas_buy_orders_with_analysis(
 
         success_count = 0
         for price in valid_prices:
-            quantity = int(KIS_BUY_AMOUNT / price)
+            quantity = int(KIS_OVERSEAS_BUY_AMOUNT_USD / price)
             if quantity < 1:
                 continue
 
