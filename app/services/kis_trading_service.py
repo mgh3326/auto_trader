@@ -2,7 +2,6 @@ import asyncio
 from typing import Dict, Any, List, Optional, Tuple
 from app.services.kis import KISClient
 from app.models.analysis import StockAnalysisResult
-from app.analysis.prompt import format_decimal
 from app.core.config import settings
 
 # KIS 매수 설정 (추후 설정 파일로 이동 가능)
@@ -59,10 +58,14 @@ async def process_kis_domestic_buy_orders_with_analysis(
 
         # 3. 가격 정보 확인
         buy_prices = []
-        if analysis.appropriate_buy_min is not None: buy_prices.append(("appropriate_buy_min", analysis.appropriate_buy_min))
-        if analysis.appropriate_buy_max is not None: buy_prices.append(("appropriate_buy_max", analysis.appropriate_buy_max))
-        if analysis.buy_hope_min is not None: buy_prices.append(("buy_hope_min", analysis.buy_hope_min))
-        if analysis.buy_hope_max is not None: buy_prices.append(("buy_hope_max", analysis.buy_hope_max))
+        if analysis.appropriate_buy_min is not None:
+            buy_prices.append(("appropriate_buy_min", analysis.appropriate_buy_min))
+        if analysis.appropriate_buy_max is not None:
+            buy_prices.append(("appropriate_buy_max", analysis.appropriate_buy_max))
+        if analysis.buy_hope_min is not None:
+            buy_prices.append(("buy_hope_min", analysis.buy_hope_min))
+        if analysis.buy_hope_max is not None:
+            buy_prices.append(("buy_hope_max", analysis.buy_hope_max))
 
         if not buy_prices:
             return {
@@ -143,10 +146,14 @@ async def process_kis_overseas_buy_orders_with_analysis(
             return {'success': False, 'message': "분석 결과 없음", 'orders_placed': 0}
 
         buy_prices = []
-        if analysis.appropriate_buy_min: buy_prices.append(analysis.appropriate_buy_min)
-        if analysis.appropriate_buy_max: buy_prices.append(analysis.appropriate_buy_max)
-        if analysis.buy_hope_min: buy_prices.append(analysis.buy_hope_min)
-        if analysis.buy_hope_max: buy_prices.append(analysis.buy_hope_max)
+        if analysis.appropriate_buy_min:
+            buy_prices.append(analysis.appropriate_buy_min)
+        if analysis.appropriate_buy_max:
+            buy_prices.append(analysis.appropriate_buy_max)
+        if analysis.buy_hope_min:
+            buy_prices.append(analysis.buy_hope_min)
+        if analysis.buy_hope_max:
+            buy_prices.append(analysis.buy_hope_max)
 
         threshold_price = avg_buy_price * 0.99 if avg_buy_price > 0 else float('inf')
         valid_prices = [p for p in buy_prices if p < threshold_price and p < current_price]
@@ -157,7 +164,8 @@ async def process_kis_overseas_buy_orders_with_analysis(
         success_count = 0
         for price in valid_prices:
             quantity = int(KIS_BUY_AMOUNT / price)
-            if quantity < 1: continue
+            if quantity < 1:
+                continue
 
             res = await kis_client.order_overseas_stock(
                 symbol=symbol,
@@ -197,10 +205,14 @@ async def process_kis_domestic_sell_orders_with_analysis(
             return {'success': False, 'message': "분석 결과 없음", 'orders_placed': 0}
 
         sell_prices = []
-        if analysis.appropriate_sell_min: sell_prices.append(analysis.appropriate_sell_min)
-        if analysis.appropriate_sell_max: sell_prices.append(analysis.appropriate_sell_max)
-        if analysis.sell_target_min: sell_prices.append(analysis.sell_target_min)
-        if analysis.sell_target_max: sell_prices.append(analysis.sell_target_max)
+        if analysis.appropriate_sell_min:
+            sell_prices.append(analysis.appropriate_sell_min)
+        if analysis.appropriate_sell_max:
+            sell_prices.append(analysis.appropriate_sell_max)
+        if analysis.sell_target_min:
+            sell_prices.append(analysis.sell_target_min)
+        if analysis.sell_target_max:
+            sell_prices.append(analysis.sell_target_max)
 
         if not sell_prices:
             return {'success': False, 'message': "매도 가격 정보 없음", 'orders_placed': 0}
@@ -246,7 +258,8 @@ async def process_kis_domestic_sell_orders_with_analysis(
             is_last = (i == len(valid_prices) - 1)
             qty = remaining_qty if is_last else qty_per_order
             
-            if qty < 1: continue
+            if qty < 1:
+                continue
             
             res = await kis_client.order_korea_stock(
                 symbol=symbol,
@@ -287,10 +300,14 @@ async def process_kis_overseas_sell_orders_with_analysis(
             return {'success': False, 'message': "분석 결과 없음", 'orders_placed': 0}
 
         sell_prices = []
-        if analysis.appropriate_sell_min: sell_prices.append(analysis.appropriate_sell_min)
-        if analysis.appropriate_sell_max: sell_prices.append(analysis.appropriate_sell_max)
-        if analysis.sell_target_min: sell_prices.append(analysis.sell_target_min)
-        if analysis.sell_target_max: sell_prices.append(analysis.sell_target_max)
+        if analysis.appropriate_sell_min:
+            sell_prices.append(analysis.appropriate_sell_min)
+        if analysis.appropriate_sell_max:
+            sell_prices.append(analysis.appropriate_sell_max)
+        if analysis.sell_target_min:
+            sell_prices.append(analysis.sell_target_min)
+        if analysis.sell_target_max:
+            sell_prices.append(analysis.sell_target_max)
 
         if not sell_prices:
             return {'success': False, 'message': "매도 가격 정보 없음", 'orders_placed': 0}
@@ -337,7 +354,8 @@ async def process_kis_overseas_sell_orders_with_analysis(
             is_last = (i == len(valid_prices) - 1)
             qty = remaining_qty if is_last else qty_per_order
             
-            if qty < 1: continue
+            if qty < 1:
+                continue
             
             res = await kis_client.order_overseas_stock(
                 symbol=symbol,
@@ -357,4 +375,3 @@ async def process_kis_overseas_sell_orders_with_analysis(
             'message': f"{success_count}건 분할 매도 주문 완료",
             'orders_placed': success_count
         }
-

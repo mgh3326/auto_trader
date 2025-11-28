@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from typing import Callable, Dict, List, Optional
 
 from celery import shared_task
@@ -14,6 +15,7 @@ from app.services.kis_trading_service import (
 )
 
 ProgressCallback = Optional[Callable[[Dict[str, str]], None]]
+logger = logging.getLogger(__name__)
 
 
 # --- Domestic Stocks Tasks ---
@@ -38,7 +40,7 @@ async def _analyze_domestic_stock_async(code: str, progress_cb: ProgressCallback
                 "step": "analysis",
             })
 
-        result, model = await analyzer.analyze_stock_json(name)
+        result, _ = await analyzer.analyze_stock_json(name)
 
         if result is None:
             return {
@@ -61,7 +63,7 @@ async def _analyze_domestic_stock_async(code: str, progress_cb: ProgressCallback
                     market_type="국내주식",
                 )
             except Exception as notify_error:
-                print(f"⚠️ 텔레그램 알림 전송 실패: {notify_error}")
+                logger.warning("⚠️ 텔레그램 알림 전송 실패: %s", notify_error)
 
         return {
             "status": "completed",
@@ -273,7 +275,7 @@ def run_per_domestic_stock_automation(self) -> dict:
                 # 1. 분석
                 self.update_state(state='PROGRESS', meta={'status': f'{name} 분석 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 try:
-                    _, model = await analyzer.analyze_stock_json(name)
+                    await analyzer.analyze_stock_json(name)
                     stock_steps.append({'step': '분석', 'result': {'success': True, 'message': '분석 완료'}})
                 except Exception as e:
                     stock_steps.append({'step': '분석', 'result': {'success': False, 'error': str(e)}})
@@ -445,7 +447,7 @@ async def _analyze_overseas_stock_async(symbol: str, progress_cb: ProgressCallba
                 "step": "analysis",
             })
 
-        result, model = await analyzer.analyze_stock_json(symbol)
+        result, _ = await analyzer.analyze_stock_json(symbol)
 
         if result is None:
             return {
@@ -467,7 +469,7 @@ async def _analyze_overseas_stock_async(symbol: str, progress_cb: ProgressCallba
                     market_type="해외주식",
                 )
             except Exception as notify_error:
-                print(f"⚠️ 텔레그램 알림 전송 실패: {notify_error}")
+                logger.warning("⚠️ 텔레그램 알림 전송 실패: %s", notify_error)
 
         return {
             "status": "completed",
@@ -675,7 +677,7 @@ def run_per_overseas_stock_automation(self) -> dict:
                 # 1. 분석
                 self.update_state(state='PROGRESS', meta={'status': f'{symbol} 분석 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 try:
-                    _, model = await analyzer.analyze_stock_json(symbol)
+                    await analyzer.analyze_stock_json(symbol)
                     stock_steps.append({'step': '분석', 'result': {'success': True, 'message': '분석 완료'}})
                 except Exception as e:
                     stock_steps.append({'step': '분석', 'result': {'success': False, 'error': str(e)}})

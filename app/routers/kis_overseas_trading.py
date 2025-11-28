@@ -84,7 +84,7 @@ async def get_my_overseas_stocks(
 
     except Exception as e:
         logger.error(f"Error in get_my_overseas_stocks: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 from app.core.celery_app import celery_app
@@ -101,7 +101,7 @@ async def analyze_my_overseas_stocks():
             "task_id": async_result.id
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/api/analyze-task/{task_id}")
@@ -140,7 +140,7 @@ async def execute_buy_orders():
             "task_id": async_result.id
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/api/sell-orders")
@@ -154,32 +154,32 @@ async def execute_sell_orders():
             "task_id": async_result.id
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/api/automation/per-stock")
-async def run_per_stock_automation(request: Request):
+async def run_per_stock_automation():
     """보유 종목별 자동 실행 (분석 -> 매수 -> 매도)"""
     task = celery_app.send_task("kis.run_per_overseas_stock_automation")
     return {"success": True, "message": "종목별 자동 실행이 시작되었습니다.", "task_id": task.id}
 
 
 @router.post("/api/analyze-stock/{symbol}")
-async def analyze_stock(symbol: str, request: Request):
+async def analyze_stock(symbol: str):
     """단일 종목 분석 요청"""
     task = celery_app.send_task("kis.analyze_overseas_stock_task", args=[symbol])
     return {"success": True, "message": f"{symbol} 분석 요청 완료", "task_id": task.id}
 
 
 @router.post("/api/buy-order/{symbol}")
-async def buy_order(symbol: str, request: Request):
+async def buy_order(symbol: str):
     """단일 종목 매수 요청"""
     task = celery_app.send_task("kis.execute_overseas_buy_order_task", args=[symbol])
     return {"success": True, "message": f"{symbol} 매수 요청 완료", "task_id": task.id}
 
 
 @router.post("/api/sell-order/{symbol}")
-async def sell_order(symbol: str, request: Request):
+async def sell_order(symbol: str):
     """단일 종목 매도 요청"""
     task = celery_app.send_task("kis.execute_overseas_sell_order_task", args=[symbol])
     return {"success": True, "message": f"{symbol} 매도 요청 완료", "task_id": task.id}
