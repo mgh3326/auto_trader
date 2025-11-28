@@ -1,20 +1,56 @@
 {% if user %}
-<nav class="navbar">
-    <div class="navbar-content">
-        <a href="/" class="navbar-brand">🚀 Auto Trader</a>
-        <div class="navbar-menu">
-            <a href="/analysis-json/">분석 결과</a>
-            <a href="/stock-latest/">최신 종목</a>
-            <a href="/upbit-trading/">Upbit 거래</a>
-            <a href="/kis-domestic-trading/">KIS 국내</a>
-            <a href="/kis-overseas-trading/">KIS 해외</a>
-            {% if user and user.role and user.role.value == 'admin' %}
-            <a href="/admin/users" style="color: #dc3545; font-weight: bold;">👥 관리자</a>
-            {% endif %}
-            <div class="user-info">
-                <span>{{ user.username }}</span>
-                <span class="user-role">{{ user.role.value if user.role else 'N/A' }}</span>
-                <a href="/web-auth/logout" class="btn-logout">로그아웃</a>
+<nav class="navbar navbar-expand-lg navbar-light bg-light shadow-sm mb-4">
+    <div class="container-fluid px-4">
+        <a class="navbar-brand fw-bold text-primary" href="/">
+            <i class="bi bi-rocket-takeoff-fill"></i> Auto Trader
+        </a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+            aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                <li class="nav-item">
+                    <a class="nav-link" href="/analysis-json/">
+                        <i class="bi bi-bar-chart-line"></i> 분석 결과
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="/stock-latest/">
+                        <i class="bi bi-lightning-charge"></i> 최신 종목
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="/upbit-trading/">
+                        <i class="bi bi-currency-bitcoin"></i> Upbit 거래
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="/kis-domestic-trading/">
+                        <i class="bi bi-graph-up-arrow"></i> KIS 국내
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="/kis-overseas-trading/">
+                        <i class="bi bi-globe"></i> KIS 해외
+                    </a>
+                </li>
+                {% if user and user.role and user.role.value == 'admin' %}
+                <li class="nav-item">
+                    <a class="nav-link text-danger fw-bold" href="/admin/users">
+                        <i class="bi bi-people-fill"></i> 관리자
+                    </a>
+                </li>
+                {% endif %}
+            </ul>
+            <div class="d-flex align-items-center gap-3">
+                <div class="d-flex align-items-center gap-2">
+                    <span class="fw-medium">{{ user.username }}</span>
+                    <span class="badge bg-primary rounded-pill">{{ user.role.value if user.role else 'N/A' }}</span>
+                </div>
+                <a href="/web-auth/logout" class="btn btn-outline-danger btn-sm">
+                    <i class="bi bi-box-arrow-right"></i> 로그아웃
+                </a>
             </div>
         </div>
     </div>

@@ -20,13 +20,25 @@ router = APIRouter(prefix="/stock-latest", tags=["Stock Latest Analysis"])
 @router.get("/", response_class=HTMLResponse)
 async def stock_latest_dashboard(request: Request):
     """종목별 최신 분석 결과 대시보드 페이지"""
-    return templates.TemplateResponse("stock_latest_dashboard.html", {"request": request})
+    return templates.TemplateResponse(
+        "stock_latest_dashboard.html",
+        {
+            "request": request,
+            "user": getattr(request.state, "user", None)
+        }
+    )
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def stock_latest_dashboard_page(request: Request):
     """종목별 최신 분석 결과 대시보드 HTML 페이지"""
-    return templates.TemplateResponse("stock_latest_dashboard.html", {"request": request})
+    return templates.TemplateResponse(
+        "stock_latest_dashboard.html",
+        {
+            "request": request,
+            "user": getattr(request.state, "user", None)
+        }
+    )
 
 
 @router.get("/api/latest-results")
