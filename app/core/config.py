@@ -179,6 +179,9 @@ class Settings(BaseSettings):
     # Environment setting for cookie security
     ENVIRONMENT: str = "development"  # development, production
 
+    # Logging
+    LOG_LEVEL: str = "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+
     # API Documentation
     DOCS_ENABLED: bool = True  # 개발 환경: True, 프로덕션: False
 

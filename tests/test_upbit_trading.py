@@ -54,6 +54,13 @@ async def test_get_my_coins_success(monkeypatch):
         async def get_latest_analysis_results_for_coins(self, markets):
             return {market: None for market in markets}
 
+    class DummySettingsService:
+        def __init__(self, db):
+            self.db = db
+
+        async def get_by_symbol(self, symbol):
+            return None  # No settings configured
+
     monkeypatch.setattr(
         "data.coins_info.upbit_pairs.prime_upbit_constants",
         fake_prime,
@@ -85,6 +92,11 @@ async def test_get_my_coins_success(monkeypatch):
         upbit_trading,
         "StockAnalysisService",
         DummyAnalysisService,
+    )
+    monkeypatch.setattr(
+        upbit_trading,
+        "SymbolTradeSettingsService",
+        DummySettingsService,
     )
 
     response = await upbit_trading.get_my_coins(db=object())

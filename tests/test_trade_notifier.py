@@ -74,7 +74,7 @@ def test_format_buy_notification(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💰 *매수 주문 체결*" in message
+    assert "💰 *매수 주문 접수*" in message
     assert "비트코인 (BTC)" in message
     assert "3건" in message
     assert "300,000원" in message
@@ -94,7 +94,7 @@ def test_format_buy_notification_without_details(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💰 *매수 주문 체결*" in message
+    assert "💰 *매수 주문 접수*" in message
     assert "비트코인 (BTC)" in message
     assert "2건" in message
     assert "200,000원" in message
@@ -114,7 +114,7 @@ def test_format_sell_notification(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💸 *매도 주문 체결*" in message
+    assert "💸 *매도 주문 접수*" in message
     assert "이더리움 (ETH)" in message
     assert "2건" in message
     assert "0.5" in message
@@ -135,7 +135,7 @@ def test_format_sell_notification_without_volumes(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💸 *매도 주문 체결*" in message
+    assert "💸 *매도 주문 접수*" in message
     assert "이더리움 (ETH)" in message
     assert "*매도 가격대:*" in message
     assert "2,000,000.00원" in message

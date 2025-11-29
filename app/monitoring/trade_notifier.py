@@ -101,7 +101,7 @@ class TradeNotifier:
         timestamp = format_datetime()
 
         parts = [
-            "💰 *매수 주문 체결*",
+            "💰 *매수 주문 접수*",
             f"🕒 {timestamp}",
             "",
             f"*종목:* {korean_name} ({symbol})",
@@ -154,7 +154,7 @@ class TradeNotifier:
         timestamp = format_datetime()
 
         parts = [
-            "💸 *매도 주문 체결*",
+            "💸 *매도 주문 접수*",
             f"🕒 {timestamp}",
             "",
             f"*종목:* {korean_name} ({symbol})",

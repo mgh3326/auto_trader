@@ -14,7 +14,7 @@ from app.core.db import AsyncSessionLocal
 from app.core.model_rate_limiter import ModelRateLimiter
 from app.models.prompt import PromptResult
 from app.models.analysis import StockInfo, StockAnalysisResult
-from app.services.stock_info_service import create_stock_if_not_exists
+# from app.services.stock_info_service import create_stock_if_not_exists
 GEMINI_TIMEOUT = 3 * 60 * 1000 # 3 minutes
 
 class Analyzer:
@@ -328,6 +328,7 @@ class Analyzer:
     ) -> None:
         """JSON 분석 결과를 DB에 저장"""
         async with AsyncSessionLocal() as db:
+            from app.services.stock_info_service import create_stock_if_not_exists
             # 1. 주식 정보가 없으면 생성 (또는 기존 정보 조회)
             stock_info = await create_stock_if_not_exists(
                 symbol=symbol,
