@@ -1316,6 +1316,8 @@ class KISClient:
 
         js = r.json()
 
+        logging.debug(f"통합증거금 API 응답: {js}")
+
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()

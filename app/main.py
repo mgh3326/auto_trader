@@ -39,8 +39,21 @@ logger = logging.getLogger(__name__)
 _redis_client: Optional[Redis] = None
 
 
+def configure_logging() -> None:
+    """Configure logging based on settings."""
+    log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    # uvicorn 로거도 동일 레벨로 설정
+    logging.getLogger("uvicorn").setLevel(log_level)
+    logging.getLogger("uvicorn.access").setLevel(log_level)
+
+
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
+    configure_logging()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
