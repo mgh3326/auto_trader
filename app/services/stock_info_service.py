@@ -435,6 +435,10 @@ async def process_buy_orders_with_analysis(symbol: str, current_price: float, av
 async def _place_multiple_buy_orders_by_analysis(market: str, current_price: float, avg_buy_price: float, analysis) -> Dict[str, Any]:
     """분석 결과의 4개 가격 값 중 평균 매수가보다 1% 낮고 현재가보다 낮은 것들을 각각 설정된 금액/수량씩 매수합니다.
 
+    암호화폐의 경우:
+    - 종목별 설정이 있으면 설정된 금액 사용
+    - 설정이 없으면 사용자 기본 설정의 crypto_default_buy_amount 사용 (기본 10,000원)
+
     Returns
     -------
     Dict[str, Any]
@@ -448,26 +452,36 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
     from app.services import upbit
     from app.core.config import settings
     from app.core.db import AsyncSessionLocal
-    from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
+    from app.services.symbol_trade_settings_service import (
+        SymbolTradeSettingsService,
+        UserTradeDefaultsService,
+        get_buy_amount_for_crypto,
+    )
 
     # 코인 코드 추출 (KRW-BTC -> BTC)
     currency = market.replace("KRW-", "")
 
-    # 종목 설정 조회
+    # 종목 설정 및 사용자 기본 설정 조회
     async with AsyncSessionLocal() as db:
         settings_service = SymbolTradeSettingsService(db)
         symbol_settings = await settings_service.get_by_symbol(currency)
 
-    use_quantity_mode = symbol_settings and symbol_settings.is_active
-    buy_quantity = float(symbol_settings.buy_quantity_per_order) if use_quantity_mode else None
+        # 종목별 설정이 있으면 그 금액 사용, 없으면 사용자 기본값 또는 시스템 기본값(10,000원) 사용
+        if symbol_settings and symbol_settings.is_active:
+            buy_amount = float(symbol_settings.buy_quantity_per_order)
+            use_settings_mode = True
+        else:
+            # 암호화폐는 설정이 없어도 기본 금액으로 매수
+            buy_amount = await get_buy_amount_for_crypto(db, currency, default_amount=10000)
+            use_settings_mode = False
 
     print(f"📊 {market} 분석 기반 다중 매수 주문 처리")
     print(f"현재가: {format_decimal(current_price, '₩')}원")
     print(f"평균 매수가: {format_decimal(avg_buy_price, '₩')}원")
-    if use_quantity_mode:
-        print(f"매수 수량: {buy_quantity} (설정된 수량)")
+    if use_settings_mode:
+        print(f"매수 금액: {format_decimal(buy_amount, '₩')}원 (종목 설정)")
     else:
-        print(f"매수 단위: {format_decimal(settings.upbit_buy_amount, '₩')}원")
+        print(f"매수 금액: {format_decimal(buy_amount, '₩')}원 (기본값)")
 
     # 1% 룰 기준가 계산
     threshold_price = avg_buy_price * 0.99
@@ -532,30 +546,21 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
 
     print(f"\n🎯 총 {len(valid_prices)}개 가격에서 매수 주문 실행:")
 
-    # 각 가격별로 매수 주문 (수량 모드 또는 금액 모드)
+    # 각 가격별로 금액 기반 매수 주문 실행
     success_count = 0
     total_orders = len(valid_prices)
-    total_amount = 0.0
+    total_amount_placed = 0.0
 
     for i, (price_name, buy_price) in enumerate(valid_prices, 1):
         print(f"\n[{i}/{total_orders}] {price_name} - {format_decimal(buy_price, '₩')}원")
 
-        if use_quantity_mode:
-            # 수량 기반 매수
-            result = await _place_single_buy_order_by_quantity(
-                market, buy_quantity, buy_price, price_name
-            )
-            if result:
-                success_count += 1
-                total_amount += buy_quantity * buy_price
-        else:
-            # 금액 기반 매수 (기존 방식)
-            result = await _place_single_buy_order(
-                market, settings.upbit_buy_amount, buy_price, price_name
-            )
-            if result:
-                success_count += 1
-                total_amount += settings.upbit_buy_amount
+        # 금액 기반 매수 (암호화폐)
+        result = await _place_single_buy_order(
+            market, buy_amount, buy_price, price_name
+        )
+        if result:
+            success_count += 1
+            total_amount_placed += buy_amount
 
         # 주문 간 약간의 지연 (API 제한 고려)
         if i < total_orders:
@@ -569,7 +574,7 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
             'success': True,
             'message': f"{success_count}개 매수 주문 성공",
             'orders_placed': success_count,
-            'total_amount': total_amount
+            'total_amount': total_amount_placed
         }
     else:
         return {

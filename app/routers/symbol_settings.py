@@ -2,22 +2,46 @@
 Symbol Trade Settings Router
 
 종목별 분할 매수 수량 설정 API
+사용자별 기본 거래 설정도 관리
 """
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
-from app.models.trading import InstrumentType
+from app.models.trading import InstrumentType, User
+from app.auth.dependencies import get_current_user
+from app.auth.web_router import get_current_user_from_session
 from app.services.symbol_trade_settings_service import (
     SymbolTradeSettingsService,
+    UserTradeDefaultsService,
     calculate_estimated_order_cost,
 )
 from app.services.stock_info_service import StockAnalysisService
 
 router = APIRouter(prefix="/api/symbol-settings", tags=["symbol-settings"])
+
+
+async def get_user_from_request(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """웹 세션 또는 API 토큰에서 사용자 조회"""
+    # 먼저 request.state.user 확인 (AuthMiddleware에서 설정)
+    if hasattr(request.state, "user") and request.state.user:
+        return request.state.user
+
+    # 세션에서 사용자 조회 시도
+    user = await get_current_user_from_session(request, db)
+    if user:
+        return user
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required",
+    )
 
 
 # Pydantic 모델
@@ -87,20 +111,126 @@ class AllEstimatedCostResponse(BaseModel):
     total_symbols: int
 
 
-# API 엔드포인트
-@router.get("/", response_model=List[SymbolSettingsResponse])
+# 사용자 기본 설정 Pydantic 모델
+class UserTradeDefaultsUpdate(BaseModel):
+    """사용자 기본 설정 업데이트 요청"""
+
+    crypto_default_buy_amount: Optional[float] = Field(
+        None, gt=0, description="암호화폐 기본 매수 금액 (KRW)"
+    )
+    crypto_min_order_amount: Optional[float] = Field(
+        None, gt=0, description="암호화폐 최소 주문 금액 (KRW)"
+    )
+    equity_kr_default_buy_quantity: Optional[float] = Field(
+        None, ge=0, description="국내주식 기본 매수 수량 (0이면 매수 안함)"
+    )
+    equity_us_default_buy_quantity: Optional[float] = Field(
+        None, ge=0, description="해외주식 기본 매수 수량 (0이면 매수 안함)"
+    )
+    equity_us_default_buy_amount: Optional[float] = Field(
+        None, ge=0, description="해외주식 기본 매수 금액 (USD, 0이면 매수 안함)"
+    )
+
+
+class UserTradeDefaultsResponse(BaseModel):
+    """사용자 기본 설정 응답"""
+
+    id: int
+    user_id: int
+    crypto_default_buy_amount: float
+    crypto_min_order_amount: float
+    equity_kr_default_buy_quantity: Optional[float]
+    equity_us_default_buy_quantity: Optional[float]
+    equity_us_default_buy_amount: Optional[float]
+    is_active: bool
+    created_at: str
+    updated_at: str
+
+    class Config:
+        from_attributes = True
+
+
+# ==========================================
+# 사용자 기본 설정 API 엔드포인트
+# ==========================================
+
+@router.get("/user-defaults", response_model=UserTradeDefaultsResponse)
+async def get_user_defaults(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """현재 사용자의 기본 거래 설정 조회"""
+    user = await get_user_from_request(request, db)
+    service = UserTradeDefaultsService(db)
+    defaults = await service.get_or_create(user.id)
+
+    return UserTradeDefaultsResponse(
+        id=defaults.id,
+        user_id=defaults.user_id,
+        crypto_default_buy_amount=float(defaults.crypto_default_buy_amount),
+        crypto_min_order_amount=float(defaults.crypto_min_order_amount),
+        equity_kr_default_buy_quantity=float(defaults.equity_kr_default_buy_quantity) if defaults.equity_kr_default_buy_quantity else None,
+        equity_us_default_buy_quantity=float(defaults.equity_us_default_buy_quantity) if defaults.equity_us_default_buy_quantity else None,
+        equity_us_default_buy_amount=float(defaults.equity_us_default_buy_amount) if defaults.equity_us_default_buy_amount else None,
+        is_active=defaults.is_active,
+        created_at=str(defaults.created_at),
+        updated_at=str(defaults.updated_at),
+    )
+
+
+@router.put("/user-defaults", response_model=UserTradeDefaultsResponse)
+async def update_user_defaults(
+    request_data: UserTradeDefaultsUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """현재 사용자의 기본 거래 설정 업데이트"""
+    user = await get_user_from_request(request, db)
+    service = UserTradeDefaultsService(db)
+
+    # None이 아닌 필드만 업데이트
+    update_data = {k: v for k, v in request_data.model_dump().items() if v is not None}
+
+    if not update_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields to update",
+        )
+
+    defaults = await service.update_settings(user.id, update_data)
+
+    return UserTradeDefaultsResponse(
+        id=defaults.id,
+        user_id=defaults.user_id,
+        crypto_default_buy_amount=float(defaults.crypto_default_buy_amount),
+        crypto_min_order_amount=float(defaults.crypto_min_order_amount),
+        equity_kr_default_buy_quantity=float(defaults.equity_kr_default_buy_quantity) if defaults.equity_kr_default_buy_quantity else None,
+        equity_us_default_buy_quantity=float(defaults.equity_us_default_buy_quantity) if defaults.equity_us_default_buy_quantity else None,
+        equity_us_default_buy_amount=float(defaults.equity_us_default_buy_amount) if defaults.equity_us_default_buy_amount else None,
+        is_active=defaults.is_active,
+        created_at=str(defaults.created_at),
+        updated_at=str(defaults.updated_at),
+    )
+
+
+# ==========================================
+# 종목별 설정 API 엔드포인트
+# ==========================================
+@router.get("/symbols", response_model=List[SymbolSettingsResponse])
 async def get_all_settings(
+    request: Request,
     active_only: bool = True,
     instrument_type: Optional[InstrumentType] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """모든 종목 설정 조회"""
+    """현재 사용자의 모든 종목 설정 조회"""
+    user = await get_user_from_request(request, db)
     service = SymbolTradeSettingsService(db)
 
     if instrument_type:
-        settings_list = await service.get_by_type(instrument_type, active_only)
+        settings_list = await service.get_by_type(instrument_type, user.id, active_only)
     else:
-        settings_list = await service.get_all(active_only)
+        settings_list = await service.get_all(user.id, active_only)
 
     return [
         SymbolSettingsResponse(
@@ -118,14 +248,16 @@ async def get_all_settings(
     ]
 
 
-@router.get("/{symbol}", response_model=SymbolSettingsResponse)
+@router.get("/symbols/{symbol}", response_model=SymbolSettingsResponse)
 async def get_settings_by_symbol(
     symbol: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """특정 종목 설정 조회"""
+    """현재 사용자의 특정 종목 설정 조회"""
+    user = await get_user_from_request(request, db)
     service = SymbolTradeSettingsService(db)
-    settings_obj = await service.get_by_symbol(symbol)
+    settings_obj = await service.get_by_symbol(symbol, user.id)
 
     if not settings_obj:
         raise HTTPException(
@@ -146,28 +278,31 @@ async def get_settings_by_symbol(
     )
 
 
-@router.post("/", response_model=SymbolSettingsResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/symbols", response_model=SymbolSettingsResponse, status_code=status.HTTP_201_CREATED)
 async def create_settings(
-    request: SymbolSettingsCreate,
+    request_data: SymbolSettingsCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """종목 설정 생성"""
+    """현재 사용자의 종목 설정 생성"""
+    user = await get_user_from_request(request, db)
     service = SymbolTradeSettingsService(db)
 
-    # 이미 존재하는지 확인
-    existing = await service.get_by_symbol(request.symbol)
+    # 이미 존재하는지 확인 (같은 사용자 + 같은 종목)
+    existing = await service.get_by_symbol(request_data.symbol, user.id)
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Settings already exist for symbol: {request.symbol}",
+            detail=f"Settings already exist for symbol: {request_data.symbol}",
         )
 
     settings_obj = await service.create(
-        symbol=request.symbol,
-        instrument_type=request.instrument_type,
-        buy_quantity_per_order=request.buy_quantity_per_order,
-        exchange_code=request.exchange_code,
-        note=request.note,
+        user_id=user.id,
+        symbol=request_data.symbol,
+        instrument_type=request_data.instrument_type,
+        buy_quantity_per_order=request_data.buy_quantity_per_order,
+        exchange_code=request_data.exchange_code,
+        note=request_data.note,
     )
 
     return SymbolSettingsResponse(
@@ -183,17 +318,19 @@ async def create_settings(
     )
 
 
-@router.put("/{symbol}", response_model=SymbolSettingsResponse)
+@router.put("/symbols/{symbol}", response_model=SymbolSettingsResponse)
 async def update_settings(
     symbol: str,
-    request: SymbolSettingsUpdate,
+    request_data: SymbolSettingsUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """종목 설정 업데이트"""
+    """현재 사용자의 종목 설정 업데이트"""
+    user = await get_user_from_request(request, db)
     service = SymbolTradeSettingsService(db)
 
     # 존재 여부 확인
-    existing = await service.get_by_symbol(symbol)
+    existing = await service.get_by_symbol(symbol, user.id)
     if not existing:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -201,7 +338,7 @@ async def update_settings(
         )
 
     # None이 아닌 필드만 업데이트
-    update_data = {k: v for k, v in request.model_dump().items() if v is not None}
+    update_data = {k: v for k, v in request_data.model_dump().items() if v is not None}
 
     if not update_data:
         raise HTTPException(
@@ -209,7 +346,7 @@ async def update_settings(
             detail="No fields to update",
         )
 
-    settings_obj = await service.update_settings(symbol, update_data)
+    settings_obj = await service.update_settings(symbol, update_data, user.id)
 
     return SymbolSettingsResponse(
         id=settings_obj.id,
@@ -224,15 +361,17 @@ async def update_settings(
     )
 
 
-@router.delete("/{symbol}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/symbols/{symbol}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_settings(
     symbol: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """종목 설정 삭제"""
+    """현재 사용자의 종목 설정 삭제"""
+    user = await get_user_from_request(request, db)
     service = SymbolTradeSettingsService(db)
 
-    deleted = await service.delete_settings(symbol)
+    deleted = await service.delete_settings(symbol, user.id)
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -240,20 +379,22 @@ async def delete_settings(
         )
 
 
-@router.get("/{symbol}/estimated-cost", response_model=EstimatedCostResponse)
+@router.get("/symbols/{symbol}/estimated-cost", response_model=EstimatedCostResponse)
 async def get_estimated_cost(
     symbol: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """특정 종목의 예상 매수 비용 계산
 
     AI 분석 결과의 4개 매수 가격을 기반으로 예상 비용을 계산합니다.
     """
+    user = await get_user_from_request(request, db)
     settings_service = SymbolTradeSettingsService(db)
     analysis_service = StockAnalysisService(db)
 
-    # 설정 조회
-    settings_obj = await settings_service.get_by_symbol(symbol)
+    # 설정 조회 (사용자별)
+    settings_obj = await settings_service.get_by_symbol(symbol, user.id)
     if not settings_obj or not settings_obj.is_active:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -299,19 +440,21 @@ async def get_estimated_cost(
     return EstimatedCostResponse(**result)
 
 
-@router.get("/all/estimated-cost", response_model=AllEstimatedCostResponse)
+@router.get("/symbols/all/estimated-cost", response_model=AllEstimatedCostResponse)
 async def get_all_estimated_costs(
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """모든 활성 종목의 예상 매수 비용 합계
+    """현재 사용자의 모든 활성 종목 예상 매수 비용 합계
 
     설정된 모든 종목에 대해 예상 비용을 계산하고 합계를 반환합니다.
     """
+    user = await get_user_from_request(request, db)
     settings_service = SymbolTradeSettingsService(db)
     analysis_service = StockAnalysisService(db)
 
-    # 모든 활성 설정 조회
-    all_settings = await settings_service.get_all(active_only=True)
+    # 현재 사용자의 모든 활성 설정 조회
+    all_settings = await settings_service.get_all(user.id, active_only=True)
 
     results = []
     grand_total = 0.0

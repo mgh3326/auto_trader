@@ -25,6 +25,7 @@ from app.services.stock_info_service import (
     process_buy_orders_with_analysis,
     StockAnalysisService
 )
+from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
 from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)
@@ -89,9 +90,17 @@ async def get_my_coins(
             market_codes = [f"KRW-{coin['currency']}" for coin in tradable_coins]
             current_prices = await upbit.fetch_multiple_current_prices(market_codes)
             analysis_service = StockAnalysisService(db)
+            settings_service = SymbolTradeSettingsService(db)
             latest_analysis_map = await analysis_service.get_latest_analysis_results_for_coins(
                 list(dict.fromkeys(market_codes))
             )
+
+            # 종목별 설정 조회 (market code 기준)
+            settings_map = {}
+            for market in market_codes:
+                settings_obj = await settings_service.get_by_symbol(market)
+                if settings_obj and settings_obj.is_active:
+                    settings_map[market] = settings_obj
 
             for coin in tradable_coins:
                 currency = coin['currency']
@@ -154,6 +163,12 @@ async def get_my_coins(
                     coin['last_analysis_at'] = None
                     coin['last_analysis_decision'] = None
                     coin['analysis_confidence'] = None
+
+                # Symbol trade settings (코인은 금액 기반)
+                symbol_settings = settings_map.get(market)
+                coin['settings_amount'] = float(symbol_settings.buy_quantity_per_order) if symbol_settings else None
+                coin['settings_note'] = symbol_settings.note if symbol_settings else None
+                coin['settings_active'] = symbol_settings.is_active if symbol_settings else None
 
         krw_balance = 0
         krw_locked = 0

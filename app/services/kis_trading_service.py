@@ -1,13 +1,17 @@
 import asyncio
+import logging
 from typing import Dict, Any, List, Optional, Tuple
 from app.services.kis import KISClient
 from app.models.analysis import StockAnalysisResult
 from app.core.config import settings
 
-# KIS 매수 설정 (폴백용 - 종목 설정이 없을 때 사용)
-KIS_BUY_AMOUNT = 100000  # 국내 주식 매수 금액 (KRW)
-KIS_OVERSEAS_BUY_AMOUNT_USD = 100  # 해외 주식 매수 금액 (USD)
+logger = logging.getLogger(__name__)
+
+# KIS 매수 설정 (주식은 설정이 없으면 매수하지 않음)
 KIS_MIN_BALANCE = 100000  # 최소 예수금
+
+# 메시지 상수
+MSG_NO_SETTINGS = "종목 설정 없음 - 매수 건너뜀"
 
 async def process_kis_domestic_buy_orders_with_analysis(
     kis_client: KISClient,
@@ -76,13 +80,23 @@ async def process_kis_domestic_buy_orders_with_analysis(
                 'orders_placed': 0
             }
 
-        # 5. 주문 실행
+        # 5. 수량 확인 - 설정이 없으면 매수 안함
+        # 첫 번째 가격으로 수량 확인 (모든 주문에 같은 수량 적용)
+        first_price = valid_prices[0][1]
+        quantity = await get_buy_quantity_for_symbol(
+            db, symbol, first_price, fallback_amount=None  # None = 설정 없으면 매수 안함
+        )
+        if quantity is None:
+            logger.info(f"[{symbol}] {MSG_NO_SETTINGS}")
+            return {
+                'success': False,
+                'message': MSG_NO_SETTINGS,
+                'orders_placed': 0
+            }
+
+        # 6. 주문 실행
         success_count = 0
         for name, price in valid_prices:
-            # 수량 계산: 종목 설정이 있으면 설정된 수량 사용, 없으면 금액 기반 계산
-            quantity = await get_buy_quantity_for_symbol(
-                db, symbol, price, KIS_BUY_AMOUNT
-            )
             if quantity < 1:
                 continue
 
@@ -144,12 +158,21 @@ async def process_kis_overseas_buy_orders_with_analysis(
         if not valid_prices:
             return {'success': False, 'message': "조건에 맞는 매수 가격 없음", 'orders_placed': 0}
 
+        # 수량 확인 - 설정이 없으면 매수 안함
+        first_price = valid_prices[0]
+        quantity = await get_buy_quantity_for_symbol(
+            db, symbol, first_price, fallback_amount=None  # None = 설정 없으면 매수 안함
+        )
+        if quantity is None:
+            logger.info(f"[{symbol}] {MSG_NO_SETTINGS}")
+            return {
+                'success': False,
+                'message': MSG_NO_SETTINGS,
+                'orders_placed': 0
+            }
+
         success_count = 0
         for price in valid_prices:
-            # 수량 계산: 종목 설정이 있으면 설정된 수량 사용, 없으면 금액 기반 계산
-            quantity = await get_buy_quantity_for_symbol(
-                db, symbol, price, KIS_OVERSEAS_BUY_AMOUNT_USD
-            )
             if quantity < 1:
                 continue
 
