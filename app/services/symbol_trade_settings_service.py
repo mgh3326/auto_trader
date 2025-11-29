@@ -82,6 +82,7 @@ class SymbolTradeSettingsService:
         symbol: str,
         instrument_type: InstrumentType,
         buy_quantity_per_order: float,
+        buy_price_levels: int = 4,
         exchange_code: Optional[str] = None,
         note: Optional[str] = None,
     ) -> SymbolTradeSettings:
@@ -91,6 +92,7 @@ class SymbolTradeSettingsService:
             symbol=symbol,
             instrument_type=instrument_type,
             buy_quantity_per_order=Decimal(str(buy_quantity_per_order)),
+            buy_price_levels=buy_price_levels,
             exchange_code=exchange_code,
             note=note,
             is_active=True,

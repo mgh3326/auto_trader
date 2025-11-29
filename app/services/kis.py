@@ -1325,8 +1325,8 @@ class KISClient:
                 return await self.inquire_integrated_margin(is_mock)
             raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
 
-        output1 = js.get("output1", {})  # 원화 정보
-        output2 = js.get("output2", [])  # 통화별 정보
+        # API 응답은 output (단일 객체)로 옴
+        output = js.get("output", {})
 
         # 금액 값을 float으로 안전하게 변환
         def safe_float(val, default=0.0):
@@ -1337,41 +1337,30 @@ class KISClient:
             except (ValueError, TypeError):
                 return default
 
-        # 원화 정보
+        # 통합증거금 정보 파싱
         result = {
-            "dnca_tot_amt": safe_float(output1.get("dnca_tot_amt")),  # 예수금총액 (원화)
-            "nxdy_excc_amt": safe_float(output1.get("nxdy_excc_amt")),  # 익일정산금액
-            "prvs_rcdl_excc_amt": safe_float(output1.get("prvs_rcdl_excc_amt")),  # 가수도정산금액
-            "cma_evlu_amt": safe_float(output1.get("cma_evlu_amt")),  # CMA평가금액
-            "bfdy_buy_amt": safe_float(output1.get("bfdy_buy_amt")),  # 전일매수금액
-            "thdt_buy_amt": safe_float(output1.get("thdt_buy_amt")),  # 금일매수금액
-            "nxdy_auto_rdpt_amt": safe_float(output1.get("nxdy_auto_rdpt_amt")),  # 익일자동상환금액
-            "d2_auto_rdpt_amt": safe_float(output1.get("d2_auto_rdpt_amt")),  # D+2자동상환금액
+            # 원화 예수금 (국내주식용)
+            "dnca_tot_amt": safe_float(output.get("stck_cash_objt_amt")),  # 주식현금대용금액 = 원화 예수금
+            "stck_cash_ord_psbl_amt": safe_float(output.get("stck_cash_ord_psbl_amt")),  # 주식현금주문가능금액
+            "stck_sbst_ord_psbl_amt": safe_float(output.get("stck_sbst_ord_psbl_amt")),  # 주식대용주문가능금액
+            "stck_evlu_ord_psbl_amt": safe_float(output.get("stck_evlu_ord_psbl_amt")),  # 주식평가주문가능금액
+            # 외화 예수금
+            "usd_objt_amt": safe_float(output.get("usd_objt_amt")),  # USD 대용금액
+            "usd_ord_psbl_amt": safe_float(output.get("usd_ord_psbl_amt")),  # USD 주문가능금액
+            "hkd_objt_amt": safe_float(output.get("hkd_objt_amt")),  # HKD 대용금액
+            "jpy_objt_amt": safe_float(output.get("jpy_objt_amt")),  # JPY 대용금액
+            "cny_objt_amt": safe_float(output.get("cny_objt_amt")),  # CNY 대용금액
+            # 환율 정보
+            "usd_exrt": safe_float(output.get("usd_frst_bltn_exrt")),  # USD 환율
             "currencies": []
         }
 
-        # 통화별 정보 (원화 포함)
-        for item in output2:
-            currency_info = {
-                "crcy_cd": item.get("crcy_cd"),  # 통화코드
-                "frcr_evlu_tota": safe_float(item.get("frcr_evlu_tota")),  # 외화평가금액
-                "frcr_dncl_amt_2": safe_float(item.get("frcr_dncl_amt_2")),  # 외화예수금액
-            }
-            result["currencies"].append(currency_info)
+        # 하위 호환성을 위해 krw_balance, usd_balance 추가
+        result["krw_balance"] = result["dnca_tot_amt"]
+        result["usd_balance"] = result["usd_objt_amt"]
 
-            logging.info(f"{currency_info['crcy_cd']}: 예수금 {currency_info['frcr_dncl_amt_2']:,.2f}")
-
-        # 원화와 주요 통화 정보를 빠르게 찾을 수 있도록 추가
-        krw = next((c for c in result["currencies"] if c["crcy_cd"] == "KRW"), None)
-        usd = next((c for c in result["currencies"] if c["crcy_cd"] == "USD"), None)
-
-        if krw:
-            result["krw_balance"] = krw["frcr_dncl_amt_2"]
-            logging.info(f"원화 예수금: {result['krw_balance']:,.0f}원")
-
-        if usd:
-            result["usd_balance"] = usd["frcr_dncl_amt_2"]
-            logging.info(f"달러 예수금: ${result['usd_balance']:,.2f}")
+        logging.debug(f"원화 예수금: {result['krw_balance']:,.0f}원")
+        logging.debug(f"달러 예수금: ${result['usd_balance']:,.2f}")
 
         return result
 

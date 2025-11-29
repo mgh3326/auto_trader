@@ -85,6 +85,7 @@ async def get_my_overseas_stocks(
                 "analysis_confidence": analysis.confidence if analysis else None,
                 # Symbol trade settings
                 "settings_quantity": float(symbol_settings.buy_quantity_per_order) if symbol_settings else None,
+                "settings_price_levels": symbol_settings.buy_price_levels if symbol_settings else None,
                 "settings_note": symbol_settings.note if symbol_settings else None,
                 "settings_active": symbol_settings.is_active if symbol_settings else None,
             })

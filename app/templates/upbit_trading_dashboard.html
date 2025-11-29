@@ -1872,7 +1872,7 @@
 
         async function loadCoinEstimatedCost(market) {
             try {
-                const response = await fetch(`/api/symbol-settings/${encodeURIComponent(market)}/estimated-cost`);
+                const response = await fetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}/estimated-cost`);
                 if (response.ok) {
                     const data = await response.json();
                     displayCoinEstimatedCost(data);
@@ -1919,13 +1919,13 @@
 
             try {
                 // Check if settings exist
-                const checkResponse = await fetch(`/api/symbol-settings/${encodeURIComponent(market)}`);
+                const checkResponse = await fetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}`);
                 const settingsExist = checkResponse.ok;
 
                 let response;
                 if (settingsExist) {
                     // Update existing
-                    response = await fetch(`/api/symbol-settings/${encodeURIComponent(market)}`, {
+                    response = await fetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -1936,7 +1936,7 @@
                     });
                 } else {
                     // Create new
-                    response = await fetch('/api/symbol-settings/', {
+                    response = await fetch('/api/symbol-settings/symbols', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -1969,7 +1969,7 @@
             }
 
             try {
-                const response = await fetch(`/api/symbol-settings/${encodeURIComponent(market)}`, {
+                const response = await fetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}`, {
                     method: 'DELETE'
                 });
 

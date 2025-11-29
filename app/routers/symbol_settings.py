@@ -55,6 +55,10 @@ class SymbolSettingsCreate(BaseModel):
     buy_quantity_per_order: float = Field(
         ..., gt=0, description="주문당 매수 수량"
     )
+    buy_price_levels: int = Field(
+        default=4, ge=1, le=4,
+        description="주문할 가격대 수 (1~4). 1: appropriate_buy_min만, 4: 전체 4개"
+    )
     exchange_code: Optional[str] = Field(
         None, description="해외주식 거래소 코드 (NASD, NYSE 등)"
     )
@@ -66,6 +70,10 @@ class SymbolSettingsUpdate(BaseModel):
 
     buy_quantity_per_order: Optional[float] = Field(
         None, gt=0, description="주문당 매수 수량"
+    )
+    buy_price_levels: Optional[int] = Field(
+        None, ge=1, le=4,
+        description="주문할 가격대 수 (1~4)"
     )
     exchange_code: Optional[str] = Field(
         None, description="해외주식 거래소 코드"
@@ -81,6 +89,7 @@ class SymbolSettingsResponse(BaseModel):
     symbol: str
     instrument_type: str
     buy_quantity_per_order: float
+    buy_price_levels: int
     exchange_code: Optional[str]
     is_active: bool
     note: Optional[str]
@@ -238,6 +247,7 @@ async def get_all_settings(
             symbol=s.symbol,
             instrument_type=s.instrument_type.value,
             buy_quantity_per_order=float(s.buy_quantity_per_order),
+            buy_price_levels=s.buy_price_levels,
             exchange_code=s.exchange_code,
             is_active=s.is_active,
             note=s.note,
@@ -270,6 +280,7 @@ async def get_settings_by_symbol(
         symbol=settings_obj.symbol,
         instrument_type=settings_obj.instrument_type.value,
         buy_quantity_per_order=float(settings_obj.buy_quantity_per_order),
+        buy_price_levels=settings_obj.buy_price_levels,
         exchange_code=settings_obj.exchange_code,
         is_active=settings_obj.is_active,
         note=settings_obj.note,
@@ -301,6 +312,7 @@ async def create_settings(
         symbol=request_data.symbol,
         instrument_type=request_data.instrument_type,
         buy_quantity_per_order=request_data.buy_quantity_per_order,
+        buy_price_levels=request_data.buy_price_levels,
         exchange_code=request_data.exchange_code,
         note=request_data.note,
     )
@@ -310,6 +322,7 @@ async def create_settings(
         symbol=settings_obj.symbol,
         instrument_type=settings_obj.instrument_type.value,
         buy_quantity_per_order=float(settings_obj.buy_quantity_per_order),
+        buy_price_levels=settings_obj.buy_price_levels,
         exchange_code=settings_obj.exchange_code,
         is_active=settings_obj.is_active,
         note=settings_obj.note,
@@ -353,6 +366,7 @@ async def update_settings(
         symbol=settings_obj.symbol,
         instrument_type=settings_obj.instrument_type.value,
         buy_quantity_per_order=float(settings_obj.buy_quantity_per_order),
+        buy_price_levels=settings_obj.buy_price_levels,
         exchange_code=settings_obj.exchange_code,
         is_active=settings_obj.is_active,
         note=settings_obj.note,

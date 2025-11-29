@@ -109,6 +109,15 @@ class SymbolTradeSettings(Base):
         Numeric(18, 8), nullable=False
     )
 
+    # 주문할 가격대 수 (1~4) - 낮은 가격부터 순서대로
+    # 1: appropriate_buy_min만
+    # 2: appropriate_buy_min, appropriate_buy_max
+    # 3: appropriate_buy_min, appropriate_buy_max, buy_hope_min
+    # 4: 전체 4개 가격대 (기본값)
+    buy_price_levels: Mapped[int] = mapped_column(
+        default=4, nullable=False
+    )
+
     # 선택적 필드
     exchange_code: Mapped[str | None] = mapped_column(
         Text, nullable=True

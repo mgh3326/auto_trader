@@ -284,7 +284,22 @@
                             <span class="input-group-text">주</span>
                         </div>
                         <div class="form-text">
-                            AI 분석 결과의 4개 매수 가격대에 각각 이 수량만큼 주문합니다.
+                            아래에서 선택한 가격대 수만큼, 각각 이 수량으로 주문합니다.
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="settings-price-levels" class="form-label fw-bold">
+                            주문 가격대 수 <span class="text-danger">*</span>
+                        </label>
+                        <select class="form-select" id="settings-price-levels">
+                            <option value="1">1개 (적정 매수 min만)</option>
+                            <option value="2">2개 (적정 매수 min, max)</option>
+                            <option value="3">3개 (적정 매수 + 희망 매수 min)</option>
+                            <option value="4" selected>4개 (전체 가격대)</option>
+                        </select>
+                        <div class="form-text">
+                            AI 분석 결과의 몇 개 가격대에 주문할지 선택합니다.
                         </div>
                     </div>
 
@@ -434,15 +449,17 @@
                         // Settings badge
                         let settingsBadge;
                         if (stock.settings_quantity) {
+                            const priceLevels = stock.settings_price_levels || 4;
                             settingsBadge = `
                                 <span class="badge settings-badge settings-configured"
                                       data-code="${stock.code}"
                                       data-name="${stock.name}"
                                       data-quantity="${stock.settings_quantity}"
+                                      data-price-levels="${priceLevels}"
                                       data-note="${stock.settings_note || ''}"
                                       data-active="${stock.settings_active}"
                                       title="클릭하여 수정">
-                                    ${stock.settings_quantity}주
+                                    ${stock.settings_quantity}주 x ${priceLevels}
                                 </span>
                             `;
                         } else {
@@ -796,10 +813,11 @@
                     const symbol = badge.dataset.code;
                     const name = badge.dataset.name;
                     const quantity = badge.dataset.quantity || '';
+                    const priceLevels = badge.dataset.priceLevels || '4';
                     const note = badge.dataset.note || '';
                     const active = badge.dataset.active !== 'false';
 
-                    openSettingsModal(symbol, name, quantity, note, active);
+                    openSettingsModal(symbol, name, quantity, priceLevels, note, active);
                 });
             });
 
@@ -1016,12 +1034,13 @@
 
         // ===== Symbol Settings Modal Functions =====
 
-        function openSettingsModal(symbol, name, quantity, note, active) {
+        function openSettingsModal(symbol, name, quantity, priceLevels, note, active) {
             const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('symbolSettingsModal'));
 
             document.getElementById('settings-symbol').value = symbol;
             document.getElementById('settings-stock-info').innerHTML = `<strong>${name}</strong> <small class="text-muted">(${symbol})</small>`;
             document.getElementById('settings-quantity').value = quantity || '';
+            document.getElementById('settings-price-levels').value = priceLevels || '4';
             document.getElementById('settings-note').value = note || '';
             document.getElementById('settings-active').checked = active;
 
@@ -1044,7 +1063,7 @@
 
         async function loadEstimatedCost(symbol) {
             try {
-                const response = await fetch(`/api/symbol-settings/${symbol}/estimated-cost`);
+                const response = await fetch(`/api/symbol-settings/symbols/${symbol}/estimated-cost`);
                 if (response.ok) {
                     const data = await response.json();
                     displayEstimatedCost(data);
@@ -1081,6 +1100,7 @@
         async function saveSettings() {
             const symbol = document.getElementById('settings-symbol').value;
             const quantity = parseFloat(document.getElementById('settings-quantity').value);
+            const priceLevels = parseInt(document.getElementById('settings-price-levels').value);
             const note = document.getElementById('settings-note').value;
             const isActive = document.getElementById('settings-active').checked;
 
@@ -1091,30 +1111,32 @@
 
             try {
                 // Check if settings exist
-                const checkResponse = await fetch(`/api/symbol-settings/${symbol}`);
+                const checkResponse = await fetch(`/api/symbol-settings/symbols/${symbol}`);
                 const settingsExist = checkResponse.ok;
 
                 let response;
                 if (settingsExist) {
                     // Update existing
-                    response = await fetch(`/api/symbol-settings/${symbol}`, {
+                    response = await fetch(`/api/symbol-settings/symbols/${symbol}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             buy_quantity_per_order: quantity,
+                            buy_price_levels: priceLevels,
                             note: note || null,
                             is_active: isActive
                         })
                     });
                 } else {
                     // Create new
-                    response = await fetch('/api/symbol-settings/', {
+                    response = await fetch('/api/symbol-settings/symbols', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             symbol: symbol,
                             instrument_type: 'equity_kr',
                             buy_quantity_per_order: quantity,
+                            buy_price_levels: priceLevels,
                             note: note || null
                         })
                     });
@@ -1141,7 +1163,7 @@
             }
 
             try {
-                const response = await fetch(`/api/symbol-settings/${symbol}`, {
+                const response = await fetch(`/api/symbol-settings/symbols/${symbol}`, {
                     method: 'DELETE'
                 });
 
