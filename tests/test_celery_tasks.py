@@ -143,6 +143,104 @@ def test_execute_buy_orders_task_no_tradable(monkeypatch):
     assert any(update["state"] == "PROGRESS" for update in progress_updates)
 
 
+@pytest.mark.asyncio
+async def test_execute_buy_order_notifies_on_insufficient_balance(monkeypatch):
+    """잔고 부족으로 매수 실패 시 텔레그램 알림을 보내는지 확인."""
+    from app.tasks import analyze
+
+    async def fake_prime():
+        return None
+
+    monkeypatch.setattr(
+        "data.coins_info.upbit_pairs.prime_upbit_constants",
+        fake_prime,
+    )
+    monkeypatch.setattr(
+        "data.coins_info.upbit_pairs.KRW_TRADABLE_COINS",
+        {"BTC"},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "data.coins_info.upbit_pairs.COIN_TO_NAME_KR",
+        {"BTC": "비트코인"},
+        raising=False,
+    )
+
+    async def fake_fetch_my_coins():
+        return [{"currency": "BTC", "avg_buy_price": "1000000", "balance": "0.1"}]
+
+    monkeypatch.setattr("app.services.upbit.fetch_my_coins", fake_fetch_my_coins)
+
+    class DummyPriceFrame:
+        def __init__(self, close):
+            self._row = {"close": close}
+
+        @property
+        def iloc(self):
+            return self
+
+        def __getitem__(self, index):
+            if index == 0:
+                return self._row
+            raise IndexError
+
+    async def fake_fetch_price(_):
+        return DummyPriceFrame(close=900000)
+
+    monkeypatch.setattr("app.services.upbit.fetch_price", fake_fetch_price)
+
+    async def fake_cancel(_):
+        return None
+
+    monkeypatch.setattr(analyze, "cancel_existing_buy_orders", fake_cancel)
+    monkeypatch.setattr(analyze.asyncio, "sleep", fake_cancel)
+
+    failure_message = "모든 매수 주문 실패: 주문 가능 금액 부족"
+
+    async def fake_process_buy_orders_with_analysis(*_, **__):
+        return {
+            "success": False,
+            "message": failure_message,
+            "orders_placed": 0,
+            "total_amount": 0.0,
+        }
+
+    monkeypatch.setattr(
+        "app.services.stock_info_service.process_buy_orders_with_analysis",
+        fake_process_buy_orders_with_analysis,
+    )
+
+    class DummyNotifier:
+        def __init__(self):
+            self.failure_calls = []
+
+        async def notify_trade_failure(self, symbol, korean_name, reason, market_type="암호화폐"):
+            self.failure_calls.append(
+                {
+                    "symbol": symbol,
+                    "korean_name": korean_name,
+                    "reason": reason,
+                    "market_type": market_type,
+                }
+            )
+            return True
+
+    dummy_notifier = DummyNotifier()
+    monkeypatch.setattr(analyze, "get_trade_notifier", lambda: dummy_notifier)
+
+    result = await analyze._execute_buy_order_for_coin_async("btc")
+
+    assert result["status"] == "failed"
+    assert dummy_notifier.failure_calls == [
+        {
+            "symbol": "BTC",
+            "korean_name": "비트코인",
+            "reason": failure_message,
+            "market_type": "암호화폐",
+        }
+    ]
+
+
 def test_run_per_coin_automation_no_tradable(monkeypatch):
     """코인 자동 실행 태스크가 거래 가능한 코인이 없을 때 바로 완료된다."""
     from app.tasks import analyze

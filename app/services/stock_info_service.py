@@ -346,7 +346,8 @@ async def process_buy_orders_with_analysis(symbol: str, current_price: float, av
             'success': bool,
             'message': str,
             'orders_placed': int,
-            'total_amount': float
+            'total_amount': float,
+            'failure_reasons': List[str] (optional, failures only)
         }
     """
     from app.core.db import AsyncSessionLocal
@@ -367,7 +368,9 @@ async def process_buy_orders_with_analysis(symbol: str, current_price: float, av
             'success': False,
             'message': message,
             'orders_placed': 0,
-            'total_amount': 0.0
+            'total_amount': 0.0,
+            'insufficient_balance': True,
+            'failure_reasons': [message],
         }
 
     print(f"✅ KRW 잔고 충분: 매수 가능")
@@ -550,13 +553,18 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
     success_count = 0
     total_orders = len(valid_prices)
     total_amount_placed = 0.0
+    failure_reasons: List[str] = []
 
     for i, (price_name, buy_price) in enumerate(valid_prices, 1):
         print(f"\n[{i}/{total_orders}] {price_name} - {format_decimal(buy_price, '₩')}원")
 
         # 금액 기반 매수 (암호화폐)
         result = await _place_single_buy_order(
-            market, buy_amount, buy_price, price_name
+            market,
+            buy_amount,
+            buy_price,
+            price_name,
+            failure_reasons=failure_reasons,
         )
         if result:
             success_count += 1
@@ -577,15 +585,27 @@ async def _place_multiple_buy_orders_by_analysis(market: str, current_price: flo
             'total_amount': total_amount_placed
         }
     else:
+        unique_reasons = list(dict.fromkeys(failure_reasons))
+        failure_message = "모든 매수 주문 실패"
+        if unique_reasons:
+            failure_message = f"{failure_message}: {unique_reasons[0]}"
+
         return {
             'success': False,
-            'message': "모든 매수 주문 실패",
+            'message': failure_message,
             'orders_placed': 0,
-            'total_amount': 0.0
+            'total_amount': 0.0,
+            'failure_reasons': unique_reasons,
         }
 
 
-async def _place_single_buy_order(market: str, amount: int, buy_price: float, price_name: str):
+async def _place_single_buy_order(
+    market: str,
+    amount: int,
+    buy_price: float,
+    price_name: str,
+    failure_reasons: Optional[List[str]] = None,
+):
     """단일 가격으로 매수 주문을 실행합니다."""
     from app.services import upbit
     
@@ -621,6 +641,8 @@ async def _place_single_buy_order(market: str, amount: int, buy_price: float, pr
         
     except Exception as e:
         print(f"    ❌ {price_name} 매수 주문 실패: {e}")
+        if failure_reasons is not None:
+            failure_reasons.append(str(e))
         return None
 
 
