@@ -122,6 +122,7 @@ class TestSymbolTradeSettingsService:
         mock_db.refresh = AsyncMock()
 
         result = await service.create(
+            user_id=1,
             symbol="005930",
             instrument_type=InstrumentType.equity_kr,
             buy_quantity_per_order=2,
@@ -285,7 +286,9 @@ class TestGetBuyQuantityFunctions:
 
         mock_settings = MagicMock()
         mock_settings.is_active = True
-        mock_settings.buy_quantity_per_order = Decimal("0.001")
+        # 코인의 경우 buy_quantity_per_order는 매수 금액(KRW)을 의미함
+        # 50,000 KRW / 50,000,000 KRW/BTC = 0.001 BTC
+        mock_settings.buy_quantity_per_order = Decimal("50000")
 
         with patch(
             "app.services.symbol_trade_settings_service.SymbolTradeSettingsService"
@@ -395,5 +398,5 @@ class TestSymbolSettingsRouter:
         routes = [route.path for route in router.routes]
         # 경로는 prefix 포함 형태로 저장됨
         assert any("/api/symbol-settings/" in r for r in routes)
-        assert any("/api/symbol-settings/{symbol}" in r for r in routes)
+        assert any("/api/symbol-settings/symbols/{symbol}" in r for r in routes)
         assert any("estimated-cost" in r for r in routes)
