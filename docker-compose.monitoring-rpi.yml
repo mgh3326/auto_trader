@@ -126,7 +126,7 @@ services:
 
   # Grafana Loki - Log aggregation system
   loki:
-    image: grafana/loki:3.6.1
+    image: grafana/loki:3.6.2
     container_name: loki
     user: "10001:10001" # Non-root user (default loki user)
     command: [ "-config.file=/etc/loki/local-config.yaml" ]
