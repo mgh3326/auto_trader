@@ -142,6 +142,10 @@
                                         role="progressbar" style="width: 0%">0%</div>
                                 </div>
                                 <small id="buy-status" class="text-muted d-block mt-1"></small>
+                                <div id="total-estimated-cost" class="mt-2 small text-success" style="display: none;">
+                                    <i class="bi bi-calculator"></i>
+                                    <span id="estimated-cost-text"></span>
+                                </div>
                             </div>
                             <div class="col-md-3">
                                 <button id="sell-btn" class="btn btn-danger btn-action" onclick="executeSellOrders()">
@@ -494,12 +498,53 @@
                         new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(totalEval);
 
                     attachStockActionHandlers();
+
+                    // 예상 매수 비용 로드
+                    loadTotalEstimatedCost();
                 } else {
                     showAlert('보유 주식 조회 실패: ' + (data.error || 'Unknown error'), 'danger');
                 }
             } catch (error) {
                 console.error('Error loading stocks:', error);
                 showAlert('보유 주식 정보를 불러오는 중 오류가 발생했습니다.', 'danger');
+            }
+        }
+
+        // 전체 예상 매수 비용 로드
+        async function loadTotalEstimatedCost() {
+            try {
+                const response = await fetch('/api/symbol-settings/symbols/overseas/estimated-cost');
+                if (!response.ok) {
+                    document.getElementById('total-estimated-cost').style.display = 'none';
+                    return;
+                }
+
+                const data = await response.json();
+                const costDiv = document.getElementById('total-estimated-cost');
+                const costText = document.getElementById('estimated-cost-text');
+
+                if (data.total_symbols === 0) {
+                    costDiv.style.display = 'none';
+                    return;
+                }
+
+                // 순 예상 비용 표시 (기존 매수 주문 차감)
+                const formatUSD = (value) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+                const netCost = formatUSD(data.net_estimated_cost);
+                const grandTotal = formatUSD(data.grand_total_cost);
+                const pendingCost = formatUSD(data.pending_buy_orders_cost);
+
+                let displayText = `예상: ${netCost}`;
+                if (data.pending_buy_orders_cost > 0) {
+                    displayText += ` (총 ${grandTotal} - 기존주문 ${pendingCost})`;
+                }
+                displayText += ` / ${data.total_symbols}종목`;
+
+                costText.textContent = displayText;
+                costDiv.style.display = 'block';
+            } catch (error) {
+                console.log('예상 비용 로드 실패:', error);
+                document.getElementById('total-estimated-cost').style.display = 'none';
             }
         }
 

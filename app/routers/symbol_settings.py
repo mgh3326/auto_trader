@@ -118,6 +118,8 @@ class AllEstimatedCostResponse(BaseModel):
     symbols: List[EstimatedCostResponse]
     grand_total_cost: float
     total_symbols: int
+    pending_buy_orders_cost: float = 0.0  # 기존 미체결 매수 주문 총액
+    net_estimated_cost: float = 0.0  # 순 예상 비용 (grand_total_cost - pending_buy_orders_cost)
 
 
 # 사용자 기본 설정 Pydantic 모델
@@ -256,6 +258,373 @@ async def get_all_settings(
         )
         for s in settings_list
     ]
+
+
+# NOTE: 고정 경로는 반드시 경로 파라미터({symbol}) 라우트보다 먼저 정의해야 함
+@router.get("/symbols/domestic/estimated-cost", response_model=AllEstimatedCostResponse)
+async def get_domestic_estimated_costs(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """국내 주식 예상 매수 비용 합계 (미체결 매수 주문 금액 차감)
+
+    설정된 국내 주식 종목에 대해 예상 비용을 계산하고,
+    기존 미체결 매수 주문 금액을 차감한 순 비용을 반환합니다.
+    """
+    from app.services.kis import KISClient
+
+    user = await get_user_from_request(request, db)
+    settings_service = SymbolTradeSettingsService(db)
+    analysis_service = StockAnalysisService(db)
+
+    # 국내 주식 설정만 조회
+    all_settings = await settings_service.get_all(user.id, active_only=True)
+    domestic_settings = [s for s in all_settings if s.instrument_type == InstrumentType.equity_kr]
+
+    results = []
+    grand_total = 0.0
+
+    for settings_obj in domestic_settings:
+        # 분석 결과 조회
+        analysis = await analysis_service.get_latest_analysis_by_symbol(settings_obj.symbol)
+        if not analysis:
+            continue
+
+        # 매수 가격 추출
+        buy_prices = []
+        if analysis.appropriate_buy_min is not None:
+            buy_prices.append({"price_name": "appropriate_buy_min", "price": float(analysis.appropriate_buy_min)})
+        if analysis.appropriate_buy_max is not None:
+            buy_prices.append({"price_name": "appropriate_buy_max", "price": float(analysis.appropriate_buy_max)})
+        if analysis.buy_hope_min is not None:
+            buy_prices.append({"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)})
+        if analysis.buy_hope_max is not None:
+            buy_prices.append({"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)})
+
+        if not buy_prices:
+            continue
+
+        # buy_price_levels에 따라 가격대 제한
+        limited_buy_prices = buy_prices[:settings_obj.buy_price_levels]
+
+        # 예상 비용 계산
+        result = calculate_estimated_order_cost(
+            symbol=settings_obj.symbol,
+            buy_prices=limited_buy_prices,
+            quantity_per_order=float(settings_obj.buy_quantity_per_order),
+            currency="KRW",
+        )
+
+        results.append(EstimatedCostResponse(**result))
+        grand_total += result["total_cost"]
+
+    # 미체결 매수 주문 조회 및 금액 계산
+    pending_buy_cost = 0.0
+    try:
+        kis = KISClient()
+        pending_orders = await kis.inquire_korea_orders()
+        # 매수 주문만 필터링 (sll_buy_dvsn_cd: "02" = 매수)
+        for order in pending_orders:
+            if order.get("sll_buy_dvsn_cd") == "02":
+                qty = int(order.get("ord_qty", 0))
+                price = int(order.get("ord_unpr", 0))
+                pending_buy_cost += qty * price
+    except Exception as e:
+        import logging
+        logging.warning(f"미체결 주문 조회 실패 (계속 진행): {e}")
+
+    net_cost = max(0.0, grand_total - pending_buy_cost)
+
+    return AllEstimatedCostResponse(
+        symbols=results,
+        grand_total_cost=grand_total,
+        total_symbols=len(results),
+        pending_buy_orders_cost=pending_buy_cost,
+        net_estimated_cost=net_cost,
+    )
+
+
+@router.get("/symbols/overseas/estimated-cost", response_model=AllEstimatedCostResponse)
+async def get_overseas_estimated_costs(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """해외 주식 예상 매수 비용 합계 (미체결 매수 주문 금액 차감)
+
+    설정된 해외 주식 종목에 대해 예상 비용을 계산하고,
+    기존 미체결 매수 주문 금액을 차감한 순 비용을 반환합니다.
+    """
+    from app.services.kis import KISClient
+
+    user = await get_user_from_request(request, db)
+    settings_service = SymbolTradeSettingsService(db)
+    analysis_service = StockAnalysisService(db)
+
+    # 해외 주식 설정만 조회
+    all_settings = await settings_service.get_all(user.id, active_only=True)
+    overseas_settings = [s for s in all_settings if s.instrument_type == InstrumentType.equity_us]
+
+    results = []
+    grand_total = 0.0
+
+    for settings_obj in overseas_settings:
+        # 분석 결과 조회
+        analysis = await analysis_service.get_latest_analysis_by_symbol(settings_obj.symbol)
+        if not analysis:
+            continue
+
+        # 매수 가격 추출
+        buy_prices = []
+        if analysis.appropriate_buy_min is not None:
+            buy_prices.append({"price_name": "appropriate_buy_min", "price": float(analysis.appropriate_buy_min)})
+        if analysis.appropriate_buy_max is not None:
+            buy_prices.append({"price_name": "appropriate_buy_max", "price": float(analysis.appropriate_buy_max)})
+        if analysis.buy_hope_min is not None:
+            buy_prices.append({"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)})
+        if analysis.buy_hope_max is not None:
+            buy_prices.append({"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)})
+
+        if not buy_prices:
+            continue
+
+        # buy_price_levels에 따라 가격대 제한
+        limited_buy_prices = buy_prices[:settings_obj.buy_price_levels]
+
+        # 예상 비용 계산 (USD)
+        result = calculate_estimated_order_cost(
+            symbol=settings_obj.symbol,
+            buy_prices=limited_buy_prices,
+            quantity_per_order=float(settings_obj.buy_quantity_per_order),
+            currency="USD",
+        )
+
+        results.append(EstimatedCostResponse(**result))
+        grand_total += result["total_cost"]
+
+    # 미체결 매수 주문 조회 및 금액 계산
+    pending_buy_cost = 0.0
+    try:
+        kis = KISClient()
+        pending_orders = await kis.inquire_overseas_orders(exchange_code="NASD")
+        # 매수 주문만 필터링 (sll_buy_dvsn_cd: "02" = 매수)
+        for order in pending_orders:
+            if order.get("sll_buy_dvsn_cd") == "02":
+                qty = float(order.get("ft_ord_qty", 0))
+                price = float(order.get("ft_ord_unpr3", 0))
+                pending_buy_cost += qty * price
+    except Exception as e:
+        import logging
+        logging.warning(f"해외 미체결 주문 조회 실패 (계속 진행): {e}")
+
+    net_cost = max(0.0, grand_total - pending_buy_cost)
+
+    return AllEstimatedCostResponse(
+        symbols=results,
+        grand_total_cost=grand_total,
+        total_symbols=len(results),
+        pending_buy_orders_cost=pending_buy_cost,
+        net_estimated_cost=net_cost,
+    )
+
+
+@router.get("/symbols/all/estimated-cost", response_model=AllEstimatedCostResponse)
+async def get_all_estimated_costs(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """현재 사용자의 모든 활성 종목 예상 매수 비용 합계
+
+    설정된 모든 종목에 대해 예상 비용을 계산하고 합계를 반환합니다.
+    """
+    user = await get_user_from_request(request, db)
+    settings_service = SymbolTradeSettingsService(db)
+    analysis_service = StockAnalysisService(db)
+
+    # 현재 사용자의 모든 활성 설정 조회
+    all_settings = await settings_service.get_all(user.id, active_only=True)
+
+    results = []
+    grand_total = 0.0
+
+    for settings_obj in all_settings:
+        # 분석 결과 조회
+        analysis = await analysis_service.get_latest_analysis_by_symbol(settings_obj.symbol)
+        if not analysis:
+            continue
+
+        # 매수 가격 추출
+        buy_prices = []
+        if analysis.appropriate_buy_min is not None:
+            buy_prices.append({"price_name": "appropriate_buy_min", "price": float(analysis.appropriate_buy_min)})
+        if analysis.appropriate_buy_max is not None:
+            buy_prices.append({"price_name": "appropriate_buy_max", "price": float(analysis.appropriate_buy_max)})
+        if analysis.buy_hope_min is not None:
+            buy_prices.append({"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)})
+        if analysis.buy_hope_max is not None:
+            buy_prices.append({"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)})
+
+        if not buy_prices:
+            continue
+
+        # 통화 결정
+        currency = "USD" if settings_obj.instrument_type == InstrumentType.equity_us else "KRW"
+
+        # 예상 비용 계산
+        result = calculate_estimated_order_cost(
+            symbol=settings_obj.symbol,
+            buy_prices=buy_prices,
+            quantity_per_order=float(settings_obj.buy_quantity_per_order),
+            currency=currency,
+        )
+
+        results.append(EstimatedCostResponse(**result))
+        grand_total += result["total_cost"]
+
+    return AllEstimatedCostResponse(
+        symbols=results,
+        grand_total_cost=grand_total,
+        total_symbols=len(results),
+        pending_buy_orders_cost=0.0,
+        net_estimated_cost=grand_total,
+    )
+
+
+@router.get("/symbols/crypto/estimated-cost", response_model=AllEstimatedCostResponse)
+async def get_crypto_estimated_costs(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """암호화폐 예상 매수 비용 합계 (미체결 매수 주문 금액 차감)
+
+    보유 코인 전체에 대해 예상 비용을 계산합니다.
+    - 종목 설정이 있으면 설정된 금액 사용
+    - 종목 설정이 없으면 사용자 기본 설정(crypto_default_buy_amount) 또는 10,000원 사용
+    기존 미체결 매수 주문 금액을 차감한 순 비용을 반환합니다.
+    """
+    from app.services import upbit
+    from app.analysis.service_analyzers import UpbitAnalyzer
+    from data.coins_info import upbit_pairs
+    import logging
+
+    user = await get_user_from_request(request, db)
+    settings_service = SymbolTradeSettingsService(db)
+    analysis_service = StockAnalysisService(db)
+    defaults_service = UserTradeDefaultsService(db)
+
+    # 사용자 기본 설정에서 기본 매수 금액 조회
+    user_defaults = await defaults_service.get_or_create(user.id)
+    default_buy_amount = float(user_defaults.crypto_default_buy_amount) if user_defaults else 10000.0
+
+    # 보유 코인 조회
+    await upbit_pairs.prime_upbit_constants()
+    my_coins = await upbit.fetch_my_coins()
+    analyzer = UpbitAnalyzer()
+
+    # 거래 가능한 코인만 필터링
+    tradable_coins = [
+        coin for coin in my_coins
+        if coin.get("currency") != "KRW"
+        and analyzer.is_tradable(coin)
+        and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
+    ]
+
+    # 종목별 설정 조회
+    all_settings = await settings_service.get_all(user.id, active_only=True)
+    settings_map = {s.symbol: s for s in all_settings if s.instrument_type == InstrumentType.crypto}
+
+    results = []
+    grand_total = 0.0
+
+    for coin in tradable_coins:
+        currency = coin.get("currency")
+        market = f"KRW-{currency}"
+
+        # 분석 결과 조회
+        analysis = await analysis_service.get_latest_analysis_by_symbol(market)
+        if not analysis:
+            continue
+
+        # 매수 가격 추출
+        buy_prices = []
+        if analysis.appropriate_buy_min is not None:
+            buy_prices.append({"price_name": "appropriate_buy_min", "price": float(analysis.appropriate_buy_min)})
+        if analysis.appropriate_buy_max is not None:
+            buy_prices.append({"price_name": "appropriate_buy_max", "price": float(analysis.appropriate_buy_max)})
+        if analysis.buy_hope_min is not None:
+            buy_prices.append({"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)})
+        if analysis.buy_hope_max is not None:
+            buy_prices.append({"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)})
+
+        if not buy_prices:
+            continue
+
+        # 설정 조회 (없으면 기본값 사용)
+        settings_obj = settings_map.get(market)
+        if settings_obj:
+            buy_amount = float(settings_obj.buy_quantity_per_order)
+            buy_price_levels = settings_obj.buy_price_levels
+        else:
+            buy_amount = default_buy_amount
+            buy_price_levels = 4  # 기본값: 4개 가격대 전체
+
+        # buy_price_levels에 따라 가격대 제한
+        limited_buy_prices = buy_prices[:buy_price_levels]
+
+        # 암호화폐는 금액 기반 매수이므로 각 가격대마다 동일한 금액으로 매수
+        total_cost = buy_amount * len(limited_buy_prices)
+
+        # 결과 생성
+        result = {
+            "symbol": market,
+            "quantity_per_order": buy_amount,
+            "buy_prices": [
+                {
+                    "price_name": p["price_name"],
+                    "price": p["price"],
+                    "quantity": buy_amount / p["price"] if p["price"] > 0 else 0,
+                    "cost": buy_amount,
+                }
+                for p in limited_buy_prices
+            ],
+            "total_orders": len(limited_buy_prices),
+            "total_quantity": sum(buy_amount / p["price"] if p["price"] > 0 else 0 for p in limited_buy_prices),
+            "total_cost": total_cost,
+            "currency": "KRW",
+        }
+
+        results.append(EstimatedCostResponse(**result))
+        grand_total += total_cost
+
+    # 미체결 매수 주문 조회 및 금액 계산
+    pending_buy_cost = 0.0
+    try:
+        pending_orders = await upbit.fetch_pending_orders()
+        # 매수 주문만 필터링 (side: "bid" = 매수)
+        for order in pending_orders:
+            if order.get("side") == "bid":
+                # price 주문(시장가 금액 지정)의 경우 price가 주문 금액
+                # limit 주문의 경우 price * remaining_volume
+                ord_type = order.get("ord_type", "")
+                if ord_type == "price":
+                    # 시장가 매수: price가 주문 금액
+                    pending_buy_cost += float(order.get("price", 0))
+                else:
+                    # 지정가 매수: 가격 * 미체결 수량
+                    price = float(order.get("price", 0))
+                    remaining = float(order.get("remaining_volume", 0))
+                    pending_buy_cost += price * remaining
+    except Exception as e:
+        logging.warning(f"Upbit 미체결 주문 조회 실패 (계속 진행): {e}")
+
+    net_cost = max(0.0, grand_total - pending_buy_cost)
+
+    return AllEstimatedCostResponse(
+        symbols=results,
+        grand_total_cost=grand_total,
+        total_symbols=len(results),
+        pending_buy_orders_cost=pending_buy_cost,
+        net_estimated_cost=net_cost,
+    )
 
 
 @router.get("/symbols/{symbol}", response_model=SymbolSettingsResponse)
@@ -452,63 +821,3 @@ async def get_estimated_cost(
     )
 
     return EstimatedCostResponse(**result)
-
-
-@router.get("/symbols/all/estimated-cost", response_model=AllEstimatedCostResponse)
-async def get_all_estimated_costs(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    """현재 사용자의 모든 활성 종목 예상 매수 비용 합계
-
-    설정된 모든 종목에 대해 예상 비용을 계산하고 합계를 반환합니다.
-    """
-    user = await get_user_from_request(request, db)
-    settings_service = SymbolTradeSettingsService(db)
-    analysis_service = StockAnalysisService(db)
-
-    # 현재 사용자의 모든 활성 설정 조회
-    all_settings = await settings_service.get_all(user.id, active_only=True)
-
-    results = []
-    grand_total = 0.0
-
-    for settings_obj in all_settings:
-        # 분석 결과 조회
-        analysis = await analysis_service.get_latest_analysis_by_symbol(settings_obj.symbol)
-        if not analysis:
-            continue
-
-        # 매수 가격 추출
-        buy_prices = []
-        if analysis.appropriate_buy_min is not None:
-            buy_prices.append({"price_name": "appropriate_buy_min", "price": float(analysis.appropriate_buy_min)})
-        if analysis.appropriate_buy_max is not None:
-            buy_prices.append({"price_name": "appropriate_buy_max", "price": float(analysis.appropriate_buy_max)})
-        if analysis.buy_hope_min is not None:
-            buy_prices.append({"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)})
-        if analysis.buy_hope_max is not None:
-            buy_prices.append({"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)})
-
-        if not buy_prices:
-            continue
-
-        # 통화 결정
-        currency = "USD" if settings_obj.instrument_type == InstrumentType.equity_us else "KRW"
-
-        # 예상 비용 계산
-        result = calculate_estimated_order_cost(
-            symbol=settings_obj.symbol,
-            buy_prices=buy_prices,
-            quantity_per_order=float(settings_obj.buy_quantity_per_order),
-            currency=currency,
-        )
-
-        results.append(EstimatedCostResponse(**result))
-        grand_total += result["total_cost"]
-
-    return AllEstimatedCostResponse(
-        symbols=results,
-        grand_total_cost=grand_total,
-        total_symbols=len(results),
-    )
