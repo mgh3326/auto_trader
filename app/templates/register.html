@@ -3,6 +3,14 @@
 {% block title %}회원가입 - Auto Trader{% endblock %}
 
 {% block styles %}
+.auth-page {
+    min-height: calc(100vh - 4rem);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
 .auth-card {
     background: white;
     padding: 3rem;
@@ -118,79 +126,81 @@
 {% endblock %}
 
 {% block content %}
-<div class="auth-card">
-    <h1>회원가입</h1>
-    <p>새 계정을 만들어보세요</p>
+<div class="auth-page">
+    <div class="auth-card">
+        <h1>회원가입</h1>
+        <p>새 계정을 만들어보세요</p>
 
-    {% if error %}
-    <div class="error-message">{{ error }}</div>
-    {% endif %}
+        {% if error %}
+        <div class="error-message">{{ error }}</div>
+        {% endif %}
 
-    {% if success %}
-    <div class="success-message">{{ success }}</div>
-    {% endif %}
+        {% if success %}
+        <div class="success-message">{{ success }}</div>
+        {% endif %}
 
-    <form method="POST" action="/web-auth/register">
-        <div class="form-group">
-            <label for="email">이메일</label>
-            <input
-                type="email"
-                id="email"
-                name="email"
-                required
-                autofocus
-                placeholder="email@example.com"
-                value="{{ email or '' }}"
-            >
+        <form method="POST" action="/web-auth/register">
+            <div class="form-group">
+                <label for="email">이메일</label>
+                <input
+                    type="email"
+                    id="email"
+                    name="email"
+                    required
+                    autofocus
+                    placeholder="email@example.com"
+                    value="{{ email or '' }}"
+                >
+            </div>
+
+            <div class="form-group">
+                <label for="username">사용자명</label>
+                <input
+                    type="text"
+                    id="username"
+                    name="username"
+                    required
+                    placeholder="사용자명 (3자 이상)"
+                    minlength="3"
+                    maxlength="50"
+                    value="{{ username or '' }}"
+                >
+                <small>3-50자 사이로 입력하세요</small>
+            </div>
+
+            <div class="form-group">
+                <label for="password">비밀번호</label>
+                <input
+                    type="password"
+                    id="password"
+                    name="password"
+                    required
+                    placeholder="비밀번호 (8자 이상, 대문자+숫자 포함)"
+                    minlength="8"
+                >
+                <small>최소 8자 이상, 대문자와 숫자 각 1개 이상 포함</small>
+            </div>
+
+            <div class="form-group">
+                <label for="password_confirm">비밀번호 확인</label>
+                <input
+                    type="password"
+                    id="password_confirm"
+                    name="password_confirm"
+                    required
+                    placeholder="비밀번호를 다시 입력하세요"
+                    minlength="8"
+                >
+            </div>
+
+            <button type="submit" class="btn-primary">회원가입</button>
+        </form>
+
+        <div class="divider">또는</div>
+
+        <div class="login-link">
+            이미 계정이 있으신가요? <a href="/web-auth/login">로그인</a>
         </div>
-
-        <div class="form-group">
-            <label for="username">사용자명</label>
-            <input
-                type="text"
-                id="username"
-                name="username"
-                required
-                placeholder="사용자명 (3자 이상)"
-                minlength="3"
-                maxlength="50"
-                value="{{ username or '' }}"
-            >
-            <small>3-50자 사이로 입력하세요</small>
-        </div>
-
-        <div class="form-group">
-            <label for="password">비밀번호</label>
-            <input
-                type="password"
-                id="password"
-                name="password"
-                required
-                placeholder="비밀번호 (8자 이상, 대문자+숫자 포함)"
-                minlength="8"
-            >
-            <small>최소 8자 이상, 대문자와 숫자 각 1개 이상 포함</small>
-        </div>
-
-        <div class="form-group">
-            <label for="password_confirm">비밀번호 확인</label>
-            <input
-                type="password"
-                id="password_confirm"
-                name="password_confirm"
-                required
-                placeholder="비밀번호를 다시 입력하세요"
-                minlength="8"
-            >
-        </div>
-
-        <button type="submit" class="btn-primary">회원가입</button>
-    </form>
-
-    <div class="divider">또는</div>
-
-    <div class="login-link">
-        이미 계정이 있으신가요? <a href="/web-auth/login">로그인</a>
     </div>
 </div>
 {% endblock %}

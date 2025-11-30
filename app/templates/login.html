@@ -3,6 +3,14 @@
 {% block title %}로그인 - Auto Trader{% endblock %}
 
 {% block styles %}
+.auth-page {
+    min-height: calc(100vh - 4rem);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
 .auth-card {
     background: white;
     padding: 3rem;
@@ -103,47 +111,49 @@
 {% endblock %}
 
 {% block content %}
-<div class="auth-card">
-    <h1>로그인</h1>
-    <p>Auto Trader에 오신 것을 환영합니다</p>
+<div class="auth-page">
+    <div class="auth-card">
+        <h1>로그인</h1>
+        <p>Auto Trader에 오신 것을 환영합니다</p>
 
-    {% if error %}
-    <div class="error-message">{{ error }}</div>
-    {% endif %}
+        {% if error %}
+        <div class="error-message">{{ error }}</div>
+        {% endif %}
 
-    <form method="POST" action="/web-auth/login">
-        <div class="form-group">
-            <label for="username">사용자명</label>
-            <input
-                type="text"
-                id="username"
-                name="username"
-                autocomplete="username"
-                required
-                autofocus
-                placeholder="사용자명을 입력하세요"
-            >
+        <form method="POST" action="/web-auth/login">
+            <div class="form-group">
+                <label for="username">사용자명</label>
+                <input
+                    type="text"
+                    id="username"
+                    name="username"
+                    autocomplete="username"
+                    required
+                    autofocus
+                    placeholder="사용자명을 입력하세요"
+                >
+            </div>
+
+            <div class="form-group">
+                <label for="password">비밀번호</label>
+                <input
+                    type="password"
+                    id="password"
+                    name="password"
+                    autocomplete="current-password"
+                    required
+                    placeholder="비밀번호를 입력하세요"
+                >
+            </div>
+
+            <button type="submit" class="btn-primary">로그인</button>
+        </form>
+
+        <div class="divider">또는</div>
+
+        <div class="register-link">
+            계정이 없으신가요? <a href="/web-auth/register">회원가입</a>
         </div>
-
-        <div class="form-group">
-            <label for="password">비밀번호</label>
-            <input
-                type="password"
-                id="password"
-                name="password"
-                autocomplete="current-password"
-                required
-                placeholder="비밀번호를 입력하세요"
-            >
-        </div>
-
-        <button type="submit" class="btn-primary">로그인</button>
-    </form>
-
-    <div class="divider">또는</div>
-
-    <div class="register-link">
-        계정이 없으신가요? <a href="/web-auth/register">회원가입</a>
     </div>
 </div>
 {% endblock %}
