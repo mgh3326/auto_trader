@@ -105,7 +105,7 @@ def run_analysis_for_my_domestic_stocks(self) -> dict:
             for index, stock in enumerate(my_stocks, 1):
                 code = stock.get('pdno')
                 name = stock.get('prdt_name')
-                
+
                 self.update_state(
                     state='PROGRESS',
                     meta={
@@ -116,10 +116,25 @@ def run_analysis_for_my_domestic_stocks(self) -> dict:
                         'percentage': int((index / total_count) * 100)
                     }
                 )
-                
+
                 try:
-                    await analyzer.analyze_stock_json(name)
+                    result, _ = await analyzer.analyze_stock_json(name)
                     results.append({'name': name, 'code': code, 'success': True})
+
+                    # Send Telegram notification if analysis completed successfully
+                    if result is not None and hasattr(result, 'decision'):
+                        try:
+                            notifier = get_trade_notifier()
+                            await notifier.notify_analysis_complete(
+                                symbol=code,
+                                korean_name=name,
+                                decision=result.decision,
+                                confidence=float(result.confidence) if result.confidence else 0.0,
+                                reasons=result.reasons if hasattr(result, 'reasons') and result.reasons else [],
+                                market_type="국내주식",
+                            )
+                        except Exception as notify_error:
+                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as e:
                     results.append({'name': name, 'code': code, 'success': False, 'error': str(e)})
 
@@ -527,9 +542,9 @@ def run_analysis_for_my_overseas_stocks(self) -> dict:
             results = []
 
             for index, stock in enumerate(my_stocks, 1):
-                symbol = stock.get('ovrs_pdno') # 심볼
+                symbol = stock.get('ovrs_pdno')  # 심볼
                 name = stock.get('ovrs_item_name')
-                
+
                 self.update_state(
                     state='PROGRESS',
                     meta={
@@ -540,11 +555,26 @@ def run_analysis_for_my_overseas_stocks(self) -> dict:
                         'percentage': int((index / total_count) * 100)
                     }
                 )
-                
+
                 try:
                     # 해외주식은 심볼로 분석
-                    await analyzer.analyze_stock_json(symbol)
+                    result, _ = await analyzer.analyze_stock_json(symbol)
                     results.append({'name': name, 'symbol': symbol, 'success': True})
+
+                    # Send Telegram notification if analysis completed successfully
+                    if result is not None and hasattr(result, 'decision'):
+                        try:
+                            notifier = get_trade_notifier()
+                            await notifier.notify_analysis_complete(
+                                symbol=symbol,
+                                korean_name=name or symbol,
+                                decision=result.decision,
+                                confidence=float(result.confidence) if result.confidence else 0.0,
+                                reasons=result.reasons if hasattr(result, 'reasons') and result.reasons else [],
+                                market_type="해외주식",
+                            )
+                        except Exception as notify_error:
+                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as e:
                     results.append({'name': name, 'symbol': symbol, 'success': False, 'error': str(e)})
 
