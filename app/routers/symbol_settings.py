@@ -598,7 +598,7 @@ async def get_crypto_estimated_costs(
     # 미체결 매수 주문 조회 및 금액 계산
     pending_buy_cost = 0.0
     try:
-        pending_orders = await upbit.fetch_pending_orders()
+        pending_orders = await upbit.fetch_open_orders()
         # 매수 주문만 필터링 (side: "bid" = 매수)
         for order in pending_orders:
             if order.get("side") == "bid":

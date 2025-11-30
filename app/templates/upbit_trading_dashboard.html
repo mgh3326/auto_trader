@@ -258,6 +258,10 @@
                     <button id="buy-btn" class="btn btn-success btn-action" onclick="executeBuyOrders()">
                         <i class="bi bi-arrow-down-circle"></i> 매수 주문
                     </button>
+                    <div id="total-estimated-cost" class="mt-2 small text-success" style="display: none;">
+                        <i class="bi bi-calculator"></i>
+                        <span id="estimated-cost-text"></span>
+                    </div>
                 </div>
 
                 <!-- 액션 카드 3: 자동 매도 -->
@@ -794,6 +798,9 @@
                         }).join('');
                         attachCoinActionHandlers();
                     }
+
+                    // 예상 매수 비용 로드
+                    loadTotalEstimatedCost();
                 } else {
                     cachedTradableCoins = [];
                     showAlert('보유 코인 조회 실패: ' + data.error, 'danger');
@@ -803,6 +810,44 @@
                 showAlert('보유 코인 조회 중 오류 발생: ' + error.message, 'danger');
             }
         }
+
+        // 전체 예상 매수 비용 로드
+        async function loadTotalEstimatedCost() {
+            try {
+                const response = await fetch('/api/symbol-settings/symbols/crypto/estimated-cost');
+                if (!response.ok) {
+                    document.getElementById('total-estimated-cost').style.display = 'none';
+                    return;
+                }
+
+                const data = await response.json();
+                const costDiv = document.getElementById('total-estimated-cost');
+                const costText = document.getElementById('estimated-cost-text');
+
+                if (data.total_symbols === 0) {
+                    costDiv.style.display = 'none';
+                    return;
+                }
+
+                // 순 예상 비용 표시 (기존 매수 주문 차감)
+                const netCost = new Intl.NumberFormat('ko-KR').format(Math.round(data.net_estimated_cost));
+                const grandTotal = new Intl.NumberFormat('ko-KR').format(Math.round(data.grand_total_cost));
+                const pendingCost = new Intl.NumberFormat('ko-KR').format(Math.round(data.pending_buy_orders_cost));
+
+                let displayText = `예상: ${netCost}원`;
+                if (data.pending_buy_orders_cost > 0) {
+                    displayText += ` (총 ${grandTotal}원 - 기존주문 ${pendingCost}원)`;
+                }
+                displayText += ` / ${data.total_symbols}코인`;
+
+                costText.textContent = displayText;
+                costDiv.style.display = 'block';
+            } catch (error) {
+                console.log('예상 비용 로드 실패:', error);
+                document.getElementById('total-estimated-cost').style.display = 'none';
+            }
+        }
+
         // AI 분석 실행
         let analysisTaskId = null;
         let analysisCheckInterval = null;
@@ -1925,7 +1970,7 @@
                 let response;
                 if (settingsExist) {
                     // Update existing
-                    response = await fetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}`, {
+                    response = await csrfFetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}`, {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -1936,7 +1981,7 @@
                     });
                 } else {
                     // Create new
-                    response = await fetch('/api/symbol-settings/symbols', {
+                    response = await csrfFetch('/api/symbol-settings/symbols', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -1969,7 +2014,7 @@
             }
 
             try {
-                const response = await fetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}`, {
+                const response = await csrfFetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}`, {
                     method: 'DELETE'
                 });
 
