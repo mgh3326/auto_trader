@@ -144,10 +144,10 @@ services:
       - observability
     healthcheck:
       test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
     restart: unless-stopped
 
   # Promtail - Log collector for Loki
@@ -170,10 +170,10 @@ services:
         condition: service_started # Start immediately, Promtail will retry connection
     healthcheck:
       test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9080/ready" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
 
   # Prometheus - Metrics collection and storage
