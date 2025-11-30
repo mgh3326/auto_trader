@@ -143,11 +143,7 @@ services:
     networks:
       - observability
     healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready" ]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 60s
+      disable: true  # Loki 이미지에 wget/curl 없음, 외부에서 curl localhost:3100/ready로 확인
     restart: unless-stopped
 
   # Promtail - Log collector for Loki
@@ -169,11 +165,7 @@ services:
       loki:
         condition: service_started # Start immediately, Promtail will retry connection
     healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9080/ready" ]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 30s
+      disable: true  # Promtail 이미지에 wget/curl 없음, 외부에서 curl localhost:9080/ready로 확인
     restart: unless-stopped
 
   # Prometheus - Metrics collection and storage
