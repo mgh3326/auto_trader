@@ -44,18 +44,55 @@ def upgrade() -> None:
     # Add user_id column as nullable first
     op.add_column('symbol_trade_settings', sa.Column('user_id', sa.BigInteger(), nullable=True))
 
-    # Get first user id or create default assignment
-    # Update existing records to use the first user (or delete if no users exist)
-    op.execute("""
-        UPDATE symbol_trade_settings
-        SET user_id = (SELECT id FROM users ORDER BY id LIMIT 1)
-        WHERE user_id IS NULL
-    """)
+    # Drop old unique index on symbol before duplicating rows per user
+    op.drop_index(op.f('ix_symbol_trade_settings_symbol'), table_name='symbol_trade_settings')
 
-    # Delete orphan records if no users exist
-    op.execute("""
-        DELETE FROM symbol_trade_settings WHERE user_id IS NULL
-    """)
+    bind = op.get_bind()
+    user_ids = [row[0] for row in bind.execute(sa.text("SELECT id FROM users")).fetchall()]
+    has_settings = bool(bind.execute(sa.text("SELECT COUNT(*) FROM symbol_trade_settings")).scalar())
+
+    if has_settings:
+        if user_ids:
+            # 기존 설정을 모든 사용자에게 복제해 데이터 손실을 방지
+            for user_id in user_ids:
+                bind.execute(
+                    sa.text(
+                        """
+                        INSERT INTO symbol_trade_settings (
+                            symbol,
+                            instrument_type,
+                            buy_quantity_per_order,
+                            buy_price_levels,
+                            exchange_code,
+                            is_active,
+                            note,
+                            created_at,
+                            updated_at,
+                            user_id
+                        )
+                        SELECT
+                            symbol,
+                            instrument_type,
+                            buy_quantity_per_order,
+                            buy_price_levels,
+                            exchange_code,
+                            is_active,
+                            note,
+                            created_at,
+                            updated_at,
+                            :user_id
+                        FROM symbol_trade_settings
+                        WHERE user_id IS NULL
+                        """
+                    ),
+                    {"user_id": user_id},
+                )
+        else:
+            # 연결된 사용자가 없으면 기존 설정을 정리해 제약 조건 위반을 방지
+            bind.execute(sa.text("DELETE FROM symbol_trade_settings"))
+
+    # 기존 null user_id 행 제거
+    bind.execute(sa.text("DELETE FROM symbol_trade_settings WHERE user_id IS NULL"))
 
     # Now make the column non-nullable
     op.alter_column('symbol_trade_settings', 'user_id', nullable=False)
@@ -63,7 +100,6 @@ def upgrade() -> None:
                existing_type=sa.BOOLEAN(),
                server_default=None,
                existing_nullable=False)
-    op.drop_index(op.f('ix_symbol_trade_settings_symbol'), table_name='symbol_trade_settings')
     op.create_index(op.f('ix_symbol_trade_settings_symbol'), 'symbol_trade_settings', ['symbol'], unique=False)
     op.create_index(op.f('ix_symbol_trade_settings_user_id'), 'symbol_trade_settings', ['user_id'], unique=False)
     op.create_unique_constraint('uq_user_symbol', 'symbol_trade_settings', ['user_id', 'symbol'])
@@ -102,6 +138,17 @@ def downgrade() -> None:
     op.drop_constraint('uq_user_symbol', 'symbol_trade_settings', type_='unique')
     op.drop_index(op.f('ix_symbol_trade_settings_user_id'), table_name='symbol_trade_settings')
     op.drop_index(op.f('ix_symbol_trade_settings_symbol'), table_name='symbol_trade_settings')
+
+    # 복제된 설정이 있을 수 있으므로 심볼 기준 중복을 제거한 후 기존 제약을 복원
+    op.execute(
+        """
+        DELETE FROM symbol_trade_settings s
+        USING symbol_trade_settings dup
+        WHERE s.id > dup.id
+          AND s.symbol = dup.symbol
+        """
+    )
+
     op.create_index(op.f('ix_symbol_trade_settings_symbol'), 'symbol_trade_settings', ['symbol'], unique=True)
     op.alter_column('symbol_trade_settings', 'is_active',
                existing_type=sa.BOOLEAN(),

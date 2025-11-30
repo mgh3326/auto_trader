@@ -294,12 +294,30 @@ def run_per_domestic_stock_automation(self) -> dict:
                 except Exception as e:
                     stock_steps.append({'step': '매수', 'result': {'success': False, 'error': str(e)}})
 
+                # 매수 후 잔고/평단가를 최신화하여 매도 단계에 반영
+                refreshed_qty = qty
+                refreshed_avg_price = avg_price
+                refreshed_current_price = current_price
+                try:
+                    latest_holdings = await kis.fetch_my_stocks()
+                    latest = next((s for s in latest_holdings if s.get('pdno') == code), None)
+                    if latest:
+                        refreshed_qty = int(latest.get('hldg_qty', refreshed_qty))
+                        refreshed_avg_price = float(latest.get('pchs_avg_pric', refreshed_avg_price))
+                        refreshed_current_price = float(latest.get('prpr', refreshed_current_price))
+                except Exception as refresh_error:
+                    logger.warning("잔고 재조회 실패 - 기존 수량 사용 (%s)", refresh_error)
+
                 # 3. 매도
                 self.update_state(state='PROGRESS', meta={'status': f'{name} 매도 주문 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 try:
-                    # 매수 후 잔고가 변했을 수 있으므로 다시 조회하거나, 기존 수량 사용 (여기선 기존 수량 사용)
-                    # 실제로는 매수 체결 확인이 필요하지만, 비동기라 즉시 반영 안될 수 있음.
-                    res = await process_kis_domestic_sell_orders_with_analysis(kis, code, current_price, avg_price, qty)
+                    res = await process_kis_domestic_sell_orders_with_analysis(
+                        kis,
+                        code,
+                        refreshed_current_price,
+                        refreshed_avg_price,
+                        refreshed_qty,
+                    )
                     stock_steps.append({'step': '매도', 'result': res})
                 except Exception as e:
                     stock_steps.append({'step': '매도', 'result': {'success': False, 'error': str(e)}})
@@ -395,11 +413,11 @@ def execute_overseas_buy_order_task(self, symbol: str) -> dict:
                 avg_price = float(target_stock['pchs_avg_pric'])
                 current_price = float(target_stock['now_pric2'])
             else:
-                # 보유 중이 아니면 현재가 조회 필요 (구현 필요)
-                # 여기서는 간단히 에러 처리 혹은 0으로 가정
-                # 해외 주식 현재가 조회 메서드가 필요함.
-                # kis.fetch_overseas_price(symbol) 구현 안됨.
-                return {'success': False, 'message': '보유 중이 아닌 종목의 매수는 현재 지원되지 않습니다.'}
+                try:
+                    current_price = await kis.fetch_overseas_price(symbol)
+                    avg_price = 0.0  # 신규 매수이므로 평단 없음
+                except Exception as price_error:
+                    return {'success': False, 'message': f'현재가 조회 실패: {price_error}'}
             
             res = await process_kis_overseas_buy_orders_with_analysis(kis, symbol, current_price, avg_price)
             return res

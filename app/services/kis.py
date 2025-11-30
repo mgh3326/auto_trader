@@ -1018,6 +1018,28 @@ class KISClient:
 
         return pd.DataFrame([row]).set_index("code")
 
+    async def fetch_overseas_price(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD",
+    ) -> float:
+        """해외 주식 현재가를 float으로 반환."""
+        price_df = await self.inquire_overseas_price(symbol, exchange_code)
+
+        if price_df is None or price_df.empty:
+            raise RuntimeError(f"해외 주식 현재가를 가져오지 못했습니다: {symbol}")
+
+        try:
+            price_row = price_df.iloc[0]
+            close_price = price_row.get("close")
+        except Exception as exc:  # pragma: no cover - defensive parsing guard
+            raise RuntimeError(f"현재가 파싱 실패: {symbol}") from exc
+
+        if close_price is None:
+            raise RuntimeError(f"현재가 응답에 close 값이 없습니다: {symbol}")
+
+        return float(close_price)
+
     async def fetch_overseas_fundamental_info(
         self,
         symbol: str,
