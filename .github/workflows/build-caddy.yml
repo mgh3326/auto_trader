@@ -1,0 +1,75 @@
+name: Build Caddy Image
+
+on:
+  push:
+    branches: [production]
+    paths:
+      - 'Dockerfile.caddy'
+      - 'Caddyfile'
+      - '.github/workflows/build-caddy.yml'
+  workflow_dispatch:  # 수동 트리거 가능
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-caddy
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=
+
+      - name: Build and push Caddy Docker image
+        id: build
+        timeout-minutes: 30
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.caddy
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=caddy
+          cache-to: type=gha,mode=max,scope=caddy
+          platforms: linux/amd64,linux/arm64
+          provenance: false
+
+      - name: Build Summary
+        if: always()
+        run: |
+          echo "## Caddy Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Dockerfile**: ./Dockerfile.caddy" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.build.outcome }}" == "success" ]; then
+            echo "- **Image pushed**: ✅" >> $GITHUB_STEP_SUMMARY
+            echo "- **Tags**: ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Image pushed**: ❌" >> $GITHUB_STEP_SUMMARY
+          fi

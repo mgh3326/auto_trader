@@ -207,10 +207,7 @@ services:
 
   # Caddy - Reverse proxy with automatic HTTPS
   caddy:
-    build:
-      context: .
-      dockerfile: Dockerfile.caddy
-    image: auto-trader-caddy:latest
+    image: ghcr.io/${GITHUB_REPOSITORY}-caddy:latest
     container_name: caddy
     ports:
       - "80:80"
