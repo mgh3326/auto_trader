@@ -106,6 +106,10 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
                 duration_ms = (time.time() - start_time) * 1000
                 # Mark as error for 5xx status codes
                 self._record_metrics(request, status_code, duration_ms, is_error=(status_code >= 500))
+                if status_code >= 500:
+                    return await self._handle_http_exception(
+                        request, exc, start_time, request_id
+                    )
                 raise
 
             # Record exception in span
@@ -136,9 +140,16 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
 
         except Exception as exc:
             if isinstance(exc, HTTPException):
+                status_code = exc.status_code
                 duration_ms = (time.time() - start_time) * 1000
                 # Mark as error for 5xx status codes
-                self._record_metrics(request, exc.status_code, duration_ms, is_error=(exc.status_code >= 500))
+                self._record_metrics(
+                    request, status_code, duration_ms, is_error=(status_code >= 500)
+                )
+                if status_code >= 500:
+                    return await self._handle_http_exception(
+                        request, exc, start_time, request_id
+                    )
                 raise
 
             # Handle error
@@ -260,7 +271,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
                 request=request,
                 additional_context={
                     "request_id": request_id,
-                    "duration_ms": f"{duration_ms:.2f}",
+                    "duration_ms": duration_ms,
                 },
             )
         except Exception as e:
@@ -286,4 +297,47 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
                 "X-Request-ID": request_id,
                 "X-Process-Time": f"{duration_ms:.2f}ms",
             },
+        )
+
+    async def _handle_http_exception(
+        self, request: Request, exc: HTTPException, start_time: float, request_id: str
+    ) -> JSONResponse:
+        """Handle HTTPExceptions with 5xx status codes."""
+        duration_ms = (time.time() - start_time) * 1000
+
+        logger.error(
+            "HTTPException %s on %s %s: %s",
+            exc.status_code,
+            request.method,
+            request.url.path,
+            exc.detail,
+            exc_info=True,
+        )
+
+        error_reporter = get_error_reporter()
+        try:
+            await error_reporter.send_error_to_telegram(
+                exc,
+                request=request,
+                additional_context={
+                    "request_id": request_id,
+                    "status_code": exc.status_code,
+                    "duration_ms": duration_ms,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send error to Telegram: {e}")
+
+        # Build response content while preserving original detail
+        content = {"detail": exc.detail, "request_id": request_id}
+
+        # Merge headers from the exception, preserving existing ones
+        headers = {**(exc.headers or {})}
+        headers["X-Request-ID"] = request_id
+        headers["X-Process-Time"] = f"{duration_ms:.2f}ms"
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=content,
+            headers=headers,
         )
