@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ko">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -16,16 +17,19 @@
             margin-bottom: 1rem;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
+
         .stats-number {
             font-size: 1.8rem;
             font-weight: bold;
             margin: 0;
         }
+
         .stats-label {
             font-size: 0.9rem;
             opacity: 0.9;
             margin: 0;
         }
+
         .action-card {
             border: 1px solid #dee2e6;
             border-radius: 8px;
@@ -33,21 +37,25 @@
             margin-bottom: 1rem;
             background: white;
         }
+
         .action-card h5 {
             font-size: 1.1rem;
             font-weight: 600;
             margin-bottom: 0.8rem;
         }
+
         .action-card p {
             font-size: 0.9rem;
             color: #666;
             margin-bottom: 1rem;
         }
+
         .btn-action {
             width: 100%;
             padding: 0.75rem;
             font-weight: 600;
         }
+
         .coin-card {
             border: 1px solid #dee2e6;
             border-radius: 8px;
@@ -55,28 +63,34 @@
             margin-bottom: 0.75rem;
             background: white;
         }
+
         .coin-name {
             font-weight: 600;
             font-size: 1.1rem;
             margin-bottom: 0.3rem;
         }
+
         .coin-symbol {
             font-family: monospace;
             color: #666;
             font-size: 0.9rem;
         }
+
         .coin-info {
             font-size: 0.85rem;
             margin: 0.3rem 0;
         }
+
         .profit-positive {
             color: #198754;
             font-weight: 600;
         }
+
         .profit-negative {
             color: #dc3545;
             font-weight: 600;
         }
+
         .loading-spinner {
             display: inline-block;
             width: 1rem;
@@ -86,10 +100,17 @@
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
+
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
         }
+
         .order-item {
             border-left: 3px solid #0d6efd;
             padding: 0.5rem 0.75rem;
@@ -97,37 +118,43 @@
             background: #f8f9fa;
             border-radius: 4px;
         }
+
         .order-item.sell {
             border-left-color: #dc3545;
         }
+
         .alert-custom {
             padding: 0.75rem 1rem;
             border-radius: 6px;
             margin-bottom: 1rem;
         }
+
+        .settings-badge {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .settings-badge:hover {
+            transform: scale(1.05);
+        }
+
+        .settings-configured {
+            background-color: #198754 !important;
+        }
+
+        .settings-not-configured {
+            background-color: #6c757d !important;
+        }
+
+        .estimated-cost-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
     </style>
 </head>
+
 <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="/">
-                <i class="bi bi-currency-bitcoin"></i> Auto Trader
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/stock-latest/">종목 분석</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link active" href="/upbit-trading/">Upbit 자동매매</a>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </nav>
+    {% include 'nav.html' %}
 
     <div class="container-fluid mt-4">
         <div class="row">
@@ -151,6 +178,11 @@
                     <p class="stats-number" id="coin-count">-</p>
                 </div>
 
+                <!-- 기본 설정 버튼 -->
+                <button id="user-defaults-btn" class="btn btn-outline-secondary w-100 mb-2" onclick="openUserDefaultsModal()">
+                    <i class="bi bi-gear-fill"></i> 기본 거래 설정
+                </button>
+
                 <!-- 새로고침 버튼 -->
                 <button id="refresh-coins-btn" class="btn btn-outline-primary w-100 mb-3">
                     <i class="bi bi-arrow-clockwise"></i> 새로고침
@@ -159,17 +191,20 @@
                 <!-- 액션 카드 0: 코인별 자동 실행 -->
                 <div class="action-card">
                     <h5><i class="bi bi-collection-play"></i> 코인별 자동 실행</h5>
-                    <p>보유 중인 각 코인에 대해 순서대로 <strong>분석 → 분할 매수 → 분할 매도</strong> 요청을 전송합니다. 요청은 코인 단위로 순차 처리되어 API 쿼터를 절약합니다.</p>
+                    <p>보유 중인 각 코인에 대해 순서대로 <strong>분석 → 분할 매수 → 분할 매도</strong> 요청을 전송합니다. 요청은 코인 단위로 순차 처리되어 API 쿼터를
+                        절약합니다.</p>
 
                     <div id="per-coin-automation-progress" style="display: none; margin-bottom: 1rem;">
                         <div class="progress" style="height: 25px;">
-                            <div id="per-coin-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-info"
-                                 role="progressbar" style="width: 0%">
+                            <div id="per-coin-progress-bar"
+                                class="progress-bar progress-bar-striped progress-bar-animated bg-info"
+                                role="progressbar" style="width: 0%">
                                 0%
                             </div>
                         </div>
                         <div id="per-coin-automation-status" class="small text-muted mt-2">준비 중...</div>
-                        <div id="per-coin-automation-log" class="small mt-2 text-break" style="max-height: 160px; overflow-y: auto;"></div>
+                        <div id="per-coin-automation-log" class="small mt-2 text-break"
+                            style="max-height: 160px; overflow-y: auto;"></div>
                     </div>
 
                     <button id="per-coin-automation-btn" class="btn btn-outline-primary btn-action">
@@ -185,8 +220,9 @@
                     <!-- 프로그레스바 -->
                     <div id="analysis-progress" style="display: none; margin-bottom: 1rem;">
                         <div class="progress" style="height: 25px;">
-                            <div id="analysis-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
-                                 role="progressbar" style="width: 0%">
+                            <div id="analysis-progress-bar"
+                                class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar"
+                                style="width: 0%">
                                 0%
                             </div>
                         </div>
@@ -208,8 +244,9 @@
                     <!-- 프로그레스바 -->
                     <div id="buy-progress" style="display: none; margin-bottom: 1rem;">
                         <div class="progress" style="height: 25px;">
-                            <div id="buy-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-success"
-                                 role="progressbar" style="width: 0%">
+                            <div id="buy-progress-bar"
+                                class="progress-bar progress-bar-striped progress-bar-animated bg-success"
+                                role="progressbar" style="width: 0%">
                                 0%
                             </div>
                         </div>
@@ -221,6 +258,10 @@
                     <button id="buy-btn" class="btn btn-success btn-action" onclick="executeBuyOrders()">
                         <i class="bi bi-arrow-down-circle"></i> 매수 주문
                     </button>
+                    <div id="total-estimated-cost" class="mt-2 small text-success" style="display: none;">
+                        <i class="bi bi-calculator"></i>
+                        <span id="estimated-cost-text"></span>
+                    </div>
                 </div>
 
                 <!-- 액션 카드 3: 자동 매도 -->
@@ -231,8 +272,9 @@
                     <!-- 프로그레스바 -->
                     <div id="sell-progress" style="display: none; margin-bottom: 1rem;">
                         <div class="progress" style="height: 25px;">
-                            <div id="sell-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-danger"
-                                 role="progressbar" style="width: 0%">
+                            <div id="sell-progress-bar"
+                                class="progress-bar progress-bar-striped progress-bar-animated bg-danger"
+                                role="progressbar" style="width: 0%">
                                 0%
                             </div>
                         </div>
@@ -310,6 +352,143 @@
         </div>
     </div>
 
+    <!-- 코인 매수 설정 모달 (금액 기반) -->
+    <div class="modal fade" id="coinSettingsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-gear"></i> 매수 금액 설정
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="settings-symbol">
+                    <input type="hidden" id="settings-id">
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">코인</label>
+                        <div id="settings-coin-info" class="form-control-plaintext"></div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="settings-amount" class="form-label fw-bold">
+                            주문당 매수 금액 <span class="text-danger">*</span>
+                        </label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="settings-amount"
+                                   min="5000" step="1000" placeholder="예: 100000">
+                            <span class="input-group-text">원</span>
+                        </div>
+                        <div class="form-text">
+                            AI 분석 결과의 4개 매수 가격대에 각각 이 금액만큼 주문합니다.<br>
+                            <small class="text-muted">최소 주문 금액: 5,000원</small>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="settings-note" class="form-label">메모 (선택)</label>
+                        <input type="text" class="form-control" id="settings-note"
+                               placeholder="예: 장기 보유 목적">
+                    </div>
+
+                    <!-- 예상 비용 표시 -->
+                    <div id="estimated-cost-section" class="mb-3" style="display: none;">
+                        <div class="card estimated-cost-card">
+                            <div class="card-body">
+                                <h6 class="card-title mb-3">
+                                    <i class="bi bi-calculator"></i> 예상 매수 비용
+                                </h6>
+                                <div id="estimated-cost-details"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="settings-active" checked>
+                        <label class="form-check-label" for="settings-active">설정 활성화</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-danger" id="settings-delete-btn" style="display: none;">
+                        <i class="bi bi-trash"></i> 삭제
+                    </button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+                    <button type="button" class="btn btn-primary" id="settings-save-btn">
+                        <i class="bi bi-check-lg"></i> 저장
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 사용자 기본 설정 모달 -->
+    <div class="modal fade" id="userDefaultsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-secondary text-white">
+                    <h5 class="modal-title">
+                        <i class="bi bi-gear-fill"></i> 기본 거래 설정
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info small mb-3">
+                        <i class="bi bi-info-circle"></i>
+                        종목별 설정이 없는 경우 아래 기본값이 적용됩니다.
+                    </div>
+
+                    <h6 class="border-bottom pb-2 mb-3">
+                        <i class="bi bi-currency-bitcoin"></i> 암호화폐
+                    </h6>
+
+                    <div class="mb-3">
+                        <label for="defaults-crypto-amount" class="form-label">
+                            기본 매수 금액 <span class="text-danger">*</span>
+                        </label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="defaults-crypto-amount"
+                                   min="5000" step="1000" placeholder="10000">
+                            <span class="input-group-text">원</span>
+                        </div>
+                        <div class="form-text">
+                            종목 설정이 없는 코인의 기본 매수 금액
+                        </div>
+                    </div>
+
+                    <div class="mb-4">
+                        <label for="defaults-crypto-min" class="form-label">
+                            최소 주문 금액
+                        </label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="defaults-crypto-min"
+                                   min="5000" step="1000" placeholder="5000">
+                            <span class="input-group-text">원</span>
+                        </div>
+                        <div class="form-text">
+                            업비트 최소 주문 금액 (기본 5,000원)
+                        </div>
+                    </div>
+
+                    <h6 class="border-bottom pb-2 mb-3">
+                        <i class="bi bi-bank"></i> 주식 (국내/해외)
+                    </h6>
+                    <div class="alert alert-warning small">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        <strong>주식은 종목별 설정이 필수입니다.</strong><br>
+                        설정이 없는 종목은 매수 주문이 실행되지 않습니다.
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+                    <button type="button" class="btn btn-primary" id="defaults-save-btn" onclick="saveUserDefaults()">
+                        <i class="bi bi-check-lg"></i> 저장
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         // localStorage 키
@@ -359,7 +538,7 @@
         }
 
         // 페이지 로드 시 보유 코인 조회 및 진행 중인 작업 복원
-        document.addEventListener('DOMContentLoaded', async function() {
+        document.addEventListener('DOMContentLoaded', async function () {
             const refreshButton = document.getElementById('refresh-coins-btn');
             if (refreshButton) {
                 refreshButton.addEventListener('click', () => {
@@ -550,8 +729,27 @@
                                     <i class="bi bi-cart-dash"></i> 분할 매도
                                 </button>
                             `;
+                            const settingsConfigured = coin.settings_amount !== null && coin.settings_amount !== undefined;
+                            const settingsBadgeClass = settingsConfigured ? 'settings-configured' : 'settings-not-configured';
+                            const settingsText = settingsConfigured
+                                ? `${Number(coin.settings_amount).toLocaleString()}원`
+                                : '미설정';
+                            const settingsButton = `
+                                <span
+                                    class="badge ${settingsBadgeClass} settings-badge coin-settings-btn"
+                                    data-market="${escapeHtml(coin.market)}"
+                                    data-korean-name="${escapeHtml(coin.korean_name)}"
+                                    data-settings-amount="${coin.settings_amount || ''}"
+                                    data-settings-note="${escapeHtml(coin.settings_note || '')}"
+                                    data-settings-active="${coin.settings_active !== false}"
+                                    title="매수 설정 클릭"
+                                >
+                                    <i class="bi bi-gear-fill"></i> ${settingsText}
+                                </span>
+                            `;
                             const actionButtons = `
-                                <div class="d-flex flex-wrap gap-2 justify-content-lg-end">
+                                <div class="d-flex flex-wrap gap-2 justify-content-lg-end align-items-center">
+                                    ${settingsButton}
                                     ${analysisDetailButton}
                                     ${analyzeButton}
                                     ${buyButton}
@@ -600,6 +798,9 @@
                         }).join('');
                         attachCoinActionHandlers();
                     }
+
+                    // 예상 매수 비용 로드
+                    loadTotalEstimatedCost();
                 } else {
                     cachedTradableCoins = [];
                     showAlert('보유 코인 조회 실패: ' + data.error, 'danger');
@@ -609,6 +810,44 @@
                 showAlert('보유 코인 조회 중 오류 발생: ' + error.message, 'danger');
             }
         }
+
+        // 전체 예상 매수 비용 로드
+        async function loadTotalEstimatedCost() {
+            try {
+                const response = await fetch('/api/symbol-settings/symbols/crypto/estimated-cost');
+                if (!response.ok) {
+                    document.getElementById('total-estimated-cost').style.display = 'none';
+                    return;
+                }
+
+                const data = await response.json();
+                const costDiv = document.getElementById('total-estimated-cost');
+                const costText = document.getElementById('estimated-cost-text');
+
+                if (data.total_symbols === 0) {
+                    costDiv.style.display = 'none';
+                    return;
+                }
+
+                // 순 예상 비용 표시 (기존 매수 주문 차감)
+                const netCost = new Intl.NumberFormat('ko-KR').format(Math.round(data.net_estimated_cost));
+                const grandTotal = new Intl.NumberFormat('ko-KR').format(Math.round(data.grand_total_cost));
+                const pendingCost = new Intl.NumberFormat('ko-KR').format(Math.round(data.pending_buy_orders_cost));
+
+                let displayText = `예상: ${netCost}원`;
+                if (data.pending_buy_orders_cost > 0) {
+                    displayText += ` (총 ${grandTotal}원 - 기존주문 ${pendingCost}원)`;
+                }
+                displayText += ` / ${data.total_symbols}코인`;
+
+                costText.textContent = displayText;
+                costDiv.style.display = 'block';
+            } catch (error) {
+                console.log('예상 비용 로드 실패:', error);
+                document.getElementById('total-estimated-cost').style.display = 'none';
+            }
+        }
+
         // AI 분석 실행
         let analysisTaskId = null;
         let analysisCheckInterval = null;
@@ -1141,6 +1380,17 @@
                     triggerCoinSell(currency, button);
                 });
             });
+
+            document.querySelectorAll('.coin-settings-btn').forEach(badge => {
+                badge.addEventListener('click', () => {
+                    const market = badge.dataset.market;
+                    const koreanName = badge.dataset.koreanName;
+                    const amount = badge.dataset.settingsAmount;
+                    const note = badge.dataset.settingsNote;
+                    const active = badge.dataset.settingsActive !== 'false';
+                    openCoinSettingsModal(market, koreanName, amount, note, active);
+                });
+            });
         }
 
         async function triggerCoinAnalysis(currency, koreanName, button) {
@@ -1385,9 +1635,9 @@
                     const statusEl = document.getElementById('per-coin-automation-status');
                     if (statusEl) {
                         if (coinAutomationPendingCount > 5) {
-                             statusEl.innerHTML = '작업 대기 시간이 길어지고 있습니다. <a href="#" onclick="resetPerCoinAutomationUI(); return false;">상태 초기화</a>';
+                            statusEl.innerHTML = '작업 대기 시간이 길어지고 있습니다. <a href="#" onclick="resetPerCoinAutomationUI(); return false;">상태 초기화</a>';
                         } else {
-                             statusEl.textContent = '작업 대기 중... (서버 응답 대기)';
+                            statusEl.textContent = '작업 대기 중... (서버 응답 대기)';
                         }
                     }
                     return;
@@ -1503,7 +1753,7 @@
             return fixed.replace(/0+$/, '').replace(/\.$/, '') || '0';
         }
 
-        
+
         function getDecisionBadge(decision) {
             const badges = {
                 buy: '<span class="badge bg-success">매수</span>',
@@ -1637,6 +1887,226 @@
             }
         }
 
+        // ===== Coin Settings Modal Functions =====
+
+        function openCoinSettingsModal(market, koreanName, amount, note, active) {
+            const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('coinSettingsModal'));
+
+            document.getElementById('settings-symbol').value = market;
+            document.getElementById('settings-coin-info').innerHTML = `<strong>${koreanName}</strong> <small class="text-muted">(${market})</small>`;
+            document.getElementById('settings-amount').value = amount || '';
+            document.getElementById('settings-note').value = note || '';
+            document.getElementById('settings-active').checked = active;
+
+            // Show/hide delete button based on whether settings exist
+            const deleteBtn = document.getElementById('settings-delete-btn');
+            if (amount) {
+                deleteBtn.style.display = 'block';
+            } else {
+                deleteBtn.style.display = 'none';
+            }
+
+            // Hide estimated cost section initially
+            document.getElementById('estimated-cost-section').style.display = 'none';
+
+            // Load estimated cost if analysis exists
+            loadCoinEstimatedCost(market);
+
+            modal.show();
+        }
+
+        async function loadCoinEstimatedCost(market) {
+            try {
+                const response = await fetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}/estimated-cost`);
+                if (response.ok) {
+                    const data = await response.json();
+                    displayCoinEstimatedCost(data);
+                }
+                // If 404 or other error, just don't show the section
+            } catch (error) {
+                console.log('No estimated cost available:', error);
+            }
+        }
+
+        function displayCoinEstimatedCost(data) {
+            const section = document.getElementById('estimated-cost-section');
+            const details = document.getElementById('estimated-cost-details');
+
+            let pricesHtml = data.buy_prices.map(p => `
+                <div class="d-flex justify-content-between small mb-1">
+                    <span>${p.price_name.replace(/_/g, ' ')}</span>
+                    <span>${Number(p.price).toLocaleString()}원 × ${Number(p.quantity).toFixed(8)}개 = ${Number(p.cost).toLocaleString()}원</span>
+                </div>
+            `).join('');
+
+            details.innerHTML = `
+                ${pricesHtml}
+                <hr class="my-2" style="border-color: rgba(255,255,255,0.3);">
+                <div class="d-flex justify-content-between fw-bold">
+                    <span>총 예상 비용</span>
+                    <span>${Number(data.total_cost).toLocaleString()}원</span>
+                </div>
+            `;
+
+            section.style.display = 'block';
+        }
+
+        async function saveCoinSettings() {
+            const market = document.getElementById('settings-symbol').value;
+            const amount = parseFloat(document.getElementById('settings-amount').value);
+            const note = document.getElementById('settings-note').value;
+            const isActive = document.getElementById('settings-active').checked;
+
+            if (!amount || amount < 5000) {
+                showAlert('매수 금액을 5,000원 이상 입력해주세요.', 'warning');
+                return;
+            }
+
+            try {
+                // Check if settings exist
+                const checkResponse = await fetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}`);
+                const settingsExist = checkResponse.ok;
+
+                let response;
+                if (settingsExist) {
+                    // Update existing
+                    response = await csrfFetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            buy_quantity_per_order: amount,
+                            note: note || null,
+                            is_active: isActive
+                        })
+                    });
+                } else {
+                    // Create new
+                    response = await csrfFetch('/api/symbol-settings/symbols', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            symbol: market,
+                            instrument_type: 'crypto',
+                            buy_quantity_per_order: amount,
+                            note: note || null
+                        })
+                    });
+                }
+
+                if (response.ok) {
+                    showAlert(`✅ ${market} 설정이 저장되었습니다.`, 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('coinSettingsModal')).hide();
+                    loadMyCoins(); // Refresh list
+                } else {
+                    const error = await response.json();
+                    showAlert(`❌ 저장 실패: ${error.detail || '알 수 없는 오류'}`, 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ 저장 중 오류 발생: ${error.message}`, 'danger');
+            }
+        }
+
+        async function deleteCoinSettings() {
+            const market = document.getElementById('settings-symbol').value;
+
+            if (!confirm(`${market} 코인의 매수 설정을 삭제하시겠습니까?`)) {
+                return;
+            }
+
+            try {
+                const response = await csrfFetch(`/api/symbol-settings/symbols/${encodeURIComponent(market)}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok || response.status === 204) {
+                    showAlert(`✅ ${market} 설정이 삭제되었습니다.`, 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('coinSettingsModal')).hide();
+                    loadMyCoins();
+                } else {
+                    showAlert('❌ 삭제 실패', 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ 삭제 중 오류 발생: ${error.message}`, 'danger');
+            }
+        }
+
+        // Attach modal button handlers
+        document.getElementById('settings-save-btn').addEventListener('click', saveCoinSettings);
+        document.getElementById('settings-delete-btn').addEventListener('click', deleteCoinSettings);
+
+        // ==========================================
+        // 사용자 기본 설정 관련 함수
+        // ==========================================
+
+        async function openUserDefaultsModal() {
+            try {
+                const response = await fetch('/api/symbol-settings/user-defaults', {
+                    headers: { 'X-CSRF-Token': getCsrfToken() }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    document.getElementById('defaults-crypto-amount').value = data.crypto_default_buy_amount || 10000;
+                    document.getElementById('defaults-crypto-min').value = data.crypto_min_order_amount || 5000;
+                } else if (response.status === 401) {
+                    showAlert('로그인이 필요합니다.', 'warning');
+                    return;
+                } else {
+                    // 설정이 없으면 기본값 표시
+                    document.getElementById('defaults-crypto-amount').value = 10000;
+                    document.getElementById('defaults-crypto-min').value = 5000;
+                }
+
+                const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('userDefaultsModal'));
+                modal.show();
+            } catch (error) {
+                console.error('Error loading user defaults:', error);
+                showAlert('기본 설정을 불러오는 중 오류가 발생했습니다.', 'danger');
+            }
+        }
+
+        async function saveUserDefaults() {
+            const cryptoAmount = parseFloat(document.getElementById('defaults-crypto-amount').value);
+            const cryptoMin = parseFloat(document.getElementById('defaults-crypto-min').value);
+
+            if (!cryptoAmount || cryptoAmount < 5000) {
+                showAlert('기본 매수 금액은 5,000원 이상이어야 합니다.', 'warning');
+                return;
+            }
+
+            if (!cryptoMin || cryptoMin < 5000) {
+                showAlert('최소 주문 금액은 5,000원 이상이어야 합니다.', 'warning');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/symbol-settings/user-defaults', {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': getCsrfToken()
+                    },
+                    body: JSON.stringify({
+                        crypto_default_buy_amount: cryptoAmount,
+                        crypto_min_order_amount: cryptoMin
+                    })
+                });
+
+                if (response.ok) {
+                    showAlert('기본 설정이 저장되었습니다.', 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('userDefaultsModal')).hide();
+                } else if (response.status === 401) {
+                    showAlert('로그인이 필요합니다.', 'warning');
+                } else {
+                    const errorData = await response.json().catch(() => ({}));
+                    showAlert(errorData.detail || '설정 저장에 실패했습니다.', 'danger');
+                }
+            } catch (error) {
+                console.error('Error saving user defaults:', error);
+                showAlert('설정 저장 중 오류가 발생했습니다.', 'danger');
+            }
+        }
+
         // 알림 표시
         function showAlert(message, type, options = {}) {
             const alertArea = document.getElementById('alert-area');
@@ -1684,4 +2154,5 @@
         }
     </script>
 </body>
+
 </html>

@@ -1,0 +1,1226 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KIS 해외주식 자동 매매</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <style>
+        .profit-plus {
+            color: #d60000;
+        }
+
+        /* 해외주식도 상승은 빨강 (한국 기준) */
+        .profit-minus {
+            color: #0051c7;
+        }
+
+        /* 해외주식도 하락은 파랑 (한국 기준) */
+        .settings-badge {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .settings-badge:hover {
+            transform: scale(1.05);
+        }
+
+        .settings-configured {
+            background-color: #198754 !important;
+        }
+
+        .settings-not-configured {
+            background-color: #6c757d !important;
+        }
+
+        .estimated-cost-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .loading-spinner {
+            width: 1rem;
+            height: 1rem;
+            border: 0.2em solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: spinner-border .75s linear infinite;
+        }
+
+        .card {
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            border: none;
+            margin-bottom: 1.5rem;
+        }
+
+        .card-header {
+            background-color: #fff;
+            border-bottom: 1px solid #eee;
+            font-weight: 600;
+        }
+
+        .btn-action {
+            width: 100%;
+            margin-bottom: 0.5rem;
+        }
+
+        #alert-area {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            width: 350px;
+        }
+
+        .alert-custom {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            border: none;
+        }
+    </style>
+</head>
+
+<body class="bg-light">
+    {% include 'nav.html' %}
+
+    <div class="container py-4">
+        <div id="alert-area"></div>
+
+        <div class="row mb-4">
+            <div class="col-12">
+                <h2 class="mb-3">
+                    <i class="bi bi-globe text-success"></i> KIS 해외주식 자동 매매
+                </h2>
+                <div class="card">
+                    <div class="card-body">
+                        <div class="row text-center">
+                            <div class="col-md-4 mb-3 mb-md-0">
+                                <h5 class="text-muted">총 보유 자산 (USD 예수금)</h5>
+                                <h3 id="usd-balance" class="fw-bold">- USD</h3>
+                            </div>
+                            <div class="col-md-4 mb-3 mb-md-0">
+                                <h5 class="text-muted">보유 종목 수</h5>
+                                <h3 id="stock-count" class="fw-bold">- 개</h3>
+                            </div>
+                            <div class="col-md-4">
+                                <h5 class="text-muted">총 평가 금액 (추정)</h5>
+                                <h3 id="total-evaluation" class="fw-bold">- USD</h3> <!-- 해외주식은 보통 외화 평가액 -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-robot"></i> 자동 매매 제어</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-md-3">
+                                <button id="analyze-btn" class="btn btn-primary btn-action" onclick="analyzeStocks()">
+                                    <i class="bi bi-search"></i> 전체 종목 AI 분석
+                                </button>
+                                <div id="analyze-progress" class="progress mt-2" style="height: 20px; display: none;">
+                                    <div id="analyze-progress-bar"
+                                        class="progress-bar progress-bar-striped progress-bar-animated"
+                                        role="progressbar" style="width: 0%">0%</div>
+                                </div>
+                                <small id="analyze-status" class="text-muted d-block mt-1"></small>
+                            </div>
+                            <div class="col-md-3">
+                                <button id="buy-btn" class="btn btn-success btn-action" onclick="executeBuyOrders()">
+                                    <i class="bi bi-cart-plus"></i> 자동 매수 주문
+                                </button>
+                                <div id="buy-progress" class="progress mt-2" style="height: 20px; display: none;">
+                                    <div id="buy-progress-bar"
+                                        class="progress-bar progress-bar-striped progress-bar-animated bg-success"
+                                        role="progressbar" style="width: 0%">0%</div>
+                                </div>
+                                <small id="buy-status" class="text-muted d-block mt-1"></small>
+                                <div id="total-estimated-cost" class="mt-2 small text-success" style="display: none;">
+                                    <i class="bi bi-calculator"></i>
+                                    <span id="estimated-cost-text"></span>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <button id="sell-btn" class="btn btn-danger btn-action" onclick="executeSellOrders()">
+                                    <i class="bi bi-cart-dash"></i> 자동 매도 주문
+                                </button>
+                                <div id="sell-progress" class="progress mt-2" style="height: 20px; display: none;">
+                                    <div id="sell-progress-bar"
+                                        class="progress-bar progress-bar-striped progress-bar-animated bg-danger"
+                                        role="progressbar" style="width: 0%">0%</div>
+                                </div>
+                                <small id="sell-status" class="text-muted d-block mt-1"></small>
+                            </div>
+                            <div class="col-md-3">
+                                <button id="per-stock-automation-btn" class="btn btn-warning text-dark btn-action"
+                                    onclick="runPerStockAutomation()">
+                                    <i class="bi bi-collection-play"></i> 종목별 분석→매수→매도
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 종목별 자동 실행 진행상황 -->
+                        <div id="per-stock-automation-progress" class="mt-3 p-3 bg-light rounded border"
+                            style="display: none;">
+                            <h6 class="border-bottom pb-2 mb-2">종목별 자동 실행 진행상황</h6>
+                            <div class="progress mb-2" style="height: 20px;">
+                                <div id="per-stock-progress-bar"
+                                    class="progress-bar progress-bar-striped progress-bar-animated bg-warning text-dark"
+                                    role="progressbar" style="width: 0%">0%</div>
+                            </div>
+                            <div id="per-stock-automation-status" class="small fw-bold mb-2 text-primary"></div>
+                            <div id="per-stock-automation-log" class="small text-muted"
+                                style="max-height: 150px; overflow-y: auto; font-family: monospace; background: #fff; padding: 10px; border: 1px solid #ddd;">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-list-ul"></i> 보유 종목 목록</span>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadMyStocks()">
+                            <i class="bi bi-arrow-clockwise"></i> 새로고침
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>종목명 (심볼)</th>
+                                        <th class="text-end">보유수량</th>
+                                        <th class="text-end">평균단가</th>
+                                        <th class="text-end">현재가</th>
+                                        <th class="text-end">평가금액</th>
+                                        <th class="text-end">평가손익 (수익률)</th>
+                                        <th class="text-center">AI 분석</th>
+                                        <th class="text-center">매수설정</th>
+                                        <th class="text-center">관리</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="stocks-list">
+                                    <tr>
+                                        <td colspan="9" class="text-center py-4">
+                                            <div class="spinner-border text-primary" role="status">
+                                                <span class="visually-hidden">Loading...</span>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Analysis Detail Modal -->
+    <div class="modal fade" id="stockAnalysisModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">AI 분석 상세</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Content loaded via JS -->
+                </div>
+                <div class="modal-footer">
+                    <a href="#" id="stockAnalysisLink" class="btn btn-outline-primary d-none" target="_blank">차트 보기</a>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">닫기</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Symbol Settings Modal -->
+    <div class="modal fade" id="symbolSettingsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">
+                        <i class="bi bi-gear"></i> 매수 수량 설정
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="settings-symbol">
+                    <input type="hidden" id="settings-id">
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">종목</label>
+                        <div id="settings-stock-info" class="form-control-plaintext"></div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="settings-quantity" class="form-label fw-bold">
+                            주문당 매수 수량 <span class="text-danger">*</span>
+                        </label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="settings-quantity"
+                                   min="1" step="1" placeholder="예: 2">
+                            <span class="input-group-text">주</span>
+                        </div>
+                        <div class="form-text">
+                            아래에서 선택한 가격대 수만큼, 각각 이 수량으로 주문합니다.
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="settings-price-levels" class="form-label fw-bold">
+                            주문 가격대 수 <span class="text-danger">*</span>
+                        </label>
+                        <select class="form-select" id="settings-price-levels">
+                            <option value="1">1개 (적정 매수 min만)</option>
+                            <option value="2">2개 (적정 매수 min, max)</option>
+                            <option value="3">3개 (적정 매수 + 희망 매수 min)</option>
+                            <option value="4" selected>4개 (전체 가격대)</option>
+                        </select>
+                        <div class="form-text">
+                            AI 분석 결과의 몇 개 가격대에 주문할지 선택합니다.
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="settings-note" class="form-label">메모 (선택)</label>
+                        <input type="text" class="form-control" id="settings-note"
+                               placeholder="예: 장기 보유 목적">
+                    </div>
+
+                    <!-- 예상 비용 표시 -->
+                    <div id="estimated-cost-section" class="mb-3" style="display: none;">
+                        <div class="card estimated-cost-card">
+                            <div class="card-body">
+                                <h6 class="card-title mb-3">
+                                    <i class="bi bi-calculator"></i> 예상 매수 비용
+                                </h6>
+                                <div id="estimated-cost-details"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" class="form-check-input" id="settings-active" checked>
+                        <label class="form-check-label" for="settings-active">설정 활성화</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-danger" id="settings-delete-btn" style="display: none;">
+                        <i class="bi bi-trash"></i> 삭제
+                    </button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+                    <button type="button" class="btn btn-primary" id="settings-save-btn">
+                        <i class="bi bi-check-lg"></i> 저장
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // 전역 변수 및 상수
+        const STORAGE_KEYS = {
+            ANALYZE: 'kis_overseas_analyze_task_id',
+            BUY: 'kis_overseas_buy_task_id',
+            SELL: 'kis_overseas_sell_task_id',
+            STOCK_AUTOMATION: 'kis_overseas_stock_automation_task_id'
+        };
+
+        let analyzeTaskId = localStorage.getItem(STORAGE_KEYS.ANALYZE);
+        let buyTaskId = localStorage.getItem(STORAGE_KEYS.BUY);
+        let sellTaskId = localStorage.getItem(STORAGE_KEYS.SELL);
+        let stockAutomationTaskId = localStorage.getItem(STORAGE_KEYS.STOCK_AUTOMATION);
+
+        let analyzeCheckInterval = null;
+        let buyCheckInterval = null;
+        let sellCheckInterval = null;
+        let stockAutomationInterval = null;
+
+        let analyzePendingCount = 0;
+        let buyPendingCount = 0;
+        let sellPendingCount = 0;
+        let stockAutomationPendingCount = 0;
+
+        let perStockAutomationRunning = false;
+
+        // 초기화
+        document.addEventListener('DOMContentLoaded', () => {
+            loadMyStocks();
+
+            if (analyzeTaskId) {
+                document.getElementById('analyze-btn').disabled = true;
+                document.getElementById('analyze-progress').style.display = 'block';
+                analyzeCheckInterval = setInterval(checkAnalyzeProgress, 1000);
+            }
+            if (buyTaskId) {
+                document.getElementById('buy-btn').disabled = true;
+                document.getElementById('buy-progress').style.display = 'block';
+                buyCheckInterval = setInterval(checkBuyProgress, 1000);
+            }
+            if (sellTaskId) {
+                document.getElementById('sell-btn').disabled = true;
+                document.getElementById('sell-progress').style.display = 'block';
+                sellCheckInterval = setInterval(checkSellProgress, 1000);
+            }
+            if (stockAutomationTaskId) {
+                perStockAutomationRunning = true;
+                const progressWrapper = document.getElementById('per-stock-automation-progress');
+                progressWrapper.style.display = 'block';
+                document.getElementById('per-stock-automation-btn').disabled = true;
+                document.getElementById('per-stock-automation-btn').innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 실행 중...';
+                stockAutomationInterval = setInterval(checkStockAutomationProgress, 2000);
+            }
+        });
+
+        async function csrfFetch(url, options = {}) {
+            return fetch(url, options);
+        }
+
+        // 보유 주식 조회
+        async function loadMyStocks() {
+            try {
+                const response = await fetch('/kis-overseas-trading/api/my-stocks');
+                const data = await response.json();
+
+                if (data.success) {
+                    // 잔고 업데이트 (USD)
+                    document.getElementById('usd-balance').textContent =
+                        new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(data.usd_balance);
+                    document.getElementById('stock-count').textContent = data.total_stocks + ' 개';
+
+                    const list = document.getElementById('stocks-list');
+
+                    if (data.stocks.length === 0) {
+                        list.innerHTML = '<tr><td colspan="9" class="text-center py-4">보유 중인 해외 주식이 없습니다.</td></tr>';
+                        document.getElementById('total-evaluation').textContent = '0 USD';
+                        return;
+                    }
+
+                    let totalEval = 0;
+
+                    list.innerHTML = data.stocks.map(stock => {
+                        // Assuming evaluation is in local currency (USD usually for US stocks)
+                        // If mixed currencies, simple sum might be wrong, but for now assume USD
+                        totalEval += stock.evaluation;
+
+                        const profitClass = stock.profit_rate > 0 ? 'profit-plus' : (stock.profit_rate < 0 ? 'profit-minus' : '');
+                        const profitSign = stock.profit_rate > 0 ? '+' : '';
+                        const profitRatePercent = (stock.profit_rate * 100).toFixed(2);
+
+                        // Analysis status
+                        let analysisBadge = '<span class="badge bg-secondary">미분석</span>';
+                        if (stock.analysis_id) {
+                            analysisBadge = getDecisionBadge(stock.last_analysis_decision);
+                        }
+
+                        let analysisButton = `
+                            <button class="btn btn-sm btn-outline-primary stock-analyze-btn"
+                                data-id="${stock.analysis_id || ''}"
+                                data-code="${stock.code}"
+                                data-name="${stock.name}">
+                                <i class="bi bi-cpu"></i> 분석
+                            </button>
+                        `;
+
+                        // Settings badge
+                        let settingsBadge;
+                        if (stock.settings_quantity) {
+                            const priceLevels = stock.settings_price_levels || 4;
+                            settingsBadge = `
+                                <span class="badge settings-badge settings-configured"
+                                      data-code="${stock.code}"
+                                      data-name="${stock.name}"
+                                      data-quantity="${stock.settings_quantity}"
+                                      data-price-levels="${priceLevels}"
+                                      data-note="${stock.settings_note || ''}"
+                                      data-active="${stock.settings_active}"
+                                      title="클릭하여 수정">
+                                    ${stock.settings_quantity}주 x ${priceLevels}
+                                </span>
+                            `;
+                        } else {
+                            settingsBadge = `
+                                <span class="badge settings-badge settings-not-configured"
+                                      data-code="${stock.code}"
+                                      data-name="${stock.name}"
+                                      title="클릭하여 설정">
+                                    <i class="bi bi-plus-lg"></i> 설정
+                                </span>
+                            `;
+                        }
+
+                        return `
+                            <tr>
+                                <td>
+                                    <strong>${stock.name}</strong>
+                                    <br><small class="text-muted">${stock.code}</small>
+                                </td>
+                                <td class="text-end">${stock.quantity.toLocaleString()}</td>
+                                <td class="text-end">${stock.avg_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                <td class="text-end">${stock.current_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                <td class="text-end">${stock.evaluation.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                <td class="text-end ${profitClass}">
+                                    ${stock.profit_loss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}<br>
+                                    (${profitSign}${profitRatePercent}%)
+                                </td>
+                                <td class="text-center">
+                                    ${analysisBadge}
+                                </td>
+                                <td class="text-center">
+                                    ${settingsBadge}
+                                </td>
+                                <td class="text-center">
+                                    <div class="btn-group btn-group-sm">
+                                        ${analysisButton}
+                                        <button class="btn btn-outline-success stock-buy-btn" data-code="${stock.code}">매수</button>
+                                        <button class="btn btn-outline-danger stock-sell-btn" data-code="${stock.code}">매도</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('');
+
+                    document.getElementById('total-evaluation').textContent =
+                        new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(totalEval);
+
+                    attachStockActionHandlers();
+
+                    // 예상 매수 비용 로드
+                    loadTotalEstimatedCost();
+                } else {
+                    showAlert('보유 주식 조회 실패: ' + (data.error || 'Unknown error'), 'danger');
+                }
+            } catch (error) {
+                console.error('Error loading stocks:', error);
+                showAlert('보유 주식 정보를 불러오는 중 오류가 발생했습니다.', 'danger');
+            }
+        }
+
+        // 전체 예상 매수 비용 로드
+        async function loadTotalEstimatedCost() {
+            try {
+                const response = await fetch('/api/symbol-settings/symbols/overseas/estimated-cost');
+                if (!response.ok) {
+                    document.getElementById('total-estimated-cost').style.display = 'none';
+                    return;
+                }
+
+                const data = await response.json();
+                const costDiv = document.getElementById('total-estimated-cost');
+                const costText = document.getElementById('estimated-cost-text');
+
+                if (data.total_symbols === 0) {
+                    costDiv.style.display = 'none';
+                    return;
+                }
+
+                // 순 예상 비용 표시 (기존 매수 주문 차감)
+                const formatUSD = (value) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+                const netCost = formatUSD(data.net_estimated_cost);
+                const grandTotal = formatUSD(data.grand_total_cost);
+                const pendingCost = formatUSD(data.pending_buy_orders_cost);
+
+                let displayText = `예상: ${netCost}`;
+                if (data.pending_buy_orders_cost > 0) {
+                    displayText += ` (총 ${grandTotal} - 기존주문 ${pendingCost})`;
+                }
+                displayText += ` / ${data.total_symbols}종목`;
+
+                costText.textContent = displayText;
+                costDiv.style.display = 'block';
+            } catch (error) {
+                console.log('예상 비용 로드 실패:', error);
+                document.getElementById('total-estimated-cost').style.display = 'none';
+            }
+        }
+
+        // 전체 분석 실행
+        async function analyzeStocks() {
+            if (!confirm('보유 중인 모든 해외 종목에 대해 AI 분석을 실행하시겠습니까?')) {
+                return;
+            }
+
+            try {
+                const analyzeBtn = document.getElementById('analyze-btn');
+                const analyzeProgress = document.getElementById('analyze-progress');
+                const analyzeProgressBar = document.getElementById('analyze-progress-bar');
+                const analyzeStatus = document.getElementById('analyze-status');
+
+                analyzeBtn.disabled = true;
+                analyzeProgress.style.display = 'block';
+                analyzeProgressBar.style.width = '0%';
+                analyzeProgressBar.textContent = '0%';
+                analyzeStatus.textContent = '분석 요청 중...';
+
+                const response = await csrfFetch('/kis-overseas-trading/api/analyze-stocks', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (data.success && data.task_id) {
+                    analyzeTaskId = data.task_id;
+                    localStorage.setItem(STORAGE_KEYS.ANALYZE, data.task_id);
+                    showAlert('✅ ' + data.message, 'success');
+                    analyzeCheckInterval = setInterval(checkAnalyzeProgress, 1000);
+                } else {
+                    showAlert('❌ 분석 요청 실패', 'danger');
+                    analyzeBtn.disabled = false;
+                    analyzeProgress.style.display = 'none';
+                }
+            } catch (error) {
+                showAlert('분석 요청 중 오류 발생: ' + error.message, 'danger');
+                document.getElementById('analyze-btn').disabled = false;
+                document.getElementById('analyze-progress').style.display = 'none';
+            }
+        }
+
+        async function checkAnalyzeProgress() {
+            if (!analyzeTaskId) return;
+
+            try {
+                const response = await fetch(`/kis-overseas-trading/api/analyze-task/${analyzeTaskId}`);
+                const data = await response.json();
+
+                const analyzeProgressBar = document.getElementById('analyze-progress-bar');
+                const analyzeStatus = document.getElementById('analyze-status');
+
+                if (data.state === 'PENDING') {
+                    analyzePendingCount++;
+                    if (analyzeStatus) {
+                        if (analyzePendingCount > 5) {
+                            analyzeStatus.innerHTML = '대기 시간이 길어지고 있습니다. <a href="#" onclick="localStorage.removeItem(STORAGE_KEYS.ANALYZE); location.reload(); return false;">상태 초기화</a>';
+                        } else {
+                            analyzeStatus.textContent = '작업 대기 중... (서버 응답 대기)';
+                        }
+                    }
+                    return;
+                }
+                analyzePendingCount = 0;
+
+                if (data.state === 'PROGRESS' && data.progress) {
+                    const percentage = data.progress.percentage || 0;
+                    analyzeProgressBar.style.width = percentage + '%';
+                    analyzeProgressBar.textContent = percentage + '%';
+                    analyzeStatus.textContent = data.progress.status || '분석 진행 중...';
+                } else if (data.state === 'SUCCESS') {
+                    clearInterval(analyzeCheckInterval);
+                    analyzeTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.ANALYZE);
+
+                    analyzeProgressBar.style.width = '100%';
+                    analyzeProgressBar.textContent = '100%';
+                    analyzeStatus.textContent = '완료!';
+
+                    if (data.result) {
+                        const message = data.result.message || `${data.result.analyzed_count}/${data.result.total_count}개 종목 분석 완료`;
+                        showAlert('✅ ' + message, 'success');
+                    }
+
+                    setTimeout(() => {
+                        document.getElementById('analyze-btn').disabled = false;
+                        document.getElementById('analyze-progress').style.display = 'none';
+                        loadMyStocks();
+                    }, 2000);
+                } else if (data.state === 'FAILURE') {
+                    clearInterval(analyzeCheckInterval);
+                    analyzeTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.ANALYZE);
+                    showAlert('❌ 분석 실패: ' + (data.result?.error || '알 수 없는 오류'), 'danger');
+                    document.getElementById('analyze-btn').disabled = false;
+                    document.getElementById('analyze-progress').style.display = 'none';
+                }
+            } catch (error) {
+                console.error('Progress check error:', error);
+            }
+        }
+
+        // 자동 매수 주문 (Placeholder logic)
+        async function executeBuyOrders() {
+            if (!confirm('보유 종목에 대한 자동 매수 주문을 실행하시겠습니까?')) {
+                return;
+            }
+            triggerTask('buy', '/kis-overseas-trading/api/buy-orders', STORAGE_KEYS.BUY);
+        }
+
+        // 자동 매도 주문 (Placeholder logic)
+        async function executeSellOrders() {
+            if (!confirm('보유 종목에 대한 자동 매도 주문을 실행하시겠습니까?')) {
+                return;
+            }
+            triggerTask('sell', '/kis-overseas-trading/api/sell-orders', STORAGE_KEYS.SELL);
+        }
+
+        async function triggerTask(type, url, storageKey) {
+            try {
+                const btn = document.getElementById(`${type}-btn`);
+                const progress = document.getElementById(`${type}-progress`);
+                const progressBar = document.getElementById(`${type}-progress-bar`);
+                const status = document.getElementById(`${type}-status`);
+
+                btn.disabled = true;
+                progress.style.display = 'block';
+                progressBar.style.width = '0%';
+                progressBar.textContent = '0%';
+                status.textContent = '요청 중...';
+
+                const response = await csrfFetch(url, { method: 'POST' });
+                const data = await response.json();
+
+                if (data.success && data.task_id) {
+                    if (type === 'buy') buyTaskId = data.task_id;
+                    if (type === 'sell') sellTaskId = data.task_id;
+
+                    localStorage.setItem(storageKey, data.task_id);
+                    showAlert('✅ ' + data.message, 'success');
+
+                    if (type === 'buy') buyCheckInterval = setInterval(checkBuyProgress, 1000);
+                    if (type === 'sell') sellCheckInterval = setInterval(checkSellProgress, 1000);
+                } else {
+                    showAlert('❌ 요청 실패', 'danger');
+                    btn.disabled = false;
+                    progress.style.display = 'none';
+                }
+            } catch (error) {
+                showAlert('요청 중 오류 발생: ' + error.message, 'danger');
+                document.getElementById(`${type}-btn`).disabled = false;
+                document.getElementById(`${type}-progress`).style.display = 'none';
+            }
+        }
+
+        async function checkBuyProgress() {
+            checkGenericProgress(buyTaskId, 'buy', buyCheckInterval, STORAGE_KEYS.BUY);
+        }
+
+        async function checkSellProgress() {
+            checkGenericProgress(sellTaskId, 'sell', sellCheckInterval, STORAGE_KEYS.SELL);
+        }
+
+        async function checkGenericProgress(taskId, type, intervalId, storageKey) {
+            if (!taskId) return;
+            try {
+                const response = await fetch(`/kis-overseas-trading/api/analyze-task/${taskId}`);
+                const data = await response.json();
+
+                const progressBar = document.getElementById(`${type}-progress-bar`);
+                const status = document.getElementById(`${type}-status`);
+
+                if (data.state === 'PENDING') return;
+
+                if (data.state === 'PROGRESS' && data.progress) {
+                    const percentage = data.progress.percentage || 0;
+                    progressBar.style.width = percentage + '%';
+                    progressBar.textContent = percentage + '%';
+                    status.textContent = data.progress.status || '진행 중...';
+                } else if (data.state === 'SUCCESS') {
+                    clearInterval(intervalId);
+                    if (type === 'buy') buyTaskId = null;
+                    if (type === 'sell') sellTaskId = null;
+                    localStorage.removeItem(storageKey);
+
+                    progressBar.style.width = '100%';
+                    progressBar.textContent = '100%';
+                    status.textContent = '완료!';
+                    showAlert('✅ 작업 완료', 'success');
+
+                    setTimeout(() => {
+                        document.getElementById(`${type}-btn`).disabled = false;
+                        document.getElementById(`${type}-progress`).style.display = 'none';
+                        loadMyStocks();
+                    }, 2000);
+                } else if (data.state === 'FAILURE') {
+                    clearInterval(intervalId);
+                    if (type === 'buy') buyTaskId = null;
+                    if (type === 'sell') sellTaskId = null;
+                    localStorage.removeItem(storageKey);
+                    showAlert('❌ 실패: ' + (data.result?.error || '오류'), 'danger');
+                    document.getElementById(`${type}-btn`).disabled = false;
+                    document.getElementById(`${type}-progress`).style.display = 'none';
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        // 종목별 자동 실행
+        async function runPerStockAutomation() {
+            if (perStockAutomationRunning || stockAutomationTaskId) {
+                showAlert('이미 종목별 자동 실행이 진행 중입니다.', 'warning');
+                return;
+            }
+            if (!confirm('보유 중인 각 종목에 대해 분석 → 매수 → 매도 요청을 백그라운드에서 실행할까요?')) {
+                return;
+            }
+
+            perStockAutomationRunning = true;
+            const button = document.getElementById('per-stock-automation-btn');
+            const progressWrapper = document.getElementById('per-stock-automation-progress');
+            const progressBar = document.getElementById('per-stock-progress-bar');
+            const statusEl = document.getElementById('per-stock-automation-status');
+            const logEl = document.getElementById('per-stock-automation-log');
+
+            progressWrapper.style.display = 'block';
+            progressBar.style.width = '0%';
+            progressBar.textContent = '0%';
+            statusEl.textContent = '요청을 준비 중입니다...';
+            logEl.innerHTML = '';
+
+            button.disabled = true;
+            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 실행 중...';
+
+            try {
+                const response = await csrfFetch('/kis-overseas-trading/api/automation/per-stock', { method: 'POST' });
+                const data = await response.json();
+
+                if (data.success && data.task_id) {
+                    stockAutomationTaskId = data.task_id;
+                    localStorage.setItem(STORAGE_KEYS.STOCK_AUTOMATION, data.task_id);
+                    statusEl.textContent = '종목별 자동 실행이 시작되었습니다.';
+                    stockAutomationInterval = setInterval(checkStockAutomationProgress, 2000);
+                    showAlert(data.message, 'success');
+                } else {
+                    showAlert('❌ 시작 실패', 'danger');
+                    resetPerStockAutomationUI();
+                }
+            } catch (error) {
+                showAlert('❌ 오류 발생: ' + error.message, 'danger');
+                resetPerStockAutomationUI();
+            }
+        }
+
+        async function checkStockAutomationProgress() {
+            if (!stockAutomationTaskId) return;
+            try {
+                const response = await fetch(`/kis-overseas-trading/api/analyze-task/${stockAutomationTaskId}`);
+                const data = await response.json();
+
+                if (data.state === 'PENDING') return;
+
+                if (data.state === 'PROGRESS') {
+                    // Update progress UI
+                    return;
+                }
+
+                if (data.state === 'SUCCESS' || data.state === 'FAILURE') {
+                    clearInterval(stockAutomationInterval);
+                    stockAutomationTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.STOCK_AUTOMATION);
+                    showAlert(data.state === 'SUCCESS' ? '완료되었습니다.' : '실패했습니다.', data.state === 'SUCCESS' ? 'success' : 'danger');
+                    resetPerStockAutomationUI();
+                    loadMyStocks();
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function resetPerStockAutomationUI() {
+            perStockAutomationRunning = false;
+            if (stockAutomationInterval) clearInterval(stockAutomationInterval);
+            stockAutomationInterval = null;
+
+            const button = document.getElementById('per-stock-automation-btn');
+            button.disabled = false;
+            button.innerHTML = '<i class="bi bi-collection-play"></i> 종목별 분석→매수→매도';
+        }
+
+        function attachStockActionHandlers() {
+            // Settings badge handlers
+            document.querySelectorAll('.settings-badge').forEach(badge => {
+                badge.addEventListener('click', () => {
+                    const symbol = badge.dataset.code;
+                    const name = badge.dataset.name;
+                    const quantity = badge.dataset.quantity || '';
+                    const priceLevels = badge.dataset.priceLevels || '4';
+                    const note = badge.dataset.note || '';
+                    const active = badge.dataset.active !== 'false';
+
+                    openSettingsModal(symbol, name, quantity, priceLevels, note, active);
+                });
+            });
+
+            document.querySelectorAll('.stock-analyze-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const analysisId = btn.dataset.id;
+                    const symbol = btn.dataset.code;
+                    const name = btn.dataset.name;
+
+                    if (analysisId) {
+                        openStockAnalysisDetail(analysisId, symbol, name);
+                    } else {
+                        if (confirm(`${name} (${symbol})에 대한 개별 AI 분석을 실행하시겠습니까?`)) {
+                            triggerIndividualStockTask('analyze-stock', symbol, name);
+                        }
+                    }
+                });
+            });
+            document.querySelectorAll('.stock-buy-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const symbol = btn.dataset.code;
+                    if (confirm(`${symbol} 종목에 대한 매수 주문을 실행하시겠습니까? (AI 분석 기반)`)) {
+                        triggerIndividualStockTask('buy-order', symbol, symbol);
+                    }
+                });
+            });
+            document.querySelectorAll('.stock-sell-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const symbol = btn.dataset.code;
+                    if (confirm(`${symbol} 종목에 대한 매도 주문을 실행하시겠습니까? (AI 분석 기반)`)) {
+                        triggerIndividualStockTask('sell-order', symbol, symbol);
+                    }
+                });
+            });
+        }
+
+        async function triggerIndividualStockTask(action, symbol, name) {
+            try {
+                const response = await csrfFetch(`/kis-overseas-trading/api/${action}/${symbol}`, { method: 'POST' });
+                const data = await response.json();
+
+                if (data.success) {
+                    showAlert(`✅ ${name} ${action} 요청 완료. (Task ID: ${data.task_id})`, 'success');
+                } else {
+                    showAlert(`❌ ${name} ${action} 요청 실패: ${data.message || 'Unknown error'}`, 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ 요청 중 오류 발생: ${error.message}`, 'danger');
+            }
+        }
+
+        // --- Helper Functions for Analysis Modal ---
+
+        function formatLastAnalysisTime(isoString) {
+            if (!isoString) return '-';
+            const date = new Date(isoString);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMins / 60);
+
+            if (diffMins < 1) return '방금 전';
+            if (diffMins < 60) return `${diffMins}분 전`;
+            if (diffHours < 24) return `${diffHours}시간 전`;
+            return date.toLocaleString();
+        }
+
+        function getDecisionBadge(decision) {
+            const badges = {
+                buy: '<span class="badge bg-success">매수</span>',
+                sell: '<span class="badge bg-danger">매도</span>',
+                hold: '<span class="badge bg-warning text-dark">보유</span>'
+            };
+            if (!decision) {
+                return '<span class="badge bg-secondary">기록 없음</span>';
+            }
+            return badges[decision.toLowerCase()] || `<span class="badge bg-secondary">${escapeHtml(decision)}</span>`;
+        }
+
+        function formatPriceRange(min, max) {
+            if (min === undefined || min === null || max === undefined || max === null) {
+                return '-';
+            }
+            const minValue = Number(min);
+            const maxValue = Number(max);
+            if (Number.isNaN(minValue) || Number.isNaN(maxValue)) {
+                return '-';
+            }
+
+            // 해외주식은 소수점 2자리까지 표시
+            return `${minValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ~ ${maxValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        async function openStockAnalysisDetail(analysisId, symbol, name) {
+            const modalElement = document.getElementById('stockAnalysisModal');
+            const modalTitle = modalElement.querySelector('.modal-title');
+            const modalBody = modalElement.querySelector('.modal-body');
+            const linkElement = document.getElementById('stockAnalysisLink');
+            const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+
+            modalTitle.textContent = `${name} (${symbol}) 분석 상세`;
+            modalBody.innerHTML = `
+                <div class="text-center text-muted py-4">
+                    <div class="spinner-border" role="status"></div>
+                </div>
+            `;
+
+            // 차트 링크 (Yahoo Finance)
+            if (symbol) {
+                linkElement.href = `https://finance.yahoo.com/quote/${symbol}`;
+                linkElement.classList.remove('d-none');
+                linkElement.textContent = 'Yahoo Finance 보기';
+            } else {
+                linkElement.classList.add('d-none');
+            }
+
+            modal.show();
+
+            try {
+                const response = await fetch(`/analysis-json/api/detail/${analysisId}`);
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+
+                const data = await response.json();
+
+                if (data.error) {
+                    modalBody.innerHTML = `<div class="alert alert-danger">${escapeHtml(data.error)}</div>`;
+                    linkElement.classList.add('d-none');
+                    return;
+                }
+
+                const reasonsHtml = (data.reasons && data.reasons.length > 0)
+                    ? data.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join('')
+                    : '<li class="text-muted">근거 정보가 없습니다.</li>';
+
+                const confidenceLabel = data.confidence !== null && data.confidence !== undefined
+                    ? `${Number(data.confidence).toFixed(1)}%`
+                    : '-';
+
+                modalBody.innerHTML = `
+                    <div class="mb-3">
+                        <div class="d-flex flex-wrap align-items-center gap-2">
+                            ${getDecisionBadge(data.decision)}
+                            <span class="badge bg-light text-dark">신뢰도 ${confidenceLabel}</span>
+                        </div>
+                        <div class="small text-muted mt-1">${formatLastAnalysisTime(data.created_at)}</div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <div class="card h-100">
+                                <div class="card-header py-2"><small class="text-muted">적정 매수 범위</small></div>
+                                <div class="card-body py-2">
+                                    <strong>${formatPriceRange(data.appropriate_buy_range?.min, data.appropriate_buy_range?.max)}</strong>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card h-100">
+                                <div class="card-header py-2"><small class="text-muted">적정 매도 범위</small></div>
+                                <div class="card-body py-2">
+                                    <strong>${formatPriceRange(data.appropriate_sell_range?.min, data.appropriate_sell_range?.max)}</strong>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card h-100">
+                                <div class="card-header py-2"><small class="text-muted">희망 매수 범위</small></div>
+                                <div class="card-body py-2">
+                                    <strong>${formatPriceRange(data.buy_hope_range?.min, data.buy_hope_range?.max)}</strong>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card h-100">
+                                <div class="card-header py-2"><small class="text-muted">목표 매도 범위</small></div>
+                                <div class="card-body py-2">
+                                    <strong>${formatPriceRange(data.sell_target_range?.min, data.sell_target_range?.max)}</strong>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <h6>핵심 근거</h6>
+                        <ol class="ps-3 mb-0">
+                            ${reasonsHtml}
+                        </ol>
+                    </div>
+                    ${data.detailed_text ? `
+                        <div class="mb-0">
+                            <h6>상세 분석</h6>
+                            <div class="alert alert-light">
+                                <pre class="mb-0" style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(data.detailed_text)}</pre>
+                            </div>
+                        </div>
+                    ` : ''}
+                `;
+            } catch (error) {
+                console.error('분석 상세 로드 실패:', error);
+                modalBody.innerHTML = '<div class="alert alert-danger">분석 상세 정보를 불러오는 중 오류가 발생했습니다.</div>';
+                linkElement.classList.add('d-none');
+            }
+        }
+
+        // ===== Symbol Settings Modal Functions =====
+
+        function openSettingsModal(symbol, name, quantity, priceLevels, note, active) {
+            const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('symbolSettingsModal'));
+
+            document.getElementById('settings-symbol').value = symbol;
+            document.getElementById('settings-stock-info').innerHTML = `<strong>${name}</strong> <small class="text-muted">(${symbol})</small>`;
+            document.getElementById('settings-quantity').value = quantity || '';
+            document.getElementById('settings-price-levels').value = priceLevels || '4';
+            document.getElementById('settings-note').value = note || '';
+            document.getElementById('settings-active').checked = active;
+
+            // Show/hide delete button based on whether settings exist
+            const deleteBtn = document.getElementById('settings-delete-btn');
+            if (quantity) {
+                deleteBtn.style.display = 'block';
+            } else {
+                deleteBtn.style.display = 'none';
+            }
+
+            // Hide estimated cost section initially
+            document.getElementById('estimated-cost-section').style.display = 'none';
+
+            // Load estimated cost if analysis exists
+            loadEstimatedCost(symbol);
+
+            modal.show();
+        }
+
+        async function loadEstimatedCost(symbol) {
+            try {
+                const response = await fetch(`/api/symbol-settings/symbols/${symbol}/estimated-cost`);
+                if (response.ok) {
+                    const data = await response.json();
+                    displayEstimatedCost(data);
+                }
+            } catch (error) {
+                console.log('No estimated cost available:', error);
+            }
+        }
+
+        function displayEstimatedCost(data) {
+            const section = document.getElementById('estimated-cost-section');
+            const details = document.getElementById('estimated-cost-details');
+
+            let pricesHtml = data.buy_prices.map(p => `
+                <div class="d-flex justify-content-between small mb-1">
+                    <span>${p.price_name.replace(/_/g, ' ')}</span>
+                    <span>$${p.price.toFixed(2)} × ${p.quantity}주 = $${p.cost.toFixed(2)}</span>
+                </div>
+            `).join('');
+
+            details.innerHTML = `
+                ${pricesHtml}
+                <hr class="my-2" style="border-color: rgba(255,255,255,0.3);">
+                <div class="d-flex justify-content-between fw-bold">
+                    <span>총 예상 비용</span>
+                    <span>$${data.total_cost.toFixed(2)} (${data.total_quantity}주)</span>
+                </div>
+            `;
+
+            section.style.display = 'block';
+        }
+
+        async function saveSettings() {
+            const symbol = document.getElementById('settings-symbol').value;
+            const quantity = parseFloat(document.getElementById('settings-quantity').value);
+            const priceLevels = parseInt(document.getElementById('settings-price-levels').value);
+            const note = document.getElementById('settings-note').value;
+            const isActive = document.getElementById('settings-active').checked;
+
+            if (!quantity || quantity < 1) {
+                showAlert('매수 수량을 1 이상 입력해주세요.', 'warning');
+                return;
+            }
+
+            try {
+                const checkResponse = await fetch(`/api/symbol-settings/symbols/${symbol}`);
+                const settingsExist = checkResponse.ok;
+
+                let response;
+                if (settingsExist) {
+                    response = await fetch(`/api/symbol-settings/symbols/${symbol}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            buy_quantity_per_order: quantity,
+                            buy_price_levels: priceLevels,
+                            note: note || null,
+                            is_active: isActive
+                        })
+                    });
+                } else {
+                    response = await fetch('/api/symbol-settings/symbols', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            symbol: symbol,
+                            instrument_type: 'equity_us',
+                            buy_quantity_per_order: quantity,
+                            buy_price_levels: priceLevels,
+                            exchange_code: 'NASD',
+                            note: note || null
+                        })
+                    });
+                }
+
+                if (response.ok) {
+                    showAlert(`✅ ${symbol} 설정이 저장되었습니다.`, 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('symbolSettingsModal')).hide();
+                    loadMyStocks();
+                } else {
+                    const error = await response.json();
+                    showAlert(`❌ 저장 실패: ${error.detail || '알 수 없는 오류'}`, 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ 저장 중 오류 발생: ${error.message}`, 'danger');
+            }
+        }
+
+        async function deleteSettings() {
+            const symbol = document.getElementById('settings-symbol').value;
+
+            if (!confirm(`${symbol} 종목의 매수 설정을 삭제하시겠습니까?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/symbol-settings/symbols/${symbol}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok || response.status === 204) {
+                    showAlert(`✅ ${symbol} 설정이 삭제되었습니다.`, 'success');
+                    bootstrap.Modal.getInstance(document.getElementById('symbolSettingsModal')).hide();
+                    loadMyStocks();
+                } else {
+                    showAlert('❌ 삭제 실패', 'danger');
+                }
+            } catch (error) {
+                showAlert(`❌ 삭제 중 오류 발생: ${error.message}`, 'danger');
+            }
+        }
+
+        // Attach modal button handlers
+        document.getElementById('settings-save-btn').addEventListener('click', saveSettings);
+        document.getElementById('settings-delete-btn').addEventListener('click', deleteSettings);
+
+        // ===== Alert Function =====
+
+        function showAlert(message, type) {
+            const alertArea = document.getElementById('alert-area');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type} alert-dismissible fade show`;
+            alert.innerHTML = `
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            alertArea.prepend(alert);
+            setTimeout(() => alert.remove(), 5000);
+        }
+    </script>
+</body>
+
+</html>

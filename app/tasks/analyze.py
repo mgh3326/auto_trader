@@ -153,6 +153,21 @@ async def _execute_buy_order_for_coin_async(currency: str) -> Dict[str, object]:
         await asyncio.sleep(1)
 
         result = await process_buy_orders_with_analysis(market, current_price, avg_buy_price)
+        message = result.get("message") or ""
+        failure_reasons = result.get("failure_reasons") or []
+        combined_reason = " ".join([message, *failure_reasons]).lower()
+        insufficient_keywords = [
+            "krw 잔고 부족",
+            "잔고 부족",
+            "금액 부족",
+            "주문 가능 금액 부족",
+            "insufficient balance",
+            "insufficient funds",
+        ]
+        has_insufficient_balance = bool(
+            result.get("insufficient_balance")
+            or any(keyword in combined_reason for keyword in insufficient_keywords)
+        )
 
         # Send Telegram notification if orders were placed
         if result.get("success") and result.get("orders_placed", 0) > 0:
@@ -179,15 +194,18 @@ async def _execute_buy_order_for_coin_async(currency: str) -> Dict[str, object]:
                 print(f"⚠️ 텔레그램 알림 전송 실패: {notify_error}")
         
         # Send failure notification for insufficient balance
-        elif not result.get("success") and "KRW 잔고 부족" in result.get("message", ""):
+        elif not result.get("success") and has_insufficient_balance:
             try:
                 notifier = get_trade_notifier()
                 korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency_code, currency_code)
+                reason = message or (
+                    failure_reasons[0] if failure_reasons else "잔고 부족으로 매수 실패"
+                )
                 
                 await notifier.notify_trade_failure(
                     symbol=currency_code,
                     korean_name=korean_name,
-                    reason=result.get("message"),
+                    reason=reason,
                     market_type="암호화폐",
                 )
             except Exception as notify_error:  # pragma: no cover
