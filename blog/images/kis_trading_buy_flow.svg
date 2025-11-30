@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="700" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#333333" />
+        </marker>
+    </defs>
+
+    <!-- 배경 -->
+    <rect width="1200" height="700" fill="#ffffff"/>
+
+    <!-- 제목 -->
+    <text x="600" y="40" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="#1a1a2e" text-anchor="middle">
+        AI 분석 기반 분할 매수 플로우
+    </text>
+
+    <!-- Step 1: 1% 조건 확인 -->
+    <rect x="100" y="80" width="220" height="80" fill="#E3F2FD" stroke="#1976D2" stroke-width="2" rx="8"/>
+    <text x="210" y="110" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#1565C0" text-anchor="middle">1. 1% 조건 확인</text>
+    <text x="210" y="135" font-family="Arial, sans-serif" font-size="11" fill="#666666" text-anchor="middle">현재가 &lt; 평균매수가 × 0.99</text>
+
+    <!-- 화살표 -->
+    <line x1="320" y1="120" x2="380" y2="120" stroke="#333333" stroke-width="2" marker-end="url(#arrowhead)"/>
+    <text x="350" y="110" font-family="Arial, sans-serif" font-size="10" fill="#4CAF50">YES</text>
+
+    <!-- Step 2: AI 분석 결과 조회 -->
+    <rect x="390" y="80" width="220" height="80" fill="#E8F5E9" stroke="#388E3C" stroke-width="2" rx="8"/>
+    <text x="500" y="110" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#2E7D32" text-anchor="middle">2. AI 분석 결과 조회</text>
+    <text x="500" y="135" font-family="Arial, sans-serif" font-size="11" fill="#666666" text-anchor="middle">DB에서 최신 분석 조회</text>
+
+    <!-- 화살표 -->
+    <line x1="610" y1="120" x2="670" y2="120" stroke="#333333" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+    <!-- Step 3: 종목 설정 확인 -->
+    <rect x="680" y="80" width="220" height="80" fill="#FFF3E0" stroke="#F57C00" stroke-width="2" rx="8"/>
+    <text x="790" y="110" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#EF6C00" text-anchor="middle">3. 종목 설정 확인</text>
+    <text x="790" y="135" font-family="Arial, sans-serif" font-size="11" fill="#666666" text-anchor="middle">설정 없으면 매수 건너뜀</text>
+
+    <!-- 화살표 -->
+    <line x1="900" y1="120" x2="960" y2="120" stroke="#333333" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+    <!-- Step 4: 가격대 추출 -->
+    <rect x="970" y="80" width="200" height="80" fill="#FCE4EC" stroke="#C2185B" stroke-width="2" rx="8"/>
+    <text x="1070" y="110" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#AD1457" text-anchor="middle">4. 가격대 추출</text>
+    <text x="1070" y="135" font-family="Arial, sans-serif" font-size="11" fill="#666666" text-anchor="middle">buy_price_levels 적용</text>
+
+    <!-- 화살표 (세로) -->
+    <line x1="1070" y1="160" x2="1070" y2="200" stroke="#333333" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+    <!-- AI 분석 결과 가격대 박스 -->
+    <rect x="200" y="220" width="900" height="180" fill="#F5F5F5" stroke="#9E9E9E" stroke-width="1" rx="5"/>
+    <text x="650" y="250" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333" text-anchor="middle">AI 분석 결과 가격대 (낮은 순서)</text>
+
+    <!-- 4개 가격대 박스 -->
+    <rect x="230" y="270" width="200" height="110" fill="#4CAF50" stroke="#2E7D32" stroke-width="2" rx="5"/>
+    <text x="330" y="300" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">적정매수(하한)</text>
+    <text x="330" y="325" font-family="Arial, sans-serif" font-size="12" fill="#E8F5E9" text-anchor="middle">appropriate_buy_min</text>
+    <text x="330" y="350" font-family="Arial, sans-serif" font-size="11" fill="#C8E6C9" text-anchor="middle">우선순위: 1</text>
+    <text x="330" y="370" font-family="Arial, sans-serif" font-size="18" fill="#ffffff" text-anchor="middle">68,000원</text>
+
+    <rect x="450" y="270" width="200" height="110" fill="#8BC34A" stroke="#558B2F" stroke-width="2" rx="5"/>
+    <text x="550" y="300" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">적정매수(상한)</text>
+    <text x="550" y="325" font-family="Arial, sans-serif" font-size="12" fill="#DCEDC8" text-anchor="middle">appropriate_buy_max</text>
+    <text x="550" y="350" font-family="Arial, sans-serif" font-size="11" fill="#C5E1A5" text-anchor="middle">우선순위: 2</text>
+    <text x="550" y="370" font-family="Arial, sans-serif" font-size="18" fill="#ffffff" text-anchor="middle">70,000원</text>
+
+    <rect x="670" y="270" width="200" height="110" fill="#CDDC39" stroke="#9E9D24" stroke-width="2" rx="5"/>
+    <text x="770" y="300" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#333333" text-anchor="middle">희망매수(하한)</text>
+    <text x="770" y="325" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="middle">buy_hope_min</text>
+    <text x="770" y="350" font-family="Arial, sans-serif" font-size="11" fill="#827717" text-anchor="middle">우선순위: 3</text>
+    <text x="770" y="370" font-family="Arial, sans-serif" font-size="18" fill="#333333" text-anchor="middle">65,000원</text>
+
+    <rect x="890" y="270" width="200" height="110" fill="#FFC107" stroke="#FF8F00" stroke-width="2" rx="5"/>
+    <text x="990" y="300" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#333333" text-anchor="middle">희망매수(상한)</text>
+    <text x="990" y="325" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="middle">buy_hope_max</text>
+    <text x="990" y="350" font-family="Arial, sans-serif" font-size="11" fill="#FF6F00" text-anchor="middle">우선순위: 4</text>
+    <text x="990" y="370" font-family="Arial, sans-serif" font-size="18" fill="#333333" text-anchor="middle">67,000원</text>
+
+    <!-- 화살표 (세로) -->
+    <line x1="650" y1="400" x2="650" y2="440" stroke="#333333" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+    <!-- Step 5: 조건 필터링 -->
+    <rect x="400" y="450" width="500" height="80" fill="#E1BEE7" stroke="#7B1FA2" stroke-width="2" rx="8"/>
+    <text x="650" y="480" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#6A1B9A" text-anchor="middle">5. 조건 필터링</text>
+    <text x="650" y="510" font-family="Arial, sans-serif" font-size="11" fill="#666666" text-anchor="middle">가격 &lt; 평균매수가 × 0.99 AND 가격 &lt; 현재가</text>
+
+    <!-- 화살표 (세로) -->
+    <line x1="650" y1="530" x2="650" y2="570" stroke="#333333" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+    <!-- Step 6: 분할 매수 주문 -->
+    <rect x="350" y="580" width="600" height="90" fill="#4CAF50" stroke="#2E7D32" stroke-width="3" rx="8"/>
+    <text x="650" y="615" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#ffffff" text-anchor="middle">6. 분할 매수 주문 실행</text>
+    <text x="650" y="645" font-family="Arial, sans-serif" font-size="13" fill="#E8F5E9" text-anchor="middle">조건 충족 가격대마다 buy_quantity_per_order 수량으로 지정가 주문</text>
+
+    <!-- 실패 경로 표시 -->
+    <text x="210" y="175" font-family="Arial, sans-serif" font-size="10" fill="#F44336">NO → 매수 건너뜀</text>
+    <text x="790" y="175" font-family="Arial, sans-serif" font-size="10" fill="#F44336">설정 없음 → 건너뜀</text>
+</svg>

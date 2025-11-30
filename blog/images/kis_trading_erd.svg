@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="600" xmlns="http://www.w3.org/2000/svg">
+    <!-- 배경 -->
+    <rect width="1200" height="600" fill="#ffffff"/>
+
+    <!-- 제목 -->
+    <text x="600" y="40" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#1a1a2e" text-anchor="middle">
+        종목별 거래 설정 ERD
+    </text>
+
+    <!-- Users 테이블 -->
+    <rect x="100" y="100" width="300" height="200" fill="#E3F2FD" stroke="#1976D2" stroke-width="2" rx="5"/>
+    <rect x="100" y="100" width="300" height="40" fill="#1976D2" rx="5"/>
+    <text x="250" y="128" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">users</text>
+
+    <text x="120" y="165" font-family="monospace" font-size="12" fill="#333333">id (PK)</text>
+    <text x="120" y="185" font-family="monospace" font-size="12" fill="#333333">username</text>
+    <text x="120" y="205" font-family="monospace" font-size="12" fill="#333333">email</text>
+    <text x="120" y="225" font-family="monospace" font-size="12" fill="#333333">role</text>
+    <text x="120" y="245" font-family="monospace" font-size="12" fill="#333333">is_active</text>
+    <text x="120" y="265" font-family="monospace" font-size="12" fill="#666666">...</text>
+
+    <!-- SymbolTradeSettings 테이블 -->
+    <rect x="500" y="80" width="350" height="280" fill="#E8F5E9" stroke="#388E3C" stroke-width="2" rx="5"/>
+    <rect x="500" y="80" width="350" height="40" fill="#388E3C" rx="5"/>
+    <text x="675" y="108" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">symbol_trade_settings</text>
+
+    <text x="520" y="145" font-family="monospace" font-size="12" fill="#333333">id (PK)</text>
+    <text x="520" y="165" font-family="monospace" font-size="12" fill="#1976D2">user_id (FK) → users.id</text>
+    <text x="520" y="185" font-family="monospace" font-size="12" fill="#333333">symbol</text>
+    <text x="520" y="205" font-family="monospace" font-size="12" fill="#333333">instrument_type</text>
+    <text x="520" y="225" font-family="monospace" font-size="12" fill="#4CAF50" font-weight="bold">buy_quantity_per_order</text>
+    <text x="520" y="245" font-family="monospace" font-size="12" fill="#4CAF50" font-weight="bold">buy_price_levels (1~4)</text>
+    <text x="520" y="265" font-family="monospace" font-size="12" fill="#333333">exchange_code</text>
+    <text x="520" y="285" font-family="monospace" font-size="12" fill="#333333">is_active</text>
+    <text x="520" y="305" font-family="monospace" font-size="12" fill="#333333">note</text>
+    <text x="520" y="325" font-family="monospace" font-size="12" fill="#666666">created_at, updated_at</text>
+
+    <!-- UserTradeDefaults 테이블 -->
+    <rect x="100" y="350" width="300" height="200" fill="#FFF3E0" stroke="#F57C00" stroke-width="2" rx="5"/>
+    <rect x="100" y="350" width="300" height="40" fill="#F57C00" rx="5"/>
+    <text x="250" y="378" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">user_trade_defaults</text>
+
+    <text x="120" y="415" font-family="monospace" font-size="12" fill="#333333">id (PK)</text>
+    <text x="120" y="435" font-family="monospace" font-size="12" fill="#1976D2">user_id (FK, UNIQUE)</text>
+    <text x="120" y="455" font-family="monospace" font-size="12" fill="#333333">crypto_default_buy_amount</text>
+    <text x="120" y="475" font-family="monospace" font-size="12" fill="#333333">equity_kr_default_buy_qty</text>
+    <text x="120" y="495" font-family="monospace" font-size="12" fill="#333333">equity_us_default_buy_qty</text>
+    <text x="120" y="515" font-family="monospace" font-size="12" fill="#333333">is_active</text>
+
+    <!-- StockAnalysisResult 테이블 (참조용) -->
+    <rect x="900" y="150" width="280" height="220" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="2" rx="5"/>
+    <rect x="900" y="150" width="280" height="40" fill="#7B1FA2" rx="5"/>
+    <text x="1040" y="178" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">stock_analysis_results</text>
+
+    <text x="920" y="215" font-family="monospace" font-size="12" fill="#333333">id (PK)</text>
+    <text x="920" y="235" font-family="monospace" font-size="12" fill="#333333">stock_info_id (FK)</text>
+    <text x="920" y="255" font-family="monospace" font-size="12" fill="#333333">decision (buy/hold/sell)</text>
+    <text x="920" y="275" font-family="monospace" font-size="12" fill="#4CAF50" font-weight="bold">appropriate_buy_min/max</text>
+    <text x="920" y="295" font-family="monospace" font-size="12" fill="#4CAF50" font-weight="bold">buy_hope_min/max</text>
+    <text x="920" y="315" font-family="monospace" font-size="12" fill="#F44336" font-weight="bold">appropriate_sell_min/max</text>
+    <text x="920" y="335" font-family="monospace" font-size="12" fill="#F44336" font-weight="bold">sell_target_min/max</text>
+
+    <!-- 관계선 -->
+    <line x1="400" y1="200" x2="500" y2="165" stroke="#1976D2" stroke-width="2"/>
+    <text x="440" y="175" font-family="Arial, sans-serif" font-size="11" fill="#1976D2">1:N</text>
+
+    <line x1="400" y1="250" x2="400" y2="400" stroke="#1976D2" stroke-width="2"/>
+    <line x1="250" y1="300" x2="250" y2="350" stroke="#1976D2" stroke-width="2"/>
+    <text x="265" y="328" font-family="Arial, sans-serif" font-size="11" fill="#1976D2">1:1</text>
+
+    <!-- 설명 박스 -->
+    <rect x="500" y="420" width="350" height="130" fill="#FFFDE7" stroke="#FBC02D" stroke-width="1" rx="5"/>
+    <text x="675" y="450" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#F57F17" text-anchor="middle">핵심 정책</text>
+    <text x="520" y="480" font-family="Arial, sans-serif" font-size="12" fill="#333333">• 종목 설정(SymbolTradeSettings)이 없으면</text>
+    <text x="530" y="500" font-family="Arial, sans-serif" font-size="12" fill="#333333">해당 종목은 자동 매수하지 않음</text>
+    <text x="520" y="525" font-family="Arial, sans-serif" font-size="12" fill="#333333">• AI 분석 결과의 가격대를 참조하여</text>
+    <text x="530" y="545" font-family="Arial, sans-serif" font-size="12" fill="#333333">분할 매수/매도 주문 실행</text>
+
+    <!-- UNIQUE 제약 표시 -->
+    <text x="675" y="375" font-family="monospace" font-size="11" fill="#FF5722" text-anchor="middle">UNIQUE(user_id, symbol)</text>
+</svg>
