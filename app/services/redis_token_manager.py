@@ -12,13 +12,14 @@ from app.core.config import settings
 
 class RedisTokenManager:
     """Redis 기반 토큰 관리 서비스 with 분산 락"""
-    
+
     def __init__(self):
         self.redis_client: Optional[redis.Redis] = None
         self._lock_key = "kis:token:lock"
         self._token_key = "kis:access_token"
         self._lock_timeout = 30  # 락 타임아웃 (초)
         self._token_expiry_buffer = 60  # 토큰 만료 전 버퍼 (초)
+        self._current_lock_value: Optional[str] = None  # 현재 획득한 락 값 저장
     
     async def _get_redis_client(self) -> redis.Redis:
         """Redis 클라이언트 가져오기 (지연 초기화)"""
@@ -37,31 +38,35 @@ class RedisTokenManager:
         """분산 락 획득 (더 강력한 버전)"""
         redis_client = await self._get_redis_client()
         lock_value = f"{time.time()}:{id(self)}:{os.getpid()}"
-        
+
         # SET with NX and EX 옵션으로 원자적 락 설정
         result = await redis_client.set(
-            self._lock_key, 
-            lock_value, 
-            nx=True, 
+            self._lock_key,
+            lock_value,
+            nx=True,
             ex=self._lock_timeout
         )
-        
+
         if result:
             # 락 획득 성공 시 값 확인 (다른 프로세스가 이미 락을 가졌는지 체크)
             current_value = await redis_client.get(self._lock_key)
             if current_value == lock_value:
+                self._current_lock_value = lock_value  # 락 값 저장
                 return True
             else:
                 # 다른 프로세스가 락을 가짐
                 return False
-        
+
         return False
     
     async def _release_lock(self) -> None:
         """분산 락 해제 (안전한 버전)"""
+        if not self._current_lock_value:
+            logging.warning("해제할 락 값이 없음")
+            return
+
         redis_client = await self._get_redis_client()
-        lock_value = f"{time.time()}:{id(self)}:{os.getpid()}"
-        
+
         # Lua 스크립트로 원자적 락 해제 (본인이 설정한 락만 해제)
         lua_script = """
         if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -70,12 +75,16 @@ class RedisTokenManager:
             return 0
         end
         """
-        
+
         try:
-            await redis_client.eval(lua_script, 1, self._lock_key, lock_value)
+            await redis_client.eval(
+                lua_script, 1, self._lock_key, self._current_lock_value
+            )
         except Exception as e:
             logging.warning(f"락 해제 중 오류 (무시됨): {e}")
             # 락 해제 실패해도 계속 진행 (TTL로 자동 해제됨)
+        finally:
+            self._current_lock_value = None  # 락 값 초기화
     
     def _is_token_valid(self, token_data: dict) -> bool:
         """토큰이 유효한지 확인 (만료 시간 체크)"""
