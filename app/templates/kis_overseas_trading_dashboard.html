@@ -78,6 +78,40 @@
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             border: none;
         }
+
+        .stock-card {
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 1rem;
+            background: white;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+            margin-bottom: 0.75rem;
+        }
+
+        .mobile-card-list {
+            display: none;
+        }
+
+        .desktop-table-wrapper {
+            display: block;
+        }
+
+        @media (max-width: 991.98px) {
+            .desktop-table-wrapper {
+                display: none;
+            }
+
+            .mobile-card-list {
+                display: block;
+            }
+
+            #alert-area {
+                left: 12px;
+                right: 12px;
+                width: auto;
+                top: 12px;
+            }
+        }
     </style>
 </head>
 
@@ -195,7 +229,7 @@
                         </button>
                     </div>
                     <div class="card-body">
-                        <div class="table-responsive">
+                        <div class="table-responsive desktop-table-wrapper">
                             <table class="table table-hover align-middle">
                                 <thead class="table-light">
                                     <tr>
@@ -220,6 +254,13 @@
                                     </tr>
                                 </tbody>
                             </table>
+                        </div>
+                        <div class="mobile-card-list" id="stocks-card-list">
+                            <div class="text-center py-4 text-muted">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -403,16 +444,23 @@
                     document.getElementById('stock-count').textContent = data.total_stocks + ' 개';
 
                     const list = document.getElementById('stocks-list');
+                    const cardList = document.getElementById('stocks-card-list');
 
                     if (data.stocks.length === 0) {
                         list.innerHTML = '<tr><td colspan="9" class="text-center py-4">보유 중인 해외 주식이 없습니다.</td></tr>';
+                        if (cardList) {
+                            cardList.innerHTML = '<div class="text-center text-muted py-4">보유 중인 해외 주식이 없습니다.</div>';
+                        }
                         document.getElementById('total-evaluation').textContent = '0 USD';
                         return;
                     }
 
                     let totalEval = 0;
 
-                    list.innerHTML = data.stocks.map(stock => {
+                    const tableRows = [];
+                    const cardRows = [];
+
+                    data.stocks.forEach(stock => {
                         // Assuming evaluation is in local currency (USD usually for US stocks)
                         // If mixed currencies, simple sum might be wrong, but for now assume USD
                         totalEval += stock.evaluation;
@@ -420,6 +468,8 @@
                         const profitClass = stock.profit_rate > 0 ? 'profit-plus' : (stock.profit_rate < 0 ? 'profit-minus' : '');
                         const profitSign = stock.profit_rate > 0 ? '+' : '';
                         const profitRatePercent = (stock.profit_rate * 100).toFixed(2);
+                        const safeName = escapeHtml(stock.name || '');
+                        const safeCode = escapeHtml(stock.code || '');
 
                         // Analysis status
                         let analysisBadge = '<span class="badge bg-secondary">미분석</span>';
@@ -430,8 +480,8 @@
                         let analysisButton = `
                             <button class="btn btn-sm btn-outline-primary stock-analyze-btn"
                                 data-id="${stock.analysis_id || ''}"
-                                data-code="${stock.code}"
-                                data-name="${stock.name}">
+                                data-code="${safeCode}"
+                                data-name="${safeName}">
                                 <i class="bi bi-cpu"></i> 분석
                             </button>
                         `;
@@ -442,11 +492,11 @@
                             const priceLevels = stock.settings_price_levels || 4;
                             settingsBadge = `
                                 <span class="badge settings-badge settings-configured"
-                                      data-code="${stock.code}"
-                                      data-name="${stock.name}"
+                                      data-code="${safeCode}"
+                                      data-name="${safeName}"
                                       data-quantity="${stock.settings_quantity}"
                                       data-price-levels="${priceLevels}"
-                                      data-note="${stock.settings_note || ''}"
+                                      data-note="${escapeHtml(stock.settings_note || '')}"
                                       data-active="${stock.settings_active}"
                                       title="클릭하여 수정">
                                     ${stock.settings_quantity}주 x ${priceLevels}
@@ -455,26 +505,32 @@
                         } else {
                             settingsBadge = `
                                 <span class="badge settings-badge settings-not-configured"
-                                      data-code="${stock.code}"
-                                      data-name="${stock.name}"
+                                      data-code="${safeCode}"
+                                      data-name="${safeName}"
                                       title="클릭하여 설정">
                                     <i class="bi bi-plus-lg"></i> 설정
                                 </span>
                             `;
                         }
 
-                        return `
+                        const formattedQuantity = stock.quantity.toLocaleString();
+                        const formattedAvg = stock.avg_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        const formattedCurrent = stock.current_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        const formattedEval = stock.evaluation.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                        const formattedProfitLoss = stock.profit_loss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+                        tableRows.push(`
                             <tr>
                                 <td>
-                                    <strong>${stock.name}</strong>
-                                    <br><small class="text-muted">${stock.code}</small>
+                                    <strong>${safeName}</strong>
+                                    <br><small class="text-muted">${safeCode}</small>
                                 </td>
-                                <td class="text-end">${stock.quantity.toLocaleString()}</td>
-                                <td class="text-end">${stock.avg_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                <td class="text-end">${stock.current_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                <td class="text-end">${stock.evaluation.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                <td class="text-end">${formattedQuantity}</td>
+                                <td class="text-end">${formattedAvg}</td>
+                                <td class="text-end">${formattedCurrent}</td>
+                                <td class="text-end">${formattedEval}</td>
                                 <td class="text-end ${profitClass}">
-                                    ${stock.profit_loss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}<br>
+                                    ${formattedProfitLoss}<br>
                                     (${profitSign}${profitRatePercent}%)
                                 </td>
                                 <td class="text-center">
@@ -486,13 +542,48 @@
                                 <td class="text-center">
                                     <div class="btn-group btn-group-sm">
                                         ${analysisButton}
-                                        <button class="btn btn-outline-success stock-buy-btn" data-code="${stock.code}">매수</button>
-                                        <button class="btn btn-outline-danger stock-sell-btn" data-code="${stock.code}">매도</button>
+                                        <button class="btn btn-outline-success stock-buy-btn" data-code="${safeCode}">매수</button>
+                                        <button class="btn btn-outline-danger stock-sell-btn" data-code="${safeCode}">매도</button>
                                     </div>
                                 </td>
                             </tr>
-                        `;
-                    }).join('');
+                        `);
+
+                        cardRows.push(`
+                            <div class="stock-card">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div>
+                                        <div class="fw-bold">${safeName}</div>
+                                        <div class="text-muted small">${safeCode}</div>
+                                    </div>
+                                    <div class="text-end ${profitClass}">
+                                        <div class="fw-bold">${profitSign}${profitRatePercent}%</div>
+                                        <div class="small">${formattedProfitLoss}</div>
+                                    </div>
+                                </div>
+                                <div class="row small text-muted mt-2">
+                                    <div class="col-6">보유: ${formattedQuantity}주</div>
+                                    <div class="col-6 text-end">현재가: ${formattedCurrent}</div>
+                                    <div class="col-6">평단: ${formattedAvg}</div>
+                                    <div class="col-6 text-end">평가: ${formattedEval}</div>
+                                </div>
+                                <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+                                    ${analysisBadge}
+                                    ${settingsBadge}
+                                </div>
+                                <div class="d-flex flex-wrap gap-2 mt-2">
+                                    ${analysisButton}
+                                    <button class="btn btn-outline-success btn-sm stock-buy-btn" data-code="${safeCode}">매수</button>
+                                    <button class="btn btn-outline-danger btn-sm stock-sell-btn" data-code="${safeCode}">매도</button>
+                                </div>
+                            </div>
+                        `);
+                    });
+
+                    list.innerHTML = tableRows.join('');
+                    if (cardList) {
+                        cardList.innerHTML = cardRows.join('');
+                    }
 
                     document.getElementById('total-evaluation').textContent =
                         new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(totalEval);
