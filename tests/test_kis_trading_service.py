@@ -1,3 +1,4 @@
+import inspect
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from app.services.kis_trading_service import (
@@ -7,6 +8,51 @@ from app.services.kis_trading_service import (
     process_kis_overseas_sell_orders_with_analysis,
 )
 from app.models.analysis import StockAnalysisResult
+from app.services.kis import KISClient
+
+
+class TestKISClientMethodSignatures:
+    """KISClient 메서드 시그니처 검증 테스트.
+
+    kis_trading_service.py에서 호출하는 KISClient 메서드들의
+    파라미터 이름이 올바른지 검증합니다.
+    """
+
+    def test_order_korea_stock_parameter_names(self):
+        """order_korea_stock 메서드의 파라미터 이름 검증"""
+        sig = inspect.signature(KISClient.order_korea_stock)
+        param_names = list(sig.parameters.keys())
+
+        # kis_trading_service.py에서 사용하는 파라미터들이 존재하는지 확인
+        assert 'stock_code' in param_names, \
+            f"order_korea_stock에 'stock_code' 파라미터가 없음. 실제 파라미터: {param_names}"
+        assert 'order_type' in param_names, \
+            f"order_korea_stock에 'order_type' 파라미터가 없음. 실제 파라미터: {param_names}"
+        assert 'quantity' in param_names, \
+            f"order_korea_stock에 'quantity' 파라미터가 없음. 실제 파라미터: {param_names}"
+        assert 'price' in param_names, \
+            f"order_korea_stock에 'price' 파라미터가 없음. 실제 파라미터: {param_names}"
+
+        # 'symbol'이 아닌 'stock_code'를 사용해야 함
+        assert 'symbol' not in param_names, \
+            "order_korea_stock에 'symbol' 파라미터가 있음 - 'stock_code'를 사용해야 함"
+
+    def test_order_overseas_stock_parameter_names(self):
+        """order_overseas_stock 메서드의 파라미터 이름 검증"""
+        sig = inspect.signature(KISClient.order_overseas_stock)
+        param_names = list(sig.parameters.keys())
+
+        # kis_trading_service.py에서 사용하는 파라미터들이 존재하는지 확인
+        assert 'symbol' in param_names, \
+            f"order_overseas_stock에 'symbol' 파라미터가 없음. 실제 파라미터: {param_names}"
+        assert 'exchange_code' in param_names, \
+            f"order_overseas_stock에 'exchange_code' 파라미터가 없음. 실제 파라미터: {param_names}"
+        assert 'order_type' in param_names, \
+            f"order_overseas_stock에 'order_type' 파라미터가 없음. 실제 파라미터: {param_names}"
+        assert 'quantity' in param_names, \
+            f"order_overseas_stock에 'quantity' 파라미터가 없음. 실제 파라미터: {param_names}"
+        assert 'price' in param_names, \
+            f"order_overseas_stock에 'price' 파라미터가 없음. 실제 파라미터: {param_names}"
 
 @pytest.fixture
 def mock_kis_client():
