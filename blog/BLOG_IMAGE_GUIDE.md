@@ -279,3 +279,19 @@ from pathlib import Path
 
 MyBlogImages("my_blog", images_dir=Path("/custom/path")).generate()
 ```
+
+## 이미지 생성기 파일 정리
+
+이미지 생성기 파일(`*_images.py`)은 PNG 이미지 생성 후 삭제해도 됩니다.
+PNG 파일만 블로그에 사용되며, 생성기 파일은 이미지 수정이 필요할 때만 필요합니다.
+
+```bash
+# PNG 생성 완료 후 생성기 파일 삭제
+rm blog/images/manual_holdings_images.py
+
+# SVG 파일도 필요 없으면 삭제
+rm blog/images/manual_holdings_*.svg
+```
+
+**권장 워크플로우:**
+1. 이미지 생성기 작성 → 2. PNG 생성 → 3. 생성기/SVG 삭제 → 4. PNG만 커밋
