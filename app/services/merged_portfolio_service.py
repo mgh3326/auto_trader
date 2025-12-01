@@ -388,8 +388,10 @@ class MergedPortfolioService:
         stock_service = StockAnalysisService(self.db)
         settings_service = SymbolTradeSettingsService(self.db)
 
+        tickers = list(merged.keys())
+        analysis_map = await stock_service.get_latest_analysis_results_for_coins(tickers)
+
         for ticker, m in merged.items():
-            analysis_map = await stock_service.get_latest_analysis_results_for_coins([ticker])
             analysis = analysis_map.get(ticker)
             if analysis:
                 m.analysis_id = analysis.id

@@ -200,16 +200,48 @@ class ManualHoldingsService:
     ) -> List[ManualHolding]:
         """여러 보유 종목 일괄 등록"""
         created = []
-        for data in holdings_data:
-            holding = await self.upsert_holding(
-                broker_account_id=broker_account_id,
-                ticker=data["ticker"],
-                market_type=data["market_type"],
-                quantity=data["quantity"],
-                avg_price=data["avg_price"],
-                display_name=data.get("display_name"),
-            )
-            created.append(holding)
+        try:
+            async with self.db.begin_nested():
+                for data in holdings_data:
+                    # upsert_holding 내부에서 commit을 하지 않도록 수정하거나,
+                    # 여기서는 별도의 로직을 사용해야 함.
+                    # upsert_holding이 commit을 수행하므로, 여기서는 직접 구현하는 것이 안전함.
+                    
+                    ticker = data["ticker"]
+                    market_type = data["market_type"]
+                    
+                    # 기존 보유 종목 조회 (lock 필요할 수 있음)
+                    existing = await self.get_holding_by_ticker(
+                        broker_account_id, ticker, market_type
+                    )
+
+                    if existing:
+                        existing.quantity = data["quantity"]
+                        existing.avg_price = data["avg_price"]
+                        if data.get("display_name"):
+                            existing.display_name = data["display_name"]
+                        created.append(existing)
+                    else:
+                        holding = ManualHolding(
+                            broker_account_id=broker_account_id,
+                            ticker=ticker.upper(),
+                            market_type=market_type,
+                            quantity=data["quantity"],
+                            avg_price=data["avg_price"],
+                            display_name=data.get("display_name"),
+                        )
+                        self.db.add(holding)
+                        created.append(holding)
+                
+                await self.db.flush()
+                # refresh는 transaction 밖에서 하거나, flush 후 사용
+                for h in created:
+                    await self.db.refresh(h)
+                    
+        except Exception as e:
+            logger.error(f"Failed to bulk create holdings: {e}")
+            raise e
+
         return created
 
     async def get_holdings_summary_by_user(

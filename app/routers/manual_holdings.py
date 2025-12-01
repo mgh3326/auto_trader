@@ -116,10 +116,8 @@ async def update_broker_account(
     service = BrokerAccountService(db)
     account = await service.get_account_by_id(account_id)
 
-    if not account:
+    if not account or account.user_id != user.id:
         raise HTTPException(status_code=404, detail="계좌를 찾을 수 없습니다")
-    if account.user_id != user.id:
-        raise HTTPException(status_code=403, detail="권한이 없습니다")
 
     updated = await service.update_account(
         account_id,
@@ -142,10 +140,8 @@ async def delete_broker_account(
     service = BrokerAccountService(db)
     account = await service.get_account_by_id(account_id)
 
-    if not account:
+    if not account or account.user_id != user.id:
         raise HTTPException(status_code=404, detail="계좌를 찾을 수 없습니다")
-    if account.user_id != user.id:
-        raise HTTPException(status_code=403, detail="권한이 없습니다")
 
     await service.delete_account(account_id)
     return {"success": True, "message": "계좌가 삭제되었습니다"}
@@ -249,19 +245,23 @@ async def create_holdings_bulk(
         )
 
     holdings_service = ManualHoldingsService(db)
-    holdings = await holdings_service.bulk_create_holdings(
-        account.id,
-        [
-            {
-                "ticker": h["ticker"],
-                "market_type": MarketType(h["market_type"]),
-                "quantity": h["quantity"],
-                "avg_price": h["avg_price"],
-                "display_name": h.get("display_name"),
-            }
-            for h in data.holdings
-        ]
-    )
+    try:
+        holdings = await holdings_service.bulk_create_holdings(
+            account.id,
+            [
+                {
+                    "ticker": h["ticker"],
+                    "market_type": MarketType(h["market_type"]),
+                    "quantity": h["quantity"],
+                    "avg_price": h["avg_price"],
+                    "display_name": h.get("display_name"),
+                }
+                for h in data.holdings
+            ]
+        )
+    except Exception as e:
+        logger.error(f"Bulk create failed: {e}")
+        raise HTTPException(status_code=500, detail="일괄 등록 중 오류가 발생했습니다")
 
     result = []
     for h in holdings:
@@ -288,10 +288,8 @@ async def update_holding(
     service = ManualHoldingsService(db)
     holding = await service.get_holding_by_id(holding_id)
 
-    if not holding:
+    if not holding or holding.broker_account.user_id != user.id:
         raise HTTPException(status_code=404, detail="보유 종목을 찾을 수 없습니다")
-    if holding.broker_account.user_id != user.id:
-        raise HTTPException(status_code=403, detail="권한이 없습니다")
 
     updated = await service.update_holding(
         holding_id,
@@ -318,10 +316,8 @@ async def delete_holding(
     service = ManualHoldingsService(db)
     holding = await service.get_holding_by_id(holding_id)
 
-    if not holding:
+    if not holding or holding.broker_account.user_id != user.id:
         raise HTTPException(status_code=404, detail="보유 종목을 찾을 수 없습니다")
-    if holding.broker_account.user_id != user.id:
-        raise HTTPException(status_code=403, detail="권한이 없습니다")
 
     await service.delete_holding(holding_id)
     return {"success": True, "message": "보유 종목이 삭제되었습니다"}

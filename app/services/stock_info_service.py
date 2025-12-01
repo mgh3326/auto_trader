@@ -212,12 +212,49 @@ class StockAnalysisService:
     
     async def get_latest_analysis_results_for_coins(self, coin_symbols: List[str]) -> Dict[str, Optional[StockAnalysisResult]]:
         """여러 코인의 최신 분석 결과를 한 번에 조회"""
-        results = {}
+        if not coin_symbols:
+            return {}
+
+        # PostgreSQL DISTINCT ON 사용
+        stmt = (
+            select(StockAnalysisResult)
+            .join(StockInfo)
+            .where(StockInfo.symbol.in_(coin_symbols))
+            .order_by(StockInfo.symbol, desc(StockAnalysisResult.created_at))
+            .distinct(StockInfo.symbol)
+        )
         
-        for symbol in coin_symbols:
-            analysis = await self.get_latest_analysis_by_symbol(symbol)
-            results[symbol] = analysis
+        result = await self.db.execute(stmt)
+        rows = result.scalars().all()
         
+        results = {symbol: None for symbol in coin_symbols}
+        for row in rows:
+            # row.stock_info might not be loaded if not requested, but we joined it.
+            # However, we need the symbol to map back. 
+            # Since we joined, we can access it if we eager load or if we select it.
+            # Let's select it explicitly or rely on lazy loading (which might be N+1 if not careful).
+            # Better to select both.
+            pass
+
+        # Re-write query to select symbol too or use options
+        from sqlalchemy.orm import selectinload
+        stmt = (
+            select(StockAnalysisResult)
+            .join(StockInfo)
+            .where(StockInfo.symbol.in_(coin_symbols))
+            .order_by(StockInfo.symbol, desc(StockAnalysisResult.created_at))
+            .distinct(StockInfo.symbol)
+            .options(selectinload(StockAnalysisResult.stock_info))
+        )
+        
+        result = await self.db.execute(stmt)
+        rows = result.scalars().all()
+        
+        results = {symbol: None for symbol in coin_symbols}
+        for row in rows:
+            if row.stock_info:
+                results[row.stock_info.symbol] = row
+                
         return results
 
 
