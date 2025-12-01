@@ -4,11 +4,10 @@ Common router dependencies and constants.
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.constants import AUTH_REQUIRED_MESSAGE
 from app.auth.web_router import get_current_user_from_session
 from app.core.db import get_db
 from app.models.trading import User
-
-AUTH_REQUIRED_MESSAGE = "로그인이 필요합니다"
 
 
 async def get_authenticated_user(

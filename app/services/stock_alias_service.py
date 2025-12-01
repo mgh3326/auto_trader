@@ -115,21 +115,33 @@ class StockAliasService:
         self, aliases_data: list[dict[str, Any]]
     ) -> list[StockAlias]:
         """여러 별칭 일괄 등록 (중복 무시)"""
-        created = []
+        if not aliases_data:
+            return []
+
+        # 한 번의 조회로 이미 존재하는 (alias, market_type) 조합을 가져온다.
+        alias_pairs = {(data["alias"], data["market_type"]) for data in aliases_data}
+        existing_query = (
+            select(StockAlias.alias, StockAlias.market_type)
+            .where(StockAlias.alias.in_({alias for alias, _ in alias_pairs}))
+            .where(StockAlias.market_type.in_({mt for _, mt in alias_pairs}))
+        )
+        existing_results = await self.db.execute(existing_query)
+        existing_pairs = {(alias, market_type) for alias, market_type in existing_results.all()}
+
+        created: list[StockAlias] = []
+        pending_pairs: set[tuple[str, MarketType]] = set()
+
         for data in aliases_data:
-            ticker = data["ticker"].upper()
             alias = data["alias"]
             market_type = data["market_type"]
-            source = data.get("source", "user")
+            pair = (alias, market_type)
 
-            # 이미 존재하는지 확인
-            existing = await self.db.execute(
-                select(StockAlias)
-                .where(StockAlias.alias == alias)
-                .where(StockAlias.market_type == market_type)
-            )
-            if existing.scalar_one_or_none():
+            # 이미 DB에 있거나 같은 요청 내에서 중복된 경우 건너뜀
+            if pair in existing_pairs or pair in pending_pairs:
                 continue
+
+            ticker = data["ticker"].upper()
+            source = data.get("source", "user")
 
             stock_alias = StockAlias(
                 ticker=ticker,
@@ -139,6 +151,7 @@ class StockAliasService:
             )
             self.db.add(stock_alias)
             created.append(stock_alias)
+            pending_pairs.add(pair)
 
         if created:
             await self.db.commit()
