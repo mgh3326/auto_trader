@@ -431,3 +431,184 @@ def test_execute_overseas_buy_order_fetches_price_for_new_symbol(monkeypatch):
     assert captured["symbol"] == "AAPL"
     assert captured["avg_price"] == 0.0  # 신규 매수이므로 평단가는 0으로 전달
     assert captured["current_price"] == 123.45
+
+
+class TestStepErrorReporting:
+    """태스크 step 에러 알림 테스트."""
+
+    def test_report_step_error_async_not_enabled(self, monkeypatch):
+        """ErrorReporter가 비활성화 상태일 때 알림을 보내지 않음."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        from app.tasks import kis as kis_tasks
+
+        mock_reporter = MagicMock()
+        mock_reporter._enabled = False
+        mock_reporter.send_error_to_telegram = AsyncMock()
+
+        monkeypatch.setattr(kis_tasks, "get_error_reporter", lambda: mock_reporter)
+
+        # 함수 실행
+        asyncio.run(kis_tasks._report_step_error_async(
+            "test_task", "삼성전자", "005930", "매도", "Test error"
+        ))
+
+        # send_error_to_telegram이 호출되지 않아야 함
+        mock_reporter.send_error_to_telegram.assert_not_called()
+
+    def test_report_step_error_async_sends_telegram_when_enabled(self, monkeypatch):
+        """ErrorReporter가 활성화 상태일 때 Telegram 알림 전송."""
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock
+        from app.tasks import kis as kis_tasks
+
+        mock_reporter = MagicMock()
+        mock_reporter._enabled = True
+        mock_reporter.send_error_to_telegram = AsyncMock(return_value=True)
+
+        monkeypatch.setattr(kis_tasks, "get_error_reporter", lambda: mock_reporter)
+
+        # 함수 실행
+        asyncio.run(kis_tasks._report_step_error_async(
+            "kis.run_per_domestic_stock_automation",
+            "삼성전자우",
+            "005935",
+            "매도",
+            "unexpected keyword argument 'symbol'"
+        ))
+
+        # send_error_to_telegram이 호출되어야 함
+        mock_reporter.send_error_to_telegram.assert_called_once()
+
+        # 호출 인자 확인
+        call_args = mock_reporter.send_error_to_telegram.call_args
+        assert "unexpected keyword argument" in str(call_args.kwargs["error"])
+        assert call_args.kwargs["additional_context"]["task_name"] == "kis.run_per_domestic_stock_automation"
+        assert call_args.kwargs["additional_context"]["stock"] == "삼성전자우 (005935)"
+        assert call_args.kwargs["additional_context"]["step"] == "매도"
+
+    def test_automation_task_reports_error_on_exception(self, monkeypatch):
+        """태스크에서 예외 발생 시 알림 함수가 호출되는지 확인."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.tasks import kis as kis_tasks
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, name):
+                return {"decision": "hold"}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        class DummyKIS:
+            async def fetch_my_stocks(self):
+                return [
+                    {
+                        "pdno": "005935",
+                        "prdt_name": "삼성전자우",
+                        "pchs_avg_pric": "73800",
+                        "prpr": "75850",
+                        "hldg_qty": "5",
+                    }
+                ]
+
+        error_reports = []
+
+        async def fake_report_error(task_name, stock_name, stock_code, step_name, error_msg):
+            error_reports.append({
+                "task_name": task_name,
+                "stock_name": stock_name,
+                "stock_code": stock_code,
+                "step_name": step_name,
+                "error_msg": error_msg,
+            })
+
+        async def fake_buy(*_, **__):
+            return {"success": True, "message": "매수 완료"}
+
+        async def fake_sell(*_, **__):
+            raise TypeError("unexpected keyword argument 'symbol'")
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(kis_tasks, "_report_step_error_async", fake_report_error)
+        monkeypatch.setattr(
+            kis_tasks.run_per_domestic_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+
+        # 태스크는 완료되어야 함 (에러를 catch하므로)
+        assert result["status"] == "completed"
+
+        # 에러 알림이 전송되어야 함
+        assert len(error_reports) == 1, f"Expected 1 error report, got {len(error_reports)}"
+        assert error_reports[0]["task_name"] == "kis.run_per_domestic_stock_automation"
+        assert error_reports[0]["stock_name"] == "삼성전자우"
+        assert error_reports[0]["stock_code"] == "005935"
+        assert error_reports[0]["step_name"] == "매도"
+        assert "unexpected keyword argument" in error_reports[0]["error_msg"]
+
+    def test_automation_task_reports_error_from_result(self, monkeypatch):
+        """결과에 error 필드가 있을 때 알림이 전송되는지 확인."""
+        from app.tasks import kis as kis_tasks
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, name):
+                return {"decision": "hold"}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        class DummyKIS:
+            async def fetch_my_stocks(self):
+                return [
+                    {
+                        "pdno": "005935",
+                        "prdt_name": "삼성전자우",
+                        "pchs_avg_pric": "73800",
+                        "prpr": "75850",
+                        "hldg_qty": "5",
+                    }
+                ]
+
+        error_reports = []
+
+        async def fake_report_error(task_name, stock_name, stock_code, step_name, error_msg):
+            error_reports.append({
+                "task_name": task_name,
+                "step_name": step_name,
+                "error_msg": error_msg,
+            })
+
+        async def fake_buy(*_, **__):
+            # 예외가 아닌 결과에 error 포함
+            return {"success": False, "error": "DB connection failed", "orders_placed": 0}
+
+        async def fake_sell(*_, **__):
+            return {"success": True, "message": "매도 완료", "orders_placed": 1}
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(kis_tasks, "_report_step_error_async", fake_report_error)
+        monkeypatch.setattr(
+            kis_tasks.run_per_domestic_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+
+        # 매수 결과의 error 필드로 인해 알림이 전송되어야 함
+        assert len(error_reports) == 1
+        assert error_reports[0]["step_name"] == "매수"
+        assert "DB connection failed" in error_reports[0]["error_msg"]
