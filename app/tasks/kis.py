@@ -866,14 +866,70 @@ def execute_overseas_sell_orders(self) -> dict:
     return asyncio.run(_run())
 
 
+async def _cancel_overseas_pending_orders(
+    kis: KISClient,
+    symbol: str,
+    exchange_code: str,
+    order_type: str,
+    all_open_orders: list[dict],
+) -> dict:
+    """
+    특정 종목의 기존 미체결 주문들을 취소합니다.
+
+    Args:
+        kis: KIS 클라이언트
+        symbol: 종목 심볼
+        exchange_code: 거래소 코드
+        order_type: "buy" 또는 "sell"
+        all_open_orders: 미리 조회한 전체 미체결 주문 목록
+
+    Returns:
+        취소 결과 딕셔너리 {'cancelled': int, 'failed': int, 'total': int}
+    """
+    # sll_buy_dvsn_cd: 01=매도, 02=매수
+    target_code = "02" if order_type == "buy" else "01"
+
+    # 해당 종목의 주문만 필터링
+    target_orders = [
+        order for order in all_open_orders
+        if order.get('pdno') == symbol and order.get('sll_buy_dvsn_cd') == target_code
+    ]
+
+    if not target_orders:
+        return {'cancelled': 0, 'failed': 0, 'total': 0}
+
+    cancelled = 0
+    failed = 0
+
+    for order in target_orders:
+        try:
+            order_number = order.get('odno')
+            order_qty = int(order.get('ft_ord_qty', 0))
+
+            await kis.cancel_overseas_order(
+                order_number=order_number,
+                symbol=symbol,
+                exchange_code=exchange_code,
+                quantity=order_qty,
+                is_mock=False
+            )
+            cancelled += 1
+            await asyncio.sleep(0.2)  # API 호출 제한 방지
+        except Exception as e:
+            logger.warning(f"주문 취소 실패 ({symbol}, {order_number}): {e}")
+            failed += 1
+
+    return {'cancelled': cancelled, 'failed': failed, 'total': len(target_orders)}
+
+
 @shared_task(name="kis.run_per_overseas_stock_automation", bind=True)
 def run_per_overseas_stock_automation(self) -> dict:
-    """해외 주식 종목별 자동 실행 (분석 -> 매수 -> 매도)"""
+    """해외 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
     async def _run() -> dict:
         kis = KISClient()
         from app.analysis.service_analyzers import YahooAnalyzer
         analyzer = YahooAnalyzer()
-        
+
         try:
             self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
             
@@ -884,15 +940,21 @@ def run_per_overseas_stock_automation(self) -> dict:
             total_count = len(my_stocks)
             results = []
 
+            # 미체결 주문 조회 (한 번만 조회하여 재사용)
+            self.update_state(state='PROGRESS', meta={'status': '미체결 주문 조회 중...', 'current': 0, 'total': total_count})
+            all_open_orders = await kis.inquire_overseas_orders(exchange_code='NASD', is_mock=False)
+            logger.info(f"미체결 주문 조회 완료: {len(all_open_orders)}건")
+
             for index, stock in enumerate(my_stocks, 1):
                 symbol = stock.get('ovrs_pdno')
                 name = stock.get('ovrs_item_name')
                 avg_price = float(stock.get('pchs_avg_pric', 0))
                 current_price = float(stock.get('now_pric2', 0))
                 qty = int(float(stock.get('ovrs_cblc_qty', 0)))
-                
+                exchange_code = stock.get('ovrs_excg_cd', 'NASD')
+
                 stock_steps = []
-                
+
                 # 1. 분석
                 self.update_state(state='PROGRESS', meta={'status': f'{symbol} 분석 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 try:
@@ -903,7 +965,22 @@ def run_per_overseas_stock_automation(self) -> dict:
                     results.append({'name': name, 'symbol': symbol, 'steps': stock_steps})
                     continue
 
-                # 2. 매수
+                # 2. 기존 미체결 매수 주문 취소
+                self.update_state(state='PROGRESS', meta={'status': f'{symbol} 미체결 매수 주문 취소 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
+                try:
+                    cancel_result = await _cancel_overseas_pending_orders(
+                        kis, symbol, exchange_code, "buy", all_open_orders
+                    )
+                    if cancel_result['total'] > 0:
+                        logger.info(f"{symbol} 미체결 매수 주문 취소: {cancel_result['cancelled']}/{cancel_result['total']}건")
+                        stock_steps.append({'step': '매수취소', 'result': {'success': True, **cancel_result}})
+                        # 취소 후 API 동기화를 위해 잠시 대기
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.warning(f"{symbol} 미체결 매수 주문 취소 실패: {e}")
+                    stock_steps.append({'step': '매수취소', 'result': {'success': False, 'error': str(e)}})
+
+                # 3. 매수
                 self.update_state(state='PROGRESS', meta={'status': f'{symbol} 매수 주문 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 try:
                     res = await process_kis_overseas_buy_orders_with_analysis(kis, symbol, current_price, avg_price)
@@ -937,7 +1014,22 @@ def run_per_overseas_stock_automation(self) -> dict:
                     except Exception as notify_error:
                         logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
 
-                # 3. 매도
+                # 4. 기존 미체결 매도 주문 취소
+                self.update_state(state='PROGRESS', meta={'status': f'{symbol} 미체결 매도 주문 취소 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
+                try:
+                    cancel_result = await _cancel_overseas_pending_orders(
+                        kis, symbol, exchange_code, "sell", all_open_orders
+                    )
+                    if cancel_result['total'] > 0:
+                        logger.info(f"{symbol} 미체결 매도 주문 취소: {cancel_result['cancelled']}/{cancel_result['total']}건")
+                        stock_steps.append({'step': '매도취소', 'result': {'success': True, **cancel_result}})
+                        # 취소 후 API 동기화를 위해 잠시 대기
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.warning(f"{symbol} 미체결 매도 주문 취소 실패: {e}")
+                    stock_steps.append({'step': '매도취소', 'result': {'success': False, 'error': str(e)}})
+
+                # 5. 매도
                 self.update_state(state='PROGRESS', meta={'status': f'{symbol} 매도 주문 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 try:
                     res = await process_kis_overseas_sell_orders_with_analysis(kis, symbol, current_price, avg_price, qty)

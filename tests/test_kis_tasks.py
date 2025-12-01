@@ -612,3 +612,416 @@ class TestStepErrorReporting:
         assert len(error_reports) == 1
         assert error_reports[0]["step_name"] == "매수"
         assert "DB connection failed" in error_reports[0]["error_msg"]
+
+
+class TestOverseasStockTelegramNotifications:
+    """해외주식 태스크 텔레그램 알림 테스트."""
+
+    def test_run_per_overseas_stock_automation_buy_failure_sends_telegram(self, monkeypatch):
+        """해외주식 매수 실패 시 텔레그램 알림이 전송되어야 함."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.tasks import kis as kis_tasks
+        from app.analysis import service_analyzers
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, symbol):
+                return {"decision": "buy", "confidence": 80}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        class DummyKIS:
+            async def fetch_my_overseas_stocks(self, *args, **kwargs):
+                return [
+                    {
+                        "ovrs_pdno": "AAPL",
+                        "ovrs_item_name": "애플",
+                        "pchs_avg_pric": "170.00",
+                        "now_pric2": "175.00",
+                        "ovrs_cblc_qty": "10",
+                        "ovrs_excg_cd": "NASD",
+                    }
+                ]
+
+            async def inquire_overseas_orders(self, *args, **kwargs):
+                return []
+
+            async def cancel_overseas_order(self, *args, **kwargs):
+                return {"odno": "0000001"}
+
+        telegram_notifications = []
+
+        class MockNotifier:
+            async def notify_trade_failure(self, symbol, korean_name, reason, market_type):
+                telegram_notifications.append({
+                    "type": "failure",
+                    "symbol": symbol,
+                    "reason": reason,
+                    "market_type": market_type,
+                })
+                return True
+
+        async def fake_buy(*_, **__):
+            raise RuntimeError("APBK0656 해당종목정보가 없습니다.")
+
+        async def fake_sell(*_, **__):
+            return {"success": False, "message": "매도 조건 미충족", "orders_placed": 0}
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+        monkeypatch.setattr(
+            kis_tasks.run_per_overseas_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+
+        # 매수 실패 시 텔레그램 알림이 전송되어야 함
+        failure_notifications = [n for n in telegram_notifications if n["type"] == "failure"]
+        assert len(failure_notifications) >= 1, f"Expected failure notification, got {telegram_notifications}"
+        assert failure_notifications[0]["symbol"] == "AAPL"
+        assert "APBK0656" in failure_notifications[0]["reason"]
+        assert failure_notifications[0]["market_type"] == "해외주식"
+
+    def test_run_per_overseas_stock_automation_sell_failure_sends_telegram(self, monkeypatch):
+        """해외주식 매도 실패 시 텔레그램 알림이 전송되어야 함."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.tasks import kis as kis_tasks
+        from app.analysis import service_analyzers
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, symbol):
+                return {"decision": "sell", "confidence": 85}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        class DummyKIS:
+            async def fetch_my_overseas_stocks(self, *args, **kwargs):
+                return [
+                    {
+                        "ovrs_pdno": "VOO",
+                        "ovrs_item_name": "VOO",
+                        "pchs_avg_pric": "500.00",
+                        "now_pric2": "520.00",
+                        "ovrs_cblc_qty": "5",
+                        "ovrs_excg_cd": "NYSE",
+                    }
+                ]
+
+            async def inquire_overseas_orders(self, *args, **kwargs):
+                return []
+
+            async def cancel_overseas_order(self, *args, **kwargs):
+                return {"odno": "0000001"}
+
+        telegram_notifications = []
+
+        class MockNotifier:
+            async def notify_trade_failure(self, symbol, korean_name, reason, market_type):
+                telegram_notifications.append({
+                    "type": "failure",
+                    "symbol": symbol,
+                    "reason": reason,
+                    "market_type": market_type,
+                })
+                return True
+
+            async def notify_sell_order(self, **kwargs):
+                telegram_notifications.append({"type": "sell_order", **kwargs})
+                return True
+
+        async def fake_buy(*_, **__):
+            return {"success": False, "message": "매수 조건 미충족", "orders_placed": 0}
+
+        async def fake_sell(*_, **__):
+            raise RuntimeError("APBK0656 해당종목정보가 없습니다.")
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+        monkeypatch.setattr(
+            kis_tasks.run_per_overseas_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+
+        # 매도 실패 시 텔레그램 알림이 전송되어야 함
+        failure_notifications = [n for n in telegram_notifications if n["type"] == "failure"]
+        assert len(failure_notifications) >= 1, f"Expected failure notification, got {telegram_notifications}"
+
+        sell_failure = next((n for n in failure_notifications if "매도" in n["reason"]), None)
+        assert sell_failure is not None, f"Expected sell failure notification, got {failure_notifications}"
+        assert sell_failure["symbol"] == "VOO"
+        assert sell_failure["market_type"] == "해외주식"
+
+    def test_run_per_overseas_stock_automation_buy_success_sends_telegram(self, monkeypatch):
+        """해외주식 매수 성공 시 텔레그램 알림이 전송되어야 함."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.tasks import kis as kis_tasks
+        from app.analysis import service_analyzers
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, symbol):
+                return {"decision": "buy", "confidence": 80}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        class DummyKIS:
+            async def fetch_my_overseas_stocks(self, *args, **kwargs):
+                return [
+                    {
+                        "ovrs_pdno": "AAPL",
+                        "ovrs_item_name": "애플",
+                        "pchs_avg_pric": "170.00",
+                        "now_pric2": "175.00",
+                        "ovrs_cblc_qty": "10",
+                        "ovrs_excg_cd": "NASD",
+                    }
+                ]
+
+            async def inquire_overseas_orders(self, *args, **kwargs):
+                return []
+
+            async def cancel_overseas_order(self, *args, **kwargs):
+                return {"odno": "0000001"}
+
+        telegram_notifications = []
+
+        class MockNotifier:
+            async def notify_buy_order(self, **kwargs):
+                telegram_notifications.append({"type": "buy_order", **kwargs})
+                return True
+
+            async def notify_sell_order(self, **kwargs):
+                telegram_notifications.append({"type": "sell_order", **kwargs})
+                return True
+
+            async def notify_trade_failure(self, **kwargs):
+                telegram_notifications.append({"type": "failure", **kwargs})
+                return True
+
+        async def fake_buy(*_, **__):
+            return {
+                "success": True,
+                "message": "매수 완료",
+                "orders_placed": 2,
+                "total_amount": 350.0,
+                "prices": [172.0, 170.0],
+                "quantities": [1, 1],
+            }
+
+        async def fake_sell(*_, **__):
+            return {"success": False, "message": "매도 조건 미충족", "orders_placed": 0}
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+        monkeypatch.setattr(
+            kis_tasks.run_per_overseas_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+
+        # 매수 성공 시 텔레그램 알림이 전송되어야 함
+        buy_notifications = [n for n in telegram_notifications if n["type"] == "buy_order"]
+        assert len(buy_notifications) >= 1, f"Expected buy notification, got {telegram_notifications}"
+        assert buy_notifications[0]["symbol"] == "AAPL"
+        assert buy_notifications[0]["order_count"] == 2
+        assert buy_notifications[0]["market_type"] == "해외주식"
+
+    def test_run_per_overseas_stock_automation_sell_success_sends_telegram(self, monkeypatch):
+        """해외주식 매도 성공 시 텔레그램 알림이 전송되어야 함."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.tasks import kis as kis_tasks
+        from app.analysis import service_analyzers
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, symbol):
+                return {"decision": "sell", "confidence": 85}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        class DummyKIS:
+            async def fetch_my_overseas_stocks(self, *args, **kwargs):
+                return [
+                    {
+                        "ovrs_pdno": "TSLA",
+                        "ovrs_item_name": "테슬라",
+                        "pchs_avg_pric": "200.00",
+                        "now_pric2": "250.00",
+                        "ovrs_cblc_qty": "10",
+                        "ovrs_excg_cd": "NASD",
+                    }
+                ]
+
+            async def inquire_overseas_orders(self, *args, **kwargs):
+                return []
+
+            async def cancel_overseas_order(self, *args, **kwargs):
+                return {"odno": "0000001"}
+
+        telegram_notifications = []
+
+        class MockNotifier:
+            async def notify_buy_order(self, **kwargs):
+                telegram_notifications.append({"type": "buy_order", **kwargs})
+                return True
+
+            async def notify_sell_order(self, **kwargs):
+                telegram_notifications.append({"type": "sell_order", **kwargs})
+                return True
+
+            async def notify_trade_failure(self, **kwargs):
+                telegram_notifications.append({"type": "failure", **kwargs})
+                return True
+
+        async def fake_buy(*_, **__):
+            return {"success": False, "message": "매수 조건 미충족", "orders_placed": 0}
+
+        async def fake_sell(*_, **__):
+            return {
+                "success": True,
+                "message": "매도 완료",
+                "orders_placed": 2,
+                "total_volume": 5,
+                "prices": [255.0, 260.0],
+                "quantities": [2, 3],
+                "expected_amount": 1290.0,
+            }
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+        monkeypatch.setattr(
+            kis_tasks.run_per_overseas_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+
+        # 매도 성공 시 텔레그램 알림이 전송되어야 함
+        sell_notifications = [n for n in telegram_notifications if n["type"] == "sell_order"]
+        assert len(sell_notifications) >= 1, f"Expected sell notification, got {telegram_notifications}"
+        assert sell_notifications[0]["symbol"] == "TSLA"
+        assert sell_notifications[0]["order_count"] == 2
+        assert sell_notifications[0]["market_type"] == "해외주식"
+
+    def test_run_per_overseas_stock_automation_cancels_pending_orders(self, monkeypatch):
+        """해외주식 자동화 시 미체결 주문이 취소되어야 함."""
+        from unittest.mock import AsyncMock, MagicMock
+        from app.tasks import kis as kis_tasks
+        from app.analysis import service_analyzers
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, symbol):
+                return {"decision": "buy", "confidence": 80}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        cancelled_orders = []
+
+        class DummyKIS:
+            async def fetch_my_overseas_stocks(self, *args, **kwargs):
+                return [
+                    {
+                        "ovrs_pdno": "AAPL",
+                        "ovrs_item_name": "애플",
+                        "pchs_avg_pric": "170.00",
+                        "now_pric2": "175.00",
+                        "ovrs_cblc_qty": "10",
+                        "ovrs_excg_cd": "NASD",
+                    }
+                ]
+
+            async def inquire_overseas_orders(self, *args, **kwargs):
+                # 기존 미체결 매수/매도 주문 시뮬레이션
+                return [
+                    {
+                        "pdno": "AAPL",
+                        "odno": "ORDER001",
+                        "sll_buy_dvsn_cd": "02",  # 매수
+                        "ft_ord_qty": "5",
+                    },
+                    {
+                        "pdno": "AAPL",
+                        "odno": "ORDER002",
+                        "sll_buy_dvsn_cd": "01",  # 매도
+                        "ft_ord_qty": "3",
+                    },
+                ]
+
+            async def cancel_overseas_order(self, order_number, symbol, exchange_code, quantity, is_mock):
+                cancelled_orders.append({
+                    "order_number": order_number,
+                    "symbol": symbol,
+                    "quantity": quantity,
+                })
+                return {"odno": order_number}
+
+        class MockNotifier:
+            async def notify_buy_order(self, **kwargs):
+                return True
+            async def notify_sell_order(self, **kwargs):
+                return True
+            async def notify_trade_failure(self, **kwargs):
+                return True
+
+        async def fake_buy(*_, **__):
+            return {"success": True, "orders_placed": 1, "total_amount": 175.0, "prices": [175.0], "quantities": [1]}
+
+        async def fake_sell(*_, **__):
+            return {"success": True, "orders_placed": 1, "total_volume": 1, "prices": [180.0], "quantities": [1], "expected_amount": 180.0}
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+        monkeypatch.setattr(
+            kis_tasks.run_per_overseas_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+
+        # 미체결 주문 취소 확인 (매수 1개, 매도 1개)
+        assert len(cancelled_orders) == 2, f"Expected 2 cancelled orders, got {cancelled_orders}"
+        buy_cancels = [o for o in cancelled_orders if o["order_number"] == "ORDER001"]
+        sell_cancels = [o for o in cancelled_orders if o["order_number"] == "ORDER002"]
+        assert len(buy_cancels) == 1, "Buy order should be cancelled"
+        assert len(sell_cancels) == 1, "Sell order should be cancelled"

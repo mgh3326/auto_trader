@@ -367,3 +367,125 @@ async def test_send_to_multiple_chats(trade_notifier):
         assert result is True
         # Should be called once per chat ID
         assert mock_post.call_count == 3
+
+
+@pytest.mark.unit
+def test_format_failure_notification(trade_notifier):
+    """Test failure notification formatting."""
+    message = trade_notifier._format_failure_notification(
+        symbol="AAPL",
+        korean_name="애플",
+        reason="APBK0656 해당종목정보가 없습니다.",
+        market_type="해외주식",
+    )
+
+    assert "⚠️ *거래 실패 알림*" in message
+    assert "애플 (AAPL)" in message
+    assert "해외주식" in message
+    assert "APBK0656 해당종목정보가 없습니다." in message
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_trade_failure_success(trade_notifier):
+    """Test successful trade failure notification."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(
+        trade_notifier._http_client, "post", new_callable=AsyncMock, return_value=mock_response
+    ) as mock_post:
+        result = await trade_notifier.notify_trade_failure(
+            symbol="VOO",
+            korean_name="VOO",
+            reason="매도 주문 실패: APBK0656 해당종목정보가 없습니다.",
+            market_type="해외주식",
+        )
+
+        assert result is True
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert "거래 실패 알림" in call_args.kwargs["json"]["text"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_trade_failure_disabled(trade_notifier):
+    """Test that trade failure notifications are not sent when disabled."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=False,
+    )
+
+    result = await trade_notifier.notify_trade_failure(
+        symbol="VOO",
+        korean_name="VOO",
+        reason="매도 주문 실패",
+        market_type="해외주식",
+    )
+
+    assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_sell_order_success(trade_notifier):
+    """Test successful sell order notification."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(
+        trade_notifier._http_client, "post", new_callable=AsyncMock, return_value=mock_response
+    ) as mock_post:
+        result = await trade_notifier.notify_sell_order(
+            symbol="AAPL",
+            korean_name="애플",
+            order_count=2,
+            total_volume=5,
+            prices=[180.0, 185.0],
+            volumes=[2, 3],
+            expected_amount=920.0,
+            market_type="해외주식",
+        )
+
+        assert result is True
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert "매도 주문 접수" in call_args.kwargs["json"]["text"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_sell_order_disabled(trade_notifier):
+    """Test that sell order notifications are not sent when disabled."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=False,
+    )
+
+    result = await trade_notifier.notify_sell_order(
+        symbol="AAPL",
+        korean_name="애플",
+        order_count=1,
+        total_volume=5,
+        prices=[180.0],
+        volumes=[5],
+        expected_amount=900.0,
+        market_type="해외주식",
+    )
+
+    assert result is False
