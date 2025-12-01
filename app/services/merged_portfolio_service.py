@@ -176,7 +176,7 @@ class MergedPortfolioService:
         try:
             if market_type == MarketType.KR:
                 return await kis_client.fetch_my_stocks()
-            return await kis_client.fetch_overseas_stocks()
+            return await kis_client.fetch_my_overseas_stocks()
         except Exception as exc:
             logger.error(
                 "Failed to fetch KIS %s stocks: %s", market_type.value, exc
