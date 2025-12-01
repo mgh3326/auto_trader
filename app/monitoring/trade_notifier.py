@@ -519,6 +519,220 @@ class TradeNotifier:
             logger.error(f"Failed to send failure notification: {e}")
             return False
 
+    def _format_toss_buy_recommendation(
+        self,
+        symbol: str,
+        korean_name: str,
+        current_price: float,
+        toss_quantity: int,
+        toss_avg_price: float,
+        kis_quantity: int | None,
+        kis_avg_price: float | None,
+        recommended_price: float,
+        recommended_quantity: int,
+        currency: str = "원",
+        market_type: str = "국내주식",
+    ) -> str:
+        """
+        Format Toss manual buy recommendation notification.
+
+        Args:
+            symbol: Trading symbol
+            korean_name: Korean name of asset
+            current_price: Current market price
+            toss_quantity: Quantity held in Toss
+            toss_avg_price: Average price in Toss
+            kis_quantity: Quantity held in KIS (optional)
+            kis_avg_price: Average price in KIS (optional)
+            recommended_price: AI recommended buy price
+            recommended_quantity: AI recommended buy quantity
+            currency: Currency symbol (원, $)
+            market_type: Type of market
+
+        Returns:
+            Markdown-formatted notification message
+        """
+        is_usd = currency == "$"
+        price_fmt = lambda p: f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
+
+        parts = [
+            f"📈 *\\[토스 수동매수\\] {korean_name}*",
+            "",
+            f"*현재가:* {price_fmt(current_price)}",
+            f"*토스 보유:* {toss_quantity}주 (평단가 {price_fmt(toss_avg_price)})",
+        ]
+
+        if kis_quantity and kis_quantity > 0 and kis_avg_price:
+            parts.append(f"*한투 보유:* {kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})")
+
+        parts.extend([
+            "",
+            f"💡 *추천 매수가:* {price_fmt(recommended_price)}",
+            f"*추천 수량:* {recommended_quantity}주",
+        ])
+
+        return "\n".join(parts)
+
+    def _format_toss_sell_recommendation(
+        self,
+        symbol: str,
+        korean_name: str,
+        current_price: float,
+        toss_quantity: int,
+        toss_avg_price: float,
+        kis_quantity: int | None,
+        kis_avg_price: float | None,
+        recommended_price: float,
+        recommended_quantity: int,
+        expected_profit: float,
+        profit_percent: float,
+        currency: str = "원",
+        market_type: str = "국내주식",
+    ) -> str:
+        """
+        Format Toss manual sell recommendation notification.
+
+        Args:
+            symbol: Trading symbol
+            korean_name: Korean name of asset
+            current_price: Current market price
+            toss_quantity: Quantity held in Toss
+            toss_avg_price: Average price in Toss
+            kis_quantity: Quantity held in KIS (optional)
+            kis_avg_price: Average price in KIS (optional)
+            recommended_price: AI recommended sell price
+            recommended_quantity: AI recommended sell quantity
+            expected_profit: Expected profit amount
+            profit_percent: Expected profit percentage
+            currency: Currency symbol (원, $)
+            market_type: Type of market
+
+        Returns:
+            Markdown-formatted notification message
+        """
+        is_usd = currency == "$"
+        price_fmt = lambda p: f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
+        profit_sign = "+" if profit_percent >= 0 else ""
+
+        parts = [
+            f"📉 *\\[토스 수동매도\\] {korean_name}*",
+            "",
+            f"*현재가:* {price_fmt(current_price)}",
+            f"*토스 보유:* {toss_quantity}주 (평단가 {price_fmt(toss_avg_price)})",
+        ]
+
+        if kis_quantity and kis_quantity > 0 and kis_avg_price:
+            parts.append(f"*한투 보유:* {kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})")
+
+        parts.extend([
+            "",
+            f"💡 *추천 매도가:* {price_fmt(recommended_price)} ({profit_sign}{profit_percent:.1f}%)",
+            f"*추천 수량:* {recommended_quantity}주",
+            f"*예상 수익:* {price_fmt(expected_profit)}",
+        ])
+
+        return "\n".join(parts)
+
+    async def notify_toss_buy_recommendation(
+        self,
+        symbol: str,
+        korean_name: str,
+        current_price: float,
+        toss_quantity: int,
+        toss_avg_price: float,
+        kis_quantity: int | None,
+        kis_avg_price: float | None,
+        recommended_price: float,
+        recommended_quantity: int,
+        currency: str = "원",
+        market_type: str = "국내주식",
+    ) -> bool:
+        """
+        Send Toss manual buy recommendation notification.
+
+        Only sends if toss_quantity > 0.
+
+        Returns:
+            True if notification sent successfully
+        """
+        if not self._enabled:
+            return False
+
+        if toss_quantity <= 0:
+            logger.debug(f"Skipping Toss buy notification for {symbol}: no Toss holdings")
+            return False
+
+        try:
+            message = self._format_toss_buy_recommendation(
+                symbol=symbol,
+                korean_name=korean_name,
+                current_price=current_price,
+                toss_quantity=toss_quantity,
+                toss_avg_price=toss_avg_price,
+                kis_quantity=kis_quantity,
+                kis_avg_price=kis_avg_price,
+                recommended_price=recommended_price,
+                recommended_quantity=recommended_quantity,
+                currency=currency,
+                market_type=market_type,
+            )
+            return await self._send_to_telegram(message)
+        except Exception as e:
+            logger.error(f"Failed to send Toss buy recommendation: {e}")
+            return False
+
+    async def notify_toss_sell_recommendation(
+        self,
+        symbol: str,
+        korean_name: str,
+        current_price: float,
+        toss_quantity: int,
+        toss_avg_price: float,
+        kis_quantity: int | None,
+        kis_avg_price: float | None,
+        recommended_price: float,
+        recommended_quantity: int,
+        expected_profit: float,
+        profit_percent: float,
+        currency: str = "원",
+        market_type: str = "국내주식",
+    ) -> bool:
+        """
+        Send Toss manual sell recommendation notification.
+
+        Only sends if toss_quantity > 0.
+
+        Returns:
+            True if notification sent successfully
+        """
+        if not self._enabled:
+            return False
+
+        if toss_quantity <= 0:
+            logger.debug(f"Skipping Toss sell notification for {symbol}: no Toss holdings")
+            return False
+
+        try:
+            message = self._format_toss_sell_recommendation(
+                symbol=symbol,
+                korean_name=korean_name,
+                current_price=current_price,
+                toss_quantity=toss_quantity,
+                toss_avg_price=toss_avg_price,
+                kis_quantity=kis_quantity,
+                kis_avg_price=kis_avg_price,
+                recommended_price=recommended_price,
+                recommended_quantity=recommended_quantity,
+                expected_profit=expected_profit,
+                profit_percent=profit_percent,
+                currency=currency,
+                market_type=market_type,
+            )
+            return await self._send_to_telegram(message)
+        except Exception as e:
+            logger.error(f"Failed to send Toss sell recommendation: {e}")
+            return False
+
     async def test_connection(self) -> bool:
         """
         Test Telegram connection by sending a test message.

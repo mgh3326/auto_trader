@@ -23,6 +23,22 @@ from app.services.stock_info_service import StockAnalysisService
 
 router = APIRouter(prefix="/api/symbol-settings", tags=["symbol-settings"])
 
+USER_DEFAULTS_UPDATABLE_FIELDS = {
+    "crypto_default_buy_amount",
+    "crypto_min_order_amount",
+    "equity_kr_default_buy_quantity",
+    "equity_us_default_buy_quantity",
+    "equity_us_default_buy_amount",
+}
+
+SYMBOL_SETTINGS_UPDATABLE_FIELDS = {
+    "buy_quantity_per_order",
+    "buy_price_levels",
+    "exchange_code",
+    "is_active",
+    "note",
+}
+
 
 async def get_user_from_request(
     request: Request,
@@ -201,6 +217,13 @@ async def update_user_defaults(
 
     # None이 아닌 필드만 업데이트
     update_data = {k: v for k, v in request_data.model_dump().items() if v is not None}
+
+    invalid_fields = set(update_data) - USER_DEFAULTS_UPDATABLE_FIELDS
+    if invalid_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid fields for update: {', '.join(sorted(invalid_fields))}",
+        )
 
     if not update_data:
         raise HTTPException(
@@ -721,6 +744,13 @@ async def update_settings(
 
     # None이 아닌 필드만 업데이트
     update_data = {k: v for k, v in request_data.model_dump().items() if v is not None}
+
+    invalid_fields = set(update_data) - SYMBOL_SETTINGS_UPDATABLE_FIELDS
+    if invalid_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid fields for update: {', '.join(sorted(invalid_fields))}",
+        )
 
     if not update_data:
         raise HTTPException(

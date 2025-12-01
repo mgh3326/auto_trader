@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>수동 잔고 관리</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
+    <style>
+        .broker-badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+        }
+        .broker-toss {
+            background-color: #0064FF;
+            color: white;
+        }
+        .broker-kis {
+            background-color: #FF6B00;
+            color: white;
+        }
+        .broker-upbit {
+            background-color: #093687;
+            color: white;
+        }
+        .card {
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            border: none;
+            margin-bottom: 1.5rem;
+        }
+        .card-header {
+            background-color: #fff;
+            border-bottom: 1px solid #eee;
+            font-weight: 600;
+        }
+        #alert-area {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            width: 350px;
+        }
+        .holding-card {
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 1rem;
+            background: white;
+            margin-bottom: 0.75rem;
+        }
+        .profit-plus {
+            color: #d60000;
+        }
+        .profit-minus {
+            color: #0051c7;
+        }
+    </style>
+</head>
+
+<body class="bg-light">
+    {% include 'nav.html' %}
+
+    <div class="container py-4">
+        <div id="alert-area"></div>
+
+        <div class="row mb-4">
+            <div class="col-12">
+                <h2 class="mb-3">
+                    <i class="bi bi-wallet2 text-primary"></i> 수동 잔고 관리
+                </h2>
+                <p class="text-muted">토스 증권 등 외부 브로커의 보유 종목을 수동으로 등록하여 통합 포트폴리오를 관리합니다.</p>
+            </div>
+        </div>
+
+        <!-- 요약 카드 -->
+        <div class="row mb-4">
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h5 class="text-muted">등록된 브로커 계좌</h5>
+                        <h3 id="account-count" class="fw-bold">-</h3>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h5 class="text-muted">수동 등록 종목</h5>
+                        <h3 id="holding-count" class="fw-bold">-</h3>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h5 class="text-muted">시장별 종목</h5>
+                        <h3 id="market-summary" class="fw-bold">-</h3>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 브로커 계좌 관리 -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-bank"></i> 브로커 계좌</span>
+                        <button class="btn btn-sm btn-primary" onclick="showAddAccountModal()">
+                            <i class="bi bi-plus"></i> 계좌 추가
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="accounts-list" class="row">
+                            <div class="col-12 text-center py-4">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 수동 보유 종목 -->
+        <div class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-list-ul"></i> 수동 등록 보유 종목</span>
+                        <div>
+                            <select id="market-filter" class="form-select form-select-sm d-inline-block" style="width: auto;" onchange="loadHoldings()">
+                                <option value="">전체 시장</option>
+                                <option value="KR">국내주식</option>
+                                <option value="US">해외주식</option>
+                            </select>
+                            <button class="btn btn-sm btn-success ms-2" onclick="showAddHoldingModal()">
+                                <i class="bi bi-plus"></i> 종목 추가
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary ms-2" onclick="loadHoldings()">
+                                <i class="bi bi-arrow-clockwise"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>종목</th>
+                                        <th>브로커</th>
+                                        <th class="text-end">수량</th>
+                                        <th class="text-end">평단가</th>
+                                        <th class="text-end">평가금액</th>
+                                        <th class="text-center">시장</th>
+                                        <th class="text-center">관리</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="holdings-list">
+                                    <tr>
+                                        <td colspan="7" class="text-center py-4">
+                                            <div class="spinner-border text-primary" role="status">
+                                                <span class="visually-hidden">Loading...</span>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 계좌 추가 모달 -->
+    <div class="modal fade" id="addAccountModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">브로커 계좌 추가</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label" for="account-broker">브로커</label>
+                        <select id="account-broker" class="form-select">
+                            <option value="toss">토스증권</option>
+                            <option value="kis">한국투자증권</option>
+                            <option value="upbit">업비트</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="account-name">계좌 이름</label>
+                        <input type="text" id="account-name" class="form-control" value="기본 계좌">
+                    </div>
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="account-mock">
+                            <label class="form-check-label" for="account-mock">모의투자 계좌</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+                    <button type="button" class="btn btn-primary" onclick="createAccount()">추가</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 종목 추가 모달 -->
+    <div class="modal fade" id="addHoldingModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">보유 종목 추가</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">브로커</label>
+                        <select id="holding-broker" class="form-select">
+                            <option value="toss">토스증권</option>
+                            <option value="kis">한국투자증권</option>
+                            <option value="upbit">업비트</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">시장</label>
+                        <select id="holding-market" class="form-select">
+                            <option value="KR">국내주식</option>
+                            <option value="US">해외주식</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">종목코드</label>
+                        <input type="text" id="holding-ticker" class="form-control" placeholder="예: 005930, AAPL">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">종목명 (선택)</label>
+                        <input type="text" id="holding-name" class="form-control" placeholder="예: 삼성전자">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">보유 수량</label>
+                        <input type="number" id="holding-quantity" class="form-control" step="1" min="1">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">평균 매수가</label>
+                        <input type="number" id="holding-avgprice" class="form-control" step="0.01" min="0">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+                    <button type="button" class="btn btn-primary" onclick="createHolding()">추가</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 종목 수정 모달 -->
+    <div class="modal fade" id="editHoldingModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">보유 종목 수정</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="edit-holding-id">
+                    <div class="mb-3">
+                        <label class="form-label">종목</label>
+                        <input type="text" id="edit-holding-ticker" class="form-control" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">보유 수량</label>
+                        <input type="number" id="edit-holding-quantity" class="form-control" step="1" min="1">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">평균 매수가</label>
+                        <input type="number" id="edit-holding-avgprice" class="form-control" step="0.01" min="0">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">종목명 (선택)</label>
+                        <input type="text" id="edit-holding-name" class="form-control">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-danger me-auto" onclick="deleteHolding()">삭제</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+                    <button type="button" class="btn btn-primary" onclick="updateHolding()">저장</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let accounts = [];
+        let holdings = [];
+
+        // 초기화
+        document.addEventListener('DOMContentLoaded', function() {
+            loadAccounts();
+            loadHoldings();
+        });
+
+        // 알림 표시
+        function showAlert(message, type = 'success') {
+            const alertArea = document.getElementById('alert-area');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type} alert-dismissible fade show`;
+            alert.innerHTML = `
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            alertArea.appendChild(alert);
+            setTimeout(() => alert.remove(), 5000);
+        }
+
+        // 브로커 계좌 로드
+        async function loadAccounts() {
+            try {
+                const response = await fetch('/manual-holdings/api/broker-accounts');
+                if (!response.ok) throw new Error('계좌 목록을 불러올 수 없습니다');
+                accounts = await response.json();
+                renderAccounts();
+            } catch (error) {
+                console.error('Error loading accounts:', error);
+                document.getElementById('accounts-list').innerHTML = `
+                    <div class="col-12 text-center text-muted py-4">
+                        계좌 목록을 불러올 수 없습니다
+                    </div>
+                `;
+            }
+        }
+
+        // 브로커 계좌 렌더링
+        function renderAccounts() {
+            const container = document.getElementById('accounts-list');
+            document.getElementById('account-count').textContent = accounts.length;
+
+            if (accounts.length === 0) {
+                container.innerHTML = `
+                    <div class="col-12 text-center text-muted py-4">
+                        등록된 계좌가 없습니다. '계좌 추가' 버튼을 눌러 추가하세요.
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = accounts.map(account => `
+                <div class="col-md-4 mb-3">
+                    <div class="holding-card">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span class="badge broker-${account.broker_type}">${getBrokerName(account.broker_type)}</span>
+                            ${account.is_mock ? '<span class="badge bg-secondary">모의</span>' : ''}
+                        </div>
+                        <h5 class="mb-1">${account.account_name}</h5>
+                        <small class="text-muted">생성: ${new Date(account.created_at).toLocaleDateString()}</small>
+                        <div class="mt-2">
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteAccount(${account.id})">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 보유 종목 로드
+        async function loadHoldings() {
+            const marketFilter = document.getElementById('market-filter').value;
+            let url = '/manual-holdings/api/holdings';
+            if (marketFilter) {
+                url += `?market_type=${marketFilter}`;
+            }
+
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('보유 종목을 불러올 수 없습니다');
+                holdings = await response.json();
+                renderHoldings();
+                updateSummary();
+            } catch (error) {
+                console.error('Error loading holdings:', error);
+                document.getElementById('holdings-list').innerHTML = `
+                    <tr><td colspan="7" class="text-center text-muted py-4">
+                        보유 종목을 불러올 수 없습니다
+                    </td></tr>
+                `;
+            }
+        }
+
+        // 보유 종목 렌더링
+        function renderHoldings() {
+            const tbody = document.getElementById('holdings-list');
+            document.getElementById('holding-count').textContent = holdings.length;
+
+            if (holdings.length === 0) {
+                tbody.innerHTML = `
+                    <tr><td colspan="7" class="text-center text-muted py-4">
+                        등록된 보유 종목이 없습니다
+                    </td></tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = holdings.map(h => {
+                const evaluation = h.quantity * h.avg_price;
+                return `
+                    <tr>
+                        <td>
+                            <strong>${h.display_name || h.ticker}</strong>
+                            ${h.display_name ? `<br><small class="text-muted">${h.ticker}</small>` : ''}
+                        </td>
+                        <td><span class="badge broker-${h.broker_type}">${getBrokerName(h.broker_type)}</span></td>
+                        <td class="text-end">${h.quantity.toLocaleString()}</td>
+                        <td class="text-end">${formatPrice(h.avg_price, h.market_type)}</td>
+                        <td class="text-end">${formatPrice(evaluation, h.market_type)}</td>
+                        <td class="text-center">
+                            <span class="badge ${h.market_type === 'KR' ? 'bg-primary' : 'bg-success'}">
+                                ${h.market_type === 'KR' ? '국내' : '해외'}
+                            </span>
+                        </td>
+                        <td class="text-center">
+                            <button class="btn btn-sm btn-outline-primary" onclick="showEditHoldingModal(${h.id})">
+                                <i class="bi bi-pencil"></i>
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // 요약 업데이트
+        function updateSummary() {
+            const krCount = holdings.filter(h => h.market_type === 'KR').length;
+            const usCount = holdings.filter(h => h.market_type === 'US').length;
+            document.getElementById('market-summary').textContent = `국내 ${krCount} / 해외 ${usCount}`;
+        }
+
+        // 유틸리티 함수
+        function getBrokerName(type) {
+            const names = { toss: '토스', kis: '한투', upbit: '업비트' };
+            return names[type] || type;
+        }
+
+        function formatPrice(price, marketType) {
+            if (marketType === 'US') {
+                return '$' + price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            }
+            return Math.round(price).toLocaleString() + '원';
+        }
+
+        // 모달 표시
+        function showAddAccountModal() {
+            new bootstrap.Modal(document.getElementById('addAccountModal')).show();
+        }
+
+        function showAddHoldingModal() {
+            document.getElementById('holding-ticker').value = '';
+            document.getElementById('holding-name').value = '';
+            document.getElementById('holding-quantity').value = '';
+            document.getElementById('holding-avgprice').value = '';
+            new bootstrap.Modal(document.getElementById('addHoldingModal')).show();
+        }
+
+        function showEditHoldingModal(id) {
+            const holding = holdings.find(h => h.id === id);
+            if (!holding) return;
+
+            document.getElementById('edit-holding-id').value = holding.id;
+            document.getElementById('edit-holding-ticker').value = holding.ticker;
+            document.getElementById('edit-holding-quantity').value = holding.quantity;
+            document.getElementById('edit-holding-avgprice').value = holding.avg_price;
+            document.getElementById('edit-holding-name').value = holding.display_name || '';
+
+            new bootstrap.Modal(document.getElementById('editHoldingModal')).show();
+        }
+
+        // CRUD 작업
+        function validateAccountName() {
+            const accountNameInput = document.getElementById('account-name');
+            const accountName = accountNameInput.value.trim();
+            if (!accountName) {
+                showAlert('계좌 이름을 입력하세요', 'danger');
+                accountNameInput.focus();
+                return null;
+            }
+            return accountName;
+        }
+
+        function validateHoldingInputs(tickerId, quantityId, avgPriceId) {
+            const tickerInput = document.getElementById(tickerId);
+            const quantityInput = document.getElementById(quantityId);
+            const avgPriceInput = document.getElementById(avgPriceId);
+
+            const ticker = tickerInput.value.trim().toUpperCase();
+            const quantity = parseFloat(quantityInput.value);
+            const avgPrice = parseFloat(avgPriceInput.value);
+
+            if (!ticker) {
+                showAlert('종목코드를 입력하세요', 'danger');
+                tickerInput.focus();
+                return null;
+            }
+            if (!Number.isFinite(quantity) || quantity <= 0) {
+                showAlert('수량은 0보다 커야 합니다', 'danger');
+                quantityInput.focus();
+                return null;
+            }
+            if (!Number.isFinite(avgPrice) || avgPrice < 0) {
+                showAlert('평균 매수가를 0 이상으로 입력하세요', 'danger');
+                avgPriceInput.focus();
+                return null;
+            }
+
+            return { ticker, quantity, avgPrice };
+        }
+
+        async function createAccount() {
+            const accountName = validateAccountName();
+            if (!accountName) return;
+
+            const data = {
+                broker_type: document.getElementById('account-broker').value,
+                account_name: accountName,
+                is_mock: document.getElementById('account-mock').checked
+            };
+
+            try {
+                const response = await fetch('/manual-holdings/api/broker-accounts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || '계좌 추가 실패');
+                }
+
+                showAlert('계좌가 추가되었습니다');
+                bootstrap.Modal.getInstance(document.getElementById('addAccountModal')).hide();
+                loadAccounts();
+            } catch (error) {
+                showAlert(error.message, 'danger');
+            }
+        }
+
+        async function deleteAccount(id) {
+            if (!confirm('이 계좌를 삭제하시겠습니까? 연결된 보유 종목도 함께 삭제됩니다.')) return;
+
+            try {
+                const response = await fetch(`/manual-holdings/api/broker-accounts/${id}`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) throw new Error('계좌 삭제 실패');
+
+                showAlert('계좌가 삭제되었습니다');
+                loadAccounts();
+                loadHoldings();
+            } catch (error) {
+                showAlert(error.message, 'danger');
+            }
+        }
+
+        async function createHolding() {
+            const validated = validateHoldingInputs('holding-ticker', 'holding-quantity', 'holding-avgprice');
+            if (!validated) return;
+
+            const displayName = document.getElementById('holding-name').value.trim();
+            const data = {
+                broker_type: document.getElementById('holding-broker').value,
+                account_name: '기본 계좌',
+                ticker: validated.ticker,
+                market_type: document.getElementById('holding-market').value,
+                quantity: validated.quantity,
+                avg_price: validated.avgPrice,
+                display_name: displayName || null
+            };
+
+            try {
+                const response = await fetch('/manual-holdings/api/holdings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || '종목 추가 실패');
+                }
+
+                showAlert('종목이 추가되었습니다');
+                bootstrap.Modal.getInstance(document.getElementById('addHoldingModal')).hide();
+                loadHoldings();
+                loadAccounts();
+            } catch (error) {
+                showAlert(error.message, 'danger');
+            }
+        }
+
+        async function updateHolding() {
+            const id = document.getElementById('edit-holding-id').value;
+            const validated = validateHoldingInputs('edit-holding-ticker', 'edit-holding-quantity', 'edit-holding-avgprice');
+            if (!validated) return;
+
+            const displayName = document.getElementById('edit-holding-name').value.trim();
+            const data = {
+                quantity: validated.quantity,
+                avg_price: validated.avgPrice,
+                display_name: displayName || null
+            };
+
+            try {
+                const response = await fetch(`/manual-holdings/api/holdings/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+
+                if (!response.ok) throw new Error('종목 수정 실패');
+
+                showAlert('종목이 수정되었습니다');
+                bootstrap.Modal.getInstance(document.getElementById('editHoldingModal')).hide();
+                loadHoldings();
+            } catch (error) {
+                showAlert(error.message, 'danger');
+            }
+        }
+
+        async function deleteHolding() {
+            const id = document.getElementById('edit-holding-id').value;
+            if (!confirm('이 종목을 삭제하시겠습니까?')) return;
+
+            try {
+                const response = await fetch(`/manual-holdings/api/holdings/${id}`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) throw new Error('종목 삭제 실패');
+
+                showAlert('종목이 삭제되었습니다');
+                bootstrap.Modal.getInstance(document.getElementById('editHoldingModal')).hide();
+                loadHoldings();
+            } catch (error) {
+                showAlert(error.message, 'danger');
+            }
+        }
+    </script>
+</body>
+</html>

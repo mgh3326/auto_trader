@@ -4,6 +4,13 @@ from .prompt import PromptResult
 from .analysis import StockInfo, StockAnalysisResult
 from .trading import Exchange, Instrument, User, UserChannel, UserWatchItem, UserRole
 from .symbol_trade_settings import SymbolTradeSettings
+from .manual_holdings import (
+    BrokerType,
+    MarketType,
+    BrokerAccount,
+    StockAlias,
+    ManualHolding,
+)
 
 # 필요한 다른 모델도 전부 여기서 import
 # from .alert import AlertRule, AlertEvent
@@ -21,6 +28,12 @@ __all__ = [
     "StockInfo",
     "StockAnalysisResult",
     "SymbolTradeSettings",
+    # Manual Holdings
+    "BrokerType",
+    "MarketType",
+    "BrokerAccount",
+    "StockAlias",
+    "ManualHolding",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",
 ]

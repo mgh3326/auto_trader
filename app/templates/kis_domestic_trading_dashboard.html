@@ -87,6 +87,29 @@
             background-color: #6c757d !important;
         }
 
+        .broker-badge {
+            font-size: 0.65rem;
+            padding: 0.15rem 0.35rem;
+            margin-left: 0.25rem;
+            vertical-align: middle;
+        }
+
+        .broker-kis {
+            background-color: #e74c3c !important;
+        }
+
+        .broker-toss {
+            background-color: #3182f6 !important;
+        }
+
+        .broker-upbit {
+            background-color: #093687 !important;
+        }
+
+        .broker-other {
+            background-color: #6c757d !important;
+        }
+
         .estimated-cost-card {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -527,10 +550,24 @@
                             `;
                         }
 
+                        // Broker badges with quantity
+                        let brokerBadges = '';
+                        if (stock.holdings && stock.holdings.length > 0) {
+                            brokerBadges = stock.holdings.map(h => {
+                                const brokerName = h.broker.toUpperCase();
+                                const brokerClass = `broker-${h.broker}`;
+                                const qtyDisplay = h.quantity.toLocaleString();
+                                return `<span class="badge broker-badge ${brokerClass}" title="평단 ${h.avg_price.toLocaleString()}원">${brokerName} ${qtyDisplay}</span>`;
+                            }).join('');
+                        } else if (stock.kis_quantity > 0) {
+                            // Fallback for backward compatibility
+                            brokerBadges = `<span class="badge broker-badge broker-kis" title="평단 ${stock.kis_avg_price?.toLocaleString() || '-'}원">KIS ${stock.kis_quantity}</span>`;
+                        }
+
                         tableRows.push(`
                             <tr>
                                 <td>
-                                    <strong>${safeName}</strong>
+                                    <strong>${safeName}</strong>${brokerBadges}
                                     <br><small class="text-muted">${safeCode}</small>
                                 </td>
                                 <td class="text-end">${stock.quantity.toLocaleString()} 주</td>
@@ -561,7 +598,7 @@
                             <div class="stock-card">
                                 <div class="d-flex justify-content-between align-items-start">
                                     <div>
-                                        <div class="fw-bold">${safeName}</div>
+                                        <div class="fw-bold">${safeName}${brokerBadges}</div>
                                         <div class="text-muted small">${safeCode}</div>
                                     </div>
                                     <div class="text-end ${profitClass}">

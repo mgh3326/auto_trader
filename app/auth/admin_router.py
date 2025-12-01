@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.constants import AUTH_REQUIRED_MESSAGE, ADMIN_REQUIRED_MESSAGE
 from app.auth.role_hierarchy import has_min_role
 from app.auth.token_repository import revoke_all_refresh_tokens
 from app.auth.web_router import get_current_user_from_session, invalidate_user_cache
@@ -47,7 +48,7 @@ async def require_admin(
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="인증이 필요합니다.",
+            detail=AUTH_REQUIRED_MESSAGE,
         )
 
     if not has_min_role(user.role, UserRole.admin):
@@ -62,7 +63,7 @@ async def require_admin(
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="관리자 권한이 필요합니다.",
+            detail=ADMIN_REQUIRED_MESSAGE,
         )
 
     return user

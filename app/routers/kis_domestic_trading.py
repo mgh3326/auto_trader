@@ -1,23 +1,21 @@
 """
 KIS 국내주식 자동 매매 웹 인터페이스 라우터
-- 보유 주식 조회
+- 보유 주식 조회 (KIS + 수동 잔고 통합)
 - AI 분석 실행
 - 자동 매수/매도 주문 (Placeholder)
 """
 
 import logging
-from typing import Optional
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
-from app.core.config import settings
 from app.core.templates import templates
+from app.models.trading import User
+from app.routers.dependencies import get_authenticated_user
 from app.services.kis import KISClient
-from app.analysis.service_analyzers import KISAnalyzer
-from app.services.stock_info_service import StockAnalysisService
-from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
+from app.services.merged_portfolio_service import MergedPortfolioService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/kis-domestic-trading", tags=["KIS Domestic Trading"])
@@ -39,59 +37,51 @@ async def kis_domestic_trading_dashboard(request: Request):
 @router.get("/api/my-stocks")
 async def get_my_domestic_stocks(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
-    """보유 국내 주식 조회 API"""
+    """보유 국내 주식 조회 API (KIS + 수동 잔고 통합)"""
     try:
         kis = KISClient()
-        # TODO: Add caching or database storage for analysis results if needed
-        # For now, we just fetch current balance and basic info
-        
-        my_stocks = await kis.fetch_my_stocks()
-        
+
         # 통합 증거금 조회 (예수금 확인용)
         margin = await kis.inquire_integrated_margin()
         krw_balance = margin.get("dnca_tot_amt", 0)
-        
-        # Enrich with analysis data if available (mock for now or fetch from DB if implemented)
-        # 2. DB에서 최신 분석 결과 조회
-        stock_service = StockAnalysisService(db)
-        settings_service = SymbolTradeSettingsService(db)
 
-        # 종목 코드 리스트 추출
-        codes = [stock.get("pdno") for stock in my_stocks]
-        analysis_map = await stock_service.get_latest_analysis_results_for_coins(codes)
-
-        # 3. 종목별 설정 조회
-        settings_map = {}
-        for code in codes:
-            settings_obj = await settings_service.get_by_symbol(code)
-            if settings_obj and settings_obj.is_active:
-                settings_map[code] = settings_obj
+        # MergedPortfolioService를 사용하여 KIS + 수동 잔고 통합
+        service = MergedPortfolioService(db)
+        merged_holdings = await service.get_merged_portfolio_domestic(
+            current_user.id, kis
+        )
 
         processed_stocks = []
-        for stock in my_stocks:
-            code = stock.get("pdno")
-            analysis = analysis_map.get(code)
-            symbol_settings = settings_map.get(code)
-
+        for holding in merged_holdings:
             processed_stocks.append({
-                "code": code,
-                "name": stock.get("prdt_name"),
-                "quantity": int(stock.get("hldg_qty", 0)),
-                "current_price": float(stock.get("prpr", 0)),
-                "avg_price": float(stock.get("pchs_avg_pric", 0)),
-                "profit_rate": float(stock.get("evlu_pfls_rt", 0)) / 100.0,
-                "evaluation": float(stock.get("evlu_amt", 0)),
-                "profit_loss": float(stock.get("evlu_pfls_amt", 0)),
-                "analysis_id": analysis.id if analysis else None,
-                "last_analysis_at": analysis.created_at.isoformat() if analysis and analysis.created_at else None,
-                "last_analysis_decision": analysis.decision if analysis else None,
-                "analysis_confidence": analysis.confidence if analysis else None,
+                "code": holding.ticker,
+                "name": holding.name,
+                "quantity": holding.total_quantity,
+                "current_price": holding.current_price,
+                "avg_price": holding.combined_avg_price,
+                "profit_rate": holding.profit_rate,
+                "evaluation": holding.evaluation,
+                "profit_loss": holding.profit_loss,
+                "analysis_id": holding.analysis_id,
+                "last_analysis_at": holding.last_analysis_at,
+                "last_analysis_decision": holding.last_analysis_decision,
+                "analysis_confidence": holding.analysis_confidence,
                 # Symbol trade settings
-                "settings_quantity": float(symbol_settings.buy_quantity_per_order) if symbol_settings else None,
-                "settings_price_levels": symbol_settings.buy_price_levels if symbol_settings else None,
-                "settings_note": symbol_settings.note if symbol_settings else None,
-                "settings_active": symbol_settings.is_active if symbol_settings else None,
+                "settings_quantity": holding.settings_quantity,
+                "settings_price_levels": holding.settings_price_levels,
+                "settings_note": None,
+                "settings_active": holding.settings_active,
+                # 브로커별 보유 정보 (UI에서 표시 가능)
+                "kis_quantity": holding.kis_quantity,
+                "kis_avg_price": holding.kis_avg_price,
+                "toss_quantity": holding.toss_quantity,
+                "toss_avg_price": holding.toss_avg_price,
+                "holdings": [
+                    {"broker": h.broker, "quantity": h.quantity, "avg_price": h.avg_price}
+                    for h in holding.holdings
+                ],
             })
 
         return {
