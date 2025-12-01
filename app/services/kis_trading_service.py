@@ -110,6 +110,10 @@ async def process_kis_domestic_buy_orders_with_analysis(
 
         # 6. 주문 실행
         success_count = 0
+        ordered_prices: List[float] = []
+        ordered_quantities: List[int] = []
+        total_amount = 0.0
+
         for name, price in valid_prices:
             res = await kis_client.order_korea_stock(
                 stock_code=symbol,
@@ -120,13 +124,19 @@ async def process_kis_domestic_buy_orders_with_analysis(
 
             if res and res.get('rt_cd') == '0':
                 success_count += 1
+                ordered_prices.append(price)
+                ordered_quantities.append(quantity)
+                total_amount += price * quantity
 
             await asyncio.sleep(0.2)
 
         return {
             'success': success_count > 0,
             'message': f"{success_count}개 주문 성공 (설정: {buy_price_levels}개 가격대)",
-            'orders_placed': success_count
+            'orders_placed': success_count,
+            'prices': ordered_prices,
+            'quantities': ordered_quantities,
+            'total_amount': total_amount
         }
 
 async def process_kis_overseas_buy_orders_with_analysis(
@@ -203,6 +213,10 @@ async def process_kis_overseas_buy_orders_with_analysis(
             }
 
         success_count = 0
+        ordered_prices: List[float] = []
+        ordered_quantities: List[int] = []
+        total_amount = 0.0
+
         for price in valid_prices:
             res = await kis_client.order_overseas_stock(
                 symbol=symbol,
@@ -213,13 +227,19 @@ async def process_kis_overseas_buy_orders_with_analysis(
             )
             if res and res.get('rt_cd') == '0':
                 success_count += 1
+                ordered_prices.append(price)
+                ordered_quantities.append(quantity)
+                total_amount += price * quantity
 
             await asyncio.sleep(0.2)
 
         return {
             'success': success_count > 0,
             'message': f"{success_count}개 주문 성공 (설정: {buy_price_levels}개 가격대)",
-            'orders_placed': success_count
+            'orders_placed': success_count,
+            'prices': ordered_prices,
+            'quantities': ordered_quantities,
+            'total_amount': total_amount
         }
 
 
@@ -267,15 +287,23 @@ async def process_kis_domestic_sell_orders_with_analysis(
                      price=int(current_price)
                  )
                  if res and res.get('rt_cd') == '0':
-                     return {'success': True, 'message': "목표가 도달로 전량 매도", 'orders_placed': 1}
+                     return {
+                         'success': True,
+                         'message': "목표가 도달로 전량 매도",
+                         'orders_placed': 1,
+                         'prices': [current_price],
+                         'quantities': [balance_qty],
+                         'total_volume': balance_qty,
+                         'expected_amount': current_price * balance_qty
+                     }
                  else:
                      return {'success': False, 'message': "매도 주문 실패", 'orders_placed': 0}
-            
+
             return {'success': False, 'message': "매도 조건 미충족", 'orders_placed': 0}
 
         split_count = len(valid_prices)
         qty_per_order = balance_qty // split_count
-        
+
         if qty_per_order < 1:
             target_price = valid_prices[0]
             res = await kis_client.order_korea_stock(
@@ -285,19 +313,31 @@ async def process_kis_domestic_sell_orders_with_analysis(
                 price=int(target_price)
             )
             if res and res.get('rt_cd') == '0':
-                return {'success': True, 'message': "전량 매도 주문 (분할 불가)", 'orders_placed': 1}
+                return {
+                    'success': True,
+                    'message': "전량 매도 주문 (분할 불가)",
+                    'orders_placed': 1,
+                    'prices': [target_price],
+                    'quantities': [balance_qty],
+                    'total_volume': balance_qty,
+                    'expected_amount': target_price * balance_qty
+                }
             return {'success': False, 'message': "매도 주문 실패", 'orders_placed': 0}
 
         success_count = 0
         remaining_qty = balance_qty
-        
+        ordered_prices: List[float] = []
+        ordered_quantities: List[int] = []
+        total_volume = 0
+        expected_amount = 0.0
+
         for i, price in enumerate(valid_prices):
             is_last = (i == len(valid_prices) - 1)
             qty = remaining_qty if is_last else qty_per_order
-            
+
             if qty < 1:
                 continue
-            
+
             res = await kis_client.order_korea_stock(
                 stock_code=symbol,
                 order_type="sell",
@@ -307,13 +347,21 @@ async def process_kis_domestic_sell_orders_with_analysis(
             if res and res.get('rt_cd') == '0':
                 success_count += 1
                 remaining_qty -= qty
-            
+                ordered_prices.append(price)
+                ordered_quantities.append(qty)
+                total_volume += qty
+                expected_amount += price * qty
+
             await asyncio.sleep(0.2)
 
         return {
             'success': success_count > 0,
             'message': f"{success_count}건 분할 매도 주문 완료",
-            'orders_placed': success_count
+            'orders_placed': success_count,
+            'prices': ordered_prices,
+            'quantities': ordered_quantities,
+            'total_volume': total_volume,
+            'expected_amount': expected_amount
         }
 
 
@@ -363,14 +411,22 @@ async def process_kis_overseas_sell_orders_with_analysis(
                      price=current_price
                  )
                  if res and res.get('rt_cd') == '0':
-                     return {'success': True, 'message': "목표가 도달로 전량 매도", 'orders_placed': 1}
+                     return {
+                         'success': True,
+                         'message': "목표가 도달로 전량 매도",
+                         'orders_placed': 1,
+                         'prices': [current_price],
+                         'quantities': [balance_qty],
+                         'total_volume': balance_qty,
+                         'expected_amount': current_price * balance_qty
+                     }
                  else:
                      return {'success': False, 'message': "매도 주문 실패", 'orders_placed': 0}
             return {'success': False, 'message': "매도 조건 미충족", 'orders_placed': 0}
 
         split_count = len(valid_prices)
         qty_per_order = balance_qty // split_count
-        
+
         if qty_per_order < 1:
             target_price = valid_prices[0]
             res = await kis_client.order_overseas_stock(
@@ -381,19 +437,31 @@ async def process_kis_overseas_sell_orders_with_analysis(
                 price=target_price
             )
             if res and res.get('rt_cd') == '0':
-                return {'success': True, 'message': "전량 매도 주문", 'orders_placed': 1}
+                return {
+                    'success': True,
+                    'message': "전량 매도 주문",
+                    'orders_placed': 1,
+                    'prices': [target_price],
+                    'quantities': [balance_qty],
+                    'total_volume': balance_qty,
+                    'expected_amount': target_price * balance_qty
+                }
             return {'success': False, 'message': "매도 주문 실패", 'orders_placed': 0}
 
         success_count = 0
         remaining_qty = balance_qty
-        
+        ordered_prices: List[float] = []
+        ordered_quantities: List[int] = []
+        total_volume = 0
+        expected_amount = 0.0
+
         for i, price in enumerate(valid_prices):
             is_last = (i == len(valid_prices) - 1)
             qty = remaining_qty if is_last else qty_per_order
-            
+
             if qty < 1:
                 continue
-            
+
             res = await kis_client.order_overseas_stock(
                 symbol=symbol,
                 exchange_code=exchange_code,
@@ -404,11 +472,19 @@ async def process_kis_overseas_sell_orders_with_analysis(
             if res and res.get('rt_cd') == '0':
                 success_count += 1
                 remaining_qty -= qty
-            
+                ordered_prices.append(price)
+                ordered_quantities.append(qty)
+                total_volume += qty
+                expected_amount += price * qty
+
             await asyncio.sleep(0.2)
 
         return {
             'success': success_count > 0,
             'message': f"{success_count}건 분할 매도 주문 완료",
-            'orders_placed': success_count
+            'orders_placed': success_count,
+            'prices': ordered_prices,
+            'quantities': ordered_quantities,
+            'total_volume': total_volume,
+            'expected_amount': expected_amount
         }

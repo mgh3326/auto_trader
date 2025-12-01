@@ -372,6 +372,21 @@ def run_per_domestic_stock_automation(self) -> dict:
                         await _report_step_error_async(
                             "kis.run_per_domestic_stock_automation", name, code, "매수", res['error']
                         )
+                    # 매수 성공 시 텔레그램 알림
+                    elif res.get('success') and res.get('orders_placed', 0) > 0:
+                        try:
+                            notifier = get_trade_notifier()
+                            await notifier.notify_buy_order(
+                                symbol=code,
+                                korean_name=name,
+                                order_count=res.get('orders_placed', 0),
+                                total_amount=res.get('total_amount', 0.0),
+                                prices=res.get('prices', []),
+                                volumes=res.get('quantities', []),
+                                market_type="국내주식",
+                            )
+                        except Exception as notify_error:
+                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as e:
                     error_msg = str(e)
                     stock_steps.append({'step': '매수', 'result': {'success': False, 'error': error_msg}})
@@ -409,6 +424,22 @@ def run_per_domestic_stock_automation(self) -> dict:
                         await _report_step_error_async(
                             "kis.run_per_domestic_stock_automation", name, code, "매도", res['error']
                         )
+                    # 매도 성공 시 텔레그램 알림
+                    elif res.get('success') and res.get('orders_placed', 0) > 0:
+                        try:
+                            notifier = get_trade_notifier()
+                            await notifier.notify_sell_order(
+                                symbol=code,
+                                korean_name=name,
+                                order_count=res.get('orders_placed', 0),
+                                total_volume=res.get('total_volume', 0),
+                                prices=res.get('prices', []),
+                                volumes=res.get('quantities', []),
+                                expected_amount=res.get('expected_amount', 0.0),
+                                market_type="국내주식",
+                            )
+                        except Exception as notify_error:
+                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as e:
                     error_msg = str(e)
                     stock_steps.append({'step': '매도', 'result': {'success': False, 'error': error_msg}})
@@ -824,6 +855,21 @@ def run_per_overseas_stock_automation(self) -> dict:
                 try:
                     res = await process_kis_overseas_buy_orders_with_analysis(kis, symbol, current_price, avg_price)
                     stock_steps.append({'step': '매수', 'result': res})
+                    # 매수 성공 시 텔레그램 알림
+                    if res.get('success') and res.get('orders_placed', 0) > 0:
+                        try:
+                            notifier = get_trade_notifier()
+                            await notifier.notify_buy_order(
+                                symbol=symbol,
+                                korean_name=name or symbol,
+                                order_count=res.get('orders_placed', 0),
+                                total_amount=res.get('total_amount', 0.0),
+                                prices=res.get('prices', []),
+                                volumes=res.get('quantities', []),
+                                market_type="해외주식",
+                            )
+                        except Exception as notify_error:
+                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as e:
                     stock_steps.append({'step': '매수', 'result': {'success': False, 'error': str(e)}})
 
@@ -832,6 +878,22 @@ def run_per_overseas_stock_automation(self) -> dict:
                 try:
                     res = await process_kis_overseas_sell_orders_with_analysis(kis, symbol, current_price, avg_price, qty)
                     stock_steps.append({'step': '매도', 'result': res})
+                    # 매도 성공 시 텔레그램 알림
+                    if res.get('success') and res.get('orders_placed', 0) > 0:
+                        try:
+                            notifier = get_trade_notifier()
+                            await notifier.notify_sell_order(
+                                symbol=symbol,
+                                korean_name=name or symbol,
+                                order_count=res.get('orders_placed', 0),
+                                total_volume=res.get('total_volume', 0),
+                                prices=res.get('prices', []),
+                                volumes=res.get('quantities', []),
+                                expected_amount=res.get('expected_amount', 0.0),
+                                market_type="해외주식",
+                            )
+                        except Exception as notify_error:
+                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as e:
                     stock_steps.append({'step': '매도', 'result': {'success': False, 'error': str(e)}})
                 
