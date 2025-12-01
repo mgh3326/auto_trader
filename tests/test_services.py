@@ -300,4 +300,85 @@ class TestDARTService:
         assert dart is not None
 
 
+class TestCeleryTaskFailureHandler:
+    """Test Celery task failure signal handler."""
+
+    def test_handle_task_failure_registered(self):
+        """task_failure 핸들러가 올바르게 등록되어 있는지 확인."""
+        from celery.signals import task_failure
+
+        # task_failure 시그널에 핸들러가 등록되었는지 확인
+        from app.core.celery_app import handle_task_failure
+
+        # task_failure 시그널의 receivers 확인
+        receivers = task_failure.receivers
+        # weakref로 저장되므로 문자열에서 함수 이름 확인
+        handler_found = any('handle_task_failure' in str(r[1]) for r in receivers)
+
+        assert handler_found, f"handle_task_failure not found in receivers: {receivers}"
+
+    def test_handle_task_failure_with_disabled_reporter(self):
+        """ErrorReporter가 비활성화 상태일 때 핸들러가 안전하게 동작하는지 확인."""
+        from app.core.celery_app import handle_task_failure
+        from app.monitoring.error_reporter import get_error_reporter
+
+        # ErrorReporter가 비활성화 상태인지 확인 (테스트 환경에서는 기본적으로 비활성화)
+        error_reporter = get_error_reporter()
+
+        # 예외 없이 실행되어야 함
+        test_exception = ValueError("Test error message")
+
+        # Mock sender 생성
+        class MockSender:
+            name = "test.mock_task"
+
+        # 핸들러 직접 호출 - 예외 없이 완료되어야 함
+        handle_task_failure(
+            sender=MockSender,
+            task_id="test-task-id-123",
+            exception=test_exception,
+            args=("arg1", "arg2"),
+            kwargs={"key": "value"},
+            traceback=None,
+            einfo=None,
+        )
+
+    @patch("app.monitoring.error_reporter.get_error_reporter")
+    def test_handle_task_failure_sends_telegram_when_enabled(self, mock_get_reporter):
+        """ErrorReporter가 활성화 상태일 때 Telegram 알림이 전송되는지 확인."""
+        from app.core.celery_app import handle_task_failure
+
+        # Mock ErrorReporter 설정
+        mock_reporter = MagicMock()
+        mock_reporter._enabled = True
+        mock_reporter.send_error_to_telegram = AsyncMock(return_value=True)
+        mock_get_reporter.return_value = mock_reporter
+
+        test_exception = TypeError("unexpected keyword argument 'symbol'")
+
+        class MockSender:
+            name = "kis.run_per_domestic_stock_automation"
+
+        # 핸들러 호출
+        handle_task_failure(
+            sender=MockSender,
+            task_id="celery-task-abc123",
+            exception=test_exception,
+            args=(),
+            kwargs={},
+            traceback=None,
+            einfo=None,
+        )
+
+        # send_error_to_telegram이 호출되었는지 확인
+        mock_reporter.send_error_to_telegram.assert_called_once()
+
+        # 호출 인자 확인
+        call_args = mock_reporter.send_error_to_telegram.call_args
+        assert call_args.kwargs["error"] == test_exception
+        assert "task_name" in call_args.kwargs["additional_context"]
+        assert call_args.kwargs["additional_context"]["task_name"] == "kis.run_per_domestic_stock_automation"
+        assert call_args.kwargs["additional_context"]["task_id"] == "celery-task-abc123"
+
+
 

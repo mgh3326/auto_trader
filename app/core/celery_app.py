@@ -34,7 +34,44 @@ def setup_periodic_tasks(sender, **kwargs):
     pass
 
 
-from celery.signals import worker_process_init
+from celery.signals import worker_process_init, task_failure
+
+@task_failure.connect
+def handle_task_failure(sender=None, task_id=None, exception=None, args=None, kwargs=None, traceback=None, einfo=None, **kw):
+    """Celery 태스크 실패 시 Telegram 알림 전송."""
+    import asyncio
+    import logging
+    from app.monitoring.error_reporter import get_error_reporter
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        error_reporter = get_error_reporter()
+        if error_reporter._enabled:
+            # 추가 컨텍스트 정보
+            additional_context = {
+                "task_name": sender.name if sender else "unknown",
+                "task_id": task_id or "unknown",
+                "args": str(args)[:200] if args else "None",
+                "kwargs": str(kwargs)[:200] if kwargs else "None",
+            }
+
+            # 동기 환경에서 비동기 함수 호출
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(
+                    error_reporter.send_error_to_telegram(
+                        error=exception,
+                        additional_context=additional_context,
+                    )
+                )
+            finally:
+                loop.close()
+
+            logger.info(f"Task failure reported to Telegram: {sender.name if sender else 'unknown'}")
+    except Exception as e:
+        logger.error(f"Failed to report task failure to Telegram: {e}")
+
 
 @worker_process_init.connect
 def init_worker(**kwargs):
