@@ -112,7 +112,7 @@ async def process_kis_domestic_buy_orders_with_analysis(
         success_count = 0
         for name, price in valid_prices:
             res = await kis_client.order_korea_stock(
-                symbol=symbol,
+                stock_code=symbol,
                 order_type="buy",
                 quantity=quantity,
                 price=int(price)
@@ -261,7 +261,7 @@ async def process_kis_domestic_sell_orders_with_analysis(
         if not valid_prices:
             if current_price >= min_sell_price:
                  res = await kis_client.order_korea_stock(
-                     symbol=symbol,
+                     stock_code=symbol,
                      order_type="sell",
                      quantity=balance_qty,
                      price=int(current_price)
@@ -279,7 +279,7 @@ async def process_kis_domestic_sell_orders_with_analysis(
         if qty_per_order < 1:
             target_price = valid_prices[0]
             res = await kis_client.order_korea_stock(
-                symbol=symbol,
+                stock_code=symbol,
                 order_type="sell",
                 quantity=balance_qty,
                 price=int(target_price)
@@ -299,7 +299,7 @@ async def process_kis_domestic_sell_orders_with_analysis(
                 continue
             
             res = await kis_client.order_korea_stock(
-                symbol=symbol,
+                stock_code=symbol,
                 order_type="sell",
                 quantity=qty,
                 price=int(price)

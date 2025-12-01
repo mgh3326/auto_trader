@@ -75,11 +75,7 @@ class TestUpbitService:
         assert "volume" in result.columns
         assert "value" in result.columns
 
-    def test_fetch_ohlcv_validation(self):
-        """Test OHLCV validation."""
-        # This test would verify validation logic
-        # For now, we'll skip the actual validation test since it's async
-        pass
+
 
 
 class TestKISService:
@@ -299,42 +295,9 @@ class TestDARTService:
         """Test that DART service can be imported."""
         # This test verifies the module can be imported
         # Implementation depends on your actual DART service
-        try:
-            from app.services.disclosures import dart
+        from app.services.disclosures import dart
 
-            assert dart is not None
-        except ImportError:
-            # If DART service is not implemented yet, skip this test
-            pytest.skip("DART service not implemented yet")
+        assert dart is not None
 
 
-class TestTelegramService:
-    """Test Telegram bot service functionality."""
 
-    def test_telegram_service_import(self):
-        """Test that Telegram service can be imported."""
-        # This test verifies the module can be imported
-        # Implementation depends on your actual Telegram service
-        try:
-            from app.services import telegram
-
-            assert telegram is not None
-        except ImportError:
-            # If Telegram service is not implemented yet, skip this test
-            pytest.skip("Telegram service not implemented yet")
-
-
-class TestServiceUtilities:
-    """Test service utility functions."""
-
-    def test_dataframe_structure(self):
-        """Test that returned DataFrames have correct structure."""
-        # This test would verify the structure of returned data
-        # Implementation depends on your actual data structure
-        pass
-
-    def test_error_handling(self):
-        """Test error handling in services."""
-        # This test would verify error handling
-        # Implementation depends on your actual error handling
-        pass
