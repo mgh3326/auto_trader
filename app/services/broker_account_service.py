@@ -7,6 +7,7 @@ import logging
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.models.manual_holdings import BrokerAccount, BrokerType
 
@@ -93,7 +94,19 @@ class BrokerAccountService:
         )
         if account:
             return account
-        return await self.create_account(user_id, broker_type, "기본 계좌")
+        try:
+            return await self.create_account(user_id, broker_type, "기본 계좌")
+        except IntegrityError:
+            await self.db.rollback()
+            logger.info(
+                "Default account already exists after race, returning existing account"
+            )
+            existing_account = await self.get_account_by_user_and_broker(
+                user_id, broker_type, "기본 계좌"
+            )
+            if existing_account:
+                return existing_account
+            raise
 
     async def update_account(
         self, account_id: int, **kwargs

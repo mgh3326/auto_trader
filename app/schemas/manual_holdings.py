@@ -4,7 +4,7 @@ Manual Holdings Schemas
 수동 잔고 관리 및 통합 포트폴리오 관련 Pydantic 스키마
 """
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -112,11 +112,25 @@ class ManualHoldingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ManualHoldingBulkItem(BaseModel):
+    """수동 보유 종목 일괄 등록 항목"""
+    ticker: str = Field(..., min_length=1, max_length=20, description="종목코드")
+    market_type: MarketType = Field(..., description="시장 타입")
+    quantity: float = Field(..., gt=0, description="보유 수량")
+    avg_price: float = Field(..., gt=0, description="평균 매수가")
+    display_name: Optional[str] = Field(None, max_length=100, description="표시명")
+
+    @field_validator("ticker")
+    @classmethod
+    def validate_ticker(cls, v: str) -> str:
+        return v.strip().upper()
+
+
 class ManualHoldingBulkCreate(BaseModel):
     """수동 보유 종목 일괄 등록 요청"""
     broker_type: BrokerType
     account_name: str = "기본 계좌"
-    holdings: List[Dict[str, Any]] = Field(
+    holdings: List[ManualHoldingBulkItem] = Field(
         ...,
         description="보유 종목 목록",
         json_schema_extra={

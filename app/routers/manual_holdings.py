@@ -77,7 +77,10 @@ async def create_broker_account(
 
     # 중복 체크
     existing = await service.get_account_by_user_and_broker(
-        current_user.id, data.broker_type, data.account_name
+        current_user.id,
+        data.broker_type,
+        data.account_name,
+        include_inactive=False,
     )
     if existing:
         raise HTTPException(
@@ -103,7 +106,7 @@ async def update_broker_account(
 ):
     """브로커 계좌 수정"""
     service = BrokerAccountService(db)
-    account = await service.get_account_by_id(account_id)
+    account = await service.get_account_by_id(account_id, include_inactive=False)
 
     if not account or account.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="계좌를 찾을 수 없습니다")
@@ -123,7 +126,7 @@ async def delete_broker_account(
 ):
     """브로커 계좌 삭제"""
     service = BrokerAccountService(db)
-    account = await service.get_account_by_id(account_id)
+    account = await service.get_account_by_id(account_id, include_inactive=False)
 
     if not account or account.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="계좌를 찾을 수 없습니다")
@@ -223,18 +226,18 @@ async def create_holdings_bulk(
             account.id,
             [
                 {
-                    "ticker": h["ticker"],
-                    "market_type": MarketType(h["market_type"]),
-                    "quantity": h["quantity"],
-                    "avg_price": h["avg_price"],
-                    "display_name": h.get("display_name"),
+                    "ticker": h.ticker,
+                    "market_type": h.market_type,
+                    "quantity": h.quantity,
+                    "avg_price": h.avg_price,
+                    "display_name": h.display_name,
                 }
                 for h in data.holdings
             ]
         )
     except Exception as e:
-        logger.error(f"Bulk create failed: {e}")
-        raise HTTPException(status_code=500, detail="일괄 등록 중 오류가 발생했습니다")
+        logger.exception("Bulk create failed")
+        raise HTTPException(status_code=500, detail="일괄 등록 중 오류가 발생했습니다") from e
 
     result = []
     for h in holdings:
@@ -335,6 +338,7 @@ async def create_stock_alias(
 
 @router.post("/api/stock-aliases/seed-toss")
 async def seed_toss_stock_aliases(
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """토스 종목 별칭 기본 데이터 시딩"""

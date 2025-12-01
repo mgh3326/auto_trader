@@ -184,7 +184,7 @@
                 </div>
                 <div class="modal-body">
                     <div class="mb-3">
-                        <label class="form-label">브로커</label>
+                        <label class="form-label" for="account-broker">브로커</label>
                         <select id="account-broker" class="form-select">
                             <option value="toss">토스증권</option>
                             <option value="kis">한국투자증권</option>
@@ -192,7 +192,7 @@
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">계좌 이름</label>
+                        <label class="form-label" for="account-name">계좌 이름</label>
                         <input type="text" id="account-name" class="form-control" value="기본 계좌">
                     </div>
                     <div class="mb-3">
@@ -409,7 +409,6 @@
 
             tbody.innerHTML = holdings.map(h => {
                 const evaluation = h.quantity * h.avg_price;
-                const currency = h.market_type === 'US' ? '$' : '원';
                 return `
                     <tr>
                         <td>
