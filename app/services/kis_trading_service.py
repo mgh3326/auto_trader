@@ -175,6 +175,8 @@ async def process_kis_overseas_buy_orders_with_analysis(
             }
 
         buy_price_levels = settings.buy_price_levels  # 1~4 (주문할 가격대 수)
+        # settings에 exchange_code가 설정되어 있으면 그것을 사용
+        actual_exchange_code = settings.exchange_code or exchange_code
 
         # 가격 정보 확인 (낮은 가격 순서: appropriate_buy_min -> max -> buy_hope_min -> max)
         all_buy_prices = []
@@ -220,7 +222,7 @@ async def process_kis_overseas_buy_orders_with_analysis(
         for price in valid_prices:
             res = await kis_client.order_overseas_stock(
                 symbol=symbol,
-                exchange_code=exchange_code,
+                exchange_code=actual_exchange_code,
                 order_type="buy",
                 quantity=quantity,
                 price=price
@@ -376,6 +378,7 @@ async def process_kis_overseas_sell_orders_with_analysis(
     """분석 결과를 기반으로 KIS 해외 주식 매도 주문 처리"""
     from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
+    from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
 
     async with AsyncSessionLocal() as db:
         service = StockAnalysisService(db)
@@ -383,6 +386,11 @@ async def process_kis_overseas_sell_orders_with_analysis(
 
         if not analysis:
             return {'success': False, 'message': "분석 결과 없음", 'orders_placed': 0}
+
+        # settings에 exchange_code가 설정되어 있으면 그것을 사용
+        settings_service = SymbolTradeSettingsService(db)
+        settings = await settings_service.get_by_symbol(symbol)
+        actual_exchange_code = (settings.exchange_code if settings and settings.exchange_code else exchange_code)
 
         sell_prices = []
         if analysis.appropriate_sell_min:
@@ -405,7 +413,7 @@ async def process_kis_overseas_sell_orders_with_analysis(
             if current_price >= min_sell_price:
                  res = await kis_client.order_overseas_stock(
                      symbol=symbol,
-                     exchange_code=exchange_code,
+                     exchange_code=actual_exchange_code,
                      order_type="sell",
                      quantity=balance_qty,
                      price=current_price
@@ -431,7 +439,7 @@ async def process_kis_overseas_sell_orders_with_analysis(
             target_price = valid_prices[0]
             res = await kis_client.order_overseas_stock(
                 symbol=symbol,
-                exchange_code=exchange_code,
+                exchange_code=actual_exchange_code,
                 order_type="sell",
                 quantity=balance_qty,
                 price=target_price
@@ -464,7 +472,7 @@ async def process_kis_overseas_sell_orders_with_analysis(
 
             res = await kis_client.order_overseas_stock(
                 symbol=symbol,
-                exchange_code=exchange_code,
+                exchange_code=actual_exchange_code,
                 order_type="sell",
                 quantity=qty,
                 price=price

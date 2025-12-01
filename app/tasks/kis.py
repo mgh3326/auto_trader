@@ -743,8 +743,34 @@ def execute_overseas_buy_orders(self) -> dict:
                 try:
                     res = await process_kis_overseas_buy_orders_with_analysis(kis, symbol, current_price, avg_price)
                     results.append({'name': name, 'symbol': symbol, 'success': res['success'], 'message': res['message']})
+                    # 매수 성공 시 텔레그램 알림
+                    if res.get('success') and res.get('orders_placed', 0) > 0:
+                        try:
+                            notifier = get_trade_notifier()
+                            await notifier.notify_buy_order(
+                                symbol=symbol,
+                                korean_name=name or symbol,
+                                order_count=res.get('orders_placed', 0),
+                                total_amount=res.get('total_amount', 0.0),
+                                prices=res.get('prices', []),
+                                volumes=res.get('quantities', []),
+                                market_type="해외주식",
+                            )
+                        except Exception as notify_error:
+                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as e:
                     results.append({'name': name, 'symbol': symbol, 'success': False, 'error': str(e)})
+                    # 매수 실패 시 텔레그램 알림
+                    try:
+                        notifier = get_trade_notifier()
+                        await notifier.notify_trade_failure(
+                            symbol=symbol,
+                            korean_name=name or symbol,
+                            reason=f"매수 주문 실패: {str(e)}",
+                            market_type="해외주식",
+                        )
+                    except Exception as notify_error:
+                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
 
             success_count = sum(1 for r in results if r['success'])
             return {
@@ -796,8 +822,35 @@ def execute_overseas_sell_orders(self) -> dict:
                 try:
                     res = await process_kis_overseas_sell_orders_with_analysis(kis, symbol, current_price, avg_price, qty)
                     results.append({'name': name, 'symbol': symbol, 'success': res['success'], 'message': res['message']})
+                    # 매도 성공 시 텔레그램 알림
+                    if res.get('success') and res.get('orders_placed', 0) > 0:
+                        try:
+                            notifier = get_trade_notifier()
+                            await notifier.notify_sell_order(
+                                symbol=symbol,
+                                korean_name=name or symbol,
+                                order_count=res.get('orders_placed', 0),
+                                total_volume=res.get('total_volume', 0),
+                                prices=res.get('prices', []),
+                                volumes=res.get('quantities', []),
+                                expected_amount=res.get('expected_amount', 0.0),
+                                market_type="해외주식",
+                            )
+                        except Exception as notify_error:
+                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as e:
                     results.append({'name': name, 'symbol': symbol, 'success': False, 'error': str(e)})
+                    # 매도 실패 시 텔레그램 알림
+                    try:
+                        notifier = get_trade_notifier()
+                        await notifier.notify_trade_failure(
+                            symbol=symbol,
+                            korean_name=name or symbol,
+                            reason=f"매도 주문 실패: {str(e)}",
+                            market_type="해외주식",
+                        )
+                    except Exception as notify_error:
+                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
 
             success_count = sum(1 for r in results if r['success'])
             return {
@@ -872,6 +925,17 @@ def run_per_overseas_stock_automation(self) -> dict:
                             logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as e:
                     stock_steps.append({'step': '매수', 'result': {'success': False, 'error': str(e)}})
+                    # 매수 실패 시 텔레그램 알림
+                    try:
+                        notifier = get_trade_notifier()
+                        await notifier.notify_trade_failure(
+                            symbol=symbol,
+                            korean_name=name or symbol,
+                            reason=f"매수 주문 실패: {str(e)}",
+                            market_type="해외주식",
+                        )
+                    except Exception as notify_error:
+                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
 
                 # 3. 매도
                 self.update_state(state='PROGRESS', meta={'status': f'{symbol} 매도 주문 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
@@ -896,7 +960,18 @@ def run_per_overseas_stock_automation(self) -> dict:
                             logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
                 except Exception as e:
                     stock_steps.append({'step': '매도', 'result': {'success': False, 'error': str(e)}})
-                
+                    # 매도 실패 시 텔레그램 알림
+                    try:
+                        notifier = get_trade_notifier()
+                        await notifier.notify_trade_failure(
+                            symbol=symbol,
+                            korean_name=name or symbol,
+                            reason=f"매도 주문 실패: {str(e)}",
+                            market_type="해외주식",
+                        )
+                    except Exception as notify_error:
+                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
+
                 results.append({'name': name, 'symbol': symbol, 'steps': stock_steps})
 
             return {

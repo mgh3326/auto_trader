@@ -699,13 +699,22 @@ async def create_settings(
             detail=f"Settings already exist for symbol: {request_data.symbol}",
         )
 
+    # 해외주식이고 exchange_code가 없으면 자동으로 조회
+    exchange_code = request_data.exchange_code
+    if request_data.instrument_type == InstrumentType.equity_us and not exchange_code:
+        from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
+        exchange_code = get_exchange_by_symbol(request_data.symbol)
+        # 조회 실패 시 기본값 NASD
+        if not exchange_code:
+            exchange_code = "NASD"
+
     settings_obj = await service.create(
         user_id=user.id,
         symbol=request_data.symbol,
         instrument_type=request_data.instrument_type,
         buy_quantity_per_order=request_data.buy_quantity_per_order,
         buy_price_levels=request_data.buy_price_levels,
-        exchange_code=request_data.exchange_code,
+        exchange_code=exchange_code,
         note=request_data.note,
     )
 
