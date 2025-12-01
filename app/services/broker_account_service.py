@@ -4,7 +4,6 @@ Broker Account Service
 브로커 계좌 관리 서비스
 """
 import logging
-from typing import List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,23 +43,25 @@ class BrokerAccountService:
         )
         return account
 
-    async def get_accounts(self, user_id: int) -> List[BrokerAccount]:
+    async def get_accounts(self, user_id: int) -> list[BrokerAccount]:
         """사용자의 모든 브로커 계좌 조회"""
         result = await self.db.execute(
             select(BrokerAccount)
             .where(BrokerAccount.user_id == user_id)
-            .where(BrokerAccount.is_active == True)  # noqa: E712
+            .where(BrokerAccount.is_active.is_(True))
             .order_by(BrokerAccount.broker_type, BrokerAccount.account_name)
         )
         return list(result.scalars().all())
 
     async def get_account_by_id(
-        self, account_id: int
-    ) -> Optional[BrokerAccount]:
+        self, account_id: int, include_inactive: bool = False
+    ) -> BrokerAccount | None:
         """ID로 브로커 계좌 조회"""
-        result = await self.db.execute(
-            select(BrokerAccount).where(BrokerAccount.id == account_id)
-        )
+        query = select(BrokerAccount).where(BrokerAccount.id == account_id)
+        if not include_inactive:
+            query = query.where(BrokerAccount.is_active.is_(True))
+
+        result = await self.db.execute(query)
         return result.scalar_one_or_none()
 
     async def get_account_by_user_and_broker(
@@ -68,14 +69,19 @@ class BrokerAccountService:
         user_id: int,
         broker_type: BrokerType,
         account_name: str = "기본 계좌",
-    ) -> Optional[BrokerAccount]:
+        include_inactive: bool = False,
+    ) -> BrokerAccount | None:
         """사용자와 브로커 타입으로 계좌 조회"""
-        result = await self.db.execute(
+        query = (
             select(BrokerAccount)
             .where(BrokerAccount.user_id == user_id)
             .where(BrokerAccount.broker_type == broker_type)
             .where(BrokerAccount.account_name == account_name)
         )
+        if not include_inactive:
+            query = query.where(BrokerAccount.is_active.is_(True))
+
+        result = await self.db.execute(query)
         return result.scalar_one_or_none()
 
     async def get_or_create_default_account(
@@ -91,7 +97,7 @@ class BrokerAccountService:
 
     async def update_account(
         self, account_id: int, **kwargs
-    ) -> Optional[BrokerAccount]:
+    ) -> BrokerAccount | None:
         """브로커 계좌 업데이트"""
         account = await self.get_account_by_id(account_id)
         if not account:
@@ -118,7 +124,7 @@ class BrokerAccountService:
 
     async def hard_delete_account(self, account_id: int) -> bool:
         """브로커 계좌 완전 삭제"""
-        account = await self.get_account_by_id(account_id)
+        account = await self.get_account_by_id(account_id, include_inactive=True)
         if not account:
             return False
 

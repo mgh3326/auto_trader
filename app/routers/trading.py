@@ -4,13 +4,14 @@ Trading Router
 매수/매도 주문 API 엔드포인트
 """
 import logging
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.models.manual_holdings import MarketType
+from app.models.trading import User
+from app.routers.dependencies import get_authenticated_user
 from app.schemas.manual_holdings import (
     BuyOrderRequest,
     SellOrderRequest,
@@ -19,42 +20,13 @@ from app.schemas.manual_holdings import (
     ExpectedProfitResponse,
 )
 from app.services.merged_portfolio_service import MergedPortfolioService
-from app.services.trading_price_service import TradingPriceService, PriceStrategy
+from app.services.trading_price_service import TradingPriceService
 from app.services.kis import KISClient
+from app.services.kis_holdings_service import get_kis_holding_for_ticker
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/trading", tags=["Trading"])
-
-
-async def _get_kis_holdings(
-    kis_client: KISClient,
-    ticker: str,
-    market_type: MarketType,
-) -> dict:
-    """KIS 보유 정보 조회"""
-    try:
-        if market_type == MarketType.KR:
-            stocks = await kis_client.fetch_my_stocks()
-            for s in stocks:
-                if s.get("pdno") == ticker:
-                    return {
-                        "quantity": int(s.get("hldg_qty", 0)),
-                        "avg_price": float(s.get("pchs_avg_pric", 0)),
-                        "current_price": float(s.get("prpr", 0)),
-                    }
-        else:
-            stocks = await kis_client.fetch_overseas_stocks()
-            for s in stocks:
-                if s.get("ovrs_pdno") == ticker:
-                    return {
-                        "quantity": int(float(s.get("ovrs_cblc_qty", 0))),
-                        "avg_price": float(s.get("pchs_avg_pric", 0)),
-                        "current_price": float(s.get("now_pric2", 0)),
-                    }
-    except Exception as e:
-        logger.warning(f"Failed to fetch KIS holdings: {e}")
-
-    return {"quantity": 0, "avg_price": 0, "current_price": 0}
+PRICE_FETCH_ERROR = "현재가를 조회할 수 없습니다"
 
 
 async def _get_current_price(
@@ -77,9 +49,9 @@ async def _get_current_price(
 
 @router.post("/api/buy", response_model=OrderSimulationResponse)
 async def buy_order(
-    request: Request,
     data: BuyOrderRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """매수 주문
 
@@ -89,10 +61,6 @@ async def buy_order(
     Args:
         data: 매수 주문 요청
     """
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     kis_client = KISClient()
     portfolio_service = MergedPortfolioService(db)
     price_service = TradingPriceService()
@@ -100,18 +68,20 @@ async def buy_order(
     ticker = data.ticker.upper()
 
     # 1. KIS 보유 정보 조회
-    kis_info = await _get_kis_holdings(kis_client, ticker, data.market_type)
+    kis_info = await get_kis_holding_for_ticker(
+        kis_client, ticker, data.market_type
+    )
 
     # 2. 현재가 조회
     current_price = kis_info.get("current_price", 0)
     if current_price <= 0:
         current_price = await _get_current_price(kis_client, ticker, data.market_type)
     if current_price <= 0:
-        raise HTTPException(status_code=400, detail="현재가를 조회할 수 없습니다")
+        raise HTTPException(status_code=400, detail=PRICE_FETCH_ERROR)
 
     # 3. 참조 평단가 조회
     ref = await portfolio_service.get_reference_prices(
-        user.id, ticker, data.market_type,
+        current_user.id, ticker, data.market_type,
         kis_holdings=kis_info if kis_info.get("quantity", 0) > 0 else None,
     )
 
@@ -365,9 +335,9 @@ async def buy_order(
 
 @router.post("/api/sell", response_model=OrderSimulationResponse)
 async def sell_order(
-    request: Request,
     data: SellOrderRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
 ):
     """매도 주문
 
@@ -379,10 +349,6 @@ async def sell_order(
     Args:
         data: 매도 주문 요청
     """
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     kis_client = KISClient()
     portfolio_service = MergedPortfolioService(db)
     price_service = TradingPriceService()
@@ -390,7 +356,9 @@ async def sell_order(
     ticker = data.ticker.upper()
 
     # 1. KIS 보유 정보 조회
-    kis_info = await _get_kis_holdings(kis_client, ticker, data.market_type)
+    kis_info = await get_kis_holding_for_ticker(
+        kis_client, ticker, data.market_type
+    )
     kis_quantity = kis_info.get("quantity", 0)
 
     # 2. 매도 수량 검증
@@ -405,11 +373,11 @@ async def sell_order(
     if current_price <= 0:
         current_price = await _get_current_price(kis_client, ticker, data.market_type)
     if current_price <= 0:
-        raise HTTPException(status_code=400, detail="현재가를 조회할 수 없습니다")
+        raise HTTPException(status_code=400, detail=PRICE_FETCH_ERROR)
 
     # 4. 참조 평단가 조회
     ref = await portfolio_service.get_reference_prices(
-        user.id, ticker, data.market_type,
+        current_user.id, ticker, data.market_type,
         kis_holdings=kis_info if kis_quantity > 0 else None,
     )
 

@@ -4,7 +4,6 @@ Manual Holdings Router
 수동 잔고 관리 API 엔드포인트
 """
 import logging
-from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse
@@ -13,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.core.templates import templates
 from app.models.manual_holdings import BrokerType, MarketType
+from app.models.trading import User
+from app.routers.dependencies import get_authenticated_user
 from app.schemas.manual_holdings import (
     BrokerAccountCreate,
     BrokerAccountUpdate,
@@ -54,37 +55,29 @@ async def manual_holdings_page(request: Request):
 # 브로커 계좌 API
 # =============================================================================
 
-@router.get("/api/broker-accounts", response_model=List[BrokerAccountResponse])
+@router.get("/api/broker-accounts", response_model=list[BrokerAccountResponse])
 async def list_broker_accounts(
-    request: Request,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """브로커 계좌 목록 조회"""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     service = BrokerAccountService(db)
-    accounts = await service.get_accounts(user.id)
+    accounts = await service.get_accounts(current_user.id)
     return accounts
 
 
 @router.post("/api/broker-accounts", response_model=BrokerAccountResponse)
 async def create_broker_account(
-    request: Request,
     data: BrokerAccountCreate,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """브로커 계좌 생성"""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     service = BrokerAccountService(db)
 
     # 중복 체크
     existing = await service.get_account_by_user_and_broker(
-        user.id, data.broker_type, data.account_name
+        current_user.id, data.broker_type, data.account_name
     )
     if existing:
         raise HTTPException(
@@ -93,7 +86,7 @@ async def create_broker_account(
         )
 
     account = await service.create_account(
-        user_id=user.id,
+        user_id=current_user.id,
         broker_type=data.broker_type,
         account_name=data.account_name,
         is_mock=data.is_mock,
@@ -103,20 +96,16 @@ async def create_broker_account(
 
 @router.put("/api/broker-accounts/{account_id}", response_model=BrokerAccountResponse)
 async def update_broker_account(
-    request: Request,
     account_id: int,
     data: BrokerAccountUpdate,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """브로커 계좌 수정"""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     service = BrokerAccountService(db)
     account = await service.get_account_by_id(account_id)
 
-    if not account or account.user_id != user.id:
+    if not account or account.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="계좌를 찾을 수 없습니다")
 
     updated = await service.update_account(
@@ -128,19 +117,15 @@ async def update_broker_account(
 
 @router.delete("/api/broker-accounts/{account_id}")
 async def delete_broker_account(
-    request: Request,
     account_id: int,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """브로커 계좌 삭제"""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     service = BrokerAccountService(db)
     account = await service.get_account_by_id(account_id)
 
-    if not account or account.user_id != user.id:
+    if not account or account.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="계좌를 찾을 수 없습니다")
 
     await service.delete_account(account_id)
@@ -151,21 +136,17 @@ async def delete_broker_account(
 # 수동 보유 종목 API
 # =============================================================================
 
-@router.get("/api/holdings", response_model=List[ManualHoldingResponse])
+@router.get("/api/holdings", response_model=list[ManualHoldingResponse])
 async def list_holdings(
-    request: Request,
-    market_type: Optional[MarketType] = None,
-    broker_type: Optional[BrokerType] = None,
+    market_type: MarketType | None = None,
+    broker_type: BrokerType | None = None,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """수동 보유 종목 목록 조회"""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     service = ManualHoldingsService(db)
     holdings = await service.get_holdings_by_user(
-        user.id,
+        current_user.id,
         market_type=market_type,
         broker_type=broker_type,
     )
@@ -183,28 +164,24 @@ async def list_holdings(
 
 @router.post("/api/holdings", response_model=ManualHoldingResponse)
 async def create_holding(
-    request: Request,
     data: ManualHoldingCreate,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """수동 보유 종목 등록"""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     # 브로커 계좌 조회 또는 생성
     account_service = BrokerAccountService(db)
     account = await account_service.get_or_create_default_account(
-        user.id, data.broker_type
+        current_user.id, data.broker_type
     )
 
     if data.account_name != "기본 계좌":
         account = await account_service.get_account_by_user_and_broker(
-            user.id, data.broker_type, data.account_name
+            current_user.id, data.broker_type, data.account_name
         )
         if not account:
             account = await account_service.create_account(
-                user.id, data.broker_type, data.account_name
+                current_user.id, data.broker_type, data.account_name
             )
 
     # 보유 종목 등록 (upsert)
@@ -224,24 +201,20 @@ async def create_holding(
     return result
 
 
-@router.post("/api/holdings/bulk", response_model=List[ManualHoldingResponse])
+@router.post("/api/holdings/bulk", response_model=list[ManualHoldingResponse])
 async def create_holdings_bulk(
-    request: Request,
     data: ManualHoldingBulkCreate,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """수동 보유 종목 일괄 등록"""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     account_service = BrokerAccountService(db)
     account = await account_service.get_account_by_user_and_broker(
-        user.id, data.broker_type, data.account_name
+        current_user.id, data.broker_type, data.account_name
     )
     if not account:
         account = await account_service.create_account(
-            user.id, data.broker_type, data.account_name
+            current_user.id, data.broker_type, data.account_name
         )
 
     holdings_service = ManualHoldingsService(db)
@@ -275,20 +248,16 @@ async def create_holdings_bulk(
 
 @router.put("/api/holdings/{holding_id}", response_model=ManualHoldingResponse)
 async def update_holding(
-    request: Request,
     holding_id: int,
     data: ManualHoldingUpdate,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """수동 보유 종목 수정"""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     service = ManualHoldingsService(db)
     holding = await service.get_holding_by_id(holding_id)
 
-    if not holding or holding.broker_account.user_id != user.id:
+    if not holding or holding.broker_account.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="보유 종목을 찾을 수 없습니다")
 
     updated = await service.update_holding(
@@ -304,19 +273,15 @@ async def update_holding(
 
 @router.delete("/api/holdings/{holding_id}")
 async def delete_holding(
-    request: Request,
     holding_id: int,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """수동 보유 종목 삭제"""
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     service = ManualHoldingsService(db)
     holding = await service.get_holding_by_id(holding_id)
 
-    if not holding or holding.broker_account.user_id != user.id:
+    if not holding or holding.broker_account.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="보유 종목을 찾을 수 없습니다")
 
     await service.delete_holding(holding_id)
@@ -330,7 +295,7 @@ async def delete_holding(
 @router.get("/api/stock-aliases/search", response_model=StockAliasSearchResult)
 async def search_stock_aliases(
     q: str = Query(..., min_length=1, description="검색어"),
-    market_type: Optional[MarketType] = None,
+    market_type: MarketType | None = None,
     limit: int = Query(default=20, le=100),
     db: AsyncSession = Depends(get_db),
 ):

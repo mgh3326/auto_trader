@@ -4,7 +4,8 @@ Stock Alias Service
 종목 별칭 관리 서비스
 """
 import logging
-from typing import Dict, List, Optional, Any
+import re
+from typing import Any
 
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,13 @@ class StockAliasService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    @staticmethod
+    def _sanitize_query(query: str) -> str:
+        """Remove wildcard and unsafe characters from search query."""
+        cleaned = re.sub(r"[%_]", "", query.strip())
+        cleaned = re.sub(r"[^0-9A-Za-z가-힣.\s-]", "", cleaned)
+        return cleaned[:50]
 
     async def create_alias(
         self,
@@ -42,7 +50,7 @@ class StockAliasService:
         )
         return stock_alias
 
-    async def get_alias_by_id(self, alias_id: int) -> Optional[StockAlias]:
+    async def get_alias_by_id(self, alias_id: int) -> StockAlias | None:
         """ID로 별칭 조회"""
         result = await self.db.execute(
             select(StockAlias).where(StockAlias.id == alias_id)
@@ -51,7 +59,7 @@ class StockAliasService:
 
     async def get_ticker_by_alias(
         self, alias: str, market_type: MarketType
-    ) -> Optional[str]:
+    ) -> str | None:
         """별칭으로 티커 조회"""
         result = await self.db.execute(
             select(StockAlias)
@@ -64,14 +72,18 @@ class StockAliasService:
     async def search_by_alias(
         self,
         query: str,
-        market_type: Optional[MarketType] = None,
+        market_type: MarketType | None = None,
         limit: int = 20,
-    ) -> List[StockAlias]:
+    ) -> list[StockAlias]:
         """별칭 검색 (부분 일치)"""
+        sanitized_query = self._sanitize_query(query)
+        if not sanitized_query:
+            return []
+
         search_query = select(StockAlias).where(
             or_(
-                StockAlias.alias.ilike(f"%{query}%"),
-                StockAlias.ticker.ilike(f"%{query}%"),
+                StockAlias.alias.ilike(f"%{sanitized_query}%"),
+                StockAlias.ticker.ilike(f"%{sanitized_query}%"),
             )
         )
 
@@ -86,8 +98,8 @@ class StockAliasService:
         return list(result.scalars().all())
 
     async def get_aliases_by_ticker(
-        self, ticker: str, market_type: Optional[MarketType] = None
-    ) -> List[StockAlias]:
+        self, ticker: str, market_type: MarketType | None = None
+    ) -> list[StockAlias]:
         """티커의 모든 별칭 조회"""
         query = select(StockAlias).where(
             StockAlias.ticker == ticker.upper()
@@ -100,8 +112,8 @@ class StockAliasService:
         return list(result.scalars().all())
 
     async def bulk_create_aliases(
-        self, aliases_data: List[Dict[str, Any]]
-    ) -> List[StockAlias]:
+        self, aliases_data: list[dict[str, Any]]
+    ) -> list[StockAlias]:
         """여러 별칭 일괄 등록 (중복 무시)"""
         created = []
         for data in aliases_data:

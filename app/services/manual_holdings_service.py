@@ -4,9 +4,10 @@ Manual Holdings Service
 수동 보유 종목 관리 서비스
 """
 import logging
-from typing import Dict, List, Optional, Any
+from decimal import Decimal
+from typing import Any
 
-from sqlalchemy import select, delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -26,22 +27,27 @@ class ManualHoldingsService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    @staticmethod
+    def _to_decimal(value: Any) -> Decimal:
+        """Convert numeric input to Decimal for consistent precision."""
+        return Decimal(str(value))
+
     async def create_holding(
         self,
         broker_account_id: int,
         ticker: str,
         market_type: MarketType,
-        quantity: float,
-        avg_price: float,
-        display_name: Optional[str] = None,
+        quantity: Decimal | float,
+        avg_price: Decimal | float,
+        display_name: str | None = None,
     ) -> ManualHolding:
         """새 보유 종목 등록"""
         holding = ManualHolding(
             broker_account_id=broker_account_id,
             ticker=ticker.upper(),
             market_type=market_type,
-            quantity=quantity,
-            avg_price=avg_price,
+            quantity=self._to_decimal(quantity),
+            avg_price=self._to_decimal(avg_price),
             display_name=display_name,
         )
         self.db.add(holding)
@@ -55,7 +61,7 @@ class ManualHoldingsService:
 
     async def get_holding_by_id(
         self, holding_id: int
-    ) -> Optional[ManualHolding]:
+    ) -> ManualHolding | None:
         """ID로 보유 종목 조회"""
         result = await self.db.execute(
             select(ManualHolding)
@@ -66,7 +72,7 @@ class ManualHoldingsService:
 
     async def get_holdings_by_account(
         self, broker_account_id: int
-    ) -> List[ManualHolding]:
+    ) -> list[ManualHolding]:
         """브로커 계좌별 보유 종목 조회"""
         result = await self.db.execute(
             select(ManualHolding)
@@ -78,15 +84,15 @@ class ManualHoldingsService:
     async def get_holdings_by_user(
         self,
         user_id: int,
-        market_type: Optional[MarketType] = None,
-        broker_type: Optional[BrokerType] = None,
-    ) -> List[ManualHolding]:
+        market_type: MarketType | None = None,
+        broker_type: BrokerType | None = None,
+    ) -> list[ManualHolding]:
         """사용자별 모든 보유 종목 조회"""
         query = (
             select(ManualHolding)
             .join(BrokerAccount)
             .where(BrokerAccount.user_id == user_id)
-            .where(BrokerAccount.is_active == True)  # noqa: E712
+            .where(BrokerAccount.is_active.is_(True))
             .options(selectinload(ManualHolding.broker_account))
         )
 
@@ -106,7 +112,7 @@ class ManualHoldingsService:
         broker_account_id: int,
         ticker: str,
         market_type: MarketType,
-    ) -> Optional[ManualHolding]:
+    ) -> ManualHolding | None:
         """티커로 보유 종목 조회"""
         result = await self.db.execute(
             select(ManualHolding)
@@ -121,13 +127,13 @@ class ManualHoldingsService:
         user_id: int,
         ticker: str,
         market_type: MarketType,
-    ) -> List[ManualHolding]:
+    ) -> list[ManualHolding]:
         """특정 티커의 모든 계좌 보유 종목 조회"""
         result = await self.db.execute(
             select(ManualHolding)
             .join(BrokerAccount)
             .where(BrokerAccount.user_id == user_id)
-            .where(BrokerAccount.is_active == True)  # noqa: E712
+            .where(BrokerAccount.is_active.is_(True))
             .where(ManualHolding.ticker == ticker.upper())
             .where(ManualHolding.market_type == market_type)
             .options(selectinload(ManualHolding.broker_account))
@@ -136,7 +142,7 @@ class ManualHoldingsService:
 
     async def update_holding(
         self, holding_id: int, **kwargs
-    ) -> Optional[ManualHolding]:
+    ) -> ManualHolding | None:
         """보유 종목 업데이트"""
         holding = await self.get_holding_by_id(holding_id)
         if not holding:
@@ -148,6 +154,8 @@ class ManualHoldingsService:
             ):
                 if key == "ticker" and value:
                     value = value.upper()
+                if key in {"quantity", "avg_price"} and value is not None:
+                    value = self._to_decimal(value)
                 setattr(holding, key, value)
 
         await self.db.commit()
@@ -170,9 +178,9 @@ class ManualHoldingsService:
         broker_account_id: int,
         ticker: str,
         market_type: MarketType,
-        quantity: float,
-        avg_price: float,
-        display_name: Optional[str] = None,
+        quantity: Decimal | float,
+        avg_price: Decimal | float,
+        display_name: str | None = None,
     ) -> ManualHolding:
         """보유 종목 등록 또는 업데이트 (upsert)"""
         existing = await self.get_holding_by_ticker(
@@ -180,8 +188,8 @@ class ManualHoldingsService:
         )
 
         if existing:
-            existing.quantity = quantity
-            existing.avg_price = avg_price
+            existing.quantity = self._to_decimal(quantity)
+            existing.avg_price = self._to_decimal(avg_price)
             if display_name is not None:
                 existing.display_name = display_name
             await self.db.commit()
@@ -196,8 +204,8 @@ class ManualHoldingsService:
     async def bulk_create_holdings(
         self,
         broker_account_id: int,
-        holdings_data: List[Dict[str, Any]],
-    ) -> List[ManualHolding]:
+        holdings_data: list[dict[str, Any]],
+    ) -> list[ManualHolding]:
         """여러 보유 종목 일괄 등록"""
         created = []
         try:
@@ -216,8 +224,8 @@ class ManualHoldingsService:
                     )
 
                     if existing:
-                        existing.quantity = data["quantity"]
-                        existing.avg_price = data["avg_price"]
+                        existing.quantity = self._to_decimal(data["quantity"])
+                        existing.avg_price = self._to_decimal(data["avg_price"])
                         if data.get("display_name"):
                             existing.display_name = data["display_name"]
                         created.append(existing)
@@ -226,8 +234,8 @@ class ManualHoldingsService:
                             broker_account_id=broker_account_id,
                             ticker=ticker.upper(),
                             market_type=market_type,
-                            quantity=data["quantity"],
-                            avg_price=data["avg_price"],
+                            quantity=self._to_decimal(data["quantity"]),
+                            avg_price=self._to_decimal(data["avg_price"]),
                             display_name=data.get("display_name"),
                         )
                         self.db.add(holding)
@@ -246,7 +254,7 @@ class ManualHoldingsService:
 
     async def get_holdings_summary_by_user(
         self, user_id: int
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """사용자별 보유 종목 요약"""
         holdings = await self.get_holdings_by_user(user_id)
 

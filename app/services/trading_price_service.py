@@ -6,7 +6,7 @@ Trading Price Service
 import enum
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Any
+from typing import Any
 
 from app.services.merged_portfolio_service import ReferencePrices
 
@@ -38,7 +38,7 @@ class ExpectedProfit:
     amount: float
     percent: float
 
-    def to_dict(self) -> Dict[str, float]:
+    def to_dict(self) -> dict[str, float]:
         return {"amount": self.amount, "percent": self.percent}
 
 
@@ -49,7 +49,7 @@ class PriceCalculationResult:
     price_source: str
     reference_prices: ReferencePrices
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "price": self.price,
             "price_source": self.price_source,
@@ -61,7 +61,19 @@ class TradingPriceService:
     """매수/매도 가격 계산 서비스"""
 
     @staticmethod
-    def get_lowest_avg(ref: ReferencePrices) -> Optional[float]:
+    def _require_price(value: float | None, error_message: str) -> float:
+        if value is None or value <= 0:
+            raise ValueError(error_message)
+        return value
+
+    @staticmethod
+    def _validate_manual_price(manual_price: float | None) -> float:
+        if manual_price is None or manual_price <= 0:
+            raise ValueError("수동 가격을 입력해주세요")
+        return manual_price
+
+    @staticmethod
+    def get_lowest_avg(ref: ReferencePrices) -> float | None:
         """가장 낮은 평단가 반환"""
         prices = []
         if ref.kis_avg and ref.kis_avg > 0:
@@ -78,7 +90,7 @@ class TradingPriceService:
         current_price: float,
         strategy: PriceStrategy,
         discount_percent: float = 0.0,
-        manual_price: Optional[float] = None,
+        manual_price: float | None = None,
     ) -> PriceCalculationResult:
         """매수 가격 계산
 
@@ -93,53 +105,40 @@ class TradingPriceService:
             PriceCalculationResult: 계산된 가격 및 출처
         """
         ref = reference_prices
-        price = 0.0
-        source = ""
-
-        if strategy == PriceStrategy.current:
-            price = current_price
-            source = "현재가"
-
-        elif strategy == PriceStrategy.manual:
-            if manual_price is None or manual_price <= 0:
-                raise ValueError("수동 가격을 입력해주세요")
-            price = manual_price
-            source = "직접 입력"
-
-        elif strategy == PriceStrategy.kis_avg:
-            if ref.kis_avg is None or ref.kis_avg <= 0:
-                raise ValueError("한투 평단가 정보가 없습니다")
-            price = ref.kis_avg
-            source = "한투 평단가"
-
-        elif strategy == PriceStrategy.toss_avg:
-            if ref.toss_avg is None or ref.toss_avg <= 0:
-                raise ValueError("토스 평단가 정보가 없습니다")
-            price = ref.toss_avg
-            source = "토스 평단가"
-
-        elif strategy == PriceStrategy.combined_avg:
-            if ref.combined_avg is None or ref.combined_avg <= 0:
-                raise ValueError("통합 평단가 정보가 없습니다")
-            price = ref.combined_avg
-            source = "통합 평단가"
-
-        elif strategy == PriceStrategy.lowest_avg:
-            lowest = self.get_lowest_avg(ref)
-            if lowest is None:
-                raise ValueError("평단가 정보가 없습니다")
-            price = lowest
-            source = "최저 평단가"
-
-        elif strategy == PriceStrategy.lowest_minus_percent:
-            lowest = self.get_lowest_avg(ref)
-            if lowest is None:
-                raise ValueError("평단가 정보가 없습니다")
-            price = lowest * (1 - discount_percent / 100)
-            source = f"최저 평단가 -{discount_percent}%"
-
-        else:
-            raise ValueError(f"지원하지 않는 매수 전략: {strategy}")
+        match strategy:
+            case PriceStrategy.current:
+                price, source = current_price, "현재가"
+            case PriceStrategy.manual:
+                price = self._validate_manual_price(manual_price)
+                source = "직접 입력"
+            case PriceStrategy.kis_avg:
+                price = self._require_price(
+                    ref.kis_avg, "한투 평단가 정보가 없습니다"
+                )
+                source = "한투 평단가"
+            case PriceStrategy.toss_avg:
+                price = self._require_price(
+                    ref.toss_avg, "토스 평단가 정보가 없습니다"
+                )
+                source = "토스 평단가"
+            case PriceStrategy.combined_avg:
+                price = self._require_price(
+                    ref.combined_avg, "통합 평단가 정보가 없습니다"
+                )
+                source = "통합 평단가"
+            case PriceStrategy.lowest_avg:
+                lowest = self._require_price(
+                    self.get_lowest_avg(ref), "평단가 정보가 없습니다"
+                )
+                price, source = lowest, "최저 평단가"
+            case PriceStrategy.lowest_minus_percent:
+                lowest = self._require_price(
+                    self.get_lowest_avg(ref), "평단가 정보가 없습니다"
+                )
+                price = lowest * (1 - discount_percent / 100)
+                source = f"최저 평단가 -{discount_percent}%"
+            case _:
+                raise ValueError(f"지원하지 않는 매수 전략: {strategy}")
 
         return PriceCalculationResult(
             price=round(price, 2),
@@ -153,7 +152,7 @@ class TradingPriceService:
         current_price: float,
         strategy: PriceStrategy,
         profit_percent: float = 5.0,
-        manual_price: Optional[float] = None,
+        manual_price: float | None = None,
     ) -> PriceCalculationResult:
         """매도 가격 계산
 
@@ -168,39 +167,32 @@ class TradingPriceService:
             PriceCalculationResult: 계산된 가격 및 출처
         """
         ref = reference_prices
-        price = 0.0
-        source = ""
-
-        if strategy == PriceStrategy.current:
-            price = current_price
-            source = "현재가"
-
-        elif strategy == PriceStrategy.manual:
-            if manual_price is None or manual_price <= 0:
-                raise ValueError("수동 가격을 입력해주세요")
-            price = manual_price
-            source = "직접 입력"
-
-        elif strategy == PriceStrategy.kis_avg_plus:
-            if ref.kis_avg is None or ref.kis_avg <= 0:
-                raise ValueError("한투 평단가 정보가 없습니다")
-            price = ref.kis_avg * (1 + profit_percent / 100)
-            source = f"한투 평단가 +{profit_percent}%"
-
-        elif strategy == PriceStrategy.toss_avg_plus:
-            if ref.toss_avg is None or ref.toss_avg <= 0:
-                raise ValueError("토스 평단가 정보가 없습니다")
-            price = ref.toss_avg * (1 + profit_percent / 100)
-            source = f"토스 평단가 +{profit_percent}%"
-
-        elif strategy == PriceStrategy.combined_avg_plus:
-            if ref.combined_avg is None or ref.combined_avg <= 0:
-                raise ValueError("통합 평단가 정보가 없습니다")
-            price = ref.combined_avg * (1 + profit_percent / 100)
-            source = f"통합 평단가 +{profit_percent}%"
-
-        else:
-            raise ValueError(f"지원하지 않는 매도 전략: {strategy}")
+        match strategy:
+            case PriceStrategy.current:
+                price, source = current_price, "현재가"
+            case PriceStrategy.manual:
+                price = self._validate_manual_price(manual_price)
+                source = "직접 입력"
+            case PriceStrategy.kis_avg_plus:
+                base = self._require_price(
+                    ref.kis_avg, "한투 평단가 정보가 없습니다"
+                )
+                price = base * (1 + profit_percent / 100)
+                source = f"한투 평단가 +{profit_percent}%"
+            case PriceStrategy.toss_avg_plus:
+                base = self._require_price(
+                    ref.toss_avg, "토스 평단가 정보가 없습니다"
+                )
+                price = base * (1 + profit_percent / 100)
+                source = f"토스 평단가 +{profit_percent}%"
+            case PriceStrategy.combined_avg_plus:
+                base = self._require_price(
+                    ref.combined_avg, "통합 평단가 정보가 없습니다"
+                )
+                price = base * (1 + profit_percent / 100)
+                source = f"통합 평단가 +{profit_percent}%"
+            case _:
+                raise ValueError(f"지원하지 않는 매도 전략: {strategy}")
 
         return PriceCalculationResult(
             price=round(price, 2),
@@ -213,7 +205,7 @@ class TradingPriceService:
         quantity: int,
         sell_price: float,
         reference_prices: ReferencePrices,
-    ) -> Dict[str, ExpectedProfit]:
+    ) -> dict[str, ExpectedProfit]:
         """예상 수익 계산
 
         Args:
@@ -222,10 +214,10 @@ class TradingPriceService:
             reference_prices: 참조 평단가 정보
 
         Returns:
-            Dict[str, ExpectedProfit]: 각 평단가 기준별 예상 수익
+            dict[str, ExpectedProfit]: 각 평단가 기준별 예상 수익
         """
         ref = reference_prices
-        results = {}
+        results: dict[str, ExpectedProfit] = {}
 
         if ref.kis_avg and ref.kis_avg > 0:
             profit = (sell_price - ref.kis_avg) * quantity
@@ -257,7 +249,7 @@ class TradingPriceService:
         self,
         kis_quantity: int,
         requested_quantity: int,
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> tuple[bool, str | None]:
         """매도 수량 검증 (KIS 보유분 내에서만 매도 가능)
 
         Args:
@@ -265,7 +257,7 @@ class TradingPriceService:
             requested_quantity: 요청 매도 수량
 
         Returns:
-            Tuple[bool, Optional[str]]: (유효 여부, 경고 메시지)
+            tuple[bool, str | None]: (유효 여부, 경고 메시지)
         """
         if requested_quantity <= 0:
             return False, "매도 수량은 0보다 커야 합니다"

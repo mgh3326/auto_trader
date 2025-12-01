@@ -482,10 +482,52 @@
         }
 
         // CRUD 작업
+        function validateAccountName() {
+            const accountNameInput = document.getElementById('account-name');
+            const accountName = accountNameInput.value.trim();
+            if (!accountName) {
+                showAlert('계좌 이름을 입력하세요', 'danger');
+                accountNameInput.focus();
+                return null;
+            }
+            return accountName;
+        }
+
+        function validateHoldingInputs(tickerId, quantityId, avgPriceId) {
+            const tickerInput = document.getElementById(tickerId);
+            const quantityInput = document.getElementById(quantityId);
+            const avgPriceInput = document.getElementById(avgPriceId);
+
+            const ticker = tickerInput.value.trim().toUpperCase();
+            const quantity = parseFloat(quantityInput.value);
+            const avgPrice = parseFloat(avgPriceInput.value);
+
+            if (!ticker) {
+                showAlert('종목코드를 입력하세요', 'danger');
+                tickerInput.focus();
+                return null;
+            }
+            if (!Number.isFinite(quantity) || quantity <= 0) {
+                showAlert('수량은 0보다 커야 합니다', 'danger');
+                quantityInput.focus();
+                return null;
+            }
+            if (!Number.isFinite(avgPrice) || avgPrice < 0) {
+                showAlert('평균 매수가를 0 이상으로 입력하세요', 'danger');
+                avgPriceInput.focus();
+                return null;
+            }
+
+            return { ticker, quantity, avgPrice };
+        }
+
         async function createAccount() {
+            const accountName = validateAccountName();
+            if (!accountName) return;
+
             const data = {
                 broker_type: document.getElementById('account-broker').value,
-                account_name: document.getElementById('account-name').value,
+                account_name: accountName,
                 is_mock: document.getElementById('account-mock').checked
             };
 
@@ -528,14 +570,18 @@
         }
 
         async function createHolding() {
+            const validated = validateHoldingInputs('holding-ticker', 'holding-quantity', 'holding-avgprice');
+            if (!validated) return;
+
+            const displayName = document.getElementById('holding-name').value.trim();
             const data = {
                 broker_type: document.getElementById('holding-broker').value,
                 account_name: '기본 계좌',
-                ticker: document.getElementById('holding-ticker').value,
+                ticker: validated.ticker,
                 market_type: document.getElementById('holding-market').value,
-                quantity: parseFloat(document.getElementById('holding-quantity').value),
-                avg_price: parseFloat(document.getElementById('holding-avgprice').value),
-                display_name: document.getElementById('holding-name').value || null
+                quantity: validated.quantity,
+                avg_price: validated.avgPrice,
+                display_name: displayName || null
             };
 
             try {
@@ -561,10 +607,14 @@
 
         async function updateHolding() {
             const id = document.getElementById('edit-holding-id').value;
+            const validated = validateHoldingInputs('edit-holding-ticker', 'edit-holding-quantity', 'edit-holding-avgprice');
+            if (!validated) return;
+
+            const displayName = document.getElementById('edit-holding-name').value.trim();
             const data = {
-                quantity: parseFloat(document.getElementById('edit-holding-quantity').value),
-                avg_price: parseFloat(document.getElementById('edit-holding-avgprice').value),
-                display_name: document.getElementById('edit-holding-name').value || null
+                quantity: validated.quantity,
+                avg_price: validated.avgPrice,
+                display_name: displayName || null
             };
 
             try {

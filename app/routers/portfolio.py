@@ -4,13 +4,14 @@ Portfolio Router
 통합 포트폴리오 API 엔드포인트
 """
 import logging
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.models.manual_holdings import MarketType
+from app.models.trading import User
+from app.routers.dependencies import get_authenticated_user
 from app.schemas.manual_holdings import (
     MergedHoldingResponse,
     MergedPortfolioResponse,
@@ -18,6 +19,7 @@ from app.schemas.manual_holdings import (
 )
 from app.services.merged_portfolio_service import MergedPortfolioService
 from app.services.kis import KISClient
+from app.services.kis_holdings_service import get_kis_holding_for_ticker
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
@@ -25,8 +27,8 @@ router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
 
 @router.get("/api/merged", response_model=MergedPortfolioResponse)
 async def get_merged_portfolio(
-    request: Request,
-    market_type: Optional[MarketType] = None,
+    market_type: MarketType | None = None,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """통합 포트폴리오 조회
@@ -36,10 +38,6 @@ async def get_merged_portfolio(
     Args:
         market_type: 시장 타입 필터 (KR: 국내, US: 해외)
     """
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     service = MergedPortfolioService(db)
     kis_client = KISClient()
 
@@ -50,7 +48,7 @@ async def get_merged_portfolio(
     try:
         if market_type is None or market_type == MarketType.KR:
             domestic = await service.get_merged_portfolio_domestic(
-                user.id, kis_client
+                current_user.id, kis_client
             )
             holdings.extend(domestic)
 
@@ -63,7 +61,7 @@ async def get_merged_portfolio(
 
         if market_type is None or market_type == MarketType.US:
             overseas = await service.get_merged_portfolio_overseas(
-                user.id, kis_client
+                current_user.id, kis_client
             )
             holdings.extend(overseas)
 
@@ -95,9 +93,9 @@ async def get_merged_portfolio(
 
 @router.get("/api/merged/{ticker}", response_model=MergedHoldingResponse)
 async def get_merged_holding_detail(
-    request: Request,
     ticker: str,
     market_type: MarketType,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """특정 종목의 통합 보유 정보 조회
@@ -106,21 +104,17 @@ async def get_merged_holding_detail(
         ticker: 종목 코드
         market_type: 시장 타입 (KR: 국내, US: 해외)
     """
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     service = MergedPortfolioService(db)
     kis_client = KISClient()
 
     try:
         if market_type == MarketType.KR:
             holdings = await service.get_merged_portfolio_domestic(
-                user.id, kis_client
+                current_user.id, kis_client
             )
         else:
             holdings = await service.get_merged_portfolio_overseas(
-                user.id, kis_client
+                current_user.id, kis_client
             )
     except Exception as e:
         logger.error(f"Error fetching holding detail: {e}", exc_info=True)
@@ -137,9 +131,9 @@ async def get_merged_holding_detail(
 
 @router.get("/api/reference-prices/{ticker}", response_model=ReferencePricesResponse)
 async def get_reference_prices(
-    request: Request,
     ticker: str,
     market_type: MarketType,
+    current_user: User = Depends(get_authenticated_user),
     db: AsyncSession = Depends(get_db),
 ):
     """특정 종목의 참조 평단가 조회
@@ -148,39 +142,17 @@ async def get_reference_prices(
         ticker: 종목 코드
         market_type: 시장 타입 (KR: 국내, US: 해외)
     """
-    user = getattr(request.state, "user", None)
-    if not user:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
-
     service = MergedPortfolioService(db)
     kis_client = KISClient()
 
-    # KIS 보유 정보 조회
-    kis_holdings = None
-    try:
-        if market_type == MarketType.KR:
-            stocks = await kis_client.fetch_my_stocks()
-            for s in stocks:
-                if s.get("pdno") == ticker.upper():
-                    kis_holdings = {
-                        "quantity": int(s.get("hldg_qty", 0)),
-                        "avg_price": float(s.get("pchs_avg_pric", 0)),
-                    }
-                    break
-        else:
-            stocks = await kis_client.fetch_overseas_stocks()
-            for s in stocks:
-                if s.get("ovrs_pdno") == ticker.upper():
-                    kis_holdings = {
-                        "quantity": int(float(s.get("ovrs_cblc_qty", 0))),
-                        "avg_price": float(s.get("pchs_avg_pric", 0)),
-                    }
-                    break
-    except Exception as e:
-        logger.warning(f"Failed to fetch KIS holdings: {e}")
+    kis_holdings = await get_kis_holding_for_ticker(
+        kis_client, ticker, market_type
+    )
+    if not kis_holdings.get("quantity"):
+        kis_holdings = None
 
     ref = await service.get_reference_prices(
-        user.id, ticker, market_type, kis_holdings
+        current_user.id, ticker, market_type, kis_holdings
     )
 
     return ReferencePricesResponse(**ref.to_dict())
