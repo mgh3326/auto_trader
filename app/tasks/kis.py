@@ -475,7 +475,8 @@ def run_per_domestic_stock_automation(self) -> dict:
                 current_price = float(stock.get('prpr', 0))
                 # 매도 시 미체결 주문을 제외한 주문 가능 수량(ord_psbl_qty)을 사용
                 # ord_psbl_qty가 없으면 hldg_qty를 fallback으로 사용
-                qty = int(stock.get('ord_psbl_qty', stock.get('hldg_qty', 0)))
+                # 수동 잔고의 경우 Decimal이 str로 변환되어 소수점이 있을 수 있으므로 float을 거쳐 int로 변환
+                qty = int(float(stock.get('ord_psbl_qty', stock.get('hldg_qty', 0))))
                 is_manual = stock.get('_is_manual', False)
 
                 # 수동 잔고 종목인 경우 현재가를 API로 조회
