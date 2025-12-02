@@ -536,8 +536,192 @@ class TestManualHoldingsIntegration:
         # 핵심 검증: 매도 함수가 호출되지 않아야 함 (수동 잔고이므로)
         assert len(sell_calls) == 0, f"수동 잔고는 매도 함수가 호출되면 안 됨. 호출된 횟수: {len(sell_calls)}"
 
-        # 매도 단계 결과가 '수동잔고 - 매도 스킵'이어야 함
+        # 매도 단계 결과가 '수동잔고' 관련 메시지여야 함
         sell_step = next((s for s in stock_result["steps"] if s["step"] == "매도"), None)
         assert sell_step is not None, "매도 단계가 있어야 함"
         assert "수동잔고" in sell_step["result"]["message"], \
             f"매도 결과에 '수동잔고' 메시지가 있어야 함: {sell_step['result']}"
+
+
+class TestTossRecommendationNotification:
+    """토스(수동 잔고) 종목 가격 제안 알림 테스트
+
+    AI 결정(buy/hold/sell)과 무관하게 항상 가격 제안을 포함하여 알림을 발송합니다.
+    """
+
+    @pytest.mark.asyncio
+    async def test_send_toss_price_recommendation_with_buy_decision(self, monkeypatch):
+        """매수 결정 시 가격 제안 알림 발송"""
+        from app.tasks.kis import _send_toss_recommendation_async
+        from app.models.analysis import StockAnalysisResult
+
+        notification_sent = []
+
+        # Mock TradeNotifier
+        class MockNotifier:
+            _enabled = True
+
+            async def notify_toss_price_recommendation(self, **kwargs):
+                notification_sent.append(kwargs)
+                return True
+
+        # Mock 분석 결과 (매수 결정)
+        mock_analysis = MagicMock(spec=StockAnalysisResult)
+        mock_analysis.decision = "buy"
+        mock_analysis.confidence = 75
+        mock_analysis.reasons = ["이동평균선 정배열", "RSI 적정 구간"]
+        mock_analysis.appropriate_buy_min = 23000.0
+        mock_analysis.appropriate_buy_max = 24000.0
+        mock_analysis.appropriate_sell_min = 28000.0
+        mock_analysis.appropriate_sell_max = 30000.0
+        mock_analysis.buy_hope_min = 22000.0
+        mock_analysis.buy_hope_max = 23000.0
+        mock_analysis.sell_target_min = 30000.0
+        mock_analysis.sell_target_max = 32000.0
+
+        class MockAnalysisService:
+            def __init__(self, db):
+                pass
+
+            async def get_latest_analysis_by_symbol(self, symbol):
+                return mock_analysis
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.tasks.kis.get_trade_notifier', return_value=MockNotifier()), \
+             patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.stock_info_service.StockAnalysisService', MockAnalysisService):
+
+            await _send_toss_recommendation_async(
+                code="015760",
+                name="한국전력",
+                current_price=25000.0,
+                toss_quantity=10,
+                toss_avg_price=23000.0,
+            )
+
+        # 가격 제안 알림이 발송되어야 함
+        assert len(notification_sent) == 1
+        assert notification_sent[0]["symbol"] == "015760"
+        assert notification_sent[0]["korean_name"] == "한국전력"
+        assert notification_sent[0]["decision"] == "buy"
+        assert notification_sent[0]["confidence"] == 75
+        assert notification_sent[0]["appropriate_buy_min"] == 23000.0
+        assert notification_sent[0]["appropriate_sell_max"] == 30000.0
+
+    @pytest.mark.asyncio
+    async def test_send_toss_price_recommendation_with_sell_decision(self, monkeypatch):
+        """매도 결정 시에도 가격 제안 알림 발송"""
+        from app.tasks.kis import _send_toss_recommendation_async
+        from app.models.analysis import StockAnalysisResult
+
+        notification_sent = []
+
+        class MockNotifier:
+            _enabled = True
+
+            async def notify_toss_price_recommendation(self, **kwargs):
+                notification_sent.append(kwargs)
+                return True
+
+        # Mock 분석 결과 (매도 결정)
+        mock_analysis = MagicMock(spec=StockAnalysisResult)
+        mock_analysis.decision = "sell"
+        mock_analysis.confidence = 80
+        mock_analysis.reasons = ["과매수 구간", "저항선 도달"]
+        mock_analysis.appropriate_buy_min = 20000.0
+        mock_analysis.appropriate_buy_max = 22000.0
+        mock_analysis.appropriate_sell_min = 26000.0
+        mock_analysis.appropriate_sell_max = 28000.0
+        mock_analysis.buy_hope_min = 18000.0
+        mock_analysis.buy_hope_max = 20000.0
+        mock_analysis.sell_target_min = 28000.0
+        mock_analysis.sell_target_max = 30000.0
+
+        class MockAnalysisService:
+            def __init__(self, db):
+                pass
+
+            async def get_latest_analysis_by_symbol(self, symbol):
+                return mock_analysis
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.tasks.kis.get_trade_notifier', return_value=MockNotifier()), \
+             patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.stock_info_service.StockAnalysisService', MockAnalysisService):
+
+            await _send_toss_recommendation_async(
+                code="015760",
+                name="한국전력",
+                current_price=25000.0,
+                toss_quantity=10,
+                toss_avg_price=23000.0,
+            )
+
+        # 가격 제안 알림이 발송되어야 함
+        assert len(notification_sent) == 1
+        assert notification_sent[0]["decision"] == "sell"
+        assert notification_sent[0]["appropriate_sell_min"] == 26000.0
+        assert notification_sent[0]["appropriate_sell_max"] == 28000.0
+
+    @pytest.mark.asyncio
+    async def test_send_toss_price_recommendation_with_hold_decision(self, monkeypatch):
+        """hold 결정 시에도 가격 제안 알림 발송 (AI 결정과 무관하게 항상 발송)"""
+        from app.tasks.kis import _send_toss_recommendation_async
+        from app.models.analysis import StockAnalysisResult
+
+        notification_sent = []
+
+        class MockNotifier:
+            _enabled = True
+
+            async def notify_toss_price_recommendation(self, **kwargs):
+                notification_sent.append(kwargs)
+                return True
+
+        mock_analysis = MagicMock(spec=StockAnalysisResult)
+        mock_analysis.decision = "hold"
+        mock_analysis.confidence = 60
+        mock_analysis.reasons = ["현재 관망 권장"]
+        mock_analysis.appropriate_buy_min = 23000.0
+        mock_analysis.appropriate_buy_max = 24000.0
+        mock_analysis.appropriate_sell_min = 26000.0
+        mock_analysis.appropriate_sell_max = 28000.0
+        mock_analysis.buy_hope_min = 22000.0
+        mock_analysis.buy_hope_max = 23000.0
+        mock_analysis.sell_target_min = 28000.0
+        mock_analysis.sell_target_max = 30000.0
+
+        class MockAnalysisService:
+            def __init__(self, db):
+                pass
+
+            async def get_latest_analysis_by_symbol(self, symbol):
+                return mock_analysis
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.tasks.kis.get_trade_notifier', return_value=MockNotifier()), \
+             patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.stock_info_service.StockAnalysisService', MockAnalysisService):
+
+            await _send_toss_recommendation_async(
+                code="015760",
+                name="한국전력",
+                current_price=25000.0,
+                toss_quantity=10,
+                toss_avg_price=23000.0,
+            )
+
+        # hold 결정이어도 알림이 발송되어야 함 (AI 결정과 무관)
+        assert len(notification_sent) == 1
+        assert notification_sent[0]["decision"] == "hold"
+        assert notification_sent[0]["appropriate_buy_min"] == 23000.0
+        assert notification_sent[0]["appropriate_sell_max"] == 28000.0

@@ -79,6 +79,62 @@ def _report_step_error(
         logger.error(f"Failed to report step error: {e}")
 
 
+async def _send_toss_recommendation_async(
+    code: str,
+    name: str,
+    current_price: float,
+    toss_quantity: int,
+    toss_avg_price: float,
+    kis_quantity: int | None = None,
+    kis_avg_price: float | None = None,
+) -> None:
+    """수동 잔고(토스) 종목에 대해 AI 분석 결과와 가격 제안 알림 발송.
+
+    AI 결정(buy/hold/sell)과 무관하게 항상 가격 제안을 포함하여 알림을 발송합니다.
+    """
+    from app.core.db import AsyncSessionLocal
+    from app.services.stock_info_service import StockAnalysisService
+
+    notifier = get_trade_notifier()
+    if not notifier._enabled:
+        logger.debug(f"[토스추천] {name}({code}) - 알림 비활성화됨")
+        return
+
+    async with AsyncSessionLocal() as db:
+        service = StockAnalysisService(db)
+        analysis = await service.get_latest_analysis_by_symbol(code)
+
+        if not analysis:
+            logger.warning(f"[토스추천] {name}({code}) - 분석 결과 없음, 알림 스킵")
+            return
+
+        decision = analysis.decision.lower() if analysis.decision else "hold"
+        confidence = analysis.confidence if analysis.confidence else 0
+        reasons = analysis.reasons if analysis.reasons else []
+
+        # AI 결정과 무관하게 항상 가격 제안 알림 발송
+        await notifier.notify_toss_price_recommendation(
+            symbol=code,
+            korean_name=name,
+            current_price=current_price,
+            toss_quantity=toss_quantity,
+            toss_avg_price=toss_avg_price,
+            decision=decision,
+            confidence=confidence,
+            reasons=reasons,
+            appropriate_buy_min=analysis.appropriate_buy_min,
+            appropriate_buy_max=analysis.appropriate_buy_max,
+            appropriate_sell_min=analysis.appropriate_sell_min,
+            appropriate_sell_max=analysis.appropriate_sell_max,
+            buy_hope_min=analysis.buy_hope_min,
+            buy_hope_max=analysis.buy_hope_max,
+            sell_target_min=analysis.sell_target_min,
+            sell_target_max=analysis.sell_target_max,
+            currency="원",
+        )
+        logger.info(f"[토스추천] {name}({code}) - 가격 제안 알림 발송 (AI 판단: {decision}, 신뢰도: {confidence}%)")
+
+
 # --- Domestic Stocks Tasks ---
 
 async def _analyze_domestic_stock_async(code: str, progress_cb: ProgressCallback = None) -> Dict[str, object]:
@@ -576,10 +632,21 @@ def run_per_domestic_stock_automation(self) -> dict:
                 except Exception as refresh_error:
                     logger.warning("잔고 재조회 실패 - 기존 수량 사용 (%s)", refresh_error)
 
-                # 수동 잔고(토스 등)는 KIS에서 매도할 수 없으므로 매도 단계 스킵
+                # 수동 잔고(토스 등)는 KIS에서 매도할 수 없으므로 텔레그램 추천 알림만 발송
                 if is_manual:
-                    logger.info(f"[수동잔고] {name}({code}) - KIS 매도 불가, 매도 단계 스킵")
-                    stock_steps.append({'step': '매도', 'result': {'success': True, 'message': '수동잔고 - 매도 스킵', 'orders_placed': 0}})
+                    logger.info(f"[수동잔고] {name}({code}) - KIS 매도 불가, 토스 추천 알림 발송")
+                    try:
+                        await _send_toss_recommendation_async(
+                            code=code,
+                            name=name,
+                            current_price=refreshed_current_price,
+                            toss_quantity=refreshed_qty,
+                            toss_avg_price=avg_price,
+                        )
+                        stock_steps.append({'step': '매도', 'result': {'success': True, 'message': '수동잔고 - 토스 추천 알림 발송', 'orders_placed': 0}})
+                    except Exception as e:
+                        logger.warning(f"[수동잔고] {name}({code}) 토스 추천 알림 발송 실패: {e}")
+                        stock_steps.append({'step': '매도', 'result': {'success': True, 'message': '수동잔고 - 매도 스킵', 'orders_placed': 0}})
                     results.append({'name': name, 'code': code, 'steps': stock_steps})
                     continue
 

@@ -733,6 +733,155 @@ class TradeNotifier:
             logger.error(f"Failed to send Toss sell recommendation: {e}")
             return False
 
+    def _format_toss_price_recommendation(
+        self,
+        symbol: str,
+        korean_name: str,
+        current_price: float,
+        toss_quantity: int,
+        toss_avg_price: float,
+        decision: str,
+        confidence: float,
+        reasons: List[str],
+        appropriate_buy_min: float | None,
+        appropriate_buy_max: float | None,
+        appropriate_sell_min: float | None,
+        appropriate_sell_max: float | None,
+        buy_hope_min: float | None = None,
+        buy_hope_max: float | None = None,
+        sell_target_min: float | None = None,
+        sell_target_max: float | None = None,
+        currency: str = "원",
+    ) -> str:
+        """
+        Format Toss price recommendation notification with AI analysis.
+        """
+        is_usd = currency == "$"
+        price_fmt = lambda p: f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
+
+        # 수익률 계산
+        profit_percent = ((current_price / toss_avg_price) - 1) * 100 if toss_avg_price > 0 else 0
+        profit_sign = "+" if profit_percent >= 0 else ""
+
+        # Decision emoji mapping
+        decision_emoji = {"buy": "🟢", "hold": "🟡", "sell": "🔴"}
+        decision_text = {"buy": "매수", "hold": "보유", "sell": "매도"}
+        emoji = decision_emoji.get(decision.lower(), "⚪")
+        decision_kr = decision_text.get(decision.lower(), decision)
+
+        parts = [
+            f"📊 *\\[토스\\] {korean_name} ({symbol})*",
+            "",
+            f"*현재가:* {price_fmt(current_price)}",
+            f"*보유:* {toss_quantity}주 (평단가 {price_fmt(toss_avg_price)}, {profit_sign}{profit_percent:.1f}%)",
+            "",
+            f"{emoji} *AI 판단:* {decision_kr} (신뢰도 {confidence:.0f}%)",
+        ]
+
+        # 근거 추가
+        if reasons:
+            parts.append("")
+            parts.append("*근거:*")
+            for i, reason in enumerate(reasons[:3], 1):
+                # 긴 근거는 줄임
+                short_reason = reason[:80] + "..." if len(reason) > 80 else reason
+                parts.append(f"  {i}. {short_reason}")
+
+        # 가격 제안 추가
+        parts.append("")
+        parts.append("*가격 제안:*")
+
+        if appropriate_buy_min or appropriate_buy_max:
+            buy_range = []
+            if appropriate_buy_min:
+                buy_range.append(price_fmt(appropriate_buy_min))
+            if appropriate_buy_max:
+                buy_range.append(price_fmt(appropriate_buy_max))
+            parts.append(f"  • 적정 매수: {' ~ '.join(buy_range)}")
+
+        if appropriate_sell_min or appropriate_sell_max:
+            sell_range = []
+            if appropriate_sell_min:
+                sell_range.append(price_fmt(appropriate_sell_min))
+            if appropriate_sell_max:
+                sell_range.append(price_fmt(appropriate_sell_max))
+            parts.append(f"  • 적정 매도: {' ~ '.join(sell_range)}")
+
+        if buy_hope_min or buy_hope_max:
+            hope_range = []
+            if buy_hope_min:
+                hope_range.append(price_fmt(buy_hope_min))
+            if buy_hope_max:
+                hope_range.append(price_fmt(buy_hope_max))
+            parts.append(f"  • 매수 희망: {' ~ '.join(hope_range)}")
+
+        if sell_target_min or sell_target_max:
+            target_range = []
+            if sell_target_min:
+                target_range.append(price_fmt(sell_target_min))
+            if sell_target_max:
+                target_range.append(price_fmt(sell_target_max))
+            parts.append(f"  • 매도 목표: {' ~ '.join(target_range)}")
+
+        return "\n".join(parts)
+
+    async def notify_toss_price_recommendation(
+        self,
+        symbol: str,
+        korean_name: str,
+        current_price: float,
+        toss_quantity: int,
+        toss_avg_price: float,
+        decision: str,
+        confidence: float,
+        reasons: List[str],
+        appropriate_buy_min: float | None,
+        appropriate_buy_max: float | None,
+        appropriate_sell_min: float | None,
+        appropriate_sell_max: float | None,
+        buy_hope_min: float | None = None,
+        buy_hope_max: float | None = None,
+        sell_target_min: float | None = None,
+        sell_target_max: float | None = None,
+        currency: str = "원",
+    ) -> bool:
+        """
+        Send Toss price recommendation notification with AI analysis.
+
+        Always sends regardless of AI decision (buy/hold/sell).
+        """
+        if not self._enabled:
+            return False
+
+        if toss_quantity <= 0:
+            logger.debug(f"Skipping Toss notification for {symbol}: no Toss holdings")
+            return False
+
+        try:
+            message = self._format_toss_price_recommendation(
+                symbol=symbol,
+                korean_name=korean_name,
+                current_price=current_price,
+                toss_quantity=toss_quantity,
+                toss_avg_price=toss_avg_price,
+                decision=decision,
+                confidence=confidence,
+                reasons=reasons,
+                appropriate_buy_min=appropriate_buy_min,
+                appropriate_buy_max=appropriate_buy_max,
+                appropriate_sell_min=appropriate_sell_min,
+                appropriate_sell_max=appropriate_sell_max,
+                buy_hope_min=buy_hope_min,
+                buy_hope_max=buy_hope_max,
+                sell_target_min=sell_target_min,
+                sell_target_max=sell_target_max,
+                currency=currency,
+            )
+            return await self._send_to_telegram(message)
+        except Exception as e:
+            logger.error(f"Failed to send Toss price recommendation: {e}")
+            return False
+
     async def test_connection(self) -> bool:
         """
         Test Telegram connection by sending a test message.
