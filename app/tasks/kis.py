@@ -450,10 +450,10 @@ def run_per_domestic_stock_automation(self) -> dict:
                 # 수동 잔고 종목을 my_stocks에 추가 (한투 형식으로 변환)
                 my_stocks.append({
                     'pdno': ticker,
-                    'prdt_name': holding.name or ticker,
+                    'prdt_name': holding.display_name or ticker,
                     'hldg_qty': str(holding.quantity),
-                    'pchs_avg_pric': str(holding.average_price),
-                    'prpr': str(holding.average_price),  # 현재가는 나중에 API로 조회
+                    'pchs_avg_pric': str(holding.avg_price),
+                    'prpr': str(holding.avg_price),  # 현재가는 나중에 API로 조회
                     '_is_manual': True  # 수동 잔고 표시
                 })
 
