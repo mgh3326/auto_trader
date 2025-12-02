@@ -312,12 +312,15 @@ class TradeNotifier:
 
         return "\n".join(parts)
 
-    async def _send_to_telegram(self, message: str) -> bool:
+    async def _send_to_telegram(
+        self, message: str, parse_mode: str = "Markdown"
+    ) -> bool:
         """
         Send message to all configured Telegram chats.
 
         Args:
             message: Message to send
+            parse_mode: Telegram parse mode ("Markdown" or "HTML")
 
         Returns:
             True if at least one message was sent successfully
@@ -335,7 +338,7 @@ class TradeNotifier:
                     json={
                         "chat_id": chat_id,
                         "text": message,
-                        "parse_mode": "Markdown",
+                        "parse_mode": parse_mode,
                         "disable_web_page_preview": True,
                     },
                 )
@@ -733,7 +736,15 @@ class TradeNotifier:
             logger.error(f"Failed to send Toss sell recommendation: {e}")
             return False
 
-    def _format_toss_price_recommendation(
+    def _escape_html(self, text: str) -> str:
+        """Escape HTML special characters for Telegram HTML parse mode."""
+        return (
+            text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+    def _format_toss_price_recommendation_html(
         self,
         symbol: str,
         korean_name: str,
@@ -754,7 +765,7 @@ class TradeNotifier:
         currency: str = "원",
     ) -> str:
         """
-        Format Toss price recommendation notification with AI analysis.
+        Format Toss price recommendation notification with AI analysis (HTML format).
         """
         is_usd = currency == "$"
         price_fmt = lambda p: f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
@@ -769,27 +780,31 @@ class TradeNotifier:
         emoji = decision_emoji.get(decision.lower(), "⚪")
         decision_kr = decision_text.get(decision.lower(), decision)
 
+        # Escape korean_name for HTML
+        safe_name = self._escape_html(korean_name)
+
         parts = [
-            f"📊 *\\[토스\\] {korean_name} ({symbol})*",
+            f"📊 <b>[토스] {safe_name} ({symbol})</b>",
             "",
-            f"*현재가:* {price_fmt(current_price)}",
-            f"*보유:* {toss_quantity}주 (평단가 {price_fmt(toss_avg_price)}, {profit_sign}{profit_percent:.1f}%)",
+            f"<b>현재가:</b> {price_fmt(current_price)}",
+            f"<b>보유:</b> {toss_quantity}주 (평단가 {price_fmt(toss_avg_price)}, {profit_sign}{profit_percent:.1f}%)",
             "",
-            f"{emoji} *AI 판단:* {decision_kr} (신뢰도 {confidence:.0f}%)",
+            f"{emoji} <b>AI 판단:</b> {decision_kr} (신뢰도 {confidence:.0f}%)",
         ]
 
         # 근거 추가
         if reasons:
             parts.append("")
-            parts.append("*근거:*")
+            parts.append("<b>근거:</b>")
             for i, reason in enumerate(reasons[:3], 1):
                 # 긴 근거는 줄임
                 short_reason = reason[:80] + "..." if len(reason) > 80 else reason
-                parts.append(f"  {i}. {short_reason}")
+                safe_reason = self._escape_html(short_reason)
+                parts.append(f"  {i}. {safe_reason}")
 
         # 가격 제안 추가
         parts.append("")
-        parts.append("*가격 제안:*")
+        parts.append("<b>가격 제안:</b>")
 
         if appropriate_buy_min or appropriate_buy_max:
             buy_range = []
@@ -849,6 +864,7 @@ class TradeNotifier:
         Send Toss price recommendation notification with AI analysis.
 
         Always sends regardless of AI decision (buy/hold/sell).
+        Uses HTML parse mode for better compatibility with special characters.
         """
         if not self._enabled:
             return False
@@ -858,7 +874,7 @@ class TradeNotifier:
             return False
 
         try:
-            message = self._format_toss_price_recommendation(
+            message = self._format_toss_price_recommendation_html(
                 symbol=symbol,
                 korean_name=korean_name,
                 current_price=current_price,
@@ -877,7 +893,7 @@ class TradeNotifier:
                 sell_target_max=sell_target_max,
                 currency=currency,
             )
-            return await self._send_to_telegram(message)
+            return await self._send_to_telegram(message, parse_mode="HTML")
         except Exception as e:
             logger.error(f"Failed to send Toss price recommendation: {e}")
             return False

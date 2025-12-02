@@ -725,3 +725,85 @@ class TestTossRecommendationNotification:
         assert notification_sent[0]["decision"] == "hold"
         assert notification_sent[0]["appropriate_buy_min"] == 23000.0
         assert notification_sent[0]["appropriate_sell_max"] == 28000.0
+
+    def test_format_toss_price_recommendation_html_escapes_special_chars(self):
+        """HTML 포맷 메시지가 특수문자를 올바르게 이스케이프하는지 확인"""
+        from app.monitoring.trade_notifier import TradeNotifier
+
+        notifier = TradeNotifier()
+
+        # 특수문자가 포함된 데이터로 테스트
+        message = notifier._format_toss_price_recommendation_html(
+            symbol="005930",
+            korean_name="삼성전자 <테스트>",  # HTML 특수문자 포함
+            current_price=72000.0,
+            toss_quantity=10,
+            toss_avg_price=70000.0,
+            decision="buy",
+            confidence=75.5,
+            reasons=["RSI < 30 (과매도)", "이평선 & 정배열"],  # 특수문자 포함
+            appropriate_buy_min=68000.0,
+            appropriate_buy_max=70000.0,
+            appropriate_sell_min=75000.0,
+            appropriate_sell_max=78000.0,
+            buy_hope_min=65000.0,
+            buy_hope_max=68000.0,
+            sell_target_min=80000.0,
+            sell_target_max=85000.0,
+            currency="원",
+        )
+
+        # HTML 특수문자가 올바르게 이스케이프 되어야 함
+        assert "&lt;테스트&gt;" in message, "< > 문자가 이스케이프되어야 함"
+        assert "&lt; 30" in message or "RSI &lt; 30" in message, "< 문자가 이스케이프되어야 함"
+        assert "&amp;" in message, "& 문자가 이스케이프되어야 함"
+
+        # <b> 태그는 이스케이프되지 않아야 함 (HTML 포맷팅용)
+        assert "<b>" in message, "볼드 태그는 유지되어야 함"
+        assert "</b>" in message, "볼드 종료 태그는 유지되어야 함"
+
+        # 숫자와 퍼센트 등이 제대로 표시되어야 함
+        assert "72,000원" in message, "현재가가 표시되어야 함"
+        assert "+2.9%" in message, "수익률이 표시되어야 함"
+        assert "76%" in message, "신뢰도가 표시되어야 함 (75.5 -> 76으로 반올림)"
+
+    def test_format_toss_price_recommendation_html_with_parentheses(self):
+        """괄호, 퍼센트 등이 포함된 메시지가 정상적으로 생성되는지 확인"""
+        from app.monitoring.trade_notifier import TradeNotifier
+
+        notifier = TradeNotifier()
+
+        message = notifier._format_toss_price_recommendation_html(
+            symbol="015760",
+            korean_name="한국전력",
+            current_price=25000.0,
+            toss_quantity=10,
+            toss_avg_price=23000.0,
+            decision="sell",
+            confidence=80,
+            reasons=["수익률 8.7% 달성", "목표가(28,000원) 근접"],
+            appropriate_buy_min=22000.0,
+            appropriate_buy_max=23000.0,
+            appropriate_sell_min=26000.0,
+            appropriate_sell_max=28000.0,
+            buy_hope_min=None,
+            buy_hope_max=None,
+            sell_target_min=28000.0,
+            sell_target_max=30000.0,
+            currency="원",
+        )
+
+        # 메시지가 생성되어야 함
+        assert len(message) > 0
+
+        # HTML 태그가 있어야 함
+        assert "<b>" in message
+
+        # 이모지가 있어야 함
+        assert "📊" in message
+        assert "🔴" in message  # sell decision
+
+        # 가격 제안이 있어야 함
+        assert "적정 매수" in message
+        assert "적정 매도" in message
+        assert "매도 목표" in message
