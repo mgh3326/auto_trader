@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.middleware.monitoring import MonitoringMiddleware
-from app.monitoring.error_reporter import ErrorReporter
+from app.monitoring.error_reporter import ErrorReporter, escape_markdown
 
 
 @pytest.fixture
@@ -132,3 +132,74 @@ async def test_handle_http_exception_reports_and_returns_json(monkeypatch):
     assert reporter.last_context["status_code"] == 500
     assert reporter.last_context["request_id"] == "req-1"
     assert isinstance(reporter.last_context["duration_ms"], float)
+
+
+class TestEscapeMarkdown:
+    """escape_markdown 함수 테스트."""
+
+    def test_escape_underscore(self):
+        """언더스코어(_)가 이스케이프되어야 함."""
+        text = "process_kis_domestic_sell_orders"
+        result = escape_markdown(text)
+        assert result == r"process\_kis\_domestic\_sell\_orders"
+
+    def test_escape_asterisk(self):
+        """별표(*)가 이스케이프되어야 함."""
+        text = "**bold** and *italic*"
+        result = escape_markdown(text)
+        assert r"\*\*bold\*\*" in result
+        assert r"\*italic\*" in result
+
+    def test_escape_backtick(self):
+        """백틱(`)이 이스케이프되어야 함."""
+        text = "use `code` here"
+        result = escape_markdown(text)
+        assert r"\`code\`" in result
+
+    def test_escape_square_bracket(self):
+        """대괄호([)가 이스케이프되어야 함."""
+        text = "see [link] here"
+        result = escape_markdown(text)
+        assert r"\[link]" in result
+
+    def test_no_escape_for_normal_text(self):
+        """특수문자가 없는 일반 텍스트는 변경되지 않아야 함."""
+        text = "APBK0400 주문 가능한 수량을 초과했습니다."
+        result = escape_markdown(text)
+        assert result == text
+
+    def test_complex_error_message(self):
+        """실제 에러 메시지 시나리오."""
+        text = "File '/app/services/kis_trading_service.py', line 343"
+        result = escape_markdown(text)
+        # 언더스코어만 이스케이프됨
+        assert r"kis\_trading\_service" in result
+
+
+class TestFormatErrorMessageWithEscape:
+    """에러 메시지 포맷팅 시 이스케이프 테스트."""
+
+    def test_format_message_escapes_error_message(self, error_reporter):
+        """에러 메시지의 특수문자가 이스케이프되어야 함."""
+        message = error_reporter._format_error_message(
+            error_type="RuntimeError",
+            error_message="Error in func_name with _underscore",
+            stack_trace="simple trace",
+        )
+        # 에러 메시지 부분에서 언더스코어가 이스케이프되어야 함
+        assert r"func\_name" in message
+        assert r"\_underscore" in message
+
+    def test_format_message_escapes_additional_context(self, error_reporter):
+        """추가 컨텍스트의 특수문자가 이스케이프되어야 함."""
+        message = error_reporter._format_error_message(
+            error_type="RuntimeError",
+            error_message="Error",
+            stack_trace="trace",
+            additional_context={
+                "task_name": "kis.run_per_domestic_stock_automation",
+                "stock": "삼성전자우 (005935)"
+            }
+        )
+        # task_name의 언더스코어가 이스케이프되어야 함
+        assert r"run\_per\_domestic\_stock\_automation" in message

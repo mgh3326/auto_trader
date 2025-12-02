@@ -438,7 +438,7 @@ def run_per_domestic_stock_automation(self) -> dict:
                 manual_service = ManualHoldingsService(db)
                 # USER_ID는 현재 1로 고정 (추후 다중 사용자 지원 시 변경 필요)
                 user_id = 1
-                manual_holdings = await manual_service.get_holdings(user_id=user_id, market_type=MarketType.KR)
+                manual_holdings = await manual_service.get_holdings_by_user(user_id=user_id, market_type=MarketType.KR)
 
             # 3. 수동 잔고 종목을 한투 형식으로 변환하여 병합
             for holding in manual_holdings:

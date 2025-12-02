@@ -42,7 +42,7 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
         def __init__(self, db):
             pass
 
-        async def get_holdings(self, user_id, market_type):
+        async def get_holdings_by_user(self, user_id, market_type):
             return []  # No manual holdings
 
     buy_calls = []
@@ -194,7 +194,7 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
         def __init__(self, db):
             pass
 
-        async def get_holdings(self, user_id, market_type):
+        async def get_holdings_by_user(self, user_id, market_type):
             return []  # No manual holdings
 
     with patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
@@ -281,7 +281,7 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
         def __init__(self, db):
             pass
 
-        async def get_holdings(self, user_id, market_type):
+        async def get_holdings_by_user(self, user_id, market_type):
             return []
 
     sell_calls = []
@@ -369,7 +369,7 @@ def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
         def __init__(self, db):
             pass
 
-        async def get_holdings(self, user_id, market_type):
+        async def get_holdings_by_user(self, user_id, market_type):
             return []
 
     async def fake_buy(*_, **__):
@@ -462,7 +462,7 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
         def __init__(self, db):
             pass
 
-        async def get_holdings(self, user_id, market_type):
+        async def get_holdings_by_user(self, user_id, market_type):
             return []
 
     sell_calls: List[Dict[str, Any]] = []
@@ -635,7 +635,7 @@ class TestStepErrorReporting:
             def __init__(self, db):
                 pass
 
-            async def get_holdings(self, user_id, market_type):
+            async def get_holdings_by_user(self, user_id, market_type):
                 return []
 
         error_reports = []
@@ -723,7 +723,7 @@ class TestStepErrorReporting:
             def __init__(self, db):
                 pass
 
-            async def get_holdings(self, user_id, market_type):
+            async def get_holdings_by_user(self, user_id, market_type):
                 return []
 
         error_reports = []
@@ -1247,7 +1247,7 @@ class TestDomesticStockPendingOrderCancel:
             def __init__(self, db):
                 pass
 
-            async def get_holdings(self, user_id, market_type):
+            async def get_holdings_by_user(self, user_id, market_type):
                 return []
 
         async def fake_buy(*_, **__):
@@ -1339,7 +1339,7 @@ class TestOrderableQuantityUsage:
             def __init__(self, db):
                 pass
 
-            async def get_holdings(self, user_id, market_type):
+            async def get_holdings_by_user(self, user_id, market_type):
                 return []
 
         async def fake_buy(*_, **__):
@@ -1432,7 +1432,7 @@ class TestOrderableQuantityUsage:
             def __init__(self, db):
                 pass
 
-            async def get_holdings(self, user_id, market_type):
+            async def get_holdings_by_user(self, user_id, market_type):
                 return []
 
         async def fake_buy(*_, **__):

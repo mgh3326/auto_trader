@@ -10,6 +10,7 @@ Features:
 
 import hashlib
 import logging
+import re
 import traceback
 from typing import Dict, Optional
 
@@ -20,6 +21,17 @@ from app.core.timezone import format_datetime
 from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
+
+
+def escape_markdown(text: str) -> str:
+    """Escape Telegram Markdown special characters.
+
+    Telegram Markdown v1 reserves these characters: _ * ` [
+    """
+    # 백틱(`) 안의 텍스트는 그대로 두고, 나머지만 이스케이프
+    # 간단하게 모든 특수문자 이스케이프
+    escape_chars = r'_*`['
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 
 class ErrorReporter:
@@ -177,13 +189,16 @@ class ErrorReporter:
         """
         timestamp = format_datetime()
 
+        # Escape Markdown special characters in dynamic content
+        safe_error_message = escape_markdown(error_message)
+
         # Build message parts
         parts = [
             "🚨 *Error Alert*",
             f"🕒 {timestamp}",
             "",
             f"*Type:* `{error_type}`",
-            f"*Message:* {error_message}",
+            f"*Message:* {safe_error_message}",
         ]
 
         # Add request info if available
@@ -193,12 +208,14 @@ class ErrorReporter:
             if "method" in request_info:
                 parts.append(f"  • Method: `{request_info['method']}`")
             if "url" in request_info:
-                parts.append(f"  • URL: `{request_info['url']}`")
+                safe_url = escape_markdown(str(request_info['url']))
+                parts.append(f"  • URL: {safe_url}")
             if "client" in request_info:
                 parts.append(f"  • Client: `{request_info['client']}`")
             if "user_agent" in request_info:
                 user_agent = request_info["user_agent"][:100]  # Truncate
-                parts.append(f"  • User-Agent: `{user_agent}`")
+                safe_ua = escape_markdown(user_agent)
+                parts.append(f"  • User-Agent: {safe_ua}")
 
         # Add additional context if available
         if additional_context:
@@ -206,13 +223,14 @@ class ErrorReporter:
             parts.append("*Additional Context:*")
             for key, value in additional_context.items():
                 # Format specific keys nicely
+                safe_value = escape_markdown(str(value))
                 if key == "request_id":
                     parts.append(f"  • Request ID: `{value}`")
                 elif key == "duration_ms":
                     parts.append(f"  • Duration: `{value:.2f}ms`")
                 else:
-                    # Generic key-value pair
-                    parts.append(f"  • {key}: `{value}`")
+                    # Generic key-value pair - escape value
+                    parts.append(f"  • {key}: {safe_value}")
 
         # Add stack trace (truncated if too long)
         parts.append("")
