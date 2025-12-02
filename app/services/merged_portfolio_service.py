@@ -256,6 +256,36 @@ class MergedPortfolioService:
                 )
             )
 
+    async def _fetch_missing_prices(
+        self,
+        merged: dict[str, MergedHolding],
+        market_type: MarketType,
+        kis_client: KISClient,
+    ) -> None:
+        """현재가가 없는 종목들의 현재가를 KIS API로 조회"""
+        tickers_without_price = [
+            ticker
+            for ticker, holding in merged.items()
+            if holding.current_price == 0 and holding.total_quantity > 0
+        ]
+
+        if not tickers_without_price:
+            return
+
+        for ticker in tickers_without_price:
+            try:
+                if market_type == MarketType.KR:
+                    df = await kis_client.inquire_price(ticker)
+                    if not df.empty:
+                        merged[ticker].current_price = float(df.iloc[0]["close"])
+                else:
+                    # 해외주식의 경우 별도 API 필요 (추후 구현)
+                    pass
+            except Exception as exc:
+                logger.warning(
+                    "Failed to fetch price for %s: %s", ticker, exc
+                )
+
     def _finalize_holdings(self, merged: dict[str, MergedHolding]) -> None:
         for holding in merged.values():
             holding.total_quantity = sum(
@@ -323,6 +353,15 @@ class MergedPortfolioService:
         kis_stocks = await self._fetch_kis_holdings(kis_client, market_type)
         self._apply_kis_holdings(merged, kis_stocks, market_type)
         await self._apply_manual_holdings(merged, user_id, market_type)
+
+        # 수동 등록 종목만 있는 경우 (KIS에 없는 종목) 현재가 조회
+        # total_quantity를 먼저 계산해야 함
+        for holding in merged.values():
+            holding.total_quantity = sum(
+                int(item.quantity) for item in holding.holdings
+            )
+        await self._fetch_missing_prices(merged, market_type, kis_client)
+
         self._finalize_holdings(merged)
         await self._attach_analysis_and_settings(merged)
 
