@@ -420,13 +420,43 @@ async def _cancel_domestic_pending_orders(
 def run_per_domestic_stock_automation(self) -> dict:
     """국내 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
     async def _run() -> dict:
+        from app.core.db import AsyncSessionLocal
+        from app.models.manual_holdings import MarketType
+        from app.services.manual_holdings_service import ManualHoldingsService
+
         kis = KISClient()
         analyzer = KISAnalyzer()
 
         try:
             self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
-            
+
+            # 1. 한투 보유 종목 조회
             my_stocks = await kis.fetch_my_stocks()
+
+            # 2. 수동 잔고(토스 등) 국내 주식 조회
+            async with AsyncSessionLocal() as db:
+                manual_service = ManualHoldingsService(db)
+                # USER_ID는 현재 1로 고정 (추후 다중 사용자 지원 시 변경 필요)
+                user_id = 1
+                manual_holdings = await manual_service.get_holdings(user_id=user_id, market_type=MarketType.KR)
+
+            # 3. 수동 잔고 종목을 한투 형식으로 변환하여 병합
+            for holding in manual_holdings:
+                ticker = holding.ticker
+                # 한투에 이미 있는 종목은 건너뛰기
+                if any(s.get('pdno') == ticker for s in my_stocks):
+                    continue
+
+                # 수동 잔고 종목을 my_stocks에 추가 (한투 형식으로 변환)
+                my_stocks.append({
+                    'pdno': ticker,
+                    'prdt_name': holding.name or ticker,
+                    'hldg_qty': str(holding.quantity),
+                    'pchs_avg_pric': str(holding.average_price),
+                    'prpr': str(holding.average_price),  # 현재가는 나중에 API로 조회
+                    '_is_manual': True  # 수동 잔고 표시
+                })
+
             if not my_stocks:
                 return {'status': 'completed', 'message': NO_DOMESTIC_STOCKS_MESSAGE, 'results': []}
 
@@ -444,6 +474,16 @@ def run_per_domestic_stock_automation(self) -> dict:
                 avg_price = float(stock.get('pchs_avg_pric', 0))
                 current_price = float(stock.get('prpr', 0))
                 qty = int(stock.get('hldg_qty', 0))
+                is_manual = stock.get('_is_manual', False)
+
+                # 수동 잔고 종목인 경우 현재가를 API로 조회
+                if is_manual:
+                    try:
+                        price_info = await kis.fetch_fundamental_info(code)
+                        current_price = float(price_info.get('현재가', current_price))
+                        logger.info(f"[수동잔고] {name}({code}) 현재가 조회: {current_price:,}원")
+                    except Exception as e:
+                        logger.warning(f"[수동잔고] {name}({code}) 현재가 조회 실패, 평단가 사용: {e}")
 
                 stock_steps = []
 

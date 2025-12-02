@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
     """분석 -> 매수 -> 매도 모든 단계가 실행되고 결과에 포함되는지 확인."""
+    from unittest.mock import AsyncMock, MagicMock, patch
     from app.tasks import kis as kis_tasks
 
     class DummyAnalyzer:
@@ -36,6 +37,14 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
         async def cancel_korea_order(self, *args, **kwargs):
             return {"odno": "0000001"}
 
+    # Mock ManualHoldingsService to return empty list
+    class MockManualService:
+        def __init__(self, db):
+            pass
+
+        async def get_holdings(self, user_id, market_type):
+            return []  # No manual holdings
+
     buy_calls = []
     sell_calls = []
 
@@ -56,18 +65,26 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
         })
         return {"success": False, "message": "매도 조건 미충족", "orders_placed": 0}
 
-    monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-    monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-    monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-    monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
-    monkeypatch.setattr(
-        kis_tasks.run_per_domestic_stock_automation,
-        "update_state",
-        lambda *_, **__: None,
-        raising=False,
-    )
+    # Mock DB session
+    mock_db_session = MagicMock()
+    mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+    mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-    result = kis_tasks.run_per_domestic_stock_automation.apply().result
+    with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+         patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(
+            kis_tasks.run_per_domestic_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_domestic_stock_automation.apply().result
 
     # 태스크가 성공적으로 완료되어야 함
     assert result["status"] == "completed"
@@ -172,9 +189,18 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
         raising=False,
     )
 
+    # Mock ManualHoldingsService to return empty list
+    class MockManualService:
+        def __init__(self, db):
+            pass
+
+        async def get_holdings(self, user_id, market_type):
+            return []  # No manual holdings
+
     with patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
          patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls, \
-         patch('app.services.symbol_trade_settings_service.SymbolTradeSettingsService') as mock_settings_service_cls:
+         patch('app.services.symbol_trade_settings_service.SymbolTradeSettingsService') as mock_settings_service_cls, \
+         patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
 
         mock_session_instance = MagicMock()
         mock_session_instance.__aenter__ = AsyncMock(return_value=AsyncMock())
@@ -222,6 +248,7 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
 
 def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
     """매수 단계에서 예외 발생 시에도 매도 단계가 실행되어야 함."""
+    from unittest.mock import AsyncMock, MagicMock, patch
     from app.tasks import kis as kis_tasks
 
     class DummyAnalyzer:
@@ -249,6 +276,14 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
         async def cancel_korea_order(self, *args, **kwargs):
             return {"odno": "0000001"}
 
+    # Mock ManualHoldingsService to return empty list
+    class MockManualService:
+        def __init__(self, db):
+            pass
+
+        async def get_holdings(self, user_id, market_type):
+            return []
+
     sell_calls = []
 
     async def fake_buy(*_, **__):
@@ -258,18 +293,26 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
         sell_calls.append({"symbol": symbol, "qty": qty})
         return {"success": True, "message": "매도 완료", "orders_placed": 1}
 
-    monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-    monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-    monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-    monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
-    monkeypatch.setattr(
-        kis_tasks.run_per_domestic_stock_automation,
-        "update_state",
-        lambda *_, **__: None,
-        raising=False,
-    )
+    # Mock DB session
+    mock_db_session = MagicMock()
+    mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+    mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-    result = kis_tasks.run_per_domestic_stock_automation.apply().result
+    with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+         patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(
+            kis_tasks.run_per_domestic_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_domestic_stock_automation.apply().result
 
     assert result["status"] == "completed"
     steps = result["results"][0]["steps"]
@@ -293,6 +336,7 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
 
 def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
     """매도 단계에서 예외 발생 시 결과에 에러가 포함되어야 함."""
+    from unittest.mock import AsyncMock, MagicMock, patch
     from app.tasks import kis as kis_tasks
 
     class DummyAnalyzer:
@@ -320,24 +364,40 @@ def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
         async def cancel_korea_order(self, *args, **kwargs):
             return {"odno": "0000001"}
 
+    # Mock ManualHoldingsService to return empty list
+    class MockManualService:
+        def __init__(self, db):
+            pass
+
+        async def get_holdings(self, user_id, market_type):
+            return []
+
     async def fake_buy(*_, **__):
         return {"success": True, "message": "매수 완료"}
 
     async def fake_sell(*_, **__):
         raise Exception("Event loop is closed")
 
-    monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-    monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-    monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-    monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
-    monkeypatch.setattr(
-        kis_tasks.run_per_domestic_stock_automation,
-        "update_state",
-        lambda *_, **__: None,
-        raising=False,
-    )
+    # Mock DB session
+    mock_db_session = MagicMock()
+    mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+    mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-    result = kis_tasks.run_per_domestic_stock_automation.apply().result
+    with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+         patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(
+            kis_tasks.run_per_domestic_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_domestic_stock_automation.apply().result
 
     assert result["status"] == "completed"
     steps = result["results"][0]["steps"]
@@ -354,6 +414,7 @@ def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
 
 def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
     """매수 이후 잔고를 다시 불러와 최신 수량으로 매도하는지 확인."""
+    from unittest.mock import AsyncMock, MagicMock, patch
     from app.tasks import kis as kis_tasks
 
     class DummyAnalyzer:
@@ -396,6 +457,14 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
         async def cancel_korea_order(self, *args, **kwargs):
             return {"odno": "0000001"}
 
+    # Mock ManualHoldingsService to return empty list
+    class MockManualService:
+        def __init__(self, db):
+            pass
+
+        async def get_holdings(self, user_id, market_type):
+            return []
+
     sell_calls: List[Dict[str, Any]] = []
 
     async def fake_buy(*_, **__):
@@ -412,18 +481,26 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
         )
         return {"success": True}
 
-    monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-    monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-    monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-    monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
-    monkeypatch.setattr(
-        kis_tasks.run_per_domestic_stock_automation,
-        "update_state",
-        lambda *_, **__: None,
-        raising=False,
-    )
+    # Mock DB session
+    mock_db_session = MagicMock()
+    mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+    mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-    result = kis_tasks.run_per_domestic_stock_automation.apply().result
+    with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+         patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(
+            kis_tasks.run_per_domestic_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_domestic_stock_automation.apply().result
 
     assert result["status"] == "completed"
     assert sell_calls, "매도 단계가 호출되어야 합니다."
@@ -525,7 +602,7 @@ class TestStepErrorReporting:
 
     def test_automation_task_reports_error_on_exception(self, monkeypatch):
         """태스크에서 예외 발생 시 알림 함수가 호출되는지 확인."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, MagicMock, patch
         from app.tasks import kis as kis_tasks
 
         class DummyAnalyzer:
@@ -552,6 +629,14 @@ class TestStepErrorReporting:
 
             async def cancel_korea_order(self, *args, **kwargs):
                 return {"odno": "0000001"}
+
+        # Mock ManualHoldingsService to return empty list
+        class MockManualService:
+            def __init__(self, db):
+                pass
+
+            async def get_holdings(self, user_id, market_type):
+                return []
 
         error_reports = []
 
@@ -570,19 +655,27 @@ class TestStepErrorReporting:
         async def fake_sell(*_, **__):
             raise TypeError("unexpected keyword argument 'symbol'")
 
-        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-        monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-        monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
-        monkeypatch.setattr(kis_tasks, "_report_step_error_async", fake_report_error)
-        monkeypatch.setattr(
-            kis_tasks.run_per_domestic_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
+        # Mock DB session
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(kis_tasks, "_report_step_error_async", fake_report_error)
+            monkeypatch.setattr(
+                kis_tasks.run_per_domestic_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_domestic_stock_automation.apply().result
 
         # 태스크는 완료되어야 함 (에러를 catch하므로)
         assert result["status"] == "completed"
@@ -597,6 +690,7 @@ class TestStepErrorReporting:
 
     def test_automation_task_reports_error_from_result(self, monkeypatch):
         """결과에 error 필드가 있을 때 알림이 전송되는지 확인."""
+        from unittest.mock import AsyncMock, MagicMock, patch
         from app.tasks import kis as kis_tasks
 
         class DummyAnalyzer:
@@ -624,6 +718,14 @@ class TestStepErrorReporting:
             async def cancel_korea_order(self, *args, **kwargs):
                 return {"odno": "0000001"}
 
+        # Mock ManualHoldingsService to return empty list
+        class MockManualService:
+            def __init__(self, db):
+                pass
+
+            async def get_holdings(self, user_id, market_type):
+                return []
+
         error_reports = []
 
         async def fake_report_error(task_name, stock_name, stock_code, step_name, error_msg):
@@ -640,19 +742,27 @@ class TestStepErrorReporting:
         async def fake_sell(*_, **__):
             return {"success": True, "message": "매도 완료", "orders_placed": 1}
 
-        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-        monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-        monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
-        monkeypatch.setattr(kis_tasks, "_report_step_error_async", fake_report_error)
-        monkeypatch.setattr(
-            kis_tasks.run_per_domestic_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
+        # Mock DB session
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(kis_tasks, "_report_step_error_async", fake_report_error)
+            monkeypatch.setattr(
+                kis_tasks.run_per_domestic_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_domestic_stock_automation.apply().result
 
         assert result["status"] == "completed"
 
@@ -1080,6 +1190,7 @@ class TestDomesticStockPendingOrderCancel:
 
     def test_run_per_domestic_stock_automation_cancels_pending_orders(self, monkeypatch):
         """국내주식 자동화 시 미체결 주문이 취소되어야 함."""
+        from unittest.mock import AsyncMock, MagicMock, patch
         from app.tasks import kis as kis_tasks
 
         class DummyAnalyzer:
@@ -1131,24 +1242,40 @@ class TestDomesticStockPendingOrderCancel:
                 })
                 return {"odno": order_number}
 
+        # Mock ManualHoldingsService to return empty list
+        class MockManualService:
+            def __init__(self, db):
+                pass
+
+            async def get_holdings(self, user_id, market_type):
+                return []
+
         async def fake_buy(*_, **__):
             return {"success": True, "orders_placed": 1, "total_amount": 50000.0, "prices": [50000], "quantities": [1]}
 
         async def fake_sell(*_, **__):
             return {"success": True, "orders_placed": 1, "total_volume": 1, "prices": [55000], "quantities": [1], "expected_amount": 55000.0}
 
-        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-        monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-        monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
-        monkeypatch.setattr(
-            kis_tasks.run_per_domestic_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
+        # Mock DB session
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks.run_per_domestic_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_domestic_stock_automation.apply().result
 
         assert result["status"] == "completed"
 
