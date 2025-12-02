@@ -578,6 +578,7 @@ def run_per_domestic_stock_automation(self) -> dict:
 
                 # 4. 기존 미체결 매도 주문 취소
                 self.update_state(state='PROGRESS', meta={'status': f'{name} 미체결 매도 주문 취소 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
+                sell_orders_cancelled = False
                 try:
                     cancel_result = await _cancel_domestic_pending_orders(
                         kis, code, "sell", all_open_orders
@@ -585,11 +586,24 @@ def run_per_domestic_stock_automation(self) -> dict:
                     if cancel_result['total'] > 0:
                         logger.info(f"{name} 미체결 매도 주문 취소: {cancel_result['cancelled']}/{cancel_result['total']}건")
                         stock_steps.append({'step': '매도취소', 'result': {'success': True, **cancel_result}})
+                        sell_orders_cancelled = cancel_result['cancelled'] > 0
                         # 취소 후 API 동기화를 위해 잠시 대기
                         await asyncio.sleep(0.5)
                 except Exception as e:
                     logger.warning(f"{name} 미체결 매도 주문 취소 실패: {e}")
                     stock_steps.append({'step': '매도취소', 'result': {'success': False, 'error': str(e)}})
+
+                # 4-1. 미체결 매도 주문 취소 성공 시 잔고 재조회하여 ord_psbl_qty 갱신
+                if sell_orders_cancelled:
+                    try:
+                        latest_holdings = await kis.fetch_my_stocks()
+                        latest = next((s for s in latest_holdings if s.get('pdno') == code), None)
+                        if latest:
+                            refreshed_qty = int(latest.get('ord_psbl_qty', latest.get('hldg_qty', refreshed_qty)))
+                            refreshed_current_price = float(latest.get('prpr', refreshed_current_price))
+                            logger.info(f"{name} 매도 취소 후 잔고 재조회: ord_psbl_qty={refreshed_qty}")
+                    except Exception as refresh_error:
+                        logger.warning(f"{name} 매도 취소 후 잔고 재조회 실패 - 기존 수량 사용: {refresh_error}")
 
                 # 5. 매도
                 self.update_state(state='PROGRESS', meta={'status': f'{name} 매도 주문 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})

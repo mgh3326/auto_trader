@@ -1468,3 +1468,115 @@ class TestOrderableQuantityUsage:
         # 재조회 후 ord_psbl_qty(9)가 전달되어야 함
         assert sell_qty_received[0] == 9, \
             f"재조회 후 ord_psbl_qty(9)를 사용해야 하는데 {sell_qty_received[0]}가 전달됨"
+
+    def test_domestic_automation_refreshes_qty_after_sell_order_cancel(self, monkeypatch):
+        """미체결 매도 주문 취소 후 잔고를 재조회하여 ord_psbl_qty를 갱신해야 함.
+
+        실제 버그 시나리오 (APBK0986 에러):
+        - 보유 8주, 미체결 매도 3주 → ord_psbl_qty=5
+        - 매수 후 잔고 재조회 → ord_psbl_qty=5 (미체결 매도 3주 여전히 존재)
+        - 미체결 매도 3주 취소 → 실제로는 ord_psbl_qty=8이 되어야 함
+        - 기존 코드: 취소 후 재조회 없이 5주로 매도 시도
+        - 수정 후: 취소 후 재조회하여 8주로 매도 시도
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from app.tasks import kis as kis_tasks
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, name):
+                return {"decision": "hold", "confidence": 65}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        sell_qty_received = []
+
+        class DummyKIS:
+            def __init__(self):
+                self.fetch_count = 0
+                self.cancel_sell_called = False
+
+            async def fetch_my_stocks(self):
+                self.fetch_count += 1
+                if self.fetch_count <= 2:
+                    # 첫 번째/두 번째 호출: 미체결 매도 3주가 있어서 ord_psbl_qty=5
+                    return [
+                        {
+                            "pdno": "005935",
+                            "prdt_name": "삼성전자우",
+                            "pchs_avg_pric": "76300",
+                            "prpr": "77500",
+                            "hldg_qty": "8",
+                            "ord_psbl_qty": "5",  # 미체결 매도 3주가 있는 상태
+                        }
+                    ]
+                else:
+                    # 세 번째 호출 (미체결 매도 취소 후): ord_psbl_qty=8
+                    return [
+                        {
+                            "pdno": "005935",
+                            "prdt_name": "삼성전자우",
+                            "pchs_avg_pric": "76300",
+                            "prpr": "77500",
+                            "hldg_qty": "8",
+                            "ord_psbl_qty": "8",  # 미체결 매도 취소 후
+                        }
+                    ]
+
+            async def inquire_korea_orders(self, *args, **kwargs):
+                # 미체결 매도 주문 3주가 있음
+                return [
+                    {
+                        "pdno": "005935",
+                        "sll_buy_dvsn_cd": "01",  # 매도
+                        "odno": "0000001",
+                        "ord_qty": "3",
+                        "ord_unpr": "78000",
+                    }
+                ]
+
+            async def cancel_korea_order(self, *args, **kwargs):
+                self.cancel_sell_called = True
+                return {"odno": "0000001"}
+
+        class MockManualService:
+            def __init__(self, db):
+                pass
+
+            async def get_holdings_by_user(self, user_id, market_type):
+                return []
+
+        async def fake_buy(*_, **__):
+            return {"success": False, "message": "1% 매수 조건 미충족", "orders_placed": 0}
+
+        async def fake_sell(kis, symbol, current_price, avg_price, qty):
+            sell_qty_received.append(qty)
+            return {"success": True, "message": "매도 완료", "orders_placed": 1}
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks.run_per_domestic_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+        assert len(sell_qty_received) == 1
+
+        # 핵심 검증: 미체결 매도 취소 후 잔고를 재조회하여 ord_psbl_qty(8)가 전달되어야 함
+        # 재조회 없이 기존 ord_psbl_qty(5)가 전달되면 버그가 있는 것임
+        assert sell_qty_received[0] == 8, \
+            f"미체결 매도 취소 후 재조회하여 ord_psbl_qty(8)를 사용해야 하는데 {sell_qty_received[0]}가 전달됨"
