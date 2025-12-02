@@ -838,12 +838,14 @@ def execute_overseas_sell_order_task(self, symbol: str) -> dict:
             
             if not target_stock:
                 return {'success': False, 'message': '보유 중인 주식이 아닙니다.'}
-                
+
             avg_price = float(target_stock['pchs_avg_pric'])
             current_price = float(target_stock['now_pric2'])
-            qty = int(float(target_stock['ovrs_cblc_qty']))
-            
-            res = await process_kis_overseas_sell_orders_with_analysis(kis, symbol, current_price, avg_price, qty)
+            # 매도 시 미체결 주문을 제외한 주문 가능 수량(ord_psbl_qty)을 사용
+            qty = int(float(target_stock.get('ord_psbl_qty', target_stock.get('ovrs_cblc_qty', 0))))
+            exchange_code = target_stock.get('ovrs_excg_cd', 'NASD')
+
+            res = await process_kis_overseas_sell_orders_with_analysis(kis, symbol, current_price, avg_price, qty, exchange_code)
             return res
         except Exception as e:
             return {'success': False, 'error': str(e)}
@@ -1125,8 +1127,11 @@ def execute_overseas_sell_orders(self) -> dict:
                 name = stock.get('ovrs_item_name')
                 avg_price = float(stock.get('pchs_avg_pric', 0))
                 current_price = float(stock.get('now_pric2', 0))
-                qty = int(float(stock.get('ovrs_cblc_qty', 0)))
-                
+                # 매도 시 미체결 주문을 제외한 주문 가능 수량(ord_psbl_qty)을 사용
+                # ord_psbl_qty가 없으면 ovrs_cblc_qty를 fallback으로 사용
+                qty = int(float(stock.get('ord_psbl_qty', stock.get('ovrs_cblc_qty', 0))))
+                exchange_code = stock.get('ovrs_excg_cd', 'NASD')
+
                 self.update_state(
                     state='PROGRESS',
                     meta={
@@ -1137,9 +1142,9 @@ def execute_overseas_sell_orders(self) -> dict:
                         'percentage': int((index / total_count) * 100)
                     }
                 )
-                
+
                 try:
-                    res = await process_kis_overseas_sell_orders_with_analysis(kis, symbol, current_price, avg_price, qty)
+                    res = await process_kis_overseas_sell_orders_with_analysis(kis, symbol, current_price, avg_price, qty, exchange_code)
                     results.append({'name': name, 'symbol': symbol, 'success': res['success'], 'message': res['message']})
                     # 매도 성공 시 텔레그램 알림
                     if res.get('success') and res.get('orders_placed', 0) > 0:
@@ -1276,7 +1281,8 @@ def run_per_overseas_stock_automation(self) -> dict:
                 name = stock.get('ovrs_item_name')
                 avg_price = float(stock.get('pchs_avg_pric', 0))
                 current_price = float(stock.get('now_pric2', 0))
-                qty = int(float(stock.get('ovrs_cblc_qty', 0)))
+                # 매도 시 미체결 주문을 제외한 주문 가능 수량(ord_psbl_qty)을 사용
+                qty = int(float(stock.get('ord_psbl_qty', stock.get('ovrs_cblc_qty', 0))))
                 exchange_code = stock.get('ovrs_excg_cd', 'NASD')
 
                 stock_steps = []
@@ -1358,7 +1364,7 @@ def run_per_overseas_stock_automation(self) -> dict:
                 # 5. 매도
                 self.update_state(state='PROGRESS', meta={'status': f'{symbol} 매도 주문 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 try:
-                    res = await process_kis_overseas_sell_orders_with_analysis(kis, symbol, current_price, avg_price, qty)
+                    res = await process_kis_overseas_sell_orders_with_analysis(kis, symbol, current_price, avg_price, qty, exchange_code)
                     stock_steps.append({'step': '매도', 'result': res})
                     # 매도 성공 시 텔레그램 알림
                     if res.get('success') and res.get('orders_placed', 0) > 0:
