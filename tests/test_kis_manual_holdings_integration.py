@@ -116,9 +116,11 @@ class TestManualHoldingsIntegration:
         assert "005935" in codes, "KIS 보유 종목(삼성전자우)이 포함되어야 함"
         assert "005930" in codes, "수동 잔고 종목(삼성전자)이 포함되어야 함"
 
-        # 매수/매도 함수가 두 종목 모두에 대해 호출되어야 함
+        # 매수 함수가 두 종목 모두에 대해 호출되어야 함 (분석은 수동 잔고도 수행)
         assert len(buy_calls) == 2, "두 종목 모두 매수 검토"
-        assert len(sell_calls) == 2, "두 종목 모두 매도 검토"
+        # 매도 함수는 KIS 종목만 호출 (수동 잔고는 KIS에서 매도 불가하므로 스킵)
+        assert len(sell_calls) == 1, "KIS 종목만 매도 검토 (수동 잔고는 스킵)"
+        assert sell_calls[0]["symbol"] == "005935", "KIS 종목(삼성전자우)만 매도 함수 호출"
 
     def test_manual_holdings_duplicates_skipped(self, monkeypatch):
         """KIS와 수동 잔고에 동일 종목이 있으면 수동 잔고는 스킵"""
@@ -357,15 +359,18 @@ class TestManualHoldingsIntegration:
         # 태스크가 성공적으로 완료되어야 함
         assert result["status"] == "completed"
 
-        # 매도 함수가 호출되어야 함
-        assert len(sell_calls) == 1, "매도 함수가 호출되어야 함"
+        # 수동 잔고는 KIS에서 매도할 수 없으므로 매도 함수가 호출되지 않아야 함
+        assert len(sell_calls) == 0, "수동 잔고는 매도 함수가 호출되면 안 됨"
 
-        # qty가 정수 타입이어야 함
-        assert sell_calls[0]["qty_type"] == "int", f"수량은 int 타입이어야 하는데 {sell_calls[0]['qty_type']} 타입임"
-        assert sell_calls[0]["qty"] == 2, f"수량은 2여야 하는데 {sell_calls[0]['qty']}임"
+        # 결과에서 매도 스킵 메시지 확인
+        assert len(result["results"]) == 1
+        stock_result = result["results"][0]
+        sell_step = next((s for s in stock_result["steps"] if s["step"] == "매도"), None)
+        assert sell_step is not None, "매도 단계가 있어야 함"
+        assert "수동잔고" in sell_step["result"]["message"], "수동잔고 스킵 메시지가 있어야 함"
 
     def test_manual_holdings_has_orderable_qty(self, monkeypatch):
-        """수동 잔고에 ord_psbl_qty 필드가 올바르게 설정되는지 확인"""
+        """수동 잔고에 ord_psbl_qty 필드가 올바르게 설정되고, 매도는 스킵되는지 확인"""
         from app.tasks import kis as kis_tasks
         from decimal import Decimal
 
@@ -436,8 +441,103 @@ class TestManualHoldingsIntegration:
         # 태스크가 성공적으로 완료되어야 함
         assert result["status"] == "completed"
 
-        # 매도 함수가 호출되어야 함
-        assert len(sell_calls) == 1, "매도 함수가 호출되어야 함"
+        # 수동 잔고는 KIS에서 매도할 수 없으므로 매도 함수가 호출되지 않아야 함
+        assert len(sell_calls) == 0, "수동 잔고는 매도 함수가 호출되면 안 됨"
 
-        # qty가 정확히 5여야 함 (ord_psbl_qty가 올바르게 설정됨)
-        assert sell_calls[0]["qty"] == 5, f"수량은 5여야 하는데 {sell_calls[0]['qty']}임"
+        # 결과에서 매도 스킵 메시지 확인
+        assert len(result["results"]) == 1
+        stock_result = result["results"][0]
+        sell_step = next((s for s in stock_result["steps"] if s["step"] == "매도"), None)
+        assert sell_step is not None, "매도 단계가 있어야 함"
+        assert "수동잔고" in sell_step["result"]["message"], "수동잔고 스킵 메시지가 있어야 함"
+
+    def test_manual_holdings_skip_sell_order(self, monkeypatch):
+        """수동 잔고(토스 등)는 KIS에서 매도할 수 없으므로 매도를 스킵해야 함.
+
+        APBK0400 에러 방지:
+        - 토스 증권에만 있는 주식을 KIS API로 매도 요청하면 "주문 가능한 수량을 초과" 에러 발생
+        - 수동 잔고 종목은 분석만 하고 매도는 스킵해야 함
+        """
+        from app.tasks import kis as kis_tasks
+        from decimal import Decimal
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, name):
+                return {"decision": "sell", "confidence": 85}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        sell_calls = []
+
+        class DummyKIS:
+            async def fetch_my_stocks(self):
+                # KIS에는 보유 종목 없음 (수동 잔고만 있음)
+                return []
+
+            async def inquire_korea_orders(self, *args, **kwargs):
+                return []
+
+            async def cancel_korea_order(self, *args, **kwargs):
+                return {"odno": "0000001"}
+
+            async def fetch_fundamental_info(self, code):
+                return {"종목명": "한국전력", "현재가": 25000}
+
+        # 수동 잔고 종목 (토스에만 있음)
+        mock_manual_holding = MagicMock()
+        mock_manual_holding.ticker = "015760"  # 한국전력
+        mock_manual_holding.display_name = "한국전력"
+        mock_manual_holding.quantity = Decimal("10")
+        mock_manual_holding.avg_price = Decimal("23000")
+
+        class MockManualService:
+            def __init__(self, db):
+                pass
+
+            async def get_holdings_by_user(self, user_id, market_type):
+                return [mock_manual_holding]
+
+        async def fake_buy(*_, **__):
+            return {"success": False, "message": "매수 조건 미충족", "orders_placed": 0}
+
+        async def fake_sell(kis, symbol, current_price, avg_price, qty):
+            sell_calls.append({"symbol": symbol, "qty": qty})
+            return {"success": True, "message": "매도 완료", "orders_placed": 1}
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks.run_per_domestic_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+
+        # 태스크가 성공적으로 완료되어야 함
+        assert result["status"] == "completed"
+
+        # 수동 잔고 종목의 결과가 있어야 함
+        assert len(result["results"]) == 1
+        stock_result = result["results"][0]
+        assert stock_result["code"] == "015760"
+
+        # 핵심 검증: 매도 함수가 호출되지 않아야 함 (수동 잔고이므로)
+        assert len(sell_calls) == 0, f"수동 잔고는 매도 함수가 호출되면 안 됨. 호출된 횟수: {len(sell_calls)}"
+
+        # 매도 단계 결과가 '수동잔고 - 매도 스킵'이어야 함
+        sell_step = next((s for s in stock_result["steps"] if s["step"] == "매도"), None)
+        assert sell_step is not None, "매도 단계가 있어야 함"
+        assert "수동잔고" in sell_step["result"]["message"], \
+            f"매도 결과에 '수동잔고' 메시지가 있어야 함: {sell_step['result']}"

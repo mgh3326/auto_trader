@@ -576,6 +576,13 @@ def run_per_domestic_stock_automation(self) -> dict:
                 except Exception as refresh_error:
                     logger.warning("잔고 재조회 실패 - 기존 수량 사용 (%s)", refresh_error)
 
+                # 수동 잔고(토스 등)는 KIS에서 매도할 수 없으므로 매도 단계 스킵
+                if is_manual:
+                    logger.info(f"[수동잔고] {name}({code}) - KIS 매도 불가, 매도 단계 스킵")
+                    stock_steps.append({'step': '매도', 'result': {'success': True, 'message': '수동잔고 - 매도 스킵', 'orders_placed': 0}})
+                    results.append({'name': name, 'code': code, 'steps': stock_steps})
+                    continue
+
                 # 4. 기존 미체결 매도 주문 취소
                 self.update_state(state='PROGRESS', meta={'status': f'{name} 미체결 매도 주문 취소 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 sell_orders_cancelled = False
