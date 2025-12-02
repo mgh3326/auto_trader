@@ -448,10 +448,13 @@ def run_per_domestic_stock_automation(self) -> dict:
                     continue
 
                 # 수동 잔고 종목을 my_stocks에 추가 (한투 형식으로 변환)
+                # 수동 잔고는 미체결 주문이 없으므로 ord_psbl_qty = hldg_qty
+                qty_str = str(holding.quantity)
                 my_stocks.append({
                     'pdno': ticker,
                     'prdt_name': holding.display_name or ticker,
-                    'hldg_qty': str(holding.quantity),
+                    'hldg_qty': qty_str,
+                    'ord_psbl_qty': qty_str,  # 수동 잔고는 미체결 없음
                     'pchs_avg_pric': str(holding.avg_price),
                     'prpr': str(holding.avg_price),  # 현재가는 나중에 API로 조회
                     '_is_manual': True  # 수동 잔고 표시
