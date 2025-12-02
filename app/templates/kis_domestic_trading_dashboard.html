@@ -943,23 +943,78 @@
                 const response = await fetch(`/kis-domestic-trading/api/analyze-task/${stockAutomationTaskId}`);
                 const data = await response.json();
 
-                if (data.state === 'PENDING') return;
+                const progressBar = document.getElementById('per-stock-progress-bar');
+                const statusEl = document.getElementById('per-stock-automation-status');
+                const logEl = document.getElementById('per-stock-automation-log');
 
-                if (data.state === 'PROGRESS') {
-                    // Update progress UI
-                    // Assuming progress structure similar to Upbit
+                if (data.state === 'PENDING') {
+                    statusEl.textContent = '작업 대기 중...';
                     return;
                 }
 
-                if (data.state === 'SUCCESS' || data.state === 'FAILURE') {
+                if (data.state === 'PROGRESS' && data.progress) {
+                    const percentage = data.progress.percentage || 0;
+                    const status = data.progress.status || '진행 중...';
+                    const current = data.progress.current || 0;
+                    const total = data.progress.total || 0;
+
+                    progressBar.style.width = percentage + '%';
+                    progressBar.textContent = percentage + '%';
+                    statusEl.textContent = `${status} (${current}/${total})`;
+
+                    // 로그에 현재 상태 추가
+                    const timestamp = new Date().toLocaleTimeString();
+                    const logEntry = `[${timestamp}] ${status}\n`;
+                    if (!logEl.textContent.includes(status)) {
+                        logEl.textContent += logEntry;
+                        logEl.scrollTop = logEl.scrollHeight;
+                    }
+                    return;
+                }
+
+                if (data.state === 'SUCCESS') {
                     clearInterval(stockAutomationInterval);
                     stockAutomationTaskId = null;
                     localStorage.removeItem(STORAGE_KEYS.STOCK_AUTOMATION);
-                    showAlert(data.state === 'SUCCESS' ? '완료되었습니다.' : '실패했습니다.', data.state === 'SUCCESS' ? 'success' : 'danger');
-                    resetPerStockAutomationUI();
-                    loadMyStocks();
+
+                    progressBar.style.width = '100%';
+                    progressBar.textContent = '100%';
+
+                    const resultMessage = data.result?.message || '종목별 자동 실행 완료';
+                    statusEl.textContent = resultMessage;
+
+                    // 최종 결과 로그
+                    const timestamp = new Date().toLocaleTimeString();
+                    logEl.textContent += `[${timestamp}] ✅ ${resultMessage}\n`;
+                    logEl.scrollTop = logEl.scrollHeight;
+
+                    showAlert('✅ ' + resultMessage, 'success');
+
+                    setTimeout(() => {
+                        resetPerStockAutomationUI();
+                        loadMyStocks();
+                    }, 3000);
+                } else if (data.state === 'FAILURE') {
+                    clearInterval(stockAutomationInterval);
+                    stockAutomationTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.STOCK_AUTOMATION);
+
+                    const errorMsg = data.error || data.result?.error || '알 수 없는 오류';
+                    statusEl.textContent = '❌ 실패: ' + errorMsg;
+
+                    const timestamp = new Date().toLocaleTimeString();
+                    logEl.textContent += `[${timestamp}] ❌ 실패: ${errorMsg}\n`;
+                    logEl.scrollTop = logEl.scrollHeight;
+
+                    showAlert('❌ 종목별 자동 실행 실패: ' + errorMsg, 'danger');
+
+                    setTimeout(() => {
+                        resetPerStockAutomationUI();
+                    }, 3000);
                 }
-            } catch (e) { console.error(e); }
+            } catch (e) {
+                console.error('checkStockAutomationProgress error:', e);
+            }
         }
 
         function resetPerStockAutomationUI() {
