@@ -88,12 +88,13 @@ async def _analyze_domestic_stock_async(code: str, progress_cb: ProgressCallback
 
     kis = KISClient()
     analyzer = KISAnalyzer()
-    
+
     try:
         # 기본 정보 조회로 종목명 확인
         info = await kis.fetch_fundamental_info(code)
         name = info.get("종목명", code)
-        
+        current_price = info.get("현재가", 0)
+
         if progress_cb:
             progress_cb({
                 "status": f"{name}({code}) 분석 중...",
@@ -125,6 +126,43 @@ async def _analyze_domestic_stock_async(code: str, progress_cb: ProgressCallback
                 )
             except Exception as notify_error:
                 logger.warning("⚠️ 텔레그램 알림 전송 실패: %s", notify_error)
+
+            # 수동 잔고(토스 등) 알림 전송
+            try:
+                from app.core.db import AsyncSessionLocal
+                from app.models.manual_holdings import MarketType
+                from app.services.toss_notification_service import send_toss_notification_if_needed
+
+                async with AsyncSessionLocal() as db:
+                    # USER_ID는 현재 1로 고정 (추후 다중 사용자 지원 시 변경 필요)
+                    user_id = 1
+
+                    # 매수/매도 추천 가격 추출
+                    recommended_buy_price = None
+                    recommended_sell_price = None
+                    recommended_quantity = 1
+
+                    if result.decision == "buy" and hasattr(result, 'appropriate_buy_min'):
+                        # 4개 구간 중 가장 적절한 매수가 (appropriate_buy_min)
+                        recommended_buy_price = float(result.appropriate_buy_min)
+                    elif result.decision == "sell" and hasattr(result, 'appropriate_sell_min'):
+                        # 4개 구간 중 가장 적절한 매도가 (appropriate_sell_min)
+                        recommended_sell_price = float(result.appropriate_sell_min)
+
+                    await send_toss_notification_if_needed(
+                        db=db,
+                        user_id=user_id,
+                        ticker=code,
+                        name=name,
+                        market_type=MarketType.KR,
+                        decision=result.decision,
+                        current_price=float(current_price) if current_price else 0.0,
+                        recommended_buy_price=recommended_buy_price,
+                        recommended_sell_price=recommended_sell_price,
+                        recommended_quantity=recommended_quantity,
+                    )
+            except Exception as toss_error:
+                logger.warning("⚠️ 토스 알림 전송 실패: %s", toss_error)
 
         return {
             "status": "completed",
@@ -322,13 +360,69 @@ def execute_domestic_sell_orders(self) -> dict:
     return asyncio.run(_run())
 
 
+async def _cancel_domestic_pending_orders(
+    kis: KISClient,
+    stock_code: str,
+    order_type: str,
+    all_open_orders: list[dict],
+) -> dict:
+    """
+    특정 종목의 기존 국내 미체결 주문들을 취소합니다.
+
+    Args:
+        kis: KIS 클라이언트
+        stock_code: 종목코드
+        order_type: "buy" 또는 "sell"
+        all_open_orders: 미리 조회한 전체 미체결 주문 목록
+
+    Returns:
+        취소 결과 딕셔너리 {'cancelled': int, 'failed': int, 'total': int}
+    """
+    # sll_buy_dvsn_cd: 01=매도, 02=매수
+    target_code = "02" if order_type == "buy" else "01"
+
+    # 해당 종목의 주문만 필터링
+    target_orders = [
+        order for order in all_open_orders
+        if order.get('pdno') == stock_code and order.get('sll_buy_dvsn_cd') == target_code
+    ]
+
+    if not target_orders:
+        return {'cancelled': 0, 'failed': 0, 'total': 0}
+
+    cancelled = 0
+    failed = 0
+
+    for order in target_orders:
+        try:
+            order_number = order.get('ord_no')
+            order_qty = int(order.get('ord_qty', 0))
+            order_price = int(float(order.get('ord_unpr', 0)))
+
+            await kis.cancel_korea_order(
+                order_number=order_number,
+                stock_code=stock_code,
+                quantity=order_qty,
+                price=order_price,
+                order_type=order_type,
+                is_mock=False
+            )
+            cancelled += 1
+            await asyncio.sleep(0.2)  # API 호출 제한 방지
+        except Exception as e:
+            logger.warning(f"주문 취소 실패 ({stock_code}, {order_number}): {e}")
+            failed += 1
+
+    return {'cancelled': cancelled, 'failed': failed, 'total': len(target_orders)}
+
+
 @shared_task(name="kis.run_per_domestic_stock_automation", bind=True)
 def run_per_domestic_stock_automation(self) -> dict:
-    """국내 주식 종목별 자동 실행 (분석 -> 매수 -> 매도)"""
+    """국내 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
     async def _run() -> dict:
         kis = KISClient()
-        analyzer = KISAnalyzer() # For analysis step
-        
+        analyzer = KISAnalyzer()
+
         try:
             self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
             
@@ -339,15 +433,20 @@ def run_per_domestic_stock_automation(self) -> dict:
             total_count = len(my_stocks)
             results = []
 
+            # 미체결 주문 조회 (한 번만 조회하여 재사용)
+            self.update_state(state='PROGRESS', meta={'status': '미체결 주문 조회 중...', 'current': 0, 'total': total_count})
+            all_open_orders = await kis.inquire_korea_orders(is_mock=False)
+            logger.info(f"국내주식 미체결 주문 조회 완료: {len(all_open_orders)}건")
+
             for index, stock in enumerate(my_stocks, 1):
                 code = stock.get('pdno')
                 name = stock.get('prdt_name')
                 avg_price = float(stock.get('pchs_avg_pric', 0))
                 current_price = float(stock.get('prpr', 0))
                 qty = int(stock.get('hldg_qty', 0))
-                
+
                 stock_steps = []
-                
+
                 # 1. 분석
                 self.update_state(state='PROGRESS', meta={'status': f'{name} 분석 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 try:
@@ -362,7 +461,22 @@ def run_per_domestic_stock_automation(self) -> dict:
                     results.append({'name': name, 'code': code, 'steps': stock_steps})
                     continue # 분석 실패시 매수/매도 건너뜀
 
-                # 2. 매수
+                # 2. 기존 미체결 매수 주문 취소
+                self.update_state(state='PROGRESS', meta={'status': f'{name} 미체결 매수 주문 취소 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
+                try:
+                    cancel_result = await _cancel_domestic_pending_orders(
+                        kis, code, "buy", all_open_orders
+                    )
+                    if cancel_result['total'] > 0:
+                        logger.info(f"{name} 미체결 매수 주문 취소: {cancel_result['cancelled']}/{cancel_result['total']}건")
+                        stock_steps.append({'step': '매수취소', 'result': {'success': True, **cancel_result}})
+                        # 취소 후 API 동기화를 위해 잠시 대기
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.warning(f"{name} 미체결 매수 주문 취소 실패: {e}")
+                    stock_steps.append({'step': '매수취소', 'result': {'success': False, 'error': str(e)}})
+
+                # 3. 매수
                 self.update_state(state='PROGRESS', meta={'status': f'{name} 매수 주문 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 try:
                     res = await process_kis_domestic_buy_orders_with_analysis(kis, code, current_price, avg_price)
@@ -408,7 +522,22 @@ def run_per_domestic_stock_automation(self) -> dict:
                 except Exception as refresh_error:
                     logger.warning("잔고 재조회 실패 - 기존 수량 사용 (%s)", refresh_error)
 
-                # 3. 매도
+                # 4. 기존 미체결 매도 주문 취소
+                self.update_state(state='PROGRESS', meta={'status': f'{name} 미체결 매도 주문 취소 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
+                try:
+                    cancel_result = await _cancel_domestic_pending_orders(
+                        kis, code, "sell", all_open_orders
+                    )
+                    if cancel_result['total'] > 0:
+                        logger.info(f"{name} 미체결 매도 주문 취소: {cancel_result['cancelled']}/{cancel_result['total']}건")
+                        stock_steps.append({'step': '매도취소', 'result': {'success': True, **cancel_result}})
+                        # 취소 후 API 동기화를 위해 잠시 대기
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    logger.warning(f"{name} 미체결 매도 주문 취소 실패: {e}")
+                    stock_steps.append({'step': '매도취소', 'result': {'success': False, 'error': str(e)}})
+
+                # 5. 매도
                 self.update_state(state='PROGRESS', meta={'status': f'{name} 매도 주문 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})
                 try:
                     res = await process_kis_domestic_sell_orders_with_analysis(
@@ -588,8 +717,10 @@ async def _analyze_overseas_stock_async(symbol: str, progress_cb: ProgressCallba
         return {"status": "failed", "error": "심볼이 필요합니다."}
 
     from app.analysis.service_analyzers import YahooAnalyzer
+    from app.services import yahoo
+
     analyzer = YahooAnalyzer()  # 해외 주식은 YahooAnalyzer 사용 (또는 KISAnalyzer 확장 필요 시 변경)
-    
+
     try:
         if progress_cb:
             progress_cb({
@@ -613,7 +744,7 @@ async def _analyze_overseas_stock_async(symbol: str, progress_cb: ProgressCallba
                 notifier = get_trade_notifier()
                 await notifier.notify_analysis_complete(
                     symbol=symbol,
-                    korean_name=symbol, # 해외주식은 한글명이 없을 수 있음
+                    korean_name=symbol,  # 해외주식은 한글명이 없을 수 있음
                     decision=result.decision,
                     confidence=float(result.confidence) if result.confidence else 0.0,
                     reasons=result.reasons if hasattr(result, 'reasons') and result.reasons else [],
@@ -621,6 +752,52 @@ async def _analyze_overseas_stock_async(symbol: str, progress_cb: ProgressCallba
                 )
             except Exception as notify_error:
                 logger.warning("⚠️ 텔레그램 알림 전송 실패: %s", notify_error)
+
+            # 수동 잔고(토스 등) 알림 전송
+            try:
+                from app.core.db import AsyncSessionLocal
+                from app.models.manual_holdings import MarketType
+                from app.services.toss_notification_service import send_toss_notification_if_needed
+
+                # 현재가 조회
+                current_price = 0.0
+                try:
+                    price_df = await yahoo.fetch_price(symbol)
+                    if not price_df.empty:
+                        current_price = float(price_df.iloc[0]["close"])
+                except Exception as price_error:
+                    logger.warning(f"현재가 조회 실패 ({symbol}): {price_error}")
+
+                async with AsyncSessionLocal() as db:
+                    # USER_ID는 현재 1로 고정 (추후 다중 사용자 지원 시 변경 필요)
+                    user_id = 1
+
+                    # 매수/매도 추천 가격 추출
+                    recommended_buy_price = None
+                    recommended_sell_price = None
+                    recommended_quantity = 1
+
+                    if result.decision == "buy" and hasattr(result, 'appropriate_buy_min'):
+                        # 4개 구간 중 가장 적절한 매수가 (appropriate_buy_min)
+                        recommended_buy_price = float(result.appropriate_buy_min)
+                    elif result.decision == "sell" and hasattr(result, 'appropriate_sell_min'):
+                        # 4개 구간 중 가장 적절한 매도가 (appropriate_sell_min)
+                        recommended_sell_price = float(result.appropriate_sell_min)
+
+                    await send_toss_notification_if_needed(
+                        db=db,
+                        user_id=user_id,
+                        ticker=symbol,
+                        name=symbol,
+                        market_type=MarketType.US,
+                        decision=result.decision,
+                        current_price=current_price,
+                        recommended_buy_price=recommended_buy_price,
+                        recommended_sell_price=recommended_sell_price,
+                        recommended_quantity=recommended_quantity,
+                    )
+            except Exception as toss_error:
+                logger.warning("⚠️ 토스 알림 전송 실패: %s", toss_error)
 
         return {
             "status": "completed",

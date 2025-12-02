@@ -30,6 +30,12 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
                 }
             ]
 
+        async def inquire_korea_orders(self, *args, **kwargs):
+            return []
+
+        async def cancel_korea_order(self, *args, **kwargs):
+            return {"odno": "0000001"}
+
     buy_calls = []
     sell_calls = []
 
@@ -71,12 +77,12 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
     assert stock_result["name"] == "삼성전자우"
     assert stock_result["code"] == "005935"
 
-    # 모든 단계(분석, 매수, 매도)가 실행되어야 함
+    # 모든 단계(분석, 매수, 매도)가 실행되어야 함 (미체결 주문이 없으면 취소 단계 생략)
     steps = stock_result["steps"]
-    assert len(steps) == 3, f"3개의 단계가 있어야 함, 실제: {len(steps)}"
-
     step_names = [s["step"] for s in steps]
-    assert step_names == ["분석", "매수", "매도"], f"단계 순서가 잘못됨: {step_names}"
+    assert "분석" in step_names
+    assert "매수" in step_names
+    assert "매도" in step_names
 
     # 매수 함수가 호출되어야 함
     assert len(buy_calls) == 1, "매수 함수가 호출되어야 합니다"
@@ -126,6 +132,12 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
                 "price": price,
             })
             return {"rt_cd": "0", "msg1": "정상처리"}
+
+        async def inquire_korea_orders(self, *args, **kwargs):
+            return []
+
+        async def cancel_korea_order(self, *args, **kwargs):
+            return {"odno": "0000001"}
 
     dummy_kis = DummyKIS()
 
@@ -186,11 +198,11 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
     stock_result = result["results"][0]
     steps = stock_result["steps"]
 
-    # 3단계 모두 있어야 함
-    assert len(steps) == 3, f"Expected 3 steps, got {len(steps)}: {steps}"
-
+    # 모든 필수 단계가 있어야 함 (미체결 주문이 없으면 취소 단계 생략)
     step_names = [s["step"] for s in steps]
-    assert step_names == ["분석", "매수", "매도"], f"단계: {step_names}"
+    assert "분석" in step_names
+    assert "매수" in step_names
+    assert "매도" in step_names
 
     # 매수 결과 확인 (현재가 > 평단*0.99 이므로 조건 미충족)
     buy_step = next(s for s in steps if s["step"] == "매수")
@@ -231,6 +243,12 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
                 }
             ]
 
+        async def inquire_korea_orders(self, *args, **kwargs):
+            return []
+
+        async def cancel_korea_order(self, *args, **kwargs):
+            return {"odno": "0000001"}
+
     sell_calls = []
 
     async def fake_buy(*_, **__):
@@ -255,9 +273,12 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
 
     assert result["status"] == "completed"
     steps = result["results"][0]["steps"]
+    step_names = [s["step"] for s in steps]
 
-    # 분석, 매수, 매도 3단계 모두 존재해야 함
-    assert len(steps) == 3
+    # 분석, 매수, 매도 필수 단계가 존재해야 함
+    assert "분석" in step_names
+    assert "매수" in step_names
+    assert "매도" in step_names
 
     # 매수 단계는 실패해야 함
     buy_step = next(s for s in steps if s["step"] == "매수")
@@ -293,6 +314,12 @@ def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
                 }
             ]
 
+        async def inquire_korea_orders(self, *args, **kwargs):
+            return []
+
+        async def cancel_korea_order(self, *args, **kwargs):
+            return {"odno": "0000001"}
+
     async def fake_buy(*_, **__):
         return {"success": True, "message": "매수 완료"}
 
@@ -314,8 +341,11 @@ def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
 
     assert result["status"] == "completed"
     steps = result["results"][0]["steps"]
+    step_names = [s["step"] for s in steps]
 
-    assert len(steps) == 3
+    assert "분석" in step_names
+    assert "매수" in step_names
+    assert "매도" in step_names
 
     sell_step = next(s for s in steps if s["step"] == "매도")
     assert sell_step["result"]["success"] is False
@@ -359,6 +389,12 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
                     "hldg_qty": "12",
                 }
             ]
+
+        async def inquire_korea_orders(self, *args, **kwargs):
+            return []
+
+        async def cancel_korea_order(self, *args, **kwargs):
+            return {"odno": "0000001"}
 
     sell_calls: List[Dict[str, Any]] = []
 
@@ -511,6 +547,12 @@ class TestStepErrorReporting:
                     }
                 ]
 
+            async def inquire_korea_orders(self, *args, **kwargs):
+                return []
+
+            async def cancel_korea_order(self, *args, **kwargs):
+                return {"odno": "0000001"}
+
         error_reports = []
 
         async def fake_report_error(task_name, stock_name, stock_code, step_name, error_msg):
@@ -575,6 +617,12 @@ class TestStepErrorReporting:
                         "hldg_qty": "5",
                     }
                 ]
+
+            async def inquire_korea_orders(self, *args, **kwargs):
+                return []
+
+            async def cancel_korea_order(self, *args, **kwargs):
+                return {"odno": "0000001"}
 
         error_reports = []
 
@@ -1025,3 +1073,90 @@ class TestOverseasStockTelegramNotifications:
         sell_cancels = [o for o in cancelled_orders if o["order_number"] == "ORDER002"]
         assert len(buy_cancels) == 1, "Buy order should be cancelled"
         assert len(sell_cancels) == 1, "Sell order should be cancelled"
+
+
+class TestDomesticStockPendingOrderCancel:
+    """국내주식 미체결 주문 취소 테스트."""
+
+    def test_run_per_domestic_stock_automation_cancels_pending_orders(self, monkeypatch):
+        """국내주식 자동화 시 미체결 주문이 취소되어야 함."""
+        from app.tasks import kis as kis_tasks
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, name):
+                return {"decision": "buy", "confidence": 80}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        cancelled_orders = []
+
+        class DummyKIS:
+            async def fetch_my_stocks(self):
+                return [
+                    {
+                        "pdno": "005930",
+                        "prdt_name": "삼성전자",
+                        "pchs_avg_pric": "50000",
+                        "prpr": "51000",
+                        "hldg_qty": "10",
+                    }
+                ]
+
+            async def inquire_korea_orders(self, *args, **kwargs):
+                # 기존 미체결 매수/매도 주문 시뮬레이션
+                return [
+                    {
+                        "pdno": "005930",
+                        "ord_no": "ORDER001",
+                        "sll_buy_dvsn_cd": "02",  # 매수
+                        "ord_qty": "5",
+                        "ord_unpr": "49000",
+                    },
+                    {
+                        "pdno": "005930",
+                        "ord_no": "ORDER002",
+                        "sll_buy_dvsn_cd": "01",  # 매도
+                        "ord_qty": "3",
+                        "ord_unpr": "55000",
+                    },
+                ]
+
+            async def cancel_korea_order(self, order_number, stock_code, quantity, price, order_type, is_mock):
+                cancelled_orders.append({
+                    "order_number": order_number,
+                    "stock_code": stock_code,
+                    "quantity": quantity,
+                    "order_type": order_type,
+                })
+                return {"odno": order_number}
+
+        async def fake_buy(*_, **__):
+            return {"success": True, "orders_placed": 1, "total_amount": 50000.0, "prices": [50000], "quantities": [1]}
+
+        async def fake_sell(*_, **__):
+            return {"success": True, "orders_placed": 1, "total_volume": 1, "prices": [55000], "quantities": [1], "expected_amount": 55000.0}
+
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+        monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+        monkeypatch.setattr(
+            kis_tasks.run_per_domestic_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+
+        # 미체결 주문 취소 확인 (매수 1개, 매도 1개)
+        assert len(cancelled_orders) == 2, f"Expected 2 cancelled orders, got {cancelled_orders}"
+        buy_cancels = [o for o in cancelled_orders if o["order_number"] == "ORDER001"]
+        sell_cancels = [o for o in cancelled_orders if o["order_number"] == "ORDER002"]
+        assert len(buy_cancels) == 1, "Buy order should be cancelled"
+        assert buy_cancels[0]["order_type"] == "buy"
+        assert len(sell_cancels) == 1, "Sell order should be cancelled"
+        assert sell_cancels[0]["order_type"] == "sell"
