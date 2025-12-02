@@ -381,10 +381,11 @@ async def _cancel_domestic_pending_orders(
     # sll_buy_dvsn_cd: 01=매도, 02=매수
     target_code = "02" if order_type == "buy" else "01"
 
-    # 해당 종목의 주문만 필터링
+    # 해당 종목의 주문만 필터링 (필드명 대소문자 모두 확인)
     target_orders = [
         order for order in all_open_orders
-        if order.get('pdno') == stock_code and order.get('sll_buy_dvsn_cd') == target_code
+        if (order.get('pdno') or order.get('PDNO')) == stock_code
+        and (order.get('sll_buy_dvsn_cd') or order.get('SLL_BUY_DVSN_CD')) == target_code
     ]
 
     if not target_orders:
@@ -395,9 +396,15 @@ async def _cancel_domestic_pending_orders(
 
     for order in target_orders:
         try:
-            order_number = order.get('ord_no')
-            order_qty = int(order.get('ord_qty', 0))
-            order_price = int(float(order.get('ord_unpr', 0)))
+            # API 응답 필드명이 소문자 또는 대문자일 수 있음
+            order_number = order.get('odno') or order.get('ODNO') or order.get('ord_no') or order.get('ORD_NO')
+            order_qty = int(order.get('ord_qty') or order.get('ORD_QTY') or 0)
+            order_price = int(float(order.get('ord_unpr') or order.get('ORD_UNPR') or 0))
+
+            if not order_number:
+                logger.warning(f"주문번호 없음 ({stock_code}): order={order}")
+                failed += 1
+                continue
 
             await kis.cancel_korea_order(
                 order_number=order_number,
@@ -1113,10 +1120,11 @@ async def _cancel_overseas_pending_orders(
     # sll_buy_dvsn_cd: 01=매도, 02=매수
     target_code = "02" if order_type == "buy" else "01"
 
-    # 해당 종목의 주문만 필터링
+    # 해당 종목의 주문만 필터링 (필드명 대소문자 모두 확인)
     target_orders = [
         order for order in all_open_orders
-        if order.get('pdno') == symbol and order.get('sll_buy_dvsn_cd') == target_code
+        if (order.get('pdno') or order.get('PDNO')) == symbol
+        and (order.get('sll_buy_dvsn_cd') or order.get('SLL_BUY_DVSN_CD')) == target_code
     ]
 
     if not target_orders:
@@ -1127,8 +1135,14 @@ async def _cancel_overseas_pending_orders(
 
     for order in target_orders:
         try:
-            order_number = order.get('odno')
-            order_qty = int(order.get('ft_ord_qty', 0))
+            # API 응답 필드명이 소문자 또는 대문자일 수 있음
+            order_number = order.get('odno') or order.get('ODNO') or order.get('ord_no') or order.get('ORD_NO')
+            order_qty = int(order.get('ft_ord_qty') or order.get('FT_ORD_QTY') or 0)
+
+            if not order_number:
+                logger.warning(f"주문번호 없음 ({symbol}): order={order}")
+                failed += 1
+                continue
 
             await kis.cancel_overseas_order(
                 order_number=order_number,
