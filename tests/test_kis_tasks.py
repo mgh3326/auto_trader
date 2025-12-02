@@ -1287,3 +1287,184 @@ class TestDomesticStockPendingOrderCancel:
         assert buy_cancels[0]["order_type"] == "buy"
         assert len(sell_cancels) == 1, "Sell order should be cancelled"
         assert sell_cancels[0]["order_type"] == "sell"
+
+
+class TestOrderableQuantityUsage:
+    """주문 가능 수량(ord_psbl_qty) 사용 테스트.
+
+    실제 버그 시나리오: 보유 8주, 미체결 매도 3주 → 실제 주문 가능 5주
+    hldg_qty(8) 대신 ord_psbl_qty(5)를 사용해야 주문 수량 초과 에러를 방지할 수 있음.
+    """
+
+    def test_domestic_automation_uses_orderable_qty_for_sell(self, monkeypatch):
+        """매도 시 hldg_qty가 아닌 ord_psbl_qty를 사용해야 함."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from app.tasks import kis as kis_tasks
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, name):
+                return {"decision": "hold", "confidence": 65}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        sell_qty_received = []
+
+        class DummyKIS:
+            def __init__(self):
+                self.fetch_count = 0
+
+            async def fetch_my_stocks(self):
+                self.fetch_count += 1
+                # 첫 번째 호출: 보유 8주, 주문 가능 5주 (미체결 3주)
+                # 두 번째 호출 (매수 후 리프레시): 동일
+                return [
+                    {
+                        "pdno": "005935",
+                        "prdt_name": "삼성전자우",
+                        "pchs_avg_pric": "76300",
+                        "prpr": "77500",
+                        "hldg_qty": "8",  # 총 보유 수량
+                        "ord_psbl_qty": "5",  # 실제 주문 가능 수량
+                    }
+                ]
+
+            async def inquire_korea_orders(self, *args, **kwargs):
+                return []
+
+            async def cancel_korea_order(self, *args, **kwargs):
+                return {"odno": "0000001"}
+
+        class MockManualService:
+            def __init__(self, db):
+                pass
+
+            async def get_holdings(self, user_id, market_type):
+                return []
+
+        async def fake_buy(*_, **__):
+            return {"success": False, "message": "1% 매수 조건 미충족", "orders_placed": 0}
+
+        async def fake_sell(kis, symbol, current_price, avg_price, qty):
+            sell_qty_received.append(qty)
+            return {"success": True, "message": "매도 완료", "orders_placed": 1}
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks.run_per_domestic_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+        assert len(sell_qty_received) == 1
+
+        # 핵심 검증: 매도 함수에 전달된 수량이 ord_psbl_qty(5)여야 함
+        # hldg_qty(8)가 전달되면 버그가 있는 것임
+        assert sell_qty_received[0] == 5, \
+            f"매도 시 ord_psbl_qty(5)를 사용해야 하는데 {sell_qty_received[0]}가 전달됨"
+
+    def test_domestic_automation_refresh_uses_orderable_qty(self, monkeypatch):
+        """매수 후 잔고 재조회 시에도 ord_psbl_qty를 사용해야 함."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from app.tasks import kis as kis_tasks
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, name):
+                return {"decision": "buy", "confidence": 80}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        sell_qty_received = []
+
+        class DummyKIS:
+            def __init__(self):
+                self.fetch_count = 0
+
+            async def fetch_my_stocks(self):
+                self.fetch_count += 1
+                if self.fetch_count == 1:
+                    # 최초 조회
+                    return [
+                        {
+                            "pdno": "005930",
+                            "prdt_name": "삼성전자",
+                            "pchs_avg_pric": "50000",
+                            "prpr": "49000",  # 현재가 < 평단가*0.99 → 매수 조건 충족
+                            "hldg_qty": "10",
+                            "ord_psbl_qty": "7",  # 미체결 3주
+                        }
+                    ]
+                else:
+                    # 매수 후 재조회 - 보유 증가, 주문 가능도 증가
+                    return [
+                        {
+                            "pdno": "005930",
+                            "prdt_name": "삼성전자",
+                            "pchs_avg_pric": "49500",
+                            "prpr": "49500",
+                            "hldg_qty": "12",  # 2주 추가 매수
+                            "ord_psbl_qty": "9",  # 9주 주문 가능
+                        }
+                    ]
+
+            async def inquire_korea_orders(self, *args, **kwargs):
+                return []
+
+            async def cancel_korea_order(self, *args, **kwargs):
+                return {"odno": "0000001"}
+
+        class MockManualService:
+            def __init__(self, db):
+                pass
+
+            async def get_holdings(self, user_id, market_type):
+                return []
+
+        async def fake_buy(*_, **__):
+            return {"success": True, "message": "매수 완료", "orders_placed": 2}
+
+        async def fake_sell(kis, symbol, current_price, avg_price, qty):
+            sell_qty_received.append(qty)
+            return {"success": True, "message": "매도 완료", "orders_placed": 1}
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks.run_per_domestic_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+        assert len(sell_qty_received) == 1
+
+        # 재조회 후 ord_psbl_qty(9)가 전달되어야 함
+        assert sell_qty_received[0] == 9, \
+            f"재조회 후 ord_psbl_qty(9)를 사용해야 하는데 {sell_qty_received[0]}가 전달됨"

@@ -473,7 +473,9 @@ def run_per_domestic_stock_automation(self) -> dict:
                 name = stock.get('prdt_name')
                 avg_price = float(stock.get('pchs_avg_pric', 0))
                 current_price = float(stock.get('prpr', 0))
-                qty = int(stock.get('hldg_qty', 0))
+                # 매도 시 미체결 주문을 제외한 주문 가능 수량(ord_psbl_qty)을 사용
+                # ord_psbl_qty가 없으면 hldg_qty를 fallback으로 사용
+                qty = int(stock.get('ord_psbl_qty', stock.get('hldg_qty', 0)))
                 is_manual = stock.get('_is_manual', False)
 
                 # 수동 잔고 종목인 경우 현재가를 API로 조회
@@ -556,7 +558,8 @@ def run_per_domestic_stock_automation(self) -> dict:
                     latest_holdings = await kis.fetch_my_stocks()
                     latest = next((s for s in latest_holdings if s.get('pdno') == code), None)
                     if latest:
-                        refreshed_qty = int(latest.get('hldg_qty', refreshed_qty))
+                        # 매도 시 미체결 주문을 제외한 주문 가능 수량(ord_psbl_qty)을 사용
+                        refreshed_qty = int(latest.get('ord_psbl_qty', latest.get('hldg_qty', refreshed_qty)))
                         refreshed_avg_price = float(latest.get('pchs_avg_pric', refreshed_avg_price))
                         refreshed_current_price = float(latest.get('prpr', refreshed_current_price))
                 except Exception as refresh_error:
