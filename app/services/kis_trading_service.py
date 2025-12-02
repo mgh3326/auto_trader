@@ -392,6 +392,19 @@ async def process_kis_overseas_sell_orders_with_analysis(
         settings = await settings_service.get_by_symbol(symbol)
         actual_exchange_code = (settings.exchange_code if settings and settings.exchange_code else exchange_code)
 
+        # KIS 계좌의 실제 주문가능수량 조회 (토스 등 수동 잔고 제외)
+        my_stocks = await kis_client.fetch_my_overseas_stocks()
+        target_stock = next((s for s in my_stocks if s.get('ovrs_pdno') == symbol), None)
+        if target_stock:
+            # ord_psbl_qty가 있으면 사용, 없으면 ovrs_cblc_qty 사용
+            actual_qty = int(float(target_stock.get('ord_psbl_qty', target_stock.get('ovrs_cblc_qty', 0))))
+            if actual_qty < balance_qty:
+                logger.info(f"[{symbol}] 주문가능수량 조정: {balance_qty} -> {actual_qty} (KIS 계좌 기준)")
+                balance_qty = actual_qty
+
+        if balance_qty <= 0:
+            return {'success': False, 'message': "주문가능수량 없음", 'orders_placed': 0}
+
         sell_prices = []
         if analysis.appropriate_sell_min:
             sell_prices.append(analysis.appropriate_sell_min)
