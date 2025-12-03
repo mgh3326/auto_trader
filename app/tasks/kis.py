@@ -1257,14 +1257,46 @@ async def _cancel_overseas_pending_orders(
 def run_per_overseas_stock_automation(self) -> dict:
     """해외 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
     async def _run() -> dict:
+        from app.core.db import AsyncSessionLocal
+        from app.models.manual_holdings import MarketType
+        from app.services.manual_holdings_service import ManualHoldingsService
+
         kis = KISClient()
         from app.analysis.service_analyzers import YahooAnalyzer
         analyzer = YahooAnalyzer()
 
         try:
             self.update_state(state='PROGRESS', meta={'status': STATUS_FETCHING_HOLDINGS, 'current': 0, 'total': 0})
-            
+
+            # 1. KIS 보유 종목 조회
             my_stocks = await kis.fetch_my_overseas_stocks()
+
+            # 2. 수동 잔고(토스 등) 해외 주식 조회
+            async with AsyncSessionLocal() as db:
+                manual_service = ManualHoldingsService(db)
+                user_id = 1  # USER_ID는 현재 1로 고정
+                manual_holdings = await manual_service.get_holdings_by_user(user_id=user_id, market_type=MarketType.US)
+
+            # 3. 수동 잔고 종목을 KIS 형식으로 변환하여 병합
+            for holding in manual_holdings:
+                ticker = holding.ticker
+                # KIS에 이미 있는 종목은 건너뛰기
+                if any(s.get('ovrs_pdno') == ticker for s in my_stocks):
+                    continue
+
+                # 수동 잔고 종목을 my_stocks에 추가 (KIS 형식으로 변환)
+                qty_str = str(holding.quantity)
+                my_stocks.append({
+                    'ovrs_pdno': ticker,
+                    'ovrs_item_name': holding.display_name or ticker,
+                    'ovrs_cblc_qty': qty_str,
+                    'ord_psbl_qty': qty_str,  # 수동 잔고는 미체결 없음
+                    'pchs_avg_pric': str(holding.avg_price),
+                    'now_pric2': '0',  # 현재가는 나중에 API로 조회
+                    'ovrs_excg_cd': 'NASD',  # 기본값 (실제 거래소는 API 조회로 확인)
+                    '_is_manual': True  # 수동 잔고 표시
+                })
+
             if not my_stocks:
                 return {'status': 'completed', 'message': NO_OVERSEAS_STOCKS_MESSAGE, 'results': []}
 
@@ -1284,6 +1316,18 @@ def run_per_overseas_stock_automation(self) -> dict:
                 # 매도 시 미체결 주문을 제외한 주문 가능 수량(ord_psbl_qty)을 사용
                 qty = int(float(stock.get('ord_psbl_qty', stock.get('ovrs_cblc_qty', 0))))
                 exchange_code = stock.get('ovrs_excg_cd', 'NASD')
+                is_manual = stock.get('_is_manual', False)
+
+                # 수동 잔고 종목인 경우 현재가를 API로 조회
+                if is_manual:
+                    try:
+                        price_df = await kis.inquire_overseas_price(symbol)
+                        if not price_df.empty:
+                            current_price = float(price_df.iloc[0]['close'])
+                            logger.info(f"[수동잔고] {name}({symbol}) 현재가 조회: ${current_price:.2f}")
+                    except Exception as e:
+                        logger.warning(f"[수동잔고] {name}({symbol}) 현재가 조회 실패, 평단가 사용: {e}")
+                        current_price = avg_price
 
                 stock_steps = []
 
@@ -1345,6 +1389,24 @@ def run_per_overseas_stock_automation(self) -> dict:
                         )
                     except Exception as notify_error:
                         logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
+
+                # 수동 잔고(토스 등)는 KIS에서 매도할 수 없으므로 텔레그램 추천 알림만 발송
+                if is_manual:
+                    logger.info(f"[수동잔고] {name}({symbol}) - KIS 매도 불가, 토스 추천 알림 발송")
+                    try:
+                        await _send_toss_recommendation_async(
+                            code=symbol,
+                            name=name or symbol,
+                            current_price=current_price,
+                            toss_quantity=qty,
+                            toss_avg_price=avg_price,
+                        )
+                        stock_steps.append({'step': '매도', 'result': {'success': True, 'message': '수동잔고 - 토스 추천 알림 발송', 'orders_placed': 0}})
+                    except Exception as e:
+                        logger.warning(f"[수동잔고] {name}({symbol}) 토스 추천 알림 발송 실패: {e}")
+                        stock_steps.append({'step': '매도', 'result': {'success': True, 'message': '수동잔고 - 매도 스킵', 'orders_placed': 0}})
+                    results.append({'name': name, 'symbol': symbol, 'steps': stock_steps})
+                    continue
 
                 # 4. 기존 미체결 매도 주문 취소
                 self.update_state(state='PROGRESS', meta={'status': f'{symbol} 미체결 매도 주문 취소 중...', 'current': index, 'total': total_count, 'percentage': int((index / total_count) * 100)})

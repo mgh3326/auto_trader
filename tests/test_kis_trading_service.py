@@ -57,8 +57,8 @@ class TestKISClientMethodSignatures:
 @pytest.fixture
 def mock_kis_client():
     client = AsyncMock()
-    client.order_korea_stock.return_value = {'rt_cd': '0', 'msg1': 'Success'}
-    client.order_overseas_stock.return_value = {'rt_cd': '0', 'msg1': 'Success'}
+    client.order_korea_stock.return_value = {'odno': '0001234567', 'ord_tmd': '091500', 'msg': 'Success'}
+    client.order_overseas_stock.return_value = {'odno': '0001234567', 'ord_tmd': '091500', 'msg': 'Success'}
     client.get_balance.return_value = {'output2': [{'dnca_tot_amt': '1000000'}]}
     return client
 
@@ -432,7 +432,7 @@ async def test_process_kis_domestic_sell_orders_quantity_exceeds_orderable(mock_
         nonlocal call_count
         call_count += 1
         if call_count <= 3:
-            return {'rt_cd': '0', 'msg1': 'Success'}
+            return {'odno': '0001234567', 'ord_tmd': '091500', 'msg': 'Success'}
         else:
             # 4번째 주문에서 수량 초과 에러
             raise RuntimeError("APBK0400 주문 가능한 수량을 초과했습니다.")
@@ -492,7 +492,7 @@ async def test_process_kis_domestic_sell_remaining_qty_tracking(mock_kis_client)
     async def capture_order(*args, **kwargs):
         qty = kwargs.get('quantity')
         ordered_quantities.append(qty)
-        return {'rt_cd': '0', 'msg1': 'Success'}
+        return {'odno': '0001234567', 'ord_tmd': '091500', 'msg': 'Success'}
 
     mock_kis_client.order_korea_stock = AsyncMock(side_effect=capture_order)
 
@@ -598,7 +598,7 @@ class TestProcessKisOverseasSellOrders:
         async def capture_order(*args, **kwargs):
             qty = kwargs.get('quantity')
             ordered_quantities.append(qty)
-            return {'rt_cd': '0', 'msg1': 'Success'}
+            return {'odno': '0001234567', 'ord_tmd': '091500', 'msg': 'Success'}
 
         mock_kis_client.order_overseas_stock = AsyncMock(side_effect=capture_order)
         # KIS 계좌 조회 결과: 4주만 주문 가능
@@ -673,7 +673,7 @@ class TestProcessKisOverseasSellOrders:
         async def capture_order(*args, **kwargs):
             qty = kwargs.get('quantity')
             ordered_quantities.append(qty)
-            return {'rt_cd': '0', 'msg1': 'Success'}
+            return {'odno': '0001234567', 'ord_tmd': '091500', 'msg': 'Success'}
 
         mock_kis_client.order_overseas_stock = AsyncMock(side_effect=capture_order)
         mock_kis_client.fetch_my_overseas_stocks = AsyncMock(return_value=[
@@ -790,7 +790,7 @@ class TestProcessKisOverseasSellOrders:
     @pytest.mark.asyncio
     async def test_overseas_sell_uses_exchange_code_from_settings(self, mock_kis_client):
         """settings에 exchange_code가 있으면 그것을 사용"""
-        mock_kis_client.order_overseas_stock = AsyncMock(return_value={'rt_cd': '0', 'msg1': 'Success'})
+        mock_kis_client.order_overseas_stock = AsyncMock(return_value={'odno': '0001234567', 'ord_tmd': '091500', 'msg': 'Success'})
         mock_kis_client.fetch_my_overseas_stocks = AsyncMock(return_value=[
             {
                 'ovrs_pdno': 'SOXL',
@@ -853,7 +853,7 @@ class TestProcessKisOverseasSellOrders:
         async def capture_order(*args, **kwargs):
             ordered_prices.append(kwargs.get('price'))
             ordered_quantities.append(kwargs.get('quantity'))
-            return {'rt_cd': '0', 'msg1': 'Success'}
+            return {'odno': '0001234567', 'ord_tmd': '091500', 'msg': 'Success'}
 
         mock_kis_client.order_overseas_stock = AsyncMock(side_effect=capture_order)
         mock_kis_client.fetch_my_overseas_stocks = AsyncMock(return_value=[

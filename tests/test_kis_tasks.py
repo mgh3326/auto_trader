@@ -148,7 +148,7 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
                 "quantity": quantity,
                 "price": price,
             })
-            return {"rt_cd": "0", "msg1": "정상처리"}
+            return {"odno": "0001234567", "ord_tmd": "091500", "msg": "정상처리"}
 
         async def inquire_korea_orders(self, *args, **kwargs):
             return []
@@ -777,7 +777,7 @@ class TestOverseasStockTelegramNotifications:
 
     def test_run_per_overseas_stock_automation_buy_failure_sends_telegram(self, monkeypatch):
         """해외주식 매수 실패 시 텔레그램 알림이 전송되어야 함."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, MagicMock, patch
         from app.tasks import kis as kis_tasks
         from app.analysis import service_analyzers
 
@@ -825,19 +825,33 @@ class TestOverseasStockTelegramNotifications:
         async def fake_sell(*_, **__):
             return {"success": False, "message": "매도 조건 미충족", "orders_placed": 0}
 
-        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
-        monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
-        monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
-        monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-        monkeypatch.setattr(
-            kis_tasks.run_per_overseas_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
+        # Mock ManualHoldingsService to return empty list
+        class MockManualService:
+            def __init__(self, db):
+                pass
+            async def get_holdings_by_user(self, user_id, market_type):
+                return []
 
-        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+            monkeypatch.setattr(
+                kis_tasks.run_per_overseas_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_overseas_stock_automation.apply().result
 
         assert result["status"] == "completed"
 
@@ -850,7 +864,7 @@ class TestOverseasStockTelegramNotifications:
 
     def test_run_per_overseas_stock_automation_sell_failure_sends_telegram(self, monkeypatch):
         """해외주식 매도 실패 시 텔레그램 알림이 전송되어야 함."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, MagicMock, patch
         from app.tasks import kis as kis_tasks
         from app.analysis import service_analyzers
 
@@ -902,19 +916,33 @@ class TestOverseasStockTelegramNotifications:
         async def fake_sell(*_, **__):
             raise RuntimeError("APBK0656 해당종목정보가 없습니다.")
 
-        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
-        monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
-        monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
-        monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-        monkeypatch.setattr(
-            kis_tasks.run_per_overseas_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
+        # Mock ManualHoldingsService to return empty list
+        class MockManualService:
+            def __init__(self, db):
+                pass
+            async def get_holdings_by_user(self, user_id, market_type):
+                return []
 
-        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+            monkeypatch.setattr(
+                kis_tasks.run_per_overseas_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_overseas_stock_automation.apply().result
 
         assert result["status"] == "completed"
 
@@ -929,7 +957,7 @@ class TestOverseasStockTelegramNotifications:
 
     def test_run_per_overseas_stock_automation_buy_success_sends_telegram(self, monkeypatch):
         """해외주식 매수 성공 시 텔레그램 알림이 전송되어야 함."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, MagicMock, patch
         from app.tasks import kis as kis_tasks
         from app.analysis import service_analyzers
 
@@ -987,19 +1015,33 @@ class TestOverseasStockTelegramNotifications:
         async def fake_sell(*_, **__):
             return {"success": False, "message": "매도 조건 미충족", "orders_placed": 0}
 
-        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
-        monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
-        monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
-        monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-        monkeypatch.setattr(
-            kis_tasks.run_per_overseas_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
+        # Mock ManualHoldingsService to return empty list
+        class MockManualService:
+            def __init__(self, db):
+                pass
+            async def get_holdings_by_user(self, user_id, market_type):
+                return []
 
-        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+            monkeypatch.setattr(
+                kis_tasks.run_per_overseas_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_overseas_stock_automation.apply().result
 
         assert result["status"] == "completed"
 
@@ -1012,7 +1054,7 @@ class TestOverseasStockTelegramNotifications:
 
     def test_run_per_overseas_stock_automation_sell_success_sends_telegram(self, monkeypatch):
         """해외주식 매도 성공 시 텔레그램 알림이 전송되어야 함."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, MagicMock, patch
         from app.tasks import kis as kis_tasks
         from app.analysis import service_analyzers
 
@@ -1071,19 +1113,33 @@ class TestOverseasStockTelegramNotifications:
                 "expected_amount": 1290.0,
             }
 
-        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
-        monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
-        monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
-        monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-        monkeypatch.setattr(
-            kis_tasks.run_per_overseas_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
+        # Mock ManualHoldingsService to return empty list
+        class MockManualService:
+            def __init__(self, db):
+                pass
+            async def get_holdings_by_user(self, user_id, market_type):
+                return []
 
-        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+            monkeypatch.setattr(
+                kis_tasks.run_per_overseas_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_overseas_stock_automation.apply().result
 
         assert result["status"] == "completed"
 
@@ -1096,7 +1152,7 @@ class TestOverseasStockTelegramNotifications:
 
     def test_run_per_overseas_stock_automation_cancels_pending_orders(self, monkeypatch):
         """해외주식 자동화 시 미체결 주문이 취소되어야 함."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, MagicMock, patch
         from app.tasks import kis as kis_tasks
         from app.analysis import service_analyzers
 
@@ -1161,19 +1217,33 @@ class TestOverseasStockTelegramNotifications:
         async def fake_sell(*_, **__):
             return {"success": True, "orders_placed": 1, "total_volume": 1, "prices": [180.0], "quantities": [1], "expected_amount": 180.0}
 
-        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
-        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
-        monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
-        monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
-        monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-        monkeypatch.setattr(
-            kis_tasks.run_per_overseas_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
+        # Mock ManualHoldingsService to return empty list
+        class MockManualService:
+            def __init__(self, db):
+                pass
+            async def get_holdings_by_user(self, user_id, market_type):
+                return []
 
-        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+            monkeypatch.setattr(
+                kis_tasks.run_per_overseas_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_overseas_stock_automation.apply().result
 
         assert result["status"] == "completed"
 
@@ -1580,3 +1650,324 @@ class TestOrderableQuantityUsage:
         # 재조회 없이 기존 ord_psbl_qty(5)가 전달되면 버그가 있는 것임
         assert sell_qty_received[0] == 8, \
             f"미체결 매도 취소 후 재조회하여 ord_psbl_qty(8)를 사용해야 하는데 {sell_qty_received[0]}가 전달됨"
+
+
+class TestOverseasManualHoldings:
+    """해외주식 토스 전용 종목(수동 잔고) 테스트."""
+
+    def test_overseas_automation_includes_manual_holdings(self, monkeypatch):
+        """해외주식 자동화 시 토스 전용 종목도 포함되어 분석/매수가 실행되어야 함."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from decimal import Decimal
+        from app.tasks import kis as kis_tasks
+        from app.analysis import service_analyzers
+        import pandas as pd
+
+        analyzed_symbols = []
+        buy_calls = []
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, symbol):
+                analyzed_symbols.append(symbol)
+                return {"decision": "buy", "confidence": 75}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        class DummyKIS:
+            async def fetch_my_overseas_stocks(self):
+                # KIS 계좌에는 AAPL만 있음
+                return [
+                    {
+                        "ovrs_pdno": "AAPL",
+                        "ovrs_item_name": "애플",
+                        "pchs_avg_pric": "170.00",
+                        "now_pric2": "175.00",
+                        "ovrs_cblc_qty": "10",
+                        "ord_psbl_qty": "10",
+                        "ovrs_excg_cd": "NASD",
+                    }
+                ]
+
+            async def inquire_overseas_orders(self, *args, **kwargs):
+                return []
+
+            async def inquire_overseas_price(self, symbol):
+                # CONY 현재가 조회
+                return pd.DataFrame([{"close": 18.50}])
+
+        # 토스에 CONY 보유 (KIS에 없음)
+        class MockManualHolding:
+            ticker = "CONY"
+            display_name = "CONY"
+            quantity = Decimal("20")
+            avg_price = Decimal("17.18")
+
+        class MockManualService:
+            def __init__(self, db):
+                pass
+
+            async def get_holdings_by_user(self, user_id, market_type):
+                return [MockManualHolding()]
+
+        class MockNotifier:
+            async def notify_buy_order(self, **kwargs):
+                return True
+            async def notify_sell_order(self, **kwargs):
+                return True
+            async def notify_trade_failure(self, **kwargs):
+                return True
+
+        async def fake_buy(kis, symbol, current_price, avg_price):
+            buy_calls.append({"symbol": symbol, "current_price": current_price})
+            return {"success": True, "orders_placed": 1, "total_amount": 100.0, "prices": [100.0], "quantities": [1]}
+
+        async def fake_sell(*_, **__):
+            return {"success": False, "message": "매도 조건 미충족", "orders_placed": 0}
+
+        # Mock _send_toss_recommendation_async
+        toss_recommendations = []
+        async def mock_toss_recommendation(**kwargs):
+            toss_recommendations.append(kwargs)
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+            monkeypatch.setattr(kis_tasks, "_send_toss_recommendation_async", mock_toss_recommendation)
+            monkeypatch.setattr(
+                kis_tasks.run_per_overseas_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+
+        # AAPL(KIS)과 CONY(토스) 모두 분석되어야 함
+        assert "AAPL" in analyzed_symbols, "KIS 종목 AAPL이 분석되어야 함"
+        assert "CONY" in analyzed_symbols, "토스 종목 CONY가 분석되어야 함"
+
+        # 매수는 두 종목 모두 시도
+        assert len(buy_calls) == 2, f"KIS와 토스 종목 모두 매수 시도해야 함, 실제: {buy_calls}"
+
+        # CONY의 현재가가 API로 조회되어 설정되었는지 확인
+        cony_buy = next((b for b in buy_calls if b["symbol"] == "CONY"), None)
+        assert cony_buy is not None
+        assert cony_buy["current_price"] == 18.50, "토스 종목 현재가가 API로 조회되어야 함"
+
+    def test_overseas_automation_skips_sell_for_manual_holdings(self, monkeypatch):
+        """토스 전용 종목은 매도를 스킵하고 추천 알림만 발송해야 함."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from decimal import Decimal
+        from app.tasks import kis as kis_tasks
+        from app.analysis import service_analyzers
+        import pandas as pd
+
+        sell_calls = []
+        toss_recommendations = []
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, symbol):
+                return {"decision": "sell", "confidence": 85}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        class DummyKIS:
+            async def fetch_my_overseas_stocks(self):
+                # KIS 계좌에는 아무것도 없음
+                return []
+
+            async def inquire_overseas_orders(self, *args, **kwargs):
+                return []
+
+            async def inquire_overseas_price(self, symbol):
+                return pd.DataFrame([{"close": 18.50}])
+
+        # 토스에만 CONY 보유
+        class MockManualHolding:
+            ticker = "CONY"
+            display_name = "CONY"
+            quantity = Decimal("20")
+            avg_price = Decimal("17.18")
+
+        class MockManualService:
+            def __init__(self, db):
+                pass
+
+            async def get_holdings_by_user(self, user_id, market_type):
+                return [MockManualHolding()]
+
+        class MockNotifier:
+            async def notify_buy_order(self, **kwargs):
+                return True
+            async def notify_sell_order(self, **kwargs):
+                return True
+            async def notify_trade_failure(self, **kwargs):
+                return True
+
+        async def fake_buy(*_, **__):
+            return {"success": False, "message": "매수 조건 미충족", "orders_placed": 0}
+
+        async def fake_sell(kis, symbol, current_price, avg_price, qty, exchange_code):
+            sell_calls.append({"symbol": symbol})
+            return {"success": True, "orders_placed": 1}
+
+        async def mock_toss_recommendation(**kwargs):
+            toss_recommendations.append(kwargs)
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+            monkeypatch.setattr(kis_tasks, "_send_toss_recommendation_async", mock_toss_recommendation)
+            monkeypatch.setattr(
+                kis_tasks.run_per_overseas_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+
+        # 토스 종목은 KIS에서 매도할 수 없으므로 매도 함수가 호출되면 안됨
+        assert len(sell_calls) == 0, f"토스 종목은 매도 스킵해야 함, 실제 매도 호출: {sell_calls}"
+
+        # 대신 토스 추천 알림이 발송되어야 함
+        assert len(toss_recommendations) == 1, f"토스 추천 알림이 발송되어야 함, 실제: {toss_recommendations}"
+        assert toss_recommendations[0]["code"] == "CONY"
+
+        # 결과에 '수동잔고' 매도 스킵 정보가 포함되어야 함
+        cony_result = next((r for r in result["results"] if r["symbol"] == "CONY"), None)
+        assert cony_result is not None
+        sell_step = next((s for s in cony_result["steps"] if s["step"] == "매도"), None)
+        assert sell_step is not None
+        assert "수동잔고" in sell_step["result"]["message"]
+
+    def test_overseas_automation_does_not_duplicate_kis_stocks(self, monkeypatch):
+        """KIS에도 있고 토스에도 있는 종목은 중복 추가되지 않아야 함."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from decimal import Decimal
+        from app.tasks import kis as kis_tasks
+        from app.analysis import service_analyzers
+        import pandas as pd
+
+        analyzed_symbols = []
+
+        class DummyAnalyzer:
+            async def analyze_stock_json(self, symbol):
+                analyzed_symbols.append(symbol)
+                return {"decision": "hold", "confidence": 70}, "gemini-2.5-pro"
+
+            async def close(self):
+                return None
+
+        class DummyKIS:
+            async def fetch_my_overseas_stocks(self):
+                # KIS에 AAPL 10주
+                return [
+                    {
+                        "ovrs_pdno": "AAPL",
+                        "ovrs_item_name": "애플",
+                        "pchs_avg_pric": "170.00",
+                        "now_pric2": "175.00",
+                        "ovrs_cblc_qty": "10",
+                        "ord_psbl_qty": "10",
+                        "ovrs_excg_cd": "NASD",
+                    }
+                ]
+
+            async def inquire_overseas_orders(self, *args, **kwargs):
+                return []
+
+            async def fetch_my_overseas_stocks(self):
+                return [
+                    {
+                        "ovrs_pdno": "AAPL",
+                        "ovrs_item_name": "애플",
+                        "pchs_avg_pric": "170.00",
+                        "now_pric2": "175.00",
+                        "ovrs_cblc_qty": "10",
+                        "ord_psbl_qty": "10",
+                        "ovrs_excg_cd": "NASD",
+                    }
+                ]
+
+        # 토스에도 AAPL 5주 (중복)
+        class MockManualHolding:
+            ticker = "AAPL"  # KIS에도 있는 종목
+            display_name = "애플"
+            quantity = Decimal("5")
+            avg_price = Decimal("165.00")
+
+        class MockManualService:
+            def __init__(self, db):
+                pass
+
+            async def get_holdings_by_user(self, user_id, market_type):
+                return [MockManualHolding()]
+
+        class MockNotifier:
+            async def notify_buy_order(self, **kwargs):
+                return True
+            async def notify_sell_order(self, **kwargs):
+                return True
+            async def notify_trade_failure(self, **kwargs):
+                return True
+
+        async def fake_buy(*_, **__):
+            return {"success": False, "message": "매수 조건 미충족", "orders_placed": 0}
+
+        async def fake_sell(*_, **__):
+            return {"success": False, "message": "매도 조건 미충족", "orders_placed": 0}
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
+
+            monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+            monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_buy)
+            monkeypatch.setattr(kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
+            monkeypatch.setattr(
+                kis_tasks.run_per_overseas_stock_automation,
+                "update_state",
+                lambda *_, **__: None,
+                raising=False,
+            )
+
+            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+
+        assert result["status"] == "completed"
+
+        # AAPL은 한 번만 분석되어야 함 (중복 추가 안됨)
+        aapl_count = analyzed_symbols.count("AAPL")
+        assert aapl_count == 1, f"KIS에 있는 AAPL은 한 번만 분석되어야 함, 실제: {aapl_count}번"
+
+        # 결과에도 AAPL은 한 번만 포함
+        assert len(result["results"]) == 1

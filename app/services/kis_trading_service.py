@@ -122,7 +122,7 @@ async def process_kis_domestic_buy_orders_with_analysis(
                 price=int(price)
             )
 
-            if res and res.get('rt_cd') == '0':
+            if res and res.get('odno'):
                 success_count += 1
                 ordered_prices.append(price)
                 ordered_quantities.append(quantity)
@@ -227,7 +227,7 @@ async def process_kis_overseas_buy_orders_with_analysis(
                 quantity=quantity,
                 price=price
             )
-            if res and res.get('rt_cd') == '0':
+            if res and res.get('odno'):
                 success_count += 1
                 ordered_prices.append(price)
                 ordered_quantities.append(quantity)
@@ -288,7 +288,7 @@ async def process_kis_domestic_sell_orders_with_analysis(
                      quantity=balance_qty,
                      price=int(current_price)
                  )
-                 if res and res.get('rt_cd') == '0':
+                 if res and res.get('odno'):
                      return {
                          'success': True,
                          'message': "목표가 도달로 전량 매도",
@@ -314,7 +314,7 @@ async def process_kis_domestic_sell_orders_with_analysis(
                 quantity=balance_qty,
                 price=int(target_price)
             )
-            if res and res.get('rt_cd') == '0':
+            if res and res.get('odno'):
                 return {
                     'success': True,
                     'message': "전량 매도 주문 (분할 불가)",
@@ -346,7 +346,7 @@ async def process_kis_domestic_sell_orders_with_analysis(
                 quantity=qty,
                 price=int(price)
             )
-            if res and res.get('rt_cd') == '0':
+            if res and res.get('odno'):
                 success_count += 1
                 remaining_qty -= qty
                 ordered_prices.append(price)
@@ -431,7 +431,7 @@ async def process_kis_overseas_sell_orders_with_analysis(
                      quantity=balance_qty,
                      price=current_price
                  )
-                 if res and res.get('rt_cd') == '0':
+                 if res and res.get('odno'):
                      return {
                          'success': True,
                          'message': "목표가 도달로 전량 매도",
@@ -457,7 +457,7 @@ async def process_kis_overseas_sell_orders_with_analysis(
                 quantity=balance_qty,
                 price=target_price
             )
-            if res and res.get('rt_cd') == '0':
+            if res and res.get('odno'):
                 return {
                     'success': True,
                     'message': "전량 매도 주문",
@@ -490,7 +490,7 @@ async def process_kis_overseas_sell_orders_with_analysis(
                 quantity=qty,
                 price=price
             )
-            if res and res.get('rt_cd') == '0':
+            if res and res.get('odno'):
                 success_count += 1
                 remaining_qty -= qty
                 ordered_prices.append(price)
