@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -110,7 +111,23 @@ async def _send_toss_recommendation_async(
 
         decision = analysis.decision.lower() if analysis.decision else "hold"
         confidence = analysis.confidence if analysis.confidence else 0
-        reasons = analysis.reasons if analysis.reasons else []
+        raw_reasons = analysis.reasons
+        if isinstance(raw_reasons, list):
+            reasons = [str(r) for r in raw_reasons]
+        elif isinstance(raw_reasons, str):
+            try:
+                parsed = json.loads(raw_reasons)
+                reasons = [str(r) for r in parsed] if isinstance(parsed, list) else [str(parsed)]
+            except Exception as parse_error:
+                logger.debug(
+                    "Failed to parse analysis reasons for %s(%s): %s",
+                    name,
+                    code,
+                    parse_error,
+                )
+                reasons = [raw_reasons]
+        else:
+            reasons = []
 
         # AI 결정과 무관하게 항상 가격 제안 알림 발송
         await notifier.notify_toss_price_recommendation(

@@ -1,3 +1,4 @@
+import json
 import time
 from typing import List, Optional
 
@@ -36,6 +37,23 @@ db_query_duration = _meter.create_histogram(
     description="Database query duration for analysis API",
     unit="ms",
 )
+
+
+def _normalize_reasons(raw_reasons) -> List[str]:
+    """Convert stored reasons to a string list, handling JSON/text/null."""
+    if raw_reasons is None:
+        return []
+    if isinstance(raw_reasons, list):
+        return [str(r) for r in raw_reasons]
+    if isinstance(raw_reasons, str):
+        try:
+            parsed = json.loads(raw_reasons)
+            if isinstance(parsed, list):
+                return [str(r) for r in parsed]
+            return [str(parsed)]
+        except Exception:
+            return [raw_reasons]
+    return []
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -145,7 +163,7 @@ async def get_analysis_results(
                     "buy_hope_max": analysis_result.buy_hope_max,
                     "sell_target_min": analysis_result.sell_target_min,
                     "sell_target_max": analysis_result.sell_target_max,
-                    "reasons": analysis_result.reasons,
+                    "reasons": _normalize_reasons(analysis_result.reasons),
                     "detailed_text": analysis_result.detailed_text,
                     "created_at": analysis_result.created_at.isoformat() if analysis_result.created_at else None,
                 })
@@ -218,14 +236,7 @@ async def get_analysis_detail(
     
     analysis_result, stock_info = row
     
-    # 근거를 JSON에서 파싱
-    import json
-    reasons = []
-    try:
-        if analysis_result.reasons:
-            reasons = json.loads(analysis_result.reasons)
-    except:
-        reasons = []
+    reasons = _normalize_reasons(analysis_result.reasons)
     
     return {
         "id": analysis_result.id,

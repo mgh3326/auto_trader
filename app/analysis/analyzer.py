@@ -336,10 +336,7 @@ class Analyzer:
                 instrument_type=instrument_type
             )
 
-            # 2. 근거를 JSON 문자열로 변환
-            reasons_json = json.dumps(result.reasons, ensure_ascii=False)
-
-            # 3. 분석 결과 저장
+            # 2. 분석 결과 저장
             record = StockAnalysisResult(
                 stock_info_id=stock_info.id,  # 주식 정보와 연결
                 prompt=prompt,
@@ -354,7 +351,7 @@ class Analyzer:
                 buy_hope_max=result.price_analysis.buy_hope_range.max,
                 sell_target_min=result.price_analysis.sell_target_range.min,
                 sell_target_max=result.price_analysis.sell_target_range.max,
-                reasons=reasons_json,
+                reasons=result.reasons,
                 detailed_text=result.detailed_text,
             )
             db.add(record)

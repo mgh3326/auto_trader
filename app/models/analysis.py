@@ -2,6 +2,7 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, Boolean
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import JSONB
 from app.models.base import Base
 
 
@@ -53,7 +54,7 @@ class StockAnalysisResult(Base):
     sell_target_max = Column(Float, nullable=True, comment="매도 목표 범위 최대값")
     
     # 근거 및 상세 분석
-    reasons = Column(Text, nullable=True, comment="분석 근거 (JSON 형태로 저장)")
+    reasons = Column(JSONB, nullable=True, comment="분석 근거 (JSON 형태로 저장)")
     detailed_text = Column(Text, nullable=True, comment="상세 분석 텍스트")
     
     # 원본 프롬프트

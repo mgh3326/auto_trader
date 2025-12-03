@@ -1,4 +1,5 @@
 import asyncio
+import json
 from asyncio import AbstractEventLoop
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, Query, HTTPException, BackgroundTasks
@@ -15,6 +16,23 @@ from app.analysis.service_analyzers import KISAnalyzer, YahooAnalyzer, UpbitAnal
 from app.core.celery_app import celery_app
 
 router = APIRouter(prefix="/stock-latest", tags=["Stock Latest Analysis"])
+
+
+def _normalize_reasons(raw_reasons) -> List[str]:
+    """Convert stored reasons to a string list, handling JSON/text/null."""
+    if raw_reasons is None:
+        return []
+    if isinstance(raw_reasons, list):
+        return [str(r) for r in raw_reasons]
+    if isinstance(raw_reasons, str):
+        try:
+            parsed = json.loads(raw_reasons)
+            if isinstance(parsed, list):
+                return [str(r) for r in parsed]
+            return [str(parsed)]
+        except Exception:
+            return [raw_reasons]
+    return []
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -173,14 +191,7 @@ async def get_stock_analysis_history(
     # 응답 데이터 구성
     history_results = []
     for analysis in analysis_history:
-        # 근거를 JSON에서 파싱
-        import json
-        reasons = []
-        try:
-            if analysis.reasons:
-                reasons = json.loads(analysis.reasons)
-        except:
-            reasons = []
+        reasons = _normalize_reasons(analysis.reasons)
 
         history_results.append({
             "id": analysis.id,

@@ -3,6 +3,7 @@ Tests for manual holdings integration in KIS automation tasks.
 
 수동 잔고(토스 등)를 자동화 태스크에 통합하는 기능 테스트
 """
+import json
 import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -725,6 +726,62 @@ class TestTossRecommendationNotification:
         assert notification_sent[0]["decision"] == "hold"
         assert notification_sent[0]["appropriate_buy_min"] == 23000.0
         assert notification_sent[0]["appropriate_sell_max"] == 28000.0
+
+    @pytest.mark.asyncio
+    async def test_send_toss_price_recommendation_parses_json_reasons(self, monkeypatch):
+        """DB에 JSON 문자열로 저장된 근거를 리스트로 파싱해 전달"""
+        from app.tasks.kis import _send_toss_recommendation_async
+        from app.models.analysis import StockAnalysisResult
+
+        notification_sent = []
+
+        class MockNotifier:
+            _enabled = True
+
+            async def notify_toss_price_recommendation(self, **kwargs):
+                notification_sent.append(kwargs)
+                return True
+
+        mock_analysis = MagicMock(spec=StockAnalysisResult)
+        mock_analysis.decision = "buy"
+        mock_analysis.confidence = 70
+        mock_analysis.reasons = json.dumps(
+            ["첫째 근거", "둘째 근거", "셋째 근거"], ensure_ascii=False
+        )
+        mock_analysis.appropriate_buy_min = 23000.0
+        mock_analysis.appropriate_buy_max = 24000.0
+        mock_analysis.appropriate_sell_min = 26000.0
+        mock_analysis.appropriate_sell_max = 28000.0
+        mock_analysis.buy_hope_min = 22000.0
+        mock_analysis.buy_hope_max = 23000.0
+        mock_analysis.sell_target_min = 28000.0
+        mock_analysis.sell_target_max = 30000.0
+
+        class MockAnalysisService:
+            def __init__(self, db):
+                pass
+
+            async def get_latest_analysis_by_symbol(self, symbol):
+                return mock_analysis
+
+        mock_db_session = MagicMock()
+        mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch('app.tasks.kis.get_trade_notifier', return_value=MockNotifier()), \
+             patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
+             patch('app.services.stock_info_service.StockAnalysisService', MockAnalysisService):
+
+            await _send_toss_recommendation_async(
+                code="015760",
+                name="한국전력",
+                current_price=25000.0,
+                toss_quantity=10,
+                toss_avg_price=23000.0,
+            )
+
+        assert len(notification_sent) == 1
+        assert notification_sent[0]["reasons"] == ["첫째 근거", "둘째 근거", "셋째 근거"]
 
     def test_format_toss_price_recommendation_html_escapes_special_chars(self):
         """HTML 포맷 메시지가 특수문자를 올바르게 이스케이프하는지 확인"""
