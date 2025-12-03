@@ -642,3 +642,126 @@ class TestMergedHoldingToDict:
         assert result["evaluation"] == 11670000.0
         assert result["analysis_id"] == 123
         assert len(result["holdings"]) == 1
+
+
+class TestFetchMissingPricesOverseas:
+    """해외주식 _fetch_missing_prices 테스트 - TOSS 전용 해외 종목 현재가 조회"""
+
+    @pytest.mark.asyncio
+    async def test_fetch_overseas_price_for_toss_only_stock(
+        self, merged_portfolio_service, mock_kis_client
+    ):
+        """TOSS만 보유한 해외 종목의 현재가 조회"""
+        # 현재가가 0인 TOSS 전용 해외 종목
+        merged = {
+            "CONY": MergedHolding(
+                ticker="CONY",
+                name="CONY",
+                market_type="US",
+                current_price=0.0,
+                total_quantity=20,
+                toss_quantity=20,
+                toss_avg_price=17.18,
+                holdings=[HoldingInfo(broker="toss", quantity=20, avg_price=17.18)],
+            )
+        }
+
+        # KIS API 해외주식 현재가 응답 Mock
+        price_df = pd.DataFrame([{"close": 18.50}])
+        mock_kis_client.inquire_overseas_price = AsyncMock(return_value=price_df)
+
+        await merged_portfolio_service._fetch_missing_prices(
+            merged, MarketType.US, mock_kis_client
+        )
+
+        assert merged["CONY"].current_price == 18.50
+        mock_kis_client.inquire_overseas_price.assert_called_once_with("CONY")
+
+    @pytest.mark.asyncio
+    async def test_fetch_overseas_price_multiple_stocks(
+        self, merged_portfolio_service, mock_kis_client
+    ):
+        """여러 TOSS 전용 해외 종목의 현재가 조회"""
+        merged = {
+            "CONY": MergedHolding(
+                ticker="CONY",
+                name="CONY",
+                market_type="US",
+                current_price=0.0,
+                total_quantity=20,
+            ),
+            "BRK-B": MergedHolding(
+                ticker="BRK-B",
+                name="버크셔 해서웨이 B",
+                market_type="US",
+                current_price=0.0,
+                total_quantity=5,
+            ),
+        }
+
+        # 각 종목별 현재가 응답
+        def mock_inquire_overseas_price(ticker):
+            prices = {"CONY": 18.50, "BRK-B": 474.17}
+            return pd.DataFrame([{"close": prices[ticker]}])
+
+        mock_kis_client.inquire_overseas_price = AsyncMock(
+            side_effect=mock_inquire_overseas_price
+        )
+
+        await merged_portfolio_service._fetch_missing_prices(
+            merged, MarketType.US, mock_kis_client
+        )
+
+        assert merged["CONY"].current_price == 18.50
+        assert merged["BRK-B"].current_price == 474.17
+        assert mock_kis_client.inquire_overseas_price.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_skip_overseas_stocks_with_price(
+        self, merged_portfolio_service, mock_kis_client
+    ):
+        """현재가가 이미 있는 해외 종목은 조회하지 않음"""
+        merged = {
+            "TSLA": MergedHolding(
+                ticker="TSLA",
+                name="Tesla",
+                market_type="US",
+                current_price=250.0,  # 이미 현재가 있음
+                total_quantity=3,
+            )
+        }
+
+        mock_kis_client.inquire_overseas_price = AsyncMock()
+
+        await merged_portfolio_service._fetch_missing_prices(
+            merged, MarketType.US, mock_kis_client
+        )
+
+        mock_kis_client.inquire_overseas_price.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_overseas_api_error_gracefully(
+        self, merged_portfolio_service, mock_kis_client
+    ):
+        """해외주식 API 오류 시 로그만 남기고 계속 진행"""
+        merged = {
+            "INVALID": MergedHolding(
+                ticker="INVALID",
+                name="존재하지 않는 종목",
+                market_type="US",
+                current_price=0.0,
+                total_quantity=10,
+            )
+        }
+
+        mock_kis_client.inquire_overseas_price = AsyncMock(
+            side_effect=Exception("API Error: 해당종목정보가 없습니다")
+        )
+
+        # 예외 발생해도 에러 없이 진행
+        await merged_portfolio_service._fetch_missing_prices(
+            merged, MarketType.US, mock_kis_client
+        )
+
+        # 현재가는 0으로 유지
+        assert merged["INVALID"].current_price == 0.0

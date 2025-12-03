@@ -279,8 +279,10 @@ class MergedPortfolioService:
                     if not df.empty:
                         merged[ticker].current_price = float(df.iloc[0]["close"])
                 else:
-                    # 해외주식의 경우 별도 API 필요 (추후 구현)
-                    pass
+                    # 해외주식 현재가 조회
+                    df = await kis_client.inquire_overseas_price(ticker)
+                    if not df.empty:
+                        merged[ticker].current_price = float(df.iloc[0]["close"])
             except Exception as exc:
                 logger.warning(
                     "Failed to fetch price for %s: %s", ticker, exc
