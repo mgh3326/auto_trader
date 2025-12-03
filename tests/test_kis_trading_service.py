@@ -957,3 +957,346 @@ class TestProcessKisOverseasSellOrders:
             # 이 경우는 실제로 주문이 실행될 수 있음 (balance_qty 유지)
             # 하지만 KIS API에서 종목 없음 에러가 발생할 것임
             # 테스트에서는 mock이므로 성공할 수 있지만, 실제로는 실패함
+
+
+# ==================== 1개 가격대 스마트 선택 테스트 ====================
+
+class TestSinglePriceLevelSmartSelection:
+    """buy_price_levels=1일 때 스마트 가격 선택 로직 테스트.
+
+    로직:
+    - 적정매수 max가 평균 매수가보다 낮으면 → 적정매수 min 또는 희망매수 min 사용 (더 낮은 가격)
+    - 그렇지 않으면 → 적정매수 max 사용 (더 높은 가격이 적절)
+    """
+
+    @pytest.mark.asyncio
+    async def test_domestic_single_level_uses_max_when_above_avg_price(self, mock_kis_client):
+        """적정매수 max >= 평균매수가일 때 적정매수 max 사용 (threshold 미충족으로 주문 없음).
+
+        시나리오:
+        - 평균 매수가: 50000 (threshold = 49500)
+        - 현재가: 48000 (threshold 미만이므로 1% 조건 통과)
+        - 적정매수 min: 48000, max: 52000
+        - 52000 >= 50000 이므로 max(52000) 선택
+        - 하지만 52000 > threshold(49500) 이므로 필터링됨
+        - 따라서 주문 없음
+        """
+        with patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
+             patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls, \
+             patch('app.services.symbol_trade_settings_service.SymbolTradeSettingsService') as mock_settings_service_cls:
+
+            mock_session_instance = MagicMock()
+            mock_session_instance.__aenter__ = AsyncMock(return_value=AsyncMock())
+            mock_session_instance.__aexit__ = AsyncMock(return_value=None)
+            mock_session_cls.return_value = mock_session_instance
+
+            mock_service = AsyncMock()
+            mock_service_cls.return_value = mock_service
+
+            mock_settings_service = AsyncMock()
+            mock_settings_service_cls.return_value = mock_settings_service
+            mock_settings = MagicMock()
+            mock_settings.is_active = True
+            mock_settings.buy_price_levels = 1  # 1개 가격대만
+            mock_settings.buy_quantity_per_order = 2
+            mock_settings_service.get_by_symbol.return_value = mock_settings
+
+            analysis = StockAnalysisResult(
+                decision="buy",
+                appropriate_buy_min=48000,
+                appropriate_buy_max=52000,  # >= avg_buy_price(50000)
+                buy_hope_min=45000,
+                buy_hope_max=46000,
+                confidence=90,
+                model_name="gemini-2.0-flash",
+                prompt="test prompt"
+            )
+            mock_service.get_latest_analysis_by_symbol.return_value = analysis
+
+            result = await process_kis_domestic_buy_orders_with_analysis(
+                kis_client=mock_kis_client,
+                symbol="005930",
+                current_price=48000,  # threshold(49500) 미만이므로 1% 조건 통과
+                avg_buy_price=50000  # threshold = 49500
+            )
+
+            # max(52000) 선택되지만 threshold(49500)보다 높아서 필터링
+            assert result['success'] is False
+            assert "조건에 맞는 매수 가격 없음" in result['message']
+
+    @pytest.mark.asyncio
+    async def test_domestic_single_level_uses_max_when_new_entry(self, mock_kis_client):
+        """신규 진입(avg_buy_price=0) 또는 max >= avg일 때 max 사용.
+
+        시나리오:
+        - 평균 매수가: 50000 (threshold = 49500)
+        - 현재가: 48000 (threshold 미만이므로 1% 조건 통과)
+        - 적정매수 min: 45000, max: 50000 (== avg_buy_price, >= 조건 충족)
+        - max >= avg 이므로 max(50000) 선택
+        - 하지만 50000 > threshold(49500) 이므로 필터링
+        - 실제로 threshold를 통과하는 max를 설정해야 함
+
+        수정된 시나리오:
+        - 평균 매수가: 60000 (threshold = 59400)
+        - 현재가: 58000
+        - 적정매수 min: 50000, max: 62000 (>= avg 60000)
+        - max(62000) 선택 but > threshold(59400) 필터링
+        - 따라서 주문 없음
+
+        더 나은 테스트: 신규진입(avg=0) 시 max 사용
+        """
+        with patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
+             patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls, \
+             patch('app.services.symbol_trade_settings_service.SymbolTradeSettingsService') as mock_settings_service_cls:
+
+            mock_session_instance = MagicMock()
+            mock_session_instance.__aenter__ = AsyncMock(return_value=AsyncMock())
+            mock_session_instance.__aexit__ = AsyncMock(return_value=None)
+            mock_session_cls.return_value = mock_session_instance
+
+            mock_service = AsyncMock()
+            mock_service_cls.return_value = mock_service
+
+            mock_settings_service = AsyncMock()
+            mock_settings_service_cls.return_value = mock_settings_service
+            mock_settings = MagicMock()
+            mock_settings.is_active = True
+            mock_settings.buy_price_levels = 1
+            mock_settings.buy_quantity_per_order = 2
+            mock_settings_service.get_by_symbol.return_value = mock_settings
+
+            analysis = StockAnalysisResult(
+                decision="buy",
+                appropriate_buy_min=50000,
+                appropriate_buy_max=55000,
+                buy_hope_min=45000,
+                buy_hope_max=46000,
+                confidence=90,
+                model_name="gemini-2.0-flash",
+                prompt="test prompt"
+            )
+            mock_service.get_latest_analysis_by_symbol.return_value = analysis
+
+            # 신규 진입: avg_buy_price=0
+            result = await process_kis_domestic_buy_orders_with_analysis(
+                kis_client=mock_kis_client,
+                symbol="005930",
+                current_price=58000,
+                avg_buy_price=0  # 신규 진입
+            )
+
+            assert result['success'] is True
+            assert result['orders_placed'] == 1
+            # 신규 진입이므로 max(55000) 사용
+            call_args = mock_kis_client.order_korea_stock.call_args
+            assert call_args.kwargs['price'] == 55000
+
+    @pytest.mark.asyncio
+    async def test_domestic_single_level_uses_lower_price_when_max_below_avg(self, mock_kis_client):
+        """적정매수 max가 평균매수가보다 낮으면 적정매수 min 또는 희망매수 min 사용.
+
+        시나리오:
+        - 평균 매수가: 60000 (threshold = 59400)
+        - 현재가: 58000
+        - 적정매수 min: 50000, max: 52000
+        - max(52000) < avg(60000) 이므로 min(50000) 또는 hope_min 사용
+        """
+        with patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
+             patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls, \
+             patch('app.services.symbol_trade_settings_service.SymbolTradeSettingsService') as mock_settings_service_cls:
+
+            mock_session_instance = MagicMock()
+            mock_session_instance.__aenter__ = AsyncMock(return_value=AsyncMock())
+            mock_session_instance.__aexit__ = AsyncMock(return_value=None)
+            mock_session_cls.return_value = mock_session_instance
+
+            mock_service = AsyncMock()
+            mock_service_cls.return_value = mock_service
+
+            mock_settings_service = AsyncMock()
+            mock_settings_service_cls.return_value = mock_settings_service
+            mock_settings = MagicMock()
+            mock_settings.is_active = True
+            mock_settings.buy_price_levels = 1
+            mock_settings.buy_quantity_per_order = 2
+            mock_settings_service.get_by_symbol.return_value = mock_settings
+
+            analysis = StockAnalysisResult(
+                decision="buy",
+                appropriate_buy_min=50000,
+                appropriate_buy_max=52000,  # < avg_buy_price(60000)
+                buy_hope_min=45000,
+                buy_hope_max=46000,
+                confidence=90,
+                model_name="gemini-2.0-flash",
+                prompt="test prompt"
+            )
+            mock_service.get_latest_analysis_by_symbol.return_value = analysis
+
+            result = await process_kis_domestic_buy_orders_with_analysis(
+                kis_client=mock_kis_client,
+                symbol="005930",
+                current_price=58000,
+                avg_buy_price=60000
+            )
+
+            assert result['success'] is True
+            assert result['orders_placed'] == 1
+            # max(52000) < avg(60000) 이므로 min(50000)에 주문
+            call_args = mock_kis_client.order_korea_stock.call_args
+            assert call_args.kwargs['price'] == 50000
+
+    @pytest.mark.asyncio
+    async def test_domestic_single_level_fallback_to_hope_min_when_min_unavailable(self, mock_kis_client):
+        """적정매수 min이 없을 때 희망매수 min 사용.
+
+        시나리오:
+        - 적정매수 max < 평균매수가 (조건 만족)
+        - 적정매수 min이 None
+        - 희망매수 min 사용
+        """
+        with patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
+             patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls, \
+             patch('app.services.symbol_trade_settings_service.SymbolTradeSettingsService') as mock_settings_service_cls:
+
+            mock_session_instance = MagicMock()
+            mock_session_instance.__aenter__ = AsyncMock(return_value=AsyncMock())
+            mock_session_instance.__aexit__ = AsyncMock(return_value=None)
+            mock_session_cls.return_value = mock_session_instance
+
+            mock_service = AsyncMock()
+            mock_service_cls.return_value = mock_service
+
+            mock_settings_service = AsyncMock()
+            mock_settings_service_cls.return_value = mock_settings_service
+            mock_settings = MagicMock()
+            mock_settings.is_active = True
+            mock_settings.buy_price_levels = 1
+            mock_settings.buy_quantity_per_order = 2
+            mock_settings_service.get_by_symbol.return_value = mock_settings
+
+            analysis = StockAnalysisResult(
+                decision="buy",
+                appropriate_buy_min=None,  # 없음
+                appropriate_buy_max=52000,
+                buy_hope_min=45000,  # fallback으로 사용
+                buy_hope_max=46000,
+                confidence=90,
+                model_name="gemini-2.0-flash",
+                prompt="test prompt"
+            )
+            mock_service.get_latest_analysis_by_symbol.return_value = analysis
+
+            result = await process_kis_domestic_buy_orders_with_analysis(
+                kis_client=mock_kis_client,
+                symbol="005930",
+                current_price=58000,
+                avg_buy_price=60000
+            )
+
+            assert result['success'] is True
+            assert result['orders_placed'] == 1
+            # min이 없으므로 hope_min(45000) 사용
+            call_args = mock_kis_client.order_korea_stock.call_args
+            assert call_args.kwargs['price'] == 45000
+
+    @pytest.mark.asyncio
+    async def test_overseas_single_level_uses_max_when_new_entry(self, mock_kis_client):
+        """해외주식: 신규 진입 시 max 사용 테스트"""
+        with patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
+             patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls, \
+             patch('app.services.symbol_trade_settings_service.SymbolTradeSettingsService') as mock_settings_service_cls:
+
+            mock_session_instance = MagicMock()
+            mock_session_instance.__aenter__ = AsyncMock(return_value=AsyncMock())
+            mock_session_instance.__aexit__ = AsyncMock(return_value=None)
+            mock_session_cls.return_value = mock_session_instance
+
+            mock_service = AsyncMock()
+            mock_service_cls.return_value = mock_service
+
+            mock_settings_service = AsyncMock()
+            mock_settings_service_cls.return_value = mock_settings_service
+            mock_settings = MagicMock()
+            mock_settings.is_active = True
+            mock_settings.buy_price_levels = 1
+            mock_settings.buy_quantity_per_order = 2
+            mock_settings.exchange_code = "NASD"
+            mock_settings_service.get_by_symbol.return_value = mock_settings
+
+            analysis = StockAnalysisResult(
+                decision="buy",
+                appropriate_buy_min=150.0,
+                appropriate_buy_max=160.0,
+                buy_hope_min=140.0,
+                buy_hope_max=145.0,
+                confidence=90,
+                model_name="gemini-2.0-flash",
+                prompt="test prompt"
+            )
+            mock_service.get_latest_analysis_by_symbol.return_value = analysis
+
+            # 신규 진입: avg_buy_price=0
+            result = await process_kis_overseas_buy_orders_with_analysis(
+                kis_client=mock_kis_client,
+                symbol="AAPL",
+                current_price=170.0,
+                avg_buy_price=0,  # 신규 진입
+                exchange_code="NASD"
+            )
+
+            assert result['success'] is True
+            assert result['orders_placed'] == 1
+            # 신규 진입이므로 max(160) 사용
+            call_args = mock_kis_client.order_overseas_stock.call_args
+            assert call_args.kwargs['price'] == 160.0
+
+    @pytest.mark.asyncio
+    async def test_overseas_single_level_uses_min_when_max_below_avg(self, mock_kis_client):
+        """해외주식: 적정매수 max < 평균매수가일 때 min 사용"""
+        with patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
+             patch('app.services.stock_info_service.StockAnalysisService') as mock_service_cls, \
+             patch('app.services.symbol_trade_settings_service.SymbolTradeSettingsService') as mock_settings_service_cls:
+
+            mock_session_instance = MagicMock()
+            mock_session_instance.__aenter__ = AsyncMock(return_value=AsyncMock())
+            mock_session_instance.__aexit__ = AsyncMock(return_value=None)
+            mock_session_cls.return_value = mock_session_instance
+
+            mock_service = AsyncMock()
+            mock_service_cls.return_value = mock_service
+
+            mock_settings_service = AsyncMock()
+            mock_settings_service_cls.return_value = mock_settings_service
+            mock_settings = MagicMock()
+            mock_settings.is_active = True
+            mock_settings.buy_price_levels = 1
+            mock_settings.buy_quantity_per_order = 2
+            mock_settings.exchange_code = "NASD"
+            mock_settings_service.get_by_symbol.return_value = mock_settings
+
+            analysis = StockAnalysisResult(
+                decision="buy",
+                appropriate_buy_min=150.0,
+                appropriate_buy_max=155.0,  # < avg(180)
+                buy_hope_min=140.0,
+                buy_hope_max=145.0,
+                confidence=90,
+                model_name="gemini-2.0-flash",
+                prompt="test prompt"
+            )
+            mock_service.get_latest_analysis_by_symbol.return_value = analysis
+
+            result = await process_kis_overseas_buy_orders_with_analysis(
+                kis_client=mock_kis_client,
+                symbol="AAPL",
+                current_price=170.0,
+                avg_buy_price=180.0,
+                exchange_code="NASD"
+            )
+
+            assert result['success'] is True
+            assert result['orders_placed'] == 1
+            # max(155) < avg(180) 이므로 min(150) 사용
+            call_args = mock_kis_client.order_overseas_stock.call_args
+            assert call_args.kwargs['price'] == 150.0

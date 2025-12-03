@@ -62,26 +62,55 @@ async def process_kis_domestic_buy_orders_with_analysis(
 
         buy_price_levels = settings.buy_price_levels  # 1~4 (주문할 가격대 수)
 
-        # 3. 가격 정보 확인 (낮은 가격 순서: appropriate_buy_min -> max -> buy_hope_min -> max)
-        all_buy_prices = []
-        if analysis.appropriate_buy_min is not None:
-            all_buy_prices.append(("appropriate_buy_min", analysis.appropriate_buy_min))
-        if analysis.appropriate_buy_max is not None:
-            all_buy_prices.append(("appropriate_buy_max", analysis.appropriate_buy_max))
-        if analysis.buy_hope_min is not None:
-            all_buy_prices.append(("buy_hope_min", analysis.buy_hope_min))
-        if analysis.buy_hope_max is not None:
-            all_buy_prices.append(("buy_hope_max", analysis.buy_hope_max))
+        # 3. 가격 정보 확인
+        # buy_price_levels=1일 때 스마트 선택:
+        # - 적정매수 max가 평균매수가보다 낮으면 → 적정매수 min 또는 희망매수 min 사용 (더 낮은 가격 선호)
+        # - 그렇지 않으면 → 적정매수 max 사용 (신규 진입 또는 적정 가격이 아직 높은 경우)
+        if buy_price_levels == 1:
+            # 스마트 단일 가격 선택
+            appropriate_max = analysis.appropriate_buy_max
+            use_lower_price = (
+                appropriate_max is not None
+                and avg_buy_price > 0
+                and appropriate_max < avg_buy_price
+            )
 
-        if not all_buy_prices:
+            if use_lower_price:
+                # 적정매수 max가 평균매수가보다 낮음 → 더 낮은 가격(min 또는 hope_min) 선택
+                if analysis.appropriate_buy_min is not None:
+                    buy_prices = [("appropriate_buy_min", analysis.appropriate_buy_min)]
+                elif analysis.buy_hope_min is not None:
+                    buy_prices = [("buy_hope_min", analysis.buy_hope_min)]
+                else:
+                    buy_prices = []
+            else:
+                # 신규 진입이거나 적정매수 max >= 평균매수가 → max 사용
+                if analysis.appropriate_buy_max is not None:
+                    buy_prices = [("appropriate_buy_max", analysis.appropriate_buy_max)]
+                elif analysis.appropriate_buy_min is not None:
+                    buy_prices = [("appropriate_buy_min", analysis.appropriate_buy_min)]
+                else:
+                    buy_prices = []
+        else:
+            # 기존 로직: 낮은 가격 순서로 나열
+            all_buy_prices = []
+            if analysis.appropriate_buy_min is not None:
+                all_buy_prices.append(("appropriate_buy_min", analysis.appropriate_buy_min))
+            if analysis.appropriate_buy_max is not None:
+                all_buy_prices.append(("appropriate_buy_max", analysis.appropriate_buy_max))
+            if analysis.buy_hope_min is not None:
+                all_buy_prices.append(("buy_hope_min", analysis.buy_hope_min))
+            if analysis.buy_hope_max is not None:
+                all_buy_prices.append(("buy_hope_max", analysis.buy_hope_max))
+
+            buy_prices = all_buy_prices[:buy_price_levels]
+
+        if not buy_prices:
             return {
                 'success': False,
                 'message': "분석 결과에 매수 가격 정보 없음",
                 'orders_placed': 0
             }
-
-        # buy_price_levels 설정에 따라 사용할 가격대 제한
-        buy_prices = all_buy_prices[:buy_price_levels]
 
         # 4. 조건에 맞는 가격 필터링
         # 평균 매수가의 99%보다 낮고(평단가 있을시), 현재가보다 낮은 가격
@@ -178,22 +207,51 @@ async def process_kis_overseas_buy_orders_with_analysis(
         # settings에 exchange_code가 설정되어 있으면 그것을 사용
         actual_exchange_code = settings.exchange_code or exchange_code
 
-        # 가격 정보 확인 (낮은 가격 순서: appropriate_buy_min -> max -> buy_hope_min -> max)
-        all_buy_prices = []
-        if analysis.appropriate_buy_min:
-            all_buy_prices.append(analysis.appropriate_buy_min)
-        if analysis.appropriate_buy_max:
-            all_buy_prices.append(analysis.appropriate_buy_max)
-        if analysis.buy_hope_min:
-            all_buy_prices.append(analysis.buy_hope_min)
-        if analysis.buy_hope_max:
-            all_buy_prices.append(analysis.buy_hope_max)
+        # 가격 정보 확인
+        # buy_price_levels=1일 때 스마트 선택:
+        # - 적정매수 max가 평균매수가보다 낮으면 → 적정매수 min 또는 희망매수 min 사용 (더 낮은 가격 선호)
+        # - 그렇지 않으면 → 적정매수 max 사용 (신규 진입 또는 적정 가격이 아직 높은 경우)
+        if buy_price_levels == 1:
+            # 스마트 단일 가격 선택
+            appropriate_max = analysis.appropriate_buy_max
+            use_lower_price = (
+                appropriate_max is not None
+                and avg_buy_price > 0
+                and appropriate_max < avg_buy_price
+            )
 
-        if not all_buy_prices:
+            if use_lower_price:
+                # 적정매수 max가 평균매수가보다 낮음 → 더 낮은 가격(min 또는 hope_min) 선택
+                if analysis.appropriate_buy_min is not None:
+                    buy_prices = [analysis.appropriate_buy_min]
+                elif analysis.buy_hope_min is not None:
+                    buy_prices = [analysis.buy_hope_min]
+                else:
+                    buy_prices = []
+            else:
+                # 신규 진입이거나 적정매수 max >= 평균매수가 → max 사용
+                if analysis.appropriate_buy_max is not None:
+                    buy_prices = [analysis.appropriate_buy_max]
+                elif analysis.appropriate_buy_min is not None:
+                    buy_prices = [analysis.appropriate_buy_min]
+                else:
+                    buy_prices = []
+        else:
+            # 기존 로직: 낮은 가격 순서로 나열
+            all_buy_prices = []
+            if analysis.appropriate_buy_min:
+                all_buy_prices.append(analysis.appropriate_buy_min)
+            if analysis.appropriate_buy_max:
+                all_buy_prices.append(analysis.appropriate_buy_max)
+            if analysis.buy_hope_min:
+                all_buy_prices.append(analysis.buy_hope_min)
+            if analysis.buy_hope_max:
+                all_buy_prices.append(analysis.buy_hope_max)
+
+            buy_prices = all_buy_prices[:buy_price_levels]
+
+        if not buy_prices:
             return {'success': False, 'message': "분석 결과에 매수 가격 정보 없음", 'orders_placed': 0}
-
-        # buy_price_levels 설정에 따라 사용할 가격대 제한
-        buy_prices = all_buy_prices[:buy_price_levels]
 
         threshold_price = avg_buy_price * 0.99 if avg_buy_price > 0 else float('inf')
         valid_prices = [p for p in buy_prices if p < threshold_price and p < current_price]
