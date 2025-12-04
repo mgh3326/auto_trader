@@ -1347,15 +1347,16 @@
         function attachCoinActionHandlers() {
             document.querySelectorAll('.coin-analysis-btn').forEach(button => {
                 button.addEventListener('click', () => {
-                    const analysisId = Number(button.dataset.analysisId);
+                    const hasAnalysis = button.dataset.analysisId && Number(button.dataset.analysisId) > 0;
                     const symbol = button.dataset.symbol;
                     const name = button.dataset.name;
 
-                    if (!analysisId) {
+                    if (!hasAnalysis) {
                         return;
                     }
 
-                    openCoinAnalysisDetail(analysisId, symbol, name);
+                    // 항상 최신 분석을 symbol 기반으로 조회
+                    openCoinAnalysisDetail(symbol, name);
                 });
             });
 
@@ -1778,7 +1779,7 @@
             return `${minValue.toLocaleString()} ~ ${maxValue.toLocaleString()}`;
         }
 
-        async function openCoinAnalysisDetail(analysisId, symbol, name) {
+        async function openCoinAnalysisDetail(symbol, name) {
             const modalElement = document.getElementById('coinAnalysisModal');
             const modalTitle = modalElement.querySelector('.modal-title');
             const modalBody = modalElement.querySelector('.modal-body');
@@ -1802,7 +1803,8 @@
             modal.show();
 
             try {
-                const response = await fetch(`/analysis-json/api/detail/${analysisId}`);
+                // symbol 기반으로 최신 분석 결과를 조회
+                const response = await fetch(`/analysis-json/api/detail/by-symbol/${encodeURIComponent(symbol)}`);
                 if (!response.ok) {
                     throw new Error('Network response was not ok');
                 }

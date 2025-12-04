@@ -718,6 +718,7 @@
         }
 
         // 최신 분석 상세 정보 표시 (메인 테이블에서 호출)
+        // symbol 기반으로 항상 최신 분석을 조회
         async function showLatestAnalysisDetail(analysisId, symbol, name, stockInfoId) {
             const modal = new bootstrap.Modal(document.getElementById('analysisDetailModal'));
             const modalTitle = document.getElementById('analysisDetailModalLabel');
@@ -729,7 +730,8 @@
             modal.show();
 
             try {
-                const response = await fetch(`/analysis-json/api/detail/${analysisId}`);
+                // symbol 기반으로 최신 분석 결과를 조회 (페이지 로드 시점의 analysisId 대신)
+                const response = await fetch(`/analysis-json/api/detail/by-symbol/${encodeURIComponent(symbol)}`);
                 if (!response.ok) throw new Error('Network response was not ok');
 
                 const data = await response.json();

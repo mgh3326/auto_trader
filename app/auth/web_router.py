@@ -1,6 +1,5 @@
 """Web authentication router with HTML pages and session management."""
 import hashlib
-import hmac
 import json
 import logging
 import string
@@ -42,6 +41,7 @@ session_serializer = URLSafeTimedSerializer(
 SESSION_COOKIE_NAME = "session"
 SESSION_TTL = 60 * 60 * 24 * 7  # 7 days
 USER_CACHE_TTL = 300  # 5 minutes
+MAX_SESSIONS_PER_USER = 5
 SESSION_HASH_KEY_PREFIX = "user_session"
 USER_CACHE_KEY_PREFIX = "user_cache"
 
@@ -151,31 +151,26 @@ async def get_current_user_from_session(
             settings.get_redis_url(),
             decode_responses=True,
         )
-        stored_session_hash = await redis_client.get(session_hash_key)
-        if stored_session_hash:
-            if not hmac.compare_digest(stored_session_hash, session_hash):
-                return None
+        is_member = await redis_client.sismember(session_hash_key, session_hash)
+        if not is_member:
+            return None
 
-            session_hash_verified = True
+        session_hash_verified = True
 
-            cached_user = await redis_client.get(user_cache_key)
+        cached_user = await redis_client.get(user_cache_key)
 
-            if cached_user:
-                user_data = json.loads(cached_user)
-                user = User(
-                    id=user_data["id"],
-                    username=user_data["username"],
-                    email=user_data["email"],
-                    role=UserRole[user_data["role"]],
-                    is_active=user_data["is_active"],
-                    hashed_password=user_data.get("hashed_password"),
-                )
-                if user.is_active:
-                    return user
-                return None
-        elif settings.ENVIRONMENT != "production":
-            redis_error = True
-        else:
+        if cached_user:
+            user_data = json.loads(cached_user)
+            user = User(
+                id=user_data["id"],
+                username=user_data["username"],
+                email=user_data["email"],
+                role=UserRole[user_data["role"]],
+                is_active=user_data["is_active"],
+                hashed_password=user_data.get("hashed_password"),
+            )
+            if user.is_active:
+                return user
             return None
     except Exception:
         redis_error = True
@@ -212,9 +207,8 @@ async def get_current_user_from_session(
             await redis_client.set(
                 user_cache_key, json.dumps(user_data), ex=USER_CACHE_TTL
             )
-            await redis_client.set(
-                session_hash_key, session_hash, ex=SESSION_TTL
-            )
+            await redis_client.sadd(session_hash_key, session_hash)
+            await redis_client.expire(session_hash_key, SESSION_TTL)
         except Exception:
             logger.warning(
                 "Failed to refresh session cache for user_id=%s",
@@ -376,6 +370,7 @@ async def login(
             settings.get_redis_url(),
             decode_responses=True,
         )
+        session_hash_key = _session_hash_key(user.id)
         user_data = {
             "id": user.id,
             "username": user.username,
@@ -384,9 +379,11 @@ async def login(
             "is_active": user.is_active,
             "hashed_password": user.hashed_password,
         }
-        await redis_client.set(
-            _session_hash_key(user.id), session_hash, ex=SESSION_TTL
-        )
+        session_count = await redis_client.scard(session_hash_key)
+        if session_count >= MAX_SESSIONS_PER_USER:
+            await redis_client.spop(session_hash_key)
+        await redis_client.sadd(session_hash_key, session_hash)
+        await redis_client.expire(session_hash_key, SESSION_TTL)
         await redis_client.set(
             _user_cache_key(user.id), json.dumps(user_data), ex=USER_CACHE_TTL
         )
@@ -572,15 +569,8 @@ async def logout(request: Request):
                     settings.get_redis_url(),
                     decode_responses=True,
                 )
-                # Add to blacklist to invalidate all sessions for this user (optional but safer)
-                blacklist = get_session_blacklist()
-                await blacklist.blacklist_user(user_id)
-
-                # Delete session key from Redis
-                await redis_client.delete(
-                    _session_hash_key(user_id),
-                    _user_cache_key(user_id),
-                )
+                session_hash = _hash_session_token(session_token)
+                await redis_client.srem(_session_hash_key(user_id), session_hash)
             except Exception:
                 logger.warning(
                     "Failed to invalidate session cache during logout for user_id=%s",

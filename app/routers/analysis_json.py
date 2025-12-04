@@ -217,27 +217,10 @@ async def get_analysis_results(
             raise
 
 
-@router.get("/api/detail/{result_id}")
-async def get_analysis_detail(
-    result_id: int,
-    db: AsyncSession = Depends(get_db)
-):
-    """특정 분석 결과의 상세 정보를 조회하는 API"""
-    
-    query = select(StockAnalysisResult, StockInfo).join(
-        StockInfo, StockAnalysisResult.stock_info_id == StockInfo.id
-    ).where(StockAnalysisResult.id == result_id)
-    
-    result = await db.execute(query)
-    row = result.first()
-    
-    if not row:
-        return {"error": "분석 결과를 찾을 수 없습니다."}
-    
-    analysis_result, stock_info = row
-    
+def _build_analysis_response(analysis_result: StockAnalysisResult, stock_info: StockInfo) -> dict:
+    """분석 결과를 응답 형식으로 변환하는 헬퍼 함수"""
     reasons = _normalize_reasons(analysis_result.reasons)
-    
+
     return {
         "id": analysis_result.id,
         "symbol": stock_info.symbol,
@@ -267,6 +250,52 @@ async def get_analysis_detail(
         "created_at": analysis_result.created_at.isoformat() if analysis_result.created_at else None,
         "prompt": analysis_result.prompt
     }
+
+
+@router.get("/api/detail/{result_id}")
+async def get_analysis_detail(
+    result_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """특정 분석 결과의 상세 정보를 조회하는 API"""
+
+    query = select(StockAnalysisResult, StockInfo).join(
+        StockInfo, StockAnalysisResult.stock_info_id == StockInfo.id
+    ).where(StockAnalysisResult.id == result_id)
+
+    result = await db.execute(query)
+    row = result.first()
+
+    if not row:
+        return {"error": "분석 결과를 찾을 수 없습니다."}
+
+    analysis_result, stock_info = row
+    return _build_analysis_response(analysis_result, stock_info)
+
+
+@router.get("/api/detail/by-symbol/{symbol}")
+async def get_latest_analysis_by_symbol(
+    symbol: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """특정 종목의 최신 분석 결과를 조회하는 API"""
+
+    query = select(StockAnalysisResult, StockInfo).join(
+        StockInfo, StockAnalysisResult.stock_info_id == StockInfo.id
+    ).where(
+        StockInfo.symbol == symbol
+    ).order_by(
+        StockAnalysisResult.created_at.desc()
+    ).limit(1)
+
+    result = await db.execute(query)
+    row = result.first()
+
+    if not row:
+        return {"error": "분석 결과를 찾을 수 없습니다."}
+
+    analysis_result, stock_info = row
+    return _build_analysis_response(analysis_result, stock_info)
 
 
 @router.get("/api/filters")
