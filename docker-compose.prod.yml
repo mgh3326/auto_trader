@@ -44,11 +44,11 @@ services:
     deploy:
       resources:
         limits:
+          memory: 2G
+          cpus: '1.5'
+        reservations:
           memory: 1G
           cpus: '0.5'
-        reservations:
-          memory: 512M
-          cpus: '0.25'
 
   worker:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
@@ -65,11 +65,11 @@ services:
     deploy:
       resources:
         limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
           memory: 512M
           cpus: '0.25'
-        reservations:
-          memory: 256M
-          cpus: '0.1'
 
   websocket:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
@@ -88,9 +88,9 @@ services:
       resources:
         limits:
           memory: 512M
-          cpus: '0.25'
+          cpus: '0.5'
         reservations:
           memory: 256M
-          cpus: '0.1'
+          cpus: '0.25'
 
 # 네이티브 PostgreSQL과 Redis 사용으로 볼륨/네트워크 불필요

@@ -26,8 +26,8 @@
 #   - Logs: Promtail scrapes Docker containers → Loki
 #
 # Resource Limits (optimized for Raspberry Pi 5 - 8GB RAM):
-#   - Memory: ~2.5GB total (512MB × 5 services)
-#   - CPU: ~5 cores total (1.0 for main services, 0.5 for Collector/Promtail)
+#   - Memory: ~3GB total (512MB × 5 main + 256MB × 2 lightweight)
+#   - CPU: ~4.5 cores total (1.0 for main services, 0.5 for Collector/Promtail/Caddy)
 #   - Tested on: Raspberry Pi 5 with 8GB RAM
 #
 # Security:
@@ -158,6 +158,8 @@ services:
       - promtail_data:/data/promtail
     ports:
       - "9080:9080" # Promtail HTTP for healthcheck
+    mem_limit: 256m
+    mem_reservation: 128m
     cpus: '0.5' # Limit to 0.5 CPU core (lightweight)
     networks:
       - observability
