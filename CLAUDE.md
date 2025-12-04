@@ -156,6 +156,47 @@ stock_info (마스터 테이블)        stock_analysis_results (분석 결과)
 - 최신 분석: Correlated Subquery 또는 Window Function 사용
 - 히스토리: `stock_info_id`로 JOIN하여 시간순 정렬
 
+### 해외주식 심볼 변환 시스템
+
+**배경:** 해외주식 심볼은 서비스마다 다른 구분자를 사용함 (예: 버크셔 해서웨이 B)
+- Yahoo Finance: `BRK-B` (하이픈)
+- 한국투자증권 API: `BRK/B` (슬래시)
+- DB 저장 형식: `BRK.B` (점) ← **기준**
+
+**구조:**
+```
+app/core/symbol.py              # 심볼 변환 유틸리티
+├── to_kis_symbol()             # DB → KIS API (. → /)
+├── to_yahoo_symbol()           # DB → Yahoo Finance (. → -)
+└── to_db_symbol()              # 외부 → DB (- 또는 / → .)
+```
+
+**적용된 파일:**
+- `app/services/kis.py` - KIS API 호출 시 자동 변환
+- `app/services/yahoo.py` - Yahoo Finance 호출 시 자동 변환
+- `app/tasks/kis.py` - 심볼 비교 시 정규화
+- `app/services/kis_holdings_service.py` - 보유주식 조회 시 정규화
+- `app/services/kis_trading_service.py` - 매도 주문 시 정규화
+
+**DB 테이블 (해외주식 심볼 저장):**
+| 테이블 | 컬럼 | 설명 |
+|--------|------|------|
+| `stock_info` | `symbol` | 종목 마스터 |
+| `manual_holdings` | `ticker` | 수동 잔고 (토스 등) |
+| `stock_aliases` | `ticker` | 종목 별칭 매핑 |
+| `symbol_trade_settings` | `symbol` | 종목별 거래 설정 |
+
+**마이그레이션:** 기존 데이터가 `-` 또는 `/` 형식이면 `.` 형식으로 변환 필요
+```bash
+# scripts/migrate_symbols_to_dot_format.sql 실행
+psql -d your_db -f scripts/migrate_symbols_to_dot_format.sql
+```
+
+**테스트:**
+```bash
+uv run pytest tests/test_symbol_conversion.py -v
+```
+
 ### API 서비스 클라이언트
 
 ```
