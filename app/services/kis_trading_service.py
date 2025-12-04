@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Dict, Any, List, Optional, Tuple
+from app.core.symbol import to_db_symbol
 from app.services.kis import KISClient
 from app.models.analysis import StockAnalysisResult
 from app.core.config import settings
@@ -452,7 +453,9 @@ async def process_kis_overseas_sell_orders_with_analysis(
 
         # KIS 계좌의 실제 주문가능수량 조회 (토스 등 수동 잔고 제외)
         my_stocks = await kis_client.fetch_my_overseas_stocks()
-        target_stock = next((s for s in my_stocks if s.get('ovrs_pdno') == symbol), None)
+        # 심볼 형식 정규화하여 비교
+        normalized_symbol = to_db_symbol(symbol)
+        target_stock = next((s for s in my_stocks if to_db_symbol(s.get('ovrs_pdno', '')) == normalized_symbol), None)
         if target_stock:
             # ord_psbl_qty가 있으면 사용, 없으면 ovrs_cblc_qty 사용
             actual_qty = int(float(target_stock.get('ord_psbl_qty', target_stock.get('ovrs_cblc_qty', 0))))

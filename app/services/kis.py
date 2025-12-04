@@ -9,6 +9,7 @@ import pandas as pd
 from pandas import DataFrame
 
 from app.core.config import settings
+from app.core.symbol import to_kis_symbol
 from app.services.redis_token_manager import redis_token_manager
 
 BASE = "https://openapi.koreainvestment.com:9443"
@@ -856,7 +857,7 @@ class KISClient:
             params = {
                 "AUTH": "",
                 "EXCD": excd,  # 거래소코드 (3자리)
-                "SYMB": symbol,  # 심볼
+                "SYMB": to_kis_symbol(symbol),  # 심볼 (DB형식 . -> KIS형식 /)
                 "GUBN": "0",  # 0:일, 1:주, 2:월
                 "BYMD": bymd,  # 조회기준일자
                 "MODP": "1",  # 0:수정주가 미반영, 1:수정주가 반영
@@ -960,7 +961,7 @@ class KISClient:
         params = {
             "AUTH": "",
             "EXCD": excd,  # 거래소코드 (3자리)
-            "SYMB": symbol,
+            "SYMB": to_kis_symbol(symbol),  # 심볼 (DB형식 . -> KIS형식 /)
         }
 
         async with httpx.AsyncClient(timeout=5) as cli:
@@ -1069,7 +1070,7 @@ class KISClient:
         params = {
             "AUTH": "",
             "EXCD": excd,  # 거래소코드 (3자리)
-            "SYMB": symbol,
+            "SYMB": to_kis_symbol(symbol),  # 심볼 (DB형식 . -> KIS형식 /)
         }
 
         async with httpx.AsyncClient(timeout=5) as cli:
@@ -1134,7 +1135,7 @@ class KISClient:
         params = {
             "AUTH": "",
             "EXCD": excd,  # 거래소코드 (3자리)
-            "SYMB": symbol,
+            "SYMB": to_kis_symbol(symbol),  # 심볼 (DB형식 . -> KIS형식 /)
             "NMIN": "1",  # 1분봉
             "PINC": "1",  # 1:주가, 2:대비
             "NEXT": "",  # 연속조회
@@ -1525,7 +1526,7 @@ class KISClient:
             "ACNT_PRDT_CD": acnt_prdt_cd,
             "OVRS_EXCG_CD": excd,  # 해외거래소코드 (3자리)
             "OVRS_ORD_UNPR": str(price),  # 해외주문단가 (0: 시장가)
-            "ITEM_CD": symbol,  # 종목코드
+            "ITEM_CD": to_kis_symbol(symbol),  # 종목코드 (DB형식 . -> KIS형식 /)
         }
 
         logging.info(f"해외주식 매수가능금액 조회 - symbol: {symbol}, exchange: {excd}, price: {price}")
@@ -1623,7 +1624,7 @@ class KISClient:
             "CANO": cano,
             "ACNT_PRDT_CD": acnt_prdt_cd,
             "OVRS_EXCG_CD": excd,  # 해외거래소코드 (3자리)
-            "PDNO": symbol,  # 상품번호(종목코드)
+            "PDNO": to_kis_symbol(symbol),  # 상품번호(종목코드) (DB형식 . -> KIS형식 /)
             "ORD_DVSN": ord_dvsn,  # 주문구분 (00:지정가, 01:시장가)
             "ORD_QTY": str(quantity),  # 주문수량
             "OVRS_ORD_UNPR": str(price),  # 해외주문단가 (시장가일 경우 0)
@@ -1888,7 +1889,7 @@ class KISClient:
             "CANO": cano,
             "ACNT_PRDT_CD": acnt_prdt_cd,
             "OVRS_EXCG_CD": exchange_code,  # 해외거래소코드
-            "PDNO": symbol,  # 상품번호(종목코드)
+            "PDNO": to_kis_symbol(symbol),  # 상품번호(종목코드) (DB형식 . -> KIS형식 /)
             "ORGN_ODNO": order_number,  # 원주문번호
             "RVSE_CNCL_DVSN_CD": "02",  # 정정취소구분코드 (01:정정, 02:취소)
             "ORD_QTY": str(quantity),  # 주문수량

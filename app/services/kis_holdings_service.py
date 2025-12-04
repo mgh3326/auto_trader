@@ -3,6 +3,7 @@ Helpers for fetching KIS holdings data.
 """
 import logging
 
+from app.core.symbol import to_db_symbol
 from app.models.manual_holdings import MarketType
 from app.services.kis import KISClient
 
@@ -13,7 +14,7 @@ async def get_kis_holding_for_ticker(
     kis_client: KISClient, ticker: str, market_type: MarketType
 ) -> dict[str, float]:
     """Fetch KIS holding info for a single ticker."""
-    normalized_ticker = ticker.upper()
+    normalized_ticker = to_db_symbol(ticker.upper())
     default = {"quantity": 0, "avg_price": 0.0, "current_price": 0.0}
 
     try:
@@ -29,7 +30,8 @@ async def get_kis_holding_for_ticker(
         else:
             stocks = await kis_client.fetch_overseas_stocks()
             for stock in stocks:
-                if stock.get("ovrs_pdno") == normalized_ticker:
+                # KIS API 응답의 심볼도 정규화하여 비교
+                if to_db_symbol(stock.get("ovrs_pdno", "")) == normalized_ticker:
                     return {
                         "quantity": int(float(stock.get("ovrs_cblc_qty", 0))),
                         "avg_price": float(stock.get("pchs_avg_pric", 0)),

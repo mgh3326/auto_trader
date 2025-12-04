@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional
 from celery import shared_task
 
 from app.analysis.service_analyzers import KISAnalyzer
+from app.core.symbol import to_db_symbol
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.monitoring.error_reporter import get_error_reporter
 from app.services.kis import KISClient
@@ -824,8 +825,10 @@ def execute_overseas_buy_order_task(self, symbol: str) -> dict:
         kis = KISClient()
         try:
             my_stocks = await kis.fetch_my_overseas_stocks()
-            target_stock = next((s for s in my_stocks if s['ovrs_pdno'] == symbol), None)
-            
+            # 심볼 형식 정규화하여 비교
+            normalized_symbol = to_db_symbol(symbol)
+            target_stock = next((s for s in my_stocks if to_db_symbol(s.get('ovrs_pdno', '')) == normalized_symbol), None)
+
             if target_stock:
                 avg_price = float(target_stock['pchs_avg_pric'])
                 current_price = float(target_stock['now_pric2'])
@@ -835,7 +838,7 @@ def execute_overseas_buy_order_task(self, symbol: str) -> dict:
                     avg_price = 0.0  # 신규 매수이므로 평단 없음
                 except Exception as price_error:
                     return {'success': False, 'message': f'현재가 조회 실패: {price_error}'}
-            
+
             res = await process_kis_overseas_buy_orders_with_analysis(kis, symbol, current_price, avg_price)
             return res
         except Exception as e:
@@ -851,8 +854,10 @@ def execute_overseas_sell_order_task(self, symbol: str) -> dict:
         kis = KISClient()
         try:
             my_stocks = await kis.fetch_my_overseas_stocks()
-            target_stock = next((s for s in my_stocks if s['ovrs_pdno'] == symbol), None)
-            
+            # 심볼 형식 정규화하여 비교
+            normalized_symbol = to_db_symbol(symbol)
+            target_stock = next((s for s in my_stocks if to_db_symbol(s.get('ovrs_pdno', '')) == normalized_symbol), None)
+
             if not target_stock:
                 return {'success': False, 'message': '보유 중인 주식이 아닙니다.'}
 
@@ -1230,10 +1235,11 @@ async def _cancel_overseas_pending_orders(
     # sll_buy_dvsn_cd: 01=매도, 02=매수
     target_code = "02" if order_type == "buy" else "01"
 
-    # 해당 종목의 주문만 필터링 (필드명 대소문자 모두 확인)
+    # 해당 종목의 주문만 필터링 (필드명 대소문자 모두 확인, 심볼 형식 정규화)
+    normalized_symbol = to_db_symbol(symbol)
     target_orders = [
         order for order in all_open_orders
-        if (order.get('pdno') or order.get('PDNO')) == symbol
+        if to_db_symbol(order.get('pdno') or order.get('PDNO') or '') == normalized_symbol
         and (order.get('sll_buy_dvsn_cd') or order.get('SLL_BUY_DVSN_CD')) == target_code
     ]
 
@@ -1297,8 +1303,8 @@ def run_per_overseas_stock_automation(self) -> dict:
             # 3. 수동 잔고 종목을 KIS 형식으로 변환하여 병합
             for holding in manual_holdings:
                 ticker = holding.ticker
-                # KIS에 이미 있는 종목은 건너뛰기
-                if any(s.get('ovrs_pdno') == ticker for s in my_stocks):
+                # KIS에 이미 있는 종목은 건너뛰기 (심볼 형식 정규화하여 비교)
+                if any(to_db_symbol(s.get('ovrs_pdno', '')) == ticker for s in my_stocks):
                     continue
 
                 # 수동 잔고 종목을 my_stocks에 추가 (KIS 형식으로 변환)
