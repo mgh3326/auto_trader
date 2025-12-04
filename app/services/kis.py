@@ -985,6 +985,9 @@ class KISClient:
         if not out:
             return pd.DataFrame(columns=["code", "date", "time", "open", "high", "low", "close", "volume"])
 
+        # 디버깅을 위해 전체 응답 로깅
+        logging.debug(f"해외주식 현재가 API 응답 ({symbol}): {out}")
+
         # 현재 시간 정보
         now = datetime.datetime.now()
 
@@ -1005,6 +1008,16 @@ class KISClient:
             except (ValueError, TypeError):
                 return default
 
+        # 현재가(last)가 0이면 전일종가(base)를 사용
+        current_price = safe_float(out.get("last"))
+        if current_price == 0:
+            base_price = safe_float(out.get("base"))
+            if base_price > 0:
+                logging.warning(f"현재가가 0이어서 전일종가를 사용합니다 ({symbol}): {base_price}")
+                current_price = base_price
+            else:
+                logging.warning(f"현재가와 전일종가 모두 0입니다 ({symbol})")
+
         row = {
             "code": symbol,
             "date": pd.Timestamp(now.date()),  # Timestamp로 변환하여 일봉 데이터와 타입 일치
@@ -1012,7 +1025,7 @@ class KISClient:
             "open": safe_float(out.get("open")),
             "high": safe_float(out.get("high")),
             "low": safe_float(out.get("low")),
-            "close": safe_float(out.get("last")),  # 현재가
+            "close": current_price,  # 수정된 현재가
             "volume": safe_int(out.get("tvol")),
             "value": 0,  # 해외주식은 거래대금 정보 없음
         }
