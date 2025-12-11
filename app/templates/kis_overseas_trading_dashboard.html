@@ -830,11 +830,109 @@
         }
 
         async function checkBuyProgress() {
-            checkGenericProgress(buyTaskId, 'buy', buyCheckInterval, STORAGE_KEYS.BUY);
+            if (!buyTaskId) return;
+            try {
+                const response = await fetch(`/kis-overseas-trading/api/analyze-task/${buyTaskId}`);
+                const data = await response.json();
+
+                const progressBar = document.getElementById('buy-progress-bar');
+                const status = document.getElementById('buy-status');
+
+                if (data.state === 'PENDING') {
+                    buyPendingCount++;
+                    if (status) {
+                        if (buyPendingCount > 5) {
+                            status.innerHTML = '대기 시간이 길어지고 있습니다. <a href="#" onclick="localStorage.removeItem(STORAGE_KEYS.BUY); location.reload(); return false;">상태 초기화</a>';
+                        } else {
+                            status.textContent = '작업 대기 중... (서버 응답 대기)';
+                        }
+                    }
+                    return;
+                }
+                buyPendingCount = 0;
+
+                if (data.state === 'PROGRESS' && data.progress) {
+                    const percentage = data.progress.percentage || 0;
+                    progressBar.style.width = percentage + '%';
+                    progressBar.textContent = percentage + '%';
+                    status.textContent = data.progress.status || '진행 중...';
+                } else if (data.state === 'SUCCESS') {
+                    clearInterval(buyCheckInterval);
+                    buyTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.BUY);
+
+                    progressBar.style.width = '100%';
+                    progressBar.textContent = '100%';
+                    status.textContent = '완료!';
+                    showAlert('✅ 매수 작업 완료', 'success');
+
+                    setTimeout(() => {
+                        document.getElementById('buy-btn').disabled = false;
+                        document.getElementById('buy-progress').style.display = 'none';
+                        loadMyStocks();
+                    }, 2000);
+                } else if (data.state === 'FAILURE') {
+                    clearInterval(buyCheckInterval);
+                    buyTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.BUY);
+                    showAlert('❌ 매수 실패: ' + (data.result?.error || '오류'), 'danger');
+                    document.getElementById('buy-btn').disabled = false;
+                    document.getElementById('buy-progress').style.display = 'none';
+                }
+            } catch (e) { console.error(e); }
         }
 
         async function checkSellProgress() {
-            checkGenericProgress(sellTaskId, 'sell', sellCheckInterval, STORAGE_KEYS.SELL);
+            if (!sellTaskId) return;
+            try {
+                const response = await fetch(`/kis-overseas-trading/api/analyze-task/${sellTaskId}`);
+                const data = await response.json();
+
+                const progressBar = document.getElementById('sell-progress-bar');
+                const status = document.getElementById('sell-status');
+
+                if (data.state === 'PENDING') {
+                    sellPendingCount++;
+                    if (status) {
+                        if (sellPendingCount > 5) {
+                            status.innerHTML = '대기 시간이 길어지고 있습니다. <a href="#" onclick="localStorage.removeItem(STORAGE_KEYS.SELL); location.reload(); return false;">상태 초기화</a>';
+                        } else {
+                            status.textContent = '작업 대기 중... (서버 응답 대기)';
+                        }
+                    }
+                    return;
+                }
+                sellPendingCount = 0;
+
+                if (data.state === 'PROGRESS' && data.progress) {
+                    const percentage = data.progress.percentage || 0;
+                    progressBar.style.width = percentage + '%';
+                    progressBar.textContent = percentage + '%';
+                    status.textContent = data.progress.status || '진행 중...';
+                } else if (data.state === 'SUCCESS') {
+                    clearInterval(sellCheckInterval);
+                    sellTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.SELL);
+
+                    progressBar.style.width = '100%';
+                    progressBar.textContent = '100%';
+                    status.textContent = '완료!';
+                    showAlert('✅ 매도 작업 완료', 'success');
+
+                    setTimeout(() => {
+                        document.getElementById('sell-btn').disabled = false;
+                        document.getElementById('sell-progress').style.display = 'none';
+                        loadMyStocks();
+                    }, 2000);
+                } else if (data.state === 'FAILURE') {
+                    clearInterval(sellCheckInterval);
+                    sellTaskId = null;
+                    localStorage.removeItem(STORAGE_KEYS.SELL);
+                    showAlert('❌ 매도 실패: ' + (data.result?.error || '오류'), 'danger');
+                    document.getElementById('sell-btn').disabled = false;
+                    document.getElementById('sell-progress').style.display = 'none';
+                }
+            } catch (e) { console.error(e); }
         }
 
         async function checkGenericProgress(taskId, type, intervalId, storageKey) {
@@ -938,9 +1036,18 @@
                 const logEl = document.getElementById('per-stock-automation-log');
 
                 if (data.state === 'PENDING') {
-                    statusEl.textContent = '작업 대기 중...';
+                    stockAutomationPendingCount++;
+                    if (statusEl) {
+                        if (stockAutomationPendingCount > 5) {
+                            statusEl.innerHTML = '작업 대기 시간이 길어지고 있습니다. <a href="#" onclick="resetPerStockAutomationUI(); return false;">상태 초기화</a>';
+                        } else {
+                            statusEl.textContent = '작업 대기 중... (서버 응답 대기)';
+                        }
+                    }
                     return;
                 }
+
+                stockAutomationPendingCount = 0;
 
                 if (data.state === 'PROGRESS' && data.progress) {
                     const percentage = data.progress.percentage || 0;
@@ -1009,12 +1116,20 @@
 
         function resetPerStockAutomationUI() {
             perStockAutomationRunning = false;
+            stockAutomationPendingCount = 0;
+
             if (stockAutomationInterval) clearInterval(stockAutomationInterval);
             stockAutomationInterval = null;
 
+            stockAutomationTaskId = null;
+            localStorage.removeItem(STORAGE_KEYS.STOCK_AUTOMATION);
+
             const button = document.getElementById('per-stock-automation-btn');
+            const progressWrapper = document.getElementById('per-stock-automation-progress');
+
             button.disabled = false;
             button.innerHTML = '<i class="bi bi-collection-play"></i> 종목별 분석→매수→매도';
+            progressWrapper.style.display = 'none';
         }
 
         function attachStockActionHandlers() {
