@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.13"]
+        python-version: ["3.14"]
 
     services:
       postgres:
@@ -81,7 +81,7 @@ jobs:
   security:
     runs-on: ubuntu-latest
     env:
-      PYTHON_VERSION: "3.13"
+      PYTHON_VERSION: "3.14"
 
     steps:
     - uses: actions/checkout@v4
