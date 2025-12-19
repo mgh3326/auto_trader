@@ -34,13 +34,24 @@ def setup_periodic_tasks(sender, **kwargs):
     pass
 
 
-from celery.signals import worker_process_init, task_failure
+from celery.signals import task_failure, worker_process_init
+
 
 @task_failure.connect
-def handle_task_failure(sender=None, task_id=None, exception=None, args=None, kwargs=None, traceback=None, einfo=None, **kw):
+def handle_task_failure(
+    sender=None,
+    task_id=None,
+    exception=None,
+    args=None,
+    kwargs=None,
+    traceback=None,
+    einfo=None,
+    **kw,
+):
     """Celery 태스크 실패 시 Telegram 알림 전송."""
     import asyncio
     import logging
+
     from app.monitoring.error_reporter import get_error_reporter
 
     logger = logging.getLogger(__name__)
@@ -68,7 +79,9 @@ def handle_task_failure(sender=None, task_id=None, exception=None, args=None, kw
             finally:
                 loop.close()
 
-            logger.info(f"Task failure reported to Telegram: {sender.name if sender else 'unknown'}")
+            logger.info(
+                f"Task failure reported to Telegram: {sender.name if sender else 'unknown'}"
+            )
     except Exception as e:
         logger.error(f"Failed to report task failure to Telegram: {e}")
 
@@ -76,14 +89,16 @@ def handle_task_failure(sender=None, task_id=None, exception=None, args=None, kw
 @worker_process_init.connect
 def init_worker(**kwargs):
     """Initialize monitoring when worker process starts."""
-    from app.core.config import settings
-    from app.monitoring.trade_notifier import get_trade_notifier
-    from app.monitoring.error_reporter import get_error_reporter
-    from redis import Redis
     import logging
-    
+
+    from redis import Redis
+
+    from app.core.config import settings
+    from app.monitoring.error_reporter import get_error_reporter
+    from app.monitoring.trade_notifier import get_trade_notifier
+
     logger = logging.getLogger(__name__)
-    
+
     # Initialize Trade Notifier
     if settings.telegram_token and settings.telegram_chat_id:
         try:
@@ -93,10 +108,10 @@ def init_worker(**kwargs):
                 chat_ids=settings.telegram_chat_ids,
                 enabled=True,
             )
-            logger.info(f"Worker: Trade notifier initialized")
+            logger.info("Worker: Trade notifier initialized")
         except Exception as e:
             logger.error(f"Worker: Failed to initialize trade notifier: {e}")
-            
+
     # Initialize Error Reporter
     if settings.ERROR_REPORTING_ENABLED:
         try:
@@ -105,19 +120,18 @@ def init_worker(**kwargs):
                 decode_responses=True,
                 max_connections=settings.redis_max_connections,
             )
-            
+
             error_reporter = get_error_reporter()
             error_reporter.configure(
                 bot_token=settings.telegram_token,
-                chat_id=settings.ERROR_REPORTING_CHAT_ID or (
+                chat_id=settings.ERROR_REPORTING_CHAT_ID
+                or (
                     settings.telegram_chat_ids[0] if settings.telegram_chat_ids else ""
                 ),
                 redis_client=redis_client,
                 enabled=True,
                 duplicate_window=settings.ERROR_DUPLICATE_WINDOW,
             )
-            logger.info(f"Worker: Error reporter initialized")
+            logger.info("Worker: Error reporter initialized")
         except Exception as e:
             logger.error(f"Worker: Failed to initialize error reporter: {e}")
-
-

@@ -32,6 +32,7 @@ class NotifyChannel(str, enum.Enum):
 
 class UserRole(str, enum.Enum):
     """User roles for permission management."""
+
     admin = "admin"  # 관리자: 모든 권한
     trader = "trader"  # 트레이더: 거래 및 분석 기능
     viewer = "viewer"  # 뷰어: 읽기 전용
@@ -45,7 +46,7 @@ class Exchange(Base):
     country: Mapped[str | None] = mapped_column(Text)
     tz: Mapped[str] = mapped_column(Text, nullable=False, default="Asia/Seoul")
 
-    instruments: Mapped[list["Instrument"]] = relationship(back_populates="exchange")
+    instruments: Mapped[list[Instrument]] = relationship(back_populates="exchange")
 
 
 class Instrument(Base):
@@ -62,7 +63,7 @@ class Instrument(Base):
     tick_size: Mapped[float] = mapped_column(Numeric(18, 8), default=0.01)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
-    exchange: Mapped["Exchange"] = relationship(back_populates="instruments")
+    exchange: Mapped[Exchange] = relationship(back_populates="instruments")
 
 
 class User(Base):
@@ -99,7 +100,7 @@ class RefreshToken(Base):
         TIMESTAMP(timezone=True), server_default="now()", nullable=False
     )
 
-    user: Mapped["User"] = relationship("User", backref="refresh_tokens")
+    user: Mapped[User] = relationship("User", backref="refresh_tokens")
 
 
 class UserChannel(Base):

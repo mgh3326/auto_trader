@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock
+
 from app.auth.security import get_password_hash
 from app.models.trading import User
 
@@ -51,7 +52,7 @@ def test_login_success(auth_test_client, auth_mock_session):
         username="testuser",
         email="test@example.com",
         hashed_password=hashed_password,
-        is_active=True
+        is_active=True,
     )
 
     mock_result = MagicMock()
@@ -59,11 +60,7 @@ def test_login_success(auth_test_client, auth_mock_session):
     auth_mock_session.execute.return_value = mock_result
 
     response = auth_test_client.post(
-        "/auth/login",
-        data={
-            "username": "testuser",
-            "password": "password123"
-        }
+        "/auth/login", data={"username": "testuser", "password": "password123"}
     )
     assert response.status_code == 200
     data = response.json()
@@ -80,7 +77,7 @@ def test_login_invalid_credentials(auth_test_client, auth_mock_session):
         username="testuser",
         email="test@example.com",
         hashed_password=hashed_password,
-        is_active=True
+        is_active=True,
     )
 
     mock_result = MagicMock()
@@ -88,11 +85,7 @@ def test_login_invalid_credentials(auth_test_client, auth_mock_session):
     auth_mock_session.execute.return_value = mock_result
 
     response = auth_test_client.post(
-        "/auth/login",
-        data={
-            "username": "testuser",
-            "password": "wrongpassword"
-        }
+        "/auth/login", data={"username": "testuser", "password": "wrongpassword"}
     )
     assert response.status_code == 401
     assert response.json()["detail"] == "Incorrect username or password"

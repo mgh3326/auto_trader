@@ -1,4 +1,5 @@
 """Centralized role hierarchy helpers."""
+
 from enum import IntEnum
 
 from app.models.trading import UserRole
@@ -12,7 +13,7 @@ class RoleHierarchy(IntEnum):
     admin = 2
 
     @classmethod
-    def from_user_role(cls, role: UserRole) -> "RoleHierarchy":
+    def from_user_role(cls, role: UserRole) -> RoleHierarchy:
         """Convert UserRole to comparable hierarchy level."""
         return cls[role.value]
 

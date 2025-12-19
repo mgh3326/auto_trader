@@ -4,22 +4,21 @@ Symbol Trade Settings Router
 종목별 분할 매수 수량 설정 API
 사용자별 기본 거래 설정도 관리
 """
-from typing import Annotated, List, Optional
+
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.web_router import get_current_user_from_session
 from app.core.db import get_db
 from app.models.trading import InstrumentType, User
-from app.auth.dependencies import get_current_user
-from app.auth.web_router import get_current_user_from_session
+from app.services.stock_info_service import StockAnalysisService
 from app.services.symbol_trade_settings_service import (
     SymbolTradeSettingsService,
     UserTradeDefaultsService,
     calculate_estimated_order_cost,
 )
-from app.services.stock_info_service import StockAnalysisService
 
 router = APIRouter(prefix="/api/symbol-settings", tags=["symbol-settings"])
 
@@ -68,34 +67,31 @@ class SymbolSettingsCreate(BaseModel):
     instrument_type: InstrumentType = Field(
         ..., description="상품 타입 (equity_kr, equity_us, crypto)"
     )
-    buy_quantity_per_order: float = Field(
-        ..., gt=0, description="주문당 매수 수량"
-    )
+    buy_quantity_per_order: float = Field(..., gt=0, description="주문당 매수 수량")
     buy_price_levels: int = Field(
-        default=4, ge=1, le=4,
-        description="주문할 가격대 수 (1~4). 1: appropriate_buy_min만, 4: 전체 4개"
+        default=4,
+        ge=1,
+        le=4,
+        description="주문할 가격대 수 (1~4). 1: appropriate_buy_min만, 4: 전체 4개",
     )
-    exchange_code: Optional[str] = Field(
+    exchange_code: str | None = Field(
         None, description="해외주식 거래소 코드 (NASD, NYSE 등)"
     )
-    note: Optional[str] = Field(None, description="메모")
+    note: str | None = Field(None, description="메모")
 
 
 class SymbolSettingsUpdate(BaseModel):
     """설정 업데이트 요청"""
 
-    buy_quantity_per_order: Optional[float] = Field(
+    buy_quantity_per_order: float | None = Field(
         None, gt=0, description="주문당 매수 수량"
     )
-    buy_price_levels: Optional[int] = Field(
-        None, ge=1, le=4,
-        description="주문할 가격대 수 (1~4)"
+    buy_price_levels: int | None = Field(
+        None, ge=1, le=4, description="주문할 가격대 수 (1~4)"
     )
-    exchange_code: Optional[str] = Field(
-        None, description="해외주식 거래소 코드"
-    )
-    is_active: Optional[bool] = Field(None, description="활성화 여부")
-    note: Optional[str] = Field(None, description="메모")
+    exchange_code: str | None = Field(None, description="해외주식 거래소 코드")
+    is_active: bool | None = Field(None, description="활성화 여부")
+    note: str | None = Field(None, description="메모")
 
 
 class SymbolSettingsResponse(BaseModel):
@@ -106,9 +102,9 @@ class SymbolSettingsResponse(BaseModel):
     instrument_type: str
     buy_quantity_per_order: float
     buy_price_levels: int
-    exchange_code: Optional[str]
+    exchange_code: str | None
     is_active: bool
-    note: Optional[str]
+    note: str | None
     created_at: str
     updated_at: str
 
@@ -121,7 +117,7 @@ class EstimatedCostResponse(BaseModel):
 
     symbol: str
     quantity_per_order: float
-    buy_prices: List[dict]
+    buy_prices: list[dict]
     total_orders: int
     total_quantity: float
     total_cost: float
@@ -131,30 +127,32 @@ class EstimatedCostResponse(BaseModel):
 class AllEstimatedCostResponse(BaseModel):
     """전체 예상 비용 응답"""
 
-    symbols: List[EstimatedCostResponse]
+    symbols: list[EstimatedCostResponse]
     grand_total_cost: float
     total_symbols: int
     pending_buy_orders_cost: float = 0.0  # 기존 미체결 매수 주문 총액
-    net_estimated_cost: float = 0.0  # 순 예상 비용 (grand_total_cost - pending_buy_orders_cost)
+    net_estimated_cost: float = (
+        0.0  # 순 예상 비용 (grand_total_cost - pending_buy_orders_cost)
+    )
 
 
 # 사용자 기본 설정 Pydantic 모델
 class UserTradeDefaultsUpdate(BaseModel):
     """사용자 기본 설정 업데이트 요청"""
 
-    crypto_default_buy_amount: Optional[float] = Field(
+    crypto_default_buy_amount: float | None = Field(
         None, gt=0, description="암호화폐 기본 매수 금액 (KRW)"
     )
-    crypto_min_order_amount: Optional[float] = Field(
+    crypto_min_order_amount: float | None = Field(
         None, gt=0, description="암호화폐 최소 주문 금액 (KRW)"
     )
-    equity_kr_default_buy_quantity: Optional[float] = Field(
+    equity_kr_default_buy_quantity: float | None = Field(
         None, ge=0, description="국내주식 기본 매수 수량 (0이면 매수 안함)"
     )
-    equity_us_default_buy_quantity: Optional[float] = Field(
+    equity_us_default_buy_quantity: float | None = Field(
         None, ge=0, description="해외주식 기본 매수 수량 (0이면 매수 안함)"
     )
-    equity_us_default_buy_amount: Optional[float] = Field(
+    equity_us_default_buy_amount: float | None = Field(
         None, ge=0, description="해외주식 기본 매수 금액 (USD, 0이면 매수 안함)"
     )
 
@@ -166,9 +164,9 @@ class UserTradeDefaultsResponse(BaseModel):
     user_id: int
     crypto_default_buy_amount: float
     crypto_min_order_amount: float
-    equity_kr_default_buy_quantity: Optional[float]
-    equity_us_default_buy_quantity: Optional[float]
-    equity_us_default_buy_amount: Optional[float]
+    equity_kr_default_buy_quantity: float | None
+    equity_us_default_buy_quantity: float | None
+    equity_us_default_buy_amount: float | None
     is_active: bool
     created_at: str
     updated_at: str
@@ -180,6 +178,7 @@ class UserTradeDefaultsResponse(BaseModel):
 # ==========================================
 # 사용자 기본 설정 API 엔드포인트
 # ==========================================
+
 
 @router.get("/user-defaults", response_model=UserTradeDefaultsResponse)
 async def get_user_defaults(
@@ -196,9 +195,15 @@ async def get_user_defaults(
         user_id=defaults.user_id,
         crypto_default_buy_amount=float(defaults.crypto_default_buy_amount),
         crypto_min_order_amount=float(defaults.crypto_min_order_amount),
-        equity_kr_default_buy_quantity=float(defaults.equity_kr_default_buy_quantity) if defaults.equity_kr_default_buy_quantity else None,
-        equity_us_default_buy_quantity=float(defaults.equity_us_default_buy_quantity) if defaults.equity_us_default_buy_quantity else None,
-        equity_us_default_buy_amount=float(defaults.equity_us_default_buy_amount) if defaults.equity_us_default_buy_amount else None,
+        equity_kr_default_buy_quantity=float(defaults.equity_kr_default_buy_quantity)
+        if defaults.equity_kr_default_buy_quantity
+        else None,
+        equity_us_default_buy_quantity=float(defaults.equity_us_default_buy_quantity)
+        if defaults.equity_us_default_buy_quantity
+        else None,
+        equity_us_default_buy_amount=float(defaults.equity_us_default_buy_amount)
+        if defaults.equity_us_default_buy_amount
+        else None,
         is_active=defaults.is_active,
         created_at=str(defaults.created_at),
         updated_at=str(defaults.updated_at),
@@ -238,9 +243,15 @@ async def update_user_defaults(
         user_id=defaults.user_id,
         crypto_default_buy_amount=float(defaults.crypto_default_buy_amount),
         crypto_min_order_amount=float(defaults.crypto_min_order_amount),
-        equity_kr_default_buy_quantity=float(defaults.equity_kr_default_buy_quantity) if defaults.equity_kr_default_buy_quantity else None,
-        equity_us_default_buy_quantity=float(defaults.equity_us_default_buy_quantity) if defaults.equity_us_default_buy_quantity else None,
-        equity_us_default_buy_amount=float(defaults.equity_us_default_buy_amount) if defaults.equity_us_default_buy_amount else None,
+        equity_kr_default_buy_quantity=float(defaults.equity_kr_default_buy_quantity)
+        if defaults.equity_kr_default_buy_quantity
+        else None,
+        equity_us_default_buy_quantity=float(defaults.equity_us_default_buy_quantity)
+        if defaults.equity_us_default_buy_quantity
+        else None,
+        equity_us_default_buy_amount=float(defaults.equity_us_default_buy_amount)
+        if defaults.equity_us_default_buy_amount
+        else None,
         is_active=defaults.is_active,
         created_at=str(defaults.created_at),
         updated_at=str(defaults.updated_at),
@@ -250,11 +261,11 @@ async def update_user_defaults(
 # ==========================================
 # 종목별 설정 API 엔드포인트
 # ==========================================
-@router.get("/symbols", response_model=List[SymbolSettingsResponse])
+@router.get("/symbols", response_model=list[SymbolSettingsResponse])
 async def get_all_settings(
     request: Request,
     active_only: bool = True,
-    instrument_type: Optional[InstrumentType] = None,
+    instrument_type: InstrumentType | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """현재 사용자의 모든 종목 설정 조회"""
@@ -302,33 +313,51 @@ async def get_domestic_estimated_costs(
 
     # 국내 주식 설정만 조회
     all_settings = await settings_service.get_all(user.id, active_only=True)
-    domestic_settings = [s for s in all_settings if s.instrument_type == InstrumentType.equity_kr]
+    domestic_settings = [
+        s for s in all_settings if s.instrument_type == InstrumentType.equity_kr
+    ]
 
     results = []
     grand_total = 0.0
 
     for settings_obj in domestic_settings:
         # 분석 결과 조회
-        analysis = await analysis_service.get_latest_analysis_by_symbol(settings_obj.symbol)
+        analysis = await analysis_service.get_latest_analysis_by_symbol(
+            settings_obj.symbol
+        )
         if not analysis:
             continue
 
         # 매수 가격 추출
         buy_prices = []
         if analysis.appropriate_buy_min is not None:
-            buy_prices.append({"price_name": "appropriate_buy_min", "price": float(analysis.appropriate_buy_min)})
+            buy_prices.append(
+                {
+                    "price_name": "appropriate_buy_min",
+                    "price": float(analysis.appropriate_buy_min),
+                }
+            )
         if analysis.appropriate_buy_max is not None:
-            buy_prices.append({"price_name": "appropriate_buy_max", "price": float(analysis.appropriate_buy_max)})
+            buy_prices.append(
+                {
+                    "price_name": "appropriate_buy_max",
+                    "price": float(analysis.appropriate_buy_max),
+                }
+            )
         if analysis.buy_hope_min is not None:
-            buy_prices.append({"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)})
+            buy_prices.append(
+                {"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)}
+            )
         if analysis.buy_hope_max is not None:
-            buy_prices.append({"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)})
+            buy_prices.append(
+                {"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)}
+            )
 
         if not buy_prices:
             continue
 
         # buy_price_levels에 따라 가격대 제한
-        limited_buy_prices = buy_prices[:settings_obj.buy_price_levels]
+        limited_buy_prices = buy_prices[: settings_obj.buy_price_levels]
 
         # 예상 비용 계산
         result = calculate_estimated_order_cost(
@@ -354,6 +383,7 @@ async def get_domestic_estimated_costs(
                 pending_buy_cost += qty * price
     except Exception as e:
         import logging
+
         logging.warning(f"미체결 주문 조회 실패 (계속 진행): {e}")
 
     net_cost = max(0.0, grand_total - pending_buy_cost)
@@ -385,33 +415,51 @@ async def get_overseas_estimated_costs(
 
     # 해외 주식 설정만 조회
     all_settings = await settings_service.get_all(user.id, active_only=True)
-    overseas_settings = [s for s in all_settings if s.instrument_type == InstrumentType.equity_us]
+    overseas_settings = [
+        s for s in all_settings if s.instrument_type == InstrumentType.equity_us
+    ]
 
     results = []
     grand_total = 0.0
 
     for settings_obj in overseas_settings:
         # 분석 결과 조회
-        analysis = await analysis_service.get_latest_analysis_by_symbol(settings_obj.symbol)
+        analysis = await analysis_service.get_latest_analysis_by_symbol(
+            settings_obj.symbol
+        )
         if not analysis:
             continue
 
         # 매수 가격 추출
         buy_prices = []
         if analysis.appropriate_buy_min is not None:
-            buy_prices.append({"price_name": "appropriate_buy_min", "price": float(analysis.appropriate_buy_min)})
+            buy_prices.append(
+                {
+                    "price_name": "appropriate_buy_min",
+                    "price": float(analysis.appropriate_buy_min),
+                }
+            )
         if analysis.appropriate_buy_max is not None:
-            buy_prices.append({"price_name": "appropriate_buy_max", "price": float(analysis.appropriate_buy_max)})
+            buy_prices.append(
+                {
+                    "price_name": "appropriate_buy_max",
+                    "price": float(analysis.appropriate_buy_max),
+                }
+            )
         if analysis.buy_hope_min is not None:
-            buy_prices.append({"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)})
+            buy_prices.append(
+                {"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)}
+            )
         if analysis.buy_hope_max is not None:
-            buy_prices.append({"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)})
+            buy_prices.append(
+                {"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)}
+            )
 
         if not buy_prices:
             continue
 
         # buy_price_levels에 따라 가격대 제한
-        limited_buy_prices = buy_prices[:settings_obj.buy_price_levels]
+        limited_buy_prices = buy_prices[: settings_obj.buy_price_levels]
 
         # 예상 비용 계산 (USD)
         result = calculate_estimated_order_cost(
@@ -437,6 +485,7 @@ async def get_overseas_estimated_costs(
                 pending_buy_cost += qty * price
     except Exception as e:
         import logging
+
         logging.warning(f"해외 미체결 주문 조회 실패 (계속 진행): {e}")
 
     net_cost = max(0.0, grand_total - pending_buy_cost)
@@ -471,26 +520,44 @@ async def get_all_estimated_costs(
 
     for settings_obj in all_settings:
         # 분석 결과 조회
-        analysis = await analysis_service.get_latest_analysis_by_symbol(settings_obj.symbol)
+        analysis = await analysis_service.get_latest_analysis_by_symbol(
+            settings_obj.symbol
+        )
         if not analysis:
             continue
 
         # 매수 가격 추출
         buy_prices = []
         if analysis.appropriate_buy_min is not None:
-            buy_prices.append({"price_name": "appropriate_buy_min", "price": float(analysis.appropriate_buy_min)})
+            buy_prices.append(
+                {
+                    "price_name": "appropriate_buy_min",
+                    "price": float(analysis.appropriate_buy_min),
+                }
+            )
         if analysis.appropriate_buy_max is not None:
-            buy_prices.append({"price_name": "appropriate_buy_max", "price": float(analysis.appropriate_buy_max)})
+            buy_prices.append(
+                {
+                    "price_name": "appropriate_buy_max",
+                    "price": float(analysis.appropriate_buy_max),
+                }
+            )
         if analysis.buy_hope_min is not None:
-            buy_prices.append({"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)})
+            buy_prices.append(
+                {"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)}
+            )
         if analysis.buy_hope_max is not None:
-            buy_prices.append({"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)})
+            buy_prices.append(
+                {"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)}
+            )
 
         if not buy_prices:
             continue
 
         # 통화 결정
-        currency = "USD" if settings_obj.instrument_type == InstrumentType.equity_us else "KRW"
+        currency = (
+            "USD" if settings_obj.instrument_type == InstrumentType.equity_us else "KRW"
+        )
 
         # 예상 비용 계산
         result = calculate_estimated_order_cost(
@@ -524,10 +591,11 @@ async def get_crypto_estimated_costs(
     - 종목 설정이 없으면 사용자 기본 설정(crypto_default_buy_amount) 또는 10,000원 사용
     기존 미체결 매수 주문 금액을 차감한 순 비용을 반환합니다.
     """
-    from app.services import upbit
-    from app.analysis.service_analyzers import UpbitAnalyzer
-    from data.coins_info import upbit_pairs
     import logging
+
+    from app.analysis.service_analyzers import UpbitAnalyzer
+    from app.services import upbit
+    from data.coins_info import upbit_pairs
 
     user = await get_user_from_request(request, db)
     settings_service = SymbolTradeSettingsService(db)
@@ -536,7 +604,9 @@ async def get_crypto_estimated_costs(
 
     # 사용자 기본 설정에서 기본 매수 금액 조회
     user_defaults = await defaults_service.get_or_create(user.id)
-    default_buy_amount = float(user_defaults.crypto_default_buy_amount) if user_defaults else 10000.0
+    default_buy_amount = (
+        float(user_defaults.crypto_default_buy_amount) if user_defaults else 10000.0
+    )
 
     # 보유 코인 조회
     await upbit_pairs.prime_upbit_constants()
@@ -545,7 +615,8 @@ async def get_crypto_estimated_costs(
 
     # 거래 가능한 코인만 필터링
     tradable_coins = [
-        coin for coin in my_coins
+        coin
+        for coin in my_coins
         if coin.get("currency") != "KRW"
         and analyzer.is_tradable(coin)
         and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
@@ -553,7 +624,9 @@ async def get_crypto_estimated_costs(
 
     # 종목별 설정 조회
     all_settings = await settings_service.get_all(user.id, active_only=True)
-    settings_map = {s.symbol: s for s in all_settings if s.instrument_type == InstrumentType.crypto}
+    settings_map = {
+        s.symbol: s for s in all_settings if s.instrument_type == InstrumentType.crypto
+    }
 
     results = []
     grand_total = 0.0
@@ -570,13 +643,27 @@ async def get_crypto_estimated_costs(
         # 매수 가격 추출
         buy_prices = []
         if analysis.appropriate_buy_min is not None:
-            buy_prices.append({"price_name": "appropriate_buy_min", "price": float(analysis.appropriate_buy_min)})
+            buy_prices.append(
+                {
+                    "price_name": "appropriate_buy_min",
+                    "price": float(analysis.appropriate_buy_min),
+                }
+            )
         if analysis.appropriate_buy_max is not None:
-            buy_prices.append({"price_name": "appropriate_buy_max", "price": float(analysis.appropriate_buy_max)})
+            buy_prices.append(
+                {
+                    "price_name": "appropriate_buy_max",
+                    "price": float(analysis.appropriate_buy_max),
+                }
+            )
         if analysis.buy_hope_min is not None:
-            buy_prices.append({"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)})
+            buy_prices.append(
+                {"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)}
+            )
         if analysis.buy_hope_max is not None:
-            buy_prices.append({"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)})
+            buy_prices.append(
+                {"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)}
+            )
 
         if not buy_prices:
             continue
@@ -610,7 +697,10 @@ async def get_crypto_estimated_costs(
                 for p in limited_buy_prices
             ],
             "total_orders": len(limited_buy_prices),
-            "total_quantity": sum(buy_amount / p["price"] if p["price"] > 0 else 0 for p in limited_buy_prices),
+            "total_quantity": sum(
+                buy_amount / p["price"] if p["price"] > 0 else 0
+                for p in limited_buy_prices
+            ),
             "total_cost": total_cost,
             "currency": "KRW",
         }
@@ -681,7 +771,11 @@ async def get_settings_by_symbol(
     )
 
 
-@router.post("/symbols", response_model=SymbolSettingsResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/symbols",
+    response_model=SymbolSettingsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_settings(
     request_data: SymbolSettingsCreate,
     request: Request,
@@ -703,6 +797,7 @@ async def create_settings(
     exchange_code = request_data.exchange_code
     if request_data.instrument_type == InstrumentType.equity_us and not exchange_code:
         from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
+
         exchange_code = get_exchange_by_symbol(request_data.symbol)
         # 조회 실패 시 기본값 NASD
         if not exchange_code:
@@ -834,13 +929,27 @@ async def get_estimated_cost(
     # 매수 가격 추출
     buy_prices = []
     if analysis.appropriate_buy_min is not None:
-        buy_prices.append({"price_name": "appropriate_buy_min", "price": float(analysis.appropriate_buy_min)})
+        buy_prices.append(
+            {
+                "price_name": "appropriate_buy_min",
+                "price": float(analysis.appropriate_buy_min),
+            }
+        )
     if analysis.appropriate_buy_max is not None:
-        buy_prices.append({"price_name": "appropriate_buy_max", "price": float(analysis.appropriate_buy_max)})
+        buy_prices.append(
+            {
+                "price_name": "appropriate_buy_max",
+                "price": float(analysis.appropriate_buy_max),
+            }
+        )
     if analysis.buy_hope_min is not None:
-        buy_prices.append({"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)})
+        buy_prices.append(
+            {"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)}
+        )
     if analysis.buy_hope_max is not None:
-        buy_prices.append({"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)})
+        buy_prices.append(
+            {"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)}
+        )
 
     if not buy_prices:
         raise HTTPException(
@@ -849,7 +958,9 @@ async def get_estimated_cost(
         )
 
     # 통화 결정
-    currency = "USD" if settings_obj.instrument_type == InstrumentType.equity_us else "KRW"
+    currency = (
+        "USD" if settings_obj.instrument_type == InstrumentType.equity_us else "KRW"
+    )
 
     # 예상 비용 계산
     result = calculate_estimated_order_cost(

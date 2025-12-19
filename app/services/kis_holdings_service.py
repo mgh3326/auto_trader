@@ -1,6 +1,7 @@
 """
 Helpers for fetching KIS holdings data.
 """
+
 import logging
 
 from app.core.symbol import to_db_symbol

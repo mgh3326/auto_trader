@@ -9,7 +9,6 @@ Features:
 """
 
 import logging
-from typing import Dict, List, Optional
 
 import httpx
 
@@ -23,7 +22,7 @@ class TradeNotifier:
     Singleton trade notifier with Telegram integration.
     """
 
-    _instance: Optional["TradeNotifier"] = None
+    _instance: TradeNotifier | None = None
     _initialized: bool = False
 
     def __new__(cls):
@@ -34,16 +33,16 @@ class TradeNotifier:
     def __init__(self):
         """Initialize TradeNotifier (only once due to singleton pattern)."""
         if not self._initialized:
-            self._bot_token: Optional[str] = None
-            self._chat_ids: List[str] = []
+            self._bot_token: str | None = None
+            self._chat_ids: list[str] = []
             self._enabled: bool = False
-            self._http_client: Optional[httpx.AsyncClient] = None
+            self._http_client: httpx.AsyncClient | None = None
             TradeNotifier._initialized = True
 
     def configure(
         self,
         bot_token: str,
-        chat_ids: List[str],
+        chat_ids: list[str],
         enabled: bool = True,
     ) -> None:
         """
@@ -60,9 +59,7 @@ class TradeNotifier:
 
         if enabled and not self._http_client:
             self._http_client = httpx.AsyncClient(timeout=10.0)
-            logger.info(
-                f"TradeNotifier configured: {len(chat_ids)} chat(s)"
-            )
+            logger.info(f"TradeNotifier configured: {len(chat_ids)} chat(s)")
 
     async def shutdown(self) -> None:
         """Shutdown HTTP client."""
@@ -79,8 +76,8 @@ class TradeNotifier:
         korean_name: str,
         order_count: int,
         total_amount: float,
-        prices: List[float],
-        volumes: List[float],
+        prices: list[float],
+        volumes: list[float],
         market_type: str = "암호화폐",
     ) -> str:
         """
@@ -114,7 +111,7 @@ class TradeNotifier:
         if prices and volumes and len(prices) == len(volumes):
             parts.append("")
             parts.append("*주문 상세:*")
-            for i, (price, volume) in enumerate(zip(prices, volumes), 1):
+            for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
                 parts.append(f"  {i}. 가격: {price:,.2f}원 × 수량: {volume:.8g}")
         elif prices:
             parts.append("")
@@ -130,8 +127,8 @@ class TradeNotifier:
         korean_name: str,
         order_count: int,
         total_volume: float,
-        prices: List[float],
-        volumes: List[float],
+        prices: list[float],
+        volumes: list[float],
         expected_amount: float,
         market_type: str = "암호화폐",
     ) -> str:
@@ -168,7 +165,7 @@ class TradeNotifier:
         if prices and volumes and len(prices) == len(volumes):
             parts.append("")
             parts.append("*주문 상세:*")
-            for i, (price, volume) in enumerate(zip(prices, volumes), 1):
+            for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
                 parts.append(f"  {i}. 가격: {price:,.2f}원 × 수량: {volume:.8g}")
         elif prices:
             parts.append("")
@@ -219,7 +216,7 @@ class TradeNotifier:
         korean_name: str,
         decision: str,
         confidence: float,
-        reasons: List[str],
+        reasons: list[str],
         market_type: str = "암호화폐",
     ) -> str:
         """
@@ -239,16 +236,8 @@ class TradeNotifier:
         timestamp = format_datetime()
 
         # Decision emoji mapping
-        decision_emoji = {
-            "buy": "🟢",
-            "hold": "🟡",
-            "sell": "🔴"
-        }
-        decision_text = {
-            "buy": "매수",
-            "hold": "보유",
-            "sell": "매도"
-        }
+        decision_emoji = {"buy": "🟢", "hold": "🟡", "sell": "🔴"}
+        decision_text = {"buy": "매수", "hold": "보유", "sell": "매도"}
 
         emoji = decision_emoji.get(decision.lower(), "⚪")
         decision_kr = decision_text.get(decision.lower(), decision)
@@ -262,7 +251,7 @@ class TradeNotifier:
             f"*판단:* {decision_kr}",
             f"*신뢰도:* {confidence:.1f}%",
             "",
-            "*주요 근거:*"
+            "*주요 근거:*",
         ]
 
         # Add reasons
@@ -346,9 +335,7 @@ class TradeNotifier:
                 success_count += 1
 
             except Exception as e:
-                logger.error(
-                    f"Failed to send notification to chat {chat_id}: {e}"
-                )
+                logger.error(f"Failed to send notification to chat {chat_id}: {e}")
 
         if success_count > 0:
             logger.info(f"Notification sent to {success_count} chat(s)")
@@ -361,8 +348,8 @@ class TradeNotifier:
         korean_name: str,
         order_count: int,
         total_amount: float,
-        prices: List[float],
-        volumes: List[float],
+        prices: list[float],
+        volumes: list[float],
         market_type: str = "암호화폐",
     ) -> bool:
         """Send buy order notification."""
@@ -371,8 +358,13 @@ class TradeNotifier:
 
         try:
             message = self._format_buy_notification(
-                symbol, korean_name, order_count, total_amount,
-                prices, volumes, market_type
+                symbol,
+                korean_name,
+                order_count,
+                total_amount,
+                prices,
+                volumes,
+                market_type,
             )
             return await self._send_to_telegram(message)
         except Exception as e:
@@ -385,8 +377,8 @@ class TradeNotifier:
         korean_name: str,
         order_count: int,
         total_volume: float,
-        prices: List[float],
-        volumes: List[float],
+        prices: list[float],
+        volumes: list[float],
         expected_amount: float,
         market_type: str = "암호화폐",
     ) -> bool:
@@ -396,8 +388,14 @@ class TradeNotifier:
 
         try:
             message = self._format_sell_notification(
-                symbol, korean_name, order_count, total_volume,
-                prices, volumes, expected_amount, market_type
+                symbol,
+                korean_name,
+                order_count,
+                total_volume,
+                prices,
+                volumes,
+                expected_amount,
+                market_type,
             )
             return await self._send_to_telegram(message)
         except Exception as e:
@@ -431,7 +429,7 @@ class TradeNotifier:
         korean_name: str,
         decision: str,
         confidence: float,
-        reasons: List[str],
+        reasons: list[str],
         market_type: str = "암호화폐",
     ) -> bool:
         """Send AI analysis completion notification."""
@@ -440,8 +438,7 @@ class TradeNotifier:
 
         try:
             message = self._format_analysis_notification(
-                symbol, korean_name, decision, confidence,
-                reasons, market_type
+                symbol, korean_name, decision, confidence, reasons, market_type
             )
             return await self._send_to_telegram(message)
         except Exception as e:
@@ -556,7 +553,9 @@ class TradeNotifier:
             Markdown-formatted notification message
         """
         is_usd = currency == "$"
-        price_fmt = lambda p: f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
+
+        def price_fmt(p: float) -> str:
+            return f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
 
         parts = [
             f"📈 *\\[토스 수동매수\\] {korean_name}*",
@@ -566,13 +565,17 @@ class TradeNotifier:
         ]
 
         if kis_quantity and kis_quantity > 0 and kis_avg_price:
-            parts.append(f"*한투 보유:* {kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})")
+            parts.append(
+                f"*한투 보유:* {kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})"
+            )
 
-        parts.extend([
-            "",
-            f"💡 *추천 매수가:* {price_fmt(recommended_price)}",
-            f"*추천 수량:* {recommended_quantity}주",
-        ])
+        parts.extend(
+            [
+                "",
+                f"💡 *추천 매수가:* {price_fmt(recommended_price)}",
+                f"*추천 수량:* {recommended_quantity}주",
+            ]
+        )
 
         return "\n".join(parts)
 
@@ -614,7 +617,10 @@ class TradeNotifier:
             Markdown-formatted notification message
         """
         is_usd = currency == "$"
-        price_fmt = lambda p: f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
+
+        def price_fmt(p: float) -> str:
+            return f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
+
         profit_sign = "+" if profit_percent >= 0 else ""
 
         parts = [
@@ -625,14 +631,18 @@ class TradeNotifier:
         ]
 
         if kis_quantity and kis_quantity > 0 and kis_avg_price:
-            parts.append(f"*한투 보유:* {kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})")
+            parts.append(
+                f"*한투 보유:* {kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})"
+            )
 
-        parts.extend([
-            "",
-            f"💡 *추천 매도가:* {price_fmt(recommended_price)} ({profit_sign}{profit_percent:.1f}%)",
-            f"*추천 수량:* {recommended_quantity}주",
-            f"*예상 수익:* {price_fmt(expected_profit)}",
-        ])
+        parts.extend(
+            [
+                "",
+                f"💡 *추천 매도가:* {price_fmt(recommended_price)} ({profit_sign}{profit_percent:.1f}%)",
+                f"*추천 수량:* {recommended_quantity}주",
+                f"*예상 수익:* {price_fmt(expected_profit)}",
+            ]
+        )
 
         return "\n".join(parts)
 
@@ -662,7 +672,9 @@ class TradeNotifier:
             return False
 
         if toss_quantity <= 0:
-            logger.debug(f"Skipping Toss buy notification for {symbol}: no Toss holdings")
+            logger.debug(
+                f"Skipping Toss buy notification for {symbol}: no Toss holdings"
+            )
             return False
 
         try:
@@ -712,7 +724,9 @@ class TradeNotifier:
             return False
 
         if toss_quantity <= 0:
-            logger.debug(f"Skipping Toss sell notification for {symbol}: no Toss holdings")
+            logger.debug(
+                f"Skipping Toss sell notification for {symbol}: no Toss holdings"
+            )
             return False
 
         try:
@@ -738,11 +752,7 @@ class TradeNotifier:
 
     def _escape_html(self, text: str) -> str:
         """Escape HTML special characters for Telegram HTML parse mode."""
-        return (
-            text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     def _format_toss_price_recommendation_html(
         self,
@@ -753,7 +763,7 @@ class TradeNotifier:
         toss_avg_price: float,
         decision: str,
         confidence: float,
-        reasons: List[str],
+        reasons: list[str],
         appropriate_buy_min: float | None,
         appropriate_buy_max: float | None,
         appropriate_sell_min: float | None,
@@ -768,10 +778,14 @@ class TradeNotifier:
         Format Toss price recommendation notification with AI analysis (HTML format).
         """
         is_usd = currency == "$"
-        price_fmt = lambda p: f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
+
+        def price_fmt(p: float) -> str:
+            return f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
 
         # 수익률 계산
-        profit_percent = ((current_price / toss_avg_price) - 1) * 100 if toss_avg_price > 0 else 0
+        profit_percent = (
+            ((current_price / toss_avg_price) - 1) * 100 if toss_avg_price > 0 else 0
+        )
         profit_sign = "+" if profit_percent >= 0 else ""
 
         # Decision emoji mapping
@@ -849,7 +863,7 @@ class TradeNotifier:
         toss_avg_price: float,
         decision: str,
         confidence: float,
-        reasons: List[str],
+        reasons: list[str],
         appropriate_buy_min: float | None,
         appropriate_buy_max: float | None,
         appropriate_sell_min: float | None,

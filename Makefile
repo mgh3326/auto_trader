@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-unit test-integration test-cov lint format clean
+.PHONY: help install install-dev test test-unit test-integration test-cov lint format lint-ruff format-ruff clean
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -37,6 +37,13 @@ lint: ## Run linting checks
 format: ## Format code
 	uv run black app/ tests/
 	uv run isort app/ tests/
+
+lint-ruff: ## Run Ruff linting
+	uv run ruff check app/ tests/
+
+format-ruff: ## Format with Ruff
+	uv run ruff format app/ tests/
+	uv run ruff check --fix app/ tests/
 
 security: ## Run security checks
 	uv run bandit -r app/

@@ -1,6 +1,7 @@
 """
 Test environment settings and configuration.
 """
+
 import os
 from unittest.mock import patch
 
@@ -26,9 +27,11 @@ def test_env():
 @pytest.fixture
 def mock_external_services():
     """Mock external service calls for testing."""
-    with patch("app.services.upbit.httpx.AsyncClient") as mock_upbit, patch(
-        "app.services.yahoo.yfinance.Ticker"
-    ) as mock_yahoo, patch("app.services.kis.httpx.AsyncClient") as mock_kis:
+    with (
+        patch("app.services.upbit.httpx.AsyncClient") as mock_upbit,
+        patch("app.services.yahoo.yfinance.Ticker") as mock_yahoo,
+        patch("app.services.kis.httpx.AsyncClient") as mock_kis,
+    ):
         yield {"upbit": mock_upbit, "yahoo": mock_yahoo, "kis": mock_kis}
 
 

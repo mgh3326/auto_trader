@@ -4,6 +4,7 @@ Symbol Trade Settings Model
 종목별 분할 매수 수량 설정을 저장하는 모델
 사용자별 기본 거래 설정도 포함
 """
+
 from datetime import datetime
 
 from sqlalchemy import (
@@ -33,7 +34,10 @@ class UserTradeDefaults(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
     )
 
     # 코인 기본 매수 금액 (KRW) - 설정 없는 코인에 적용
@@ -88,9 +92,7 @@ class SymbolTradeSettings(Base):
     """
 
     __tablename__ = "symbol_trade_settings"
-    __table_args__ = (
-        UniqueConstraint("user_id", "symbol", name="uq_user_symbol"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "symbol", name="uq_user_symbol"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(
@@ -114,9 +116,7 @@ class SymbolTradeSettings(Base):
     # 2: appropriate_buy_min, appropriate_buy_max
     # 3: appropriate_buy_min, appropriate_buy_max, buy_hope_min
     # 4: 전체 4개 가격대 (기본값)
-    buy_price_levels: Mapped[int] = mapped_column(
-        default=4, nullable=False
-    )
+    buy_price_levels: Mapped[int] = mapped_column(default=4, nullable=False)
 
     # 선택적 필드
     exchange_code: Mapped[str | None] = mapped_column(

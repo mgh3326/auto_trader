@@ -1,10 +1,10 @@
 """Web authentication router with HTML pages and session management."""
+
 import hashlib
 import json
 import logging
-import string
+from typing import Annotated
 from urllib.parse import urlparse
-from typing import Annotated, Optional, Union
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, Form, Request, Response, status
@@ -33,9 +33,7 @@ logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=get_remote_address)
 
 # Session serializer for secure cookie-based sessions
-session_serializer = URLSafeTimedSerializer(
-    settings.SECRET_KEY, salt="session-cookie"
-)
+session_serializer = URLSafeTimedSerializer(settings.SECRET_KEY, salt="session-cookie")
 
 # Session cookie settings
 SESSION_COOKIE_NAME = "session"
@@ -63,7 +61,7 @@ def create_session_token(user_id: int) -> str:
     return session_serializer.dumps({"user_id": user_id})
 
 
-def verify_session_token(token: str, max_age: int = SESSION_TTL) -> Optional[int]:
+def verify_session_token(token: str, max_age: int = SESSION_TTL) -> int | None:
     """Verify session token and return user_id if valid."""
     try:
         data = session_serializer.loads(token, max_age=max_age)
@@ -100,7 +98,7 @@ def _security_log_extra(request: Request, **kwargs) -> dict:
     }
 
 
-def _sanitize_next(next_value: Optional[str]) -> Optional[str]:
+def _sanitize_next(next_value: str | None) -> str | None:
     """Allow only internal paths for `next` to prevent open redirects."""
     if not next_value:
         return None
@@ -121,7 +119,7 @@ def _sanitize_next(next_value: Optional[str]) -> Optional[str]:
 
 async def get_current_user_from_session(
     request: Request, db: Annotated[AsyncSession, Depends(get_db)]
-) -> Optional[User]:
+) -> User | None:
     """Get current user from session cookie with Redis caching."""
     session_token = request.cookies.get(SESSION_COOKIE_NAME)
     if not session_token:
@@ -225,15 +223,20 @@ async def get_current_user_from_session(
 
 async def require_login(
     request: Request, db: Annotated[AsyncSession, Depends(get_db)]
-) -> Union[User, Response]:
+) -> User | Response:
     """Dependency to require login for routes."""
     user = await get_current_user_from_session(request, db)
     if not user:
         # Redirect to login page with next parameter
         # Use relative path to avoid open redirect issues
-        next_url = f"{request.url.path}?{request.url.query}" if request.url.query else request.url.path
+        next_url = (
+            f"{request.url.path}?{request.url.query}"
+            if request.url.query
+            else request.url.path
+        )
         return RedirectResponse(
-            url=f"/web-auth/login?next={next_url}", status_code=status.HTTP_303_SEE_OTHER
+            url=f"/web-auth/login?next={next_url}",
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     return user
 
@@ -242,7 +245,7 @@ async def require_role(
     min_role: UserRole,
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> Union[User, Response]:
+) -> User | Response:
     """Dependency to require specific role for routes."""
     user = await get_current_user_from_session(request, db)
     if not user:
@@ -267,7 +270,7 @@ async def require_role(
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(
     request: Request,
-    next: Optional[str] = None,
+    next: str | None = None,
     db: Annotated[AsyncSession, Depends(get_db)] = None,
 ):
     """Display login page."""
@@ -295,7 +298,7 @@ async def login(
     request: Request,
     username: Annotated[str, Form()],
     password: Annotated[str, Form()],
-    next: Optional[str] = Form(None),
+    next: str | None = Form(None),
     db: Annotated[AsyncSession, Depends(get_db)] = None,
 ):
     """Handle login form submission with rate limiting (5 attempts/minute)."""

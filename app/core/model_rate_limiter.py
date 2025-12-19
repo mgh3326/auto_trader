@@ -1,7 +1,7 @@
 import json
 import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any
 
 import redis.asyncio as redis
 
@@ -11,9 +11,9 @@ from app.core.config import settings
 class ModelRateLimiter:
     """Redis를 활용한 모델 사용 제한 관리자"""
 
-    def __init__(self, redis_url: Optional[str] = None):
+    def __init__(self, redis_url: str | None = None):
         self.redis_url = redis_url or settings.get_redis_url()
-        self.redis_client: Optional[redis.Redis] = None
+        self.redis_client: redis.Redis | None = None
         self._rate_limit_key_prefix = "model_rate_limit:"
         self._retry_info_key_prefix = "model_retry_info:"
 
@@ -143,7 +143,7 @@ class ModelRateLimiter:
         except Exception as e:
             print(f"Redis 제한 설정 오류: {e}")
 
-    def _extract_retry_seconds(self, retry_delay: Any) -> Optional[int]:
+    def _extract_retry_seconds(self, retry_delay: Any) -> int | None:
         """
         retry_delay에서 seconds 값을 추출
 
@@ -157,25 +157,25 @@ class ModelRateLimiter:
             # 문자열 형태인 경우 (예: "52s", "1m", "30")
             if isinstance(retry_delay, str):
                 # 숫자와 단위 분리
-                match = re.match(r'^(\d+)([smh]?)$', retry_delay.strip())
+                match = re.match(r"^(\d+)([smh]?)$", retry_delay.strip())
                 if match:
                     value = int(match.group(1))
                     unit = match.group(2)
-                    
-                    if unit == 's' or unit == '':  # 초 단위 또는 단위 없음
+
+                    if unit == "s" or unit == "":  # 초 단위 또는 단위 없음
                         return value
-                    elif unit == 'm':  # 분 단위
+                    elif unit == "m":  # 분 단위
                         return value * 60
-                    elif unit == 'h':  # 시간 단위
+                    elif unit == "h":  # 시간 단위
                         return value * 3600
                 else:
                     print(f"  retry_delay 문자열 파싱 실패: {retry_delay}")
                     return None
-            
+
             # 숫자형 (int, float)인 경우
             elif isinstance(retry_delay, (int, float)):
                 return int(retry_delay)
-            
+
             # dict 형태인 경우 (기존 Google API 구조)
             elif isinstance(retry_delay, dict):
                 if "seconds" in retry_delay:
@@ -191,16 +191,18 @@ class ModelRateLimiter:
                     return None
             else:
                 # 알 수 없는 타입
-                print(f"  retry_delay 알 수 없는 타입: {type(retry_delay)} - {retry_delay}")
+                print(
+                    f"  retry_delay 알 수 없는 타입: {type(retry_delay)} - {retry_delay}"
+                )
                 return None
-                
+
         except Exception as e:
             print(f"  retry_delay 파싱 오류: {e}")
             return None
 
     async def get_model_status(
         self, model_name: str, api_key: str = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         모델의 현재 상태 정보 조회 (API 키별 또는 전체)
 
@@ -360,7 +362,7 @@ class ModelRateLimiter:
         # 앞 4글자와 뒤 3글자만 보이고 나머지는 ***
         return f"{api_key[:4]}...{api_key[-3:]}"
 
-    async def get_all_rate_limits(self) -> Dict[str, Any]:
+    async def get_all_rate_limits(self) -> dict[str, Any]:
         """
         모든 모델과 API 키의 제한 상태를 조회
 

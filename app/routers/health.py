@@ -1,5 +1,5 @@
 # app/routers/health.py
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -19,4 +19,4 @@ async def healthz() -> HealthOut:
     Kubernetes / AWS ALB 헬스체크를 위한 엔드포인트.
     Docs 에 노출할 필요 없어서 include_in_schema=False.
     """
-    return HealthOut(timestamp=datetime.now(timezone.utc))
+    return HealthOut(timestamp=datetime.now(UTC))

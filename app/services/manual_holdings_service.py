@@ -3,6 +3,7 @@ Manual Holdings Service
 
 수동 보유 종목 관리 서비스
 """
+
 import logging
 from decimal import Decimal
 from typing import Any
@@ -59,9 +60,7 @@ class ManualHoldingsService:
         )
         return holding
 
-    async def get_holding_by_id(
-        self, holding_id: int
-    ) -> ManualHolding | None:
+    async def get_holding_by_id(self, holding_id: int) -> ManualHolding | None:
         """ID로 보유 종목 조회"""
         result = await self.db.execute(
             select(ManualHolding)
@@ -102,9 +101,7 @@ class ManualHoldingsService:
         if broker_type:
             query = query.where(BrokerAccount.broker_type == broker_type)
 
-        result = await self.db.execute(
-            query.order_by(ManualHolding.ticker)
-        )
+        result = await self.db.execute(query.order_by(ManualHolding.ticker))
         return list(result.scalars().all())
 
     async def get_holding_by_ticker(
@@ -140,9 +137,7 @@ class ManualHoldingsService:
         )
         return list(result.scalars().all())
 
-    async def update_holding(
-        self, holding_id: int, **kwargs
-    ) -> ManualHolding | None:
+    async def update_holding(self, holding_id: int, **kwargs) -> ManualHolding | None:
         """보유 종목 업데이트"""
         holding = await self.get_holding_by_id(holding_id)
         if not holding:
@@ -150,7 +145,9 @@ class ManualHoldingsService:
 
         for key, value in kwargs.items():
             if hasattr(holding, key) and key not in (
-                "id", "broker_account_id", "created_at"
+                "id",
+                "broker_account_id",
+                "created_at",
             ):
                 if key == "ticker" and value:
                     value = value.upper()
@@ -197,8 +194,7 @@ class ManualHoldingsService:
             return existing
 
         return await self.create_holding(
-            broker_account_id, ticker, market_type,
-            quantity, avg_price, display_name
+            broker_account_id, ticker, market_type, quantity, avg_price, display_name
         )
 
     async def bulk_create_holdings(
@@ -214,10 +210,10 @@ class ManualHoldingsService:
                     # upsert_holding 내부에서 commit을 하지 않도록 수정하거나,
                     # 여기서는 별도의 로직을 사용해야 함.
                     # upsert_holding이 commit을 수행하므로, 여기서는 직접 구현하는 것이 안전함.
-                    
+
                     ticker = data["ticker"]
                     market_type = data["market_type"]
-                    
+
                     # 기존 보유 종목 조회 (lock 필요할 수 있음)
                     existing = await self.get_holding_by_ticker(
                         broker_account_id, ticker, market_type
@@ -240,21 +236,19 @@ class ManualHoldingsService:
                         )
                         self.db.add(holding)
                         created.append(holding)
-                
+
                 await self.db.flush()
                 # refresh는 transaction 밖에서 하거나, flush 후 사용
                 for h in created:
                     await self.db.refresh(h)
-                    
+
         except Exception as e:
             logger.error(f"Failed to bulk create holdings: {e}")
             raise e
 
         return created
 
-    async def get_holdings_summary_by_user(
-        self, user_id: int
-    ) -> dict[str, Any]:
+    async def get_holdings_summary_by_user(self, user_id: int) -> dict[str, Any]:
         """사용자별 보유 종목 요약"""
         holdings = await self.get_holdings_by_user(user_id)
 

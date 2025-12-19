@@ -3,15 +3,16 @@ Merged Portfolio Service
 
 KIS 보유 종목과 수동 등록 종목을 통합하여 포트폴리오 제공
 """
+
 import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.manual_holdings import MarketType, ManualHolding
-from app.services.manual_holdings_service import ManualHoldingsService
+from app.models.manual_holdings import MarketType
 from app.services.kis import KISClient
+from app.services.manual_holdings_service import ManualHoldingsService
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ KIS_FIELD_CONFIG = {
 @dataclass
 class HoldingInfo:
     """단일 브로커의 보유 정보"""
+
     broker: str
     quantity: float
     avg_price: float
@@ -50,6 +52,7 @@ class HoldingInfo:
 @dataclass
 class ReferencePrices:
     """참조 평단가 정보"""
+
     kis_avg: float | None = None
     kis_quantity: int = 0
     toss_avg: float | None = None
@@ -71,6 +74,7 @@ class ReferencePrices:
 @dataclass
 class MergedHolding:
     """통합 보유 종목 정보"""
+
     ticker: str
     name: str
     market_type: str
@@ -178,9 +182,7 @@ class MergedPortfolioService:
                 return await kis_client.fetch_my_stocks()
             return await kis_client.fetch_my_overseas_stocks()
         except Exception as exc:
-            logger.error(
-                "Failed to fetch KIS %s stocks: %s", market_type.value, exc
-            )
+            logger.error("Failed to fetch KIS %s stocks: %s", market_type.value, exc)
             return []
 
     def _apply_kis_holdings(
@@ -216,9 +218,7 @@ class MergedPortfolioService:
             holding.profit_loss = profit_loss
             holding.profit_rate = profit_rate
             holding.holdings.append(
-                HoldingInfo(
-                    broker="kis", quantity=qty, avg_price=avg_price
-                )
+                HoldingInfo(broker="kis", quantity=qty, avg_price=avg_price)
             )
 
     async def _apply_manual_holdings(
@@ -251,9 +251,7 @@ class MergedPortfolioService:
                 merged_holding.other_quantity += qty
 
             merged_holding.holdings.append(
-                HoldingInfo(
-                    broker=broker_type, quantity=qty, avg_price=avg_price
-                )
+                HoldingInfo(broker=broker_type, quantity=qty, avg_price=avg_price)
             )
 
     async def _fetch_missing_prices(
@@ -284,23 +282,17 @@ class MergedPortfolioService:
                     if not df.empty:
                         merged[ticker].current_price = float(df.iloc[0]["close"])
             except Exception as exc:
-                logger.warning(
-                    "Failed to fetch price for %s: %s", ticker, exc
-                )
+                logger.warning("Failed to fetch price for %s: %s", ticker, exc)
 
     def _finalize_holdings(self, merged: dict[str, MergedHolding]) -> None:
         for holding in merged.values():
             holding.total_quantity = sum(
                 int(item.quantity) for item in holding.holdings
             )
-            holding.combined_avg_price = self.calculate_combined_avg(
-                holding.holdings
-            )
+            holding.combined_avg_price = self.calculate_combined_avg(holding.holdings)
 
             if holding.combined_avg_price > 0 and holding.current_price > 0:
-                holding.evaluation = (
-                    holding.current_price * holding.total_quantity
-                )
+                holding.evaluation = holding.current_price * holding.total_quantity
                 holding.profit_loss = (
                     holding.current_price - holding.combined_avg_price
                 ) * holding.total_quantity
@@ -320,8 +312,8 @@ class MergedPortfolioService:
         settings_service = SymbolTradeSettingsService(self.db)
 
         tickers = list(merged.keys())
-        analysis_map = (
-            await stock_service.get_latest_analysis_results_for_coins(tickers)
+        analysis_map = await stock_service.get_latest_analysis_results_for_coins(
+            tickers
         )
 
         for ticker, merged_holding in merged.items():
@@ -329,9 +321,7 @@ class MergedPortfolioService:
             if analysis:
                 merged_holding.analysis_id = analysis.id
                 merged_holding.last_analysis_at = (
-                    analysis.created_at.isoformat()
-                    if analysis.created_at
-                    else None
+                    analysis.created_at.isoformat() if analysis.created_at else None
                 )
                 merged_holding.last_analysis_decision = analysis.decision
                 merged_holding.analysis_confidence = analysis.confidence
@@ -387,13 +377,15 @@ class MergedPortfolioService:
             if kis_qty > 0:
                 ref.kis_quantity = int(kis_qty)
                 ref.kis_avg = kis_avg
-                holdings_list.append(HoldingInfo(
-                    broker="kis", quantity=kis_qty, avg_price=kis_avg
-                ))
+                holdings_list.append(
+                    HoldingInfo(broker="kis", quantity=kis_qty, avg_price=kis_avg)
+                )
 
         # 2. 수동 등록 보유 종목
-        manual_holdings = await self.manual_holdings_service.get_holdings_by_ticker_all_accounts(
-            user_id, ticker, market_type
+        manual_holdings = (
+            await self.manual_holdings_service.get_holdings_by_ticker_all_accounts(
+                user_id, ticker, market_type
+            )
         )
 
         for holding in manual_holdings:
@@ -406,9 +398,9 @@ class MergedPortfolioService:
                 ref.toss_avg = avg
             # 다른 브로커가 추가되면 여기에 처리
 
-            holdings_list.append(HoldingInfo(
-                broker=broker_type, quantity=qty, avg_price=avg
-            ))
+            holdings_list.append(
+                HoldingInfo(broker=broker_type, quantity=qty, avg_price=avg)
+            )
 
         # 3. 통합 평단가 계산
         if holdings_list:
@@ -425,9 +417,7 @@ class MergedPortfolioService:
         """국내주식 통합 포트폴리오 조회"""
         if kis_client is None:
             kis_client = KISClient()
-        return await self._build_merged_portfolio(
-            user_id, MarketType.KR, kis_client
-        )
+        return await self._build_merged_portfolio(user_id, MarketType.KR, kis_client)
 
     async def get_merged_portfolio_overseas(
         self,
@@ -437,6 +427,4 @@ class MergedPortfolioService:
         """해외주식 통합 포트폴리오 조회"""
         if kis_client is None:
             kis_client = KISClient()
-        return await self._build_merged_portfolio(
-            user_id, MarketType.US, kis_client
-        )
+        return await self._build_merged_portfolio(user_id, MarketType.US, kis_client)

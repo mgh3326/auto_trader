@@ -3,10 +3,12 @@ Tests for manual holdings integration in KIS automation tasks.
 
 수동 잔고(토스 등)를 자동화 태스크에 통합하는 기능 테스트
 """
+
 import json
-import pytest
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture
@@ -26,8 +28,9 @@ class TestManualHoldingsIntegration:
 
     def test_manual_holdings_merged_with_kis_holdings(self, monkeypatch):
         """수동 잔고가 KIS 잔고와 병합되어 처리되는지 확인"""
-        from app.tasks import kis as kis_tasks
         from decimal import Decimal
+
+        from app.tasks import kis as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -92,13 +95,21 @@ class TestManualHoldingsIntegration:
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
-             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
-
+        with (
+            patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+            patch(
+                "app.services.manual_holdings_service.ManualHoldingsService",
+                MockManualService,
+            ),
+        ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
             monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
+            )
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
+            )
             monkeypatch.setattr(
                 kis_tasks.run_per_domestic_stock_automation,
                 "update_state",
@@ -121,12 +132,15 @@ class TestManualHoldingsIntegration:
         assert len(buy_calls) == 2, "두 종목 모두 매수 검토"
         # 매도 함수는 KIS 종목만 호출 (수동 잔고는 KIS에서 매도 불가하므로 스킵)
         assert len(sell_calls) == 1, "KIS 종목만 매도 검토 (수동 잔고는 스킵)"
-        assert sell_calls[0]["symbol"] == "005935", "KIS 종목(삼성전자우)만 매도 함수 호출"
+        assert sell_calls[0]["symbol"] == "005935", (
+            "KIS 종목(삼성전자우)만 매도 함수 호출"
+        )
 
     def test_manual_holdings_duplicates_skipped(self, monkeypatch):
         """KIS와 수동 잔고에 동일 종목이 있으면 수동 잔고는 스킵"""
-        from app.tasks import kis as kis_tasks
         from decimal import Decimal
+
+        from app.tasks import kis as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -184,13 +198,21 @@ class TestManualHoldingsIntegration:
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
-             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
-
+        with (
+            patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+            patch(
+                "app.services.manual_holdings_service.ManualHoldingsService",
+                MockManualService,
+            ),
+        ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
             monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
+            )
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
+            )
             monkeypatch.setattr(
                 kis_tasks.run_per_domestic_stock_automation,
                 "update_state",
@@ -213,8 +235,9 @@ class TestManualHoldingsIntegration:
 
     def test_manual_holdings_current_price_fetched(self, monkeypatch):
         """수동 잔고 종목의 현재가가 API로 조회되는지 확인"""
-        from app.tasks import kis as kis_tasks
         from decimal import Decimal
+
+        from app.tasks import kis as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -265,13 +288,21 @@ class TestManualHoldingsIntegration:
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
-             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
-
+        with (
+            patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+            patch(
+                "app.services.manual_holdings_service.ManualHoldingsService",
+                MockManualService,
+            ),
+        ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
             monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
+            )
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
+            )
             monkeypatch.setattr(
                 kis_tasks.run_per_domestic_stock_automation,
                 "update_state",
@@ -289,8 +320,9 @@ class TestManualHoldingsIntegration:
 
     def test_manual_holdings_decimal_conversion(self, monkeypatch):
         """Decimal 타입의 수량/가격이 올바르게 변환되는지 확인"""
-        from app.tasks import kis as kis_tasks
         from decimal import Decimal
+
+        from app.tasks import kis as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -333,7 +365,9 @@ class TestManualHoldingsIntegration:
 
         async def fake_sell(kis, symbol, current_price, avg_price, qty):
             # qty가 올바르게 정수로 전달되는지 확인
-            sell_calls.append({"symbol": symbol, "qty": qty, "qty_type": type(qty).__name__})
+            sell_calls.append(
+                {"symbol": symbol, "qty": qty, "qty_type": type(qty).__name__}
+            )
             return {"success": False, "message": "조건 미충족", "orders_placed": 0}
 
         # Mock DB session
@@ -341,13 +375,21 @@ class TestManualHoldingsIntegration:
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
-             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
-
+        with (
+            patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+            patch(
+                "app.services.manual_holdings_service.ManualHoldingsService",
+                MockManualService,
+            ),
+        ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
             monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
+            )
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
+            )
             monkeypatch.setattr(
                 kis_tasks.run_per_domestic_stock_automation,
                 "update_state",
@@ -366,14 +408,19 @@ class TestManualHoldingsIntegration:
         # 결과에서 매도 스킵 메시지 확인
         assert len(result["results"]) == 1
         stock_result = result["results"][0]
-        sell_step = next((s for s in stock_result["steps"] if s["step"] == "매도"), None)
+        sell_step = next(
+            (s for s in stock_result["steps"] if s["step"] == "매도"), None
+        )
         assert sell_step is not None, "매도 단계가 있어야 함"
-        assert "수동잔고" in sell_step["result"]["message"], "수동잔고 스킵 메시지가 있어야 함"
+        assert "수동잔고" in sell_step["result"]["message"], (
+            "수동잔고 스킵 메시지가 있어야 함"
+        )
 
     def test_manual_holdings_has_orderable_qty(self, monkeypatch):
         """수동 잔고에 ord_psbl_qty 필드가 올바르게 설정되고, 매도는 스킵되는지 확인"""
-        from app.tasks import kis as kis_tasks
         from decimal import Decimal
+
+        from app.tasks import kis as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -423,13 +470,21 @@ class TestManualHoldingsIntegration:
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
-             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
-
+        with (
+            patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+            patch(
+                "app.services.manual_holdings_service.ManualHoldingsService",
+                MockManualService,
+            ),
+        ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
             monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
+            )
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
+            )
             monkeypatch.setattr(
                 kis_tasks.run_per_domestic_stock_automation,
                 "update_state",
@@ -448,9 +503,13 @@ class TestManualHoldingsIntegration:
         # 결과에서 매도 스킵 메시지 확인
         assert len(result["results"]) == 1
         stock_result = result["results"][0]
-        sell_step = next((s for s in stock_result["steps"] if s["step"] == "매도"), None)
+        sell_step = next(
+            (s for s in stock_result["steps"] if s["step"] == "매도"), None
+        )
         assert sell_step is not None, "매도 단계가 있어야 함"
-        assert "수동잔고" in sell_step["result"]["message"], "수동잔고 스킵 메시지가 있어야 함"
+        assert "수동잔고" in sell_step["result"]["message"], (
+            "수동잔고 스킵 메시지가 있어야 함"
+        )
 
     def test_manual_holdings_skip_sell_order(self, monkeypatch):
         """수동 잔고(토스 등)는 KIS에서 매도할 수 없으므로 매도를 스킵해야 함.
@@ -459,8 +518,9 @@ class TestManualHoldingsIntegration:
         - 토스 증권에만 있는 주식을 KIS API로 매도 요청하면 "주문 가능한 수량을 초과" 에러 발생
         - 수동 잔고 종목은 분석만 하고 매도는 스킵해야 함
         """
-        from app.tasks import kis as kis_tasks
         from decimal import Decimal
+
+        from app.tasks import kis as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -510,13 +570,21 @@ class TestManualHoldingsIntegration:
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
-             patch('app.services.manual_holdings_service.ManualHoldingsService', MockManualService):
-
+        with (
+            patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+            patch(
+                "app.services.manual_holdings_service.ManualHoldingsService",
+                MockManualService,
+            ),
+        ):
             monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
             monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy)
-            monkeypatch.setattr(kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell)
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_buy_orders_with_analysis", fake_buy
+            )
+            monkeypatch.setattr(
+                kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
+            )
             monkeypatch.setattr(
                 kis_tasks.run_per_domestic_stock_automation,
                 "update_state",
@@ -535,13 +603,18 @@ class TestManualHoldingsIntegration:
         assert stock_result["code"] == "015760"
 
         # 핵심 검증: 매도 함수가 호출되지 않아야 함 (수동 잔고이므로)
-        assert len(sell_calls) == 0, f"수동 잔고는 매도 함수가 호출되면 안 됨. 호출된 횟수: {len(sell_calls)}"
+        assert len(sell_calls) == 0, (
+            f"수동 잔고는 매도 함수가 호출되면 안 됨. 호출된 횟수: {len(sell_calls)}"
+        )
 
         # 매도 단계 결과가 '수동잔고' 관련 메시지여야 함
-        sell_step = next((s for s in stock_result["steps"] if s["step"] == "매도"), None)
+        sell_step = next(
+            (s for s in stock_result["steps"] if s["step"] == "매도"), None
+        )
         assert sell_step is not None, "매도 단계가 있어야 함"
-        assert "수동잔고" in sell_step["result"]["message"], \
+        assert "수동잔고" in sell_step["result"]["message"], (
             f"매도 결과에 '수동잔고' 메시지가 있어야 함: {sell_step['result']}"
+        )
 
 
 class TestTossRecommendationNotification:
@@ -553,8 +626,8 @@ class TestTossRecommendationNotification:
     @pytest.mark.asyncio
     async def test_send_toss_price_recommendation_with_buy_decision(self, monkeypatch):
         """매수 결정 시 가격 제안 알림 발송"""
-        from app.tasks.kis import _send_toss_recommendation_async
         from app.models.analysis import StockAnalysisResult
+        from app.tasks.kis import _send_toss_recommendation_async
 
         notification_sent = []
 
@@ -591,10 +664,14 @@ class TestTossRecommendationNotification:
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('app.tasks.kis.get_trade_notifier', return_value=MockNotifier()), \
-             patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
-             patch('app.services.stock_info_service.StockAnalysisService', MockAnalysisService):
-
+        with (
+            patch("app.tasks.kis.get_trade_notifier", return_value=MockNotifier()),
+            patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+            patch(
+                "app.services.stock_info_service.StockAnalysisService",
+                MockAnalysisService,
+            ),
+        ):
             await _send_toss_recommendation_async(
                 code="015760",
                 name="한국전력",
@@ -615,8 +692,8 @@ class TestTossRecommendationNotification:
     @pytest.mark.asyncio
     async def test_send_toss_price_recommendation_with_sell_decision(self, monkeypatch):
         """매도 결정 시에도 가격 제안 알림 발송"""
-        from app.tasks.kis import _send_toss_recommendation_async
         from app.models.analysis import StockAnalysisResult
+        from app.tasks.kis import _send_toss_recommendation_async
 
         notification_sent = []
 
@@ -652,10 +729,14 @@ class TestTossRecommendationNotification:
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('app.tasks.kis.get_trade_notifier', return_value=MockNotifier()), \
-             patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
-             patch('app.services.stock_info_service.StockAnalysisService', MockAnalysisService):
-
+        with (
+            patch("app.tasks.kis.get_trade_notifier", return_value=MockNotifier()),
+            patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+            patch(
+                "app.services.stock_info_service.StockAnalysisService",
+                MockAnalysisService,
+            ),
+        ):
             await _send_toss_recommendation_async(
                 code="015760",
                 name="한국전력",
@@ -673,8 +754,8 @@ class TestTossRecommendationNotification:
     @pytest.mark.asyncio
     async def test_send_toss_price_recommendation_with_hold_decision(self, monkeypatch):
         """hold 결정 시에도 가격 제안 알림 발송 (AI 결정과 무관하게 항상 발송)"""
-        from app.tasks.kis import _send_toss_recommendation_async
         from app.models.analysis import StockAnalysisResult
+        from app.tasks.kis import _send_toss_recommendation_async
 
         notification_sent = []
 
@@ -709,10 +790,14 @@ class TestTossRecommendationNotification:
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('app.tasks.kis.get_trade_notifier', return_value=MockNotifier()), \
-             patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
-             patch('app.services.stock_info_service.StockAnalysisService', MockAnalysisService):
-
+        with (
+            patch("app.tasks.kis.get_trade_notifier", return_value=MockNotifier()),
+            patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+            patch(
+                "app.services.stock_info_service.StockAnalysisService",
+                MockAnalysisService,
+            ),
+        ):
             await _send_toss_recommendation_async(
                 code="015760",
                 name="한국전력",
@@ -728,10 +813,12 @@ class TestTossRecommendationNotification:
         assert notification_sent[0]["appropriate_sell_max"] == 28000.0
 
     @pytest.mark.asyncio
-    async def test_send_toss_price_recommendation_parses_json_reasons(self, monkeypatch):
+    async def test_send_toss_price_recommendation_parses_json_reasons(
+        self, monkeypatch
+    ):
         """DB에 JSON 문자열로 저장된 근거를 리스트로 파싱해 전달"""
-        from app.tasks.kis import _send_toss_recommendation_async
         from app.models.analysis import StockAnalysisResult
+        from app.tasks.kis import _send_toss_recommendation_async
 
         notification_sent = []
 
@@ -768,10 +855,14 @@ class TestTossRecommendationNotification:
         mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch('app.tasks.kis.get_trade_notifier', return_value=MockNotifier()), \
-             patch('app.core.db.AsyncSessionLocal', return_value=mock_db_session), \
-             patch('app.services.stock_info_service.StockAnalysisService', MockAnalysisService):
-
+        with (
+            patch("app.tasks.kis.get_trade_notifier", return_value=MockNotifier()),
+            patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+            patch(
+                "app.services.stock_info_service.StockAnalysisService",
+                MockAnalysisService,
+            ),
+        ):
             await _send_toss_recommendation_async(
                 code="015760",
                 name="한국전력",
@@ -781,7 +872,11 @@ class TestTossRecommendationNotification:
             )
 
         assert len(notification_sent) == 1
-        assert notification_sent[0]["reasons"] == ["첫째 근거", "둘째 근거", "셋째 근거"]
+        assert notification_sent[0]["reasons"] == [
+            "첫째 근거",
+            "둘째 근거",
+            "셋째 근거",
+        ]
 
     def test_format_toss_price_recommendation_html_escapes_special_chars(self):
         """HTML 포맷 메시지가 특수문자를 올바르게 이스케이프하는지 확인"""
@@ -812,7 +907,9 @@ class TestTossRecommendationNotification:
 
         # HTML 특수문자가 올바르게 이스케이프 되어야 함
         assert "&lt;테스트&gt;" in message, "< > 문자가 이스케이프되어야 함"
-        assert "&lt; 30" in message or "RSI &lt; 30" in message, "< 문자가 이스케이프되어야 함"
+        assert "&lt; 30" in message or "RSI &lt; 30" in message, (
+            "< 문자가 이스케이프되어야 함"
+        )
         assert "&amp;" in message, "& 문자가 이스케이프되어야 함"
 
         # <b> 태그는 이스케이프되지 않아야 함 (HTML 포맷팅용)

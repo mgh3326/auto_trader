@@ -18,7 +18,6 @@ Tests OTEL trace/metric ingestion, datasource connectivity,
 and end-to-end observability flow.
 """
 
-import json
 import time
 
 import pytest
@@ -27,7 +26,6 @@ from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
 
 pytestmark = pytest.mark.skipif(
     "not config.getoption('--run-integration')",
@@ -63,9 +61,7 @@ class TestMonitoringStack:
 
         for service, url in health_checks.items():
             response = requests.get(url, timeout=5)
-            assert (
-                response.status_code == 200
-            ), f"{service} health check failed: {url}"
+            assert response.status_code == 200, f"{service} health check failed: {url}"
 
     def test_grafana_datasources_provisioned(self):
         """Test that Grafana datasources are properly provisioned."""
@@ -84,15 +80,16 @@ class TestMonitoringStack:
         # Verify datasources are reachable
         for ds in datasources:
             if ds["name"] in ["Tempo", "Loki", "Prometheus"]:
-                assert ds["isDefault"] or not ds[
-                    "isDefault"
-                ], f"{ds['name']} datasource exists"
+                assert ds["isDefault"] or not ds["isDefault"], (
+                    f"{ds['name']} datasource exists"
+                )
 
     def test_otlp_trace_ingestion(self):
         """Test that OTEL Collector accepts traces via OTLP gRPC."""
         # Configure OTLP exporter
         otlp_exporter = OTLPSpanExporter(
-            endpoint="localhost:4317", insecure=True  # gRPC endpoint
+            endpoint="localhost:4317",
+            insecure=True,  # gRPC endpoint
         )
 
         # Set up tracer
@@ -133,9 +130,9 @@ class TestMonitoringStack:
 
         expected_jobs = {"prometheus", "tempo", "loki", "grafana", "otel-collector"}
         for job in expected_jobs:
-            assert (
-                job in target_jobs
-            ), f"Prometheus not scraping {job} (may take time to appear)"
+            assert job in target_jobs, (
+                f"Prometheus not scraping {job} (may take time to appear)"
+            )
 
     def test_prometheus_query_api(self):
         """Test that Prometheus query API is working."""
@@ -169,7 +166,9 @@ class TestMonitoringStack:
 
         params = {
             "query": '{service=~".+"}',  # Match any service
-            "start": str(five_min_ago),  # Convert to string to avoid scientific notation
+            "start": str(
+                five_min_ago
+            ),  # Convert to string to avoid scientific notation
             "end": str(now),
             "limit": 10,
         }
@@ -235,7 +234,9 @@ class TestMonitoringStack:
         # Check storage retention (should be 7d, 168h, or 1w - all equivalent)
         storage_retention = runtime_info["data"].get("storageRetention", "")
         assert (
-            "7d" in storage_retention or "168h" in storage_retention or "1w" in storage_retention
+            "7d" in storage_retention
+            or "168h" in storage_retention
+            or "1w" in storage_retention
         ), f"Unexpected retention: {storage_retention}"
 
 
@@ -253,11 +254,10 @@ def test_end_to_end_observability_flow():
     tracer_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
 
     tracer = trace.get_tracer("e2e-test")
-    test_trace_id = None
 
     with tracer.start_as_current_span("e2e-test-span") as span:
         span.set_attribute("test.e2e", "true")
-        test_trace_id = format(span.get_span_context().trace_id, "032x")
+        # trace_id for debugging if needed: format(span.get_span_context().trace_id, "032x")
 
     tracer_provider.force_flush()
 
@@ -277,7 +277,9 @@ def test_end_to_end_observability_flow():
             break
 
     if tempo_uid:
-        search_url = f"http://localhost:3000/api/datasources/proxy/uid/{tempo_uid}/api/search"
+        search_url = (
+            f"http://localhost:3000/api/datasources/proxy/uid/{tempo_uid}/api/search"
+        )
         response = requests.get(search_url, auth=("admin", "admin"), timeout=5)
 
         # Should succeed even if trace not found yet (indexing lag)

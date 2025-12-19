@@ -6,24 +6,20 @@ Upbit 자동 매매 웹 인터페이스 라우터
 - 자동 매도 주문
 """
 
-import asyncio
 import logging
 from decimal import Decimal, InvalidOperation
-from typing import List, Optional
-from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.web_router import get_current_user_from_session
-from app.core.db import get_db
-from app.core.config import settings
-from app.core.templates import templates
 from app.analysis.service_analyzers import UpbitAnalyzer
-from app.models.trading import User
+from app.core.config import settings
+from app.core.db import get_db
+from app.core.templates import templates
 from app.services import upbit
 from app.services.stock_info_service import (
-    process_buy_orders_with_analysis,
-    StockAnalysisService
+    StockAnalysisService,
 )
 from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
 from data.coins_info import upbit_pairs
@@ -43,10 +39,10 @@ def _to_decimal(value) -> Decimal:
 def _format_coin_amount(value: Decimal) -> str:
     """코인 수량 표시용 문자열 반환"""
     normalized = value.normalize()
-    formatted = format(normalized, 'f')
-    if '.' in formatted:
-        formatted = formatted.rstrip('0').rstrip('.')
-    return formatted or '0'
+    formatted = format(normalized, "f")
+    if "." in formatted:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted or "0"
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -59,7 +55,7 @@ async def upbit_trading_dashboard(request: Request):
         {
             "request": request,
             "user": user,
-        }
+        },
     )
 
 
@@ -80,7 +76,8 @@ async def get_my_coins(
 
         analyzer = UpbitAnalyzer()
         tradable_coins = [
-            coin for coin in my_coins
+            coin
+            for coin in my_coins
             if coin.get("currency") != "KRW"
             and analyzer.is_tradable(coin)
             and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
@@ -91,8 +88,10 @@ async def get_my_coins(
             current_prices = await upbit.fetch_multiple_current_prices(market_codes)
             analysis_service = StockAnalysisService(db)
             settings_service = SymbolTradeSettingsService(db)
-            latest_analysis_map = await analysis_service.get_latest_analysis_results_for_coins(
-                list(dict.fromkeys(market_codes))
+            latest_analysis_map = (
+                await analysis_service.get_latest_analysis_results_for_coins(
+                    list(dict.fromkeys(market_codes))
+                )
             )
 
             # 종목별 설정 조회 (market code 기준)
@@ -103,72 +102,82 @@ async def get_my_coins(
                     settings_map[market] = settings_obj
 
             for coin in tradable_coins:
-                currency = coin['currency']
+                currency = coin["currency"]
                 market = f"KRW-{currency}"
-                balance_raw = coin.get('balance', '0')
-                locked_raw = coin.get('locked', '0')
+                balance_raw = coin.get("balance", "0")
+                locked_raw = coin.get("locked", "0")
                 balance_decimal = _to_decimal(balance_raw)
                 locked_decimal = _to_decimal(locked_raw)
                 balance = float(balance_decimal)
                 locked = float(locked_decimal)
-                avg_buy_price = float(coin.get('avg_buy_price', 0))
+                avg_buy_price = float(coin.get("avg_buy_price", 0))
 
                 korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency, currency)
-                coin['korean_name'] = korean_name
-                coin['balance_raw'] = str(balance_raw)
-                coin['locked_raw'] = str(locked_raw)
-                coin['balance'] = balance
-                coin['locked'] = locked
-                coin['balance_display'] = _format_coin_amount(balance_decimal)
-                coin['locked_display'] = _format_coin_amount(locked_decimal)
+                coin["korean_name"] = korean_name
+                coin["balance_raw"] = str(balance_raw)
+                coin["locked_raw"] = str(locked_raw)
+                coin["balance"] = balance
+                coin["locked"] = locked
+                coin["balance_display"] = _format_coin_amount(balance_decimal)
+                coin["locked_display"] = _format_coin_amount(locked_decimal)
 
                 if market in current_prices:
                     current_price = current_prices[market]
-                    coin['current_price'] = current_price
+                    coin["current_price"] = current_price
 
                     if avg_buy_price > 0:
                         profit_rate = (current_price - avg_buy_price) / avg_buy_price
-                        coin['profit_rate'] = profit_rate
+                        coin["profit_rate"] = profit_rate
 
                         evaluation = (balance + locked) * current_price
-                        coin['evaluation'] = evaluation
+                        coin["evaluation"] = evaluation
 
                         profit_loss = evaluation - ((balance + locked) * avg_buy_price)
-                        coin['profit_loss'] = profit_loss
+                        coin["profit_loss"] = profit_loss
                     else:
-                        coin['profit_rate'] = 0
-                        coin['evaluation'] = 0
-                        coin['profit_loss'] = 0
+                        coin["profit_rate"] = 0
+                        coin["evaluation"] = 0
+                        coin["profit_loss"] = 0
                 else:
-                    coin['current_price'] = 0
-                    coin['profit_rate'] = 0
-                    coin['evaluation'] = 0
-                    coin['profit_loss'] = 0
+                    coin["current_price"] = 0
+                    coin["profit_rate"] = 0
+                    coin["evaluation"] = 0
+                    coin["profit_loss"] = 0
 
                 analysis = latest_analysis_map.get(market)
-                coin['market'] = market
+                coin["market"] = market
                 if analysis:
-                    coin['analysis_id'] = analysis.id
-                    coin['stock_info_id'] = analysis.stock_info_id
-                    coin['last_analysis_at'] = (
+                    coin["analysis_id"] = analysis.id
+                    coin["stock_info_id"] = analysis.stock_info_id
+                    coin["last_analysis_at"] = (
                         analysis.created_at.isoformat() if analysis.created_at else None
                     )
-                    coin['last_analysis_decision'] = analysis.decision
-                    coin['analysis_confidence'] = (
-                        float(analysis.confidence) if analysis.confidence is not None else None
+                    coin["last_analysis_decision"] = analysis.decision
+                    coin["analysis_confidence"] = (
+                        float(analysis.confidence)
+                        if analysis.confidence is not None
+                        else None
                     )
                 else:
-                    coin['analysis_id'] = None
-                    coin['stock_info_id'] = None
-                    coin['last_analysis_at'] = None
-                    coin['last_analysis_decision'] = None
-                    coin['analysis_confidence'] = None
+                    coin["analysis_id"] = None
+                    coin["stock_info_id"] = None
+                    coin["last_analysis_at"] = None
+                    coin["last_analysis_decision"] = None
+                    coin["analysis_confidence"] = None
 
                 # Symbol trade settings (코인은 금액 기반)
                 symbol_settings = settings_map.get(market)
-                coin['settings_amount'] = float(symbol_settings.buy_quantity_per_order) if symbol_settings else None
-                coin['settings_note'] = symbol_settings.note if symbol_settings else None
-                coin['settings_active'] = symbol_settings.is_active if symbol_settings else None
+                coin["settings_amount"] = (
+                    float(symbol_settings.buy_quantity_per_order)
+                    if symbol_settings
+                    else None
+                )
+                coin["settings_note"] = (
+                    symbol_settings.note if symbol_settings else None
+                )
+                coin["settings_active"] = (
+                    symbol_settings.is_active if symbol_settings else None
+                )
 
         krw_balance = 0
         krw_locked = 0
@@ -187,7 +196,7 @@ async def get_my_coins(
             "krw_total": krw_balance + krw_locked,
             "total_coins": len(my_coins),
             "tradable_coins_count": len(tradable_coins),
-            "coins": tradable_coins
+            "coins": tradable_coins,
         }
 
     except HTTPException:
@@ -206,16 +215,19 @@ async def analyze_my_coins():
     try:
         # API 키 확인
         if not settings.upbit_access_key or not settings.upbit_secret_key:
-            raise HTTPException(status_code=400, detail="Upbit API 키가 설정되지 않았습니다.")
+            raise HTTPException(
+                status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
+            )
 
         # Celery 작업 큐에 등록
         from app.core.celery_app import celery_app
+
         async_result = celery_app.send_task("analyze.run_for_my_coins")
 
         return {
             "success": True,
             "message": "코인 분석이 시작되었습니다.",
-            "task_id": async_result.id
+            "task_id": async_result.id,
         }
 
     except HTTPException:
@@ -237,7 +249,7 @@ async def get_analyze_task_status(task_id: str):
         "ready": result.ready(),
     }
 
-    if result.state == 'PROGRESS':
+    if result.state == "PROGRESS":
         # 진행 중 - meta 정보 반환
         response["progress"] = result.info
     elif result.successful():
@@ -261,13 +273,15 @@ async def execute_buy_orders():
     try:
         # API 키 확인
         if not settings.upbit_access_key or not settings.upbit_secret_key:
-            raise HTTPException(status_code=400, detail="Upbit API 키가 설정되지 않았습니다.")
+            raise HTTPException(
+                status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
+            )
 
         async_result = celery_app.send_task("upbit.execute_buy_orders")
         return {
             "success": True,
             "message": "매수 주문이 시작되었습니다.",
-            "task_id": async_result.id
+            "task_id": async_result.id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -281,13 +295,15 @@ async def execute_sell_orders():
     try:
         # API 키 확인
         if not settings.upbit_access_key or not settings.upbit_secret_key:
-            raise HTTPException(status_code=400, detail="Upbit API 키가 설정되지 않았습니다.")
+            raise HTTPException(
+                status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
+            )
 
         async_result = celery_app.send_task("upbit.execute_sell_orders")
         return {
             "success": True,
             "message": "매도 주문이 시작되었습니다.",
-            "task_id": async_result.id
+            "task_id": async_result.id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -300,7 +316,9 @@ async def execute_per_coin_automation():
 
     try:
         if not settings.upbit_access_key or not settings.upbit_secret_key:
-            raise HTTPException(status_code=400, detail="Upbit API 키가 설정되지 않았습니다.")
+            raise HTTPException(
+                status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
+            )
 
         async_result = celery_app.send_task("upbit.run_per_coin_automation")
         return {
@@ -323,14 +341,18 @@ async def execute_coin_buy_orders(currency: str):
 
     try:
         if not settings.upbit_access_key or not settings.upbit_secret_key:
-            raise HTTPException(status_code=400, detail="Upbit API 키가 설정되지 않았습니다.")
+            raise HTTPException(
+                status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
+            )
 
-        async_result = celery_app.send_task("upbit.execute_buy_order_for_coin", args=[currency_code])
+        async_result = celery_app.send_task(
+            "upbit.execute_buy_order_for_coin", args=[currency_code]
+        )
         return {
             "success": True,
             "currency": currency_code,
             "message": f"{currency_code} 분할 매수 주문이 시작되었습니다.",
-            "task_id": async_result.id
+            "task_id": async_result.id,
         }
     except HTTPException:
         raise
@@ -349,14 +371,19 @@ async def analyze_coin(currency: str):
         await upbit_pairs.prime_upbit_constants()
 
         if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
-            raise HTTPException(status_code=400, detail=f"{currency_code}는 KRW 마켓 거래 대상이 아닙니다.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"{currency_code}는 KRW 마켓 거래 대상이 아닙니다.",
+            )
 
-        async_result = celery_app.send_task("analyze.run_for_coin", args=[currency_code])
+        async_result = celery_app.send_task(
+            "analyze.run_for_coin", args=[currency_code]
+        )
         return {
             "success": True,
             "currency": currency_code,
             "message": f"{currency_code} 분석이 시작되었습니다.",
-            "task_id": async_result.id
+            "task_id": async_result.id,
         }
     except HTTPException:
         raise
@@ -373,14 +400,18 @@ async def execute_coin_sell_orders(currency: str):
 
     try:
         if not settings.upbit_access_key or not settings.upbit_secret_key:
-            raise HTTPException(status_code=400, detail="Upbit API 키가 설정되지 않았습니다.")
+            raise HTTPException(
+                status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
+            )
 
-        async_result = celery_app.send_task("upbit.execute_sell_order_for_coin", args=[currency_code])
+        async_result = celery_app.send_task(
+            "upbit.execute_sell_order_for_coin", args=[currency_code]
+        )
         return {
             "success": True,
             "currency": currency_code,
             "message": f"{currency_code} 분할 매도 주문이 시작되었습니다.",
-            "task_id": async_result.id
+            "task_id": async_result.id,
         }
     except HTTPException:
         raise
@@ -397,9 +428,7 @@ async def get_open_orders():
         # 현재 보유 자산 정보는 보조 메타데이터로 활용
         my_coins = await upbit.fetch_my_coins()
         holdings = {
-            coin.get("currency"): coin
-            for coin in my_coins
-            if coin.get("currency")
+            coin.get("currency"): coin for coin in my_coins if coin.get("currency")
         }
 
         open_orders = await upbit.fetch_open_orders()
@@ -413,7 +442,9 @@ async def get_open_orders():
             elif market:
                 currency = market
 
-            korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency, currency) if currency else ""
+            korean_name = (
+                upbit_pairs.COIN_TO_NAME_KR.get(currency, currency) if currency else ""
+            )
             holding = holdings.get(currency)
 
             enriched_order = dict(order)
@@ -476,34 +507,40 @@ async def cancel_all_orders():
             try:
                 order_uuids = [order["uuid"] for order in orders if order.get("uuid")]
                 if not order_uuids:
-                    cancel_results.append({
+                    cancel_results.append(
+                        {
+                            "currency": currency,
+                            "market": market,
+                            "success": False,
+                            "cancelled_count": 0,
+                            "total_count": len(orders),
+                            "error": "취소할 주문 UUID가 없습니다.",
+                        }
+                    )
+                    continue
+
+                results = await upbit.cancel_orders(order_uuids)
+                success_count = sum(1 for item in results if "error" not in item)
+                cancel_results.append(
+                    {
+                        "currency": currency,
+                        "market": market,
+                        "success": success_count == len(order_uuids),
+                        "cancelled_count": success_count,
+                        "total_count": len(order_uuids),
+                    }
+                )
+            except Exception as exc:
+                cancel_results.append(
+                    {
                         "currency": currency,
                         "market": market,
                         "success": False,
                         "cancelled_count": 0,
                         "total_count": len(orders),
-                        "error": "취소할 주문 UUID가 없습니다.",
-                    })
-                    continue
-
-                results = await upbit.cancel_orders(order_uuids)
-                success_count = sum(1 for item in results if "error" not in item)
-                cancel_results.append({
-                    "currency": currency,
-                    "market": market,
-                    "success": success_count == len(order_uuids),
-                    "cancelled_count": success_count,
-                    "total_count": len(order_uuids),
-                })
-            except Exception as exc:
-                cancel_results.append({
-                    "currency": currency,
-                    "market": market,
-                    "success": False,
-                    "cancelled_count": 0,
-                    "total_count": len(orders),
-                    "error": str(exc),
-                })
+                        "error": str(exc),
+                    }
+                )
 
         return {
             "success": True,

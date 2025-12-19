@@ -61,6 +61,7 @@ dev = [
     "bandit>=1.7.0,<2.0.0",
     "safety>=3.7.0,<3.8.0",
     "playwright>=1.56.0",
+    "ruff>=0.14.10",
 ]
 
 [tool.pytest.ini_options]
@@ -118,3 +119,47 @@ line_length = 88
 
 [tool.black]
 line-length = 88
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+exclude = [
+    ".venv",
+    "alembic/versions",
+    "__pycache__",
+    "data/stocks_info",
+    "data/coins_info",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E203",   # Whitespace before ':' (black compatible)
+    "E501",   # Line too long (formatter handles this)
+    "B008",   # FastAPI Depends() in default arguments
+    "E712",   # SQLAlchemy == True comparison
+    "B904",   # raise ... from err (FastAPI HTTPException pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app/core/celery_app.py" = ["E402"]  # Delayed import for Celery signals
+"app/routers/kis_domestic_trading.py" = ["E402"]  # Delayed Celery import
+"app/routers/kis_overseas_trading.py" = ["E402"]  # Delayed Celery import
+"tests/conftest.py" = ["E402"]  # Delayed import after env setup
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

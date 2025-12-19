@@ -1,6 +1,7 @@
 """
 Tests covering the Upbit trading router endpoints.
 """
+
 from types import SimpleNamespace
 
 import pytest
@@ -45,14 +46,14 @@ async def test_get_my_coins_success(monkeypatch):
             self.closed = True
 
     async def fake_fetch_prices(markets):
-        return {market: 60000000 for market in markets}
+        return dict.fromkeys(markets, 60000000)
 
     class DummyAnalysisService:
         def __init__(self, db):
             self.db = db
 
         async def get_latest_analysis_results_for_coins(self, markets):
-            return {market: None for market in markets}
+            return dict.fromkeys(markets)
 
     class DummySettingsService:
         def __init__(self, db):

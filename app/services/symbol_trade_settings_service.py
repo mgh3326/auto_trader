@@ -4,8 +4,9 @@ Symbol Trade Settings Service
 종목별 거래 설정 CRUD 및 예상 비용 계산 서비스
 사용자별 기본 거래 설정도 관리
 """
+
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +21,7 @@ class UserTradeDefaultsService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_by_user_id(self, user_id: int) -> Optional[UserTradeDefaults]:
+    async def get_by_user_id(self, user_id: int) -> UserTradeDefaults | None:
         """사용자 ID로 기본 설정 조회"""
         result = await self.db.execute(
             select(UserTradeDefaults).where(UserTradeDefaults.user_id == user_id)
@@ -42,7 +43,7 @@ class UserTradeDefaultsService:
         return settings
 
     async def update_settings(
-        self, user_id: int, update_data: Dict[str, Any]
+        self, user_id: int, update_data: dict[str, Any]
     ) -> UserTradeDefaults:
         """사용자 기본 설정 업데이트"""
         # 숫자 필드를 Decimal로 변환
@@ -58,7 +59,7 @@ class UserTradeDefaultsService:
                 update_data[field] = Decimal(str(update_data[field]))
 
         # 설정이 없으면 생성
-        settings = await self.get_or_create(user_id)
+        await self.get_or_create(user_id)
 
         # 업데이트 실행
         await self.db.execute(
@@ -83,8 +84,8 @@ class SymbolTradeSettingsService:
         instrument_type: InstrumentType,
         buy_quantity_per_order: float,
         buy_price_levels: int = 4,
-        exchange_code: Optional[str] = None,
-        note: Optional[str] = None,
+        exchange_code: str | None = None,
+        note: str | None = None,
     ) -> SymbolTradeSettings:
         """새로운 종목 설정 생성"""
         settings = SymbolTradeSettings(
@@ -103,8 +104,8 @@ class SymbolTradeSettingsService:
         return settings
 
     async def get_by_symbol(
-        self, symbol: str, user_id: Optional[int] = None
-    ) -> Optional[SymbolTradeSettings]:
+        self, symbol: str, user_id: int | None = None
+    ) -> SymbolTradeSettings | None:
         """심볼로 설정 조회
 
         user_id가 제공되면 해당 사용자의 설정만 조회
@@ -115,7 +116,7 @@ class SymbolTradeSettingsService:
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
 
-    async def get_by_id(self, settings_id: int) -> Optional[SymbolTradeSettings]:
+    async def get_by_id(self, settings_id: int) -> SymbolTradeSettings | None:
         """ID로 설정 조회"""
         result = await self.db.execute(
             select(SymbolTradeSettings).where(SymbolTradeSettings.id == settings_id)
@@ -123,8 +124,8 @@ class SymbolTradeSettingsService:
         return result.scalar_one_or_none()
 
     async def get_all(
-        self, user_id: Optional[int] = None, active_only: bool = True
-    ) -> List[SymbolTradeSettings]:
+        self, user_id: int | None = None, active_only: bool = True
+    ) -> list[SymbolTradeSettings]:
         """모든 설정 조회"""
         query = select(SymbolTradeSettings)
         if user_id is not None:
@@ -137,9 +138,9 @@ class SymbolTradeSettingsService:
     async def get_by_type(
         self,
         instrument_type: InstrumentType,
-        user_id: Optional[int] = None,
+        user_id: int | None = None,
         active_only: bool = True,
-    ) -> List[SymbolTradeSettings]:
+    ) -> list[SymbolTradeSettings]:
         """상품 타입별 설정 조회"""
         query = select(SymbolTradeSettings).where(
             SymbolTradeSettings.instrument_type == instrument_type
@@ -152,8 +153,8 @@ class SymbolTradeSettingsService:
         return list(result.scalars().all())
 
     async def update_settings(
-        self, symbol: str, update_data: Dict[str, Any], user_id: Optional[int] = None
-    ) -> Optional[SymbolTradeSettings]:
+        self, symbol: str, update_data: dict[str, Any], user_id: int | None = None
+    ) -> SymbolTradeSettings | None:
         """설정 업데이트"""
         # buy_quantity_per_order가 있으면 Decimal로 변환
         if "buy_quantity_per_order" in update_data:
@@ -161,10 +162,7 @@ class SymbolTradeSettingsService:
                 str(update_data["buy_quantity_per_order"])
             )
 
-        query = (
-            update(SymbolTradeSettings)
-            .where(SymbolTradeSettings.symbol == symbol)
-        )
+        query = update(SymbolTradeSettings).where(SymbolTradeSettings.symbol == symbol)
         if user_id is not None:
             query = query.where(SymbolTradeSettings.user_id == user_id)
 
@@ -172,9 +170,7 @@ class SymbolTradeSettingsService:
         await self.db.commit()
         return await self.get_by_symbol(symbol, user_id)
 
-    async def delete_settings(
-        self, symbol: str, user_id: Optional[int] = None
-    ) -> bool:
+    async def delete_settings(self, symbol: str, user_id: int | None = None) -> bool:
         """설정 삭제"""
         query = delete(SymbolTradeSettings).where(SymbolTradeSettings.symbol == symbol)
         if user_id is not None:
@@ -183,24 +179,18 @@ class SymbolTradeSettingsService:
         await self.db.commit()
         return result.rowcount > 0
 
-    async def deactivate(self, symbol: str, user_id: Optional[int] = None) -> bool:
+    async def deactivate(self, symbol: str, user_id: int | None = None) -> bool:
         """설정 비활성화"""
-        query = (
-            update(SymbolTradeSettings)
-            .where(SymbolTradeSettings.symbol == symbol)
-        )
+        query = update(SymbolTradeSettings).where(SymbolTradeSettings.symbol == symbol)
         if user_id is not None:
             query = query.where(SymbolTradeSettings.user_id == user_id)
         result = await self.db.execute(query.values(is_active=False))
         await self.db.commit()
         return result.rowcount > 0
 
-    async def activate(self, symbol: str, user_id: Optional[int] = None) -> bool:
+    async def activate(self, symbol: str, user_id: int | None = None) -> bool:
         """설정 활성화"""
-        query = (
-            update(SymbolTradeSettings)
-            .where(SymbolTradeSettings.symbol == symbol)
-        )
+        query = update(SymbolTradeSettings).where(SymbolTradeSettings.symbol == symbol)
         if user_id is not None:
             query = query.where(SymbolTradeSettings.user_id == user_id)
         result = await self.db.execute(query.values(is_active=True))
@@ -210,10 +200,10 @@ class SymbolTradeSettingsService:
 
 def calculate_estimated_order_cost(
     symbol: str,
-    buy_prices: List[Dict[str, float]],
+    buy_prices: list[dict[str, float]],
     quantity_per_order: float,
     currency: str = "KRW",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     예상 주문 비용 계산
 
@@ -279,9 +269,9 @@ async def get_buy_quantity_for_symbol(
     db: AsyncSession,
     symbol: str,
     price: float,
-    user_id: Optional[int] = None,
-    fallback_amount: Optional[float] = None,
-) -> Optional[int]:
+    user_id: int | None = None,
+    fallback_amount: float | None = None,
+) -> int | None:
     """
     종목의 매수 수량 조회 (국내/해외 주식용)
 
@@ -317,7 +307,7 @@ async def get_buy_quantity_for_symbol(
 async def get_buy_amount_for_crypto(
     db: AsyncSession,
     symbol: str,
-    user_id: Optional[int] = None,
+    user_id: int | None = None,
     default_amount: float = 10000,
 ) -> float:
     """

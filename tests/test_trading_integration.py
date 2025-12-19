@@ -3,24 +3,22 @@ Trading Integration Tests
 
 수동 잔고와 트레이딩 기능 통합 테스트
 """
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.models.manual_holdings import MarketType
 from app.services.merged_portfolio_service import (
+    HoldingInfo,
     MergedPortfolioService,
     ReferencePrices,
-    HoldingInfo,
-    MergedHolding,
 )
 from app.services.trading_price_service import (
-    TradingPriceService,
     PriceStrategy,
-    PriceCalculationResult,
-    ExpectedProfit,
+    TradingPriceService,
 )
-
 
 # =============================================================================
 # Unit Tests: MergedPortfolioService

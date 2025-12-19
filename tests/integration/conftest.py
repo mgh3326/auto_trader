@@ -1,6 +1,5 @@
 """Pytest configuration for integration tests."""
 
-import pytest
 
 
 def pytest_addoption(parser):
@@ -16,5 +15,6 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     """Register custom markers."""
     config.addinivalue_line(
-        "markers", "integration: mark test as integration test (requires services running)"
+        "markers",
+        "integration: mark test as integration test (requires services running)",
     )

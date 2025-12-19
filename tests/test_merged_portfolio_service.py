@@ -1,19 +1,20 @@
 """
 Tests for MergedPortfolioService - 통합 포트폴리오 서비스 테스트
 """
-import pytest
+
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
-import pandas as pd
 
-from app.services.merged_portfolio_service import (
-    MergedPortfolioService,
-    MergedHolding,
-    HoldingInfo,
-    ReferencePrices,
-    KIS_FIELD_CONFIG,
-)
+import pandas as pd
+import pytest
+
 from app.models.manual_holdings import MarketType
+from app.services.merged_portfolio_service import (
+    HoldingInfo,
+    MergedHolding,
+    MergedPortfolioService,
+    ReferencePrices,
+)
 
 
 @pytest.fixture
@@ -263,7 +264,9 @@ class TestFetchMissingPrices:
     """_fetch_missing_prices 테스트 - TOSS 전용 종목 현재가 조회"""
 
     @pytest.mark.asyncio
-    async def test_fetch_price_for_toss_only_stock(self, merged_portfolio_service, mock_kis_client):
+    async def test_fetch_price_for_toss_only_stock(
+        self, merged_portfolio_service, mock_kis_client
+    ):
         """TOSS만 보유한 종목의 현재가 조회"""
         # 현재가가 0인 TOSS 전용 종목
         merged = {
@@ -291,7 +294,9 @@ class TestFetchMissingPrices:
         mock_kis_client.inquire_price.assert_called_once_with("005380")
 
     @pytest.mark.asyncio
-    async def test_skip_stocks_with_price(self, merged_portfolio_service, mock_kis_client):
+    async def test_skip_stocks_with_price(
+        self, merged_portfolio_service, mock_kis_client
+    ):
         """현재가가 이미 있는 종목은 조회하지 않음"""
         merged = {
             "005930": MergedHolding(
@@ -310,7 +315,9 @@ class TestFetchMissingPrices:
         mock_kis_client.inquire_price.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_skip_zero_quantity_stocks(self, merged_portfolio_service, mock_kis_client):
+    async def test_skip_zero_quantity_stocks(
+        self, merged_portfolio_service, mock_kis_client
+    ):
         """수량이 0인 종목은 조회하지 않음"""
         merged = {
             "005380": MergedHolding(
@@ -329,7 +336,9 @@ class TestFetchMissingPrices:
         mock_kis_client.inquire_price.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_handle_api_error_gracefully(self, merged_portfolio_service, mock_kis_client):
+    async def test_handle_api_error_gracefully(
+        self, merged_portfolio_service, mock_kis_client
+    ):
         """API 오류 시 로그만 남기고 계속 진행"""
         merged = {
             "005380": MergedHolding(
@@ -341,9 +350,7 @@ class TestFetchMissingPrices:
             )
         }
 
-        mock_kis_client.inquire_price = AsyncMock(
-            side_effect=Exception("API Error")
-        )
+        mock_kis_client.inquire_price = AsyncMock(side_effect=Exception("API Error"))
 
         # 예외 발생해도 에러 없이 진행
         await merged_portfolio_service._fetch_missing_prices(
@@ -354,7 +361,9 @@ class TestFetchMissingPrices:
         assert merged["005380"].current_price == 0.0
 
     @pytest.mark.asyncio
-    async def test_fetch_multiple_missing_prices(self, merged_portfolio_service, mock_kis_client):
+    async def test_fetch_multiple_missing_prices(
+        self, merged_portfolio_service, mock_kis_client
+    ):
         """여러 TOSS 전용 종목의 현재가 조회"""
         merged = {
             "005380": MergedHolding(

@@ -11,7 +11,6 @@ This module provides:
 """
 
 import logging
-from typing import Optional
 
 from opentelemetry import metrics, trace
 from opentelemetry._logs import set_logger_provider
@@ -101,7 +100,9 @@ def setup_telemetry(
             insecure=insecure,
         )
         metric_reader = PeriodicExportingMetricReader(metric_exporter)
-        meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+        meter_provider = MeterProvider(
+            resource=resource, metric_readers=[metric_reader]
+        )
         metrics.set_meter_provider(meter_provider)
 
         # Setup logging provider with OTLP exporter
@@ -161,7 +162,7 @@ def _instrument_libraries() -> None:
             from app.core.db import engine
 
             # For async engines (create_async_engine), instrument sync_engine
-            if hasattr(engine, 'sync_engine'):
+            if hasattr(engine, "sync_engine"):
                 SQLAlchemyInstrumentor().instrument(
                     engine=engine.sync_engine,
                     enable_commenter=True,
@@ -286,6 +287,7 @@ def shutdown_telemetry() -> None:
         # Flush logger provider
         try:
             from opentelemetry._logs import get_logger_provider
+
             logger_provider = get_logger_provider()
             if hasattr(logger_provider, "shutdown"):
                 logger_provider.shutdown()

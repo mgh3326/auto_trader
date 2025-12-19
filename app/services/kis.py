@@ -1,8 +1,6 @@
 import asyncio
 import datetime
-import json
 import logging
-from typing import Any, Coroutine
 
 import httpx
 import pandas as pd
@@ -39,9 +37,15 @@ OVERSEAS_BALANCE_TR_MOCK = "VTTS3012R"  # 모의투자 해외주식 잔고조회
 # 해외주식 일봉/분봉 조회 관련 URL 및 TR ID
 OVERSEAS_DAILY_CHART_URL = "/uapi/overseas-price/v1/quotations/dailyprice"
 OVERSEAS_DAILY_CHART_TR = "HHDFS76240000"  # 해외주식 기간별시세 (v1_해외주식-010)
-OVERSEAS_PERIOD_CHART_URL = "/uapi/overseas-price/v1/quotations/inquire-daily-chartprice"
-OVERSEAS_PERIOD_CHART_TR = "FHKST03030100"  # 해외주식 종목/지수/환율 기간별시세 (v1_해외주식-012)
-OVERSEAS_MINUTE_CHART_URL = "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice"
+OVERSEAS_PERIOD_CHART_URL = (
+    "/uapi/overseas-price/v1/quotations/inquire-daily-chartprice"
+)
+OVERSEAS_PERIOD_CHART_TR = (
+    "FHKST03030100"  # 해외주식 종목/지수/환율 기간별시세 (v1_해외주식-012)
+)
+OVERSEAS_MINUTE_CHART_URL = (
+    "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice"
+)
 OVERSEAS_MINUTE_CHART_TR = "FHKST03010200"  # 해외주식 분봉조회 (v1_해외주식-030)
 OVERSEAS_PRICE_URL = "/uapi/overseas-price/v1/quotations/price"
 OVERSEAS_PRICE_TR = "HHDFS00000300"  # 해외주식 현재가 조회
@@ -116,7 +120,7 @@ class KISClient:
         response = r.json()
         access_token = response["access_token"]
         expires_in = response.get("expires_in", 3600)  # 기본 1시간
-        
+
         logging.info("KIS 새 토큰 발급 완료")
         return access_token, expires_in
 
@@ -128,14 +132,16 @@ class KISClient:
             settings.kis_access_token = token
             logging.info(f"Redis에서 토큰 사용: {token[:10]}...")
             return
-        
+
         # 토큰이 없거나 만료된 경우 새로 발급 (분산 락 사용)
         async def token_fetcher():
             access_token, expires_in = await self._fetch_token()
             logging.info(f"새 토큰 발급: {access_token[:10]}... (만료: {expires_in}초)")
             return access_token, expires_in
-        
-        settings.kis_access_token = await self._token_manager.refresh_token_with_lock(token_fetcher)
+
+        settings.kis_access_token = await self._token_manager.refresh_token_with_lock(
+            token_fetcher
+        )
         logging.info(f"토큰 설정 완료: {settings.kis_access_token[:10]}...")
 
     async def volume_rank(self):
@@ -202,13 +208,16 @@ class KISClient:
             r = await cli.get(f"{BASE}{PRICE_URL}", headers=hdr, params=params)
         js = r.json()
         if js["rt_cd"] != "0":
-            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:  # 토큰 만료 또는 유효하지 않은 토큰
+            if js.get("msg_cd") in [
+                "EGW00123",
+                "EGW00121",
+            ]:  # 토큰 만료 또는 유효하지 않은 토큰
                 # Redis에서 토큰 삭제 후 새로 발급
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 # 재시도 1회
                 return await self.inquire_price(code, market)
-            raise RuntimeError(f'{js["msg_cd"]} {js["msg1"]}')
+            raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
         out = js["output"]  # 단일 dict
         trade_date_str = out.get("stck_bsop_date")  # 예: '20250805'
         if trade_date_str:
@@ -259,13 +268,16 @@ class KISClient:
             r = await cli.get(f"{BASE}{PRICE_URL}", headers=hdr, params=params)
         js = r.json()
         if js["rt_cd"] != "0":
-            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:  # 토큰 만료 또는 유효하지 않은 토큰
+            if js.get("msg_cd") in [
+                "EGW00123",
+                "EGW00121",
+            ]:  # 토큰 만료 또는 유효하지 않은 토큰
                 # Redis에서 토큰 삭제 후 새로 발급
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 # 재시도 1회
                 return await self.fetch_fundamental_info(code, market)
-            raise RuntimeError(f'{js["msg_cd"]} {js["msg1"]}')
+            raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
         out = js["output"]  # 단일 dict
 
         # 기본 정보 구성
@@ -288,14 +300,14 @@ class KISClient:
         return {k: v for k, v in fundamental_data.items() if v is not None}
 
     async def inquire_daily_itemchartprice(
-            self,
-            code: str,
-            market: str = "J",
-            n: int = 200,  # 최종 확보하고 싶은 캔들 수
-            adj: bool = True,
-            period: str = "D",  # D/W/M (일/주/월봉)
-            end_date: datetime.date | None = None,  # None이면 오늘까지
-            per_call_days: int = 150,  # 한 번 호출 시 조회 날짜 폭
+        self,
+        code: str,
+        market: str = "J",
+        n: int = 200,  # 최종 확보하고 싶은 캔들 수
+        adj: bool = True,
+        period: str = "D",  # D/W/M (일/주/월봉)
+        end_date: datetime.date | None = None,  # None이면 오늘까지
+        per_call_days: int = 150,  # 한 번 호출 시 조회 날짜 폭
     ) -> pd.DataFrame:
         """
         ✅ KIS 일봉/주봉/월봉을 여러 번 호출해 최근 n개 OHLCV만 반환
@@ -329,12 +341,15 @@ class KISClient:
             js = r.json()
 
             if js.get("rt_cd") != "0":
-                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:  # 토큰 만료 또는 유효하지 않은 토큰
+                if js.get("msg_cd") in [
+                    "EGW00123",
+                    "EGW00121",
+                ]:  # 토큰 만료 또는 유효하지 않은 토큰
                     # Redis에서 토큰 삭제 후 새로 발급
                     await self._token_manager.clear_token()
                     await self._ensure_token()
                     continue
-                raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
             chunk = js.get("output2") or js.get("output") or []
             if not chunk:
@@ -382,17 +397,17 @@ class KISClient:
         return df
 
     async def inquire_minute_chart(
-            self,
-            code: str,
-            market: str = "J",
-            time_unit: int = 1,  # 1: 1분, 3: 3분, 5: 5분, 10: 10분, 15: 15분, 30: 30분, 45: 45분, 60: 60분
-            n: int = 200,  # 최종 확보하고 싶은 캔들 수
-            end_date: datetime.date | None = None,  # None이면 오늘까지
+        self,
+        code: str,
+        market: str = "J",
+        time_unit: int = 1,  # 1: 1분, 3: 3분, 5: 5분, 10: 10분, 15: 15분, 30: 30분, 45: 45분, 60: 60분
+        n: int = 200,  # 최종 확보하고 싶은 캔들 수
+        end_date: datetime.date | None = None,  # None이면 오늘까지
     ) -> pd.DataFrame:
         """
         KIS 분봉 데이터 조회
         컬럼: datetime, date, time, open, high, low, close, volume, value
-        
+
         Parameters
         ----------
         code : str
@@ -416,10 +431,10 @@ class KISClient:
         # KIS 분봉 API는 time_unit 파라미터를 제대로 인식하지 못하는 문제가 있음
         # 현재로서는 모든 시간대에서 동일한 데이터가 반환됨
         # 향후 API 문서 업데이트나 기술지원을 통해 해결 필요
-        
+
         # 현재 시간을 시분초로 설정 (장 시간 내에만 작동)
         current_time = datetime.datetime.now().strftime("%H%M%S")
-        
+
         params = {
             "FID_COND_MRKT_DIV_CODE": market,
             "FID_INPUT_ISCD": code.zfill(6),
@@ -429,26 +444,36 @@ class KISClient:
             "FID_INPUT_TIME_1": "01",  # 1분봉으로 고정 (API가 time_unit을 지원하지 않음)
             "FID_INPUT_TIME_2": "01",  # 1분봉으로 고정
             "FID_PW_DATA_INCU_YN": "N",
-            "FID_ETC_CLS_CODE": ""
+            "FID_ETC_CLS_CODE": "",
         }
 
         async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(
-                f"{BASE}{MINUTE_CHART_URL}", headers=hdr, params=params
-            )
+            r = await cli.get(f"{BASE}{MINUTE_CHART_URL}", headers=hdr, params=params)
 
         js = r.json()
-        
+
         # 디버깅을 위한 로깅 추가
         logging.info(f"KIS 분봉 API 응답: {js}")
 
         # rt_cd가 비어있어도 output2에 데이터가 있을 수 있음
         rows = js.get("output2") or js.get("output") or []
-        
+
         if not rows:
             # 데이터가 없는 경우 빈 DataFrame 반환
             logging.warning(f"KIS 분봉 API에서 데이터를 찾을 수 없음: {js}")
-            return pd.DataFrame(columns=["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"])
+            return pd.DataFrame(
+                columns=[
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ]
+            )
 
         # 데이터가 있으면 성공으로 처리 (rt_cd가 비어있어도)
         logging.info(f"KIS 분봉 API에서 {len(rows)}개 데이터 수집 성공")
@@ -484,13 +509,25 @@ class KISClient:
             .assign(
                 # 날짜와 시간을 결합하여 datetime 생성
                 datetime=lambda d: pd.to_datetime(
-                    d["date"] + d["time"], 
-                    format="%Y%m%d%H%M%S"
+                    d["date"] + d["time"], format="%Y%m%d%H%M%S"
                 ),
                 date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
                 time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
             )
-            .loc[:, ["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"]]
+            .loc[
+                :,
+                [
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ],
+            ]
             .drop_duplicates(subset=["datetime"], keep="first")
             .sort_values("datetime")
             .tail(n)  # 요청한 개수만
@@ -499,73 +536,102 @@ class KISClient:
 
         return df
 
-    def _aggregate_minute_candles(self, df_1min: pd.DataFrame, time_unit: int) -> pd.DataFrame:
+    def _aggregate_minute_candles(
+        self, df_1min: pd.DataFrame, time_unit: int
+    ) -> pd.DataFrame:
         """
         1분봉 데이터를 지정된 시간 단위로 집계
-        
+
         Args:
             df_1min: 1분봉 DataFrame
             time_unit: 집계할 시간 단위 (분)
-            
+
         Returns:
             집계된 DataFrame (완전한 시간대만)
         """
         if df_1min.empty:
             return df_1min
-        
+
         # 시간을 time_unit 단위로 그룹화
         df_1min = df_1min.copy()
-        df_1min['time_group'] = df_1min['datetime'].dt.floor(f'{time_unit}min')
-        
+        df_1min["time_group"] = df_1min["datetime"].dt.floor(f"{time_unit}min")
+
         # 그룹별로 OHLCV 집계
-        aggregated = df_1min.groupby('time_group').agg({
-            'open': 'first',      # 첫 번째 시가
-            'high': 'max',        # 최고가
-            'low': 'min',         # 최저가
-            'close': 'last',      # 마지막 종가
-            'volume': 'sum',      # 거래량 합계
-            'value': 'sum'        # 거래대금 합계
-        }).reset_index()
-        
+        aggregated = (
+            df_1min.groupby("time_group")
+            .agg(
+                {
+                    "open": "first",  # 첫 번째 시가
+                    "high": "max",  # 최고가
+                    "low": "min",  # 최저가
+                    "close": "last",  # 마지막 종가
+                    "volume": "sum",  # 거래량 합계
+                    "value": "sum",  # 거래대금 합계
+                }
+            )
+            .reset_index()
+        )
+
         # 완전한 시간대만 필터링 (time_unit만큼의 분 데이터가 있는 그룹만)
         complete_periods = []
         for _, row in aggregated.iterrows():
-            group_start = row['time_group']
+            group_start = row["time_group"]
             group_end = group_start + pd.Timedelta(minutes=time_unit)
-            
+
             # 해당 그룹에 속하는 1분봉 개수 확인
             period_data = df_1min[
-                (df_1min['datetime'] >= group_start) & 
-                (df_1min['datetime'] < group_end)
+                (df_1min["datetime"] >= group_start) & (df_1min["datetime"] < group_end)
             ]
-            
+
             # 완전한 시간대인지 확인 (time_unit만큼의 분 데이터가 있어야 함)
             if len(period_data) >= time_unit:
                 complete_periods.append(row)
-        
+
         if not complete_periods:
             # 완전한 시간대가 없으면 빈 DataFrame 반환
             return pd.DataFrame(
-                columns=["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"]
+                columns=[
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ]
             )
-        
+
         # 완전한 시간대만으로 DataFrame 재구성
         df_complete = pd.DataFrame(complete_periods)
-        
+
         # 컬럼명 변경 및 시간 정보 추가
-        df_complete = df_complete.rename(columns={'time_group': 'datetime'})
-        df_complete['date'] = df_complete['datetime'].dt.date
-        df_complete['time'] = df_complete['datetime'].dt.time
-        
+        df_complete = df_complete.rename(columns={"time_group": "datetime"})
+        df_complete["date"] = df_complete["datetime"].dt.date
+        df_complete["time"] = df_complete["datetime"].dt.time
+
         # 원본 컬럼 순서로 재정렬
-        return df_complete[['datetime', 'date', 'time', 'open', 'high', 'low', 'close', 'volume', 'value']]
+        return df_complete[
+            [
+                "datetime",
+                "date",
+                "time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "value",
+            ]
+        ]
 
     async def fetch_my_stocks(
         self,
         is_mock: bool = False,
         is_overseas: bool = False,
         exchange_code: str = "NASD",
-        currency_code: str = "USD"
+        currency_code: str = "USD",
     ) -> list[dict]:
         """
         보유 주식 목록 조회 (Upbit의 fetch_my_coins와 유사한 기능)
@@ -620,13 +686,17 @@ class KISClient:
 
         # 계좌번호 확인
         if not settings.kis_account_no:
-            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다. 계좌번호를 .env 파일에 추가해주세요.")
+            raise ValueError(
+                "KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다. 계좌번호를 .env 파일에 추가해주세요."
+            )
 
         # 계좌번호를 CANO(앞 8자리)와 ACNT_PRDT_CD(뒤 2자리)로 분리
         # 형식: "12345678-01" 또는 "1234567801"
         account_no = settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
-            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
 
         cano = account_no[:8]  # 계좌번호 앞 8자리
         acnt_prdt_cd = account_no[8:10]  # 계좌상품코드 뒤 2자리
@@ -678,20 +748,27 @@ class KISClient:
         js = r.json()
 
         if js.get("rt_cd") != "0":
-            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:  # 토큰 만료 또는 유효하지 않은 토큰
+            if js.get("msg_cd") in [
+                "EGW00123",
+                "EGW00121",
+            ]:  # 토큰 만료 또는 유효하지 않은 토큰
                 # Redis에서 토큰 삭제 후 새로 발급
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 # 재시도 1회
-                return await self.fetch_my_stocks(is_mock, is_overseas, exchange_code, currency_code)
-            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+                return await self.fetch_my_stocks(
+                    is_mock, is_overseas, exchange_code, currency_code
+                )
+            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
         # output1: 종목별 보유 내역
         stocks = js.get("output1", [])
 
         if is_overseas:
             # 해외주식: 보유수량이 0인 종목 제외
-            stocks = [stock for stock in stocks if int(stock.get("ovrs_cblc_qty", 0)) > 0]
+            stocks = [
+                stock for stock in stocks if int(stock.get("ovrs_cblc_qty", 0)) > 0
+            ]
         else:
             # 국내주식: 보유수량이 0인 종목 제외
             stocks = [stock for stock in stocks if int(stock.get("hldg_qty", 0)) > 0]
@@ -702,7 +779,7 @@ class KISClient:
         self,
         is_mock: bool = False,
         exchange_code: str = "NASD",
-        currency_code: str = "USD"
+        currency_code: str = "USD",
     ) -> list[dict]:
         """
         해외 보유 주식 목록 조회 편의 메서드
@@ -719,10 +796,12 @@ class KISClient:
             is_mock=is_mock,
             is_overseas=True,
             exchange_code=exchange_code,
-            currency_code=currency_code
+            currency_code=currency_code,
         )
 
-    async def fetch_my_us_stocks(self, is_mock: bool = False, exchange: str = "NASD") -> list[dict]:
+    async def fetch_my_us_stocks(
+        self, is_mock: bool = False, exchange: str = "NASD"
+    ) -> list[dict]:
         """
         미국 보유 주식 목록 조회 편의 메서드
 
@@ -734,9 +813,7 @@ class KISClient:
             미국 보유 주식 목록
         """
         return await self.fetch_my_overseas_stocks(
-            is_mock=is_mock,
-            exchange_code=exchange,
-            currency_code="USD"
+            is_mock=is_mock, exchange_code=exchange, currency_code="USD"
         )
 
     async def fetch_minute_candles(
@@ -747,62 +824,78 @@ class KISClient:
     ) -> dict:
         """
         분봉 데이터를 가져와서 60분, 5분, 1분 캔들로 반환
-        
+
         Args:
             code: 종목코드
             market: 시장 구분 (J: KRX)
             end_date: 종료 날짜 (None이면 오늘)
-            
+
         Returns:
             분봉 캔들 데이터 딕셔너리
         """
         minute_candles = {}
-        
+
         try:
             logging.info(f"분봉 데이터 수집 시작: {code}")
-            
+
             # 단일 요청으로 200개 1분봉 수집
             df_1min = await self.inquire_minute_chart(
                 code, market, time_unit=1, n=200, end_date=end_date
             )
-            
+
             if not df_1min.empty:
                 logging.info(f"1분봉 {len(df_1min)}개 수집 완료")
-                
+
                 minute_candles["1min"] = df_1min
-                
+
                 # 1분봉 데이터를 5분봉으로 가공
                 df_5min = self._aggregate_minute_candles(df_1min, 5)
                 minute_candles["5min"] = df_5min
-                
+
                 # 1분봉 데이터를 60분봉으로 가공
                 df_60min = self._aggregate_minute_candles(df_1min, 60)
                 minute_candles["60min"] = df_60min
-                
-                logging.info(f"집계 완료 - 1분봉: {len(df_1min)}개, 5분봉: {len(df_5min)}개, 60분봉: {len(df_60min)}개")
-                
+
+                logging.info(
+                    f"집계 완료 - 1분봉: {len(df_1min)}개, 5분봉: {len(df_5min)}개, 60분봉: {len(df_60min)}개"
+                )
+
             else:
                 # 데이터가 없는 경우 빈 DataFrame으로 설정
                 empty_df = pd.DataFrame(
-                    columns=["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"])
-                minute_candles = {
-                    "60min": empty_df,
-                    "5min": empty_df,
-                    "1min": empty_df
-                }
+                    columns=[
+                        "datetime",
+                        "date",
+                        "time",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "value",
+                    ]
+                )
+                minute_candles = {"60min": empty_df, "5min": empty_df, "1min": empty_df}
                 logging.warning("수집된 데이터가 없습니다")
-            
+
         except Exception as e:
             logging.warning(f"분봉 데이터 수집 실패 ({code}): {e}")
             # 실패한 경우 빈 DataFrame으로 설정
             empty_df = pd.DataFrame(
-                columns=["datetime", "date", "time", "open", "high", "low", "close", "volume", "value"])
-            minute_candles = {
-                "60min": empty_df,
-                "5min": empty_df,
-                "1min": empty_df
-            }
-        
+                columns=[
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ]
+            )
+            minute_candles = {"60min": empty_df, "5min": empty_df, "1min": empty_df}
+
         return minute_candles
 
     async def inquire_overseas_daily_price(
@@ -849,7 +942,7 @@ class KISClient:
                 try:
                     oldest_dt = datetime.datetime.strptime(oldest_date, "%Y%m%d")
                     bymd = (oldest_dt - datetime.timedelta(days=1)).strftime("%Y%m%d")
-                except:
+                except Exception:
                     bymd = ""
             else:
                 bymd = ""  # 첫 요청은 최신 데이터부터
@@ -863,13 +956,13 @@ class KISClient:
                 "MODP": "1",  # 0:수정주가 미반영, 1:수정주가 반영
             }
 
-            logging.info(f"해외주식 일봉 조회 요청 (반복 {iteration + 1}/{max_iterations}) - symbol: {symbol}, exchange: {excd}, bymd: {bymd}")
+            logging.info(
+                f"해외주식 일봉 조회 요청 (반복 {iteration + 1}/{max_iterations}) - symbol: {symbol}, exchange: {excd}, bymd: {bymd}"
+            )
 
             async with httpx.AsyncClient(timeout=10) as cli:
                 r = await cli.get(
-                    f"{BASE}{OVERSEAS_DAILY_CHART_URL}",
-                    headers=hdr,
-                    params=params
+                    f"{BASE}{OVERSEAS_DAILY_CHART_URL}", headers=hdr, params=params
                 )
 
             # 디버깅: 응답 내용 확인
@@ -879,7 +972,7 @@ class KISClient:
 
             try:
                 js = r.json()
-            except Exception as e:
+            except Exception:
                 logging.error(f"JSON 파싱 실패. 응답 내용: {r.text[:200]}")
                 raise
 
@@ -888,12 +981,14 @@ class KISClient:
                     await self._token_manager.clear_token()
                     await self._ensure_token()
                     continue
-                raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
             chunk = js.get("output2", [])
 
             if not chunk:
-                logging.info(f"더 이상 과거 데이터가 없음. 현재까지 수집: {len(rows)}개")
+                logging.info(
+                    f"더 이상 과거 데이터가 없음. 현재까지 수집: {len(rows)}개"
+                )
                 break  # 더 이상 과거 데이터 없음
 
             rows.extend(chunk)
@@ -902,26 +997,33 @@ class KISClient:
             logging.info(f"누적 데이터: {len(rows)}개 / 목표: {n}개")
 
         if not rows:
-            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+            return pd.DataFrame(
+                columns=["date", "open", "high", "low", "close", "volume"]
+            )
 
         df = (
             pd.DataFrame(rows)
-            .rename(columns={
-                "xymd": "date",
-                "open": "open",
-                "high": "high",
-                "low": "low",
-                "clos": "close",
-                "tvol": "volume",
-            })
-            .astype({
-                "date": "str",
-                "open": "float",
-                "high": "float",
-                "low": "float",
-                "close": "float",
-                "volume": "int",
-            }, errors="ignore")
+            .rename(
+                columns={
+                    "xymd": "date",
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "clos": "close",
+                    "tvol": "volume",
+                }
+            )
+            .astype(
+                {
+                    "date": "str",
+                    "open": "float",
+                    "high": "float",
+                    "low": "float",
+                    "close": "float",
+                    "volume": "int",
+                },
+                errors="ignore",
+            )
             .assign(date=lambda d: pd.to_datetime(d["date"], format="%Y%m%d"))
             .drop_duplicates(subset=["date"], keep="first")
             .sort_values("date")
@@ -933,9 +1035,7 @@ class KISClient:
         return df
 
     async def inquire_overseas_price(
-        self,
-        symbol: str,
-        exchange_code: str = "NASD"
+        self, symbol: str, exchange_code: str = "NASD"
     ) -> pd.DataFrame:
         """
         해외주식 현재가 조회
@@ -965,11 +1065,7 @@ class KISClient:
         }
 
         async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(
-                f"{BASE}{OVERSEAS_PRICE_URL}",
-                headers=hdr,
-                params=params
-            )
+            r = await cli.get(f"{BASE}{OVERSEAS_PRICE_URL}", headers=hdr, params=params)
 
         js = r.json()
 
@@ -978,12 +1074,23 @@ class KISClient:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 return await self.inquire_overseas_price(symbol, exchange_code)
-            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
         out = js.get("output", {})
 
         if not out:
-            return pd.DataFrame(columns=["code", "date", "time", "open", "high", "low", "close", "volume"])
+            return pd.DataFrame(
+                columns=[
+                    "code",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+            )
 
         # 디버깅을 위해 전체 응답 로깅
         logging.debug(f"해외주식 현재가 API 응답 ({symbol}): {out}")
@@ -993,7 +1100,7 @@ class KISClient:
 
         # 빈 문자열을 0으로 변환하는 헬퍼 함수
         def safe_float(val, default=0.0):
-            if val == '' or val is None:
+            if val == "" or val is None:
                 return default
             try:
                 return float(val)
@@ -1001,7 +1108,7 @@ class KISClient:
                 return default
 
         def safe_int(val, default=0):
-            if val == '' or val is None:
+            if val == "" or val is None:
                 return default
             try:
                 return int(val)
@@ -1013,14 +1120,18 @@ class KISClient:
         if current_price == 0:
             base_price = safe_float(out.get("base"))
             if base_price > 0:
-                logging.warning(f"현재가가 0이어서 전일종가를 사용합니다 ({symbol}): {base_price}")
+                logging.warning(
+                    f"현재가가 0이어서 전일종가를 사용합니다 ({symbol}): {base_price}"
+                )
                 current_price = base_price
             else:
                 logging.warning(f"현재가와 전일종가 모두 0입니다 ({symbol})")
 
         row = {
             "code": symbol,
-            "date": pd.Timestamp(now.date()),  # Timestamp로 변환하여 일봉 데이터와 타입 일치
+            "date": pd.Timestamp(
+                now.date()
+            ),  # Timestamp로 변환하여 일봉 데이터와 타입 일치
             "time": now.time(),
             "open": safe_float(out.get("open")),
             "high": safe_float(out.get("high")),
@@ -1055,9 +1166,7 @@ class KISClient:
         return float(close_price)
 
     async def fetch_overseas_fundamental_info(
-        self,
-        symbol: str,
-        exchange_code: str = "NASD"
+        self, symbol: str, exchange_code: str = "NASD"
     ) -> dict:
         """
         해외주식 기본 정보 조회
@@ -1087,11 +1196,7 @@ class KISClient:
         }
 
         async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(
-                f"{BASE}{OVERSEAS_PRICE_URL}",
-                headers=hdr,
-                params=params
-            )
+            r = await cli.get(f"{BASE}{OVERSEAS_PRICE_URL}", headers=hdr, params=params)
 
         js = r.json()
 
@@ -1100,7 +1205,7 @@ class KISClient:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 return await self.fetch_overseas_fundamental_info(symbol, exchange_code)
-            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
         out = js.get("output", {})
 
@@ -1158,13 +1263,13 @@ class KISClient:
         }
 
         # 디버깅: 요청 파라미터 로깅
-        logging.info(f"해외주식 분봉 조회 요청 - symbol: {symbol}, exchange: {excd}, params: {params}")
+        logging.info(
+            f"해외주식 분봉 조회 요청 - symbol: {symbol}, exchange: {excd}, params: {params}"
+        )
 
         async with httpx.AsyncClient(timeout=10) as cli:
             r = await cli.get(
-                f"{BASE}{OVERSEAS_MINUTE_CHART_URL}",
-                headers=hdr,
-                params=params
+                f"{BASE}{OVERSEAS_MINUTE_CHART_URL}", headers=hdr, params=params
             )
 
         js = r.json()
@@ -1173,45 +1278,76 @@ class KISClient:
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
-                return await self.inquire_overseas_minute_chart(symbol, exchange_code, n)
+                return await self.inquire_overseas_minute_chart(
+                    symbol, exchange_code, n
+                )
             logging.warning(f"해외주식 분봉 조회 실패: {js.get('msg1')}")
-            return pd.DataFrame(columns=["datetime", "date", "time", "open", "high", "low", "close", "volume"])
+            return pd.DataFrame(
+                columns=[
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+            )
 
         rows = js.get("output2", [])
 
         if not rows:
             logging.warning("해외주식 분봉 데이터 없음")
-            return pd.DataFrame(columns=["datetime", "date", "time", "open", "high", "low", "close", "volume"])
+            return pd.DataFrame(
+                columns=[
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+            )
 
         df = (
             pd.DataFrame(rows)
-            .rename(columns={
-                "kymd": "date",
-                "khms": "time",
-                "open": "open",
-                "high": "high",
-                "low": "low",
-                "last": "close",
-                "evol": "volume",
-            })
-            .astype({
-                "date": "str",
-                "time": "str",
-                "open": "float",
-                "high": "float",
-                "low": "float",
-                "close": "float",
-                "volume": "int",
-            }, errors="ignore")
+            .rename(
+                columns={
+                    "kymd": "date",
+                    "khms": "time",
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "last": "close",
+                    "evol": "volume",
+                }
+            )
+            .astype(
+                {
+                    "date": "str",
+                    "time": "str",
+                    "open": "float",
+                    "high": "float",
+                    "low": "float",
+                    "close": "float",
+                    "volume": "int",
+                },
+                errors="ignore",
+            )
             .assign(
                 datetime=lambda d: pd.to_datetime(
-                    d["date"] + d["time"],
-                    format="%Y%m%d%H%M%S"
+                    d["date"] + d["time"], format="%Y%m%d%H%M%S"
                 ),
                 date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
                 time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
             )
-            .loc[:, ["datetime", "date", "time", "open", "high", "low", "close", "volume"]]
+            .loc[
+                :,
+                ["datetime", "date", "time", "open", "high", "low", "close", "volume"],
+            ]
             .drop_duplicates(subset=["datetime"], keep="first")
             .sort_values("datetime")
             .tail(n)
@@ -1241,7 +1377,9 @@ class KISClient:
             logging.info(f"해외주식 분봉 데이터 수집 시작: {symbol}")
 
             # 1분봉 수집 (최대 120개)
-            df_1min = await self.inquire_overseas_minute_chart(symbol, exchange_code, n=120)
+            df_1min = await self.inquire_overseas_minute_chart(
+                symbol, exchange_code, n=120
+            )
 
             if not df_1min.empty:
                 logging.info(f"1분봉 {len(df_1min)}개 수집 완료")
@@ -1256,27 +1394,41 @@ class KISClient:
                 df_60min = self._aggregate_minute_candles(df_1min, 60)
                 minute_candles["60min"] = df_60min.tail(12)  # 최근 12개만
 
-                logging.info(f"집계 완료 - 5분봉: {len(df_5min)}개, 60분봉: {len(df_60min)}개")
+                logging.info(
+                    f"집계 완료 - 5분봉: {len(df_5min)}개, 60분봉: {len(df_60min)}개"
+                )
             else:
                 # 빈 DataFrame
                 empty_df = pd.DataFrame(
-                    columns=["datetime", "date", "time", "open", "high", "low", "close", "volume"])
-                minute_candles = {
-                    "60min": empty_df,
-                    "5min": empty_df,
-                    "1min": empty_df
-                }
+                    columns=[
+                        "datetime",
+                        "date",
+                        "time",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                    ]
+                )
+                minute_candles = {"60min": empty_df, "5min": empty_df, "1min": empty_df}
                 logging.warning("수집된 데이터가 없습니다")
 
         except Exception as e:
             logging.warning(f"해외주식 분봉 데이터 수집 실패 ({symbol}): {e}")
             empty_df = pd.DataFrame(
-                columns=["datetime", "date", "time", "open", "high", "low", "close", "volume"])
-            minute_candles = {
-                "60min": empty_df,
-                "5min": empty_df,
-                "1min": empty_df
-            }
+                columns=[
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                ]
+            )
+            minute_candles = {"60min": empty_df, "5min": empty_df, "1min": empty_df}
 
         return minute_candles
 
@@ -1321,7 +1473,9 @@ class KISClient:
 
         account_no = settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
-            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
 
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
@@ -1341,13 +1495,11 @@ class KISClient:
             "FWEX_CTRT_FRCR_DVSN_CD": fwex_ctrt_frcr_dvsn_cd,
         }
 
-        logging.info(f"통합증거금 조회 (원화 + 외화)")
+        logging.info("통합증거금 조회 (원화 + 외화)")
 
         async with httpx.AsyncClient(timeout=5) as cli:
             r = await cli.get(
-                f"{BASE}{INTEGRATED_MARGIN_URL}",
-                headers=hdr,
-                params=params
+                f"{BASE}{INTEGRATED_MARGIN_URL}", headers=hdr, params=params
             )
 
         js = r.json()
@@ -1359,14 +1511,14 @@ class KISClient:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 return await self.inquire_integrated_margin(is_mock)
-            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
         # API 응답은 output (단일 객체)로 옴
         output = js.get("output", {})
 
         # 금액 값을 float으로 안전하게 변환
         def safe_float(val, default=0.0):
-            if val == '' or val is None:
+            if val == "" or val is None:
                 return default
             try:
                 return float(val)
@@ -1376,19 +1528,29 @@ class KISClient:
         # 통합증거금 정보 파싱
         result = {
             # 원화 예수금 (국내주식용)
-            "dnca_tot_amt": safe_float(output.get("stck_cash_objt_amt")),  # 주식현금대용금액 = 원화 예수금
-            "stck_cash_ord_psbl_amt": safe_float(output.get("stck_cash_ord_psbl_amt")),  # 주식현금주문가능금액
-            "stck_sbst_ord_psbl_amt": safe_float(output.get("stck_sbst_ord_psbl_amt")),  # 주식대용주문가능금액
-            "stck_evlu_ord_psbl_amt": safe_float(output.get("stck_evlu_ord_psbl_amt")),  # 주식평가주문가능금액
+            "dnca_tot_amt": safe_float(
+                output.get("stck_cash_objt_amt")
+            ),  # 주식현금대용금액 = 원화 예수금
+            "stck_cash_ord_psbl_amt": safe_float(
+                output.get("stck_cash_ord_psbl_amt")
+            ),  # 주식현금주문가능금액
+            "stck_sbst_ord_psbl_amt": safe_float(
+                output.get("stck_sbst_ord_psbl_amt")
+            ),  # 주식대용주문가능금액
+            "stck_evlu_ord_psbl_amt": safe_float(
+                output.get("stck_evlu_ord_psbl_amt")
+            ),  # 주식평가주문가능금액
             # 외화 예수금
             "usd_objt_amt": safe_float(output.get("usd_objt_amt")),  # USD 대용금액
-            "usd_ord_psbl_amt": safe_float(output.get("usd_ord_psbl_amt")),  # USD 주문가능금액
+            "usd_ord_psbl_amt": safe_float(
+                output.get("usd_ord_psbl_amt")
+            ),  # USD 주문가능금액
             "hkd_objt_amt": safe_float(output.get("hkd_objt_amt")),  # HKD 대용금액
             "jpy_objt_amt": safe_float(output.get("jpy_objt_amt")),  # JPY 대용금액
             "cny_objt_amt": safe_float(output.get("cny_objt_amt")),  # CNY 대용금액
             # 환율 정보
             "usd_exrt": safe_float(output.get("usd_frst_bltn_exrt")),  # USD 환율
-            "currencies": []
+            "currencies": [],
         }
 
         # 하위 호환성을 위해 krw_balance, usd_balance 추가
@@ -1427,7 +1589,9 @@ class KISClient:
 
         account_no = settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
-            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
 
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
@@ -1444,13 +1608,11 @@ class KISClient:
             "ACNT_PRDT_CD": acnt_prdt_cd,
         }
 
-        logging.info(f"해외증거금 통화별 조회")
+        logging.info("해외증거금 통화별 조회")
 
         async with httpx.AsyncClient(timeout=5) as cli:
             r = await cli.get(
-                f"{BASE}{OVERSEAS_MARGIN_URL}",
-                headers=hdr,
-                params=params
+                f"{BASE}{OVERSEAS_MARGIN_URL}", headers=hdr, params=params
             )
 
         js = r.json()
@@ -1460,13 +1622,13 @@ class KISClient:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 return await self.inquire_overseas_margin(is_mock)
-            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
         output = js.get("output", [])
 
         # 금액 값을 float으로 안전하게 변환
         def safe_float(val, default=0.0):
-            if val == '' or val is None:
+            if val == "" or val is None:
                 return default
             try:
                 return float(val)
@@ -1477,14 +1639,26 @@ class KISClient:
         for item in output:
             result = {
                 "crcy_cd": item.get("crcy_cd"),  # 통화코드
-                "frcr_dncl_amt_2": safe_float(item.get("frcr_dncl_amt_2")),  # 외화예수금액 (보유현금)
-                "frcr_ord_psbl_amt": safe_float(item.get("frcr_ord_psbl_amt")),  # 외화주문가능금액
-                "frcr_buy_amt_smtl": safe_float(item.get("frcr_buy_amt_smtl")),  # 외화매수금액합계
-                "tot_evlu_pfls_amt": safe_float(item.get("tot_evlu_pfls_amt")),  # 총평가손익금액
-                "ovrs_tot_pfls": safe_float(item.get("ovrs_tot_pfls")),  # 해외총손익금액
+                "frcr_dncl_amt_2": safe_float(
+                    item.get("frcr_dncl_amt_2")
+                ),  # 외화예수금액 (보유현금)
+                "frcr_ord_psbl_amt": safe_float(
+                    item.get("frcr_ord_psbl_amt")
+                ),  # 외화주문가능금액
+                "frcr_buy_amt_smtl": safe_float(
+                    item.get("frcr_buy_amt_smtl")
+                ),  # 외화매수금액합계
+                "tot_evlu_pfls_amt": safe_float(
+                    item.get("tot_evlu_pfls_amt")
+                ),  # 총평가손익금액
+                "ovrs_tot_pfls": safe_float(
+                    item.get("ovrs_tot_pfls")
+                ),  # 해외총손익금액
             }
             results.append(result)
-            logging.info(f"{result['crcy_cd']}: 보유 {result['frcr_dncl_amt_2']:.2f}, 주문가능 {result['frcr_ord_psbl_amt']:.2f}")
+            logging.info(
+                f"{result['crcy_cd']}: 보유 {result['frcr_dncl_amt_2']:.2f}, 주문가능 {result['frcr_ord_psbl_amt']:.2f}"
+            )
 
         return results
 
@@ -1518,7 +1692,9 @@ class KISClient:
 
         account_no = settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
-            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
 
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
@@ -1527,7 +1703,9 @@ class KISClient:
         excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
         excd = excd_map.get(exchange_code, exchange_code[:3])
 
-        tr_id = OVERSEAS_BUYABLE_AMOUNT_TR_MOCK if is_mock else OVERSEAS_BUYABLE_AMOUNT_TR
+        tr_id = (
+            OVERSEAS_BUYABLE_AMOUNT_TR_MOCK if is_mock else OVERSEAS_BUYABLE_AMOUNT_TR
+        )
 
         hdr = self._hdr_base | {
             "authorization": f"Bearer {settings.kis_access_token}",
@@ -1542,13 +1720,13 @@ class KISClient:
             "ITEM_CD": to_kis_symbol(symbol),  # 종목코드 (DB형식 . -> KIS형식 /)
         }
 
-        logging.info(f"해외주식 매수가능금액 조회 - symbol: {symbol}, exchange: {excd}, price: {price}")
+        logging.info(
+            f"해외주식 매수가능금액 조회 - symbol: {symbol}, exchange: {excd}, price: {price}"
+        )
 
         async with httpx.AsyncClient(timeout=5) as cli:
             r = await cli.get(
-                f"{BASE}{OVERSEAS_BUYABLE_AMOUNT_URL}",
-                headers=hdr,
-                params=params
+                f"{BASE}{OVERSEAS_BUYABLE_AMOUNT_URL}", headers=hdr, params=params
             )
 
         js = r.json()
@@ -1557,8 +1735,10 @@ class KISClient:
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
-                return await self.inquire_overseas_buyable_amount(symbol, exchange_code, price, is_mock)
-            raise RuntimeError(f'{js.get("msg_cd")} {js.get("msg1")}')
+                return await self.inquire_overseas_buyable_amount(
+                    symbol, exchange_code, price, is_mock
+                )
+            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
         output = js.get("output", {})
 
@@ -1569,7 +1749,9 @@ class KISClient:
             "currency": output.get("tr_crcy_cd"),  # 거래통화코드
         }
 
-        logging.info(f"매수가능금액: {result['ord_psbl_frcr_amt']} {result.get('currency', 'USD')}, 최대수량: {result['max_ord_psbl_qty']}주")
+        logging.info(
+            f"매수가능금액: {result['ord_psbl_frcr_amt']} {result.get('currency', 'USD')}, 최대수량: {result['max_ord_psbl_qty']}주"
+        )
 
         return result
 
@@ -1606,7 +1788,9 @@ class KISClient:
 
         account_no = settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
-            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
 
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
@@ -1623,7 +1807,9 @@ class KISClient:
             tr_id = OVERSEAS_ORDER_SELL_TR_MOCK if is_mock else OVERSEAS_ORDER_SELL_TR
             order_type_korean = "매도"
         else:
-            raise ValueError(f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}")
+            raise ValueError(
+                f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}"
+            )
 
         hdr = self._hdr_base | {
             "authorization": f"Bearer {settings.kis_access_token}",
@@ -1644,15 +1830,13 @@ class KISClient:
             "ORD_SVR_DVSN_CD": "0",  # 주문서버구분코드 (0:해외)
         }
 
-        logging.info(f"해외주식 {order_type_korean} 주문 - symbol: {symbol}, exchange: {excd}, "
-                    f"수량: {quantity}주, 가격: {price if price > 0 else '시장가'}")
+        logging.info(
+            f"해외주식 {order_type_korean} 주문 - symbol: {symbol}, exchange: {excd}, "
+            f"수량: {quantity}주, 가격: {price if price > 0 else '시장가'}"
+        )
 
         async with httpx.AsyncClient(timeout=10) as cli:
-            r = await cli.post(
-                f"{BASE}{OVERSEAS_ORDER_URL}",
-                headers=hdr,
-                json=body
-            )
+            r = await cli.post(f"{BASE}{OVERSEAS_ORDER_URL}", headers=hdr, json=body)
 
         js = r.json()
 
@@ -1660,9 +1844,11 @@ class KISClient:
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
-                return await self.order_overseas_stock(symbol, exchange_code, order_type, quantity, price, is_mock)
+                return await self.order_overseas_stock(
+                    symbol, exchange_code, order_type, quantity, price, is_mock
+                )
 
-            error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+            error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
             logging.error(f"해외주식 주문 실패: {error_msg}")
             raise RuntimeError(error_msg)
 
@@ -1674,7 +1860,9 @@ class KISClient:
             "msg": js.get("msg1"),  # 응답메시지
         }
 
-        logging.info(f"{order_type_korean} 주문 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}")
+        logging.info(
+            f"{order_type_korean} 주문 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}"
+        )
 
         return result
 
@@ -1699,7 +1887,9 @@ class KISClient:
         Returns:
             주문 결과
         """
-        return await self.order_overseas_stock(symbol, exchange_code, "buy", quantity, price, is_mock)
+        return await self.order_overseas_stock(
+            symbol, exchange_code, "buy", quantity, price, is_mock
+        )
 
     async def sell_overseas_stock(
         self,
@@ -1722,7 +1912,9 @@ class KISClient:
         Returns:
             주문 결과
         """
-        return await self.order_overseas_stock(symbol, exchange_code, "sell", quantity, price, is_mock)
+        return await self.order_overseas_stock(
+            symbol, exchange_code, "sell", quantity, price, is_mock
+        )
 
     async def inquire_overseas_orders(
         self,
@@ -1766,7 +1958,9 @@ class KISClient:
 
         account_no = settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
-            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
 
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
@@ -1799,13 +1993,13 @@ class KISClient:
                 "CTX_AREA_NK200": ctx_area_nk200,  # 연속조회키200
             }
 
-            logging.info(f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK200: '{ctx_area_nk200[:20] if ctx_area_nk200 else 'empty'}...')")
+            logging.info(
+                f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK200: '{ctx_area_nk200[:20] if ctx_area_nk200 else 'empty'}...')"
+            )
 
             async with httpx.AsyncClient(timeout=10) as cli:
                 r = await cli.get(
-                    f"{BASE}{OVERSEAS_ORDER_INQUIRY_URL}",
-                    headers=hdr,
-                    params=params
+                    f"{BASE}{OVERSEAS_ORDER_INQUIRY_URL}", headers=hdr, params=params
                 )
 
             js = r.json()
@@ -1816,7 +2010,7 @@ class KISClient:
                     await self._ensure_token()
                     continue
 
-                error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+                error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
                 logging.error(f"미체결 주문 조회 실패: {error_msg}")
                 raise RuntimeError(error_msg)
 
@@ -1828,18 +2022,24 @@ class KISClient:
                 break
 
             all_orders.extend(orders)
-            logging.info(f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)")
+            logging.info(
+                f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)"
+            )
 
             # 다음 페이지 키 확인
             new_ctx_area_fk200 = js.get("ctx_area_fk200", "")
             new_ctx_area_nk200 = js.get("ctx_area_nk200", "")
 
-            logging.info(f"  반환된 FK200: '{new_ctx_area_fk200[:20] if new_ctx_area_fk200 else 'empty'}...'")
-            logging.info(f"  반환된 NK200: '{new_ctx_area_nk200[:20] if new_ctx_area_nk200 else 'empty'}...'")
+            logging.info(
+                f"  반환된 FK200: '{new_ctx_area_fk200[:20] if new_ctx_area_fk200 else 'empty'}...'"
+            )
+            logging.info(
+                f"  반환된 NK200: '{new_ctx_area_nk200[:20] if new_ctx_area_nk200 else 'empty'}...'"
+            )
 
             # 연속조회 키가 없거나 이전과 동일하면 마지막 페이지
             if not new_ctx_area_nk200 or new_ctx_area_nk200 == ctx_area_nk200:
-                logging.info(f"마지막 페이지 도달 (연속조회 키 없음 또는 동일)")
+                logging.info("마지막 페이지 도달 (연속조회 키 없음 또는 동일)")
                 break
 
             # 다음 페이지를 위한 설정
@@ -1886,7 +2086,9 @@ class KISClient:
 
         account_no = settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
-            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
 
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
@@ -1915,9 +2117,7 @@ class KISClient:
 
         async with httpx.AsyncClient(timeout=10) as cli:
             r = await cli.post(
-                f"{BASE}{OVERSEAS_ORDER_CANCEL_URL}",
-                headers=hdr,
-                json=body
+                f"{BASE}{OVERSEAS_ORDER_CANCEL_URL}", headers=hdr, json=body
             )
 
         js = r.json()
@@ -1926,9 +2126,11 @@ class KISClient:
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
-                return await self.cancel_overseas_order(order_number, symbol, exchange_code, quantity, is_mock)
+                return await self.cancel_overseas_order(
+                    order_number, symbol, exchange_code, quantity, is_mock
+                )
 
-            error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+            error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
             logging.error(f"주문 취소 실패: {error_msg}")
             raise RuntimeError(error_msg)
 
@@ -1940,7 +2142,9 @@ class KISClient:
             "msg": js.get("msg1"),  # 응답메시지
         }
 
-        logging.info(f"주문 취소 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}")
+        logging.info(
+            f"주문 취소 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}"
+        )
 
         return result
 
@@ -1976,7 +2180,9 @@ class KISClient:
 
         account_no = settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
-            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
 
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
@@ -1991,7 +2197,7 @@ class KISClient:
         page = 1
         max_pages = 10  # 최대 페이지 수 제한
 
-        logging.info(f"국내주식 미체결 주문 조회 시작")
+        logging.info("국내주식 미체결 주문 조회 시작")
 
         while page <= max_pages:
             hdr = self._hdr_base | {
@@ -2009,13 +2215,13 @@ class KISClient:
                 "INQR_DVSN_2": "0",  # 조회구분2 (0:전체, 1:매도, 2:매수)
             }
 
-            logging.info(f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK100: '{ctx_area_nk100[:20] if ctx_area_nk100 else 'empty'}...')")
+            logging.info(
+                f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK100: '{ctx_area_nk100[:20] if ctx_area_nk100 else 'empty'}...')"
+            )
 
             async with httpx.AsyncClient(timeout=10) as cli:
                 r = await cli.get(
-                    f"{BASE}{KOREA_ORDER_INQUIRY_URL}",
-                    headers=hdr,
-                    params=params
+                    f"{BASE}{KOREA_ORDER_INQUIRY_URL}", headers=hdr, params=params
                 )
 
             js = r.json()
@@ -2026,7 +2232,7 @@ class KISClient:
                     await self._ensure_token()
                     continue
 
-                error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+                error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
                 logging.error(f"미체결 주문 조회 실패: {error_msg}")
                 raise RuntimeError(error_msg)
 
@@ -2038,18 +2244,24 @@ class KISClient:
                 break
 
             all_orders.extend(orders)
-            logging.info(f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)")
+            logging.info(
+                f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)"
+            )
 
             # 다음 페이지 키 확인
             new_ctx_area_fk100 = js.get("ctx_area_fk100", "")
             new_ctx_area_nk100 = js.get("ctx_area_nk100", "")
 
-            logging.info(f"  반환된 FK100: '{new_ctx_area_fk100[:20] if new_ctx_area_fk100 else 'empty'}...'")
-            logging.info(f"  반환된 NK100: '{new_ctx_area_nk100[:20] if new_ctx_area_nk100 else 'empty'}...'")
+            logging.info(
+                f"  반환된 FK100: '{new_ctx_area_fk100[:20] if new_ctx_area_fk100 else 'empty'}...'"
+            )
+            logging.info(
+                f"  반환된 NK100: '{new_ctx_area_nk100[:20] if new_ctx_area_nk100 else 'empty'}...'"
+            )
 
             # 연속조회 키가 없거나 이전과 동일하면 마지막 페이지
             if not new_ctx_area_nk100 or new_ctx_area_nk100 == ctx_area_nk100:
-                logging.info(f"마지막 페이지 도달 (연속조회 키 없음 또는 동일)")
+                logging.info("마지막 페이지 도달 (연속조회 키 없음 또는 동일)")
                 break
 
             # 다음 페이지를 위한 설정
@@ -2095,7 +2307,9 @@ class KISClient:
 
         account_no = settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
-            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
 
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
@@ -2108,7 +2322,9 @@ class KISClient:
             tr_id = KOREA_ORDER_SELL_TR_MOCK if is_mock else KOREA_ORDER_SELL_TR
             order_type_korean = "매도"
         else:
-            raise ValueError(f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}")
+            raise ValueError(
+                f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}"
+            )
 
         hdr = self._hdr_base | {
             "authorization": f"Bearer {settings.kis_access_token}",
@@ -2127,15 +2343,13 @@ class KISClient:
             "ORD_UNPR": str(price),  # 주문단가 (시장가일 경우 0)
         }
 
-        logging.info(f"국내주식 {order_type_korean} 주문 - stock_code: {stock_code}, "
-                    f"수량: {quantity}주, 가격: {price if price > 0 else '시장가'}")
+        logging.info(
+            f"국내주식 {order_type_korean} 주문 - stock_code: {stock_code}, "
+            f"수량: {quantity}주, 가격: {price if price > 0 else '시장가'}"
+        )
 
         async with httpx.AsyncClient(timeout=10) as cli:
-            r = await cli.post(
-                f"{BASE}{KOREA_ORDER_URL}",
-                headers=hdr,
-                json=body
-            )
+            r = await cli.post(f"{BASE}{KOREA_ORDER_URL}", headers=hdr, json=body)
 
         js = r.json()
 
@@ -2143,9 +2357,11 @@ class KISClient:
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
-                return await self.order_korea_stock(stock_code, order_type, quantity, price, is_mock)
+                return await self.order_korea_stock(
+                    stock_code, order_type, quantity, price, is_mock
+                )
 
-            error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+            error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
             logging.error(f"국내주식 주문 실패: {error_msg}")
             raise RuntimeError(error_msg)
 
@@ -2157,7 +2373,9 @@ class KISClient:
             "msg": js.get("msg1"),  # 응답메시지
         }
 
-        logging.info(f"국내주식 주문 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}")
+        logging.info(
+            f"국내주식 주문 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}"
+        )
 
         return result
 
@@ -2180,7 +2398,9 @@ class KISClient:
         Returns:
             주문 결과
         """
-        return await self.order_korea_stock(stock_code, "sell", quantity, price, is_mock)
+        return await self.order_korea_stock(
+            stock_code, "sell", quantity, price, is_mock
+        )
 
     async def cancel_korea_order(
         self,
@@ -2216,7 +2436,9 @@ class KISClient:
 
         account_no = settings.kis_account_no.replace("-", "")
         if len(account_no) < 10:
-            raise ValueError(f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}")
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
 
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
@@ -2231,13 +2453,11 @@ class KISClient:
         # 주문구분: 00(지정가)
         ord_dvsn = "00"
 
-        # 매도매수구분: 매도(01), 매수(02) - 취소할 주문과 동일하게
-        if order_type.lower() == "sell":
-            sll_buy_dvsn_cd = "01"
-        elif order_type.lower() == "buy":
-            sll_buy_dvsn_cd = "02"
-        else:
-            raise ValueError(f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}")
+        # 매도매수구분: 매도(01), 매수(02) - 취소할 주문과 동일하게 (검증용)
+        if order_type.lower() not in ("sell", "buy"):
+            raise ValueError(
+                f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}"
+            )
 
         body = {
             "CANO": cano,
@@ -2251,13 +2471,13 @@ class KISClient:
             "QTY_ALL_ORD_YN": "Y",  # 잔량전부주문여부 (Y:전부취소, N:일부취소)
         }
 
-        logging.info(f"국내주식 주문 취소 - stock_code: {stock_code}, 주문번호: {order_number}")
+        logging.info(
+            f"국내주식 주문 취소 - stock_code: {stock_code}, 주문번호: {order_number}"
+        )
 
         async with httpx.AsyncClient(timeout=10) as cli:
             r = await cli.post(
-                f"{BASE}{KOREA_ORDER_CANCEL_URL}",
-                headers=hdr,
-                json=body
+                f"{BASE}{KOREA_ORDER_CANCEL_URL}", headers=hdr, json=body
             )
 
         js = r.json()
@@ -2266,9 +2486,11 @@ class KISClient:
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
-                return await self.cancel_korea_order(order_number, stock_code, quantity, price, order_type, is_mock)
+                return await self.cancel_korea_order(
+                    order_number, stock_code, quantity, price, order_type, is_mock
+                )
 
-            error_msg = f'{js.get("msg_cd")} {js.get("msg1")}'
+            error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
             logging.error(f"주문 취소 실패: {error_msg}")
             raise RuntimeError(error_msg)
 
@@ -2280,7 +2502,9 @@ class KISClient:
             "msg": js.get("msg1"),  # 응답메시지
         }
 
-        logging.info(f"주문 취소 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}")
+        logging.info(
+            f"주문 취소 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}"
+        )
 
         return result
 

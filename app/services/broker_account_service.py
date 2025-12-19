@@ -3,11 +3,12 @@ Broker Account Service
 
 브로커 계좌 관리 서비스
 """
+
 import logging
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.manual_holdings import BrokerAccount, BrokerType
 
@@ -108,9 +109,7 @@ class BrokerAccountService:
                 return existing_account
             raise
 
-    async def update_account(
-        self, account_id: int, **kwargs
-    ) -> BrokerAccount | None:
+    async def update_account(self, account_id: int, **kwargs) -> BrokerAccount | None:
         """브로커 계좌 업데이트"""
         account = await self.get_account_by_id(account_id)
         if not account:
