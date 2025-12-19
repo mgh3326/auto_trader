@@ -148,7 +148,7 @@ services:
 
   # Promtail - Log collector for Loki
   promtail:
-    image: grafana/promtail:3.6.2
+    image: grafana/promtail:3.6.3
     container_name: promtail
     command: [ "-config.file=/etc/promtail/config.yaml" ]
     volumes:
