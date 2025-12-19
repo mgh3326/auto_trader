@@ -948,9 +948,17 @@
                 const logEl = document.getElementById('per-stock-automation-log');
 
                 if (data.state === 'PENDING') {
-                    statusEl.textContent = '작업 대기 중...';
+                    stockAutomationPendingCount++;
+                    if (statusEl) {
+                        if (stockAutomationPendingCount > 5) {
+                            statusEl.innerHTML = '작업 대기 시간이 길어지고 있습니다. <a href="#" onclick="resetPerStockAutomationUI(); return false;">상태 초기화</a>';
+                        } else {
+                            statusEl.textContent = '작업 대기 중... (서버 응답 대기)';
+                        }
+                    }
                     return;
                 }
+                stockAutomationPendingCount = 0;
 
                 if (data.state === 'PROGRESS' && data.progress) {
                     const percentage = data.progress.percentage || 0;
@@ -1021,10 +1029,29 @@
             perStockAutomationRunning = false;
             if (stockAutomationInterval) clearInterval(stockAutomationInterval);
             stockAutomationInterval = null;
+            stockAutomationPendingCount = 0;
+            stockAutomationTaskId = null;
+            localStorage.removeItem(STORAGE_KEYS.STOCK_AUTOMATION);
 
             const button = document.getElementById('per-stock-automation-btn');
             button.disabled = false;
             button.innerHTML = '<i class="bi bi-collection-play"></i> 종목별 분석→매수→매도';
+
+            // 진행상황 섹션 숨기기 및 초기화
+            const progressSection = document.getElementById('per-stock-automation-progress');
+            if (progressSection) progressSection.style.display = 'none';
+
+            const progressBar = document.getElementById('per-stock-progress-bar');
+            if (progressBar) {
+                progressBar.style.width = '0%';
+                progressBar.textContent = '0%';
+            }
+
+            const statusEl = document.getElementById('per-stock-automation-status');
+            if (statusEl) statusEl.textContent = '';
+
+            const logEl = document.getElementById('per-stock-automation-log');
+            if (logEl) logEl.textContent = '';
         }
 
         function attachStockActionHandlers() {
