@@ -113,7 +113,7 @@ class Analyzer:
         fundamental_info: dict | None = None,
         position_info: dict | None = None,
         minute_candles: dict | None = None,
-    ) -> tuple[StockAnalysisResponse, str]:
+    ) -> tuple[str | StockAnalysisResponse, str]:
         """
         JSON 형식의 구조화된 분석 결과를 반환하는 메서드
 

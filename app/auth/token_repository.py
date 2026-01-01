@@ -19,9 +19,7 @@ async def save_refresh_token(
     db: AsyncSession, user_id: int, refresh_token: str
 ) -> RefreshToken:
     """Persist a new refresh token record for the user."""
-    expires_at = datetime.now(UTC) + timedelta(
-        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-    )
+    expires_at = datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     token_record = RefreshToken(
         user_id=user_id,
         token_hash=hash_refresh_token(refresh_token),

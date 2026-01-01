@@ -27,7 +27,7 @@ celery_app.conf.update(
 )
 
 
-@celery_app.on_after_configure.connect
+@celery_app.on_after_configure.connect  # type: ignore[union-attr]
 def setup_periodic_tasks(sender, **kwargs):
     """Setup periodic tasks."""
     # Example: sender.add_periodic_task(300.0, test.s(), name='add every 10')

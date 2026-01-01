@@ -10,6 +10,7 @@ These endpoints are used to test:
 import asyncio
 import logging
 import time
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
@@ -60,7 +61,7 @@ async def test_critical_error() -> dict[str, str]:
 
 
 @router.get("/trace")
-async def test_trace() -> dict[str, str]:
+async def test_trace() -> dict[str, Any]:
     """
     Test endpoint for custom span creation and tracing.
 
@@ -144,7 +145,7 @@ async def test_http_error() -> dict[str, str]:
 
 
 @router.get("/slow")
-async def test_slow_endpoint() -> dict[str, str]:
+async def test_slow_endpoint() -> dict[str, Any]:
     """
     Test endpoint that simulates a slow operation.
 
@@ -175,7 +176,7 @@ async def test_slow_endpoint() -> dict[str, str]:
 
 
 @router.get("/health-check")
-async def test_health_check() -> dict[str, str]:
+async def test_health_check() -> dict[str, Any]:
     """
     Simple health check endpoint for monitoring.
 

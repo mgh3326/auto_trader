@@ -92,7 +92,7 @@ class UpbitAnalyzer(Analyzer):
 
         return self._tradable_coins_map
 
-    def _create_position_info(self, my_coin: dict) -> dict:
+    def _create_position_info(self, my_coin: dict | None) -> dict | None:
         """
         코인 정보를 position_info 형태로 변환
 
@@ -100,7 +100,7 @@ class UpbitAnalyzer(Analyzer):
             my_coin: 보유 코인 정보
 
         Returns:
-            position_info 딕셔너리
+            position_info 딕셔너리 또는 None
         """
         if not my_coin:
             return None
@@ -480,9 +480,7 @@ class YahooAnalyzer(Analyzer):
 
             self._print_analysis_result(result, stock_symbol, use_json=True)
 
-    async def analyze_stock_json(
-        self, stock_symbol: str
-    ) -> tuple[object | None, str]:
+    async def analyze_stock_json(self, stock_symbol: str) -> tuple[object | None, str]:
         """단일 주식을 JSON 형식으로 분석"""
         start_time = time.time()
 

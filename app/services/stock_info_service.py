@@ -40,7 +40,7 @@ class StockInfoService:
         result = await self.db.execute(
             select(StockInfo).where(StockInfo.is_active == True)
         )
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     async def get_stocks_by_type(self, instrument_type: str) -> list[StockInfo]:
         """상품 타입별 주식 정보 조회"""
@@ -50,7 +50,7 @@ class StockInfoService:
                 StockInfo.is_active == True,
             )
         )
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     async def update_stock_info(
         self, stock_info_id: int, update_data: dict[str, Any]
@@ -101,7 +101,7 @@ class StockInfoService:
             )
             .limit(limit)
         )
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     async def get_stock_count_by_type(self) -> dict[str, int]:
         """상품 타입별 주식 개수 조회"""
@@ -193,14 +193,17 @@ class StockAnalysisService:
             analysis.appropriate_sell_min is not None
             and analysis.appropriate_sell_max is not None
         ):
-            return (analysis.appropriate_sell_min, analysis.appropriate_sell_max)
+            return (
+                float(analysis.appropriate_sell_min),
+                float(analysis.appropriate_sell_max),
+            )
 
         # appropriate_sell 범위가 없으면 sell_target 범위 사용
         if (
             analysis.sell_target_min is not None
             and analysis.sell_target_max is not None
         ):
-            return (analysis.sell_target_min, analysis.sell_target_max)
+            return (float(analysis.sell_target_min), float(analysis.sell_target_max))
 
         return None
 

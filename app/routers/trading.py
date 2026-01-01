@@ -226,7 +226,7 @@ async def _resolve_exchange_code(ticker: str, db: AsyncSession) -> str:
     stock_service = StockInfoService(db)
     stock_info = await stock_service.get_stock_info_by_symbol(ticker)
     if stock_info and stock_info.exchange:
-        return stock_info.exchange
+        return str(stock_info.exchange)
     return EXCHANGE_MAP.get(ticker, "NASD")
 
 

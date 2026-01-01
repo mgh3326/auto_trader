@@ -164,6 +164,9 @@ class UpbitMyOrderWebSocket:
     async def _listen_for_messages(self):
         """메시지 수신 루프"""
         logger.info("메시지 수신 대기 중...")
+        if self.websocket is None:
+            logger.error("WebSocket이 연결되지 않았습니다.")
+            return
         try:
             async for message in self.websocket:
                 try:

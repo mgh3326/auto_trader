@@ -21,7 +21,7 @@ class InstrumentType(str, enum.Enum):
     equity_us = "equity_us"  # 해외주식
     crypto = "crypto"  # 암호화폐
     forex = "forex"  # 환율
-    index = "index"  # 지수
+    index = "index"  # type: ignore[assignment]  # 지수 (conflicts with str.index)
 
 
 class NotifyChannel(str, enum.Enum):

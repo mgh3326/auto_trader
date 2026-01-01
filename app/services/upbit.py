@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 
 import httpx
 import jwt  # pyjwt 라이브러리가 필요합니다 (pip install pyjwt)
@@ -373,7 +374,7 @@ async def fetch_multiple_current_prices(market_codes: list[str]) -> dict[str, fl
 
 async def _request_with_auth(
     method: str, url: str, query_params: dict = None, body_params: dict = None
-) -> dict:
+) -> Any:
     """인증이 필요한 API 요청을 처리하는 헬퍼 함수"""
     import hashlib
     from urllib.parse import urlencode

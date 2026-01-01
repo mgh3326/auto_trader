@@ -68,7 +68,10 @@ class UserTradeDefaultsService:
             .values(**update_data)
         )
         await self.db.commit()
-        return await self.get_by_user_id(user_id)
+        # get_or_create guarantees the record exists
+        result = await self.get_by_user_id(user_id)
+        assert result is not None
+        return result
 
 
 class SymbolTradeSettingsService:

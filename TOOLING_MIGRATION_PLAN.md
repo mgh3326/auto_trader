@@ -24,11 +24,11 @@
 
 ### 1.1 작업 목록
 
-- [ ] Ruff 의존성 추가 (`uv add --group dev ruff`)
-- [ ] pyproject.toml에 `[tool.ruff]` 설정 추가
-- [ ] Makefile에 `lint-ruff`, `format-ruff` 명령어 추가 (기존 명령어 유지)
-- [ ] 기존 도구와 Ruff 결과 비교 테스트
-- [ ] 기존 lint 에러 수정 또는 ignore 설정
+- [x] Ruff 의존성 추가 (`uv add --group dev ruff`)
+- [x] pyproject.toml에 `[tool.ruff]` 설정 추가
+- [x] Makefile에 `lint-ruff`, `format-ruff` 명령어 추가 (기존 명령어 유지)
+- [x] 기존 도구와 Ruff 결과 비교 테스트
+- [x] 기존 lint 에러 수정 또는 ignore 설정
 
 ### 1.2 pyproject.toml 설정
 
@@ -115,11 +115,11 @@ uv remove --group dev ruff
 
 ### 2.1 작업 목록
 
-- [ ] Pyright 의존성 추가 (`uv add --group dev pyright`)
-- [ ] pyproject.toml에 `[tool.pyright]` 설정 추가
-- [ ] Makefile에 `typecheck-pyright` 명령어 추가
-- [ ] 기존 mypy와 Pyright 결과 비교 테스트
-- [ ] 타입 에러 수정 또는 ignore 설정
+- [x] Pyright 의존성 추가 (`uv add --group dev pyright`)
+- [x] pyproject.toml에 `[tool.pyright]` 설정 추가
+- [x] Makefile에 `typecheck-pyright` 명령어 추가
+- [x] 기존 mypy와 Pyright 결과 비교 테스트
+- [x] 타입 에러 수정 또는 ignore 설정
 
 ### 2.2 pyproject.toml 설정
 
@@ -179,9 +179,9 @@ uv remove --group dev pyright
 
 ### 3.1 작업 목록
 
-- [ ] `.github/workflows/test.yml`에 lint job 추가
-- [ ] Ruff + Pyright를 CI에서 실행
-- [ ] lint 실패 시 PR 차단 설정
+- [x] `.github/workflows/test.yml`에 lint job 추가
+- [x] Ruff + Pyright를 CI에서 실행
+- [x] lint 실패 시 PR 차단 설정
 
 ### 3.2 test.yml 변경사항
 
@@ -244,10 +244,10 @@ jobs:
 
 ### 4.1 작업 목록
 
-- [ ] 기존 도구 의존성 제거 (black, isort, flake8, mypy)
-- [ ] pyproject.toml에서 기존 설정 제거
-- [ ] Makefile 명령어 통합 (legacy 제거)
-- [ ] 문서 업데이트 (CLAUDE.md, README.md)
+- [x] 기존 도구 의존성 제거 (black, isort, flake8, mypy)
+- [x] pyproject.toml에서 기존 설정 제거
+- [x] Makefile 명령어 통합 (legacy 제거)
+- [x] 문서 업데이트 (CLAUDE.md, README.md)
 
 ### 4.2 의존성 제거
 
@@ -372,23 +372,23 @@ git checkout HEAD -- pyproject.toml Makefile .github/workflows/test.yml
 ## 마이그레이션 체크리스트
 
 ### Phase 1 완료 기준
-- [ ] `make lint-ruff` 성공
-- [ ] `make format-ruff` 성공
-- [ ] 기존 `make lint` 대비 동등하거나 더 나은 검출
+- [x] `make lint-ruff` 성공
+- [x] `make format-ruff` 성공
+- [x] 기존 `make lint` 대비 동등하거나 더 나은 검출
 
 ### Phase 2 완료 기준
-- [ ] `make typecheck-pyright` 성공 (warning 허용)
-- [ ] 주요 타입 에러 없음
+- [x] `make typecheck-pyright` 성공 (warning 허용)
+- [x] 주요 타입 에러 없음
 
 ### Phase 3 완료 기준
-- [ ] CI lint job 추가됨
-- [ ] PR에서 lint 실패 시 머지 차단
+- [x] CI lint job 추가됨
+- [x] PR에서 lint 실패 시 머지 차단
 
 ### Phase 4 완료 기준
-- [ ] 기존 도구 완전 제거
-- [ ] `make lint && make format` 정상 동작
-- [ ] CI 정상 동작
-- [ ] 문서 업데이트 완료
+- [x] 기존 도구 완전 제거
+- [x] `make lint && make format` 정상 동작
+- [x] CI 정상 동작
+- [x] 문서 업데이트 완료
 
 ---
 

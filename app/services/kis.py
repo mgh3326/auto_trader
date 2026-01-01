@@ -105,7 +105,7 @@ class KISClient:
         # Redis 기반 토큰 관리 사용
         self._token_manager = redis_token_manager
 
-    async def _fetch_token(self) -> str:
+    async def _fetch_token(self) -> tuple[str, int]:
         """KIS API에서 새 토큰 발급"""
         async with httpx.AsyncClient() as cli:
             r = await cli.post(

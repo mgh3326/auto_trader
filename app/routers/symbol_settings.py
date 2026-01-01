@@ -5,7 +5,6 @@ Symbol Trade Settings Router
 사용자별 기본 거래 설정도 관리
 """
 
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -863,6 +862,12 @@ async def update_settings(
         )
 
     settings_obj = await service.update_settings(symbol, update_data, user.id)
+
+    if settings_obj is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Settings for symbol '{symbol}' not found",
+        )
 
     return SymbolSettingsResponse(
         id=settings_obj.id,
