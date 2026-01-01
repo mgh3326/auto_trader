@@ -1,5 +1,5 @@
 # app/services/yahoo.py
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import yfinance as yf
@@ -19,10 +19,15 @@ def _flatten_cols(df: pd.DataFrame) -> pd.DataFrame:
 async def fetch_ohlcv(ticker: str, days: int = 100) -> pd.DataFrame:
     """최근 days개(최대 100) 일봉 OHLCV DataFrame 반환"""
     yahoo_ticker = to_yahoo_symbol(ticker)  # DB형식 . -> Yahoo형식 -
-    end = datetime.now(timezone.utc).date()
+    end = datetime.now(UTC).date()
     start = end - timedelta(days=days * 2)  # 휴일 감안 넉넉히
     df = yf.download(
-        yahoo_ticker, start=start, end=end, interval="1d", progress=False, auto_adjust=False
+        yahoo_ticker,
+        start=start,
+        end=end,
+        interval="1d",
+        progress=False,
+        auto_adjust=False,
     )
     df = _flatten_cols(df).reset_index(names="date")  # ← 여기만 변경
     df = (
@@ -42,8 +47,8 @@ async def fetch_price(ticker: str) -> pd.DataFrame:
     info = yf.Ticker(yahoo_ticker).fast_info
     row = {
         "code": ticker,  # DB 형식 유지
-        "date": datetime.now(timezone.utc).date(),
-        "time": datetime.now(timezone.utc).time(),
+        "date": datetime.now(UTC).date(),
+        "time": datetime.now(UTC).time(),
         "open": getattr(info, "open", 0.0),
         "high": getattr(info, "day_high", 0.0),
         "low": getattr(info, "day_low", 0.0),

@@ -1,7 +1,7 @@
 """
 Tests for Redis Token Manager.
 """
-import asyncio
+
 import json
 import time
 from unittest.mock import AsyncMock, patch
@@ -304,7 +304,12 @@ class TestRefreshTokenWithLock:
 
         manager = RedisTokenManager()
 
-        get_token_returns = [None, None, None, None]  # For initial checks and post-lock check
+        get_token_returns = [
+            None,
+            None,
+            None,
+            None,
+        ]  # For initial checks and post-lock check
         get_token_index = 0
 
         async def mock_get_token():
@@ -320,7 +325,9 @@ class TestRefreshTokenWithLock:
         with (
             patch.object(manager, "get_token", side_effect=mock_get_token),
             patch.object(manager, "_acquire_lock", return_value=True),
-            patch.object(manager, "_release_lock", new_callable=AsyncMock) as mock_release,
+            patch.object(
+                manager, "_release_lock", new_callable=AsyncMock
+            ) as mock_release,
             patch.object(manager, "save_token", new_callable=AsyncMock),
         ):
             manager._current_lock_value = "test_lock_value"  # Simulate lock acquired
@@ -351,7 +358,9 @@ class TestRefreshTokenWithLock:
         with (
             patch.object(manager, "get_token", side_effect=mock_get_token),
             patch.object(manager, "_acquire_lock", return_value=True),
-            patch.object(manager, "_release_lock", new_callable=AsyncMock) as mock_release,
+            patch.object(
+                manager, "_release_lock", new_callable=AsyncMock
+            ) as mock_release,
         ):
             manager._current_lock_value = "test_lock_value"
 

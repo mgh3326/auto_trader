@@ -1,6 +1,7 @@
 """
 Tests for API routers.
 """
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient

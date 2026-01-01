@@ -1,7 +1,8 @@
 """Tests for TradeNotifier."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.monitoring.trade_notifier import TradeNotifier, get_trade_notifier
 
@@ -55,7 +56,9 @@ async def test_shutdown(trade_notifier):
         enabled=True,
     )
 
-    with patch.object(trade_notifier._http_client, "aclose", new_callable=AsyncMock) as mock_close:
+    with patch.object(
+        trade_notifier._http_client, "aclose", new_callable=AsyncMock
+    ) as mock_close:
         await trade_notifier.shutdown()
         mock_close.assert_called_once()
         assert trade_notifier._http_client is None
@@ -285,7 +288,10 @@ async def test_notify_buy_order_success(trade_notifier):
     mock_response.raise_for_status = MagicMock()
 
     with patch.object(
-        trade_notifier._http_client, "post", new_callable=AsyncMock, return_value=mock_response
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
     ) as mock_post:
         result = await trade_notifier.notify_buy_order(
             symbol="BTC",
@@ -317,7 +323,10 @@ async def test_test_connection_success(trade_notifier):
     mock_response.raise_for_status = MagicMock()
 
     with patch.object(
-        trade_notifier._http_client, "post", new_callable=AsyncMock, return_value=mock_response
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
     ) as mock_post:
         result = await trade_notifier.test_connection()
 
@@ -353,7 +362,10 @@ async def test_send_to_multiple_chats(trade_notifier):
     mock_response.raise_for_status = MagicMock()
 
     with patch.object(
-        trade_notifier._http_client, "post", new_callable=AsyncMock, return_value=mock_response
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
     ) as mock_post:
         result = await trade_notifier.notify_buy_order(
             symbol="BTC",
@@ -399,7 +411,10 @@ async def test_notify_trade_failure_success(trade_notifier):
     mock_response.raise_for_status = MagicMock()
 
     with patch.object(
-        trade_notifier._http_client, "post", new_callable=AsyncMock, return_value=mock_response
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
     ) as mock_post:
         result = await trade_notifier.notify_trade_failure(
             symbol="VOO",
@@ -448,7 +463,10 @@ async def test_notify_sell_order_success(trade_notifier):
     mock_response.raise_for_status = MagicMock()
 
     with patch.object(
-        trade_notifier._http_client, "post", new_callable=AsyncMock, return_value=mock_response
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
     ) as mock_post:
         result = await trade_notifier.notify_sell_order(
             symbol="AAPL",

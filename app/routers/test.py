@@ -10,7 +10,7 @@ These endpoints are used to test:
 import asyncio
 import logging
 import time
-from typing import Dict
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/test", tags=["test"])
 
 
 @router.get("/error")
-async def test_error() -> Dict[str, str]:
+async def test_error() -> dict[str, str]:
     """
     Test endpoint that raises a general error.
 
@@ -41,7 +41,7 @@ async def test_error() -> Dict[str, str]:
 
 
 @router.get("/critical")
-async def test_critical_error() -> Dict[str, str]:
+async def test_critical_error() -> dict[str, str]:
     """
     Test endpoint that raises a critical error.
 
@@ -61,7 +61,7 @@ async def test_critical_error() -> Dict[str, str]:
 
 
 @router.get("/trace")
-async def test_trace() -> Dict[str, str]:
+async def test_trace() -> dict[str, Any]:
     """
     Test endpoint for custom span creation and tracing.
 
@@ -124,7 +124,7 @@ async def test_trace() -> Dict[str, str]:
 
 
 @router.get("/http-error")
-async def test_http_error() -> Dict[str, str]:
+async def test_http_error() -> dict[str, str]:
     """
     Test endpoint that raises an HTTP exception.
 
@@ -145,7 +145,7 @@ async def test_http_error() -> Dict[str, str]:
 
 
 @router.get("/slow")
-async def test_slow_endpoint() -> Dict[str, str]:
+async def test_slow_endpoint() -> dict[str, Any]:
     """
     Test endpoint that simulates a slow operation.
 
@@ -176,7 +176,7 @@ async def test_slow_endpoint() -> Dict[str, str]:
 
 
 @router.get("/health-check")
-async def test_health_check() -> Dict[str, str]:
+async def test_health_check() -> dict[str, Any]:
     """
     Simple health check endpoint for monitoring.
 

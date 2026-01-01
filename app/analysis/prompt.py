@@ -1,4 +1,4 @@
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 import pandas as pd
 import ta
@@ -9,103 +9,103 @@ from .indicators import add_indicators
 def format_decimal(value: float, currency: str = "₩") -> str:
     """
     값의 크기에 따라 적절한 소수점 자릿수를 결정하여 포맷팅
-    
+
     Args:
         value: 포맷팅할 값
         currency: 통화 단위 (₩, $ 등)
-    
+
     Returns:
         포맷팅된 문자열
     """
     if value == 0:
         return "0"
-    
+
     abs_value = abs(value)
-    
+
     # 한국 원화 (₩) 기준
     if currency == "₩":
         if abs_value >= 1000000:  # 100만원 이상
             return f"{value:,.0f}"
-        elif abs_value >= 10000:   # 1만원 이상
+        elif abs_value >= 10000:  # 1만원 이상
             return f"{value:,.1f}"
-        elif abs_value >= 1000:    # 1천원 이상
+        elif abs_value >= 1000:  # 1천원 이상
             return f"{value:,.2f}"
-        elif abs_value >= 100:     # 100원 이상
+        elif abs_value >= 100:  # 100원 이상
             return f"{value:,.2f}"
-        else:                       # 100원 미만
+        else:  # 100원 미만
             return f"{value:,.2f}"
-    
+
     # 미국 달러 ($) 기준
     elif currency == "$":
-        if abs_value >= 1000:      # $1,000 이상
+        if abs_value >= 1000:  # $1,000 이상
             return f"{value:,.2f}"
-        elif abs_value >= 100:     # $100 이상
+        elif abs_value >= 100:  # $100 이상
             return f"{value:,.2f}"
-        elif abs_value >= 10:      # $10 이상
+        elif abs_value >= 10:  # $10 이상
             return f"{value:,.2f}"
-        else:                       # $10 미만
+        else:  # $10 미만
             return f"{value:,.3f}"
-    
+
     # 암호화폐 등 기타 통화 (기본값)
     else:
-        if abs_value >= 1000:      # 1000 이상
+        if abs_value >= 1000:  # 1000 이상
             return f"{value:,.2f}"
-        elif abs_value >= 100:     # 100 이상
+        elif abs_value >= 100:  # 100 이상
             return f"{value:,.3f}"
-        elif abs_value >= 10:      # 10 이상
+        elif abs_value >= 10:  # 10 이상
             return f"{value:,.4f}"
-        elif abs_value >= 1:       # 1 이상
+        elif abs_value >= 1:  # 1 이상
             return f"{value:,.5f}"
-        elif abs_value >= 0.1:     # 0.1 이상
+        elif abs_value >= 0.1:  # 0.1 이상
             return f"{value:,.6f}"
-        elif abs_value >= 0.01:    # 0.01 이상
+        elif abs_value >= 0.01:  # 0.01 이상
             return f"{value:,.7f}"
-        else:                       # 0.01 미만
+        else:  # 0.01 미만
             return f"{value:,.8f}"
 
 
 def format_quantity(quantity: float, unit_shares: str = "개") -> str:
     """
     수량을 적절한 소수점 자릿수로 포맷팅
-    
+
     Args:
         quantity: 수량
         unit_shares: 단위 (개, 주 등)
-    
+
     Returns:
         포맷팅된 문자열
     """
     if quantity == 0:
         return "0"
-    
+
     abs_quantity = abs(quantity)
-    
+
     # 주식의 경우 (보통 정수 단위)
     if unit_shares == "주":
-        if abs_quantity >= 1000:   # 1000주 이상
+        if abs_quantity >= 1000:  # 1000주 이상
             return f"{quantity:,.0f}"
         elif abs_quantity >= 100:  # 100주 이상
             return f"{quantity:,.0f}"
-        else:                       # 100주 미만
+        else:  # 100주 미만
             return f"{quantity:,.0f}"
-    
+
     # 암호화폐의 경우 (소수점 포함)
     elif unit_shares == "개":
-        if abs_quantity >= 1000:   # 1000개 이상
+        if abs_quantity >= 1000:  # 1000개 이상
             return f"{quantity:,.2f}"
         elif abs_quantity >= 100:  # 100개 이상
             return f"{quantity:,.3f}"
-        elif abs_quantity >= 10:   # 10개 이상
+        elif abs_quantity >= 10:  # 10개 이상
             return f"{quantity:,.4f}"
-        elif abs_quantity >= 1:    # 1개 이상
+        elif abs_quantity >= 1:  # 1개 이상
             return f"{quantity:,.5f}"
         elif abs_quantity >= 0.1:  # 0.1개 이상
             return f"{quantity:,.6f}"
-        elif abs_quantity >= 0.01: # 0.01개 이상
+        elif abs_quantity >= 0.01:  # 0.01개 이상
             return f"{quantity:,.7f}"
-        else:                       # 0.01개 미만
+        else:  # 0.01개 미만
             return f"{quantity:,.8f}"
-    
+
     # 기타 단위
     else:
         if abs_quantity >= 1000:
@@ -126,9 +126,9 @@ def build_prompt(
     stock_name: str,
     currency: str = "₩",
     unit_shares: str = "주",
-    fundamental_info: Optional[dict] = None,
-    position_info: Optional[dict] = None,
-    minute_candles: Optional[dict] = None,
+    fundamental_info: dict | None = None,
+    position_info: dict | None = None,
+    minute_candles: dict | None = None,
 ) -> str:
     df = add_indicators(df).sort_values("date").reset_index(drop=True)
     """
@@ -169,7 +169,6 @@ def build_prompt(
     )  # 개수/주수 등 단위
 
     df = add_ma(df, windows=(5, 20, 60, 120, 200))
-    ma_line = format_ma_line(df, currency)
     rsi14 = ta.momentum.RSIIndicator(df.close).rsi().iloc[-1]
 
     # 전일 대비·등락률·거래량 증감
@@ -178,7 +177,6 @@ def build_prompt(
     df["vol_rate"] = df.volume.pct_change() * 100
 
     today = df.iloc[-1]
-    yday = df.iloc[-2]
 
     # 최근 10 봉만 미니 테이블로 추림 → 토큰 절약
     recent10 = df.iloc[-11:-1][["date", "close", "volume"]].to_string(
@@ -191,7 +189,7 @@ def build_prompt(
         obs_date = obs_date.date()
 
     # ─ 2) 프롬프트 구성 ────────────────────────────────
-    
+
     # 기본 정보 섹션 구성
     fundamental_section = ""
     if fundamental_info:
@@ -207,7 +205,7 @@ def build_prompt(
                 else:
                     formatted_value = str(value)
                 fundamental_section += f"- {key}: {formatted_value}\n"
-    
+
     # 보유 자산 정보 섹션 구성
     position_section = ""
     if position_info:
@@ -217,66 +215,81 @@ def build_prompt(
             quantity = float(position_info["quantity"])
             formatted_quantity = format_quantity(quantity, unit_shares)
             position_section += f"- 보유 수량: {formatted_quantity}{unit_shares}\n"
-        
+
         # 평균 매수가
         if position_info.get("avg_price"):
             avg_price = float(position_info["avg_price"])
             formatted_avg_price = format_decimal(avg_price, currency)
             position_section += f"- 평균 매수가: {formatted_avg_price}{currency}\n"
-        
+
         # 총 평가 금액
         if position_info.get("total_value"):
             total_value = float(position_info["total_value"])
             formatted_total_value = format_decimal(total_value, currency)
             position_section += f"- 총 평가 금액: {formatted_total_value}{currency}\n"
-        
+
         # 거래 중인 수량 (잠긴 수량)
-        if position_info.get("locked_quantity") and float(position_info["locked_quantity"]) > 0:
+        if (
+            position_info.get("locked_quantity")
+            and float(position_info["locked_quantity"]) > 0
+        ):
             locked = float(position_info["locked_quantity"])
             formatted_locked = format_quantity(locked, unit_shares)
             position_section += f"- 거래 중인 수량: {formatted_locked}{unit_shares}\n"
-    
+
     # 분봉 캔들 정보 섹션 구성
     minute_candles_section = ""
     if minute_candles:
         minute_candles_section = "\n[단기(분) 캔들 정보]\n"
-        
+
         # 60분 캔들 (최근 12개)
         if "60min" in minute_candles and not minute_candles["60min"].empty:
             df_60min = minute_candles["60min"]
             recent_60min = df_60min.tail(12)
             candles_60min = []
             for _, row in recent_60min.iterrows():
-                time_str = row["time"].strftime("%H:%M") if hasattr(row["time"], "strftime") else str(row["time"])
+                time_str = (
+                    row["time"].strftime("%H:%M")
+                    if hasattr(row["time"], "strftime")
+                    else str(row["time"])
+                )
                 close_str = format_decimal(row["close"], currency)
                 volume_str = format_quantity(row["volume"], unit_shares)
                 candles_60min.append(f"{time_str} {close_str} {volume_str}")
             minute_candles_section += f"- 60분 캔들 (최근 {len(recent_60min)}개, 시간·종가·거래량):\n  ({', '.join(candles_60min)})\n"
-        
+
         # 5분 캔들 (최근 12개)
         if "5min" in minute_candles and not minute_candles["5min"].empty:
             df_5min = minute_candles["5min"]
             recent_5min = df_5min.tail(12)
             candles_5min = []
             for _, row in recent_5min.iterrows():
-                time_str = row["time"].strftime("%H:%M") if hasattr(row["time"], "strftime") else str(row["time"])
+                time_str = (
+                    row["time"].strftime("%H:%M")
+                    if hasattr(row["time"], "strftime")
+                    else str(row["time"])
+                )
                 close_str = format_decimal(row["close"], currency)
                 volume_str = format_quantity(row["volume"], unit_shares)
                 candles_5min.append(f"{time_str} {close_str} {volume_str}")
             minute_candles_section += f"- 5분 캔들 (최근 {len(recent_5min)}개, 시간·종가·거래량):\n  ({', '.join(candles_5min)})\n"
-        
+
         # 1분 캔들 (최근 10개)
         if "1min" in minute_candles and not minute_candles["1min"].empty:
             df_1min = minute_candles["1min"]
             recent_1min = df_1min.tail(10)
             candles_1min = []
             for _, row in recent_1min.iterrows():
-                time_str = row["time"].strftime("%H:%M:%S") if hasattr(row["time"], "strftime") else str(row["time"])
+                time_str = (
+                    row["time"].strftime("%H:%M:%S")
+                    if hasattr(row["time"], "strftime")
+                    else str(row["time"])
+                )
                 close_str = format_decimal(row["close"], currency)
                 volume_str = format_quantity(row["volume"], unit_shares)
                 candles_1min.append(f"{time_str} {close_str} {volume_str}")
             minute_candles_section += f"- 1분 캔들 (최근 {len(recent_1min)}개, 시간·종가·거래량):\n  ({', '.join(candles_1min)})\n"
-    
+
     prompt = f"""
     {stock_name}({ticker}) (관측일 {obs_date})
     {tech_summary}{fundamental_section}{position_section}{minute_candles_section}
@@ -309,17 +322,6 @@ def add_ma(df: pd.DataFrame, windows=(5, 20, 60, 120, 200)) -> pd.DataFrame:
     for w in windows:
         df[f"ma{w}"] = df["close"].rolling(window=w, min_periods=w).mean()
     return df
-
-
-def format_ma_line(df: pd.DataFrame, currency, windows=(5, 20, 60, 120, 200)) -> str:
-    """마지막 행 기준으로 값이 있는 MA만 골라 'MA 5/20/... : v1 / v2 / ...' 형태로 반환"""
-    last = df.iloc[-1]
-    avail = [w for w in windows if not pd.isna(last[f"ma{w}"])]
-    if not avail:
-        return "- MA : 자료 부족"
-    labels = "/".join(str(w) for w in avail)
-    values = " / ".join(format_decimal(last[f'ma{w}'], currency) for w in avail)
-    return f"- MA {labels} : {values} {currency}"
 
 
 def add_ma_multi(
@@ -366,14 +368,14 @@ def format_ma_line(
     keys = [f"{column}_ma{w}" for w in windows]
     avail = [
         w
-        for w, k in zip(windows, keys)
+        for w, k in zip(windows, keys, strict=True)
         if k in df.columns and pd.notna(last.get(k, pd.NA))
     ]
     if not avail:
         return f"- {label_prefix} : 자료 부족"
 
     labels = "/".join(str(w) for w in avail)
-    values: List[str] = []
+    values: list[str] = []
     for w in avail:
         k = f"{column}_ma{w}"
         v = last[k]
@@ -382,7 +384,6 @@ def format_ma_line(
         except Exception:
             values.append(str(v))
 
-    tail = f" {suffix}".rstrip()
     return f"- {label_prefix} {labels} : {' / '.join(values)}{(' ' + suffix) if suffix else ''}"
 
 
@@ -392,19 +393,25 @@ def build_json_prompt(
     stock_name: str,
     currency: str = "₩",
     unit_shares: str = "주",
-    fundamental_info: Optional[dict] = None,
-    position_info: Optional[dict] = None,
-    minute_candles: Optional[dict] = None,
+    fundamental_info: dict | None = None,
+    position_info: dict | None = None,
+    minute_candles: dict | None = None,
 ) -> str:
     """
     JSON 형식의 응답을 받기 위한 프롬프트를 생성합니다.
     """
     # 기본 프롬프트 생성
     original_prompt = build_prompt(
-        df, ticker, stock_name, currency, unit_shares, 
-        fundamental_info, position_info, minute_candles
+        df,
+        ticker,
+        stock_name,
+        currency,
+        unit_shares,
+        fundamental_info,
+        position_info,
+        minute_candles,
     )
-    
+
     # JSON 형식 프롬프트로 변환
     json_prompt = f"""
 {original_prompt}

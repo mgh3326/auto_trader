@@ -1,5 +1,5 @@
 import random
-from typing import List, Literal, Optional
+from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,22 +20,22 @@ class Settings(BaseSettings):
     # Scheduler
     cron: str = "0 * * * *"  # 매시 정각
     google_api_key: str
-    google_api_keys: Optional[List[str]] = None
+    google_api_keys: list[str] | None = None
 
     @property
-    def telegram_chat_ids(self) -> List[str]:
+    def telegram_chat_ids(self) -> list[str]:
         """단일 chat_id를 리스트로 변환 (하위 호환성 유지)"""
         if not self.telegram_chat_id:
             return []
         return [self.telegram_chat_id.strip()]
 
-    @field_validator("google_api_keys", mode='before')
+    @field_validator("google_api_keys", mode="before")
     @classmethod
-    def split_google_api_keys(cls, v: any) -> List[str]:
+    def split_google_api_keys(cls, v: any) -> list[str]:
         if isinstance(v, str):
             if not v:  # 빈 문자열 처리
                 return []
-            return [key.strip() for key in v.split(',') if key.strip()]
+            return [key.strip() for key in v.split(",") if key.strip()]
         return v
 
     def _ensure_key_index(self):
@@ -73,8 +73,7 @@ class Settings(BaseSettings):
             auth_part = f":{self.redis_password}@"
 
         url = (
-            f"{protocol}{auth_part}{self.redis_host}:"
-            f"{self.redis_port}/{self.redis_db}"
+            f"{protocol}{auth_part}{self.redis_host}:{self.redis_port}/{self.redis_db}"
         )
         return url
 
@@ -104,7 +103,9 @@ class Settings(BaseSettings):
     # OpenTelemetry settings (vendor-agnostic)
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "localhost:4317"  # OTLP gRPC endpoint
     OTEL_ENABLED: bool = False  # 기본적으로 비활성화
-    OTEL_INSECURE: bool = True  # OTLP gRPC insecure 연결 (개발 환경용, 프로덕션에서는 False)
+    OTEL_INSECURE: bool = (
+        True  # OTLP gRPC insecure 연결 (개발 환경용, 프로덕션에서는 False)
+    )
     OTEL_SERVICE_NAME: str = "auto-trader"
     OTEL_SERVICE_VERSION: str = "0.1.0"
     OTEL_ENVIRONMENT: str = "development"
@@ -124,7 +125,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     SESSION_BLACKLIST_FAIL_SAFE: bool = True
     SESSION_BLACKLIST_DB_FALLBACK: bool = True
-    PUBLIC_API_PATHS: List[str] = []
+    PUBLIC_API_PATHS: list[str] = []
 
     @field_validator("SECRET_KEY")
     @classmethod
@@ -170,7 +171,7 @@ class Settings(BaseSettings):
 
     @field_validator("PUBLIC_API_PATHS", mode="before")
     @classmethod
-    def validate_public_api_paths(cls, v: List[str] | str) -> List[str]:
+    def validate_public_api_paths(cls, v: list[str] | str) -> list[str]:
         """Ensure PUBLIC_API_PATHS is parsed consistently from env strings."""
         if isinstance(v, str):
             return [path.strip() for path in v.split(",") if path.strip()]
@@ -192,7 +193,7 @@ class Settings(BaseSettings):
         env_parse_none_str="None",  # None 문자열 파싱
         # JSON 자동 파싱 비활성화
         env_parse_enums=True,
-        extra='ignore',  # 추가 필드 무시
+        extra="ignore",  # 추가 필드 무시
     )
 
 

@@ -1,10 +1,11 @@
 """
 Pytest configuration and common fixtures for auto-trader tests.
 """
+
 import asyncio
 import os
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -93,7 +94,7 @@ from app.core.config import settings
 
 
 @pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
+def event_loop() -> Generator[asyncio.AbstractEventLoop]:
     """Create an instance of the default event loop for the test session."""
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
@@ -127,15 +128,13 @@ def mock_http_client():
 @pytest.fixture
 def mock_external_services():
     """Mock all external service calls for testing."""
-    with patch("app.services.upbit.httpx.AsyncClient") as mock_upbit, patch(
-        "app.services.yahoo.yf.download"
-    ) as mock_yahoo_download, patch(
-        "app.services.yahoo.yf.Ticker"
-    ) as mock_yahoo_ticker, patch(
-        "app.services.kis.httpx.AsyncClient"
-    ) as mock_kis, patch(
-        "app.core.model_rate_limiter.redis.asyncio.Redis"
-    ) as mock_redis:
+    with (
+        patch("app.services.upbit.httpx.AsyncClient") as mock_upbit,
+        patch("app.services.yahoo.yf.download") as mock_yahoo_download,
+        patch("app.services.yahoo.yf.Ticker") as mock_yahoo_ticker,
+        patch("app.services.kis.httpx.AsyncClient") as mock_kis,
+        patch("app.core.model_rate_limiter.redis.asyncio.Redis") as mock_redis,
+    ):
         # Configure mock responses
         yield {
             "upbit": mock_upbit,
@@ -231,9 +230,10 @@ def auth_mock_session():
 @pytest.fixture
 def auth_test_client(auth_mock_session):
     """FastAPI test client with mocked database for auth tests."""
-    from app.main import api
-    from app.core.db import get_db
     from fastapi.testclient import TestClient
+
+    from app.core.db import get_db
+    from app.main import api
 
     async def override_get_db():
         yield auth_mock_session

@@ -1,16 +1,16 @@
 # app/models/__init__.py
+from .analysis import StockAnalysisResult, StockInfo
 from .base import Base
-from .prompt import PromptResult
-from .analysis import StockInfo, StockAnalysisResult
-from .trading import Exchange, Instrument, User, UserChannel, UserWatchItem, UserRole
-from .symbol_trade_settings import SymbolTradeSettings
 from .manual_holdings import (
-    BrokerType,
-    MarketType,
     BrokerAccount,
-    StockAlias,
+    BrokerType,
     ManualHolding,
+    MarketType,
+    StockAlias,
 )
+from .prompt import PromptResult
+from .symbol_trade_settings import SymbolTradeSettings
+from .trading import Exchange, Instrument, User, UserChannel, UserRole, UserWatchItem
 
 # 필요한 다른 모델도 전부 여기서 import
 # from .alert import AlertRule, AlertEvent

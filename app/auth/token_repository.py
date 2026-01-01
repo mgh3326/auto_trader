@@ -1,6 +1,7 @@
 """Utilities for persisting and validating refresh tokens."""
+
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,9 +19,7 @@ async def save_refresh_token(
     db: AsyncSession, user_id: int, refresh_token: str
 ) -> RefreshToken:
     """Persist a new refresh token record for the user."""
-    expires_at = datetime.now(timezone.utc) + timedelta(
-        days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-    )
+    expires_at = datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     token_record = RefreshToken(
         user_id=user_id,
         token_hash=hash_refresh_token(refresh_token),
@@ -48,7 +47,7 @@ async def get_valid_refresh_token(
     if not token_record:
         return None
 
-    if token_record.expires_at <= datetime.now(timezone.utc):
+    if token_record.expires_at <= datetime.now(UTC):
         return None
 
     return token_record

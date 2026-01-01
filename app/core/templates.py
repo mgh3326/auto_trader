@@ -1,4 +1,5 @@
 """Shared templates configuration for FastAPI routers."""
+
 from pathlib import Path
 
 from fastapi.templating import Jinja2Templates

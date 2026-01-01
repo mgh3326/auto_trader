@@ -19,8 +19,8 @@
 
 ### 요구사항
 
-- Python 3.11+
-- Poetry
+- Python 3.14+
+- UV (패키지 관리)
 - PostgreSQL
 - Redis
 
@@ -202,8 +202,8 @@ tests/
 
 GitHub Actions를 통해 자동으로 다음을 실행합니다:
 
-- **테스트**: Python 3.11, 3.12에서 테스트 실행
-- **린팅**: flake8, black, isort, mypy 검사
+- **린팅**: Ruff 린터 + 포맷터, Pyright 타입 체커
+- **테스트**: Python 3.14에서 테스트 실행 (lint 통과 후)
 - **보안**: bandit, safety 검사
 - **커버리지**: 테스트 커버리지 리포트 생성
 

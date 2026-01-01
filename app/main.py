@@ -1,6 +1,6 @@
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -8,38 +8,39 @@ from redis.asyncio import Redis
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app.auth.admin_router import router as admin_router
+from app.auth.router import router as auth_router
+from app.auth.web_router import limiter
+from app.auth.web_router import router as web_auth_router
 from app.core.config import settings
 from app.middleware.auth import AuthMiddleware
 from app.middleware.monitoring import MonitoringMiddleware
 from app.monitoring.error_reporter import get_error_reporter
-from app.monitoring.trade_notifier import get_trade_notifier
 from app.monitoring.telemetry import (
     instrument_fastapi,
     setup_telemetry,
     shutdown_telemetry,
 )
-from app.auth.router import router as auth_router
-from app.auth.web_router import limiter, router as web_auth_router
-from app.auth.admin_router import router as admin_router
+from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
     analysis_json,
     dashboard,
     health,
-    stock_latest,
-    symbol_settings,
-    test,
-    upbit_trading,
     kis_domestic_trading,
     kis_overseas_trading,
     manual_holdings,
     portfolio,
+    stock_latest,
+    symbol_settings,
+    test,
     trading,
+    upbit_trading,
 )
 
 logger = logging.getLogger(__name__)
 
 # Module-level Redis client for proper cleanup
-_redis_client: Optional[Redis] = None
+_redis_client: Redis | None = None
 
 
 def configure_logging() -> None:
@@ -87,16 +88,15 @@ def create_app() -> FastAPI:
     async def global_exception_handler(request: Request, exc: Exception):
         """Log all unhandled exceptions with full traceback"""
         logger.error(
-            f"Unhandled exception on {request.method} "
-            f"{request.url.path}: {str(exc)}",
+            f"Unhandled exception on {request.method} {request.url.path}: {str(exc)}",
             exc_info=True,
             extra={
                 "method": request.method,
                 "url": str(request.url),
                 "client": request.client.host if request.client else None,
-            }
+            },
         )
-        
+
         # Send error to Telegram
         if settings.ERROR_REPORTING_ENABLED:
             try:
@@ -107,7 +107,7 @@ def create_app() -> FastAPI:
 
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": str(exc)}
+            content={"detail": str(exc)},
         )
 
     # Include routers
@@ -194,7 +194,8 @@ async def setup_monitoring() -> None:
             error_reporter = get_error_reporter()
             error_reporter.configure(
                 bot_token=settings.telegram_token,
-                chat_id=settings.ERROR_REPORTING_CHAT_ID or (
+                chat_id=settings.ERROR_REPORTING_CHAT_ID
+                or (
                     settings.telegram_chat_ids[0] if settings.telegram_chat_ids else ""
                 ),
                 redis_client=_redis_client,

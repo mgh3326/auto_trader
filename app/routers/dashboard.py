@@ -1,6 +1,5 @@
 # app/routers/dashboard.py
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
@@ -49,7 +48,7 @@ async def analysis_list(request: Request):
 
 @router.get("/api/analysis/symbols")
 async def get_unique_symbols(
-    instrument_type: Optional[str] = None, db: AsyncSession = Depends(get_db)
+    instrument_type: str | None = None, db: AsyncSession = Depends(get_db)
 ):
     """
     고유한 종목 코드 목록을 반환
@@ -97,8 +96,8 @@ async def get_unique_symbols(
 
 @router.get("/api/analysis/models")
 async def get_unique_models(
-    instrument_type: Optional[str] = None,
-    symbol: Optional[str] = None,
+    instrument_type: str | None = None,
+    symbol: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -153,9 +152,9 @@ async def get_unique_models(
 
 @router.get("/api/analysis/count")
 async def get_analysis_count(
-    symbol: Optional[str] = None,
-    instrument_type: Optional[str] = None,
-    model_name: Optional[str] = None,
+    symbol: str | None = None,
+    instrument_type: str | None = None,
+    model_name: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -212,9 +211,9 @@ async def get_analysis_count(
 
 @router.get("/api/analysis")
 async def get_analysis_results(
-    symbol: Optional[str] = None,
-    instrument_type: Optional[str] = None,
-    model_name: Optional[str] = None,
+    symbol: str | None = None,
+    instrument_type: str | None = None,
+    model_name: str | None = None,
     page: int = 1,
     limit: int = 20,
     db: AsyncSession = Depends(get_db),

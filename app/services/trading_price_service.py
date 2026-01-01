@@ -3,6 +3,7 @@ Trading Price Service
 
 매수/매도 가격 전략 계산 서비스
 """
+
 import enum
 import logging
 from dataclasses import dataclass
@@ -15,26 +16,28 @@ logger = logging.getLogger(__name__)
 
 class PriceStrategy(str, enum.Enum):
     """가격 전략"""
+
     # 공통
     current = "current"  # 현재가
-    manual = "manual"    # 직접 입력
+    manual = "manual"  # 직접 입력
 
     # 매수 전략
-    kis_avg = "kis_avg"              # 한투 평단가
-    toss_avg = "toss_avg"            # 토스 평단가
-    combined_avg = "combined_avg"    # 통합 평단가
-    lowest_avg = "lowest_avg"        # 최저 평단가
+    kis_avg = "kis_avg"  # 한투 평단가
+    toss_avg = "toss_avg"  # 토스 평단가
+    combined_avg = "combined_avg"  # 통합 평단가
+    lowest_avg = "lowest_avg"  # 최저 평단가
     lowest_minus_percent = "lowest_minus_percent"  # 최저 평단가 -N%
 
     # 매도 전략
-    kis_avg_plus = "kis_avg_plus"        # 한투 평단가 +N%
-    toss_avg_plus = "toss_avg_plus"      # 토스 평단가 +N%
+    kis_avg_plus = "kis_avg_plus"  # 한투 평단가 +N%
+    toss_avg_plus = "toss_avg_plus"  # 토스 평단가 +N%
     combined_avg_plus = "combined_avg_plus"  # 통합 평단가 +N%
 
 
 @dataclass
 class ExpectedProfit:
     """예상 수익 정보"""
+
     amount: float
     percent: float
 
@@ -45,6 +48,7 @@ class ExpectedProfit:
 @dataclass
 class PriceCalculationResult:
     """가격 계산 결과"""
+
     price: float
     price_source: str
     reference_prices: ReferencePrices
@@ -112,14 +116,10 @@ class TradingPriceService:
                 price = self._validate_manual_price(manual_price)
                 source = "직접 입력"
             case PriceStrategy.kis_avg:
-                price = self._require_price(
-                    ref.kis_avg, "한투 평단가 정보가 없습니다"
-                )
+                price = self._require_price(ref.kis_avg, "한투 평단가 정보가 없습니다")
                 source = "한투 평단가"
             case PriceStrategy.toss_avg:
-                price = self._require_price(
-                    ref.toss_avg, "토스 평단가 정보가 없습니다"
-                )
+                price = self._require_price(ref.toss_avg, "토스 평단가 정보가 없습니다")
                 source = "토스 평단가"
             case PriceStrategy.combined_avg:
                 price = self._require_price(
@@ -174,15 +174,11 @@ class TradingPriceService:
                 price = self._validate_manual_price(manual_price)
                 source = "직접 입력"
             case PriceStrategy.kis_avg_plus:
-                base = self._require_price(
-                    ref.kis_avg, "한투 평단가 정보가 없습니다"
-                )
+                base = self._require_price(ref.kis_avg, "한투 평단가 정보가 없습니다")
                 price = base * (1 + profit_percent / 100)
                 source = f"한투 평단가 +{profit_percent}%"
             case PriceStrategy.toss_avg_plus:
-                base = self._require_price(
-                    ref.toss_avg, "토스 평단가 정보가 없습니다"
-                )
+                base = self._require_price(ref.toss_avg, "토스 평단가 정보가 없습니다")
                 price = base * (1 + profit_percent / 100)
                 source = f"토스 평단가 +{profit_percent}%"
             case PriceStrategy.combined_avg_plus:

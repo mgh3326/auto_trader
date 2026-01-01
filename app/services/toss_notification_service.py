@@ -3,15 +3,18 @@ Toss Manual Trading Notification Service
 
 토스 보유 종목에 대한 AI 분석 결과를 텔레그램으로 알림
 """
+
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.manual_holdings import MarketType
 from app.monitoring.trade_notifier import get_trade_notifier
-from app.services.merged_portfolio_service import MergedPortfolioService, ReferencePrices
+from app.services.merged_portfolio_service import (
+    MergedPortfolioService,
+    ReferencePrices,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +22,14 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TossNotificationData:
     """토스 알림 데이터"""
+
     ticker: str
     name: str
     current_price: float
     toss_quantity: int
     toss_avg_price: float
-    kis_quantity: Optional[int] = None
-    kis_avg_price: Optional[float] = None
+    kis_quantity: int | None = None
+    kis_avg_price: float | None = None
     recommended_price: float = 0.0
     recommended_quantity: int = 1
     expected_profit: float = 0.0
@@ -87,7 +91,9 @@ class TossNotificationService:
             bool: 성공 여부
         """
         if data.toss_quantity <= 0:
-            logger.debug(f"Skipping Toss buy notification for {data.ticker}: no Toss holdings")
+            logger.debug(
+                f"Skipping Toss buy notification for {data.ticker}: no Toss holdings"
+            )
             return False
 
         try:
@@ -122,7 +128,9 @@ class TossNotificationService:
             bool: 성공 여부
         """
         if data.toss_quantity <= 0:
-            logger.debug(f"Skipping Toss sell notification for {data.ticker}: no Toss holdings")
+            logger.debug(
+                f"Skipping Toss sell notification for {data.ticker}: no Toss holdings"
+            )
             return False
 
         try:
@@ -214,8 +222,12 @@ class TossNotificationService:
 
             # 예상 수익 계산 (토스 평단가 기준)
             if ref.toss_avg and ref.toss_avg > 0:
-                data.profit_percent = (recommended_sell_price - ref.toss_avg) / ref.toss_avg * 100
-                data.expected_profit = (recommended_sell_price - ref.toss_avg) * recommended_quantity
+                data.profit_percent = (
+                    (recommended_sell_price - ref.toss_avg) / ref.toss_avg * 100
+                )
+                data.expected_profit = (
+                    recommended_sell_price - ref.toss_avg
+                ) * recommended_quantity
 
             return await self.notify_sell_recommendation(data)
 

@@ -3,14 +3,15 @@ Stock Alias Service
 
 종목 별칭 관리 서비스
 """
+
 import logging
 import re
 from typing import Any
 
-from sqlalchemy import select, or_
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.manual_holdings import StockAlias, MarketType
+from app.models.manual_holdings import MarketType, StockAlias
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,7 @@ class StockAliasService:
         self.db.add(stock_alias)
         await self.db.commit()
         await self.db.refresh(stock_alias)
-        logger.info(
-            f"Created stock alias: ticker={ticker}, alias={alias}"
-        )
+        logger.info(f"Created stock alias: ticker={ticker}, alias={alias}")
         return stock_alias
 
     async def get_alias_by_id(self, alias_id: int) -> StockAlias | None:
@@ -88,9 +87,7 @@ class StockAliasService:
         )
 
         if market_type:
-            search_query = search_query.where(
-                StockAlias.market_type == market_type
-            )
+            search_query = search_query.where(StockAlias.market_type == market_type)
 
         result = await self.db.execute(
             search_query.order_by(StockAlias.alias).limit(limit)
@@ -101,9 +98,7 @@ class StockAliasService:
         self, ticker: str, market_type: MarketType | None = None
     ) -> list[StockAlias]:
         """티커의 모든 별칭 조회"""
-        query = select(StockAlias).where(
-            StockAlias.ticker == ticker.upper()
-        )
+        query = select(StockAlias).where(StockAlias.ticker == ticker.upper())
 
         if market_type:
             query = query.where(StockAlias.market_type == market_type)
@@ -126,7 +121,9 @@ class StockAliasService:
             .where(StockAlias.market_type.in_({mt for _, mt in alias_pairs}))
         )
         existing_results = await self.db.execute(existing_query)
-        existing_pairs = {(alias, market_type) for alias, market_type in existing_results.all()}
+        existing_pairs = {
+            (alias, market_type) for alias, market_type in existing_results.all()
+        }
 
         created: list[StockAlias] = []
         pending_pairs: set[tuple[str, MarketType]] = set()
@@ -189,22 +186,62 @@ class StockAliasService:
 # 토스 종목명 -> 실제 티커 매핑 기본 데이터
 TOSS_STOCK_ALIASES = [
     # 해외주식
-    {"ticker": "BRK.B", "alias": "버크셔 해서웨이 B", "market_type": MarketType.US, "source": "toss"},
-    {"ticker": "TSMC", "alias": "TSMC(ADR)", "market_type": MarketType.US, "source": "toss"},
+    {
+        "ticker": "BRK.B",
+        "alias": "버크셔 해서웨이 B",
+        "market_type": MarketType.US,
+        "source": "toss",
+    },
+    {
+        "ticker": "TSMC",
+        "alias": "TSMC(ADR)",
+        "market_type": MarketType.US,
+        "source": "toss",
+    },
     {"ticker": "QQQM", "alias": "QQQM", "market_type": MarketType.US, "source": "toss"},
     {"ticker": "QQQ", "alias": "QQQ", "market_type": MarketType.US, "source": "toss"},
     {"ticker": "SPYM", "alias": "SPYM", "market_type": MarketType.US, "source": "toss"},
     {"ticker": "VOO", "alias": "VOO", "market_type": MarketType.US, "source": "toss"},
-    {"ticker": "PLTR", "alias": "팔란티어", "market_type": MarketType.US, "source": "toss"},
+    {
+        "ticker": "PLTR",
+        "alias": "팔란티어",
+        "market_type": MarketType.US,
+        "source": "toss",
+    },
     {"ticker": "IVV", "alias": "IVV", "market_type": MarketType.US, "source": "toss"},
     {"ticker": "AAPL", "alias": "애플", "market_type": MarketType.US, "source": "toss"},
     {"ticker": "ETHU", "alias": "ETHU", "market_type": MarketType.US, "source": "toss"},
     # 국내주식
-    {"ticker": "068270", "alias": "셀트리온", "market_type": MarketType.KR, "source": "toss"},
-    {"ticker": "005930", "alias": "삼성전자", "market_type": MarketType.KR, "source": "toss"},
-    {"ticker": "000660", "alias": "SK하이닉스", "market_type": MarketType.KR, "source": "toss"},
-    {"ticker": "207940", "alias": "삼성바이오로직스", "market_type": MarketType.KR, "source": "toss"},
-    {"ticker": "373220", "alias": "LG에너지솔루션", "market_type": MarketType.KR, "source": "toss"},
+    {
+        "ticker": "068270",
+        "alias": "셀트리온",
+        "market_type": MarketType.KR,
+        "source": "toss",
+    },
+    {
+        "ticker": "005930",
+        "alias": "삼성전자",
+        "market_type": MarketType.KR,
+        "source": "toss",
+    },
+    {
+        "ticker": "000660",
+        "alias": "SK하이닉스",
+        "market_type": MarketType.KR,
+        "source": "toss",
+    },
+    {
+        "ticker": "207940",
+        "alias": "삼성바이오로직스",
+        "market_type": MarketType.KR,
+        "source": "toss",
+    },
+    {
+        "ticker": "373220",
+        "alias": "LG에너지솔루션",
+        "market_type": MarketType.KR,
+        "source": "toss",
+    },
 ]
 
 

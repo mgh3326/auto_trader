@@ -3,6 +3,7 @@ Manual Holdings Models
 
 외부 브로커(토스 등) 수동 잔고 등록을 위한 모델
 """
+
 import enum
 from datetime import datetime
 
@@ -24,15 +25,17 @@ from app.models.base import Base
 
 class BrokerType(str, enum.Enum):
     """브로커 타입"""
-    kis = "kis"      # 한국투자증권
-    toss = "toss"    # 토스증권
+
+    kis = "kis"  # 한국투자증권
+    toss = "toss"  # 토스증권
     upbit = "upbit"  # 업비트 (암호화폐)
 
 
 class MarketType(str, enum.Enum):
     """시장 타입"""
-    KR = "KR"          # 국내주식
-    US = "US"          # 해외주식
+
+    KR = "KR"  # 국내주식
+    US = "US"  # 해외주식
     CRYPTO = "CRYPTO"  # 암호화폐
 
 
@@ -45,30 +48,20 @@ class BrokerAccount(Base):
     __tablename__ = "broker_accounts"
     __table_args__ = (
         UniqueConstraint(
-            "user_id", "broker_type", "account_name",
-            name="uq_broker_account"
+            "user_id", "broker_type", "account_name", name="uq_broker_account"
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     broker_type: Mapped[BrokerType] = mapped_column(
-        Enum(BrokerType, name="broker_type"),
-        nullable=False
+        Enum(BrokerType, name="broker_type"), nullable=False
     )
-    account_name: Mapped[str] = mapped_column(
-        Text, nullable=False, default="기본 계좌"
-    )
-    is_mock: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )
-    is_active: Mapped[bool] = mapped_column(
-        Boolean, default=True, nullable=False
-    )
+    account_name: Mapped[str] = mapped_column(Text, nullable=False, default="기본 계좌")
+    is_mock: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
@@ -81,9 +74,8 @@ class BrokerAccount(Base):
 
     # Relationships
     user = relationship("User", backref="broker_accounts")
-    holdings: Mapped[list["ManualHolding"]] = relationship(
-        back_populates="broker_account",
-        cascade="all, delete-orphan"
+    holdings: Mapped[list[ManualHolding]] = relationship(
+        back_populates="broker_account", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
@@ -101,15 +93,12 @@ class StockAlias(Base):
     """
 
     __tablename__ = "stock_aliases"
-    __table_args__ = (
-        UniqueConstraint("alias", "market_type", name="uq_alias_market"),
-    )
+    __table_args__ = (UniqueConstraint("alias", "market_type", name="uq_alias_market"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     ticker: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     market_type: Mapped[MarketType] = mapped_column(
-        Enum(MarketType, name="market_type"),
-        nullable=False
+        Enum(MarketType, name="market_type"), nullable=False
     )
     alias: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     source: Mapped[str] = mapped_column(
@@ -132,28 +121,20 @@ class ManualHolding(Base):
     __tablename__ = "manual_holdings"
     __table_args__ = (
         UniqueConstraint(
-            "broker_account_id", "ticker", "market_type",
-            name="uq_holding_ticker"
+            "broker_account_id", "ticker", "market_type", name="uq_holding_ticker"
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     broker_account_id: Mapped[int] = mapped_column(
-        ForeignKey("broker_accounts.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True
+        ForeignKey("broker_accounts.id", ondelete="CASCADE"), nullable=False, index=True
     )
     ticker: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     market_type: Mapped[MarketType] = mapped_column(
-        Enum(MarketType, name="market_type", create_type=False),
-        nullable=False
+        Enum(MarketType, name="market_type", create_type=False), nullable=False
     )
-    quantity: Mapped[float] = mapped_column(
-        Numeric(18, 8), nullable=False
-    )
-    avg_price: Mapped[float] = mapped_column(
-        Numeric(18, 8), nullable=False
-    )
+    quantity: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
+    avg_price: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
     display_name: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )  # 사용자 정의 표시명
@@ -168,9 +149,7 @@ class ManualHolding(Base):
     )
 
     # Relationships
-    broker_account: Mapped["BrokerAccount"] = relationship(
-        back_populates="holdings"
-    )
+    broker_account: Mapped[BrokerAccount] = relationship(back_populates="holdings")
 
     def __repr__(self) -> str:
         return (
