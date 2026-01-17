@@ -40,7 +40,7 @@ dependencies = [
     "opentelemetry-instrumentation-redis>=0.48b0",
     "email-validator>=2.0.0,<3.0.0",
     "itsdangerous>=2.0.0,<3.0.0",
-    "pandas-stubs==2.3.3.251219",
+    "pandas-stubs==2.3.3.260113",
     "slowapi>=0.1.9",
 ]
 
