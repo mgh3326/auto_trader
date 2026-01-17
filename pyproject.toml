@@ -8,7 +8,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi>=0.125.0,<0.126.0",
+    "fastapi>=0.128.0,<0.129.0",
     "uvicorn>=0.40.0,<0.41.0",
     "pydantic-settings>=2.10.1,<3.0.0",
     "pytz>=2025.2,<2026.0",
