@@ -3,6 +3,7 @@ Trading Router
 
 매수/매도 주문 API 엔드포인트
 """
+
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,43 +15,189 @@ from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.manual_holdings import (
     BuyOrderRequest,
-    SellOrderRequest,
+    ExpectedProfitResponse,
     OrderSimulationResponse,
     ReferencePricesResponse,
-    ExpectedProfitResponse,
+    SellOrderRequest,
 )
-from app.services.merged_portfolio_service import MergedPortfolioService
-from app.services.trading_price_service import TradingPriceService
 from app.services.kis import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
+from app.services.merged_portfolio_service import MergedPortfolioService
+from app.services.trading_price_service import TradingPriceService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/trading", tags=["Trading"])
 PRICE_FETCH_ERROR = "현재가를 조회할 수 없습니다"
 NYSE_TICKERS = {
-    "ABBV", "ABT", "ACN", "AI", "AMPL", "AMT", "ANET", "APTV", "AXP", "BA",
-    "BAC", "BDX", "BILL", "BLK", "BMY", "BRK.B", "BSX", "C", "CAT", "CI",
-    "CRM", "CVS", "CVX", "DE", "DHR", "DIS", "EOG", "FI", "GE", "GS",
-    "HD", "HUBS", "IBM", "IOT", "JNJ", "JPM", "KO", "LIN", "LLY", "LMT",
-    "LOW", "MA", "MCD", "MMC", "MRK", "MS", "NEE", "NET", "NKE", "ORCL",
-    "PATH", "PEP", "PFE", "PG", "PGR", "PINS", "PLD", "PLTR", "PM", "RBLX",
-    "RTX", "S", "SE", "SHOP", "SLB", "SNAP", "SNOW", "SO", "SPGI", "SPOT",
-    "SQ", "SYK", "TJX", "TMO", "TSM", "TWLO", "U", "UBER", "UNH", "UPS",
-    "V", "VZ", "WMT", "XOM", "ZTS",
+    "ABBV",
+    "ABT",
+    "ACN",
+    "AI",
+    "AMPL",
+    "AMT",
+    "ANET",
+    "APTV",
+    "AXP",
+    "BA",
+    "BAC",
+    "BDX",
+    "BILL",
+    "BLK",
+    "BMY",
+    "BRK.B",
+    "BSX",
+    "C",
+    "CAT",
+    "CI",
+    "CRM",
+    "CVS",
+    "CVX",
+    "DE",
+    "DHR",
+    "DIS",
+    "EOG",
+    "FI",
+    "GE",
+    "GS",
+    "HD",
+    "HUBS",
+    "IBM",
+    "IOT",
+    "JNJ",
+    "JPM",
+    "KO",
+    "LIN",
+    "LLY",
+    "LMT",
+    "LOW",
+    "MA",
+    "MCD",
+    "MMC",
+    "MRK",
+    "MS",
+    "NEE",
+    "NET",
+    "NKE",
+    "ORCL",
+    "PATH",
+    "PEP",
+    "PFE",
+    "PG",
+    "PGR",
+    "PINS",
+    "PLD",
+    "PLTR",
+    "PM",
+    "RBLX",
+    "RTX",
+    "S",
+    "SE",
+    "SHOP",
+    "SLB",
+    "SNAP",
+    "SNOW",
+    "SO",
+    "SPGI",
+    "SPOT",
+    "SQ",
+    "SYK",
+    "TJX",
+    "TMO",
+    "TSM",
+    "TWLO",
+    "U",
+    "UBER",
+    "UNH",
+    "UPS",
+    "V",
+    "VZ",
+    "WMT",
+    "XOM",
+    "ZTS",
 }
 NASDAQ_TICKERS = {
-    "ADBE", "ADI", "ADP", "AEP", "AFRM", "ALGN", "AMGN", "BIIB", "BKNG", "BKR",
-    "CDNS", "CFLT", "CMCSA", "COIN", "CRWD", "CSCO", "CSX", "CTAS", "DDOG", "DKNG",
-    "DLTR", "DOCU", "DXCM", "EA", "EQIX", "EXC", "FANG", "FAST", "FTNT", "GILD",
-    "GTLB", "HCP", "HON", "HOOD", "IDXX", "ILMN", "INTC", "INTU", "ISRG", "KDP",
-    "KHC", "KLAC", "LCID", "LRCX", "MAR", "MCHP", "MDB", "MDLZ", "MELI", "MNST",
-    "MRNA", "MSTR", "NFLX", "ODFL", "OKTA", "OPEN", "ORLY", "PANW", "PAYX", "PCAR",
-    "PYPL", "REGN", "RIVN", "ROKU", "ROP", "ROST", "SNPS", "SOFI", "TEAM", "TTD",
-    "TXN", "UPST", "VRTX", "WBD", "WDAY", "XEL", "ZM", "ZS",
+    "ADBE",
+    "ADI",
+    "ADP",
+    "AEP",
+    "AFRM",
+    "ALGN",
+    "AMGN",
+    "BIIB",
+    "BKNG",
+    "BKR",
+    "CDNS",
+    "CFLT",
+    "CMCSA",
+    "COIN",
+    "CRWD",
+    "CSCO",
+    "CSX",
+    "CTAS",
+    "DDOG",
+    "DKNG",
+    "DLTR",
+    "DOCU",
+    "DXCM",
+    "EA",
+    "EQIX",
+    "EXC",
+    "FANG",
+    "FAST",
+    "FTNT",
+    "GILD",
+    "GTLB",
+    "HCP",
+    "HON",
+    "HOOD",
+    "IDXX",
+    "ILMN",
+    "INTC",
+    "INTU",
+    "ISRG",
+    "KDP",
+    "KHC",
+    "KLAC",
+    "LCID",
+    "LRCX",
+    "MAR",
+    "MCHP",
+    "MDB",
+    "MDLZ",
+    "MELI",
+    "MNST",
+    "MRNA",
+    "MSTR",
+    "NFLX",
+    "ODFL",
+    "OKTA",
+    "OPEN",
+    "ORLY",
+    "PANW",
+    "PAYX",
+    "PCAR",
+    "PYPL",
+    "REGN",
+    "RIVN",
+    "ROKU",
+    "ROP",
+    "ROST",
+    "SNPS",
+    "SOFI",
+    "TEAM",
+    "TTD",
+    "TXN",
+    "UPST",
+    "VRTX",
+    "WBD",
+    "WDAY",
+    "XEL",
+    "ZM",
+    "ZS",
 }
 EXCHANGE_MAP: dict[str, str] = {
-    **{ticker: "NYSE" for ticker in NYSE_TICKERS},
-    **{ticker: "NASD" for ticker in NASDAQ_TICKERS},
+    **dict.fromkeys(NYSE_TICKERS, "NYSE"),
+    **dict.fromkeys(NASDAQ_TICKERS, "NASD"),
 }
 
 
@@ -79,7 +226,7 @@ async def _resolve_exchange_code(ticker: str, db: AsyncSession) -> str:
     stock_service = StockInfoService(db)
     stock_info = await stock_service.get_stock_info_by_symbol(ticker)
     if stock_info and stock_info.exchange:
-        return stock_info.exchange
+        return str(stock_info.exchange)
     return EXCHANGE_MAP.get(ticker, "NASD")
 
 
@@ -104,9 +251,7 @@ async def buy_order(
     ticker = data.ticker.upper()
 
     # 1. KIS 보유 정보 조회
-    kis_info = await get_kis_holding_for_ticker(
-        kis_client, ticker, data.market_type
-    )
+    kis_info = await get_kis_holding_for_ticker(kis_client, ticker, data.market_type)
 
     # 2. 현재가 조회
     current_price = kis_info.get("current_price", 0)
@@ -117,7 +262,9 @@ async def buy_order(
 
     # 3. 참조 평단가 조회
     ref = await portfolio_service.get_reference_prices(
-        current_user.id, ticker, data.market_type,
+        current_user.id,
+        ticker,
+        data.market_type,
         kis_holdings=kis_info if kis_info.get("quantity", 0) > 0 else None,
     )
 
@@ -176,7 +323,9 @@ async def buy_order(
                 order_time=order_result.get("ord_tmd"),
             )
         else:
-            error_msg = order_result.get("msg1", "주문 실패") if order_result else "주문 실패"
+            error_msg = (
+                order_result.get("msg1", "주문 실패") if order_result else "주문 실패"
+            )
             return OrderSimulationResponse(
                 status="failed",
                 order_price=order_price,
@@ -214,9 +363,7 @@ async def sell_order(
     ticker = data.ticker.upper()
 
     # 1. KIS 보유 정보 조회
-    kis_info = await get_kis_holding_for_ticker(
-        kis_client, ticker, data.market_type
-    )
+    kis_info = await get_kis_holding_for_ticker(kis_client, ticker, data.market_type)
     kis_quantity = kis_info.get("quantity", 0)
 
     # 2. 매도 수량 검증
@@ -235,7 +382,9 @@ async def sell_order(
 
     # 4. 참조 평단가 조회
     ref = await portfolio_service.get_reference_prices(
-        current_user.id, ticker, data.market_type,
+        current_user.id,
+        ticker,
+        data.market_type,
         kis_holdings=kis_info if kis_quantity > 0 else None,
     )
 
@@ -258,14 +407,15 @@ async def sell_order(
         data.quantity, order_price, ref
     )
     expected_profit_response = {
-        k: ExpectedProfitResponse(**v.to_dict())
-        for k, v in expected_profit.items()
+        k: ExpectedProfitResponse(**v.to_dict()) for k, v in expected_profit.items()
     }
 
     # 7. 경고 메시지
     warning_msg = None
     if data.quantity < kis_quantity:
-        warning_msg = f"KIS 보유 수량({kis_quantity}주) 중 {data.quantity}주만 매도합니다"
+        warning_msg = (
+            f"KIS 보유 수량({kis_quantity}주) 중 {data.quantity}주만 매도합니다"
+        )
 
     # 8. 시뮬레이션 또는 실제 주문
     if data.dry_run:
@@ -312,7 +462,9 @@ async def sell_order(
                 order_time=order_result.get("ord_tmd"),
             )
         else:
-            error_msg = order_result.get("msg1", "주문 실패") if order_result else "주문 실패"
+            error_msg = (
+                order_result.get("msg1", "주문 실패") if order_result else "주문 실패"
+            )
             return OrderSimulationResponse(
                 status="failed",
                 order_price=order_price,

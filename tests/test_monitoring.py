@@ -33,9 +33,7 @@ def test_generate_rate_limit_key_uses_first_frame_for_signature(error_reporter):
         stack_trace=stack_trace,
     )
 
-    expected_signature = (
-        'ValueError:Boom:File "/app/main.py", line 10, in <module>'
-    )
+    expected_signature = 'ValueError:Boom:File "/app/main.py", line 10, in <module>'
     expected_hash = hashlib.sha256(expected_signature.encode()).hexdigest()
 
     assert result == f"error_rate_limit:{expected_hash}"
@@ -198,8 +196,8 @@ class TestFormatErrorMessageWithEscape:
             stack_trace="trace",
             additional_context={
                 "task_name": "kis.run_per_domestic_stock_automation",
-                "stock": "삼성전자우 (005935)"
-            }
+                "stock": "삼성전자우 (005935)",
+            },
         )
         # task_name의 언더스코어가 이스케이프되어야 함
         assert r"run\_per\_domestic\_stock\_automation" in message

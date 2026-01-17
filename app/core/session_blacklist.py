@@ -1,6 +1,6 @@
 """Redis-based session blacklist for user deactivation."""
+
 import logging
-from typing import Optional
 
 import redis.asyncio as redis
 from sqlalchemy import select
@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 class SessionBlacklist:
     """Redis를 활용한 세션 블랙리스트 관리자."""
 
-    def __init__(self, redis_url: Optional[str] = None):
+    def __init__(self, redis_url: str | None = None):
         self.redis_url = redis_url or settings.get_redis_url()
-        self.redis_client: Optional[redis.Redis] = None
+        self.redis_client: redis.Redis | None = None
         self._blacklist_key_prefix = "session_blacklist:user:"
 
     def _get_redis_client(self) -> redis.Redis:
@@ -72,7 +72,7 @@ class SessionBlacklist:
             key = f"{self._blacklist_key_prefix}{user_id}"
             result = await client.get(key)
             return result is not None
-        except Exception as err:
+        except Exception:
             logger.warning(
                 "Redis session blacklist check failed; "
                 "applying fail-safe policy for user_id=%s",
@@ -130,7 +130,7 @@ class SessionBlacklist:
 
 
 # 싱글톤 인스턴스
-_session_blacklist: Optional[SessionBlacklist] = None
+_session_blacklist: SessionBlacklist | None = None
 
 
 def get_session_blacklist() -> SessionBlacklist:

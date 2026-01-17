@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-unit test-integration test-cov lint format clean
+.PHONY: help install install-dev test test-unit test-integration test-cov lint format typecheck security clean
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -28,15 +28,17 @@ test-fast: ## Run tests without coverage (faster)
 test-watch: ## Run tests in watch mode
 	uv run pytest tests/ -v -f
 
-lint: ## Run linting checks
-	uv run flake8 app/ tests/ --max-line-length=88 --extend-ignore=E203,W503
-	uv run black --check app/ tests/
-	uv run isort --check-only app/ tests/
-	uv run mypy app/ --ignore-missing-imports
+lint: ## Run linting checks (Ruff + Pyright)
+	uv run ruff check app/ tests/
+	uv run ruff format --check app/ tests/
+	uv run pyright app/
 
-format: ## Format code
-	uv run black app/ tests/
-	uv run isort app/ tests/
+format: ## Format code with Ruff
+	uv run ruff format app/ tests/
+	uv run ruff check --fix app/ tests/
+
+typecheck: ## Run Pyright type checking
+	uv run pyright app/
 
 security: ## Run security checks
 	uv run bandit -r app/
@@ -50,7 +52,7 @@ clean: ## Clean up generated files
 	find . -type f -name ".coverage" -delete
 	find . -type d -name "htmlcov" -exec rm -rf {} +
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
-	find . -type d -name ".mypy_cache" -exec rm -rf {} +
+	find . -type d -name ".ruff_cache" -exec rm -rf {} +
 
 dev: ## Start development server
 	uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

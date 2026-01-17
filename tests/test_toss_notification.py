@@ -6,11 +6,13 @@ Tests for Toss Notification Service
 - 한투+토스 둘 다 있는 경우에도 알림 발송 확인
 - 한투만 있는 경우(toss_quantity == 0) 알림 안 함 확인
 """
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.models.manual_holdings import MarketType
-from app.monitoring.trade_notifier import TradeNotifier, get_trade_notifier
+from app.monitoring.trade_notifier import TradeNotifier
 from app.services.merged_portfolio_service import ReferencePrices
 from app.services.toss_notification_service import (
     TossNotificationData,
@@ -18,13 +20,13 @@ from app.services.toss_notification_service import (
     send_toss_notification_if_needed,
 )
 
-
 # Note: MarketType values are KR and US (not DOMESTIC)
 
 
 # =============================================================================
 # Fixtures
 # =============================================================================
+
 
 @pytest.fixture
 def mock_trade_notifier():
@@ -83,6 +85,7 @@ def kis_only_ref():
 # =============================================================================
 # TradeNotifier Tests - Message Formatting
 # =============================================================================
+
 
 class TestTradeNotifierFormatting:
     """Test message formatting for Toss notifications."""
@@ -237,6 +240,7 @@ class TestTradeNotifierFormatting:
 # TradeNotifier Tests - Notification Sending
 # =============================================================================
 
+
 class TestTradeNotifierSending:
     """Test notification sending logic for Toss notifications."""
 
@@ -329,6 +333,7 @@ class TestTradeNotifierSending:
 # TossNotificationData Tests
 # =============================================================================
 
+
 class TestTossNotificationData:
     """Test TossNotificationData dataclass."""
 
@@ -379,6 +384,7 @@ class TestTossNotificationData:
 # TossNotificationService Tests
 # =============================================================================
 
+
 class TestTossNotificationService:
     """Test TossNotificationService class."""
 
@@ -403,7 +409,9 @@ class TestTossNotificationService:
         assert ref.toss_quantity == 10
 
     @pytest.mark.asyncio
-    async def test_should_notify_toss_without_toss_holdings(self, mock_db, kis_only_ref):
+    async def test_should_notify_toss_without_toss_holdings(
+        self, mock_db, kis_only_ref
+    ):
         """Test should_notify_toss returns False when no Toss holdings."""
         service = TossNotificationService(mock_db)
 
@@ -530,13 +538,16 @@ class TestTossNotificationService:
         """Test process_analysis_result sends buy notification when Toss exists."""
         service = TossNotificationService(mock_db)
 
-        with patch.object(
-            service.portfolio_service,
-            "get_reference_prices",
-            new=AsyncMock(return_value=toss_only_ref),
-        ), patch(
-            "app.services.toss_notification_service.get_trade_notifier",
-            return_value=mock_trade_notifier,
+        with (
+            patch.object(
+                service.portfolio_service,
+                "get_reference_prices",
+                new=AsyncMock(return_value=toss_only_ref),
+            ),
+            patch(
+                "app.services.toss_notification_service.get_trade_notifier",
+                return_value=mock_trade_notifier,
+            ),
         ):
             result = await service.process_analysis_result(
                 user_id=1,
@@ -559,13 +570,16 @@ class TestTossNotificationService:
         """Test process_analysis_result sends sell notification when Toss exists."""
         service = TossNotificationService(mock_db)
 
-        with patch.object(
-            service.portfolio_service,
-            "get_reference_prices",
-            new=AsyncMock(return_value=toss_only_ref),
-        ), patch(
-            "app.services.toss_notification_service.get_trade_notifier",
-            return_value=mock_trade_notifier,
+        with (
+            patch.object(
+                service.portfolio_service,
+                "get_reference_prices",
+                new=AsyncMock(return_value=toss_only_ref),
+            ),
+            patch(
+                "app.services.toss_notification_service.get_trade_notifier",
+                return_value=mock_trade_notifier,
+            ),
         ):
             result = await service.process_analysis_result(
                 user_id=1,
@@ -588,13 +602,16 @@ class TestTossNotificationService:
         """Test process_analysis_result sends no notification for hold decision."""
         service = TossNotificationService(mock_db)
 
-        with patch.object(
-            service.portfolio_service,
-            "get_reference_prices",
-            new=AsyncMock(return_value=toss_only_ref),
-        ), patch(
-            "app.services.toss_notification_service.get_trade_notifier",
-            return_value=mock_trade_notifier,
+        with (
+            patch.object(
+                service.portfolio_service,
+                "get_reference_prices",
+                new=AsyncMock(return_value=toss_only_ref),
+            ),
+            patch(
+                "app.services.toss_notification_service.get_trade_notifier",
+                return_value=mock_trade_notifier,
+            ),
         ):
             result = await service.process_analysis_result(
                 user_id=1,
@@ -616,13 +633,16 @@ class TestTossNotificationService:
         """Test process_analysis_result sends no notification when no Toss holdings."""
         service = TossNotificationService(mock_db)
 
-        with patch.object(
-            service.portfolio_service,
-            "get_reference_prices",
-            new=AsyncMock(return_value=kis_only_ref),
-        ), patch(
-            "app.services.toss_notification_service.get_trade_notifier",
-            return_value=mock_trade_notifier,
+        with (
+            patch.object(
+                service.portfolio_service,
+                "get_reference_prices",
+                new=AsyncMock(return_value=kis_only_ref),
+            ),
+            patch(
+                "app.services.toss_notification_service.get_trade_notifier",
+                return_value=mock_trade_notifier,
+            ),
         ):
             result = await service.process_analysis_result(
                 user_id=1,
@@ -645,13 +665,16 @@ class TestTossNotificationService:
         """Test process_analysis_result sends notification when both KIS and Toss exist."""
         service = TossNotificationService(mock_db)
 
-        with patch.object(
-            service.portfolio_service,
-            "get_reference_prices",
-            new=AsyncMock(return_value=kis_and_toss_ref),
-        ), patch(
-            "app.services.toss_notification_service.get_trade_notifier",
-            return_value=mock_trade_notifier,
+        with (
+            patch.object(
+                service.portfolio_service,
+                "get_reference_prices",
+                new=AsyncMock(return_value=kis_and_toss_ref),
+            ),
+            patch(
+                "app.services.toss_notification_service.get_trade_notifier",
+                return_value=mock_trade_notifier,
+            ),
         ):
             result = await service.process_analysis_result(
                 user_id=1,
@@ -668,7 +691,9 @@ class TestTossNotificationService:
         mock_trade_notifier.notify_toss_buy_recommendation.assert_called_once()
 
         # Verify both KIS and Toss info was passed
-        call_kwargs = mock_trade_notifier.notify_toss_buy_recommendation.call_args.kwargs
+        call_kwargs = (
+            mock_trade_notifier.notify_toss_buy_recommendation.call_args.kwargs
+        )
         assert call_kwargs["toss_quantity"] == 10
         assert call_kwargs["kis_quantity"] == 5
 
@@ -688,13 +713,16 @@ class TestTossNotificationService:
 
         service = TossNotificationService(mock_db)
 
-        with patch.object(
-            service.portfolio_service,
-            "get_reference_prices",
-            return_value=us_ref,
-        ), patch(
-            "app.services.toss_notification_service.get_trade_notifier",
-            return_value=mock_trade_notifier,
+        with (
+            patch.object(
+                service.portfolio_service,
+                "get_reference_prices",
+                return_value=us_ref,
+            ),
+            patch(
+                "app.services.toss_notification_service.get_trade_notifier",
+                return_value=mock_trade_notifier,
+            ),
         ):
             result = await service.process_analysis_result(
                 user_id=1,
@@ -710,7 +738,9 @@ class TestTossNotificationService:
         assert result is True
 
         # Verify USD currency was used
-        call_kwargs = mock_trade_notifier.notify_toss_buy_recommendation.call_args.kwargs
+        call_kwargs = (
+            mock_trade_notifier.notify_toss_buy_recommendation.call_args.kwargs
+        )
         assert call_kwargs["currency"] == "$"
         assert call_kwargs["market_type"] == "해외주식"
 
@@ -718,6 +748,7 @@ class TestTossNotificationService:
 # =============================================================================
 # Helper Function Tests
 # =============================================================================
+
 
 class TestSendTossNotificationIfNeeded:
     """Test send_toss_notification_if_needed helper function."""
@@ -757,7 +788,9 @@ class TestSendTossNotificationIfNeeded:
             "app.services.toss_notification_service.TossNotificationService"
         ) as MockService:
             mock_service_instance = MockService.return_value
-            mock_service_instance.process_analysis_result = AsyncMock(return_value=False)
+            mock_service_instance.process_analysis_result = AsyncMock(
+                return_value=False
+            )
 
             result = await send_toss_notification_if_needed(
                 db=mock_db,
@@ -778,6 +811,7 @@ class TestSendTossNotificationIfNeeded:
 # Integration Scenarios
 # =============================================================================
 
+
 class TestIntegrationScenarios:
     """Test complete notification scenarios."""
 
@@ -791,13 +825,16 @@ class TestIntegrationScenarios:
         """
         service = TossNotificationService(mock_db)
 
-        with patch.object(
-            service.portfolio_service,
-            "get_reference_prices",
-            new=AsyncMock(return_value=toss_only_ref),
-        ), patch(
-            "app.services.toss_notification_service.get_trade_notifier",
-            return_value=mock_trade_notifier,
+        with (
+            patch.object(
+                service.portfolio_service,
+                "get_reference_prices",
+                new=AsyncMock(return_value=toss_only_ref),
+            ),
+            patch(
+                "app.services.toss_notification_service.get_trade_notifier",
+                return_value=mock_trade_notifier,
+            ),
         ):
             result = await service.process_analysis_result(
                 user_id=1,
@@ -811,7 +848,9 @@ class TestIntegrationScenarios:
             )
 
         assert result is True
-        call_kwargs = mock_trade_notifier.notify_toss_buy_recommendation.call_args.kwargs
+        call_kwargs = (
+            mock_trade_notifier.notify_toss_buy_recommendation.call_args.kwargs
+        )
         assert call_kwargs["toss_quantity"] == 10
         assert call_kwargs["kis_quantity"] is None
 
@@ -825,13 +864,16 @@ class TestIntegrationScenarios:
         """
         service = TossNotificationService(mock_db)
 
-        with patch.object(
-            service.portfolio_service,
-            "get_reference_prices",
-            new=AsyncMock(return_value=kis_and_toss_ref),
-        ), patch(
-            "app.services.toss_notification_service.get_trade_notifier",
-            return_value=mock_trade_notifier,
+        with (
+            patch.object(
+                service.portfolio_service,
+                "get_reference_prices",
+                new=AsyncMock(return_value=kis_and_toss_ref),
+            ),
+            patch(
+                "app.services.toss_notification_service.get_trade_notifier",
+                return_value=mock_trade_notifier,
+            ),
         ):
             result = await service.process_analysis_result(
                 user_id=1,
@@ -845,7 +887,9 @@ class TestIntegrationScenarios:
             )
 
         assert result is True
-        call_kwargs = mock_trade_notifier.notify_toss_sell_recommendation.call_args.kwargs
+        call_kwargs = (
+            mock_trade_notifier.notify_toss_sell_recommendation.call_args.kwargs
+        )
         assert call_kwargs["toss_quantity"] == 10
         assert call_kwargs["kis_quantity"] == 5
         assert call_kwargs["toss_avg_price"] == 52000.0
@@ -861,13 +905,16 @@ class TestIntegrationScenarios:
         """
         service = TossNotificationService(mock_db)
 
-        with patch.object(
-            service.portfolio_service,
-            "get_reference_prices",
-            new=AsyncMock(return_value=kis_only_ref),
-        ), patch(
-            "app.services.toss_notification_service.get_trade_notifier",
-            return_value=mock_trade_notifier,
+        with (
+            patch.object(
+                service.portfolio_service,
+                "get_reference_prices",
+                new=AsyncMock(return_value=kis_only_ref),
+            ),
+            patch(
+                "app.services.toss_notification_service.get_trade_notifier",
+                return_value=mock_trade_notifier,
+            ),
         ):
             result = await service.process_analysis_result(
                 user_id=1,
@@ -894,13 +941,16 @@ class TestIntegrationScenarios:
         """
         service = TossNotificationService(mock_db)
 
-        with patch.object(
-            service.portfolio_service,
-            "get_reference_prices",
-            new=AsyncMock(return_value=toss_only_ref),
-        ), patch(
-            "app.services.toss_notification_service.get_trade_notifier",
-            return_value=mock_trade_notifier,
+        with (
+            patch.object(
+                service.portfolio_service,
+                "get_reference_prices",
+                new=AsyncMock(return_value=toss_only_ref),
+            ),
+            patch(
+                "app.services.toss_notification_service.get_trade_notifier",
+                return_value=mock_trade_notifier,
+            ),
         ):
             # Toss avg is 50000, sell at 55000 = 10% profit
             result = await service.process_analysis_result(
@@ -915,7 +965,9 @@ class TestIntegrationScenarios:
             )
 
         assert result is True
-        call_kwargs = mock_trade_notifier.notify_toss_sell_recommendation.call_args.kwargs
+        call_kwargs = (
+            mock_trade_notifier.notify_toss_sell_recommendation.call_args.kwargs
+        )
         # Expected profit: (55000 - 50000) / 50000 * 100 = 10%
         assert call_kwargs["profit_percent"] == 10.0
         # Expected amount: (55000 - 50000) * 5 = 25000

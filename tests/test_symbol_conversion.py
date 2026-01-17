@@ -6,6 +6,7 @@
 - Yahoo Finance: `-` (예: BRK-B)
 - KIS API: `/` (예: BRK/B)
 """
+
 import pytest
 
 from app.core.symbol import to_db_symbol, to_kis_symbol, to_yahoo_symbol
@@ -90,25 +91,31 @@ class TestToDbSymbol:
 class TestRoundTrip:
     """왕복 변환 테스트"""
 
-    @pytest.mark.parametrize("symbol", [
-        "AAPL",
-        "BRK.B",
-        "NVDA",
-        "TSLA",
-        "A.B.C",
-    ])
+    @pytest.mark.parametrize(
+        "symbol",
+        [
+            "AAPL",
+            "BRK.B",
+            "NVDA",
+            "TSLA",
+            "A.B.C",
+        ],
+    )
     def test_kis_roundtrip(self, symbol: str):
         """DB → KIS → DB 왕복 변환"""
         kis_symbol = to_kis_symbol(symbol)
         back_to_db = to_db_symbol(kis_symbol)
         assert back_to_db == symbol
 
-    @pytest.mark.parametrize("symbol", [
-        "AAPL",
-        "BRK.B",
-        "NVDA",
-        "TSLA",
-    ])
+    @pytest.mark.parametrize(
+        "symbol",
+        [
+            "AAPL",
+            "BRK.B",
+            "NVDA",
+            "TSLA",
+        ],
+    )
     def test_yahoo_roundtrip(self, symbol: str):
         """DB → Yahoo → DB 왕복 변환"""
         yahoo_symbol = to_yahoo_symbol(symbol)
@@ -119,14 +126,19 @@ class TestRoundTrip:
 class TestRealWorldSymbols:
     """실제 사용되는 심볼 테스트"""
 
-    @pytest.mark.parametrize("db_symbol,kis_symbol,yahoo_symbol", [
-        ("BRK.B", "BRK/B", "BRK-B"),  # 버크셔 해서웨이 B
-        ("BRK.A", "BRK/A", "BRK-A"),  # 버크셔 해서웨이 A
-        ("AAPL", "AAPL", "AAPL"),     # 애플 (구분자 없음)
-        ("NVDA", "NVDA", "NVDA"),     # 엔비디아 (구분자 없음)
-        ("CONY", "CONY", "CONY"),     # CONY ETF (구분자 없음)
-    ])
-    def test_symbol_conversions(self, db_symbol: str, kis_symbol: str, yahoo_symbol: str):
+    @pytest.mark.parametrize(
+        "db_symbol,kis_symbol,yahoo_symbol",
+        [
+            ("BRK.B", "BRK/B", "BRK-B"),  # 버크셔 해서웨이 B
+            ("BRK.A", "BRK/A", "BRK-A"),  # 버크셔 해서웨이 A
+            ("AAPL", "AAPL", "AAPL"),  # 애플 (구분자 없음)
+            ("NVDA", "NVDA", "NVDA"),  # 엔비디아 (구분자 없음)
+            ("CONY", "CONY", "CONY"),  # CONY ETF (구분자 없음)
+        ],
+    )
+    def test_symbol_conversions(
+        self, db_symbol: str, kis_symbol: str, yahoo_symbol: str
+    ):
         """실제 심볼 변환 검증"""
         assert to_kis_symbol(db_symbol) == kis_symbol
         assert to_yahoo_symbol(db_symbol) == yahoo_symbol

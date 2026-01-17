@@ -7,7 +7,43 @@ on:
     branches: [ main, develop ]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      PYTHON_VERSION: "3.14"
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@v3
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group dev
+
+    - name: Run Ruff linter
+      run: uv run ruff check app/ tests/
+
+    - name: Run Ruff formatter check
+      run: uv run ruff format --check app/ tests/
+
+    - name: Run Pyright
+      run: uv run pyright app/
+
   test:
+    needs: lint
     runs-on: ubuntu-latest
     strategy:
       matrix:

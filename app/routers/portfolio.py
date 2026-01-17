@@ -3,6 +3,7 @@ Portfolio Router
 
 통합 포트폴리오 API 엔드포인트
 """
+
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,9 +18,9 @@ from app.schemas.manual_holdings import (
     MergedPortfolioResponse,
     ReferencePricesResponse,
 )
-from app.services.merged_portfolio_service import MergedPortfolioService
 from app.services.kis import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
+from app.services.merged_portfolio_service import MergedPortfolioService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
@@ -145,9 +146,7 @@ async def get_reference_prices(
     service = MergedPortfolioService(db)
     kis_client = KISClient()
 
-    kis_holdings = await get_kis_holding_for_ticker(
-        kis_client, ticker, market_type
-    )
+    kis_holdings = await get_kis_holding_for_ticker(kis_client, ticker, market_type)
     if not kis_holdings.get("quantity"):
         kis_holdings = None
 

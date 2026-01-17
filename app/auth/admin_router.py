@@ -1,4 +1,5 @@
 """Admin router for user management."""
+
 import logging
 from typing import Annotated
 
@@ -8,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.constants import AUTH_REQUIRED_MESSAGE, ADMIN_REQUIRED_MESSAGE
+from app.auth.constants import ADMIN_REQUIRED_MESSAGE, AUTH_REQUIRED_MESSAGE
 from app.auth.role_hierarchy import has_min_role
 from app.auth.token_repository import revoke_all_refresh_tokens
 from app.auth.web_router import get_current_user_from_session, invalidate_user_cache
@@ -32,6 +33,7 @@ def _security_log_extra(request: Request, **kwargs) -> dict:
 
 class RoleUpdateRequest(BaseModel):
     """Request model for role update."""
+
     role: UserRole
 
 
@@ -77,9 +79,7 @@ async def users_management_page(
 ):
     """사용자 관리 페이지."""
     # Get all users
-    result = await db.execute(
-        select(User).order_by(User.created_at.desc())
-    )
+    result = await db.execute(select(User).order_by(User.created_at.desc()))
     users = result.scalars().all()
 
     return templates.TemplateResponse(
@@ -112,6 +112,7 @@ async def get_all_users(
 
     # Get total count
     from sqlalchemy import func
+
     count_result = await db.execute(select(func.count(User.id)))
     total = count_result.scalar()
 
@@ -204,7 +205,9 @@ async def update_user_role(
     try:
         await invalidate_user_cache(user.id)
     except Exception:
-        logger.warning("Failed to invalidate cache for user_id=%s", user.id, exc_info=True)
+        logger.warning(
+            "Failed to invalidate cache for user_id=%s", user.id, exc_info=True
+        )
 
     return {
         "id": user.id,
@@ -276,7 +279,9 @@ async def toggle_user_active(
     try:
         await invalidate_user_cache(user.id)
     except Exception:
-        logger.warning("Failed to invalidate cache for user_id=%s", user.id, exc_info=True)
+        logger.warning(
+            "Failed to invalidate cache for user_id=%s", user.id, exc_info=True
+        )
 
     logger.info(
         "User active status toggled by admin",

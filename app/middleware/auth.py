@@ -1,4 +1,5 @@
 """Authentication middleware for protecting web routes."""
+
 from typing import ClassVar
 
 from fastapi import Request
@@ -61,7 +62,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
     def _is_public_api_path(self, path: str) -> bool:
         """Check if API path is explicitly public."""
         return any(
-            path.startswith(public_api_path) for public_api_path in self.public_api_paths
+            path.startswith(public_api_path)
+            for public_api_path in self.public_api_paths
         )
 
     async def dispatch(self, request: Request, call_next):

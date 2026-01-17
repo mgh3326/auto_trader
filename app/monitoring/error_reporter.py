@@ -12,13 +12,12 @@ import hashlib
 import logging
 import re
 import traceback
-from typing import Dict, Optional
 
 import httpx
 from fastapi import Request
+from redis.asyncio import Redis
 
 from app.core.timezone import format_datetime
-from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +29,8 @@ def escape_markdown(text: str) -> str:
     """
     # 백틱(`) 안의 텍스트는 그대로 두고, 나머지만 이스케이프
     # 간단하게 모든 특수문자 이스케이프
-    escape_chars = r'_*`['
-    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
+    escape_chars = r"_*`["
+    return re.sub(f"([{re.escape(escape_chars)}])", r"\\\1", text)
 
 
 class ErrorReporter:
@@ -39,7 +38,7 @@ class ErrorReporter:
     Singleton error reporter with Telegram integration and Redis-based deduplication.
     """
 
-    _instance: Optional["ErrorReporter"] = None
+    _instance: ErrorReporter | None = None
     _initialized: bool = False
 
     def __new__(cls):
@@ -50,12 +49,12 @@ class ErrorReporter:
     def __init__(self):
         """Initialize ErrorReporter (only once due to singleton pattern)."""
         if not self._initialized:
-            self._bot_token: Optional[str] = None
-            self._chat_id: Optional[str] = None
+            self._bot_token: str | None = None
+            self._chat_id: str | None = None
             self._enabled: bool = False
             self._duplicate_window: int = 300  # 5 minutes
-            self._redis: Optional[Redis] = None
-            self._http_client: Optional[httpx.AsyncClient] = None
+            self._redis: Redis | None = None
+            self._http_client: httpx.AsyncClient | None = None
             ErrorReporter._initialized = True
 
     def configure(
@@ -156,9 +155,7 @@ class ErrorReporter:
                 return False
 
             # Set key with expiration
-            await self._redis.setex(
-                rate_limit_key, self._duplicate_window, "1"
-            )
+            await self._redis.setex(rate_limit_key, self._duplicate_window, "1")
             return True
 
         except Exception as e:
@@ -171,8 +168,8 @@ class ErrorReporter:
         error_type: str,
         error_message: str,
         stack_trace: str,
-        request_info: Optional[Dict] = None,
-        additional_context: Optional[Dict] = None,
+        request_info: dict | None = None,
+        additional_context: dict | None = None,
     ) -> str:
         """
         Format error message in markdown for Telegram.
@@ -208,7 +205,7 @@ class ErrorReporter:
             if "method" in request_info:
                 parts.append(f"  • Method: `{request_info['method']}`")
             if "url" in request_info:
-                safe_url = escape_markdown(str(request_info['url']))
+                safe_url = escape_markdown(str(request_info["url"]))
                 parts.append(f"  • URL: {safe_url}")
             if "client" in request_info:
                 parts.append(f"  • Client: `{request_info['client']}`")
@@ -257,8 +254,8 @@ class ErrorReporter:
     async def send_error_to_telegram(
         self,
         error: Exception,
-        request: Optional[Request] = None,
-        additional_context: Optional[Dict] = None,
+        request: Request | None = None,
+        additional_context: dict | None = None,
     ) -> bool:
         """
         Send error to Telegram with duplicate prevention.
