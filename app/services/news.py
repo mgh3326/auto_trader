@@ -258,7 +258,17 @@ class NewsService:
                         pub_date = dt.strftime("%m/%d")
                     except ValueError:
                         pub_date = pub_date[:10]
+
+                # 제목
                 lines.append(f"- [{pub_date}] {n['title']}")
+
+                # 요약(description)이 있으면 추가
+                description = n.get("description", "").strip()
+                if description:
+                    # 너무 길면 잘라서 표시 (최대 100자)
+                    if len(description) > 100:
+                        description = description[:100] + "..."
+                    lines.append(f"  → {description}")
 
         if not lines:
             return ""
