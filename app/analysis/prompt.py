@@ -386,6 +386,144 @@ def format_ma_line(
     return f"- {label_prefix} {labels} : {' / '.join(values)}{(' ' + suffix) if suffix else ''}"
 
 
+def calculate_trend_info(df: pd.DataFrame, current_price: float) -> dict:
+    """
+    시장 추세 정보를 계산합니다.
+
+    Returns:
+        dict: {
+            'ma_alignment': '정배열' | '역배열' | '혼조',
+            'trend_direction': '상승' | '하락' | '횡보',
+            'price_vs_ma': dict,  # 각 MA 대비 현재가 위치
+            'trend_strength': '강함' | '보통' | '약함'
+        }
+    """
+    latest = df.iloc[-1]
+
+    # MA 값들 가져오기
+    ma_values = {}
+    for w in [5, 20, 60, 120, 200]:
+        col = f"close_ma{w}"
+        if col in df.columns and pd.notna(latest.get(col)):
+            ma_values[w] = latest[col]
+
+    if len(ma_values) < 3:
+        return {
+            'ma_alignment': '데이터 부족',
+            'trend_direction': '판단 불가',
+            'price_vs_ma': {},
+            'trend_strength': '판단 불가'
+        }
+
+    # 현재가가 각 MA 위/아래 확인
+    price_vs_ma = {}
+    above_count = 0
+    below_count = 0
+    for w, ma_val in ma_values.items():
+        if current_price > ma_val:
+            price_vs_ma[w] = 'above'
+            above_count += 1
+        else:
+            price_vs_ma[w] = 'below'
+            below_count += 1
+
+    # MA 배열 판단 (정배열: 단기 > 장기, 역배열: 단기 < 장기)
+    sorted_windows = sorted(ma_values.keys())
+    ascending_count = 0  # 정배열 (단기 > 장기)
+    descending_count = 0  # 역배열 (단기 < 장기)
+
+    for i in range(len(sorted_windows) - 1):
+        w1, w2 = sorted_windows[i], sorted_windows[i + 1]
+        if ma_values[w1] > ma_values[w2]:
+            ascending_count += 1
+        elif ma_values[w1] < ma_values[w2]:
+            descending_count += 1
+
+    total_pairs = len(sorted_windows) - 1
+    if ascending_count == total_pairs:
+        ma_alignment = '정배열'
+    elif descending_count == total_pairs:
+        ma_alignment = '역배열'
+    else:
+        ma_alignment = '혼조'
+
+    # 추세 방향 판단
+    if above_count >= 4:
+        trend_direction = '상승'
+    elif below_count >= 4:
+        trend_direction = '하락'
+    else:
+        trend_direction = '횡보'
+
+    # 추세 강도 판단
+    if ma_alignment in ['정배열', '역배열'] and (above_count == len(ma_values) or below_count == len(ma_values)):
+        trend_strength = '강함'
+    elif ma_alignment == '혼조':
+        trend_strength = '약함'
+    else:
+        trend_strength = '보통'
+
+    return {
+        'ma_alignment': ma_alignment,
+        'trend_direction': trend_direction,
+        'price_vs_ma': price_vs_ma,
+        'trend_strength': trend_strength,
+        'above_ma_count': above_count,
+        'total_ma_count': len(ma_values)
+    }
+
+
+def calculate_position_pnl(position_info: dict, current_price: float) -> dict:
+    """
+    보유 포지션의 손익률을 계산합니다.
+
+    Returns:
+        dict: {
+            'pnl_percent': float,  # 손익률 (%)
+            'pnl_amount': float,   # 손익 금액
+            'status': '수익' | '손실' | '본전',
+            'risk_level': '안전' | '주의' | '위험' | '심각'
+        }
+    """
+    if not position_info:
+        return None
+
+    avg_price = float(position_info.get("avg_price", 0))
+    quantity = float(position_info.get("quantity", 0))
+
+    if avg_price <= 0 or quantity <= 0:
+        return None
+
+    # 손익 계산
+    pnl_percent = ((current_price - avg_price) / avg_price) * 100
+    pnl_amount = (current_price - avg_price) * quantity
+
+    # 상태 판단
+    if pnl_percent > 0.5:
+        status = '수익'
+    elif pnl_percent < -0.5:
+        status = '손실'
+    else:
+        status = '본전'
+
+    # 리스크 레벨 판단
+    if pnl_percent >= 0:
+        risk_level = '안전'
+    elif pnl_percent >= -5:
+        risk_level = '주의'
+    elif pnl_percent >= -10:
+        risk_level = '위험'
+    else:
+        risk_level = '심각'
+
+    return {
+        'pnl_percent': pnl_percent,
+        'pnl_amount': pnl_amount,
+        'status': status,
+        'risk_level': risk_level
+    }
+
+
 def build_json_prompt(
     df: pd.DataFrame,
     ticker: str,
@@ -401,32 +539,102 @@ def build_json_prompt(
     """
     # 기본 프롬프트 생성
     original_prompt = build_prompt(
-        df, ticker, stock_name, currency, unit_shares, 
+        df, ticker, stock_name, currency, unit_shares,
         fundamental_info, position_info, minute_candles
     )
-    
+
+    # 현재가 추출
+    current_price = float(df.iloc[-1]["close"])
+
+    # MA 컬럼 추가 (추세 분석용)
+    df_with_ma = add_ma_multi(df, columns=("close",), windows=(5, 20, 60, 120, 200))
+
+    # 시장 추세 분석
+    trend_info = calculate_trend_info(df_with_ma, current_price)
+
+    # 포지션 손익 분석
+    pnl_info = calculate_position_pnl(position_info, current_price) if position_info else None
+
+    # 추세 분석 섹션 생성
+    trend_section = f"""
+[시장 추세 분석]
+- MA 배열: {trend_info['ma_alignment']}
+- 추세 방향: {trend_info['trend_direction']}
+- 추세 강도: {trend_info['trend_strength']}
+- 현재가 위치: {trend_info['above_ma_count']}/{trend_info['total_ma_count']} MA 위"""
+
+    # 포지션 손익 섹션 생성
+    pnl_section = ""
+    if pnl_info:
+        pnl_section = f"""
+
+[포지션 손익 현황]
+- 현재 손익률: {pnl_info['pnl_percent']:+.2f}%
+- 손익 금액: {format_decimal(pnl_info['pnl_amount'], currency)}{currency}
+- 상태: {pnl_info['status']}
+- 리스크 레벨: {pnl_info['risk_level']}"""
+
     # JSON 형식 프롬프트로 변환
     json_prompt = f"""
 {original_prompt}
+{trend_section}{pnl_section}
 
-당신은 전문 주식 분석가입니다. 위 정보를 바탕으로 투자 결정을 내려주세요.
+당신은 **추세 추종 전략**을 사용하는 전문 트레이더입니다.
+
+## 핵심 투자 원칙
+
+### 1. 추세 추종 원칙 (가장 중요)
+- **하락 추세(역배열)에서는 신규 매수 금지**: "떨어지는 칼날을 잡지 마라"
+- **상승 추세(정배열)에서만 매수 고려**: 추세를 따라가라
+- **추세 전환 확인 전까지 역방향 진입 금지**
+
+### 2. 손익 관리 원칙
+- **-10% 이상 손실 시**: 손절 강력 권고 (추가 손실 방지)
+- **-5% ~ -10% 손실 시**: 추가 매수 금지, 반등 시 일부 정리 고려
+- **수익 중일 때**: 추세가 유지되면 보유, 추세 전환 시 익절
+
+### 3. 결정 기준
+
+**매수 조건 (모두 충족 시에만):**
+- MA 배열이 정배열 또는 정배열로 전환 중
+- 현재가가 최소 2개 이상의 주요 MA 위에 위치
+- RSI가 30~70 사이 (과매수/과매도 아님)
+- 기존 포지션이 없거나, 있다면 수익 중
+
+**관망 조건:**
+- MA 배열이 혼조 상태
+- 추세 방향이 불명확
+- 기존 포지션이 -5% ~ 0% 손실 구간
+
+**매도 조건 (하나라도 해당 시):**
+- MA 배열이 역배열이고 손실 중
+- 손실률이 -10% 이상 (손절)
+- 수익 중이나 추세가 하락 전환
+
+## 현재 상황 요약
+- MA 배열: {trend_info['ma_alignment']}
+- 추세: {trend_info['trend_direction']} (강도: {trend_info['trend_strength']})
+{f"- 포지션 손익: {pnl_info['pnl_percent']:+.2f}% ({pnl_info['risk_level']})" if pnl_info else "- 포지션: 없음"}
 
 **가격 용어 정의:**
-- **적절한 매수 범위**: 현재 시점에서 매수하기에 적정한 가격 범위 (현재가 기준)
-- **적절한 매도 범위**: 보유중일 때 매도하기에 적정한 가격 범위 (단기 목표)
-- **매수 희망 범위**: 조금 더 저렴하게 사고 싶은 이상적인 매수 가격 범위 (지정가 주문용)
-- **매도 목표 범위**: 최종적으로 도달하기를 기대하는 매도 가격 범위 (장기 목표)
+- **적절한 매수 범위**: 현재 시점에서 매수하기에 적정한 가격 범위
+- **적절한 매도 범위**: 단기 목표 매도 가격 범위
+- **매수 희망 범위**: 지정가 매수 주문용 (더 저렴한 가격)
+- **매도 목표 범위**: 장기 목표 매도 가격 범위
 
-**중요**: 매수 희망가 ≤ 적절한 매수가, 적절한 매도가 ≤ 매도 목표가 관계를 유지하세요.
+**중요**:
+- 매수 희망가 ≤ 적절한 매수가
+- 적절한 매도가 ≤ 매도 목표가
+- **역배열 + 손실 중이면 반드시 "매도" 권고**
 
 반드시 아래 JSON 형식으로만 답변하세요:
 
 {{
     "decision": "매수/관망/매도 중 하나",
     "reasons": [
-        "근거1 (기술적 분석 관점)",
-        "근거2 (거래량 또는 모멘텀 관점)",
-        "근거3 (위험도 또는 타이밍 관점)"
+        "근거1 (추세 분석 관점)",
+        "근거2 (기술적 지표 관점)",
+        "근거3 (리스크 관리 관점)"
     ],
     "price_analysis": {{
         "appropriate_buy_range": {{"min": 숫자, "max": 숫자}},
@@ -434,7 +642,7 @@ def build_json_prompt(
         "buy_hope_range": {{"min": 숫자, "max": 숫자}},
         "sell_target_range": {{"min": 숫자, "max": 숫자}}
     }},
-    "detailed_text": "**매수**\\n\\n**근거:**\\n1. 근거1\\n2. 근거2\\n3. 근거3\\n\\n**가격 제안:**\\n* **적절한 매수 가격:** X원 ~ Y원\\n* **적절한 매도 가격:** X원 ~ Y원\\n* **매수 희망가:** X원 ~ Y원\\n* **매도 목표가:** X원 ~ Y원",
+    "detailed_text": "**결정**\\n\\n**근거:**\\n1. 근거1\\n2. 근거2\\n3. 근거3\\n\\n**가격 제안:**\\n* **적절한 매수 가격:** X원 ~ Y원\\n* **적절한 매도 가격:** X원 ~ Y원\\n* **매수 희망가:** X원 ~ Y원\\n* **매도 목표가:** X원 ~ Y원",
     "confidence": 숫자0부터100
 }}
 
