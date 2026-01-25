@@ -1,6 +1,7 @@
 """
 Integration tests for auto-trader application.
 """
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -127,9 +128,7 @@ class TestExternalServiceMocking:
     @pytest.mark.asyncio
     @patch("app.services.kis.KISClient._ensure_token", new_callable=AsyncMock)
     @patch("app.services.kis.httpx.AsyncClient")
-    async def test_kis_service_mocking(
-        self, mock_kis_client, mock_ensure_token
-    ):
+    async def test_kis_service_mocking(self, mock_kis_client, mock_ensure_token):
         """Test KIS service mocking."""
         mock_instance = mock_kis_client.return_value.__aenter__.return_value
 

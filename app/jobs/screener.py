@@ -2,7 +2,7 @@ import pandas as pd
 
 from app.core.config import settings
 from app.services.kis import kis
-from app.services.telegram import send
+from app.services.telegram import send  # type: ignore[import-not-found]
 
 
 async def screen_once_async():

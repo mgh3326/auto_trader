@@ -6,7 +6,8 @@ KIS 국내주식 자동 매매 웹 인터페이스 라우터
 """
 
 import logging
-from fastapi import APIRouter, Depends, Request, HTTPException
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,7 +31,7 @@ async def kis_domestic_trading_dashboard(request: Request):
         {
             "request": request,
             "user": user,
-        }
+        },
     )
 
 
@@ -55,40 +56,46 @@ async def get_my_domestic_stocks(
 
         processed_stocks = []
         for holding in merged_holdings:
-            processed_stocks.append({
-                "code": holding.ticker,
-                "name": holding.name,
-                "quantity": holding.total_quantity,
-                "current_price": holding.current_price,
-                "avg_price": holding.combined_avg_price,
-                "profit_rate": holding.profit_rate,
-                "evaluation": holding.evaluation,
-                "profit_loss": holding.profit_loss,
-                "analysis_id": holding.analysis_id,
-                "last_analysis_at": holding.last_analysis_at,
-                "last_analysis_decision": holding.last_analysis_decision,
-                "analysis_confidence": holding.analysis_confidence,
-                # Symbol trade settings
-                "settings_quantity": holding.settings_quantity,
-                "settings_price_levels": holding.settings_price_levels,
-                "settings_note": None,
-                "settings_active": holding.settings_active,
-                # 브로커별 보유 정보 (UI에서 표시 가능)
-                "kis_quantity": holding.kis_quantity,
-                "kis_avg_price": holding.kis_avg_price,
-                "toss_quantity": holding.toss_quantity,
-                "toss_avg_price": holding.toss_avg_price,
-                "holdings": [
-                    {"broker": h.broker, "quantity": h.quantity, "avg_price": h.avg_price}
-                    for h in holding.holdings
-                ],
-            })
+            processed_stocks.append(
+                {
+                    "code": holding.ticker,
+                    "name": holding.name,
+                    "quantity": holding.total_quantity,
+                    "current_price": holding.current_price,
+                    "avg_price": holding.combined_avg_price,
+                    "profit_rate": holding.profit_rate,
+                    "evaluation": holding.evaluation,
+                    "profit_loss": holding.profit_loss,
+                    "analysis_id": holding.analysis_id,
+                    "last_analysis_at": holding.last_analysis_at,
+                    "last_analysis_decision": holding.last_analysis_decision,
+                    "analysis_confidence": holding.analysis_confidence,
+                    # Symbol trade settings
+                    "settings_quantity": holding.settings_quantity,
+                    "settings_price_levels": holding.settings_price_levels,
+                    "settings_note": None,
+                    "settings_active": holding.settings_active,
+                    # 브로커별 보유 정보 (UI에서 표시 가능)
+                    "kis_quantity": holding.kis_quantity,
+                    "kis_avg_price": holding.kis_avg_price,
+                    "toss_quantity": holding.toss_quantity,
+                    "toss_avg_price": holding.toss_avg_price,
+                    "holdings": [
+                        {
+                            "broker": h.broker,
+                            "quantity": h.quantity,
+                            "avg_price": h.avg_price,
+                        }
+                        for h in holding.holdings
+                    ],
+                }
+            )
 
         return {
             "success": True,
             "krw_balance": krw_balance,
             "total_stocks": len(processed_stocks),
-            "stocks": processed_stocks
+            "stocks": processed_stocks,
         }
 
     except Exception as e:
@@ -97,6 +104,7 @@ async def get_my_domestic_stocks(
 
 
 from app.core.celery_app import celery_app
+
 
 @router.post("/api/analyze-stocks")
 async def analyze_my_domestic_stocks():
@@ -107,7 +115,7 @@ async def analyze_my_domestic_stocks():
         return {
             "success": True,
             "message": "국내 주식 분석이 시작되었습니다.",
-            "task_id": async_result.id
+            "task_id": async_result.id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -125,7 +133,7 @@ async def get_analyze_task_status(task_id: str):
         "ready": result.ready(),
     }
 
-    if result.state == 'PROGRESS':
+    if result.state == "PROGRESS":
         response["progress"] = result.info
     elif result.successful():
         try:
@@ -146,7 +154,7 @@ async def execute_buy_orders():
         return {
             "success": True,
             "message": "매수 주문이 시작되었습니다.",
-            "task_id": async_result.id
+            "task_id": async_result.id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -160,7 +168,7 @@ async def execute_sell_orders():
         return {
             "success": True,
             "message": "매도 주문이 시작되었습니다.",
-            "task_id": async_result.id
+            "task_id": async_result.id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -170,7 +178,11 @@ async def execute_sell_orders():
 async def run_per_stock_automation():
     """보유 종목별 자동 실행 (분석 -> 매수 -> 매도)"""
     task = celery_app.send_task("kis.run_per_domestic_stock_automation")
-    return {"success": True, "message": "종목별 자동 실행이 시작되었습니다.", "task_id": task.id}
+    return {
+        "success": True,
+        "message": "종목별 자동 실행이 시작되었습니다.",
+        "task_id": task.id,
+    }
 
 
 @router.post("/api/analyze-stock/{symbol}")

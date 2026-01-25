@@ -3,8 +3,10 @@ Tests for Toss notification integration in KIS automation tasks.
 
 종목별 자동 실행 시 토스 수동 잔고가 있을 때 텔레그램 메시지 발송 테스트
 """
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture
@@ -53,24 +55,26 @@ class TestDomesticStockTossNotification:
         """
         국내 주식 분석 시 buy 결정이고 토스 잔고가 있으면 알림을 보내야 함
         """
-        from app.tasks import kis as kis_tasks
         from app.models.manual_holdings import MarketType
+        from app.tasks import kis as kis_tasks
 
         # Mock analyzer result
         mock_stock_analysis_result.decision = "buy"
 
-        with patch('app.tasks.kis.KISClient') as MockKIS, \
-             patch('app.tasks.kis.KISAnalyzer') as MockAnalyzer, \
-             patch('app.tasks.kis.get_trade_notifier') as mock_get_notifier, \
-             patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
-             patch('app.services.toss_notification_service.send_toss_notification_if_needed') as mock_send_toss:
-
+        with (
+            patch("app.tasks.kis.KISClient") as MockKIS,
+            patch("app.tasks.kis.KISAnalyzer") as MockAnalyzer,
+            patch("app.tasks.kis.get_trade_notifier") as mock_get_notifier,
+            patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
+            patch(
+                "app.services.toss_notification_service.send_toss_notification_if_needed"
+            ) as mock_send_toss,
+        ):
             # Setup KIS mock
             mock_kis = MockKIS.return_value
-            mock_kis.fetch_fundamental_info = AsyncMock(return_value={
-                "종목명": "삼성전자",
-                "현재가": 70000
-            })
+            mock_kis.fetch_fundamental_info = AsyncMock(
+                return_value={"종목명": "삼성전자", "현재가": 70000}
+            )
 
             # Setup analyzer mock
             mock_analyzer_instance = MockAnalyzer.return_value
@@ -119,23 +123,24 @@ class TestDomesticStockTossNotification:
         국내 주식 분석 시 sell 결정이고 토스 잔고가 있으면 알림을 보내야 함
         """
         from app.tasks import kis as kis_tasks
-        from app.models.manual_holdings import MarketType
 
         # Mock analyzer result
         mock_stock_analysis_result.decision = "sell"
 
-        with patch('app.tasks.kis.KISClient') as MockKIS, \
-             patch('app.tasks.kis.KISAnalyzer') as MockAnalyzer, \
-             patch('app.tasks.kis.get_trade_notifier') as mock_get_notifier, \
-             patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
-             patch('app.services.toss_notification_service.send_toss_notification_if_needed') as mock_send_toss:
-
+        with (
+            patch("app.tasks.kis.KISClient") as MockKIS,
+            patch("app.tasks.kis.KISAnalyzer") as MockAnalyzer,
+            patch("app.tasks.kis.get_trade_notifier") as mock_get_notifier,
+            patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
+            patch(
+                "app.services.toss_notification_service.send_toss_notification_if_needed"
+            ) as mock_send_toss,
+        ):
             # Setup KIS mock
             mock_kis = MockKIS.return_value
-            mock_kis.fetch_fundamental_info = AsyncMock(return_value={
-                "종목명": "카카오",
-                "현재가": 50000
-            })
+            mock_kis.fetch_fundamental_info = AsyncMock(
+                return_value={"종목명": "카카오", "현재가": 50000}
+            )
 
             # Setup analyzer mock
             mock_analyzer_instance = MockAnalyzer.return_value
@@ -169,7 +174,9 @@ class TestDomesticStockTossNotification:
 
             call_kwargs = mock_send_toss.call_args.kwargs
             assert call_kwargs["decision"] == "sell"
-            assert call_kwargs["recommended_sell_price"] == 75000  # appropriate_sell_min
+            assert (
+                call_kwargs["recommended_sell_price"] == 75000
+            )  # appropriate_sell_min
 
     @pytest.mark.asyncio
     async def test_analyze_domestic_stock_no_toss_notification_on_hold(
@@ -183,18 +190,20 @@ class TestDomesticStockTossNotification:
         # Mock analyzer result
         mock_stock_analysis_result.decision = "hold"
 
-        with patch('app.tasks.kis.KISClient') as MockKIS, \
-             patch('app.tasks.kis.KISAnalyzer') as MockAnalyzer, \
-             patch('app.tasks.kis.get_trade_notifier') as mock_get_notifier, \
-             patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
-             patch('app.services.toss_notification_service.send_toss_notification_if_needed') as mock_send_toss:
-
+        with (
+            patch("app.tasks.kis.KISClient") as MockKIS,
+            patch("app.tasks.kis.KISAnalyzer") as MockAnalyzer,
+            patch("app.tasks.kis.get_trade_notifier") as mock_get_notifier,
+            patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
+            patch(
+                "app.services.toss_notification_service.send_toss_notification_if_needed"
+            ) as mock_send_toss,
+        ):
             # Setup mocks
             mock_kis = MockKIS.return_value
-            mock_kis.fetch_fundamental_info = AsyncMock(return_value={
-                "종목명": "NAVER",
-                "현재가": 180000
-            })
+            mock_kis.fetch_fundamental_info = AsyncMock(
+                return_value={"종목명": "NAVER", "현재가": 180000}
+            )
 
             mock_analyzer_instance = MockAnalyzer.return_value
             mock_analyzer_instance.analyze_stock_json = AsyncMock(
@@ -235,18 +244,21 @@ class TestOverseasStockTossNotification:
         """
         해외 주식 분석 시 buy 결정이고 토스 잔고가 있으면 알림을 보내야 함
         """
-        from app.tasks import kis as kis_tasks
         from app.models.manual_holdings import MarketType
+        from app.tasks import kis as kis_tasks
 
         # Mock analyzer result
         mock_stock_analysis_result.decision = "buy"
 
-        with patch('app.analysis.service_analyzers.YahooAnalyzer') as MockAnalyzer, \
-             patch('app.services.yahoo.fetch_price') as mock_fetch_price, \
-             patch('app.tasks.kis.get_trade_notifier') as mock_get_notifier, \
-             patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
-             patch('app.services.toss_notification_service.send_toss_notification_if_needed') as mock_send_toss:
-
+        with (
+            patch("app.analysis.service_analyzers.YahooAnalyzer") as MockAnalyzer,
+            patch("app.services.yahoo.fetch_price") as mock_fetch_price,
+            patch("app.tasks.kis.get_trade_notifier") as mock_get_notifier,
+            patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
+            patch(
+                "app.services.toss_notification_service.send_toss_notification_if_needed"
+            ) as mock_send_toss,
+        ):
             # Setup analyzer mock
             mock_analyzer_instance = MockAnalyzer.return_value
             mock_analyzer_instance.analyze_stock_json = AsyncMock(
@@ -256,6 +268,7 @@ class TestOverseasStockTossNotification:
 
             # Setup Yahoo price mock (returns DataFrame)
             import pandas as pd
+
             price_df = pd.DataFrame([{"close": 175.50}])
             mock_fetch_price.return_value = price_df
 
@@ -301,12 +314,15 @@ class TestOverseasStockTossNotification:
         # Mock analyzer result
         mock_stock_analysis_result.decision = "sell"
 
-        with patch('app.analysis.service_analyzers.YahooAnalyzer') as MockAnalyzer, \
-             patch('app.services.yahoo.fetch_price') as mock_fetch_price, \
-             patch('app.tasks.kis.get_trade_notifier') as mock_get_notifier, \
-             patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
-             patch('app.services.toss_notification_service.send_toss_notification_if_needed') as mock_send_toss:
-
+        with (
+            patch("app.analysis.service_analyzers.YahooAnalyzer") as MockAnalyzer,
+            patch("app.services.yahoo.fetch_price") as mock_fetch_price,
+            patch("app.tasks.kis.get_trade_notifier") as mock_get_notifier,
+            patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
+            patch(
+                "app.services.toss_notification_service.send_toss_notification_if_needed"
+            ) as mock_send_toss,
+        ):
             # Setup analyzer mock
             mock_analyzer_instance = MockAnalyzer.return_value
             mock_analyzer_instance.analyze_stock_json = AsyncMock(
@@ -316,6 +332,7 @@ class TestOverseasStockTossNotification:
 
             # Setup Yahoo price mock (returns DataFrame)
             import pandas as pd
+
             price_df = pd.DataFrame([{"close": 250.00}])
             mock_fetch_price.return_value = price_df
 
@@ -344,7 +361,9 @@ class TestOverseasStockTossNotification:
 
             call_kwargs = mock_send_toss.call_args.kwargs
             assert call_kwargs["decision"] == "sell"
-            assert call_kwargs["recommended_sell_price"] == 75000  # appropriate_sell_min
+            assert (
+                call_kwargs["recommended_sell_price"] == 75000
+            )  # appropriate_sell_min
 
 
 class TestTossNotificationIntegration:
@@ -355,9 +374,9 @@ class TestTossNotificationIntegration:
         """
         국내 주식 단일 분석 시 토스 알림이 전송되는지 확인
         """
-        from app.tasks import kis as kis_tasks
-        from app.models.manual_holdings import MarketType
         from app.models.analysis import StockAnalysisResult
+        from app.models.manual_holdings import MarketType
+        from app.tasks import kis as kis_tasks
 
         # Create result with all required fields
         result = StockAnalysisResult(
@@ -373,28 +392,34 @@ class TestTossNotificationIntegration:
             sell_target_max=82000,
             model_name="gemini-2.5-pro",
             prompt="test",
-            reasons=["기술적 분석 상 매수 시점"]
+            reasons=["기술적 분석 상 매수 시점"],
         )
 
-        with patch('app.tasks.kis.KISClient') as MockKIS, \
-             patch('app.tasks.kis.KISAnalyzer') as MockAnalyzer, \
-             patch('app.tasks.kis.get_trade_notifier') as mock_notifier, \
-             patch('app.core.db.AsyncSessionLocal') as mock_session_cls, \
-             patch('app.services.toss_notification_service.send_toss_notification_if_needed') as mock_send_toss:
-
+        with (
+            patch("app.tasks.kis.KISClient") as MockKIS,
+            patch("app.tasks.kis.KISAnalyzer") as MockAnalyzer,
+            patch("app.tasks.kis.get_trade_notifier") as mock_notifier,
+            patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
+            patch(
+                "app.services.toss_notification_service.send_toss_notification_if_needed"
+            ) as mock_send_toss,
+        ):
             # Setup mocks
             mock_kis = MockKIS.return_value
-            mock_kis.fetch_fundamental_info = AsyncMock(return_value={
-                "종목명": "삼성전자",
-                "현재가": 70000
-            })
+            mock_kis.fetch_fundamental_info = AsyncMock(
+                return_value={"종목명": "삼성전자", "현재가": 70000}
+            )
 
             mock_analyzer = MockAnalyzer.return_value
-            mock_analyzer.analyze_stock_json = AsyncMock(return_value=(result, "gemini-2.5-pro"))
+            mock_analyzer.analyze_stock_json = AsyncMock(
+                return_value=(result, "gemini-2.5-pro")
+            )
             mock_analyzer.close = AsyncMock(return_value=None)
 
             mock_notifier_instance = MagicMock()
-            mock_notifier_instance.notify_analysis_complete = AsyncMock(return_value=True)
+            mock_notifier_instance.notify_analysis_complete = AsyncMock(
+                return_value=True
+            )
             mock_notifier.return_value = mock_notifier_instance
 
             mock_session = MagicMock()

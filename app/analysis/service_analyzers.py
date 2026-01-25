@@ -1,5 +1,4 @@
 import time
-from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -42,9 +41,10 @@ api_call_duration = _meter.create_histogram(
 
 class UpbitAnalyzer(Analyzer):
     """Upbit 암호화폐 분석기"""
+
     # 상수를 클래스 속성으로 정의합니다.
     MIN_TRADE_THRESHOLD = 1000  # 1000원 미만은 거래 불가로 간주
-    
+
     def __init__(self, api_key=None):
         super().__init__(api_key)
         self._tradable_coins_map = None  # 캐시용 인스턴스 변수
@@ -64,14 +64,14 @@ class UpbitAnalyzer(Analyzer):
             return estimated_value >= UpbitAnalyzer.MIN_TRADE_THRESHOLD
         except (ValueError, KeyError, TypeError):
             return False
-    
+
     async def _get_tradable_coins_map(self, force_refresh: bool = False) -> dict:
         """
         거래 가능한 코인 맵을 가져오거나 캐시에서 반환
-        
+
         Args:
             force_refresh: True일 경우 캐시를 무시하고 새로 가져옴
-            
+
         Returns:
             심볼별 코인 정보 딕셔너리
         """
@@ -79,47 +79,51 @@ class UpbitAnalyzer(Analyzer):
             try:
                 my_coins = await upbit.fetch_my_coins()
                 self._tradable_coins_map = {
-                    f"KRW-{coin['currency']}": coin for coin in my_coins
+                    f"KRW-{coin['currency']}": coin
+                    for coin in my_coins
                     if coin.get("currency") != "KRW"  # 원화 제외
                     and self.is_tradable(coin)  # 최소 평가액 이상
-                    and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS  # KRW 마켓에서 거래 가능
+                    and coin.get("currency")
+                    in upbit_pairs.KRW_TRADABLE_COINS  # KRW 마켓에서 거래 가능
                 }
             except Exception as e:
                 print(f"보유 자산 정보를 가져오는 데 실패했습니다: {e}")
                 self._tradable_coins_map = {}
-        
+
         return self._tradable_coins_map
-    
-    def _create_position_info(self, my_coin: dict) -> dict:
+
+    def _create_position_info(self, my_coin: dict | None) -> dict | None:
         """
         코인 정보를 position_info 형태로 변환
-        
+
         Args:
             my_coin: 보유 코인 정보
-            
+
         Returns:
-            position_info 딕셔너리
+            position_info 딕셔너리 또는 None
         """
         if not my_coin:
             return None
-            
+
         return {
             "quantity": my_coin.get("balance"),
             "avg_price": my_coin.get("avg_buy_price"),
             "total_value": (
-                float(my_coin.get("balance", 0)) * float(my_coin.get("avg_buy_price", 0))
-                if my_coin.get("balance") and my_coin.get("avg_buy_price") else None
+                float(my_coin.get("balance", 0))
+                * float(my_coin.get("avg_buy_price", 0))
+                if my_coin.get("balance") and my_coin.get("avg_buy_price")
+                else None
             ),
             "locked_quantity": my_coin.get("locked"),
         }
-    
+
     async def _collect_coin_data(self, stock_symbol: str):
         """
         코인 데이터 수집 (OHLCV, 현재가, 기본정보, 분봉)
-        
+
         Args:
             stock_symbol: 코인 심볼 (예: KRW-BTC)
-            
+
         Returns:
             (df_merged, fundamental_info, minute_candles) 튜플
         """
@@ -127,18 +131,18 @@ class UpbitAnalyzer(Analyzer):
         df_historical = await upbit.fetch_ohlcv(stock_symbol, days=200)
         df_current = await upbit.fetch_price(stock_symbol)
         fundamental_info = await upbit.fetch_fundamental_info(stock_symbol)
-        
+
         # 분봉 데이터 수집
         minute_candles = {}
         try:
             # 60분 캔들 (최근 12개)
             df_60min = await upbit.fetch_hourly_candles(stock_symbol, count=12)
             minute_candles["60min"] = df_60min
-            
+
             # 5분 캔들 (최근 12개)
             df_5min = await upbit.fetch_5min_candles(stock_symbol, count=12)
             minute_candles["5min"] = df_5min
-            
+
             # 1분 캔들 (최근 10개)
             df_1min = await upbit.fetch_1min_candles(stock_symbol, count=10)
             minute_candles["1min"] = df_1min
@@ -150,22 +154,22 @@ class UpbitAnalyzer(Analyzer):
         df_merged = DataProcessor.merge_historical_and_current(
             df_historical, df_current
         )
-        
+
         return df_merged, fundamental_info, minute_candles
 
-    async def analyze_coins(self, coin_names: List[str]) -> None:
+    async def analyze_coins(self, coin_names: list[str]) -> None:
         """여러 코인을 순차적으로 분석"""
         await upbit_pairs.prime_upbit_constants()
-        
+
         # 보유 코인 정보를 한 번만 가져와서 캐시
         tradable_coins_map = await self._get_tradable_coins_map()
-        
+
         for coin_name in coin_names:
             stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
             if not stock_symbol:
                 print(f"코인명을 찾을 수 없음: {coin_name}")
                 continue
-            
+
             # 캐시된 정보에서 코인 조회
             my_coin = tradable_coins_map.get(stock_symbol)
             position_info = self._create_position_info(my_coin)
@@ -173,7 +177,9 @@ class UpbitAnalyzer(Analyzer):
             print(f"\n=== {coin_name} ({stock_symbol}) 분석 시작 ===")
 
             # 데이터 수집
-            df_merged, fundamental_info, minute_candles = await self._collect_coin_data(stock_symbol)
+            df_merged, fundamental_info, minute_candles = await self._collect_coin_data(
+                stock_symbol
+            )
 
             # 분석 및 저장
             result, model_name = await self.analyze_and_save(
@@ -191,19 +197,19 @@ class UpbitAnalyzer(Analyzer):
             print(f"분석 완료: {coin_name}")
             print(f"결과: {result[:100]}...")
 
-    async def analyze_coins_json(self, coin_names: List[str]) -> None:
+    async def analyze_coins_json(self, coin_names: list[str]) -> None:
         """여러 코인을 순차적으로 JSON 형식으로 분석"""
         await upbit_pairs.prime_upbit_constants()
-        
+
         # 보유 코인 정보를 한 번만 가져와서 캐시
         tradable_coins_map = await self._get_tradable_coins_map()
-            
+
         for coin_name in coin_names:
             stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
             if not stock_symbol:
                 print(f"코인명을 찾을 수 없음: {coin_name}")
                 continue
-                
+
             # 캐시된 정보에서 코인 조회
             my_coin = tradable_coins_map.get(stock_symbol)
             position_info = self._create_position_info(my_coin)
@@ -211,7 +217,9 @@ class UpbitAnalyzer(Analyzer):
             print(f"\n=== {coin_name} ({stock_symbol}) JSON 분석 시작 ===")
 
             # 데이터 수집
-            df_merged, fundamental_info, minute_candles = await self._collect_coin_data(stock_symbol)
+            df_merged, fundamental_info, minute_candles = await self._collect_coin_data(
+                stock_symbol
+            )
 
             # JSON 형식으로 분석 및 저장
             result, model_name = await self.analyze_and_save_json(
@@ -227,13 +235,15 @@ class UpbitAnalyzer(Analyzer):
             )
 
             print(f"JSON 분석 완료: {coin_name}")
-            if hasattr(result, 'decision'):
+            if hasattr(result, "decision"):
                 print(f"결정: {result.decision}, 신뢰도: {result.confidence}%")
-                print(f"매수 범위: {result.price_analysis.appropriate_buy_range.min:,.0f}원 ~ {result.price_analysis.appropriate_buy_range.max:,.0f}원")
+                print(
+                    f"매수 범위: {result.price_analysis.appropriate_buy_range.min:,.0f}원 ~ {result.price_analysis.appropriate_buy_range.max:,.0f}원"
+                )
             else:
                 print(f"결과: {result[:100]}...")
 
-    async def analyze_coin_json(self, coin_name: str) -> Tuple[Optional[object], str]:
+    async def analyze_coin_json(self, coin_name: str) -> tuple[object | None, str]:
         """단일 코인을 JSON 형식으로 분석"""
         start_time = time.time()
 
@@ -273,7 +283,11 @@ class UpbitAnalyzer(Analyzer):
 
                 # 데이터 수집 with metrics
                 data_start = time.time()
-                df_merged, fundamental_info, minute_candles = await self._collect_coin_data(stock_symbol)
+                (
+                    df_merged,
+                    fundamental_info,
+                    minute_candles,
+                ) = await self._collect_coin_data(stock_symbol)
                 data_duration = (time.time() - data_start) * 1000
 
                 # Record API call metrics
@@ -289,7 +303,9 @@ class UpbitAnalyzer(Analyzer):
                     data_duration, {"service": "upbit", "operation": "collect_data"}
                 )
                 span.set_attribute("data.collection.duration_ms", data_duration)
-                span.set_attribute("data.rows", len(df_merged) if df_merged is not None else 0)
+                span.set_attribute(
+                    "data.rows", len(df_merged) if df_merged is not None else 0
+                )
 
                 # JSON 형식으로 분석 및 저장
                 analysis_start = time.time()
@@ -319,7 +335,7 @@ class UpbitAnalyzer(Analyzer):
                     "model": model_name,
                 }
 
-                if hasattr(result, 'decision'):
+                if hasattr(result, "decision"):
                     attributes["decision"] = result.decision
                     if result.confidence >= 70:
                         confidence_range = "high"
@@ -335,9 +351,11 @@ class UpbitAnalyzer(Analyzer):
                 analysis_duration.record(total_duration, attributes)
 
                 print(f"JSON 분석 완료: {coin_name}")
-                if hasattr(result, 'decision'):
+                if hasattr(result, "decision"):
                     print(f"결정: {result.decision}, 신뢰도: {result.confidence}%")
-                    print(f"매수 범위: {result.price_analysis.appropriate_buy_range.min:,.0f}원 ~ {result.price_analysis.appropriate_buy_range.max:,.0f}원")
+                    print(
+                        f"매수 범위: {result.price_analysis.appropriate_buy_range.min:,.0f}원 ~ {result.price_analysis.appropriate_buy_range.max:,.0f}원"
+                    )
                 else:
                     print(f"결과: {result[:100]}...")
 
@@ -371,14 +389,14 @@ class UpbitAnalyzer(Analyzer):
 
 class YahooAnalyzer(Analyzer):
     """Yahoo Finance 주식 분석기"""
-    
+
     async def _collect_stock_data(self, stock_symbol: str):
         """
         주식 데이터 수집 (OHLCV, 현재가, 기본정보)
-        
+
         Args:
             stock_symbol: 주식 심볼 (예: AAPL)
-            
+
         Returns:
             (df_merged, fundamental_info) 튜플
         """
@@ -391,13 +409,13 @@ class YahooAnalyzer(Analyzer):
         df_merged = DataProcessor.merge_historical_and_current(
             df_historical, df_current
         )
-        
+
         return df_merged, fundamental_info
-    
+
     def _print_analysis_result(self, result, stock_symbol: str, use_json: bool = False):
         """
         분석 결과 출력
-        
+
         Args:
             result: 분석 결과
             stock_symbol: 주식 심볼
@@ -405,16 +423,18 @@ class YahooAnalyzer(Analyzer):
         """
         if use_json:
             print(f"JSON 분석 완료: {stock_symbol}")
-            if hasattr(result, 'decision'):
+            if hasattr(result, "decision"):
                 print(f"결정: {result.decision}, 신뢰도: {result.confidence}%")
-                print(f"매수 범위: ${result.price_analysis.appropriate_buy_range.min:.2f} ~ ${result.price_analysis.appropriate_buy_range.max:.2f}")
+                print(
+                    f"매수 범위: ${result.price_analysis.appropriate_buy_range.min:.2f} ~ ${result.price_analysis.appropriate_buy_range.max:.2f}"
+                )
             else:
                 print(f"결과: {result[:100]}...")
         else:
             print(f"분석 완료: {stock_symbol}")
             print(f"결과: {result[:100]}...")
 
-    async def analyze_stocks(self, stock_symbols: List[str]) -> None:
+    async def analyze_stocks(self, stock_symbols: list[str]) -> None:
         """여러 주식을 순차적으로 분석"""
 
         for stock_symbol in stock_symbols:
@@ -437,7 +457,7 @@ class YahooAnalyzer(Analyzer):
 
             self._print_analysis_result(result, stock_symbol, use_json=False)
 
-    async def analyze_stocks_json(self, stock_symbols: List[str]) -> None:
+    async def analyze_stocks_json(self, stock_symbols: list[str]) -> None:
         """여러 주식을 순차적으로 JSON 형식으로 분석"""
 
         for stock_symbol in stock_symbols:
@@ -460,7 +480,7 @@ class YahooAnalyzer(Analyzer):
 
             self._print_analysis_result(result, stock_symbol, use_json=True)
 
-    async def analyze_stock_json(self, stock_symbol: str) -> Tuple[Optional[object], str]:
+    async def analyze_stock_json(self, stock_symbol: str) -> tuple[object | None, str]:
         """단일 주식을 JSON 형식으로 분석"""
         start_time = time.time()
 
@@ -474,7 +494,9 @@ class YahooAnalyzer(Analyzer):
 
                 # 데이터 수집 with metrics
                 data_start = time.time()
-                df_merged, fundamental_info = await self._collect_stock_data(stock_symbol)
+                df_merged, fundamental_info = await self._collect_stock_data(
+                    stock_symbol
+                )
                 data_duration = (time.time() - data_start) * 1000
 
                 # Record API call metrics
@@ -490,7 +512,9 @@ class YahooAnalyzer(Analyzer):
                     data_duration, {"service": "yahoo", "operation": "collect_data"}
                 )
                 span.set_attribute("data.collection.duration_ms", data_duration)
-                span.set_attribute("data.rows", len(df_merged) if df_merged is not None else 0)
+                span.set_attribute(
+                    "data.rows", len(df_merged) if df_merged is not None else 0
+                )
 
                 # JSON 형식으로 분석 및 저장
                 analysis_start = time.time()
@@ -519,7 +543,7 @@ class YahooAnalyzer(Analyzer):
                     "model": model_name,
                 }
 
-                if hasattr(result, 'decision'):
+                if hasattr(result, "decision"):
                     attributes["decision"] = result.decision
                     if result.confidence >= 70:
                         confidence_range = "high"
@@ -612,19 +636,27 @@ class KISAnalyzer(Analyzer):
         # 기본 데이터 수집
         # 일봉 데이터: KIS API에서 일봉을 지원하지 않는 경우를 대비하여 빈 DataFrame 사용
         try:
-            df_historical = await kis.kis.inquire_overseas_daily_price(symbol, exchange_code)
+            df_historical = await kis.kis.inquire_overseas_daily_price(
+                symbol, exchange_code
+            )
         except Exception as e:
             print(f"일봉 데이터 수집 실패 (Yahoo Finance 방식으로 대체 필요): {e}")
             # 빈 DataFrame 생성 (Yahoo Finance와 동일한 컬럼)
-            df_historical = pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+            df_historical = pd.DataFrame(
+                columns=["date", "open", "high", "low", "close", "volume"]
+            )
 
         df_current = await kis.kis.inquire_overseas_price(symbol, exchange_code)
-        fundamental_info = await kis.kis.fetch_overseas_fundamental_info(symbol, exchange_code)
+        fundamental_info = await kis.kis.fetch_overseas_fundamental_info(
+            symbol, exchange_code
+        )
 
         # 분봉 데이터 수집
         minute_candles = {}
         try:
-            minute_candles = await kis.kis.fetch_overseas_minute_candles(symbol, exchange_code)
+            minute_candles = await kis.kis.fetch_overseas_minute_candles(
+                symbol, exchange_code
+            )
         except Exception as e:
             print(f"분봉 데이터 수집 실패: {e}")
             minute_candles = {}
@@ -639,11 +671,11 @@ class KISAnalyzer(Analyzer):
             )
 
         return df_merged, fundamental_info, minute_candles
-    
+
     def _print_analysis_result(self, result, stock_name: str, use_json: bool = False):
         """
         분석 결과 출력
-        
+
         Args:
             result: 분석 결과
             stock_name: 종목명
@@ -651,9 +683,11 @@ class KISAnalyzer(Analyzer):
         """
         if use_json:
             print(f"JSON 분석 완료: {stock_name}")
-            if hasattr(result, 'decision'):
+            if hasattr(result, "decision"):
                 print(f"결정: {result.decision}, 신뢰도: {result.confidence}%")
-                print(f"매수 범위: {result.price_analysis.appropriate_buy_range.min:,.0f}원 ~ {result.price_analysis.appropriate_buy_range.max:,.0f}원")
+                print(
+                    f"매수 범위: {result.price_analysis.appropriate_buy_range.min:,.0f}원 ~ {result.price_analysis.appropriate_buy_range.max:,.0f}원"
+                )
             else:
                 print(f"결과: {result[:100]}...")
         else:
@@ -671,7 +705,9 @@ class KISAnalyzer(Analyzer):
             return
 
         # 데이터 수집
-        df_merged, fundamental_info, minute_candles = await self._collect_stock_data(stock_name, stock_code)
+        df_merged, fundamental_info, minute_candles = await self._collect_stock_data(
+            stock_name, stock_code
+        )
 
         # 분석 및 저장
         result, model_name = await self.analyze_and_save(
@@ -687,17 +723,17 @@ class KISAnalyzer(Analyzer):
 
         self._print_analysis_result(result, stock_name, use_json=False)
 
-    async def analyze_stocks(self, stock_names: List[str]) -> None:
+    async def analyze_stocks(self, stock_names: list[str]) -> None:
         """여러 국내주식을 순차적으로 분석"""
         for stock_name in stock_names:
             await self.analyze_stock(stock_name)
 
-    async def analyze_stocks_json(self, stock_names: List[str]) -> None:
+    async def analyze_stocks_json(self, stock_names: list[str]) -> None:
         """여러 국내주식을 순차적으로 JSON 형식으로 분석"""
         for stock_name in stock_names:
             await self.analyze_stock_json(stock_name)
 
-    async def analyze_stock_json(self, stock_name: str) -> Tuple[Optional[object], str]:
+    async def analyze_stock_json(self, stock_name: str) -> tuple[object | None, str]:
         """단일 국내주식을 JSON 형식으로 분석"""
         print(f"\n=== {stock_name} JSON 분석 시작 ===")
 
@@ -708,7 +744,9 @@ class KISAnalyzer(Analyzer):
             return None, ""
 
         # 데이터 수집
-        df_merged, fundamental_info, minute_candles = await self._collect_stock_data(stock_name, stock_code)
+        df_merged, fundamental_info, minute_candles = await self._collect_stock_data(
+            stock_name, stock_code
+        )
 
         # JSON 형식으로 분석 및 저장
         result, model_name = await self.analyze_and_save_json(
@@ -726,7 +764,7 @@ class KISAnalyzer(Analyzer):
 
         return result, model_name
 
-    async def analyze_overseas_stocks(self, stock_symbols: List[str]) -> None:
+    async def analyze_overseas_stocks(self, stock_symbols: list[str]) -> None:
         """여러 해외주식을 순차적으로 분석"""
         for symbol in stock_symbols:
             await self.analyze_overseas_stock(symbol)
@@ -744,9 +782,11 @@ class KISAnalyzer(Analyzer):
         print(f"거래소: {exchange_code}")
 
         # 데이터 수집
-        df_merged, fundamental_info, minute_candles = await self._collect_overseas_stock_data(
-            symbol, exchange_code
-        )
+        (
+            df_merged,
+            fundamental_info,
+            minute_candles,
+        ) = await self._collect_overseas_stock_data(symbol, exchange_code)
 
         # 분석 및 저장
         result, model_name = await self.analyze_and_save(
@@ -762,7 +802,7 @@ class KISAnalyzer(Analyzer):
 
         self._print_analysis_result(result, symbol, use_json=False)
 
-    async def analyze_overseas_stocks_json(self, stock_symbols: List[str]) -> None:
+    async def analyze_overseas_stocks_json(self, stock_symbols: list[str]) -> None:
         """여러 해외주식을 순차적으로 JSON 형식으로 분석"""
         for symbol in stock_symbols:
             await self.analyze_overseas_stock_json(symbol)
@@ -780,9 +820,11 @@ class KISAnalyzer(Analyzer):
         print(f"거래소: {exchange_code}")
 
         # 데이터 수집
-        df_merged, fundamental_info, minute_candles = await self._collect_overseas_stock_data(
-            symbol, exchange_code
-        )
+        (
+            df_merged,
+            fundamental_info,
+            minute_candles,
+        ) = await self._collect_overseas_stock_data(symbol, exchange_code)
 
         # JSON 형식으로 분석 및 저장
         result, model_name = await self.analyze_and_save_json(

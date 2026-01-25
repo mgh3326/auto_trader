@@ -3,9 +3,10 @@ Manual Holdings Router
 
 수동 잔고 관리 API 엔드포인트
 """
+
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,12 +17,12 @@ from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
 from app.schemas.manual_holdings import (
     BrokerAccountCreate,
-    BrokerAccountUpdate,
     BrokerAccountResponse,
-    ManualHoldingCreate,
-    ManualHoldingUpdate,
-    ManualHoldingResponse,
+    BrokerAccountUpdate,
     ManualHoldingBulkCreate,
+    ManualHoldingCreate,
+    ManualHoldingResponse,
+    ManualHoldingUpdate,
     StockAliasCreate,
     StockAliasResponse,
     StockAliasSearchResult,
@@ -38,6 +39,7 @@ router = APIRouter(prefix="/manual-holdings", tags=["Manual Holdings"])
 # 웹 페이지
 # =============================================================================
 
+
 @router.get("/", response_class=HTMLResponse)
 async def manual_holdings_page(request: Request):
     """수동 잔고 관리 페이지"""
@@ -47,13 +49,14 @@ async def manual_holdings_page(request: Request):
         {
             "request": request,
             "user": user,
-        }
+        },
     )
 
 
 # =============================================================================
 # 브로커 계좌 API
 # =============================================================================
+
 
 @router.get("/api/broker-accounts", response_model=list[BrokerAccountResponse])
 async def list_broker_accounts(
@@ -85,7 +88,7 @@ async def create_broker_account(
     if existing:
         raise HTTPException(
             status_code=400,
-            detail=f"이미 동일한 계좌가 존재합니다: {data.broker_type.value} - {data.account_name}"
+            detail=f"이미 동일한 계좌가 존재합니다: {data.broker_type.value} - {data.account_name}",
         )
 
     account = await service.create_account(
@@ -112,8 +115,7 @@ async def update_broker_account(
         raise HTTPException(status_code=404, detail="계좌를 찾을 수 없습니다")
 
     updated = await service.update_account(
-        account_id,
-        **data.model_dump(exclude_unset=True)
+        account_id, **data.model_dump(exclude_unset=True)
     )
     return updated
 
@@ -138,6 +140,7 @@ async def delete_broker_account(
 # =============================================================================
 # 수동 보유 종목 API
 # =============================================================================
+
 
 @router.get("/api/holdings", response_model=list[ManualHoldingResponse])
 async def list_holdings(
@@ -233,11 +236,13 @@ async def create_holdings_bulk(
                     "display_name": h.display_name,
                 }
                 for h in data.holdings
-            ]
+            ],
         )
     except Exception as e:
         logger.exception("Bulk create failed")
-        raise HTTPException(status_code=500, detail="일괄 등록 중 오류가 발생했습니다") from e
+        raise HTTPException(
+            status_code=500, detail="일괄 등록 중 오류가 발생했습니다"
+        ) from e
 
     result = []
     for h in holdings:
@@ -264,8 +269,7 @@ async def update_holding(
         raise HTTPException(status_code=404, detail="보유 종목을 찾을 수 없습니다")
 
     updated = await service.update_holding(
-        holding_id,
-        **data.model_dump(exclude_unset=True)
+        holding_id, **data.model_dump(exclude_unset=True)
     )
 
     result = ManualHoldingResponse.model_validate(updated)
@@ -295,6 +299,7 @@ async def delete_holding(
 # 종목 별칭 API
 # =============================================================================
 
+
 @router.get("/api/stock-aliases/search", response_model=StockAliasSearchResult)
 async def search_stock_aliases(
     q: str = Query(..., min_length=1, description="검색어"),
@@ -323,8 +328,7 @@ async def create_stock_alias(
     existing = await service.get_ticker_by_alias(data.alias, data.market_type)
     if existing:
         raise HTTPException(
-            status_code=400,
-            detail=f"이미 등록된 별칭입니다: {data.alias}"
+            status_code=400, detail=f"이미 등록된 별칭입니다: {data.alias}"
         )
 
     alias = await service.create_alias(

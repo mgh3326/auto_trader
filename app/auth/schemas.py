@@ -1,7 +1,6 @@
 """Pydantic schemas for authentication."""
+
 import string
-from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -19,7 +18,7 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     """Data extracted from JWT token."""
 
-    username: Optional[str] = None
+    username: str | None = None
 
 
 class UserCreate(BaseModel):

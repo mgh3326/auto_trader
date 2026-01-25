@@ -1,28 +1,31 @@
 import asyncio
 import json
-from typing import Optional, Tuple, Union
 
 import pandas as pd
 from google import genai
 from google.genai.errors import ClientError
 from google.genai.types import HttpOptions
 
-from app.analysis.prompt import build_prompt, build_json_prompt
 from app.analysis.models import StockAnalysisResponse
+from app.analysis.prompt import build_json_prompt, build_prompt
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.model_rate_limiter import ModelRateLimiter
+from app.models.analysis import StockAnalysisResult
 from app.models.prompt import PromptResult
-from app.models.analysis import StockInfo, StockAnalysisResult
+
 # from app.services.stock_info_service import create_stock_if_not_exists
-GEMINI_TIMEOUT = 3 * 60 * 1000 # 3 minutes
+GEMINI_TIMEOUT = 3 * 60 * 1000  # 3 minutes
+
 
 class Analyzer:
     """프롬프트 생성, Gemini 실행, DB 저장을 담당하는 공통 클래스"""
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: str | None = None):
         self.api_key = api_key or settings.get_random_key()
-        self.client = genai.Client(api_key=self.api_key, http_options=HttpOptions(timeout=GEMINI_TIMEOUT))
+        self.client = genai.Client(
+            api_key=self.api_key, http_options=HttpOptions(timeout=GEMINI_TIMEOUT)
+        )
         self.rate_limiter = ModelRateLimiter()
 
     async def analyze_and_save(
@@ -33,11 +36,11 @@ class Analyzer:
         instrument_type: str,
         currency: str = "₩",
         unit_shares: str = "주",
-        fundamental_info: Optional[dict] = None,
-        position_info: Optional[dict] = None,
-        minute_candles: Optional[dict] = None,
+        fundamental_info: dict | None = None,
+        position_info: dict | None = None,
+        minute_candles: dict | None = None,
         use_json: bool = False,
-    ) -> Tuple[Union[str, StockAnalysisResponse], str]:
+    ) -> tuple[str | StockAnalysisResponse, str]:
         """
         데이터 분석, 프롬프트 생성, Gemini 실행, DB 저장을 순차적으로 수행
 
@@ -57,12 +60,32 @@ class Analyzer:
         """
         # 1. 프롬프트 생성
         if use_json:
-            prompt = build_json_prompt(df, symbol, name, currency, unit_shares, fundamental_info, position_info, minute_candles)
+            prompt = build_json_prompt(
+                df,
+                symbol,
+                name,
+                currency,
+                unit_shares,
+                fundamental_info,
+                position_info,
+                minute_candles,
+            )
         else:
-            prompt = build_prompt(df, symbol, name, currency, unit_shares, fundamental_info, position_info, minute_candles)
+            prompt = build_prompt(
+                df,
+                symbol,
+                name,
+                currency,
+                unit_shares,
+                fundamental_info,
+                position_info,
+                minute_candles,
+            )
 
         # 2. Gemini 실행
-        result, model_name = await self._generate_with_smart_retry(prompt, use_json=use_json)
+        result, model_name = await self._generate_with_smart_retry(
+            prompt, use_json=use_json
+        )
 
         # 3. DB 저장
         if use_json and isinstance(result, StockAnalysisResponse):
@@ -87,19 +110,27 @@ class Analyzer:
         instrument_type: str,
         currency: str = "₩",
         unit_shares: str = "주",
-        fundamental_info: Optional[dict] = None,
-        position_info: Optional[dict] = None,
-        minute_candles: Optional[dict] = None,
-    ) -> Tuple[StockAnalysisResponse, str]:
+        fundamental_info: dict | None = None,
+        position_info: dict | None = None,
+        minute_candles: dict | None = None,
+    ) -> tuple[str | StockAnalysisResponse, str]:
         """
         JSON 형식의 구조화된 분석 결과를 반환하는 메서드
-        
+
         Returns:
             (StockAnalysisResponse 객체, 모델명) 튜플
         """
         return await self.analyze_and_save(
-            df, symbol, name, instrument_type, currency, unit_shares,
-            fundamental_info, position_info, minute_candles, use_json=True
+            df,
+            symbol,
+            name,
+            instrument_type,
+            currency,
+            unit_shares,
+            fundamental_info,
+            position_info,
+            minute_candles,
+            use_json=True,
         )
 
     async def close(self):
@@ -111,7 +142,7 @@ class Analyzer:
         try:
             # 비동기 메서드를 동기적으로 호출할 수 없으므로 경고만 출력
             pass
-        except:
+        except Exception:
             pass
 
     def _mask_api_key(self, api_key: str) -> str:
@@ -132,7 +163,7 @@ class Analyzer:
 
     async def _generate_with_smart_retry(
         self, prompt: str, max_retries: int = 3, use_json: bool = False
-    ) -> Tuple[Union[str, StockAnalysisResponse], str]:
+    ) -> tuple[str | StockAnalysisResponse, str]:
         """스마트 재시도: Redis 기반 모델 제한 + 429 에러 시 다음 모델로 즉시 전환"""
 
         models_to_try = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
@@ -140,13 +171,16 @@ class Analyzer:
         for model in models_to_try:
             print(f"모델 시도: {model}")
 
-
             for attempt in range(max_retries):
                 # Redis에서 현재 API 키의 모델 사용 제한 확인
                 masked_api_key = self._mask_api_key(self.api_key)
                 if not await self.rate_limiter.is_model_available(model, self.api_key):
-                    print(f"  {model} 모델 (API: {masked_api_key}) 사용 제한 중, 다음 모델로...")
-                    self.api_key = settings.get_next_key()  # 매번 첫번째껏만 받는것 같아서 랜덤으로 변경
+                    print(
+                        f"  {model} 모델 (API: {masked_api_key}) 사용 제한 중, 다음 모델로..."
+                    )
+                    self.api_key = (
+                        settings.get_next_key()
+                    )  # 매번 첫번째껏만 받는것 같아서 랜덤으로 변경
                     continue
                 try:
                     if use_json:
@@ -154,12 +188,10 @@ class Analyzer:
                         response_schema = StockAnalysisResponse.model_json_schema()
                         config = {
                             "response_mime_type": "application/json",
-                            "response_schema": response_schema
+                            "response_schema": response_schema,
                         }
                         resp = self.client.models.generate_content(
-                            model=model,
-                            contents=prompt,
-                            config=config
+                            model=model, contents=prompt, config=config
                         )
                     else:
                         # 기존 방식 (텍스트 응답)
@@ -173,12 +205,16 @@ class Analyzer:
                         finish_reason = getattr(candidate, "finish_reason", None)
 
                         if finish_reason == "STOP" and not resp.text:
-                            print(f"  시도 {attempt + 1}: STOP이지만 text가 None, 재시도...")
+                            print(
+                                f"  시도 {attempt + 1}: STOP이지만 text가 None, 재시도..."
+                            )
                             await asyncio.sleep(1 + attempt)
                             continue
 
                         if finish_reason in ["SAFETY", "RECITATION"]:
-                            print(f"  {model} 차단됨: {finish_reason}, 다음 모델로 시도...")
+                            print(
+                                f"  {model} 차단됨: {finish_reason}, 다음 모델로 시도..."
+                            )
                             break
 
                         if resp.text:
@@ -187,7 +223,9 @@ class Analyzer:
                                 try:
                                     # JSON 응답을 파싱하고 Pydantic 모델로 검증
                                     parsed_response = json.loads(resp.text)
-                                    validated_response = StockAnalysisResponse(**parsed_response)
+                                    validated_response = StockAnalysisResponse(
+                                        **parsed_response
+                                    )
                                     return validated_response, model
                                 except (json.JSONDecodeError, ValueError) as e:
                                     print(f"  JSON 파싱/검증 실패: {e}")
@@ -221,11 +259,13 @@ class Analyzer:
                                         if retry_delay:
                                             print(f"  retry_delay: {retry_delay}")
                                             # Redis에 모델 사용 제한 설정
-                                            await self.rate_limiter.set_model_rate_limit(
-                                                model,
-                                                self.api_key,
-                                                retry_delay,
-                                                e.code,
+                                            await (
+                                                self.rate_limiter.set_model_rate_limit(
+                                                    model,
+                                                    self.api_key,
+                                                    retry_delay,
+                                                    e.code,
+                                                )
                                             )
                             except Exception as parse_error:
                                 print(f"  retry_delay 파싱 오류: {parse_error}")
@@ -237,16 +277,21 @@ class Analyzer:
                             )
 
                         # API 키 교체 및 계속 시도
-                        new_api_key = settings.get_next_key() # 매번 첫번째껏만 받는것 같아서 랜덤으로 변경
+                        new_api_key = (
+                            settings.get_next_key()
+                        )  # 매번 첫번째껏만 받는것 같아서 랜덤으로 변경
                         print(
                             f"  API 키 교체: {masked_api_key} → {self._mask_api_key(new_api_key)}"
                         )
-                        self.client = genai.Client(api_key=new_api_key, http_options=HttpOptions(timeout=GEMINI_TIMEOUT))
+                        self.client = genai.Client(
+                            api_key=new_api_key,
+                            http_options=HttpOptions(timeout=GEMINI_TIMEOUT),
+                        )
                         self.api_key = new_api_key
                         masked_api_key = self._mask_api_key(self.api_key)
 
                         # 새로운 API 키로 계속 시도 (break 제거)
-                        print(f"  새로운 API 키로 계속 시도...")
+                        print("  새로운 API 키로 계속 시도...")
                         if model == "gemini-2.5-pro":
                             print("pro 는 다음 모델로 실행")
                             break
@@ -260,7 +305,11 @@ class Analyzer:
 
                     # 503 에러(모델 과부하) 체크
                     error_str = str(e)
-                    if "503" in error_str and "UNAVAILABLE" in error_str or "500" in error_str:
+                    if (
+                        "503" in error_str
+                        and "UNAVAILABLE" in error_str
+                        or "500" in error_str
+                    ):
                         print(f"  {model} 모델 과부하(503), Redis에 1분 제한 설정...")
 
                         # 503 에러 시 1분 제한 설정
@@ -274,11 +323,14 @@ class Analyzer:
                         print(
                             f"  API 키 교체: {masked_api_key} → {self._mask_api_key(new_api_key)}"
                         )
-                        self.client = genai.Client(api_key=new_api_key, http_options=HttpOptions(timeout=GEMINI_TIMEOUT))
+                        self.client = genai.Client(
+                            api_key=new_api_key,
+                            http_options=HttpOptions(timeout=GEMINI_TIMEOUT),
+                        )
                         self.api_key = new_api_key
 
                         # 새로운 API 키로 계속 시도
-                        print(f"  새로운 API 키로 계속 시도...")
+                        print("  새로운 API 키로 계속 시도...")
                         if model == "gemini-2.5-pro":
                             print("pro 는 다음 모델로 실행")
                             break
@@ -296,7 +348,7 @@ class Analyzer:
     async def _save_to_db(
         self,
         prompt: str,
-        result: Union[str, StockAnalysisResponse],
+        result: str | StockAnalysisResponse,
         symbol: str,
         name: str,
         instrument_type: str,
@@ -329,11 +381,10 @@ class Analyzer:
         """JSON 분석 결과를 DB에 저장"""
         async with AsyncSessionLocal() as db:
             from app.services.stock_info_service import create_stock_if_not_exists
+
             # 1. 주식 정보가 없으면 생성 (또는 기존 정보 조회)
             stock_info = await create_stock_if_not_exists(
-                symbol=symbol,
-                name=name,
-                instrument_type=instrument_type
+                symbol=symbol, name=name, instrument_type=instrument_type
             )
 
             # 2. 분석 결과 저장
@@ -357,7 +408,9 @@ class Analyzer:
             db.add(record)
             await db.commit()
             await db.refresh(record)
-            print(f"JSON 분석 결과 DB 저장 완료: {symbol} ({name}) - StockInfo ID: {stock_info.id}")
+            print(
+                f"JSON 분석 결과 DB 저장 완료: {symbol} ({name}) - StockInfo ID: {stock_info.id}"
+            )
 
 
 class DataProcessor:
@@ -382,6 +435,8 @@ class DataProcessor:
                 [df_historical, df_current.reset_index(drop=True)], ignore_index=True
             )
             .sort_values("date")
-            .drop_duplicates(subset=["date"], keep="last")  # 같은 날짜면 마지막 것만 유지
+            .drop_duplicates(
+                subset=["date"], keep="last"
+            )  # 같은 날짜면 마지막 것만 유지
             .reset_index(drop=True)
         )

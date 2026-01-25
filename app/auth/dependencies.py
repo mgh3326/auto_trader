@@ -1,4 +1,5 @@
 """Authentication dependencies for FastAPI."""
+
 from typing import Annotated
 
 import jwt
@@ -40,7 +41,9 @@ async def get_current_user(
     )
 
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
         username: str = payload.get("sub")
         token_type: str = payload.get("type")
 
@@ -68,7 +71,7 @@ async def get_current_user(
 
 
 def get_current_active_user(
-    current_user: Annotated[User, Depends(get_current_user)]
+    current_user: Annotated[User, Depends(get_current_user)],
 ) -> User:
     """
     Get the current active user.

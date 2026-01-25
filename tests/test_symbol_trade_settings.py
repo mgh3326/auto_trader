@@ -1,17 +1,19 @@
 """
 Tests for Symbol Trade Settings functionality
 """
-import pytest
+
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.models.symbol_trade_settings import SymbolTradeSettings
 from app.models.trading import InstrumentType
 from app.services.symbol_trade_settings_service import (
     SymbolTradeSettingsService,
     calculate_estimated_order_cost,
-    get_buy_quantity_for_symbol,
     get_buy_quantity_for_crypto,
+    get_buy_quantity_for_symbol,
 )
 
 
@@ -121,7 +123,7 @@ class TestSymbolTradeSettingsService:
         mock_db.commit = AsyncMock()
         mock_db.refresh = AsyncMock()
 
-        result = await service.create(
+        await service.create(
             user_id=1,
             symbol="005930",
             instrument_type=InstrumentType.equity_kr,
@@ -356,10 +358,12 @@ class TestSymbolSettingsRouter:
     def client(self):
         """FastAPI TestClient with auth bypass"""
         from fastapi.testclient import TestClient
+
         from app.main import api
 
         # Auth middleware를 우회하기 위한 설정
         with patch("app.middleware.auth.AuthMiddleware.__call__") as mock_auth:
+
             async def bypass_auth(scope, receive, send):
                 # 바로 다음 앱 호출
                 await mock_auth.return_value.app(scope, receive, send)

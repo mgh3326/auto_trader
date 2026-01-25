@@ -1,6 +1,7 @@
 """
 Tests for analysis module.
 """
+
 import pandas as pd
 
 from app.analysis.indicators import add_indicators

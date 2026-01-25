@@ -54,13 +54,11 @@ test = [
     "aiosqlite>=0.19.0,<1.0.0",
 ]
 dev = [
-    "black>=25.12.0,<25.13.0",
-    "flake8>=7.3.0,<7.4.0",
-    "isort>=7.0.0,<7.1.0",
-    "mypy>=1.5.0,<2.0.0",
     "bandit>=1.7.0,<2.0.0",
     "safety>=3.7.0,<3.8.0",
     "playwright>=1.56.0",
+    "ruff>=0.14.10",
+    "pyright>=1.1.407",
 ]
 
 [tool.pytest.ini_options]
@@ -112,9 +110,77 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
-[tool.isort]
-profile = "black"
-line_length = 88
-
-[tool.black]
+[tool.ruff]
+target-version = "py314"
 line-length = 88
+exclude = [
+    ".venv",
+    "alembic/versions",
+    "__pycache__",
+    "data/stocks_info",
+    "data/coins_info",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E203",   # Whitespace before ':' (black compatible)
+    "E501",   # Line too long (formatter handles this)
+    "B008",   # FastAPI Depends() in default arguments
+    "E712",   # SQLAlchemy == True comparison
+    "B904",   # raise ... from err (FastAPI HTTPException pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app/core/celery_app.py" = ["E402"]  # Delayed import for Celery signals
+"app/routers/kis_domestic_trading.py" = ["E402"]  # Delayed Celery import
+"app/routers/kis_overseas_trading.py" = ["E402"]  # Delayed Celery import
+"tests/conftest.py" = ["E402"]  # Delayed import after env setup
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.pyright]
+pythonVersion = "3.14"
+pythonPlatform = "All"
+typeCheckingMode = "basic"
+
+include = ["app"]
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    "alembic",
+    "tests",
+    "data",
+]
+
+# Gradual migration settings
+reportMissingImports = "warning"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownParameterType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+
+# Relaxed settings for gradual adoption
+reportAttributeAccessIssue = false  # ta library has no type stubs
+reportGeneralTypeIssues = false     # SQLAlchemy async session issues
+reportArgumentType = false          # dict.get() returns Unknown | None
+reportCallIssue = false             # Pydantic Field overloads
+reportOptionalOperand = false       # Optional arithmetic
+reportIndexIssue = false            # StockAnalysisResponse indexing
+reportInvalidTypeForm = false       # Type form issues

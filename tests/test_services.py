@@ -1,6 +1,7 @@
 """
 Tests for service modules.
 """
+
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -74,8 +75,6 @@ class TestUpbitService:
         assert "close" in result.columns
         assert "volume" in result.columns
         assert "value" in result.columns
-
-
 
 
 class TestKISService:
@@ -229,14 +228,20 @@ class TestStockInfoServiceGuard:
             "app.services.upbit.check_krw_balance_sufficient",
             fake_check,
         )
-        monkeypatch.setattr("app.core.db.AsyncSessionLocal", lambda: DummyAsyncSession())
+        monkeypatch.setattr(
+            "app.core.db.AsyncSessionLocal", lambda: DummyAsyncSession()
+        )
         monkeypatch.setattr(
             stock_info_service,
             "StockAnalysisService",
             DummyService,
         )
-        monkeypatch.setattr(settings, "upbit_min_krw_balance", Decimal("10000"), raising=False)
-        monkeypatch.setattr(settings, "upbit_buy_amount", Decimal("10000"), raising=False)
+        monkeypatch.setattr(
+            settings, "upbit_min_krw_balance", Decimal("10000"), raising=False
+        )
+        monkeypatch.setattr(
+            settings, "upbit_buy_amount", Decimal("10000"), raising=False
+        )
 
         calls = []
 
@@ -308,12 +313,11 @@ class TestCeleryTaskFailureHandler:
         from celery.signals import task_failure
 
         # task_failure 시그널에 핸들러가 등록되었는지 확인
-        from app.core.celery_app import handle_task_failure
 
         # task_failure 시그널의 receivers 확인
         receivers = task_failure.receivers
         # weakref로 저장되므로 문자열에서 함수 이름 확인
-        handler_found = any('handle_task_failure' in str(r[1]) for r in receivers)
+        handler_found = any("handle_task_failure" in str(r[1]) for r in receivers)
 
         assert handler_found, f"handle_task_failure not found in receivers: {receivers}"
 
@@ -323,7 +327,7 @@ class TestCeleryTaskFailureHandler:
         from app.monitoring.error_reporter import get_error_reporter
 
         # ErrorReporter가 비활성화 상태인지 확인 (테스트 환경에서는 기본적으로 비활성화)
-        error_reporter = get_error_reporter()
+        get_error_reporter()  # verify it doesn't raise
 
         # 예외 없이 실행되어야 함
         test_exception = ValueError("Test error message")
@@ -377,8 +381,8 @@ class TestCeleryTaskFailureHandler:
         call_args = mock_reporter.send_error_to_telegram.call_args
         assert call_args.kwargs["error"] == test_exception
         assert "task_name" in call_args.kwargs["additional_context"]
-        assert call_args.kwargs["additional_context"]["task_name"] == "kis.run_per_domestic_stock_automation"
+        assert (
+            call_args.kwargs["additional_context"]["task_name"]
+            == "kis.run_per_domestic_stock_automation"
+        )
         assert call_args.kwargs["additional_context"]["task_id"] == "celery-task-abc123"
-
-
-

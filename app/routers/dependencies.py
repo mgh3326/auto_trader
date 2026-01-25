@@ -1,6 +1,7 @@
 """
 Common router dependencies and constants.
 """
+
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 

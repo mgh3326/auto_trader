@@ -10,7 +10,7 @@ Provides:
 import asyncio
 import logging
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -67,7 +67,12 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
             )
 
     async def _process_request_with_span(
-        self, request: Request, call_next: Callable, start_time: float, request_id: str, span
+        self,
+        request: Request,
+        call_next: Callable,
+        start_time: float,
+        request_id: str,
+        span,
     ) -> Response:
         """Process request with OpenTelemetry span."""
         try:
@@ -105,7 +110,9 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
                     span.set_attribute("error", True)
                 duration_ms = (time.time() - start_time) * 1000
                 # Mark as error for 5xx status codes
-                self._record_metrics(request, status_code, duration_ms, is_error=(status_code >= 500))
+                self._record_metrics(
+                    request, status_code, duration_ms, is_error=(status_code >= 500)
+                )
                 if status_code >= 500:
                     return await self._handle_http_exception(
                         request, exc, start_time, request_id
@@ -117,9 +124,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
             span.set_attribute("error", True)
 
             # Handle error
-            return await self._handle_error(
-                request, exc, start_time, request_id
-            )
+            return await self._handle_error(request, exc, start_time, request_id)
 
     async def _process_request_without_span(
         self, request: Request, call_next: Callable, start_time: float, request_id: str
@@ -153,9 +158,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
                 raise
 
             # Handle error
-            return await self._handle_error(
-                request, exc, start_time, request_id
-            )
+            return await self._handle_error(request, exc, start_time, request_id)
 
     async def _ensure_instruments(self) -> None:
         """
@@ -201,7 +204,11 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
                 logger.warning("Failed to configure telemetry instruments: %s", exc)
 
     def _record_metrics(
-        self, request: Request, status_code: int, duration_ms: float, is_error: bool = False
+        self,
+        request: Request,
+        status_code: int,
+        duration_ms: float,
+        is_error: bool = False,
     ) -> None:
         """
         Record request metrics.
@@ -213,9 +220,7 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
             is_error: Whether this is an error response (for error counter)
         """
         if not (
-            self._meter
-            and self._request_duration_histogram
-            and self._request_counter
+            self._meter and self._request_duration_histogram and self._request_counter
         ):
             return
 

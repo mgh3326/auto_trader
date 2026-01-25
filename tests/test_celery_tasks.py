@@ -1,4 +1,5 @@
 """Tests for Celery tasks defined in app.tasks.analyze."""
+
 import pytest
 
 
@@ -214,7 +215,9 @@ async def test_execute_buy_order_notifies_on_insufficient_balance(monkeypatch):
         def __init__(self):
             self.failure_calls = []
 
-        async def notify_trade_failure(self, symbol, korean_name, reason, market_type="암호화폐"):
+        async def notify_trade_failure(
+            self, symbol, korean_name, reason, market_type="암호화폐"
+        ):
             self.failure_calls.append(
                 {
                     "symbol": symbol,
@@ -336,4 +339,6 @@ def test_run_per_coin_automation_success(monkeypatch):
     coin_steps = result["results"][0]["steps"]
     assert [step["step"] for step in coin_steps] == ["analysis", "buy", "sell"]
     assert all(step["result"]["status"] == "completed" for step in coin_steps)
-    assert any(update["meta"]["current_step"] == "analysis" for update in progress_updates)
+    assert any(
+        update["meta"]["current_step"] == "analysis" for update in progress_updates
+    )

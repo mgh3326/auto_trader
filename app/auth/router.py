@@ -1,4 +1,5 @@
 """Authentication router for FastAPI."""
+
 import hashlib
 import logging
 from typing import Annotated
@@ -23,13 +24,13 @@ from app.auth.security import (
     get_password_hash,
     verify_password,
 )
-from app.auth.web_router import limiter
 from app.auth.token_repository import (
     get_valid_refresh_token,
     revoke_all_refresh_tokens,
     revoke_refresh_token,
     save_refresh_token,
 )
+from app.auth.web_router import limiter
 from app.core.config import settings
 from app.core.db import get_db
 from app.models.trading import User, UserRole
@@ -47,7 +48,9 @@ def _security_log_extra(request: Request, **kwargs) -> dict:
     }
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED
+)
 @limiter.limit("5/minute")
 async def register(
     request: Request,
@@ -381,7 +384,7 @@ async def logout(
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
-    current_user: Annotated[User, Depends(get_current_active_user)]
+    current_user: Annotated[User, Depends(get_current_active_user)],
 ) -> UserResponse:
     """
     Get current authenticated user information.
