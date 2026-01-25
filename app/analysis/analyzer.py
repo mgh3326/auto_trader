@@ -36,6 +36,7 @@ class Analyzer:
         fundamental_info: Optional[dict] = None,
         position_info: Optional[dict] = None,
         minute_candles: Optional[dict] = None,
+        news_info: Optional[dict] = None,
         use_json: bool = False,
     ) -> Tuple[Union[str, StockAnalysisResponse], str]:
         """
@@ -51,15 +52,16 @@ class Analyzer:
             fundamental_info: 기본 정보
             position_info: 보유 자산 정보
             minute_candles: 분봉 캔들 데이터 (60분, 5분, 1분)
+            news_info: 뉴스 정보 (네이버 뉴스, 업비트 공지 등)
 
         Returns:
             (결과 텍스트, 모델명) 튜플
         """
         # 1. 프롬프트 생성
         if use_json:
-            prompt = build_json_prompt(df, symbol, name, currency, unit_shares, fundamental_info, position_info, minute_candles)
+            prompt = build_json_prompt(df, symbol, name, currency, unit_shares, fundamental_info, position_info, minute_candles, news_info)
         else:
-            prompt = build_prompt(df, symbol, name, currency, unit_shares, fundamental_info, position_info, minute_candles)
+            prompt = build_prompt(df, symbol, name, currency, unit_shares, fundamental_info, position_info, minute_candles, news_info)
 
         # 2. Gemini 실행
         result, model_name = await self._generate_with_smart_retry(prompt, use_json=use_json)
@@ -90,16 +92,17 @@ class Analyzer:
         fundamental_info: Optional[dict] = None,
         position_info: Optional[dict] = None,
         minute_candles: Optional[dict] = None,
+        news_info: Optional[dict] = None,
     ) -> Tuple[StockAnalysisResponse, str]:
         """
         JSON 형식의 구조화된 분석 결과를 반환하는 메서드
-        
+
         Returns:
             (StockAnalysisResponse 객체, 모델명) 튜플
         """
         return await self.analyze_and_save(
             df, symbol, name, instrument_type, currency, unit_shares,
-            fundamental_info, position_info, minute_candles, use_json=True
+            fundamental_info, position_info, minute_candles, news_info, use_json=True
         )
 
     async def close(self):

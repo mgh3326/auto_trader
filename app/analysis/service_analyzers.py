@@ -5,6 +5,7 @@ import pandas as pd
 
 from app.monitoring.telemetry import get_meter, get_tracer
 from app.services import kis, upbit, yahoo
+from app.services.news import news_service
 from data.coins_info import upbit_pairs
 from data.stocks_info import KRX_NAME_TO_CODE, get_exchange_by_symbol
 
@@ -113,32 +114,33 @@ class UpbitAnalyzer(Analyzer):
             "locked_quantity": my_coin.get("locked"),
         }
     
-    async def _collect_coin_data(self, stock_symbol: str):
+    async def _collect_coin_data(self, stock_symbol: str, coin_name: str = None):
         """
-        코인 데이터 수집 (OHLCV, 현재가, 기본정보, 분봉)
-        
+        코인 데이터 수집 (OHLCV, 현재가, 기본정보, 분봉, 뉴스)
+
         Args:
             stock_symbol: 코인 심볼 (예: KRW-BTC)
-            
+            coin_name: 코인 이름 (예: 비트코인) - 뉴스 검색용
+
         Returns:
-            (df_merged, fundamental_info, minute_candles) 튜플
+            (df_merged, fundamental_info, minute_candles, news_info) 튜플
         """
         # 기본 데이터 수집
         df_historical = await upbit.fetch_ohlcv(stock_symbol, days=200)
         df_current = await upbit.fetch_price(stock_symbol)
         fundamental_info = await upbit.fetch_fundamental_info(stock_symbol)
-        
+
         # 분봉 데이터 수집
         minute_candles = {}
         try:
             # 60분 캔들 (최근 12개)
             df_60min = await upbit.fetch_hourly_candles(stock_symbol, count=12)
             minute_candles["60min"] = df_60min
-            
+
             # 5분 캔들 (최근 12개)
             df_5min = await upbit.fetch_5min_candles(stock_symbol, count=12)
             minute_candles["5min"] = df_5min
-            
+
             # 1분 캔들 (최근 10개)
             df_1min = await upbit.fetch_1min_candles(stock_symbol, count=10)
             minute_candles["1min"] = df_1min
@@ -146,34 +148,45 @@ class UpbitAnalyzer(Analyzer):
             print(f"분봉 데이터 수집 실패: {e}")
             minute_candles = {}
 
+        # 뉴스 정보 수집
+        news_info = None
+        if coin_name:
+            try:
+                news_info = await news_service.get_coin_news(coin_name)
+                if news_info.get("summary"):
+                    print(f"뉴스 수집 완료: {len(news_info.get('news', []))}건, 공지: {len(news_info.get('notices', []))}건")
+            except Exception as e:
+                print(f"뉴스 수집 실패: {e}")
+                news_info = None
+
         # 데이터 병합
         df_merged = DataProcessor.merge_historical_and_current(
             df_historical, df_current
         )
-        
-        return df_merged, fundamental_info, minute_candles
+
+        return df_merged, fundamental_info, minute_candles, news_info
 
     async def analyze_coins(self, coin_names: List[str]) -> None:
         """여러 코인을 순차적으로 분석"""
         await upbit_pairs.prime_upbit_constants()
-        
+
         # 보유 코인 정보를 한 번만 가져와서 캐시
         tradable_coins_map = await self._get_tradable_coins_map()
-        
+
         for coin_name in coin_names:
             stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
             if not stock_symbol:
                 print(f"코인명을 찾을 수 없음: {coin_name}")
                 continue
-            
+
             # 캐시된 정보에서 코인 조회
             my_coin = tradable_coins_map.get(stock_symbol)
             position_info = self._create_position_info(my_coin)
 
             print(f"\n=== {coin_name} ({stock_symbol}) 분석 시작 ===")
 
-            # 데이터 수집
-            df_merged, fundamental_info, minute_candles = await self._collect_coin_data(stock_symbol)
+            # 데이터 수집 (뉴스 포함)
+            df_merged, fundamental_info, minute_candles, news_info = await self._collect_coin_data(stock_symbol, coin_name)
 
             # 분석 및 저장
             result, model_name = await self.analyze_and_save(
@@ -186,6 +199,7 @@ class UpbitAnalyzer(Analyzer):
                 fundamental_info=fundamental_info,
                 position_info=position_info,
                 minute_candles=minute_candles,
+                news_info=news_info,
             )
 
             print(f"분석 완료: {coin_name}")
@@ -194,24 +208,24 @@ class UpbitAnalyzer(Analyzer):
     async def analyze_coins_json(self, coin_names: List[str]) -> None:
         """여러 코인을 순차적으로 JSON 형식으로 분석"""
         await upbit_pairs.prime_upbit_constants()
-        
+
         # 보유 코인 정보를 한 번만 가져와서 캐시
         tradable_coins_map = await self._get_tradable_coins_map()
-            
+
         for coin_name in coin_names:
             stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
             if not stock_symbol:
                 print(f"코인명을 찾을 수 없음: {coin_name}")
                 continue
-                
+
             # 캐시된 정보에서 코인 조회
             my_coin = tradable_coins_map.get(stock_symbol)
             position_info = self._create_position_info(my_coin)
 
             print(f"\n=== {coin_name} ({stock_symbol}) JSON 분석 시작 ===")
 
-            # 데이터 수집
-            df_merged, fundamental_info, minute_candles = await self._collect_coin_data(stock_symbol)
+            # 데이터 수집 (뉴스 포함)
+            df_merged, fundamental_info, minute_candles, news_info = await self._collect_coin_data(stock_symbol, coin_name)
 
             # JSON 형식으로 분석 및 저장
             result, model_name = await self.analyze_and_save_json(
@@ -224,6 +238,7 @@ class UpbitAnalyzer(Analyzer):
                 fundamental_info=fundamental_info,
                 position_info=position_info,
                 minute_candles=minute_candles,
+                news_info=news_info,
             )
 
             print(f"JSON 분석 완료: {coin_name}")
@@ -271,9 +286,9 @@ class UpbitAnalyzer(Analyzer):
 
                 print(f"\n=== {coin_name} ({stock_symbol}) JSON 분석 시작 ===")
 
-                # 데이터 수집 with metrics
+                # 데이터 수집 with metrics (뉴스 포함)
                 data_start = time.time()
-                df_merged, fundamental_info, minute_candles = await self._collect_coin_data(stock_symbol)
+                df_merged, fundamental_info, minute_candles, news_info = await self._collect_coin_data(stock_symbol, coin_name)
                 data_duration = (time.time() - data_start) * 1000
 
                 # Record API call metrics
@@ -303,6 +318,7 @@ class UpbitAnalyzer(Analyzer):
                     fundamental_info=fundamental_info,
                     position_info=position_info,
                     minute_candles=minute_candles,
+                    news_info=news_info,
                 )
                 analysis_duration_ms = (time.time() - analysis_start) * 1000
                 span.set_attribute("analysis.duration_ms", analysis_duration_ms)

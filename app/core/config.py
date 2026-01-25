@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     upbit_access_key: str
     upbit_secret_key: str
 
+    # Naver API (뉴스 검색용, 선택사항)
+    naver_client_id: str | None = None
+    naver_client_secret: str | None = None
+
     # Upbit 매수 설정
     upbit_buy_amount: int = 10000  # 분할 매수 금액 (기본 10만원)
     upbit_min_krw_balance: int = upbit_buy_amount + 5000  # 최소 KRW 잔고 (기본 10만원)
