@@ -5,7 +5,7 @@
 # 이 스테이지는 각 아키텍처(amd64, arm64)에 맞게 의존성을 설치하는 역할만 합니다.
 # ==============================================================================
 # Build dependencies for the TARGET platform (not the build host)
-FROM --platform=$TARGETPLATFORM python:3.13-slim AS builder
+FROM --platform=$TARGETPLATFORM python:3.14-slim AS builder
 
 # UV 설치
 RUN pip install --upgrade pip && pip install uv
@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # STAGE 2: 'final' - 최종 실행 이미지를 만드는 스테이지
 # 가볍고 깨끗한 상태에서 시작합니다.
 # ==============================================================================
-FROM python:3.13-slim AS final
+FROM python:3.14-slim AS final
 
 # 환경 변수 설정
 ENV PYTHONDONTWRITEBYTECODE=1 \
