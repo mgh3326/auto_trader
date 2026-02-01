@@ -235,7 +235,7 @@ services:
 
   # Grafana - Visualization and dashboards
   grafana:
-    image: grafana/grafana:12.3.1
+    image: grafana/grafana:12.3.2
     container_name: grafana
     environment:
       # Authentication settings (can be overridden via .env file)
