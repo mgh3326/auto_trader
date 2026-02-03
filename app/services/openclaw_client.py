@@ -50,6 +50,7 @@ class OpenClawClient:
             name=name,
             instrument_type=instrument_type,
             callback_url=self._callback_url,
+            callback_token=settings.OPENCLAW_CALLBACK_TOKEN,
         )
 
         payload = {
@@ -85,6 +86,7 @@ def _build_openclaw_message(
     name: str,
     instrument_type: str,
     callback_url: str,
+    callback_token: str | None,
 ) -> str:
     callback_schema = {
         "request_id": request_id,
@@ -106,6 +108,11 @@ def _build_openclaw_message(
 
     schema_json = json.dumps(callback_schema, ensure_ascii=True)
 
+    callback_headers = "Content-Type: application/json\n"
+    token = callback_token.strip() if callback_token else ""
+    if token:
+        callback_headers += f"Authorization: Bearer {token}\n"
+
     return (
         "Analyze the following trading instrument and return a JSON result via HTTP callback.\n\n"
         f"request_id: {request_id}\n"
@@ -116,7 +123,7 @@ def _build_openclaw_message(
         f"{prompt}\n\n"
         "CALLBACK:\n"
         f"POST {callback_url}\n"
-        "Content-Type: application/json\n\n"
+        f"{callback_headers}\n"
         "RESPONSE_JSON_SCHEMA (example):\n"
         f"{schema_json}\n"
     )

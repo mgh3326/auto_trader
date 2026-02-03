@@ -1,15 +1,51 @@
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+import hmac
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analysis.models import PriceAnalysis
+from app.core.config import settings
 from app.core.db import get_db
 from app.models.analysis import StockAnalysisResult
 from app.services.stock_info_service import create_stock_if_not_exists
 
 router = APIRouter(prefix="/api/v1/openclaw", tags=["OpenClaw"])
+
+
+def _extract_bearer_token(auth_header: str | None) -> str | None:
+    if not auth_header:
+        return None
+    parts = auth_header.split(None, 1)
+    if len(parts) != 2:
+        return None
+    if parts[0].lower() != "bearer":
+        return None
+    token = parts[1].strip()
+    return token or None
+
+
+async def _require_openclaw_callback_token(request: Request) -> None:
+    expected = settings.OPENCLAW_CALLBACK_TOKEN.strip()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OPENCLAW_CALLBACK_TOKEN is not configured",
+        )
+
+    provided = _extract_bearer_token(request.headers.get("authorization"))
+    if provided is None:
+        provided = request.headers.get("x-openclaw-token")
+        provided = provided.strip() if provided else None
+
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid OpenClaw callback token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 class OpenClawCallbackRequest(BaseModel):
@@ -41,6 +77,7 @@ class OpenClawCallbackRequest(BaseModel):
 @router.post("/callback")
 async def openclaw_callback(
     payload: OpenClawCallbackRequest,
+    _: None = Depends(_require_openclaw_callback_token),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     stock_info = await create_stock_if_not_exists(

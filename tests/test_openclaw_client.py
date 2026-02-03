@@ -20,10 +20,12 @@ def test_build_openclaw_message_includes_callback_and_schema() -> None:
         name="Apple Inc.",
         instrument_type="equity_us",
         callback_url="http://example.test/api/v1/openclaw/callback",
+        callback_token="cb-token",
     )
 
     assert "USER_PROMPT:\nPROMPT" in message
     assert "POST http://example.test/api/v1/openclaw/callback" in message
+    assert "Authorization: Bearer cb-token" in message
     assert "RESPONSE_JSON_SCHEMA (example):" in message
 
     schema_json = message.split("RESPONSE_JSON_SCHEMA (example):\n", 1)[1].strip()
@@ -68,6 +70,7 @@ async def test_request_analysis_posts_payload_and_returns_request_id(
         "http://example.test/api/v1/openclaw/callback",
     )
     monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "test-token")
+    monkeypatch.setattr(settings, "OPENCLAW_CALLBACK_TOKEN", "cb-token")
 
     mock_cli = AsyncMock()
     mock_res = MagicMock(status_code=202)
@@ -103,3 +106,4 @@ async def test_request_analysis_posts_payload_and_returns_request_id(
     assert called_json["sessionKey"] == f"auto-trader:openclaw:{request_id}"
     assert "USER_PROMPT:\nP" in called_json["message"]
     assert "POST http://example.test/api/v1/openclaw/callback" in called_json["message"]
+    assert "Authorization: Bearer cb-token" in called_json["message"]

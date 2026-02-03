@@ -121,6 +121,7 @@ class Settings(BaseSettings):
     # OpenClaw integration
     OPENCLAW_WEBHOOK_URL: str = "http://localhost:18789/hooks/agent"
     OPENCLAW_TOKEN: str = ""
+    OPENCLAW_CALLBACK_TOKEN: str = ""  # shared secret for inbound callback auth
     OPENCLAW_CALLBACK_URL: str = "http://localhost:8000/api/v1/openclaw/callback"
     OPENCLAW_ENABLED: bool = False
 

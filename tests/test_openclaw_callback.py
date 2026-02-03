@@ -49,7 +49,7 @@ async def test_openclaw_callback_persists_result_with_prompt_fallback_and_model_
         "app.routers.openclaw_callback.create_stock_if_not_exists",
         new=mock_create_stock,
     ):
-        res = await openclaw_callback(payload, db)
+        res = await openclaw_callback(payload, db=db)
 
     assert res == {"status": "ok", "request_id": "r1", "analysis_result_id": 123}
 
@@ -120,7 +120,7 @@ async def test_openclaw_callback_uses_payload_prompt_when_provided() -> None:
         "app.routers.openclaw_callback.create_stock_if_not_exists",
         new=mock_create_stock,
     ):
-        res = await openclaw_callback(payload, db)
+        res = await openclaw_callback(payload, db=db)
 
     assert res["analysis_result_id"] == 999
     record = db.add.call_args.args[0]
