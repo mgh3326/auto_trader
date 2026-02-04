@@ -63,6 +63,23 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
+### MCP 서버 실행
+
+MCP 서버는 시장 데이터 조회용 read-only 도구를 제공합니다.
+
+필수 환경 변수:
+- `MCP_TYPE` (기본: streamable-http)
+- `MCP_HOST` (기본: 0.0.0.0)
+- `MCP_PORT` (기본: 8765)
+- `MCP_PATH` (기본: /mcp)
+
+Docker (production compose):
+```bash
+docker compose -f docker-compose.prod.yml up -d mcp
+```
+
+자세한 내용은 `app/mcp_server/README.md`를 참고하세요.
+
 ## 사용법
 
 ### 암호화폐 분석 (업비트)
