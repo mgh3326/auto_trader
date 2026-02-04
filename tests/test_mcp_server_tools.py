@@ -175,6 +175,26 @@ async def test_get_quote_korean_equity(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_quote_korean_equity_returns_error_payload(monkeypatch):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            raise RuntimeError("kis down")
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+    result = await tools["get_quote"]("005930")
+
+    assert result == {
+        "error": "kis down",
+        "source": "kis",
+        "symbol": "005930",
+        "instrument_type": "equity_kr",
+    }
+
+
+@pytest.mark.asyncio
 async def test_get_quote_us_equity(monkeypatch):
     tools = build_tools()
     df = pd.DataFrame(
@@ -214,6 +234,22 @@ async def test_get_quote_us_equity(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_quote_us_equity_returns_error_payload(monkeypatch):
+    tools = build_tools()
+    mock_fetch = AsyncMock(side_effect=RuntimeError("yahoo down"))
+    monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_price", mock_fetch)
+
+    result = await tools["get_quote"]("AAPL")
+
+    assert result == {
+        "error": "yahoo down",
+        "source": "yahoo",
+        "symbol": "AAPL",
+        "instrument_type": "equity_us",
+    }
+
+
+@pytest.mark.asyncio
 async def test_get_quote_raises_on_invalid_symbol():
     tools = build_tools()
 
@@ -232,6 +268,24 @@ async def test_get_quote_market_crypto_requires_prefix():
         ValueError, match="crypto symbols must include KRW-/USDT- prefix"
     ):
         await tools["get_quote"]("BTC", market="crypto")
+
+
+@pytest.mark.asyncio
+async def test_get_quote_market_kr_requires_digits():
+    tools = build_tools()
+
+    with pytest.raises(ValueError, match="korean equity symbols must be 6 digits"):
+        await tools["get_quote"]("AAPL", market="kr")
+
+
+@pytest.mark.asyncio
+async def test_get_quote_market_us_rejects_crypto_prefix():
+    tools = build_tools()
+
+    with pytest.raises(
+        ValueError, match="us equity symbols must not include KRW-/USDT- prefix"
+    ):
+        await tools["get_quote"]("KRW-BTC", market="us")
 
 
 @pytest.mark.asyncio
@@ -348,3 +402,13 @@ async def test_get_ohlcv_market_kr_requires_digits():
 
     with pytest.raises(ValueError, match="korean equity symbols must be 6 digits"):
         await tools["get_ohlcv"]("AAPL", market="kr")
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_market_us_rejects_crypto_prefix():
+    tools = build_tools()
+
+    with pytest.raises(
+        ValueError, match="us equity symbols must not include KRW-/USDT- prefix"
+    ):
+        await tools["get_ohlcv"]("KRW-BTC", market="us")
