@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     # Monitoring test route exposure
     EXPOSE_MONITORING_TEST_ROUTES: bool = False
 
+    # OpenClaw integration
+    OPENCLAW_WEBHOOK_URL: str = "http://localhost:18789/hooks/agent"
+    OPENCLAW_TOKEN: str = ""
+    OPENCLAW_CALLBACK_TOKEN: str = ""  # shared secret for inbound callback auth
+    OPENCLAW_CALLBACK_URL: str = "http://localhost:8000/api/v1/openclaw/callback"
+    OPENCLAW_ENABLED: bool = False
+
     # JWT Authentication settings
     SECRET_KEY: str
     ALGORITHM: Literal["HS256", "HS384", "HS512"] = "HS256"

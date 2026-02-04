@@ -29,6 +29,7 @@ from app.routers import (
     kis_domestic_trading,
     kis_overseas_trading,
     manual_holdings,
+    openclaw_callback,
     portfolio,
     stock_latest,
     symbol_settings,
@@ -117,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(health.router)
     app.include_router(analysis_json.router)
+    app.include_router(openclaw_callback.router)
     app.include_router(stock_latest.router)
     app.include_router(upbit_trading.router)
     app.include_router(kis_domestic_trading.router)
