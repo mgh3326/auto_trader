@@ -8,7 +8,7 @@
 > **개발 인프라 개선 시리즈:**
 > - [Infra-1편: Poetry에서 UV로 마이그레이션](https://mgh3326.tistory.com/235)
 > - [Infra-2편: Python 3.13 업그레이드](https://mgh3326.tistory.com/236)
-> - [Infra-3편: Python 3.14 업그레이드](https://mgh3326.tistory.com/237)
+> - [Infra-3편: Python 3.14 업그레이드](https://mgh3326.tistory.com/239)
 > - **Infra-4편: Ruff + Pyright 마이그레이션** ← 현재 글
 >
 > **AI 자동매매 시리즈:**
