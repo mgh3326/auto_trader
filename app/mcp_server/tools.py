@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastmcp import FastMCP
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
 
 from app.core.db import AsyncSessionLocal
 from app.services.stock_info_service import StockInfoService
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
-from app.services.kis import KISService
+from app.services.kis import KISClient
 
 
 def _is_korean_equity_code(symbol: str) -> bool:
@@ -28,7 +29,9 @@ def _is_us_equity_symbol(symbol: str) -> bool:
 
 
 def register_tools(mcp: FastMCP) -> None:
-    @mcp.tool(name="search_symbol", description="Search symbols by query (symbol or name).")
+    @mcp.tool(
+        name="search_symbol", description="Search symbols by query (symbol or name)."
+    )
     async def search_symbol(query: str, limit: int = 20) -> list[dict[str, Any]]:
         query = (query or "").strip()
         if not query:
@@ -49,7 +52,10 @@ def register_tools(mcp: FastMCP) -> None:
             for r in rows
         ]
 
-    @mcp.tool(name="get_quote", description="Get latest quote/last price for a symbol (KR equity / US equity / crypto).")
+    @mcp.tool(
+        name="get_quote",
+        description="Get latest quote/last price for a symbol (KR equity / US equity / crypto).",
+    )
     async def get_quote(symbol: str, market: str | None = None) -> dict[str, Any]:
         symbol = (symbol or "").strip()
         if not symbol:
@@ -68,7 +74,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         # Korea equity (KIS)
         if _is_korean_equity_code(symbol):
-            kis = KISService()
+            kis = KISClient()
             df = await kis.inquire_daily_itemchartprice(
                 code=symbol, market=(market or "J"), n=1
             )
@@ -120,7 +126,9 @@ def register_tools(mcp: FastMCP) -> None:
 
         # Crypto
         if _is_crypto_market(symbol):
-            df = await upbit_service.fetch_ohlcv(market=symbol.upper(), days=min(days, 200))
+            df = await upbit_service.fetch_ohlcv(
+                market=symbol.upper(), days=min(days, 200)
+            )
             return {
                 "symbol": symbol.upper(),
                 "instrument_type": "crypto",
@@ -131,7 +139,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         # Korea equity
         if _is_korean_equity_code(symbol):
-            kis = KISService()
+            kis = KISClient()
             df = await kis.inquire_daily_itemchartprice(
                 code=symbol,
                 market=(market or "J"),
