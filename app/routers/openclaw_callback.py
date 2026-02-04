@@ -1,6 +1,5 @@
-from typing import Literal
-
 import hmac
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -28,12 +27,13 @@ def _extract_bearer_token(auth_header: str | None) -> str | None:
 
 
 async def _require_openclaw_callback_token(request: Request) -> None:
-    expected = settings.OPENCLAW_CALLBACK_TOKEN.strip()
-    if not expected:
+    token = settings.OPENCLAW_CALLBACK_TOKEN
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="OPENCLAW_CALLBACK_TOKEN is not configured",
         )
+    expected = token.strip()
 
     provided = _extract_bearer_token(request.headers.get("authorization"))
     if provided is None:
@@ -87,6 +87,7 @@ async def openclaw_callback(
         symbol=payload.symbol,
         name=payload.name,
         instrument_type=payload.instrument_type,
+        db=db,
     )
 
     prompt = payload.prompt or (

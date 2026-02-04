@@ -133,13 +133,58 @@ class StockInfoService:
 
 # 편의 함수들
 async def create_stock_if_not_exists(
-    symbol: str, name: str, instrument_type: str, **kwargs
+    symbol: str,
+    name: str,
+    instrument_type: str,
+    db: AsyncSession | None = None,
+    **kwargs,
 ) -> StockInfo:
-    """주식이 존재하지 않으면 생성하고, 존재하면 반환"""
+    """주식이 존재하지 않으면 생성하고, 존재하면 반환
+
+    Parameters
+    ----------
+    symbol : str
+        종목 심볼
+    name : str
+        종목명
+    instrument_type : str
+        종목 타입
+    db : AsyncSession | None
+        외부에서 주입된 세션. 제공되면 해당 세션을 사용하고 커밋하지 않음.
+        제공되지 않으면 자체 세션을 생성하고 커밋함.
+    **kwargs
+        추가 필드
+
+    Returns
+    -------
+    StockInfo
+        생성되거나 조회된 StockInfo
+    """
+    if db is not None:
+        # 외부 세션 사용 - 커밋하지 않음 (호출자가 트랜잭션 관리)
+        existing_stock = await db.execute(
+            select(StockInfo).where(StockInfo.symbol == symbol)
+        )
+        stock = existing_stock.scalar_one_or_none()
+        if stock:
+            return stock
+
+        stock_data = {
+            "symbol": symbol,
+            "name": name,
+            "instrument_type": instrument_type,
+            **kwargs,
+        }
+        new_stock = StockInfo(**stock_data)
+        db.add(new_stock)
+        await db.flush()  # ID 생성을 위해 flush, 커밋은 호출자가 함
+        return new_stock
+
+    # 자체 세션 사용 - 독립적으로 커밋
     from app.core.db import AsyncSessionLocal
 
-    async with AsyncSessionLocal() as db:
-        service = StockInfoService(db)
+    async with AsyncSessionLocal() as own_db:
+        service = StockInfoService(own_db)
 
         existing_stock = await service.get_stock_info_by_symbol(symbol)
         if existing_stock:

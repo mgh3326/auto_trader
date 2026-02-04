@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -57,6 +57,7 @@ async def test_openclaw_callback_persists_result_with_prompt_fallback_and_model_
         symbol="AAPL",
         name="Apple Inc.",
         instrument_type="equity_us",
+        db=ANY,
     )
     db.add.assert_called_once()
     db.commit.assert_awaited_once()
