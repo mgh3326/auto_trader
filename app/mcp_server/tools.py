@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import datetime
 from typing import TYPE_CHECKING, Any
+
+import pandas as pd
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -26,6 +29,33 @@ def _is_us_equity_symbol(symbol: str) -> bool:
     # Simple heuristic: has letters and no dash-prefix like KRW-
     s = symbol.strip().upper()
     return (not _is_crypto_market(s)) and any(c.isalpha() for c in s)
+
+
+def _normalize_value(value: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, (datetime.date, datetime.datetime, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, pd.Timedelta):
+        return value.total_seconds()
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return value
+    return value
+
+
+def _normalize_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
+    return [
+        {str(key): _normalize_value(value) for key, value in row.items()}
+        for row in df.to_dict(orient="records")
+    ]
 
 
 def register_tools(mcp: FastMCP) -> None:
@@ -134,7 +164,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "instrument_type": "crypto",
                 "source": "upbit",
                 "days": min(days, 200),
-                "rows": df.to_dict(orient="records"),
+                "rows": _normalize_rows(df),
             }
 
         # Korea equity
@@ -151,7 +181,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "instrument_type": "equity_kr",
                 "source": "kis",
                 "days": min(days, 200),
-                "rows": df.to_dict(orient="records"),
+                "rows": _normalize_rows(df),
             }
 
         # US equity
@@ -162,7 +192,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "instrument_type": "equity_us",
                 "source": "yahoo",
                 "days": min(days, 100),
-                "rows": df.to_dict(orient="records"),
+                "rows": _normalize_rows(df),
             }
 
         raise ValueError("Unsupported symbol format")

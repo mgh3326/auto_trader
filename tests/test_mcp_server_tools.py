@@ -204,6 +204,33 @@ async def test_get_ohlcv_crypto(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_ohlcv_serializes_timestamps(monkeypatch):
+    tools = build_tools()
+    df = pd.DataFrame(
+        [
+            {
+                "date": pd.Timestamp("2024-01-01"),
+                "open": 1.0,
+                "high": 2.0,
+                "low": 0.5,
+                "close": 1.5,
+                "volume": 10,
+                "value": float("nan"),
+            }
+        ]
+    )
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", days=1)
+
+    row = result["rows"][0]
+    assert isinstance(row["date"], str)
+    assert "2024-01-01" in row["date"]
+    assert row["value"] is None
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_korean_equity(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
