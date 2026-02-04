@@ -48,6 +48,9 @@ async def _require_openclaw_callback_token(request: Request) -> None:
         )
 
 
+# TODO(security): Replace OPENCLAW_CALLBACK_TOKEN with HMAC-signed callbacks.
+# Why: the callback token is embedded into OpenClaw messages and may appear in
+# logs/session history.
 class OpenClawCallbackRequest(BaseModel):
     request_id: str = Field(description="Correlation ID for this analysis request")
     symbol: str = Field(description="Instrument symbol/ticker")
