@@ -31,6 +31,34 @@ def _is_us_equity_symbol(symbol: str) -> bool:
     return (not _is_crypto_market(s)) and any(c.isalpha() for c in s)
 
 
+def _normalize_market(market: str | None) -> str | None:
+    if not market:
+        return None
+    normalized = market.strip().lower()
+    if not normalized:
+        return None
+    mapping = {
+        "crypto": "crypto",
+        "upbit": "crypto",
+        "krw": "crypto",
+        "usdt": "crypto",
+        "kr": "equity_kr",
+        "krx": "equity_kr",
+        "korea": "equity_kr",
+        "kospi": "equity_kr",
+        "kosdaq": "equity_kr",
+        "kis": "equity_kr",
+        "equity_kr": "equity_kr",
+        "us": "equity_us",
+        "usa": "equity_us",
+        "nyse": "equity_us",
+        "nasdaq": "equity_us",
+        "yahoo": "equity_us",
+        "equity_us": "equity_us",
+    }
+    return mapping.get(normalized)
+
+
 def _error_payload(
     *,
     source: str,
@@ -80,7 +108,8 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="search_symbol", description="Search symbols by query (symbol or name)."
     )
-    async def search_symbol(query: str, limit: int = 20) -> list[dict[str, Any]]:
+    async def \
+            search_symbol(query: str, limit: int = 20) -> list[dict[str, Any]]:
         query = (query or "").strip()
         if not query:
             return []
@@ -113,6 +142,90 @@ def register_tools(mcp: FastMCP) -> None:
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
+
+        market_type = _normalize_market(market)
+
+        if market_type == "crypto":
+            symbol = symbol.upper()
+            if not _is_crypto_market(symbol):
+                raise ValueError("crypto symbols must include KRW-/USDT- prefix")
+            try:
+                prices = await upbit_service.fetch_multiple_current_prices([symbol])
+                price = prices.get(symbol)
+                return {
+                    "symbol": symbol,
+                    "instrument_type": "crypto",
+                    "price": price,
+                    "source": "upbit",
+                }
+            except Exception as exc:
+                return _error_payload(
+                    source="upbit",
+                    message=str(exc),
+                    symbol=symbol,
+                    instrument_type="crypto",
+                )
+
+        if market_type == "equity_kr":
+            if not _is_korean_equity_code(symbol):
+                raise ValueError("korean equity symbols must be 6 digits")
+            try:
+                kis = KISClient()
+                df = await kis.inquire_daily_itemchartprice(
+                    code=symbol, market=(market or "J"), n=1
+                )
+                last = df.iloc[-1].to_dict() if not df.empty else {}
+                return {
+                    "symbol": symbol,
+                    "instrument_type": "equity_kr",
+                    "date": str(last.get("date"))
+                    if last.get("date") is not None
+                    else None,
+                    "open": last.get("open"),
+                    "high": last.get("high"),
+                    "low": last.get("low"),
+                    "close": last.get("close"),
+                    "volume": last.get("volume"),
+                    "value": last.get("value"),
+                    "source": "kis",
+                }
+            except Exception as exc:
+                return _error_payload(
+                    source="kis",
+                    message=str(exc),
+                    symbol=symbol,
+                    instrument_type="equity_kr",
+                )
+
+        if market_type == "equity_us":
+            if _is_crypto_market(symbol):
+                raise ValueError("us equity symbols must not include KRW-/USDT- prefix")
+            try:
+                df = await yahoo_service.fetch_price(symbol)
+                row = df.reset_index().iloc[-1].to_dict() if not df.empty else {}
+                return {
+                    "symbol": symbol,
+                    "instrument_type": "equity_us",
+                    "date": str(row.get("date"))
+                    if row.get("date") is not None
+                    else None,
+                    "time": str(row.get("time"))
+                    if row.get("time") is not None
+                    else None,
+                    "open": row.get("open"),
+                    "high": row.get("high"),
+                    "low": row.get("low"),
+                    "close": row.get("close"),
+                    "volume": row.get("volume"),
+                    "source": "yahoo",
+                }
+            except Exception as exc:
+                return _error_payload(
+                    source="yahoo",
+                    message=str(exc),
+                    symbol=symbol,
+                    instrument_type="equity_us",
+                )
 
         # Crypto (Upbit)
         if _is_crypto_market(symbol):
@@ -207,6 +320,75 @@ def register_tools(mcp: FastMCP) -> None:
         days = int(days)
         if days <= 0:
             raise ValueError("days must be > 0")
+
+        market_type = _normalize_market(market)
+
+        if market_type == "crypto":
+            symbol = symbol.upper()
+            if not _is_crypto_market(symbol):
+                raise ValueError("crypto symbols must include KRW-/USDT- prefix")
+            try:
+                df = await upbit_service.fetch_ohlcv(market=symbol, days=min(days, 200))
+                return {
+                    "symbol": symbol,
+                    "instrument_type": "crypto",
+                    "source": "upbit",
+                    "days": min(days, 200),
+                    "rows": _normalize_rows(df),
+                }
+            except Exception as exc:
+                return _error_payload(
+                    source="upbit",
+                    message=str(exc),
+                    symbol=symbol,
+                    instrument_type="crypto",
+                )
+
+        if market_type == "equity_kr":
+            if not _is_korean_equity_code(symbol):
+                raise ValueError("korean equity symbols must be 6 digits")
+            try:
+                kis = KISClient()
+                df = await kis.inquire_daily_itemchartprice(
+                    code=symbol,
+                    market=(market or "J"),
+                    n=min(days, 200),
+                    period="D",
+                )
+                return {
+                    "symbol": symbol,
+                    "instrument_type": "equity_kr",
+                    "source": "kis",
+                    "days": min(days, 200),
+                    "rows": _normalize_rows(df),
+                }
+            except Exception as exc:
+                return _error_payload(
+                    source="kis",
+                    message=str(exc),
+                    symbol=symbol,
+                    instrument_type="equity_kr",
+                )
+
+        if market_type == "equity_us":
+            if _is_crypto_market(symbol):
+                raise ValueError("us equity symbols must not include KRW-/USDT- prefix")
+            try:
+                df = await yahoo_service.fetch_ohlcv(ticker=symbol, days=min(days, 100))
+                return {
+                    "symbol": symbol,
+                    "instrument_type": "equity_us",
+                    "source": "yahoo",
+                    "days": min(days, 100),
+                    "rows": _normalize_rows(df),
+                }
+            except Exception as exc:
+                return _error_payload(
+                    source="yahoo",
+                    message=str(exc),
+                    symbol=symbol,
+                    instrument_type="equity_us",
+                )
 
         # Crypto
         if _is_crypto_market(symbol):

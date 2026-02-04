@@ -225,6 +225,16 @@ async def test_get_quote_raises_on_invalid_symbol():
 
 
 @pytest.mark.asyncio
+async def test_get_quote_market_crypto_requires_prefix():
+    tools = build_tools()
+
+    with pytest.raises(
+        ValueError, match="crypto symbols must include KRW-/USDT- prefix"
+    ):
+        await tools["get_quote"]("BTC", market="crypto")
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_crypto(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
@@ -330,3 +340,11 @@ async def test_get_ohlcv_raises_on_invalid_input():
 
     with pytest.raises(ValueError, match="Unsupported symbol format"):
         await tools["get_ohlcv"]("1234")
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_market_kr_requires_digits():
+    tools = build_tools()
+
+    with pytest.raises(ValueError, match="korean equity symbols must be 6 digits"):
+        await tools["get_ohlcv"]("AAPL", market="kr")

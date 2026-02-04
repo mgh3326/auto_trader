@@ -7,6 +7,11 @@ Read-only MCP tools (market data) exposed via `fastmcp`.
 - `get_quote(symbol, market=None)`
 - `get_ohlcv(symbol, days=100, market=None)`
 
+Market routing:
+- `market` can override routing: `crypto|upbit`, `kr|kis|krx|kospi|kosdaq`, `us|yahoo|nasdaq|nyse`
+- If `market` is omitted, routing is heuristic: KRW-/USDT- prefix -> crypto, 6-digit code -> KR equity, otherwise -> US equity
+- Crypto symbols must include `KRW-` or `USDT-` prefix
+
 ## Run (docker-compose.prod)
 Environment variables:
 - `MCP_TYPE` : `streamable-http` (default) | `sse` | `stdio`
