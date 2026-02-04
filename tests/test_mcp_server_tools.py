@@ -140,7 +140,30 @@ async def test_get_quote_korean_equity(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_quote_us_equity(monkeypatch):
     tools = build_tools()
-    df = _single_row_df()
+    df = pd.DataFrame(
+        [
+            {
+                "date": "2024-01-01",
+                "time": "09:30:00",
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000,
+                "value": 105000.0,
+            },
+            {
+                "date": "2024-01-02",
+                "time": "09:30:00",
+                "open": 200.0,
+                "high": 210.0,
+                "low": 190.0,
+                "close": 205.0,
+                "volume": 2000,
+                "value": 205000.0,
+            },
+        ]
+    )
     mock_fetch = AsyncMock(return_value=df)
     monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_price", mock_fetch)
 
@@ -149,8 +172,8 @@ async def test_get_quote_us_equity(monkeypatch):
     mock_fetch.assert_awaited_once_with("AAPL")
     assert result["instrument_type"] == "equity_us"
     assert result["source"] == "yahoo"
-    assert result["open"] == 100.0
-    assert result["close"] == 105.0
+    assert result["open"] == 200.0
+    assert result["close"] == 205.0
 
 
 @pytest.mark.asyncio

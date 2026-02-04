@@ -95,7 +95,7 @@ def register_tools(mcp: FastMCP) -> None:
         # US equity (Yahoo)
         if _is_us_equity_symbol(symbol):
             df = await yahoo_service.fetch_price(symbol)
-            row = df.reset_index().iloc[0].to_dict() if not df.empty else {}
+            row = df.reset_index().iloc[-1].to_dict() if not df.empty else {}
             return {
                 "symbol": symbol,
                 "instrument_type": "equity_us",
