@@ -100,6 +100,25 @@ async def test_search_symbol_clamps_limit_and_shapes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_search_symbol_returns_error_payload(monkeypatch):
+    tools = build_tools()
+
+    class DummyStockInfoService:
+        def __init__(self, db) -> None:
+            self.db = db
+
+        async def search_stocks(self, query: str, limit: int):
+            raise RuntimeError("db failed")
+
+    monkeypatch.setattr(mcp_tools, "AsyncSessionLocal", lambda: DummySessionManager())
+    monkeypatch.setattr(mcp_tools, "StockInfoService", DummyStockInfoService)
+
+    result = await tools["search_symbol"]("samsung")
+
+    assert result == [{"error": "db failed", "source": "db", "query": "samsung"}]
+
+
+@pytest.mark.asyncio
 async def test_get_quote_crypto(monkeypatch):
     tools = build_tools()
     mock_fetch = AsyncMock(return_value={"KRW-BTC": 123.4})
@@ -115,6 +134,24 @@ async def test_get_quote_crypto(monkeypatch):
         "instrument_type": "crypto",
         "price": 123.4,
         "source": "upbit",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_quote_crypto_returns_error_payload(monkeypatch):
+    tools = build_tools()
+    mock_fetch = AsyncMock(side_effect=RuntimeError("upbit down"))
+    monkeypatch.setattr(
+        mcp_tools.upbit_service, "fetch_multiple_current_prices", mock_fetch
+    )
+
+    result = await tools["get_quote"]("KRW-BTC")
+
+    assert result == {
+        "error": "upbit down",
+        "source": "upbit",
+        "symbol": "KRW-BTC",
+        "instrument_type": "crypto",
     }
 
 
@@ -247,6 +284,22 @@ async def test_get_ohlcv_korean_equity(monkeypatch):
     assert result["source"] == "kis"
     assert result["days"] == 10
     assert len(result["rows"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_equity_returns_error_payload(monkeypatch):
+    tools = build_tools()
+    mock_fetch = AsyncMock(side_effect=RuntimeError("yahoo timeout"))
+    monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("AAPL", days=5)
+
+    assert result == {
+        "error": "yahoo timeout",
+        "source": "yahoo",
+        "symbol": "AAPL",
+        "instrument_type": "equity_us",
+    }
 
 
 @pytest.mark.asyncio
