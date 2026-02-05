@@ -415,6 +415,105 @@ async def test_get_ohlcv_market_us_rejects_crypto_prefix():
 
 
 @pytest.mark.unit
+class TestNormalizeMarket:
+    """Tests for _normalize_market helper function."""
+
+    def test_returns_none_for_empty(self):
+        assert mcp_tools._normalize_market(None) is None
+        assert mcp_tools._normalize_market("") is None
+        assert mcp_tools._normalize_market("   ") is None
+
+    def test_crypto_aliases(self):
+        for alias in ["crypto", "upbit", "krw", "usdt"]:
+            assert mcp_tools._normalize_market(alias) == "crypto"
+
+    def test_equity_kr_aliases(self):
+        for alias in ["kr", "krx", "korea", "kospi", "kosdaq", "kis", "equity_kr"]:
+            assert mcp_tools._normalize_market(alias) == "equity_kr"
+
+    def test_equity_us_aliases(self):
+        for alias in ["us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"]:
+            assert mcp_tools._normalize_market(alias) == "equity_us"
+
+    def test_case_insensitive(self):
+        assert mcp_tools._normalize_market("CRYPTO") == "crypto"
+        assert mcp_tools._normalize_market("KR") == "equity_kr"
+        assert mcp_tools._normalize_market("Us") == "equity_us"
+
+    def test_unknown_returns_none(self):
+        assert mcp_tools._normalize_market("unknown") is None
+        assert mcp_tools._normalize_market("invalid") is None
+
+
+@pytest.mark.unit
+class TestSymbolDetection:
+    """Tests for symbol detection helper functions."""
+
+    def test_is_korean_equity_code(self):
+        assert mcp_tools._is_korean_equity_code("005930") is True
+        assert mcp_tools._is_korean_equity_code("000660") is True
+        assert mcp_tools._is_korean_equity_code("  005930  ") is True
+        assert mcp_tools._is_korean_equity_code("00593") is False  # 5 digits
+        assert mcp_tools._is_korean_equity_code("0059300") is False  # 7 digits
+        assert mcp_tools._is_korean_equity_code("AAPL") is False
+        assert mcp_tools._is_korean_equity_code("12345A") is False
+
+    def test_is_crypto_market(self):
+        assert mcp_tools._is_crypto_market("KRW-BTC") is True
+        assert mcp_tools._is_crypto_market("krw-btc") is True
+        assert mcp_tools._is_crypto_market("USDT-BTC") is True
+        assert mcp_tools._is_crypto_market("usdt-eth") is True
+        assert mcp_tools._is_crypto_market("BTC") is False
+        assert mcp_tools._is_crypto_market("AAPL") is False
+        assert mcp_tools._is_crypto_market("005930") is False
+
+    def test_is_us_equity_symbol(self):
+        assert mcp_tools._is_us_equity_symbol("AAPL") is True
+        assert mcp_tools._is_us_equity_symbol("MSFT") is True
+        assert mcp_tools._is_us_equity_symbol("BRK.B") is True
+        assert mcp_tools._is_us_equity_symbol("KRW-BTC") is False  # crypto prefix
+        assert mcp_tools._is_us_equity_symbol("005930") is False  # all digits
+
+
+@pytest.mark.unit
+class TestNormalizeValue:
+    """Tests for _normalize_value helper function."""
+
+    def test_none_returns_none(self):
+        assert mcp_tools._normalize_value(None) is None
+
+    def test_nan_returns_none(self):
+        import numpy as np
+
+        assert mcp_tools._normalize_value(float("nan")) is None
+        assert mcp_tools._normalize_value(np.nan) is None
+
+    def test_datetime_returns_isoformat(self):
+        import datetime
+
+        dt = datetime.datetime(2024, 1, 15, 10, 30, 0)
+        assert mcp_tools._normalize_value(dt) == "2024-01-15T10:30:00"
+
+        d = datetime.date(2024, 1, 15)
+        assert mcp_tools._normalize_value(d) == "2024-01-15"
+
+    def test_timedelta_returns_seconds(self):
+        td = pd.Timedelta(hours=1, minutes=30)
+        assert mcp_tools._normalize_value(td) == 5400.0
+
+    def test_numpy_scalar_returns_python_type(self):
+        import numpy as np
+
+        assert mcp_tools._normalize_value(np.int64(42)) == 42
+        assert mcp_tools._normalize_value(np.float64(3.14)) == 3.14
+
+    def test_regular_values_pass_through(self):
+        assert mcp_tools._normalize_value(42) == 42
+        assert mcp_tools._normalize_value(3.14) == 3.14
+        assert mcp_tools._normalize_value("hello") == "hello"
+
+
+@pytest.mark.unit
 class TestResolveMarketType:
     """Tests for _resolve_market_type helper function."""
 
