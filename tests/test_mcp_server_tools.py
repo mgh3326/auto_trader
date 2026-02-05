@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -337,7 +336,7 @@ async def test_get_ohlcv_with_end_date(monkeypatch):
     mock_fetch = AsyncMock(return_value=df)
     monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
 
-    result = await tools["get_ohlcv"]("KRW-BTC", count=100, end_date="2024-06-30")
+    await tools["get_ohlcv"]("KRW-BTC", count=100, end_date="2024-06-30")
 
     # Verify end_date was parsed and passed
     call_args = mock_fetch.call_args
@@ -783,3 +782,354 @@ class TestSymbolNotFound:
         assert "error" in result
         assert "not found" in result["error"].lower()
         assert result["source"] == "yahoo"
+
+
+# ---------------------------------------------------------------------------
+# Technical Indicator Tests
+# ---------------------------------------------------------------------------
+
+
+def _sample_ohlcv_df(n: int = 250) -> pd.DataFrame:
+    """Create sample OHLCV DataFrame for indicator testing."""
+    import numpy as np
+
+    np.random.seed(42)
+    base_price = 100.0
+    prices = base_price + np.cumsum(np.random.randn(n) * 2)
+
+    return pd.DataFrame({
+        "open": prices + np.random.randn(n) * 0.5,
+        "high": prices + abs(np.random.randn(n) * 1.5),
+        "low": prices - abs(np.random.randn(n) * 1.5),
+        "close": prices,
+        "volume": np.random.randint(1000, 10000, n),
+    })
+
+
+@pytest.mark.unit
+class TestCalculateSMA:
+    """Tests for _calculate_sma function."""
+
+    def test_calculates_sma_for_all_periods(self):
+        df = _sample_ohlcv_df(250)
+        result = mcp_tools._calculate_sma(df["close"])
+
+        assert "5" in result
+        assert "20" in result
+        assert "60" in result
+        assert "120" in result
+        assert "200" in result
+        assert all(v is not None for v in result.values())
+
+    def test_returns_none_for_insufficient_data(self):
+        df = _sample_ohlcv_df(10)
+        result = mcp_tools._calculate_sma(df["close"])
+
+        assert result["5"] is not None
+        assert result["20"] is None
+        assert result["200"] is None
+
+    def test_custom_periods(self):
+        df = _sample_ohlcv_df(50)
+        result = mcp_tools._calculate_sma(df["close"], periods=[5, 10, 25])
+
+        assert "5" in result
+        assert "10" in result
+        assert "25" in result
+        assert len(result) == 3
+
+
+@pytest.mark.unit
+class TestCalculateEMA:
+    """Tests for _calculate_ema function."""
+
+    def test_calculates_ema_for_all_periods(self):
+        df = _sample_ohlcv_df(250)
+        result = mcp_tools._calculate_ema(df["close"])
+
+        assert "5" in result
+        assert "20" in result
+        assert "200" in result
+        assert all(v is not None for v in result.values())
+
+    def test_returns_none_for_insufficient_data(self):
+        df = _sample_ohlcv_df(10)
+        result = mcp_tools._calculate_ema(df["close"])
+
+        assert result["5"] is not None
+        assert result["20"] is None
+
+    def test_ema_differs_from_sma(self):
+        df = _sample_ohlcv_df(50)
+        sma = mcp_tools._calculate_sma(df["close"], periods=[20])
+        ema = mcp_tools._calculate_ema(df["close"], periods=[20])
+
+        # EMA gives more weight to recent prices, so values should differ
+        assert sma["20"] != ema["20"]
+
+
+@pytest.mark.unit
+class TestCalculateRSI:
+    """Tests for _calculate_rsi function."""
+
+    def test_calculates_rsi(self):
+        df = _sample_ohlcv_df(50)
+        result = mcp_tools._calculate_rsi(df["close"])
+
+        assert "14" in result
+        assert result["14"] is not None
+        # RSI should be between 0 and 100
+        assert 0 <= result["14"] <= 100
+
+    def test_returns_none_for_insufficient_data(self):
+        df = _sample_ohlcv_df(10)
+        result = mcp_tools._calculate_rsi(df["close"])
+
+        assert result["14"] is None
+
+    def test_custom_period(self):
+        df = _sample_ohlcv_df(50)
+        result = mcp_tools._calculate_rsi(df["close"], period=7)
+
+        assert "7" in result
+        assert result["7"] is not None
+
+
+@pytest.mark.unit
+class TestCalculateMACD:
+    """Tests for _calculate_macd function."""
+
+    def test_calculates_macd(self):
+        df = _sample_ohlcv_df(50)
+        result = mcp_tools._calculate_macd(df["close"])
+
+        assert "macd" in result
+        assert "signal" in result
+        assert "histogram" in result
+        assert all(v is not None for v in result.values())
+
+    def test_returns_none_for_insufficient_data(self):
+        df = _sample_ohlcv_df(20)
+        result = mcp_tools._calculate_macd(df["close"])
+
+        assert result["macd"] is None
+        assert result["signal"] is None
+        assert result["histogram"] is None
+
+    def test_histogram_equals_macd_minus_signal(self):
+        df = _sample_ohlcv_df(100)
+        result = mcp_tools._calculate_macd(df["close"])
+
+        expected_hist = result["macd"] - result["signal"]
+        assert abs(result["histogram"] - expected_hist) < 0.01
+
+
+@pytest.mark.unit
+class TestCalculateBollinger:
+    """Tests for _calculate_bollinger function."""
+
+    def test_calculates_bollinger_bands(self):
+        df = _sample_ohlcv_df(50)
+        result = mcp_tools._calculate_bollinger(df["close"])
+
+        assert "upper" in result
+        assert "middle" in result
+        assert "lower" in result
+        assert all(v is not None for v in result.values())
+        # Upper > middle > lower
+        assert result["upper"] > result["middle"] > result["lower"]
+
+    def test_returns_none_for_insufficient_data(self):
+        df = _sample_ohlcv_df(10)
+        result = mcp_tools._calculate_bollinger(df["close"])
+
+        assert result["upper"] is None
+        assert result["middle"] is None
+        assert result["lower"] is None
+
+    def test_middle_equals_sma(self):
+        df = _sample_ohlcv_df(50)
+        bollinger = mcp_tools._calculate_bollinger(df["close"], period=20)
+        sma = mcp_tools._calculate_sma(df["close"], periods=[20])
+
+        assert abs(bollinger["middle"] - sma["20"]) < 0.01
+
+
+@pytest.mark.unit
+class TestCalculateATR:
+    """Tests for _calculate_atr function."""
+
+    def test_calculates_atr(self):
+        df = _sample_ohlcv_df(50)
+        result = mcp_tools._calculate_atr(df["high"], df["low"], df["close"])
+
+        assert "14" in result
+        assert result["14"] is not None
+        assert result["14"] > 0
+
+    def test_returns_none_for_insufficient_data(self):
+        df = _sample_ohlcv_df(10)
+        result = mcp_tools._calculate_atr(df["high"], df["low"], df["close"])
+
+        assert result["14"] is None
+
+
+@pytest.mark.unit
+class TestCalculatePivot:
+    """Tests for _calculate_pivot function."""
+
+    def test_calculates_pivot_points(self):
+        df = _sample_ohlcv_df(50)
+        result = mcp_tools._calculate_pivot(df["high"], df["low"], df["close"])
+
+        assert "p" in result
+        assert "r1" in result
+        assert "r2" in result
+        assert "r3" in result
+        assert "s1" in result
+        assert "s2" in result
+        assert "s3" in result
+        assert all(v is not None for v in result.values())
+
+    def test_returns_none_for_insufficient_data(self):
+        df = _sample_ohlcv_df(1)
+        result = mcp_tools._calculate_pivot(df["high"], df["low"], df["close"])
+
+        assert result["p"] is None
+        assert result["r1"] is None
+        assert result["s1"] is None
+
+    def test_pivot_ordering(self):
+        df = _sample_ohlcv_df(50)
+        result = mcp_tools._calculate_pivot(df["high"], df["low"], df["close"])
+
+        # R3 > R2 > R1 > P > S1 > S2 > S3
+        assert result["r3"] > result["r2"] > result["r1"]
+        assert result["s1"] > result["s2"] > result["s3"]
+
+
+@pytest.mark.unit
+class TestComputeIndicators:
+    """Tests for _compute_indicators function."""
+
+    def test_computes_single_indicator(self):
+        df = _sample_ohlcv_df(50)
+        result = mcp_tools._compute_indicators(df, ["rsi"])
+
+        assert "rsi" in result
+        assert len(result) == 1
+
+    def test_computes_multiple_indicators(self):
+        df = _sample_ohlcv_df(100)
+        result = mcp_tools._compute_indicators(df, ["sma", "ema", "rsi", "macd"])
+
+        assert "sma" in result
+        assert "ema" in result
+        assert "rsi" in result
+        assert "macd" in result
+
+    def test_computes_all_indicators(self):
+        df = _sample_ohlcv_df(250)
+        all_indicators = ["sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot"]
+        result = mcp_tools._compute_indicators(df, all_indicators)
+
+        for indicator in all_indicators:
+            assert indicator in result
+
+    def test_raises_on_missing_columns(self):
+        df = pd.DataFrame({"close": [1, 2, 3]})
+
+        with pytest.raises(ValueError, match="Missing required columns"):
+            mcp_tools._compute_indicators(df, ["atr"])
+
+
+@pytest.mark.asyncio
+class TestGetIndicatorsTool:
+    """Tests for get_indicators tool."""
+
+    async def test_returns_indicators(self, monkeypatch):
+        tools = build_tools()
+        df = _sample_ohlcv_df(250)
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_indicators"]("KRW-BTC", ["rsi", "macd"])
+
+        assert result["symbol"] == "KRW-BTC"
+        assert result["instrument_type"] == "crypto"
+        assert result["source"] == "upbit"
+        assert "price" in result
+        assert "indicators" in result
+        assert "rsi" in result["indicators"]
+        assert "macd" in result["indicators"]
+
+    async def test_raises_on_empty_symbol(self):
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_indicators"]("", ["rsi"])
+
+    async def test_raises_on_empty_indicators(self):
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="indicators list is required"):
+            await tools["get_indicators"]("KRW-BTC", [])
+
+    async def test_raises_on_invalid_indicator(self):
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Invalid indicator 'invalid'"):
+            await tools["get_indicators"]("KRW-BTC", ["invalid"])
+
+    async def test_returns_error_payload_on_failure(self, monkeypatch):
+        tools = build_tools()
+        mock_fetch = AsyncMock(side_effect=RuntimeError("API error"))
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_indicators"]("KRW-BTC", ["rsi"])
+
+        assert "error" in result
+        assert result["source"] == "upbit"
+
+    async def test_korean_equity(self, monkeypatch):
+        tools = build_tools()
+        df = _sample_ohlcv_df(250)
+
+        class DummyKISClient:
+            async def inquire_daily_itemchartprice(self, code, market, n, period):
+                return df
+
+        monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+        result = await tools["get_indicators"]("005930", ["sma", "bollinger"])
+
+        assert result["instrument_type"] == "equity_kr"
+        assert result["source"] == "kis"
+        assert "sma" in result["indicators"]
+        assert "bollinger" in result["indicators"]
+
+    async def test_us_equity(self, monkeypatch):
+        tools = build_tools()
+        df = _sample_ohlcv_df(250)
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_indicators"]("AAPL", ["ema", "atr", "pivot"])
+
+        assert result["instrument_type"] == "equity_us"
+        assert result["source"] == "yahoo"
+        assert "ema" in result["indicators"]
+        assert "atr" in result["indicators"]
+        assert "pivot" in result["indicators"]
+
+    async def test_case_insensitive_indicators(self, monkeypatch):
+        tools = build_tools()
+        df = _sample_ohlcv_df(250)
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_indicators"]("KRW-BTC", ["RSI", "MACD", "Sma"])
+
+        assert "rsi" in result["indicators"]
+        assert "macd" in result["indicators"]
+        assert "sma" in result["indicators"]
