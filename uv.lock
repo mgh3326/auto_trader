@@ -201,6 +201,7 @@ dependencies = [
     { name = "email-validator" },
     { name = "fastapi" },
     { name = "fastmcp" },
+    { name = "finnhub-python" },
     { name = "flower" },
     { name = "google-genai" },
     { name = "httpx" },
@@ -257,6 +258,7 @@ requires-dist = [
     { name = "email-validator", specifier = ">=2.0.0,<3.0.0" },
     { name = "fastapi", specifier = ">=0.128.0,<0.129.0" },
     { name = "fastmcp", specifier = ">=2.11.2,<3.0.0" },
+    { name = "finnhub-python", specifier = ">=2.4.21,<3.0.0" },
     { name = "flower", specifier = ">=2.0.1" },
     { name = "google-genai", specifier = ">=1.30.0,<2.0.0" },
     { name = "httpx", specifier = ">=0.28.1,<0.29.0" },
@@ -949,6 +951,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/58/46/0028a82567109b5ef6e4d2a1f04a583fb513e6cf9527fcdd09afd817deeb/filelock-3.20.0.tar.gz", hash = "sha256:711e943b4ec6be42e1d4e6690b48dc175c822967466bb31c0c293f34334c13f4", size = 18922, upload-time = "2025-10-08T18:03:50.056Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/76/91/7216b27286936c16f5b4d0c530087e4a54eead683e6b0b73dd0c64844af6/filelock-3.20.0-py3-none-any.whl", hash = "sha256:339b4732ffda5cd79b13f4e2711a31b0365ce445d95d243bb996273d072546a2", size = 16054, upload-time = "2025-10-08T18:03:48.35Z" },
+]
+
+[[package]]
+name = "finnhub-python"
+version = "2.4.27"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/03/86/6bcf8c3514683198ad07160efd2426d4898275a3e11cdd3ebed659e75d7a/finnhub_python-2.4.27.tar.gz", hash = "sha256:c4402f481005bbb48f72acfa14d7c91e95af1b1c8367ba2f4457eebe4e61b611", size = 13613, upload-time = "2026-01-26T04:39:58.352Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ea/97/6b0e320f7825345ba5754d2da337086598bd04076aa18e0269812ef4f5f3/finnhub_python-2.4.27-py3-none-any.whl", hash = "sha256:2e5bd70ea9c41c077224d9eaebaa2b9c66e0445d4b4d2768fee20a56ce2af07f", size = 12013, upload-time = "2026-01-26T04:39:56.909Z" },
 ]
 
 [[package]]

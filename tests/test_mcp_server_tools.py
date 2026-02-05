@@ -208,6 +208,43 @@ async def test_get_quote_korean_equity_returns_error_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_quote_korean_etf(monkeypatch):
+    """Test get_quote with Korean ETF code (alphanumeric like 0123G0)."""
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+    result = await tools["get_quote"]("0123G0")
+
+    assert result["instrument_type"] == "equity_kr"
+    assert result["source"] == "kis"
+    assert result["price"] == 105.0
+
+
+@pytest.mark.asyncio
+async def test_get_quote_korean_etf_with_explicit_market(monkeypatch):
+    """Test get_quote with Korean ETF code and explicit market=kr."""
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+    result = await tools["get_quote"]("0117V0", market="kr")
+
+    assert result["instrument_type"] == "equity_kr"
+    assert result["source"] == "kis"
+
+
+@pytest.mark.asyncio
 async def test_get_quote_us_equity(monkeypatch):
     tools = build_tools()
 
@@ -281,7 +318,7 @@ async def test_get_quote_market_crypto_requires_prefix():
 async def test_get_quote_market_kr_requires_digits():
     tools = build_tools()
 
-    with pytest.raises(ValueError, match="korean equity symbols must be 6 digits"):
+    with pytest.raises(ValueError, match="korean equity symbols must be 6 alphanumeric"):
         await tools["get_quote"]("AAPL", market="kr")
 
 
@@ -412,6 +449,43 @@ async def test_get_ohlcv_korean_equity_with_period_month(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_ohlcv_korean_etf(monkeypatch):
+    """Test get_ohlcv with Korean ETF code (alphanumeric like 0123G0)."""
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n, period, end_date):
+            return df
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+    result = await tools["get_ohlcv"]("0123G0", count=10)
+
+    assert result["instrument_type"] == "equity_kr"
+    assert result["source"] == "kis"
+    assert result["count"] == 10
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_korean_etf_with_explicit_market(monkeypatch):
+    """Test get_ohlcv with Korean ETF code and explicit market=kr."""
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n, period, end_date):
+            return df
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+    result = await tools["get_ohlcv"]("0117V0", market="kr", count=5)
+
+    assert result["instrument_type"] == "equity_kr"
+    assert result["source"] == "kis"
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_us_equity_returns_error_payload(monkeypatch):
     tools = build_tools()
     mock_fetch = AsyncMock(side_effect=RuntimeError("yahoo timeout"))
@@ -479,7 +553,7 @@ async def test_get_ohlcv_raises_on_invalid_end_date():
 async def test_get_ohlcv_market_kr_requires_digits():
     tools = build_tools()
 
-    with pytest.raises(ValueError, match="korean equity symbols must be 6 digits"):
+    with pytest.raises(ValueError, match="korean equity symbols must be 6 alphanumeric"):
         await tools["get_ohlcv"]("AAPL", market="kr")
 
 
@@ -529,13 +603,20 @@ class TestSymbolDetection:
     """Tests for symbol detection helper functions."""
 
     def test_is_korean_equity_code(self):
+        # Regular stocks (6 digits)
         assert mcp_tools._is_korean_equity_code("005930") is True
         assert mcp_tools._is_korean_equity_code("000660") is True
         assert mcp_tools._is_korean_equity_code("  005930  ") is True
-        assert mcp_tools._is_korean_equity_code("00593") is False  # 5 digits
-        assert mcp_tools._is_korean_equity_code("0059300") is False  # 7 digits
-        assert mcp_tools._is_korean_equity_code("AAPL") is False
-        assert mcp_tools._is_korean_equity_code("12345A") is False
+        # ETF/ETN (6 alphanumeric)
+        assert mcp_tools._is_korean_equity_code("0123G0") is True  # ETF
+        assert mcp_tools._is_korean_equity_code("0117V0") is True  # ETF
+        assert mcp_tools._is_korean_equity_code("12345A") is True  # alphanumeric
+        assert mcp_tools._is_korean_equity_code("0123g0") is True  # lowercase
+        # Invalid codes
+        assert mcp_tools._is_korean_equity_code("00593") is False  # 5 chars
+        assert mcp_tools._is_korean_equity_code("0059300") is False  # 7 chars
+        assert mcp_tools._is_korean_equity_code("AAPL") is False  # 4 chars
+        assert mcp_tools._is_korean_equity_code("0123-0") is False  # contains hyphen
 
     def test_is_crypto_market(self):
         assert mcp_tools._is_crypto_market("KRW-BTC") is True
@@ -610,8 +691,20 @@ class TestResolveMarketType:
         assert market_type == "equity_kr"
         assert symbol == "005930"
 
-    def test_explicit_equity_kr_rejects_non_digits(self):
-        with pytest.raises(ValueError, match="6 digits"):
+    def test_explicit_equity_kr_validates_etf(self):
+        """Test explicit market=kr with ETF alphanumeric code."""
+        market_type, symbol = mcp_tools._resolve_market_type("0123G0", "kr")
+        assert market_type == "equity_kr"
+        assert symbol == "0123G0"
+
+    def test_explicit_equity_kr_validates_etf_lowercase(self):
+        """Test explicit market=kr with lowercase ETF code (should be accepted)."""
+        market_type, symbol = mcp_tools._resolve_market_type("0123g0", "kr")
+        assert market_type == "equity_kr"
+        assert symbol == "0123g0"
+
+    def test_explicit_equity_kr_rejects_invalid_format(self):
+        with pytest.raises(ValueError, match="6 alphanumeric"):
             mcp_tools._resolve_market_type("AAPL", "kr")
 
     def test_explicit_equity_us_rejects_crypto_prefix(self):
@@ -627,6 +720,18 @@ class TestResolveMarketType:
         market_type, symbol = mcp_tools._resolve_market_type("005930", None)
         assert market_type == "equity_kr"
         assert symbol == "005930"
+
+    def test_auto_detect_korean_etf(self):
+        """Test auto-detection of Korean ETF code (alphanumeric)."""
+        market_type, symbol = mcp_tools._resolve_market_type("0123G0", None)
+        assert market_type == "equity_kr"
+        assert symbol == "0123G0"
+
+    def test_auto_detect_korean_etf_another(self):
+        """Test auto-detection with another ETF code pattern."""
+        market_type, symbol = mcp_tools._resolve_market_type("0117V0", None)
+        assert market_type == "equity_kr"
+        assert symbol == "0117V0"
 
     def test_auto_detect_us_equity(self):
         market_type, symbol = mcp_tools._resolve_market_type("AAPL", None)
@@ -1118,6 +1223,24 @@ class TestGetIndicatorsTool:
         assert "sma" in result["indicators"]
         assert "bollinger" in result["indicators"]
 
+    async def test_korean_etf(self, monkeypatch):
+        """Test get_indicators with Korean ETF code (alphanumeric like 0123G0)."""
+        tools = build_tools()
+        df = _sample_ohlcv_df(250)
+
+        class DummyKISClient:
+            async def inquire_daily_itemchartprice(self, code, market, n, period):
+                return df
+
+        monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+        result = await tools["get_indicators"]("0123G0", ["rsi", "macd"])
+
+        assert result["instrument_type"] == "equity_kr"
+        assert result["source"] == "kis"
+        assert "rsi" in result["indicators"]
+        assert "macd" in result["indicators"]
+
     async def test_us_equity(self, monkeypatch):
         tools = build_tools()
         df = _sample_ohlcv_df(250)
@@ -1481,3 +1604,599 @@ class TestIndicatorDefaultConstants:
 
     def test_default_atr_period(self):
         assert mcp_tools.DEFAULT_ATR_PERIOD == 14
+
+
+# ---------------------------------------------------------------------------
+# Finnhub Tools Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestGetFinnhubClient:
+    """Test Finnhub client initialization."""
+
+    def test_missing_api_key_raises_error(self, monkeypatch):
+        """Test that missing API key raises ValueError."""
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", None)
+
+        with pytest.raises(ValueError, match="FINNHUB_API_KEY"):
+            mcp_tools._get_finnhub_client()
+
+    def test_returns_client_with_valid_key(self, monkeypatch):
+        """Test that valid API key returns client."""
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+
+        client = mcp_tools._get_finnhub_client()
+
+        assert client is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetNews:
+    """Test get_news tool."""
+
+    async def test_empty_symbol_raises_error(self):
+        """Test that empty symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_news"]("")
+
+    async def test_invalid_market_raises_error(self):
+        """Test that invalid market raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="market must be"):
+            await tools["get_news"]("AAPL", market="invalid")
+
+    async def test_us_news_success(self, monkeypatch):
+        """Test successful US news fetch."""
+        tools = build_tools()
+
+        mock_news = [
+            {
+                "headline": "Apple announces new product",
+                "source": "Bloomberg",
+                "datetime": 1704067200,  # 2024-01-01
+                "url": "https://example.com/news",
+                "summary": "Apple released...",
+                "sentiment": 0.5,
+                "related": "AAPL",
+            }
+        ]
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def company_news(self, symbol, _from, to):
+                return mock_news
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_news"]("AAPL", market="us", limit=5)
+
+        assert result["symbol"] == "AAPL"
+        assert result["market"] == "us"
+        assert result["source"] == "finnhub"
+        assert result["count"] == 1
+        assert result["news"][0]["title"] == "Apple announces new product"
+
+    async def test_crypto_news_success(self, monkeypatch):
+        """Test successful crypto news fetch."""
+        tools = build_tools()
+
+        mock_news = [
+            {
+                "headline": "Bitcoin reaches new high",
+                "source": "CoinDesk",
+                "datetime": 1704067200,
+                "url": "https://example.com/crypto",
+                "summary": "BTC surged...",
+            }
+        ]
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def general_news(self, category, min_id):
+                return mock_news
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_news"]("BTC", market="crypto", limit=5)
+
+        assert result["market"] == "crypto"
+        assert result["news"][0]["title"] == "Bitcoin reaches new high"
+
+    async def test_returns_error_payload_on_failure(self, monkeypatch):
+        """Test that API errors return error payload."""
+        tools = build_tools()
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def company_news(self, symbol, _from, to):
+                raise RuntimeError("API error")
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_news"]("AAPL", market="us")
+
+        assert "error" in result
+        assert result["source"] == "finnhub"
+
+    async def test_limit_capped_at_50(self, monkeypatch):
+        """Test that limit is capped at 50."""
+        tools = build_tools()
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def company_news(self, symbol, _from, to):
+                return [{"headline": f"News {i}"} for i in range(100)]
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_news"]("AAPL", market="us", limit=100)
+
+        assert result["count"] <= 50
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetCompanyProfile:
+    """Test get_company_profile tool."""
+
+    async def test_empty_symbol_raises_error(self):
+        """Test that empty symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_company_profile"]("")
+
+    async def test_crypto_symbol_raises_error(self):
+        """Test that crypto symbols are rejected."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="only available for US stocks"):
+            await tools["get_company_profile"]("KRW-BTC")
+
+    async def test_korean_symbol_raises_error(self):
+        """Test that Korean equity symbols are rejected."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="only available for US stocks"):
+            await tools["get_company_profile"]("005930")
+
+    async def test_success(self, monkeypatch):
+        """Test successful company profile fetch."""
+        tools = build_tools()
+
+        mock_profile = {
+            "name": "Apple Inc",
+            "ticker": "AAPL",
+            "country": "US",
+            "currency": "USD",
+            "exchange": "NASDAQ",
+            "ipo": "1980-12-12",
+            "marketCapitalization": 3000000,
+            "shareOutstanding": 15000,
+            "finnhubIndustry": "Technology",
+            "weburl": "https://apple.com",
+            "logo": "https://example.com/logo.png",
+            "phone": "1234567890",
+        }
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def company_profile2(self, symbol):
+                return mock_profile
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_company_profile"]("AAPL")
+
+        assert result["symbol"] == "AAPL"
+        assert result["name"] == "Apple Inc"
+        assert result["sector"] == "Technology"
+        assert result["market_cap"] == 3000000
+
+    async def test_not_found_returns_error(self, monkeypatch):
+        """Test that not found returns error payload."""
+        tools = build_tools()
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def company_profile2(self, symbol):
+                return {}
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_company_profile"]("INVALID")
+
+        assert "error" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetFinancials:
+    """Test get_financials tool."""
+
+    async def test_empty_symbol_raises_error(self):
+        """Test that empty symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_financials"]("")
+
+    async def test_invalid_statement_raises_error(self):
+        """Test that invalid statement type raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="statement must be"):
+            await tools["get_financials"]("AAPL", statement="invalid")
+
+    async def test_invalid_freq_raises_error(self):
+        """Test that invalid frequency raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="freq must be"):
+            await tools["get_financials"]("AAPL", freq="invalid")
+
+    async def test_crypto_symbol_raises_error(self):
+        """Test that crypto symbols are rejected."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="only available for US stocks"):
+            await tools["get_financials"]("KRW-BTC")
+
+    async def test_success(self, monkeypatch):
+        """Test successful financials fetch."""
+        tools = build_tools()
+
+        mock_data = {
+            "data": [
+                {
+                    "year": 2024,
+                    "quarter": 0,
+                    "filedDate": "2024-01-15",
+                    "startDate": "2023-01-01",
+                    "endDate": "2023-12-31",
+                    "report": {
+                        "ic": [
+                            {"label": "Revenue", "value": 100000000},
+                            {"label": "Net Income", "value": 20000000},
+                        ]
+                    },
+                }
+            ]
+        }
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def financials_reported(self, symbol, freq):
+                return mock_data
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_financials"]("AAPL", statement="income", freq="annual")
+
+        assert result["symbol"] == "AAPL"
+        assert result["statement"] == "income"
+        assert result["freq"] == "annual"
+        assert len(result["reports"]) == 1
+        assert result["reports"][0]["data"]["Revenue"] == 100000000
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetInsiderTransactions:
+    """Test get_insider_transactions tool."""
+
+    async def test_empty_symbol_raises_error(self):
+        """Test that empty symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_insider_transactions"]("")
+
+    async def test_crypto_symbol_raises_error(self):
+        """Test that crypto symbols are rejected."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="only available for US stocks"):
+            await tools["get_insider_transactions"]("KRW-BTC")
+
+    async def test_success(self, monkeypatch):
+        """Test successful insider transactions fetch."""
+        tools = build_tools()
+
+        mock_data = {
+            "data": [
+                {
+                    "name": "Tim Cook",
+                    "transactionCode": "S",
+                    "share": 50000,
+                    "change": -50000,
+                    "transactionPrice": 180.0,
+                    "transactionDate": "2024-01-15",
+                    "filingDate": "2024-01-17",
+                }
+            ]
+        }
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def stock_insider_transactions(self, symbol):
+                return mock_data
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_insider_transactions"]("AAPL", limit=10)
+
+        assert result["symbol"] == "AAPL"
+        assert result["count"] == 1
+        assert result["transactions"][0]["name"] == "Tim Cook"
+        assert result["transactions"][0]["shares"] == 50000
+        assert result["transactions"][0]["transaction_type"] == "Sale"
+        assert result["transactions"][0]["transaction_code"] == "S"
+        assert result["transactions"][0]["change"] == -50000
+
+    async def test_limit_capped_at_100(self, monkeypatch):
+        """Test that limit is capped at 100."""
+        tools = build_tools()
+
+        mock_data = {"data": [{"name": f"Exec {i}"} for i in range(150)]}
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def stock_insider_transactions(self, symbol):
+                return mock_data
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_insider_transactions"]("AAPL", limit=200)
+
+        assert result["count"] <= 100
+
+    async def test_transaction_code_mapping(self, monkeypatch):
+        """Test that transaction codes are properly mapped to readable types."""
+        tools = build_tools()
+
+        mock_data = {
+            "data": [
+                {"name": "Exec 1", "transactionCode": "P", "share": 1000},
+                {"name": "Exec 2", "transactionCode": "A", "share": 500},
+                {"name": "Exec 3", "transactionCode": "M", "share": 200},
+                {"name": "Exec 4", "transactionCode": "X", "share": 100},  # Unknown code
+            ]
+        }
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def stock_insider_transactions(self, symbol):
+                return mock_data
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_insider_transactions"]("AAPL", limit=10)
+
+        assert result["transactions"][0]["transaction_type"] == "Purchase"
+        assert result["transactions"][0]["transaction_code"] == "P"
+        assert result["transactions"][1]["transaction_type"] == "Grant/Award"
+        assert result["transactions"][1]["transaction_code"] == "A"
+        assert result["transactions"][2]["transaction_type"] == "Option Exercise"
+        assert result["transactions"][2]["transaction_code"] == "M"
+        # Unknown code should fall back to the code itself
+        assert result["transactions"][3]["transaction_type"] == "X"
+        assert result["transactions"][3]["transaction_code"] == "X"
+
+    async def test_empty_transactions(self, monkeypatch):
+        """Test handling of empty insider transactions."""
+        tools = build_tools()
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def stock_insider_transactions(self, symbol):
+                return {"data": []}
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_insider_transactions"]("UNKNOWN")
+
+        assert result["count"] == 0
+        assert result["transactions"] == []
+
+    async def test_no_data_in_response(self, monkeypatch):
+        """Test handling when API returns no data field."""
+        tools = build_tools()
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def stock_insider_transactions(self, symbol):
+                return {}  # No "data" field
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_insider_transactions"]("AAPL")
+
+        assert result["count"] == 0
+        assert result["transactions"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetEarningsCalendar:
+    """Test get_earnings_calendar tool."""
+
+    async def test_crypto_symbol_raises_error(self):
+        """Test that crypto symbols are rejected."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="only available for US stocks"):
+            await tools["get_earnings_calendar"](symbol="KRW-BTC")
+
+    async def test_korean_symbol_raises_error(self):
+        """Test that Korean symbols are rejected."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="only available for US stocks"):
+            await tools["get_earnings_calendar"](symbol="005930")
+
+    async def test_invalid_date_format_raises_error(self):
+        """Test that invalid date format raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="ISO format"):
+            await tools["get_earnings_calendar"](from_date="invalid")
+
+    async def test_success_with_symbol(self, monkeypatch):
+        """Test successful earnings calendar fetch with symbol."""
+        tools = build_tools()
+
+        mock_data = {
+            "earningsCalendar": [
+                {
+                    "symbol": "AAPL",
+                    "date": "2024-01-25",
+                    "hour": "amc",
+                    "epsEstimate": 2.10,
+                    "epsActual": 2.18,
+                    "revenueEstimate": 118000000000,
+                    "revenueActual": 119600000000,
+                    "quarter": 1,
+                    "year": 2024,
+                }
+            ]
+        }
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def earnings_calendar(self, symbol=None, _from=None, to=None):
+                return mock_data
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_earnings_calendar"](symbol="AAPL")
+
+        assert result["symbol"] == "AAPL"
+        assert result["count"] == 1
+        assert result["earnings"][0]["eps_estimate"] == 2.10
+        assert result["earnings"][0]["eps_actual"] == 2.18
+
+    async def test_success_without_symbol(self, monkeypatch):
+        """Test successful earnings calendar fetch without symbol (date range only)."""
+        tools = build_tools()
+
+        mock_data = {
+            "earningsCalendar": [
+                {"symbol": "AAPL", "date": "2024-01-25"},
+                {"symbol": "MSFT", "date": "2024-01-30"},
+            ]
+        }
+
+        captured_symbol = None
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def earnings_calendar(self, symbol=None, _from=None, to=None):
+                nonlocal captured_symbol
+                captured_symbol = symbol
+                return mock_data
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_earnings_calendar"](
+            from_date="2024-01-01", to_date="2024-01-31"
+        )
+
+        assert result["count"] == 2
+        # Verify empty string is passed when symbol is None
+        assert captured_symbol == ""
+
+    async def test_default_dates_when_not_provided(self, monkeypatch):
+        """Test that default dates are set when not provided."""
+        tools = build_tools()
+
+        mock_data = {"earningsCalendar": []}
+        captured_from = None
+        captured_to = None
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def earnings_calendar(self, symbol=None, _from=None, to=None):
+                nonlocal captured_from, captured_to
+                captured_from = _from
+                captured_to = to
+                return mock_data
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_earnings_calendar"]()
+
+        # Verify dates are set (today and 30 days from now)
+        assert captured_from is not None
+        assert captured_to is not None
+        assert result["from_date"] == captured_from
+        assert result["to_date"] == captured_to
+
+    async def test_empty_result(self, monkeypatch):
+        """Test handling of empty earnings calendar."""
+        tools = build_tools()
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def earnings_calendar(self, symbol=None, _from=None, to=None):
+                return {"earningsCalendar": []}
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        result = await tools["get_earnings_calendar"](symbol="UNKNOWN")
+
+        assert result["count"] == 0
+        assert result["earnings"] == []

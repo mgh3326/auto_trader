@@ -22,3 +22,8 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         logging.warning(f"Invalid integer for {name}={raw!r}, using default={default}")
         return default
+
+
+def get_finnhub_api_key() -> str | None:
+    """Get Finnhub API key from environment."""
+    return _env("FINNHUB_API_KEY")

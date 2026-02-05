@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
+import finnhub
 import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
+from app.core.config import settings
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
@@ -23,8 +26,14 @@ from data.stocks_info import (
 
 
 def _is_korean_equity_code(symbol: str) -> bool:
-    s = symbol.strip()
-    return len(s) == 6 and s.isdigit()
+    """Check if symbol is a valid Korean equity code (6 alphanumeric characters).
+
+    Korean stock codes are 6 characters:
+    - Regular stocks: 6 digits (e.g., 005930)
+    - ETF/ETN: 6 alphanumeric (e.g., 0123G0, 0117V0)
+    """
+    s = symbol.strip().upper()
+    return len(s) == 6 and s.isalnum()
 
 
 def _is_crypto_market(symbol: str) -> bool:
@@ -82,7 +91,7 @@ def _resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
 
     if market_type == "equity_kr":
         if not _is_korean_equity_code(symbol):
-            raise ValueError("korean equity symbols must be 6 digits")
+            raise ValueError("korean equity symbols must be 6 alphanumeric characters")
         return "equity_kr", symbol
 
     if market_type == "equity_us":
@@ -570,6 +579,316 @@ async def _fetch_ohlcv_for_indicators(
     return df
 
 
+# ---------------------------------------------------------------------------
+# Finnhub API Helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_finnhub_client() -> finnhub.Client:
+    """Get Finnhub client with API key from settings."""
+    api_key = settings.finnhub_api_key
+    if not api_key:
+        raise ValueError("FINNHUB_API_KEY environment variable is not set")
+    return finnhub.Client(api_key=api_key)
+
+
+async def _fetch_news_finnhub(
+    symbol: str, market: str, limit: int
+) -> dict[str, Any]:
+    """Fetch news from Finnhub API.
+
+    Args:
+        symbol: Stock symbol (e.g., "AAPL") or crypto symbol (e.g., "BINANCE:BTCUSDT")
+        market: Market type - "us" or "crypto"
+        limit: Maximum number of news items to return
+
+    Returns:
+        Dictionary with news data
+    """
+    client = _get_finnhub_client()
+
+    # Calculate date range (last 7 days for company news)
+    to_date = datetime.date.today()
+    from_date = to_date - datetime.timedelta(days=7)
+
+    def fetch_sync() -> list[dict[str, Any]]:
+        if market == "crypto":
+            # For crypto, use general news with crypto category
+            news = client.general_news("crypto", min_id=0)
+        else:
+            # For US stocks, use company news
+            news = client.company_news(
+                symbol.upper(),
+                _from=from_date.strftime("%Y-%m-%d"),
+                to=to_date.strftime("%Y-%m-%d"),
+            )
+        return news[:limit] if news else []
+
+    news_items = await asyncio.to_thread(fetch_sync)
+
+    # Transform to consistent format
+    result_items = []
+    for item in news_items:
+        result_items.append({
+            "title": item.get("headline", ""),
+            "source": item.get("source", ""),
+            "datetime": datetime.datetime.fromtimestamp(
+                item.get("datetime", 0)
+            ).isoformat() if item.get("datetime") else None,
+            "url": item.get("url", ""),
+            "summary": item.get("summary", ""),
+            "sentiment": item.get("sentiment"),  # May be None
+            "related": item.get("related", ""),
+        })
+
+    return {
+        "symbol": symbol,
+        "market": market,
+        "source": "finnhub",
+        "count": len(result_items),
+        "news": result_items,
+    }
+
+
+async def _fetch_company_profile_finnhub(symbol: str) -> dict[str, Any]:
+    """Fetch company profile from Finnhub API.
+
+    Args:
+        symbol: US stock symbol (e.g., "AAPL")
+
+    Returns:
+        Dictionary with company profile data
+    """
+    client = _get_finnhub_client()
+
+    def fetch_sync() -> dict[str, Any]:
+        return client.company_profile2(symbol=symbol.upper())
+
+    profile = await asyncio.to_thread(fetch_sync)
+
+    if not profile:
+        raise ValueError(f"Company profile not found for symbol '{symbol}'")
+
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_us",
+        "source": "finnhub",
+        "name": profile.get("name", ""),
+        "ticker": profile.get("ticker", ""),
+        "country": profile.get("country", ""),
+        "currency": profile.get("currency", ""),
+        "exchange": profile.get("exchange", ""),
+        "ipo_date": profile.get("ipo", ""),
+        "market_cap": profile.get("marketCapitalization"),
+        "shares_outstanding": profile.get("shareOutstanding"),
+        "sector": profile.get("finnhubIndustry", ""),
+        "website": profile.get("weburl", ""),
+        "logo": profile.get("logo", ""),
+        "phone": profile.get("phone", ""),
+    }
+
+
+async def _fetch_financials_finnhub(
+    symbol: str, statement: str, freq: str
+) -> dict[str, Any]:
+    """Fetch financial statements from Finnhub API.
+
+    Args:
+        symbol: US stock symbol (e.g., "AAPL")
+        statement: Statement type - "income", "balance", or "cashflow"
+        freq: Frequency - "annual" or "quarterly"
+
+    Returns:
+        Dictionary with financial data
+    """
+    client = _get_finnhub_client()
+
+    # Map statement types to Finnhub format
+    statement_map = {
+        "income": "ic",
+        "balance": "bs",
+        "cashflow": "cf",
+    }
+    finnhub_statement = statement_map.get(statement)
+    if not finnhub_statement:
+        raise ValueError(f"Invalid statement type '{statement}'. Use: income, balance, cashflow")
+
+    def fetch_sync() -> dict[str, Any]:
+        return client.financials_reported(
+            symbol=symbol.upper(),
+            freq=freq,
+        )
+
+    result = await asyncio.to_thread(fetch_sync)
+
+    if not result or not result.get("data"):
+        raise ValueError(f"Financial data not found for symbol '{symbol}'")
+
+    # Extract relevant financial data
+    reports = []
+    for report in result.get("data", [])[:4]:  # Last 4 reports
+        report_data = report.get("report", {})
+        statement_data = report_data.get(finnhub_statement, [])
+
+        # Convert list of dicts to a single dict
+        financials = {}
+        for item in statement_data:
+            label = item.get("label", item.get("concept", ""))
+            value = item.get("value")
+            if label and value is not None:
+                financials[label] = value
+
+        reports.append({
+            "year": report.get("year"),
+            "quarter": report.get("quarter"),
+            "filed_date": report.get("filedDate"),
+            "period_start": report.get("startDate"),
+            "period_end": report.get("endDate"),
+            "data": financials,
+        })
+
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_us",
+        "source": "finnhub",
+        "statement": statement,
+        "freq": freq,
+        "reports": reports,
+    }
+
+
+async def _fetch_insider_transactions_finnhub(
+    symbol: str, limit: int
+) -> dict[str, Any]:
+    """Fetch insider transactions from Finnhub API.
+
+    Args:
+        symbol: US stock symbol (e.g., "AAPL")
+        limit: Maximum number of transactions to return
+
+    Returns:
+        Dictionary with insider transaction data
+    """
+    client = _get_finnhub_client()
+
+    def fetch_sync() -> dict[str, Any]:
+        return client.stock_insider_transactions(symbol=symbol.upper())
+
+    result = await asyncio.to_thread(fetch_sync)
+
+    if not result or not result.get("data"):
+        return {
+            "symbol": symbol,
+            "instrument_type": "equity_us",
+            "source": "finnhub",
+            "count": 0,
+            "transactions": [],
+        }
+
+    transactions = []
+    for txn in result.get("data", [])[:limit]:
+        # Transaction codes: P=Purchase, S=Sale, A=Grant, D=Sale to issuer, etc.
+        txn_code = txn.get("transactionCode", "")
+        txn_type_map = {
+            "P": "Purchase",
+            "S": "Sale",
+            "A": "Grant/Award",
+            "D": "Sale to Issuer",
+            "F": "Tax Payment",
+            "M": "Option Exercise",
+            "G": "Gift",
+            "C": "Conversion",
+            "J": "Other",
+        }
+        transactions.append({
+            "name": txn.get("name", ""),
+            "transaction_type": txn_type_map.get(txn_code, txn_code),
+            "transaction_code": txn_code,
+            "shares": txn.get("share"),
+            "change": txn.get("change"),  # Net change in shares
+            "price": txn.get("transactionPrice"),
+            "date": txn.get("transactionDate"),
+            "filing_date": txn.get("filingDate"),
+        })
+
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_us",
+        "source": "finnhub",
+        "count": len(transactions),
+        "transactions": transactions,
+    }
+
+
+async def _fetch_earnings_calendar_finnhub(
+    symbol: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> dict[str, Any]:
+    """Fetch earnings calendar from Finnhub API.
+
+    Args:
+        symbol: US stock symbol (optional, e.g., "AAPL")
+        from_date: Start date in ISO format (optional)
+        to_date: End date in ISO format (optional)
+
+    Returns:
+        Dictionary with earnings calendar data
+    """
+    client = _get_finnhub_client()
+
+    # Default to next 30 days if no dates provided
+    if not from_date:
+        from_date = datetime.date.today().isoformat()
+    if not to_date:
+        to_date = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+
+    def fetch_sync() -> dict[str, Any]:
+        # Finnhub API accepts empty string for symbol to get all earnings
+        return client.earnings_calendar(
+            symbol=symbol.upper() if symbol else "",
+            _from=from_date,
+            to=to_date,
+        )
+
+    result = await asyncio.to_thread(fetch_sync)
+
+    if not result or not result.get("earningsCalendar"):
+        return {
+            "symbol": symbol,
+            "instrument_type": "equity_us",
+            "source": "finnhub",
+            "from_date": from_date,
+            "to_date": to_date,
+            "count": 0,
+            "earnings": [],
+        }
+
+    earnings = []
+    for item in result.get("earningsCalendar", []):
+        earnings.append({
+            "symbol": item.get("symbol", ""),
+            "date": item.get("date"),
+            "hour": item.get("hour", ""),  # "bmo" (before market open), "amc" (after market close)
+            "eps_estimate": item.get("epsEstimate"),
+            "eps_actual": item.get("epsActual"),
+            "revenue_estimate": item.get("revenueEstimate"),
+            "revenue_actual": item.get("revenueActual"),
+            "quarter": item.get("quarter"),
+            "year": item.get("year"),
+        })
+
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_us",
+        "source": "finnhub",
+        "from_date": from_date,
+        "to_date": to_date,
+        "count": len(earnings),
+        "earnings": earnings,
+    }
+
+
 async def _search_master_data(
     query: str, limit: int, instrument_type: str | None = None
 ) -> list[dict[str, Any]]:
@@ -848,4 +1167,222 @@ def register_tools(mcp: FastMCP) -> None:
                 message=str(exc),
                 symbol=symbol,
                 instrument_type=market_type,
+            )
+
+    # ---------------------------------------------------------------------------
+    # Finnhub Tools (News & Fundamentals)
+    # ---------------------------------------------------------------------------
+
+    @mcp.tool(
+        name="get_news",
+        description="Get recent news for a US stock or cryptocurrency. Returns title, source, datetime, url, summary, and sentiment.",
+    )
+    async def get_news(
+        symbol: str,
+        market: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Get recent news for a symbol.
+
+        Args:
+            symbol: Stock symbol (e.g., "AAPL") or "crypto" for crypto news
+            market: Market type - "us" (default) or "crypto"
+            limit: Maximum number of news items (default: 10, max: 50)
+
+        Returns:
+            Dictionary with news items including title, source, datetime, url, summary
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        # Normalize market type
+        normalized_market = (market or "us").strip().lower()
+        if normalized_market in ("crypto", "upbit", "krw", "usdt"):
+            normalized_market = "crypto"
+        elif normalized_market in ("us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"):
+            normalized_market = "us"
+        else:
+            raise ValueError("market must be 'us' or 'crypto'")
+
+        capped_limit = min(max(limit, 1), 50)
+
+        try:
+            return await _fetch_news_finnhub(symbol, normalized_market, capped_limit)
+        except Exception as exc:
+            return _error_payload(
+                source="finnhub",
+                message=str(exc),
+                symbol=symbol,
+                instrument_type="crypto" if normalized_market == "crypto" else "equity_us",
+            )
+
+    @mcp.tool(
+        name="get_company_profile",
+        description="Get company profile for a US stock. Returns name, sector, industry, market cap, description, website. US stocks only.",
+    )
+    async def get_company_profile(symbol: str) -> dict[str, Any]:
+        """Get company profile for a US stock.
+
+        Args:
+            symbol: US stock symbol (e.g., "AAPL")
+
+        Returns:
+            Dictionary with company profile including name, sector, market_cap, website
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        # Validate this is a US equity symbol
+        if _is_crypto_market(symbol):
+            raise ValueError("Company profile is only available for US stocks")
+        if _is_korean_equity_code(symbol):
+            raise ValueError("Company profile is only available for US stocks")
+
+        try:
+            return await _fetch_company_profile_finnhub(symbol)
+        except Exception as exc:
+            return _error_payload(
+                source="finnhub",
+                message=str(exc),
+                symbol=symbol,
+                instrument_type="equity_us",
+            )
+
+    @mcp.tool(
+        name="get_financials",
+        description="Get financial statements for a US stock. Supports income statement, balance sheet, and cash flow. US stocks only.",
+    )
+    async def get_financials(
+        symbol: str,
+        statement: str = "income",
+        freq: str = "annual",
+    ) -> dict[str, Any]:
+        """Get financial statements for a US stock.
+
+        Args:
+            symbol: US stock symbol (e.g., "AAPL")
+            statement: Statement type - "income", "balance", or "cashflow" (default: "income")
+            freq: Frequency - "annual" or "quarterly" (default: "annual")
+
+        Returns:
+            Dictionary with financial statement data
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        statement = (statement or "income").strip().lower()
+        if statement not in ("income", "balance", "cashflow"):
+            raise ValueError("statement must be 'income', 'balance', or 'cashflow'")
+
+        freq = (freq or "annual").strip().lower()
+        if freq not in ("annual", "quarterly"):
+            raise ValueError("freq must be 'annual' or 'quarterly'")
+
+        # Validate this is a US equity symbol
+        if _is_crypto_market(symbol):
+            raise ValueError("Financial statements are only available for US stocks")
+        if _is_korean_equity_code(symbol):
+            raise ValueError("Financial statements are only available for US stocks")
+
+        try:
+            return await _fetch_financials_finnhub(symbol, statement, freq)
+        except Exception as exc:
+            return _error_payload(
+                source="finnhub",
+                message=str(exc),
+                symbol=symbol,
+                instrument_type="equity_us",
+            )
+
+    @mcp.tool(
+        name="get_insider_transactions",
+        description="Get insider transactions for a US stock. Returns name, transaction type, shares, price, date. US stocks only.",
+    )
+    async def get_insider_transactions(
+        symbol: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Get insider transactions for a US stock.
+
+        Args:
+            symbol: US stock symbol (e.g., "AAPL")
+            limit: Maximum number of transactions (default: 20, max: 100)
+
+        Returns:
+            Dictionary with insider transaction data
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        capped_limit = min(max(limit, 1), 100)
+
+        # Validate this is a US equity symbol
+        if _is_crypto_market(symbol):
+            raise ValueError("Insider transactions are only available for US stocks")
+        if _is_korean_equity_code(symbol):
+            raise ValueError("Insider transactions are only available for US stocks")
+
+        try:
+            return await _fetch_insider_transactions_finnhub(symbol, capped_limit)
+        except Exception as exc:
+            return _error_payload(
+                source="finnhub",
+                message=str(exc),
+                symbol=symbol,
+                instrument_type="equity_us",
+            )
+
+    @mcp.tool(
+        name="get_earnings_calendar",
+        description="Get earnings calendar for a US stock or date range. Returns earnings dates, EPS estimates and actuals. US stocks only.",
+    )
+    async def get_earnings_calendar(
+        symbol: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Get earnings calendar.
+
+        Args:
+            symbol: US stock symbol (optional, e.g., "AAPL"). If not provided, returns all earnings in date range.
+            from_date: Start date in ISO format (optional, default: today)
+            to_date: End date in ISO format (optional, default: 30 days from now)
+
+        Returns:
+            Dictionary with earnings calendar including dates, EPS estimates and actuals
+        """
+        symbol = (symbol or "").strip() if symbol else None
+
+        # Validate symbol if provided
+        if symbol:
+            if _is_crypto_market(symbol):
+                raise ValueError("Earnings calendar is only available for US stocks")
+            if _is_korean_equity_code(symbol):
+                raise ValueError("Earnings calendar is only available for US stocks")
+
+        # Validate date formats if provided
+        if from_date:
+            try:
+                datetime.date.fromisoformat(from_date)
+            except ValueError:
+                raise ValueError("from_date must be ISO format (e.g., '2024-01-15')")
+
+        if to_date:
+            try:
+                datetime.date.fromisoformat(to_date)
+            except ValueError:
+                raise ValueError("to_date must be ISO format (e.g., '2024-01-15')")
+
+        try:
+            return await _fetch_earnings_calendar_finnhub(symbol, from_date, to_date)
+        except Exception as exc:
+            return _error_payload(
+                source="finnhub",
+                message=str(exc),
+                symbol=symbol,
+                instrument_type="equity_us",
             )

@@ -1,6 +1,6 @@
 import pytest
 
-from app.mcp_server.env_utils import _env, _env_int
+from app.mcp_server.env_utils import _env, _env_int, get_finnhub_api_key
 
 
 @pytest.mark.unit
@@ -40,3 +40,18 @@ class TestEnvInt:
         assert result == 3000
         assert "Invalid integer" in caplog.text
         assert "TEST_PORT" in caplog.text
+
+
+@pytest.mark.unit
+class TestGetFinnhubApiKey:
+    def test_returns_api_key_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FINNHUB_API_KEY", "test_api_key_123")
+        assert get_finnhub_api_key() == "test_api_key_123"
+
+    def test_returns_none_when_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+        assert get_finnhub_api_key() is None
+
+    def test_returns_none_when_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FINNHUB_API_KEY", "")
+        assert get_finnhub_api_key() is None

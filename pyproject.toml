@@ -43,6 +43,7 @@ dependencies = [
     "pandas-stubs==2.3.3.260113",
     "slowapi>=0.1.9",
     "fastmcp>=2.11.2,<3.0.0",
+    "finnhub-python>=2.4.21,<3.0.0",
 ]
 
 [dependency-groups]
