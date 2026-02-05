@@ -498,6 +498,55 @@ def _compute_indicators(
     return results
 
 
+async def _fetch_ohlcv_crypto_paginated(
+    symbol: str, count: int, period: str = "day"
+) -> pd.DataFrame:
+    """Fetch crypto OHLCV with pagination to overcome Upbit's 200 limit.
+
+    Args:
+        symbol: Market symbol (e.g., "KRW-BTC")
+        count: Total number of candles to fetch
+        period: Candle period ("day", "week", "month")
+
+    Returns:
+        DataFrame with requested number of candles
+    """
+    max_per_request = 200
+    all_dfs: list[pd.DataFrame] = []
+    remaining = count
+    end_date: datetime.datetime | None = None
+
+    while remaining > 0:
+        batch_size = min(remaining, max_per_request)
+        df_batch = await upbit_service.fetch_ohlcv(
+            market=symbol, days=batch_size, period=period, end_date=end_date
+        )
+
+        if df_batch.empty:
+            break
+
+        all_dfs.append(df_batch)
+        remaining -= len(df_batch)
+
+        if remaining > 0 and len(df_batch) > 0:
+            # Get the earliest date from this batch for next pagination
+            earliest_date = df_batch["date"].min()
+            # Set end_date to the day before the earliest date
+            end_date = datetime.datetime.combine(
+                earliest_date - datetime.timedelta(days=1),
+                datetime.time(23, 59, 59),
+            )
+
+    if not all_dfs:
+        return pd.DataFrame()
+
+    # Concatenate all batches, sort by date, and remove duplicates
+    combined = pd.concat(all_dfs, ignore_index=True)
+    combined = combined.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+    return combined
+
+
 async def _fetch_ohlcv_for_indicators(
     symbol: str, market_type: str, count: int = 250
 ) -> pd.DataFrame:
@@ -506,8 +555,8 @@ async def _fetch_ohlcv_for_indicators(
     Fetches enough data for long-term indicators (200-day SMA needs 200+ candles).
     """
     if market_type == "crypto":
-        capped_count = min(count, 250)
-        df = await upbit_service.fetch_ohlcv(market=symbol, days=capped_count, period="day")
+        # Use pagination for crypto to overcome Upbit's 200 limit
+        df = await _fetch_ohlcv_crypto_paginated(symbol, count=count, period="day")
     elif market_type == "equity_kr":
         capped_count = min(count, 250)
         kis = KISClient()

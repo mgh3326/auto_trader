@@ -789,21 +789,31 @@ class TestSymbolNotFound:
 # ---------------------------------------------------------------------------
 
 
-def _sample_ohlcv_df(n: int = 250) -> pd.DataFrame:
+def _sample_ohlcv_df(n: int = 250, include_date: bool = True) -> pd.DataFrame:
     """Create sample OHLCV DataFrame for indicator testing."""
+    import datetime as dt
+
     import numpy as np
 
     np.random.seed(42)
     base_price = 100.0
     prices = base_price + np.cumsum(np.random.randn(n) * 2)
 
-    return pd.DataFrame({
+    df = pd.DataFrame({
         "open": prices + np.random.randn(n) * 0.5,
         "high": prices + abs(np.random.randn(n) * 1.5),
         "low": prices - abs(np.random.randn(n) * 1.5),
         "close": prices,
         "volume": np.random.randint(1000, 10000, n),
     })
+
+    if include_date:
+        # Generate dates going back from today
+        end_date = dt.date.today()
+        dates = [end_date - dt.timedelta(days=i) for i in range(n - 1, -1, -1)]
+        df["date"] = dates
+
+    return df
 
 
 @pytest.mark.unit
@@ -1133,3 +1143,341 @@ class TestGetIndicatorsTool:
         assert "rsi" in result["indicators"]
         assert "macd" in result["indicators"]
         assert "sma" in result["indicators"]
+
+    async def test_all_indicators_at_once(self, monkeypatch):
+        """Test requesting all indicators in a single call."""
+        tools = build_tools()
+        df = _sample_ohlcv_df(250)
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_indicators"](
+            "KRW-BTC",
+            ["sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot"],
+        )
+
+        assert "error" not in result
+        assert len(result["indicators"]) == 7
+        for ind in ["sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot"]:
+            assert ind in result["indicators"]
+
+    async def test_empty_dataframe_returns_error(self, monkeypatch):
+        """Test that empty DataFrame returns error payload."""
+        tools = build_tools()
+        mock_fetch = AsyncMock(return_value=pd.DataFrame())
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_indicators"]("KRW-BTC", ["rsi"])
+
+        assert "error" in result
+        assert "No data available" in result["error"]
+
+    async def test_whitespace_in_indicators(self, monkeypatch):
+        """Test that whitespace in indicator names is handled."""
+        tools = build_tools()
+        df = _sample_ohlcv_df(250)
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_indicators"]("KRW-BTC", ["  rsi  ", " macd "])
+
+        assert "rsi" in result["indicators"]
+        assert "macd" in result["indicators"]
+
+    async def test_duplicate_indicators(self, monkeypatch):
+        """Test that duplicate indicators don't cause issues."""
+        tools = build_tools()
+        df = _sample_ohlcv_df(250)
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_indicators"]("KRW-BTC", ["rsi", "RSI", "rsi"])
+
+        assert "error" not in result
+        assert "rsi" in result["indicators"]
+
+    async def test_price_included_in_response(self, monkeypatch):
+        """Test that current price is included in response."""
+        tools = build_tools()
+        df = _sample_ohlcv_df(50)
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_indicators"]("KRW-BTC", ["rsi"])
+
+        assert "price" in result
+        assert result["price"] is not None
+        assert isinstance(result["price"], float)
+
+
+@pytest.mark.unit
+class TestFetchOhlcvForIndicators:
+    """Tests for _fetch_ohlcv_for_indicators helper function."""
+
+    @pytest.mark.asyncio
+    async def test_crypto_fetch_single_batch(self, monkeypatch):
+        """Test crypto fetch with count <= 200 (single batch)."""
+        df = _sample_ohlcv_df(100, include_date=True)
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await mcp_tools._fetch_ohlcv_for_indicators("KRW-BTC", "crypto", 100)
+
+        mock_fetch.assert_awaited_once_with(
+            market="KRW-BTC", days=100, period="day", end_date=None
+        )
+        assert len(result) == 100
+
+    @pytest.mark.asyncio
+    async def test_crypto_pagination_multiple_batches(self, monkeypatch):
+        """Test crypto fetch with count > 200 (requires pagination)."""
+        import datetime
+
+        # First batch: most recent 200 days
+        df1 = _sample_ohlcv_df(200, include_date=True)
+        # Second batch: next 50 days (older)
+        df2 = _sample_ohlcv_df(50, include_date=True)
+        # Adjust df2 dates to be older than df1
+        earliest_date = df1["date"].min()
+        df2["date"] = [
+            earliest_date - datetime.timedelta(days=i + 1)
+            for i in range(len(df2) - 1, -1, -1)
+        ]
+
+        call_count = 0
+
+        async def mock_fetch(market, days, period, end_date=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return df1
+            else:
+                return df2
+
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await mcp_tools._fetch_ohlcv_for_indicators("KRW-BTC", "crypto", 250)
+
+        assert call_count == 2
+        assert len(result) == 250  # 200 + 50
+
+    @pytest.mark.asyncio
+    async def test_crypto_pagination_handles_empty_batch(self, monkeypatch):
+        """Test that pagination stops when an empty batch is returned."""
+        df = _sample_ohlcv_df(100, include_date=True)
+        call_count = 0
+
+        async def mock_fetch(market, days, period, end_date=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return df
+            else:
+                return pd.DataFrame()  # Empty batch
+
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await mcp_tools._fetch_ohlcv_for_indicators("KRW-BTC", "crypto", 250)
+
+        assert call_count == 2
+        assert len(result) == 100  # Only first batch
+
+    @pytest.mark.asyncio
+    async def test_crypto_pagination_removes_duplicates(self, monkeypatch):
+        """Test that pagination properly removes duplicate dates."""
+        df1 = _sample_ohlcv_df(100, include_date=True)
+        df2 = _sample_ohlcv_df(50, include_date=True)
+        # Make df2 have some overlapping dates with df1
+        df2["date"] = df1["date"].iloc[:50].values
+
+        call_count = 0
+
+        async def mock_fetch(market, days, period, end_date=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return df1
+            else:
+                return df2
+
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await mcp_tools._fetch_ohlcv_for_indicators("KRW-BTC", "crypto", 150)
+
+        # Should have 100 unique dates (duplicates removed)
+        assert len(result) == 100
+
+    @pytest.mark.asyncio
+    async def test_equity_kr_fetch(self, monkeypatch):
+        df = _sample_ohlcv_df(100, include_date=True)
+
+        class DummyKISClient:
+            async def inquire_daily_itemchartprice(self, code, market, n, period):
+                return df
+
+        monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+        result = await mcp_tools._fetch_ohlcv_for_indicators("005930", "equity_kr", 100)
+
+        assert len(result) == 100
+
+    @pytest.mark.asyncio
+    async def test_equity_us_fetch(self, monkeypatch):
+        df = _sample_ohlcv_df(100, include_date=True)
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
+
+        result = await mcp_tools._fetch_ohlcv_for_indicators("AAPL", "equity_us", 100)
+
+        mock_fetch.assert_awaited_once_with(ticker="AAPL", days=100, period="day")
+        assert len(result) == 100
+
+
+@pytest.mark.unit
+class TestIndicatorEdgeCases:
+    """Edge case tests for indicator calculations."""
+
+    def test_sma_with_nan_values(self):
+        """Test SMA handles NaN values gracefully."""
+        import numpy as np
+
+        close = pd.Series([100.0, np.nan, 102.0, 103.0, 104.0, 105.0])
+        result = mcp_tools._calculate_sma(close, periods=[3])
+
+        # pandas handles NaN in mean calculation
+        assert "3" in result
+
+    def test_ema_all_same_values(self):
+        """Test EMA with constant prices."""
+        close = pd.Series([100.0] * 50)
+        result = mcp_tools._calculate_ema(close, periods=[20])
+
+        # EMA of constant should equal the constant
+        assert result["20"] == 100.0
+
+    def test_rsi_strong_uptrend(self):
+        """Test RSI with strong upward price movement."""
+        # Create data with mostly gains and occasional small losses
+        # Pattern: +2, +2, +2, -1, +2, +2, +2, -1, ... (net positive)
+        prices = [100.0]
+        for i in range(50):
+            if (i + 1) % 4 == 0:
+                prices.append(prices[-1] - 1.0)  # Small loss every 4th day
+            else:
+                prices.append(prices[-1] + 2.0)  # Gain most days
+        close = pd.Series(prices)
+        result = mcp_tools._calculate_rsi(close)
+
+        # Strong uptrend with 3:1 gain ratio should have high RSI
+        assert result["14"] is not None
+        assert result["14"] > 70
+
+    def test_rsi_all_losses(self):
+        """Test RSI with only downward price movement."""
+        close = pd.Series(range(100, 1, -1))  # 100, 99, 98, ... 2
+        result = mcp_tools._calculate_rsi(close.astype(float))
+
+        # All losses, no gains -> RSI should be 0
+        assert result["14"] == 0.0
+
+    def test_macd_with_trend(self):
+        """Test MACD detects upward trend."""
+        # Create upward trending data
+        close = pd.Series([100 + i * 0.5 for i in range(100)])
+        result = mcp_tools._calculate_macd(close)
+
+        # In uptrend, fast EMA > slow EMA, so MACD should be positive
+        assert result["macd"] is not None
+        assert result["macd"] > 0
+
+    def test_bollinger_width_increases_with_volatility(self):
+        """Test Bollinger band width reflects volatility."""
+        # Low volatility
+        close_low_vol = pd.Series([100.0 + (i % 2) * 0.1 for i in range(50)])
+        result_low = mcp_tools._calculate_bollinger(close_low_vol)
+
+        # High volatility
+        close_high_vol = pd.Series([100.0 + (i % 2) * 5.0 for i in range(50)])
+        result_high = mcp_tools._calculate_bollinger(close_high_vol)
+
+        low_width = result_low["upper"] - result_low["lower"]
+        high_width = result_high["upper"] - result_high["lower"]
+
+        assert high_width > low_width
+
+    def test_atr_reflects_volatility(self):
+        """Test ATR increases with larger price ranges."""
+        # Low volatility
+        df_low = pd.DataFrame({
+            "high": [101.0] * 50,
+            "low": [99.0] * 50,
+            "close": [100.0] * 50,
+        })
+        result_low = mcp_tools._calculate_atr(
+            df_low["high"], df_low["low"], df_low["close"]
+        )
+
+        # High volatility
+        df_high = pd.DataFrame({
+            "high": [110.0] * 50,
+            "low": [90.0] * 50,
+            "close": [100.0] * 50,
+        })
+        result_high = mcp_tools._calculate_atr(
+            df_high["high"], df_high["low"], df_high["close"]
+        )
+
+        assert result_high["14"] > result_low["14"]
+
+    def test_pivot_formula_verification(self):
+        """Verify pivot point formula correctness."""
+        high = pd.Series([110.0, 115.0])
+        low = pd.Series([90.0, 95.0])
+        close = pd.Series([100.0, 105.0])
+
+        result = mcp_tools._calculate_pivot(high, low, close)
+
+        # Using previous day's data (index -2): H=110, L=90, C=100
+        expected_p = (110 + 90 + 100) / 3  # 100
+        expected_r1 = 2 * expected_p - 90  # 110
+        expected_s1 = 2 * expected_p - 110  # 90
+
+        assert abs(result["p"] - expected_p) < 0.01
+        assert abs(result["r1"] - expected_r1) < 0.01
+        assert abs(result["s1"] - expected_s1) < 0.01
+
+    def test_compute_indicators_with_minimal_data(self):
+        """Test compute_indicators with just enough data."""
+        df = _sample_ohlcv_df(5)
+        result = mcp_tools._compute_indicators(df, ["sma", "rsi", "macd"])
+
+        # SMA(5) should work, but RSI(14) and MACD should return None
+        assert result["sma"]["5"] is not None
+        assert result["rsi"]["14"] is None
+        assert result["macd"]["macd"] is None
+
+
+@pytest.mark.unit
+class TestIndicatorDefaultConstants:
+    """Test that default constants are properly defined."""
+
+    def test_default_sma_periods(self):
+        assert mcp_tools.DEFAULT_SMA_PERIODS == [5, 20, 60, 120, 200]
+
+    def test_default_ema_periods(self):
+        assert mcp_tools.DEFAULT_EMA_PERIODS == [5, 20, 60, 120, 200]
+
+    def test_default_rsi_period(self):
+        assert mcp_tools.DEFAULT_RSI_PERIOD == 14
+
+    def test_default_macd_params(self):
+        assert mcp_tools.DEFAULT_MACD_FAST == 12
+        assert mcp_tools.DEFAULT_MACD_SLOW == 26
+        assert mcp_tools.DEFAULT_MACD_SIGNAL == 9
+
+    def test_default_bollinger_params(self):
+        assert mcp_tools.DEFAULT_BOLLINGER_PERIOD == 20
+        assert mcp_tools.DEFAULT_BOLLINGER_STD == 2.0
+
+    def test_default_atr_period(self):
+        assert mcp_tools.DEFAULT_ATR_PERIOD == 14
