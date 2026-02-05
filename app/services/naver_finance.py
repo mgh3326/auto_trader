@@ -6,12 +6,14 @@ This module provides async functions to fetch:
 - Financial statements
 - Foreign/institutional investor trends
 - Securities firm investment opinions
+- Short selling data (via KRX pykrx library)
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
@@ -761,3 +763,237 @@ async def fetch_valuation(code: str) -> dict[str, Any]:
             valuation["current_position_52w"] = round(position, 2)
 
     return valuation
+
+
+# ---------------------------------------------------------------------------
+# Short Selling Data (via KRX pykrx library)
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_short_data_from_naver(
+    code: str, days: int
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Fetch short selling data directly from Naver Finance.
+
+    Naver Finance provides short selling data via an iframe at:
+    https://finance.naver.com/item/sise_short.naver?code={code}
+
+    Args:
+        code: 6-digit Korean stock code
+        days: Number of days to fetch
+
+    Returns:
+        Tuple of (short_data_list, balance_data)
+    """
+    short_data_list: list[dict[str, Any]] = []
+    balance_data: dict[str, Any] | None = None
+
+    # Naver Finance short selling page
+    # This page shows short selling data in a table
+    url = f"{NAVER_FINANCE_ITEM}/sise_short.naver"
+
+    try:
+        soup = await _fetch_html(url, params={"code": code})
+
+        # Find the data table - it has class "type2" typically
+        # The table structure varies but usually has columns:
+        # 날짜, 종가, 전일비, 거래량, 공매도량, 공매도금액, 공매도비중
+        table = soup.select_one("table.type2")
+
+        if table:
+            rows = table.select("tr")
+            for row in rows:
+                cells = row.select("td")
+                # Need at least 7 cells for full data
+                if len(cells) >= 7:
+                    try:
+                        date_text = cells[0].get_text(strip=True)
+                        if not date_text or not date_text[0].isdigit():
+                            continue
+
+                        # Parse each column
+                        close_price = _parse_korean_number(cells[1].get_text(strip=True))
+                        total_volume = _parse_korean_number(cells[3].get_text(strip=True))
+                        short_volume = _parse_korean_number(cells[4].get_text(strip=True))
+                        short_amount = _parse_korean_number(cells[5].get_text(strip=True))
+
+                        # Short ratio might be in different positions
+                        short_ratio_text = cells[6].get_text(strip=True)
+                        short_ratio = _parse_korean_number(short_ratio_text.replace("%", ""))
+
+                        short_data_list.append(
+                            {
+                                "date": _parse_naver_date(date_text),
+                                "short_volume": int(short_volume) if short_volume else None,
+                                "short_amount": int(short_amount) if short_amount else None,
+                                "short_ratio": float(short_ratio) if short_ratio else None,
+                                "total_volume": int(total_volume) if total_volume else None,
+                                "close_price": int(close_price) if close_price else None,
+                            }
+                        )
+
+                        if len(short_data_list) >= days:
+                            break
+                    except (IndexError, ValueError):
+                        continue
+
+        # Try to get short balance from a summary section if available
+        balance_section = soup.select_one("div.short_balance, table.short_balance")
+        if balance_section:
+            # Extract balance info if available
+            balance_text = balance_section.get_text()
+            balance_match = re.search(r"공매도\s*잔고[:\s]*(\d[\d,]*)", balance_text)
+            if balance_match:
+                balance_data = {
+                    "balance_shares": _parse_korean_number(balance_match.group(1)),
+                }
+
+    except Exception:
+        # If Naver fetch fails, try alternative sources
+        pass
+
+    return short_data_list, balance_data
+
+
+async def _fetch_short_data_from_pykrx(
+    code: str, days: int
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Fetch short selling data from KRX via pykrx library.
+
+    Args:
+        code: 6-digit Korean stock code
+        days: Number of days to fetch
+
+    Returns:
+        Tuple of (short_data_list, balance_data)
+    """
+    # Calculate date range
+    end_date = date.today()
+    # Add extra days to account for weekends/holidays
+    start_date = end_date - timedelta(days=days * 2)
+
+    def _fetch_sync() -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        """Synchronous function to fetch short selling data from pykrx."""
+        import pandas as pd
+
+        from pykrx import stock as pykrx_stock
+
+        short_data_list: list[dict[str, Any]] = []
+
+        # Fetch short selling status (거래량, 거래대금, 비중)
+        try:
+            df_short = pykrx_stock.get_shorting_status_by_date(
+                fromdate=start_date.strftime("%Y%m%d"),
+                todate=end_date.strftime("%Y%m%d"),
+                ticker=code,
+            )
+
+            if df_short is not None and not df_short.empty:
+                for idx, row in df_short.iterrows():
+                    date_str = (
+                        idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
+                    )
+
+                    def safe_value(val: Any) -> Any:
+                        if pd.isna(val):
+                            return None
+                        return val
+
+                    short_amount = safe_value(row.get("공매도거래대금"))
+                    total_amount = safe_value(row.get("총거래대금"))
+                    short_ratio = safe_value(row.get("비중"))
+
+                    short_data_list.append(
+                        {
+                            "date": date_str,
+                            "short_amount": int(short_amount) if short_amount else None,
+                            "total_amount": int(total_amount) if total_amount else None,
+                            "short_ratio": float(short_ratio) if short_ratio else None,
+                            "short_volume": None,
+                            "total_volume": None,
+                        }
+                    )
+        except Exception:
+            pass
+
+        # Fetch short balance (공매도 잔고)
+        balance_data: dict[str, Any] | None = None
+        try:
+            df_balance = pykrx_stock.get_shorting_balance_by_date(
+                fromdate=end_date.strftime("%Y%m%d"),
+                todate=end_date.strftime("%Y%m%d"),
+                ticker=code,
+            )
+
+            if df_balance is not None and not df_balance.empty:
+                last_row = df_balance.iloc[-1]
+                balance_data = {
+                    "balance_shares": int(last_row.get("공매도잔고", 0)) or None,
+                    "balance_amount": int(last_row.get("공매도금액", 0)) or None,
+                    "balance_ratio": float(last_row.get("비중", 0)) or None,
+                }
+        except Exception:
+            pass
+
+        return short_data_list, balance_data
+
+    return await asyncio.to_thread(_fetch_sync)
+
+
+async def fetch_short_interest(code: str, days: int = 20) -> dict[str, Any]:
+    """Fetch short selling data for a Korean stock.
+
+    Tries multiple data sources in order:
+    1. Naver Finance (direct crawling)
+    2. KRX via pykrx library
+
+    Args:
+        code: 6-digit Korean stock code (e.g., "005930")
+        days: Number of days of data to fetch (default: 20)
+
+    Returns:
+        Dictionary with short selling data:
+        - symbol: Stock code
+        - name: Company name (if available)
+        - short_data: List of daily short selling data
+        - avg_short_ratio: Average short ratio over the period
+        - short_balance: Short balance (if available)
+    """
+    # Fetch company name
+    name = None
+    try:
+        url = f"{NAVER_FINANCE_ITEM}/main.naver"
+        soup = await _fetch_html(url, params={"code": code})
+        name_elem = soup.select_one("div.wrap_company h2 a")
+        if name_elem:
+            name = name_elem.get_text(strip=True)
+    except Exception:
+        pass
+
+    # Try Naver Finance first
+    short_data, balance_data = await _fetch_short_data_from_naver(code, days)
+
+    # If Naver didn't return data, try pykrx
+    if not short_data:
+        short_data, balance_data = await _fetch_short_data_from_pykrx(code, days)
+
+    # Sort by date descending and limit to requested days
+    short_data = sorted(short_data, key=lambda x: x["date"] or "", reverse=True)[:days]
+
+    # Calculate average short ratio
+    avg_short_ratio: float | None = None
+    valid_ratios = [d["short_ratio"] for d in short_data if d.get("short_ratio") is not None]
+    if valid_ratios:
+        avg_short_ratio = round(sum(valid_ratios) / len(valid_ratios), 2)
+
+    result: dict[str, Any] = {
+        "symbol": code,
+        "name": name,
+        "short_data": short_data,
+        "avg_short_ratio": avg_short_ratio,
+    }
+
+    if balance_data:
+        result["short_balance"] = balance_data
+
+    return result

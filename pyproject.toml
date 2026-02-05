@@ -46,6 +46,8 @@ dependencies = [
     "finnhub-python>=2.4.21,<3.0.0",
     "beautifulsoup4>=4.12.0,<5.0.0",
     "lxml>=5.0.0,<6.0.0",
+    "pykrx>=1.0.0,<2.0.0",
+    "setuptools>=70.0.0",
 ]
 
 [dependency-groups]

@@ -1785,3 +1785,56 @@ def register_tools(mcp: FastMCP) -> None:
                 symbol=symbol,
                 instrument_type="equity_kr",
             )
+
+    @mcp.tool(
+        name="get_short_interest",
+        description="Get short selling data for a Korean stock. Returns daily short selling volume, amount, ratio, and balance. Korean stocks only.",
+    )
+    async def get_short_interest(
+        symbol: str,
+        days: int = 20,
+    ) -> dict[str, Any]:
+        """Get short selling data for a Korean stock.
+
+        Args:
+            symbol: Korean stock code (6 digits, e.g., "005930" for Samsung Electronics)
+            days: Number of days of data to fetch (default: 20, max: 60)
+
+        Returns:
+            Dictionary with short selling data:
+            - symbol: Stock code
+            - name: Company name
+            - short_data: List of daily short selling data
+                - date: Trading date (ISO format)
+                - short_volume: Short selling volume (shares, if available)
+                - short_amount: Short selling amount (KRW)
+                - short_ratio: Short selling ratio (%)
+                - total_volume: Total trading volume (shares, if available)
+                - total_amount: Total trading amount (KRW)
+            - avg_short_ratio: Average short ratio over the period
+            - short_balance: Short balance data (if available)
+                - balance_shares: Outstanding short shares
+                - balance_amount: Outstanding short amount (KRW)
+                - balance_ratio: Balance ratio (%)
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        if not _is_korean_equity_code(symbol):
+            raise ValueError(
+                "Short selling data is only available for Korean stocks "
+                "(6-digit codes like '005930')"
+            )
+
+        capped_days = min(max(days, 1), 60)
+
+        try:
+            return await naver_finance.fetch_short_interest(symbol, capped_days)
+        except Exception as exc:
+            return _error_payload(
+                source="krx",
+                message=str(exc),
+                symbol=symbol,
+                instrument_type="equity_kr",
+            )

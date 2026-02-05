@@ -507,6 +507,152 @@ class TestFetchHtml:
         assert "한글" in text
 
 
+SAMPLE_SHORT_INTEREST_HTML = """
+<html>
+<body>
+<div class="wrap_company">
+    <h2><a>삼성전자</a></h2>
+</div>
+</body>
+</html>
+"""
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestFetchShortInterest:
+    """Tests for fetch_short_interest function."""
+
+    async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test successful short interest data fetch."""
+        import pandas as pd
+
+        # Mock the company name fetch
+        async def mock_fetch_html(
+            url: str, params: dict | None = None
+        ) -> BeautifulSoup:
+            return BeautifulSoup(SAMPLE_SHORT_INTEREST_HTML, "lxml")
+
+        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+
+        # Mock pykrx functions
+        def mock_get_shorting_status(fromdate: str, todate: str, ticker: str) -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "공매도거래대금": [1_000_000_000, 800_000_000],
+                    "총거래대금": [20_000_000_000, 15_000_000_000],
+                    "비중": [5.0, 5.33],
+                },
+                index=pd.to_datetime(["2024-01-15", "2024-01-14"]),
+            )
+
+        def mock_get_shorting_balance(fromdate: str, todate: str, ticker: str) -> pd.DataFrame:
+            return pd.DataFrame(
+                {
+                    "공매도잔고": [1_234_567],
+                    "공매도금액": [98_765_432_100],
+                    "비중": [0.5],
+                },
+                index=pd.to_datetime(["2024-01-15"]),
+            )
+
+        # Mock the pykrx.stock module
+        class MockPykrxStock:
+            get_shorting_status_by_date = staticmethod(mock_get_shorting_status)
+            get_shorting_balance_by_date = staticmethod(mock_get_shorting_balance)
+
+        import sys
+        mock_pykrx = type(sys)("pykrx")
+        mock_pykrx.stock = MockPykrxStock
+        monkeypatch.setitem(sys.modules, "pykrx", mock_pykrx)
+        monkeypatch.setitem(sys.modules, "pykrx.stock", MockPykrxStock)
+
+        result = await naver_finance.fetch_short_interest("005930", days=20)
+
+        assert result["symbol"] == "005930"
+        assert result["name"] == "삼성전자"
+        assert len(result["short_data"]) == 2
+
+        # Check first day data
+        day1 = result["short_data"][0]
+        assert day1["date"] == "2024-01-15"
+        assert day1["short_amount"] == 1_000_000_000
+        assert day1["total_amount"] == 20_000_000_000
+        assert day1["short_ratio"] == 5.0
+
+        # Check average ratio
+        assert result["avg_short_ratio"] == 5.17  # (5.0 + 5.33) / 2 rounded
+
+        # Check balance data
+        assert "short_balance" in result
+        assert result["short_balance"]["balance_shares"] == 1_234_567
+
+    async def test_empty_data(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test with empty short selling data."""
+        import pandas as pd
+
+        async def mock_fetch_html(
+            url: str, params: dict | None = None
+        ) -> BeautifulSoup:
+            return BeautifulSoup(SAMPLE_SHORT_INTEREST_HTML, "lxml")
+
+        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+
+        def mock_get_shorting_status(fromdate: str, todate: str, ticker: str) -> pd.DataFrame:
+            return pd.DataFrame()
+
+        def mock_get_shorting_balance(fromdate: str, todate: str, ticker: str) -> pd.DataFrame:
+            return pd.DataFrame()
+
+        class MockPykrxStock:
+            get_shorting_status_by_date = staticmethod(mock_get_shorting_status)
+            get_shorting_balance_by_date = staticmethod(mock_get_shorting_balance)
+
+        import sys
+        mock_pykrx = type(sys)("pykrx")
+        mock_pykrx.stock = MockPykrxStock
+        monkeypatch.setitem(sys.modules, "pykrx", mock_pykrx)
+        monkeypatch.setitem(sys.modules, "pykrx.stock", MockPykrxStock)
+
+        result = await naver_finance.fetch_short_interest("005930", days=20)
+
+        assert result["symbol"] == "005930"
+        assert result["short_data"] == []
+        assert result["avg_short_ratio"] is None
+        assert "short_balance" not in result
+
+    async def test_pykrx_exception_handling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test handling of pykrx exceptions."""
+        async def mock_fetch_html(
+            url: str, params: dict | None = None
+        ) -> BeautifulSoup:
+            return BeautifulSoup(SAMPLE_SHORT_INTEREST_HTML, "lxml")
+
+        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+
+        def mock_get_shorting_status(fromdate: str, todate: str, ticker: str) -> None:
+            raise Exception("Network error")
+
+        def mock_get_shorting_balance(fromdate: str, todate: str, ticker: str) -> None:
+            raise Exception("Network error")
+
+        class MockPykrxStock:
+            get_shorting_status_by_date = staticmethod(mock_get_shorting_status)
+            get_shorting_balance_by_date = staticmethod(mock_get_shorting_balance)
+
+        import sys
+        mock_pykrx = type(sys)("pykrx")
+        mock_pykrx.stock = MockPykrxStock
+        monkeypatch.setitem(sys.modules, "pykrx", mock_pykrx)
+        monkeypatch.setitem(sys.modules, "pykrx.stock", MockPykrxStock)
+
+        # Should not raise, but return empty data
+        result = await naver_finance.fetch_short_interest("005930", days=20)
+
+        assert result["symbol"] == "005930"
+        assert result["short_data"] == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.unit
 class TestFetchValuation:

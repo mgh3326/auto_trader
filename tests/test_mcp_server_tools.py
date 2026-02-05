@@ -2698,3 +2698,147 @@ class TestGetValuation:
         assert result["source"] == "naver"
         assert result["symbol"] == "005930"
         assert result["instrument_type"] == "equity_kr"
+
+
+@pytest.mark.asyncio
+class TestGetShortInterest:
+    """Test get_short_interest tool."""
+
+    async def test_successful_short_interest_fetch(self, monkeypatch):
+        """Test successful short interest fetch for Korean stock."""
+        tools = build_tools()
+
+        mock_short_interest = {
+            "symbol": "005930",
+            "name": "삼성전자",
+            "short_data": [
+                {
+                    "date": "2024-01-15",
+                    "short_amount": 1_000_000_000,
+                    "total_amount": 20_000_000_000,
+                    "short_ratio": 5.0,
+                    "short_volume": None,
+                    "total_volume": None,
+                },
+                {
+                    "date": "2024-01-14",
+                    "short_amount": 800_000_000,
+                    "total_amount": 15_000_000_000,
+                    "short_ratio": 5.33,
+                    "short_volume": None,
+                    "total_volume": None,
+                },
+            ],
+            "avg_short_ratio": 5.17,
+            "short_balance": {
+                "balance_shares": 1_234_567,
+                "balance_amount": 98_765_432_100,
+                "balance_ratio": 0.5,
+            },
+        }
+
+        async def mock_fetch_short_interest(code, days):
+            return mock_short_interest
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_short_interest", mock_fetch_short_interest
+        )
+
+        result = await tools["get_short_interest"]("005930", days=20)
+
+        assert result["symbol"] == "005930"
+        assert result["name"] == "삼성전자"
+        assert len(result["short_data"]) == 2
+        assert result["short_data"][0]["date"] == "2024-01-15"
+        assert result["short_data"][0]["short_amount"] == 1_000_000_000
+        assert result["short_data"][0]["short_ratio"] == 5.0
+        assert result["avg_short_ratio"] == 5.17
+        assert result["short_balance"]["balance_shares"] == 1_234_567
+
+    async def test_rejects_us_equity(self):
+        """Test that US equity symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Korean stocks"):
+            await tools["get_short_interest"]("AAPL")
+
+    async def test_rejects_crypto(self):
+        """Test that crypto symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Korean stocks"):
+            await tools["get_short_interest"]("KRW-BTC")
+
+    async def test_empty_symbol_raises_error(self):
+        """Test that empty symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_short_interest"]("")
+
+    async def test_days_limit_capped(self, monkeypatch):
+        """Test that days parameter is capped at 60."""
+        tools = build_tools()
+
+        captured_days = None
+
+        async def mock_fetch_short_interest(code, days):
+            nonlocal captured_days
+            captured_days = days
+            return {
+                "symbol": code,
+                "name": "테스트",
+                "short_data": [],
+                "avg_short_ratio": None,
+            }
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_short_interest", mock_fetch_short_interest
+        )
+
+        await tools["get_short_interest"]("005930", days=100)
+
+        assert captured_days == 60
+
+    async def test_error_handling(self, monkeypatch):
+        """Test error handling when fetch fails."""
+        tools = build_tools()
+
+        async def mock_fetch_short_interest(code, days):
+            raise Exception("KRX API error")
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_short_interest", mock_fetch_short_interest
+        )
+
+        result = await tools["get_short_interest"]("005930")
+
+        assert "error" in result
+        assert result["source"] == "krx"
+        assert result["symbol"] == "005930"
+        assert result["instrument_type"] == "equity_kr"
+
+    async def test_empty_short_data(self, monkeypatch):
+        """Test response with no short data."""
+        tools = build_tools()
+
+        mock_short_interest = {
+            "symbol": "000000",
+            "name": "테스트종목",
+            "short_data": [],
+            "avg_short_ratio": None,
+        }
+
+        async def mock_fetch_short_interest(code, days):
+            return mock_short_interest
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_short_interest", mock_fetch_short_interest
+        )
+
+        result = await tools["get_short_interest"]("000000")
+
+        assert result["symbol"] == "000000"
+        assert result["short_data"] == []
+        assert result["avg_short_ratio"] is None
+        assert "short_balance" not in result
