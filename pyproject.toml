@@ -6,7 +6,7 @@ authors = [
     { name = "robin", email = "robin@watcha.com" }
 ]
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.128.0,<0.129.0",
     "uvicorn>=0.40.0,<0.41.0",
@@ -112,7 +112,7 @@ build-backend = "hatchling.build"
 packages = ["app"]
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py313"
 line-length = 88
 exclude = [
     ".venv",
@@ -156,7 +156,7 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [tool.pyright]
-pythonVersion = "3.14"
+pythonVersion = "3.13"
 pythonPlatform = "All"
 typeCheckingMode = "basic"
 

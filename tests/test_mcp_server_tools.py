@@ -62,60 +62,74 @@ async def test_search_symbol_empty_query_returns_empty():
 @pytest.mark.asyncio
 async def test_search_symbol_clamps_limit_and_shapes(monkeypatch):
     tools = build_tools()
-    called = {}
 
-    class DummyStockInfoService:
-        def __init__(self, db) -> None:
-            self.db = db
+    # Mock master data
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_kospi_name_to_code",
+        lambda: {"삼성전자": "005930", "삼성SDI": "006400"},
+    )
+    monkeypatch.setattr(mcp_tools, "get_kosdaq_name_to_code", lambda: {})
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_us_stocks_data",
+        lambda: {"symbol_to_exchange": {}, "symbol_to_name_kr": {}, "symbol_to_name_en": {}},
+    )
 
-        async def search_stocks(self, query: str, limit: int):
-            called["query"] = query
-            called["limit"] = limit
-            return [
-                SimpleNamespace(
-                    symbol="005930",
-                    name="Samsung Electronics",
-                    instrument_type="equity_kr",
-                    exchange="KOSPI",
-                    is_active=True,
-                )
-            ]
+    result = await tools["search_symbol"]("삼성", limit=500)
 
-    monkeypatch.setattr(mcp_tools, "AsyncSessionLocal", lambda: DummySessionManager())
-    monkeypatch.setattr(mcp_tools, "StockInfoService", DummyStockInfoService)
+    # limit should be capped at 100
+    assert len(result) == 2
+    assert result[0]["symbol"] == "005930"
+    assert result[0]["name"] == "삼성전자"
+    assert result[0]["instrument_type"] == "equity_kr"
+    assert result[0]["exchange"] == "KOSPI"
 
-    result = await tools["search_symbol"]("  samsung  ", limit=500)
 
-    assert called["query"] == "samsung"
-    assert called["limit"] == 100
-    assert result == [
-        {
-            "symbol": "005930",
-            "name": "Samsung Electronics",
-            "instrument_type": "equity_kr",
-            "exchange": "KOSPI",
-            "is_active": True,
-        }
-    ]
+@pytest.mark.asyncio
+async def test_search_symbol_with_market_filter(monkeypatch):
+    tools = build_tools()
+
+    # Mock master data
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_kospi_name_to_code",
+        lambda: {"애플": "123456"},
+    )
+    monkeypatch.setattr(mcp_tools, "get_kosdaq_name_to_code", lambda: {})
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_us_stocks_data",
+        lambda: {
+            "symbol_to_exchange": {"AAPL": "NASDAQ"},
+            "symbol_to_name_kr": {"AAPL": "애플"},
+            "symbol_to_name_en": {"AAPL": "Apple Inc."},
+        },
+    )
+
+    # Search with us market filter
+    result = await tools["search_symbol"]("애플", market="us")
+
+    assert len(result) == 1
+    assert result[0]["symbol"] == "AAPL"
+    assert result[0]["instrument_type"] == "equity_us"
 
 
 @pytest.mark.asyncio
 async def test_search_symbol_returns_error_payload(monkeypatch):
     tools = build_tools()
 
-    class DummyStockInfoService:
-        def __init__(self, db) -> None:
-            self.db = db
+    def raise_error():
+        raise RuntimeError("master data failed")
 
-        async def search_stocks(self, query: str, limit: int):
-            raise RuntimeError("db failed")
-
-    monkeypatch.setattr(mcp_tools, "AsyncSessionLocal", lambda: DummySessionManager())
-    monkeypatch.setattr(mcp_tools, "StockInfoService", DummyStockInfoService)
+    monkeypatch.setattr(mcp_tools, "get_kospi_name_to_code", raise_error)
 
     result = await tools["search_symbol"]("samsung")
 
-    assert result == [{"error": "db failed", "source": "db", "query": "samsung"}]
+    assert len(result) == 1
+    assert result[0]["error"] == "master data failed"
+    assert result[0]["source"] == "master"
+    assert result[0]["query"] == "samsung"
 
 
 @pytest.mark.asyncio
@@ -170,8 +184,8 @@ async def test_get_quote_korean_equity(monkeypatch):
 
     assert result["instrument_type"] == "equity_kr"
     assert result["source"] == "kis"
+    assert result["price"] == 105.0  # price = close
     assert result["open"] == 100.0
-    assert result["close"] == 105.0
 
 
 @pytest.mark.asyncio
@@ -197,47 +211,41 @@ async def test_get_quote_korean_equity_returns_error_payload(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_quote_us_equity(monkeypatch):
     tools = build_tools()
-    df = pd.DataFrame(
-        [
-            {
-                "date": "2024-01-01",
-                "time": "09:30:00",
-                "open": 100.0,
-                "high": 110.0,
-                "low": 90.0,
-                "close": 105.0,
-                "volume": 1000,
-                "value": 105000.0,
-            },
-            {
-                "date": "2024-01-02",
-                "time": "09:30:00",
-                "open": 200.0,
-                "high": 210.0,
-                "low": 190.0,
-                "close": 205.0,
-                "volume": 2000,
-                "value": 205000.0,
-            },
-        ]
-    )
-    mock_fetch = AsyncMock(return_value=df)
-    monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_price", mock_fetch)
+
+    # Mock yfinance Ticker
+    class MockFastInfo:
+        last_price = 205.0
+        regular_market_previous_close = 200.0
+        open = 201.0
+        day_high = 210.0
+        day_low = 199.0
+        last_volume = 50000000
+
+    class MockTicker:
+        fast_info = MockFastInfo()
+
+    monkeypatch.setattr("yfinance.Ticker", lambda symbol: MockTicker())
 
     result = await tools["get_quote"]("AAPL")
 
-    mock_fetch.assert_awaited_once_with("AAPL")
     assert result["instrument_type"] == "equity_us"
     assert result["source"] == "yahoo"
-    assert result["open"] == 200.0
-    assert result["close"] == 205.0
+    assert result["price"] == 205.0
+    assert result["previous_close"] == 200.0
+    assert result["open"] == 201.0
+    assert result["high"] == 210.0
+    assert result["low"] == 199.0
+    assert result["volume"] == 50000000
 
 
 @pytest.mark.asyncio
 async def test_get_quote_us_equity_returns_error_payload(monkeypatch):
     tools = build_tools()
-    mock_fetch = AsyncMock(side_effect=RuntimeError("yahoo down"))
-    monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_price", mock_fetch)
+
+    def raise_error(symbol):
+        raise RuntimeError("yahoo down")
+
+    monkeypatch.setattr("yfinance.Ticker", raise_error)
 
     result = await tools["get_quote"]("AAPL")
 
@@ -295,13 +303,47 @@ async def test_get_ohlcv_crypto(monkeypatch):
     mock_fetch = AsyncMock(return_value=df)
     monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
 
-    result = await tools["get_ohlcv"]("KRW-BTC", days=300)
+    result = await tools["get_ohlcv"]("KRW-BTC", count=300)
 
-    mock_fetch.assert_awaited_once_with(market="KRW-BTC", days=200)
+    mock_fetch.assert_awaited_once_with(
+        market="KRW-BTC", days=200, period="day", end_date=None
+    )
     assert result["instrument_type"] == "crypto"
     assert result["source"] == "upbit"
-    assert result["days"] == 200
+    assert result["count"] == 200
+    assert result["period"] == "day"
     assert len(result["rows"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_with_period_week(monkeypatch):
+    tools = build_tools()
+    df = _single_row_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", count=52, period="week")
+
+    mock_fetch.assert_awaited_once_with(
+        market="KRW-BTC", days=52, period="week", end_date=None
+    )
+    assert result["period"] == "week"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_with_end_date(monkeypatch):
+    tools = build_tools()
+    df = _single_row_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", count=100, end_date="2024-06-30")
+
+    # Verify end_date was parsed and passed
+    call_args = mock_fetch.call_args
+    assert call_args.kwargs["end_date"].year == 2024
+    assert call_args.kwargs["end_date"].month == 6
+    assert call_args.kwargs["end_date"].day == 30
 
 
 @pytest.mark.asyncio
@@ -323,7 +365,7 @@ async def test_get_ohlcv_serializes_timestamps(monkeypatch):
     mock_fetch = AsyncMock(return_value=df)
     monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
 
-    result = await tools["get_ohlcv"]("KRW-BTC", days=1)
+    result = await tools["get_ohlcv"]("KRW-BTC", count=1)
 
     row = result["rows"][0]
     assert isinstance(row["date"], str)
@@ -337,17 +379,37 @@ async def test_get_ohlcv_korean_equity(monkeypatch):
     df = _single_row_df()
 
     class DummyKISClient:
-        async def inquire_daily_itemchartprice(self, code, market, n, period):
+        async def inquire_daily_itemchartprice(self, code, market, n, period, end_date):
             return df
 
     monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
 
-    result = await tools["get_ohlcv"]("005930", days=10)
+    result = await tools["get_ohlcv"]("005930", count=10)
 
     assert result["instrument_type"] == "equity_kr"
     assert result["source"] == "kis"
-    assert result["days"] == 10
+    assert result["count"] == 10
+    assert result["period"] == "day"
     assert len(result["rows"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_korean_equity_with_period_month(monkeypatch):
+    tools = build_tools()
+    df = _single_row_df()
+    called = {}
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n, period, end_date):
+            called["period"] = period
+            return df
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+    result = await tools["get_ohlcv"]("005930", count=24, period="month")
+
+    assert called["period"] == "M"  # KIS uses M for month
+    assert result["period"] == "month"
 
 
 @pytest.mark.asyncio
@@ -356,7 +418,7 @@ async def test_get_ohlcv_us_equity_returns_error_payload(monkeypatch):
     mock_fetch = AsyncMock(side_effect=RuntimeError("yahoo timeout"))
     monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
 
-    result = await tools["get_ohlcv"]("AAPL", days=5)
+    result = await tools["get_ohlcv"]("AAPL", count=5)
 
     assert result == {
         "error": "yahoo timeout",
@@ -373,12 +435,14 @@ async def test_get_ohlcv_us_equity(monkeypatch):
     mock_fetch = AsyncMock(return_value=df)
     monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
 
-    result = await tools["get_ohlcv"]("AAPL", days=5)
+    result = await tools["get_ohlcv"]("AAPL", count=5)
 
-    mock_fetch.assert_awaited_once_with(ticker="AAPL", days=5)
+    mock_fetch.assert_awaited_once_with(
+        ticker="AAPL", days=5, period="day", end_date=None
+    )
     assert result["instrument_type"] == "equity_us"
     assert result["source"] == "yahoo"
-    assert result["days"] == 5
+    assert result["count"] == 5
     assert len(result["rows"]) == 1
 
 
@@ -389,11 +453,27 @@ async def test_get_ohlcv_raises_on_invalid_input():
     with pytest.raises(ValueError, match="symbol is required"):
         await tools["get_ohlcv"]("")
 
-    with pytest.raises(ValueError, match="days must be > 0"):
-        await tools["get_ohlcv"]("AAPL", days=0)
+    with pytest.raises(ValueError, match="count must be > 0"):
+        await tools["get_ohlcv"]("AAPL", count=0)
 
     with pytest.raises(ValueError, match="Unsupported symbol format"):
         await tools["get_ohlcv"]("1234")
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_raises_on_invalid_period():
+    tools = build_tools()
+
+    with pytest.raises(ValueError, match="period must be 'day', 'week', or 'month'"):
+        await tools["get_ohlcv"]("AAPL", period="hour")
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_raises_on_invalid_end_date():
+    tools = build_tools()
+
+    with pytest.raises(ValueError, match="end_date must be ISO format"):
+        await tools["get_ohlcv"]("AAPL", end_date="invalid-date")
 
 
 @pytest.mark.asyncio
@@ -643,3 +723,63 @@ class TestNormalizeRows:
         assert result[0]["date"] == "2024-01-15"
         assert result[0]["value"] is None
         assert result[0]["count"] == 42
+
+
+@pytest.mark.unit
+class TestSymbolNotFound:
+    """Tests for symbol not found error handling."""
+
+    @pytest.mark.asyncio
+    async def test_get_quote_crypto_not_found(self, monkeypatch):
+        tools = build_tools()
+        # Return None for the symbol (not found)
+        mock_fetch = AsyncMock(return_value={"KRW-INVALID": None})
+        monkeypatch.setattr(
+            mcp_tools.upbit_service, "fetch_multiple_current_prices", mock_fetch
+        )
+
+        result = await tools["get_quote"]("KRW-INVALID")
+
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+        assert result["source"] == "upbit"
+
+    @pytest.mark.asyncio
+    async def test_get_quote_korean_equity_not_found(self, monkeypatch):
+        tools = build_tools()
+
+        class DummyKISClient:
+            async def inquire_daily_itemchartprice(self, code, market, n):
+                return pd.DataFrame()  # Empty DataFrame
+
+        monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+        result = await tools["get_quote"]("999999")
+
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+        assert result["source"] == "kis"
+
+    @pytest.mark.asyncio
+    async def test_get_quote_us_equity_not_found(self, monkeypatch):
+        tools = build_tools()
+
+        # Mock yfinance Ticker with None values (invalid symbol)
+        class MockFastInfo:
+            last_price = None
+            regular_market_previous_close = None
+            open = None
+            day_high = None
+            day_low = None
+            last_volume = None
+
+        class MockTicker:
+            fast_info = MockFastInfo()
+
+        monkeypatch.setattr("yfinance.Ticker", lambda symbol: MockTicker())
+
+        result = await tools["get_quote"]("INVALID")
+
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+        assert result["source"] == "yahoo"

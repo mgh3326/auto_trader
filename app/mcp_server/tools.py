@@ -8,11 +8,17 @@ import pandas as pd
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
-from app.core.db import AsyncSessionLocal
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
-from app.services.stock_info_service import StockInfoService
+from data.coins_info import get_or_refresh_maps
+
+# 마스터 데이터 (lazy loading)
+from data.stocks_info import (
+    get_kosdaq_name_to_code,
+    get_kospi_name_to_code,
+    get_us_stocks_data,
+)
 
 
 def _is_korean_equity_code(symbol: str) -> bool:
@@ -145,6 +151,8 @@ async def _fetch_quote_crypto(symbol: str) -> dict[str, Any]:
     """Fetch crypto quote from Upbit."""
     prices = await upbit_service.fetch_multiple_current_prices([symbol])
     price = prices.get(symbol)
+    if price is None:
+        raise ValueError(f"Symbol '{symbol}' not found")
     return {
         "symbol": symbol,
         "instrument_type": "crypto",
@@ -153,21 +161,22 @@ async def _fetch_quote_crypto(symbol: str) -> dict[str, Any]:
     }
 
 
-async def _fetch_quote_equity_kr(symbol: str, market: str | None) -> dict[str, Any]:
+async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
     """Fetch Korean equity quote from KIS."""
     kis = KISClient()
     df = await kis.inquire_daily_itemchartprice(
-        code=symbol, market=(market or "J"), n=1
+        code=symbol, market="J", n=1  # J = 주식/ETF/ETN
     )
-    last = df.iloc[-1].to_dict() if not df.empty else {}
+    if df.empty:
+        raise ValueError(f"Symbol '{symbol}' not found")
+    last = df.iloc[-1].to_dict()
     return {
         "symbol": symbol,
         "instrument_type": "equity_kr",
-        "date": str(last.get("date")) if last.get("date") is not None else None,
+        "price": last.get("close"),
         "open": last.get("open"),
         "high": last.get("high"),
         "low": last.get("low"),
-        "close": last.get("close"),
         "volume": last.get("volume"),
         "value": last.get("value"),
         "source": "kis",
@@ -176,97 +185,204 @@ async def _fetch_quote_equity_kr(symbol: str, market: str | None) -> dict[str, A
 
 async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
     """Fetch US equity quote from Yahoo Finance."""
-    df = await yahoo_service.fetch_price(symbol)
-    row = df.reset_index().iloc[-1].to_dict() if not df.empty else {}
+    import yfinance as yf
+
+    from app.core.symbol import to_yahoo_symbol
+
+    yahoo_ticker = to_yahoo_symbol(symbol)
+    info = yf.Ticker(yahoo_ticker).fast_info
+
+    price = getattr(info, "last_price", None)
+    if price is None:
+        raise ValueError(f"Symbol '{symbol}' not found")
+
     return {
         "symbol": symbol,
         "instrument_type": "equity_us",
-        "date": str(row.get("date")) if row.get("date") is not None else None,
-        "time": str(row.get("time")) if row.get("time") is not None else None,
-        "open": row.get("open"),
-        "high": row.get("high"),
-        "low": row.get("low"),
-        "close": row.get("close"),
-        "volume": row.get("volume"),
+        "price": price,
+        "previous_close": getattr(info, "regular_market_previous_close", None),
+        "open": getattr(info, "open", None),
+        "high": getattr(info, "day_high", None),
+        "low": getattr(info, "day_low", None),
+        "volume": getattr(info, "last_volume", None),
         "source": "yahoo",
     }
 
 
-async def _fetch_ohlcv_crypto(symbol: str, days: int) -> dict[str, Any]:
+async def _fetch_ohlcv_crypto(
+    symbol: str, count: int, period: str, end_date: datetime.datetime | None
+) -> dict[str, Any]:
     """Fetch crypto OHLCV from Upbit."""
-    capped_days = min(days, 200)
-    df = await upbit_service.fetch_ohlcv(market=symbol, days=capped_days)
+    capped_count = min(count, 200)
+    df = await upbit_service.fetch_ohlcv(
+        market=symbol, days=capped_count, period=period, end_date=end_date
+    )
     return {
         "symbol": symbol,
         "instrument_type": "crypto",
         "source": "upbit",
-        "days": capped_days,
+        "period": period,
+        "count": capped_count,
         "rows": _normalize_rows(df),
     }
 
 
 async def _fetch_ohlcv_equity_kr(
-    symbol: str, days: int, market: str | None
+    symbol: str,
+    count: int,
+    period: str,
+    end_date: datetime.datetime | None,
 ) -> dict[str, Any]:
     """Fetch Korean equity OHLCV from KIS."""
-    capped_days = min(days, 200)
+    capped_count = min(count, 200)
+    # KIS uses D/W/M for period
+    kis_period_map = {"day": "D", "week": "W", "month": "M"}
     kis = KISClient()
     df = await kis.inquire_daily_itemchartprice(
         code=symbol,
-        market=(market or "J"),
-        n=capped_days,
-        period="D",
+        market="J",  # J = 주식/ETF/ETN
+        n=capped_count,
+        period=kis_period_map.get(period, "D"),
+        end_date=end_date.date() if end_date else None,
     )
     return {
         "symbol": symbol,
         "instrument_type": "equity_kr",
         "source": "kis",
-        "days": capped_days,
+        "period": period,
+        "count": capped_count,
         "rows": _normalize_rows(df),
     }
 
 
-async def _fetch_ohlcv_equity_us(symbol: str, days: int) -> dict[str, Any]:
+async def _fetch_ohlcv_equity_us(
+    symbol: str, count: int, period: str, end_date: datetime.datetime | None
+) -> dict[str, Any]:
     """Fetch US equity OHLCV from Yahoo Finance."""
-    capped_days = min(days, 100)
-    df = await yahoo_service.fetch_ohlcv(ticker=symbol, days=capped_days)
+    capped_count = min(count, 100)
+    df = await yahoo_service.fetch_ohlcv(
+        ticker=symbol, days=capped_count, period=period, end_date=end_date
+    )
     return {
         "symbol": symbol,
         "instrument_type": "equity_us",
         "source": "yahoo",
-        "days": capped_days,
+        "period": period,
+        "count": capped_count,
         "rows": _normalize_rows(df),
     }
 
 
+async def _search_master_data(
+    query: str, limit: int, instrument_type: str | None = None
+) -> list[dict[str, Any]]:
+    """마스터 데이터에서 종목 검색 (KRX, US, Crypto)
+
+    Args:
+        query: 검색어 (심볼 또는 이름)
+        limit: 최대 결과 개수
+        instrument_type: 필터링할 상품 유형 (equity_kr, equity_us, crypto, None=전체)
+    """
+    results: list[dict[str, Any]] = []
+    query_lower = query.lower()
+    query_upper = query.upper()
+
+    # 1. KRX (KOSPI + KOSDAQ) 검색
+    if instrument_type is None or instrument_type == "equity_kr":
+        kospi = get_kospi_name_to_code()
+        kosdaq = get_kosdaq_name_to_code()
+
+        for name, code in kospi.items():
+            if query_lower in name.lower() or query_upper in code:
+                results.append({
+                    "symbol": code,
+                    "name": name,
+                    "instrument_type": "equity_kr",
+                    "exchange": "KOSPI",
+                    "is_active": True,
+                })
+                if len(results) >= limit:
+                    return results
+
+        for name, code in kosdaq.items():
+            if query_lower in name.lower() or query_upper in code:
+                results.append({
+                    "symbol": code,
+                    "name": name,
+                    "instrument_type": "equity_kr",
+                    "exchange": "KOSDAQ",
+                    "is_active": True,
+                })
+                if len(results) >= limit:
+                    return results
+
+    # 2. US Stocks 검색
+    if instrument_type is None or instrument_type == "equity_us":
+        us_data = get_us_stocks_data()
+        symbol_to_exchange = us_data.get("symbol_to_exchange", {})
+        symbol_to_name_kr = us_data.get("symbol_to_name_kr", {})
+        symbol_to_name_en = us_data.get("symbol_to_name_en", {})
+
+        for symbol, exchange in symbol_to_exchange.items():
+            name_kr = symbol_to_name_kr.get(symbol, "")
+            name_en = symbol_to_name_en.get(symbol, "")
+            if (
+                query_upper in symbol.upper()
+                or query_lower in name_kr.lower()
+                or query_lower in name_en.lower()
+            ):
+                results.append({
+                    "symbol": symbol,
+                    "name": name_kr or name_en or symbol,
+                    "instrument_type": "equity_us",
+                    "exchange": exchange,
+                    "is_active": True,
+                })
+                if len(results) >= limit:
+                    return results
+
+    # 3. Crypto 검색
+    if instrument_type is None or instrument_type == "crypto":
+        try:
+            crypto_maps = await get_or_refresh_maps()
+            name_to_pair = crypto_maps.get("NAME_TO_PAIR_KR", {})
+            for name, pair in name_to_pair.items():
+                if query_lower in name.lower() or query_upper in pair.upper():
+                    results.append({
+                        "symbol": pair,
+                        "name": name,
+                        "instrument_type": "crypto",
+                        "exchange": "Upbit",
+                        "is_active": True,
+                    })
+                    if len(results) >= limit:
+                        return results
+        except Exception:
+            pass  # crypto 데이터 로드 실패 시 무시
+
+    return results
+
+
 def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(
-        name="search_symbol", description="Search symbols by query (symbol or name)."
+        name="search_symbol",
+        description="Search symbols by query (symbol or name). Use market to filter: kr/kospi/kosdaq (Korean stocks), us/nasdaq/nyse (US stocks), crypto/upbit (cryptocurrencies).",
     )
-    async def search_symbol(query: str, limit: int = 20) -> list[dict[str, Any]]:
+    async def search_symbol(
+        query: str, limit: int = 20, market: str | None = None
+    ) -> list[dict[str, Any]]:
         query = (query or "").strip()
         if not query:
             return []
 
-        try:
-            async with AsyncSessionLocal() as db:
-                svc = StockInfoService(db)
-                rows = await svc.search_stocks(
-                    query=query, limit=min(max(limit, 1), 100)
-                )
-        except Exception as exc:
-            return [_error_payload(source="db", message=str(exc), query=query)]
+        # market 정규화 (get_quote, get_ohlcv와 동일한 로직)
+        instrument_type = _normalize_market(market)
 
-        return [
-            {
-                "symbol": r.symbol,
-                "name": r.name,
-                "instrument_type": r.instrument_type,
-                "exchange": r.exchange,
-                "is_active": r.is_active,
-            }
-            for r in rows
-        ]
+        try:
+            capped_limit = min(max(limit, 1), 100)
+            return await _search_master_data(query, capped_limit, instrument_type)
+        except Exception as exc:
+            return [_error_payload(source="master", message=str(exc), query=query)]
 
     @mcp.tool(
         name="get_quote",
@@ -286,7 +402,7 @@ def register_tools(mcp: FastMCP) -> None:
             if market_type == "crypto":
                 return await _fetch_quote_crypto(symbol)
             elif market_type == "equity_kr":
-                return await _fetch_quote_equity_kr(symbol, market)
+                return await _fetch_quote_equity_kr(symbol)
             else:  # equity_us
                 return await _fetch_quote_equity_us(symbol)
         except Exception as exc:
@@ -297,18 +413,43 @@ def register_tools(mcp: FastMCP) -> None:
                 instrument_type=market_type,
             )
 
-    @mcp.tool(name="get_ohlcv", description="Get OHLCV candles for a symbol.")
+    @mcp.tool(
+        name="get_ohlcv",
+        description="Get OHLCV candles for a symbol. Supports daily/weekly/monthly periods and date-based pagination.",
+    )
     async def get_ohlcv(
         symbol: str,
-        days: int = 100,
+        count: int = 100,
+        period: str = "day",
+        end_date: str | None = None,
         market: str | None = None,
     ) -> dict[str, Any]:
+        """Get OHLCV candles.
+
+        Args:
+            symbol: Symbol to query (e.g., "005930", "AAPL", "KRW-BTC")
+            count: Number of candles to return (max 200 for crypto/kr, 100 for us)
+            period: Candle period - "day", "week", or "month"
+            end_date: End date for pagination (ISO format: "2024-01-15"). None = latest
+            market: Market hint - kr/us/crypto (optional, auto-detected from symbol)
+        """
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
-        days = int(days)
-        if days <= 0:
-            raise ValueError("days must be > 0")
+        count = int(count)
+        if count <= 0:
+            raise ValueError("count must be > 0")
+
+        period = (period or "day").strip().lower()
+        if period not in ("day", "week", "month"):
+            raise ValueError("period must be 'day', 'week', or 'month'")
+
+        parsed_end_date: datetime.datetime | None = None
+        if end_date:
+            try:
+                parsed_end_date = datetime.datetime.fromisoformat(end_date)
+            except ValueError:
+                raise ValueError("end_date must be ISO format (e.g., '2024-01-15')")
 
         market_type, symbol = _resolve_market_type(symbol, market)
 
@@ -317,11 +458,13 @@ def register_tools(mcp: FastMCP) -> None:
 
         try:
             if market_type == "crypto":
-                return await _fetch_ohlcv_crypto(symbol, days)
+                return await _fetch_ohlcv_crypto(symbol, count, period, parsed_end_date)
             elif market_type == "equity_kr":
-                return await _fetch_ohlcv_equity_kr(symbol, days, market)
+                return await _fetch_ohlcv_equity_kr(
+                    symbol, count, period, parsed_end_date
+                )
             else:  # equity_us
-                return await _fetch_ohlcv_equity_us(symbol, days)
+                return await _fetch_ohlcv_equity_us(symbol, count, period, parsed_end_date)
         except Exception as exc:
             return _error_payload(
                 source=source,

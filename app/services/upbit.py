@@ -83,8 +83,10 @@ async def check_krw_balance_sufficient(required_amount: float) -> tuple[bool, fl
 async def fetch_ohlcv(
     market: str = "KRW-BTC",
     days: int = 100,
+    period: str = "day",
+    end_date: datetime | None = None,
 ) -> pd.DataFrame:
-    """최근 *days*개 일봉 OHLCV DataFrame 반환 (Upbit)
+    """최근 *days*개 OHLCV DataFrame 반환 (Upbit)
 
     Parameters
     ----------
@@ -92,19 +94,31 @@ async def fetch_ohlcv(
         업비트 마켓코드 (예: "KRW-BTC", "USDT-ETH")
     days : int, default 100
         가져올 캔들 수 (최대 200)
+    period : str, default "day"
+        캔들 주기 ("day", "week", "month")
+    end_date : datetime | None, default None
+        조회 기준 시간 (None이면 현재 시간)
     """
     if days > 200:
-        raise ValueError("Upbit 일봉 API는 최대 200개까지 요청 가능합니다.")
+        raise ValueError("Upbit API는 최대 200개까지 요청 가능합니다.")
 
-    url = f"{UPBIT_REST}/candles/days"
-    params = {
+    period_map = {
+        "day": "days",
+        "week": "weeks",
+        "month": "months",
+    }
+    if period not in period_map:
+        raise ValueError(f"period must be one of {list(period_map.keys())}")
+
+    url = f"{UPBIT_REST}/candles/{period_map[period]}"
+    params: dict[str, Any] = {
         "market": market,
         "count": days,
     }
-    # convertingPriceUnit 파라미터는 업비트에서 지원하지 않거나 다른 이름일 수 있음
-    # 필요시 아래와 같이 추가 가능
-    # if adjust_price == "true":
-    #     params["convertingPriceUnit"] = "true"
+    if end_date is not None:
+        # Upbit API expects ISO 8601 format: 2023-01-01T00:00:00
+        params["to"] = end_date.strftime("%Y-%m-%dT%H:%M:%S")
+
     rows = await _request_json(url, params)
 
     df = (

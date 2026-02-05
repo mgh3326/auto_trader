@@ -16,20 +16,49 @@ def _flatten_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-async def fetch_ohlcv(ticker: str, days: int = 100) -> pd.DataFrame:
-    """최근 days개(최대 100) 일봉 OHLCV DataFrame 반환"""
+async def fetch_ohlcv(
+    ticker: str,
+    days: int = 100,
+    period: str = "day",
+    end_date: datetime | None = None,
+) -> pd.DataFrame:
+    """최근 days개 OHLCV DataFrame 반환 (Yahoo Finance)
+
+    Parameters
+    ----------
+    ticker : str
+        종목 심볼 (DB 형식)
+    days : int, default 100
+        가져올 캔들 수
+    period : str, default "day"
+        캔들 주기 ("day", "week", "month")
+    end_date : datetime | None, default None
+        조회 기준 시간 (None이면 현재 시간)
+    """
+    period_map = {
+        "day": "1d",
+        "week": "1wk",
+        "month": "1mo",
+    }
+    if period not in period_map:
+        raise ValueError(f"period must be one of {list(period_map.keys())}")
+
     yahoo_ticker = to_yahoo_symbol(ticker)  # DB형식 . -> Yahoo형식 -
-    end = datetime.now(UTC).date()
-    start = end - timedelta(days=days * 2)  # 휴일 감안 넉넉히
+    end = (end_date.date() if end_date else datetime.now(UTC).date()) + timedelta(days=1)
+
+    # 주봉/월봉은 더 넓은 기간 필요
+    multiplier = {"day": 2, "week": 10, "month": 40}.get(period, 2)
+    start = end - timedelta(days=days * multiplier)
+
     df = yf.download(
         yahoo_ticker,
         start=start,
         end=end,
-        interval="1d",
+        interval=period_map[period],
         progress=False,
         auto_adjust=False,
     )
-    df = _flatten_cols(df).reset_index(names="date")  # ← 여기만 변경
+    df = _flatten_cols(df).reset_index(names="date")
     df = (
         df.assign(date=lambda d: pd.to_datetime(d["date"]).dt.date)
         .loc[:, ["date", "open", "high", "low", "close", "volume"]]

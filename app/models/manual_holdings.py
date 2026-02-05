@@ -74,7 +74,7 @@ class BrokerAccount(Base):
 
     # Relationships
     user = relationship("User", backref="broker_accounts")
-    holdings: Mapped[list[ManualHolding]] = relationship(
+    holdings: Mapped[list["ManualHolding"]] = relationship(
         back_populates="broker_account", cascade="all, delete-orphan"
     )
 
