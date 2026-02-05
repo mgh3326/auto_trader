@@ -412,3 +412,55 @@ async def test_get_ohlcv_market_us_rejects_crypto_prefix():
         ValueError, match="us equity symbols must not include KRW-/USDT- prefix"
     ):
         await tools["get_ohlcv"]("KRW-BTC", market="us")
+
+
+@pytest.mark.unit
+class TestResolveMarketType:
+    """Tests for _resolve_market_type helper function."""
+
+    def test_explicit_crypto_normalizes_symbol(self):
+        market_type, symbol = mcp_tools._resolve_market_type("krw-btc", "crypto")
+        assert market_type == "crypto"
+        assert symbol == "KRW-BTC"
+
+    def test_explicit_crypto_rejects_invalid_prefix(self):
+        with pytest.raises(ValueError, match="KRW-/USDT- prefix"):
+            mcp_tools._resolve_market_type("BTC", "crypto")
+
+    def test_explicit_equity_kr_validates_digits(self):
+        market_type, symbol = mcp_tools._resolve_market_type("005930", "kr")
+        assert market_type == "equity_kr"
+        assert symbol == "005930"
+
+    def test_explicit_equity_kr_rejects_non_digits(self):
+        with pytest.raises(ValueError, match="6 digits"):
+            mcp_tools._resolve_market_type("AAPL", "kr")
+
+    def test_explicit_equity_us_rejects_crypto_prefix(self):
+        with pytest.raises(ValueError, match="must not include KRW-/USDT-"):
+            mcp_tools._resolve_market_type("KRW-BTC", "us")
+
+    def test_auto_detect_crypto(self):
+        market_type, symbol = mcp_tools._resolve_market_type("krw-eth", None)
+        assert market_type == "crypto"
+        assert symbol == "KRW-ETH"
+
+    def test_auto_detect_korean_equity(self):
+        market_type, symbol = mcp_tools._resolve_market_type("005930", None)
+        assert market_type == "equity_kr"
+        assert symbol == "005930"
+
+    def test_auto_detect_us_equity(self):
+        market_type, symbol = mcp_tools._resolve_market_type("AAPL", None)
+        assert market_type == "equity_us"
+        assert symbol == "AAPL"
+
+    def test_unsupported_symbol_raises(self):
+        with pytest.raises(ValueError, match="Unsupported symbol format"):
+            mcp_tools._resolve_market_type("1234", None)
+
+    def test_market_aliases(self):
+        # Test various market aliases
+        assert mcp_tools._resolve_market_type("KRW-BTC", "upbit")[0] == "crypto"
+        assert mcp_tools._resolve_market_type("005930", "kospi")[0] == "equity_kr"
+        assert mcp_tools._resolve_market_type("AAPL", "nasdaq")[0] == "equity_us"

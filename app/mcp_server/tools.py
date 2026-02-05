@@ -59,6 +59,43 @@ def _normalize_market(market: str | None) -> str | None:
     return mapping.get(normalized)
 
 
+def _resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
+    """Resolve market type and validate symbol.
+
+    Returns (market_type, normalized_symbol) or raises ValueError.
+    """
+    market_type = _normalize_market(market)
+
+    # Explicit market specified - validate symbol format
+    if market_type == "crypto":
+        symbol = symbol.upper()
+        if not _is_crypto_market(symbol):
+            raise ValueError("crypto symbols must include KRW-/USDT- prefix")
+        return "crypto", symbol
+
+    if market_type == "equity_kr":
+        if not _is_korean_equity_code(symbol):
+            raise ValueError("korean equity symbols must be 6 digits")
+        return "equity_kr", symbol
+
+    if market_type == "equity_us":
+        if _is_crypto_market(symbol):
+            raise ValueError("us equity symbols must not include KRW-/USDT- prefix")
+        return "equity_us", symbol
+
+    # Auto-detect from symbol format
+    if _is_crypto_market(symbol):
+        return "crypto", symbol.upper()
+
+    if _is_korean_equity_code(symbol):
+        return "equity_kr", symbol
+
+    if _is_us_equity_symbol(symbol):
+        return "equity_us", symbol
+
+    raise ValueError("Unsupported symbol format")
+
+
 def _error_payload(
     *,
     source: str,
@@ -104,6 +141,104 @@ def _normalize_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
     ]
 
 
+async def _fetch_quote_crypto(symbol: str) -> dict[str, Any]:
+    """Fetch crypto quote from Upbit."""
+    prices = await upbit_service.fetch_multiple_current_prices([symbol])
+    price = prices.get(symbol)
+    return {
+        "symbol": symbol,
+        "instrument_type": "crypto",
+        "price": price,
+        "source": "upbit",
+    }
+
+
+async def _fetch_quote_equity_kr(symbol: str, market: str | None) -> dict[str, Any]:
+    """Fetch Korean equity quote from KIS."""
+    kis = KISClient()
+    df = await kis.inquire_daily_itemchartprice(
+        code=symbol, market=(market or "J"), n=1
+    )
+    last = df.iloc[-1].to_dict() if not df.empty else {}
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_kr",
+        "date": str(last.get("date")) if last.get("date") is not None else None,
+        "open": last.get("open"),
+        "high": last.get("high"),
+        "low": last.get("low"),
+        "close": last.get("close"),
+        "volume": last.get("volume"),
+        "value": last.get("value"),
+        "source": "kis",
+    }
+
+
+async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
+    """Fetch US equity quote from Yahoo Finance."""
+    df = await yahoo_service.fetch_price(symbol)
+    row = df.reset_index().iloc[-1].to_dict() if not df.empty else {}
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_us",
+        "date": str(row.get("date")) if row.get("date") is not None else None,
+        "time": str(row.get("time")) if row.get("time") is not None else None,
+        "open": row.get("open"),
+        "high": row.get("high"),
+        "low": row.get("low"),
+        "close": row.get("close"),
+        "volume": row.get("volume"),
+        "source": "yahoo",
+    }
+
+
+async def _fetch_ohlcv_crypto(symbol: str, days: int) -> dict[str, Any]:
+    """Fetch crypto OHLCV from Upbit."""
+    capped_days = min(days, 200)
+    df = await upbit_service.fetch_ohlcv(market=symbol, days=capped_days)
+    return {
+        "symbol": symbol,
+        "instrument_type": "crypto",
+        "source": "upbit",
+        "days": capped_days,
+        "rows": _normalize_rows(df),
+    }
+
+
+async def _fetch_ohlcv_equity_kr(
+    symbol: str, days: int, market: str | None
+) -> dict[str, Any]:
+    """Fetch Korean equity OHLCV from KIS."""
+    capped_days = min(days, 200)
+    kis = KISClient()
+    df = await kis.inquire_daily_itemchartprice(
+        code=symbol,
+        market=(market or "J"),
+        n=capped_days,
+        period="D",
+    )
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_kr",
+        "source": "kis",
+        "days": capped_days,
+        "rows": _normalize_rows(df),
+    }
+
+
+async def _fetch_ohlcv_equity_us(symbol: str, days: int) -> dict[str, Any]:
+    """Fetch US equity OHLCV from Yahoo Finance."""
+    capped_days = min(days, 100)
+    df = await yahoo_service.fetch_ohlcv(ticker=symbol, days=capped_days)
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_us",
+        "source": "yahoo",
+        "days": capped_days,
+        "rows": _normalize_rows(df),
+    }
+
+
 def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="search_symbol", description="Search symbols by query (symbol or name)."
@@ -142,170 +277,25 @@ def register_tools(mcp: FastMCP) -> None:
         if not symbol:
             raise ValueError("symbol is required")
 
-        market_type = _normalize_market(market)
+        market_type, symbol = _resolve_market_type(symbol, market)
 
-        if market_type == "crypto":
-            symbol = symbol.upper()
-            if not _is_crypto_market(symbol):
-                raise ValueError("crypto symbols must include KRW-/USDT- prefix")
-            try:
-                prices = await upbit_service.fetch_multiple_current_prices([symbol])
-                price = prices.get(symbol)
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "crypto",
-                    "price": price,
-                    "source": "upbit",
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="upbit",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="crypto",
-                )
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
 
-        if market_type == "equity_kr":
-            if not _is_korean_equity_code(symbol):
-                raise ValueError("korean equity symbols must be 6 digits")
-            try:
-                kis = KISClient()
-                df = await kis.inquire_daily_itemchartprice(
-                    code=symbol, market=(market or "J"), n=1
-                )
-                last = df.iloc[-1].to_dict() if not df.empty else {}
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "equity_kr",
-                    "date": str(last.get("date"))
-                    if last.get("date") is not None
-                    else None,
-                    "open": last.get("open"),
-                    "high": last.get("high"),
-                    "low": last.get("low"),
-                    "close": last.get("close"),
-                    "volume": last.get("volume"),
-                    "value": last.get("value"),
-                    "source": "kis",
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="kis",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="equity_kr",
-                )
-
-        if market_type == "equity_us":
-            if _is_crypto_market(symbol):
-                raise ValueError("us equity symbols must not include KRW-/USDT- prefix")
-            try:
-                df = await yahoo_service.fetch_price(symbol)
-                row = df.reset_index().iloc[-1].to_dict() if not df.empty else {}
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "equity_us",
-                    "date": str(row.get("date"))
-                    if row.get("date") is not None
-                    else None,
-                    "time": str(row.get("time"))
-                    if row.get("time") is not None
-                    else None,
-                    "open": row.get("open"),
-                    "high": row.get("high"),
-                    "low": row.get("low"),
-                    "close": row.get("close"),
-                    "volume": row.get("volume"),
-                    "source": "yahoo",
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="yahoo",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="equity_us",
-                )
-
-        # Crypto (Upbit)
-        if _is_crypto_market(symbol):
-            symbol = symbol.upper()
-            try:
-                prices = await upbit_service.fetch_multiple_current_prices([symbol])
-                price = prices.get(symbol)
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "crypto",
-                    "price": price,
-                    "source": "upbit",
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="upbit",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="crypto",
-                )
-
-        # Korea equity (KIS)
-        if _is_korean_equity_code(symbol):
-            try:
-                kis = KISClient()
-                df = await kis.inquire_daily_itemchartprice(
-                    code=symbol, market=(market or "J"), n=1
-                )
-                last = df.iloc[-1].to_dict() if not df.empty else {}
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "equity_kr",
-                    "date": str(last.get("date"))
-                    if last.get("date") is not None
-                    else None,
-                    "open": last.get("open"),
-                    "high": last.get("high"),
-                    "low": last.get("low"),
-                    "close": last.get("close"),
-                    "volume": last.get("volume"),
-                    "value": last.get("value"),
-                    "source": "kis",
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="kis",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="equity_kr",
-                )
-
-        # US equity (Yahoo)
-        if _is_us_equity_symbol(symbol):
-            try:
-                df = await yahoo_service.fetch_price(symbol)
-                row = df.reset_index().iloc[-1].to_dict() if not df.empty else {}
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "equity_us",
-                    "date": str(row.get("date"))
-                    if row.get("date") is not None
-                    else None,
-                    "time": str(row.get("time"))
-                    if row.get("time") is not None
-                    else None,
-                    "open": row.get("open"),
-                    "high": row.get("high"),
-                    "low": row.get("low"),
-                    "close": row.get("close"),
-                    "volume": row.get("volume"),
-                    "source": "yahoo",
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="yahoo",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="equity_us",
-                )
-
-        raise ValueError("Unsupported symbol format")
+        try:
+            if market_type == "crypto":
+                return await _fetch_quote_crypto(symbol)
+            elif market_type == "equity_kr":
+                return await _fetch_quote_equity_kr(symbol, market)
+            else:  # equity_us
+                return await _fetch_quote_equity_us(symbol)
+        except Exception as exc:
+            return _error_payload(
+                source=source,
+                message=str(exc),
+                symbol=symbol,
+                instrument_type=market_type,
+            )
 
     @mcp.tool(name="get_ohlcv", description="Get OHLCV candles for a symbol.")
     async def get_ohlcv(
@@ -320,137 +310,22 @@ def register_tools(mcp: FastMCP) -> None:
         if days <= 0:
             raise ValueError("days must be > 0")
 
-        market_type = _normalize_market(market)
+        market_type, symbol = _resolve_market_type(symbol, market)
 
-        if market_type == "crypto":
-            symbol = symbol.upper()
-            if not _is_crypto_market(symbol):
-                raise ValueError("crypto symbols must include KRW-/USDT- prefix")
-            try:
-                df = await upbit_service.fetch_ohlcv(market=symbol, days=min(days, 200))
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "crypto",
-                    "source": "upbit",
-                    "days": min(days, 200),
-                    "rows": _normalize_rows(df),
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="upbit",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="crypto",
-                )
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
 
-        if market_type == "equity_kr":
-            if not _is_korean_equity_code(symbol):
-                raise ValueError("korean equity symbols must be 6 digits")
-            try:
-                kis = KISClient()
-                df = await kis.inquire_daily_itemchartprice(
-                    code=symbol,
-                    market=(market or "J"),
-                    n=min(days, 200),
-                    period="D",
-                )
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "equity_kr",
-                    "source": "kis",
-                    "days": min(days, 200),
-                    "rows": _normalize_rows(df),
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="kis",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="equity_kr",
-                )
-
-        if market_type == "equity_us":
-            if _is_crypto_market(symbol):
-                raise ValueError("us equity symbols must not include KRW-/USDT- prefix")
-            try:
-                df = await yahoo_service.fetch_ohlcv(ticker=symbol, days=min(days, 100))
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "equity_us",
-                    "source": "yahoo",
-                    "days": min(days, 100),
-                    "rows": _normalize_rows(df),
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="yahoo",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="equity_us",
-                )
-
-        # Crypto
-        if _is_crypto_market(symbol):
-            symbol = symbol.upper()
-            try:
-                df = await upbit_service.fetch_ohlcv(market=symbol, days=min(days, 200))
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "crypto",
-                    "source": "upbit",
-                    "days": min(days, 200),
-                    "rows": _normalize_rows(df),
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="upbit",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="crypto",
-                )
-
-        # Korea equity
-        if _is_korean_equity_code(symbol):
-            try:
-                kis = KISClient()
-                df = await kis.inquire_daily_itemchartprice(
-                    code=symbol,
-                    market=(market or "J"),
-                    n=min(days, 200),
-                    period="D",
-                )
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "equity_kr",
-                    "source": "kis",
-                    "days": min(days, 200),
-                    "rows": _normalize_rows(df),
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="kis",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="equity_kr",
-                )
-
-        # US equity
-        if _is_us_equity_symbol(symbol):
-            try:
-                df = await yahoo_service.fetch_ohlcv(ticker=symbol, days=min(days, 100))
-                return {
-                    "symbol": symbol,
-                    "instrument_type": "equity_us",
-                    "source": "yahoo",
-                    "days": min(days, 100),
-                    "rows": _normalize_rows(df),
-                }
-            except Exception as exc:
-                return _error_payload(
-                    source="yahoo",
-                    message=str(exc),
-                    symbol=symbol,
-                    instrument_type="equity_us",
-                )
-
-        raise ValueError("Unsupported symbol format")
+        try:
+            if market_type == "crypto":
+                return await _fetch_ohlcv_crypto(symbol, days)
+            elif market_type == "equity_kr":
+                return await _fetch_ohlcv_equity_kr(symbol, days, market)
+            else:  # equity_us
+                return await _fetch_ohlcv_equity_us(symbol, days)
+        except Exception as exc:
+            return _error_payload(
+                source=source,
+                message=str(exc),
+                symbol=symbol,
+                instrument_type=market_type,
+            )
