@@ -11,6 +11,17 @@ def _env(name: str, default: str | None = None) -> str | None:
     return v if v not in (None, "") else default
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.warning(f"Invalid integer for {name}={raw!r}, using default={default}")
+        return default
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -20,7 +31,7 @@ def main() -> None:
 
     mcp_type = _env("MCP_TYPE", "streamable-http")  # stdio | sse | streamable-http
     mcp_host = _env("MCP_HOST", "0.0.0.0")
-    mcp_port = int(_env("MCP_PORT", "8765"))
+    mcp_port = _env_int("MCP_PORT", 8765)
     mcp_path = _env("MCP_PATH", "/mcp")
 
     server = FastMCP(
@@ -32,7 +43,9 @@ def main() -> None:
 
     register_tools(server)
 
-    logging.info(f"🚀 Starting MCP server: type={mcp_type} host={mcp_host} port={mcp_port} path={mcp_path}")
+    logging.info(
+        f"Starting MCP server: type={mcp_type} host={mcp_host} port={mcp_port} path={mcp_path}"
+    )
 
     if mcp_type == "stdio":
         server.run(transport="stdio")

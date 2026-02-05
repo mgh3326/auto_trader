@@ -9,10 +9,10 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 from app.core.db import AsyncSessionLocal
-from app.services.stock_info_service import StockInfoService
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
+from app.services.stock_info_service import StockInfoService
 
 
 def _is_korean_equity_code(symbol: str) -> bool:
@@ -108,8 +108,7 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="search_symbol", description="Search symbols by query (symbol or name)."
     )
-    async def \
-            search_symbol(query: str, limit: int = 20) -> list[dict[str, Any]]:
+    async def search_symbol(query: str, limit: int = 20) -> list[dict[str, Any]]:
         query = (query or "").strip()
         if not query:
             return []
