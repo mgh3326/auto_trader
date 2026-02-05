@@ -1,25 +1,9 @@
 import logging
-import os
 
 from fastmcp import FastMCP
 
+from app.mcp_server.env_utils import _env, _env_int
 from app.mcp_server.tools import register_tools
-
-
-def _env(name: str, default: str | None = None) -> str | None:
-    v = os.getenv(name)
-    return v if v not in (None, "") else default
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = _env(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logging.warning(f"Invalid integer for {name}={raw!r}, using default={default}")
-        return default
 
 
 def main() -> None:
