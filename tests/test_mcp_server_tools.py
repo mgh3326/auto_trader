@@ -563,3 +563,83 @@ class TestResolveMarketType:
         assert mcp_tools._resolve_market_type("KRW-BTC", "upbit")[0] == "crypto"
         assert mcp_tools._resolve_market_type("005930", "kospi")[0] == "equity_kr"
         assert mcp_tools._resolve_market_type("AAPL", "nasdaq")[0] == "equity_us"
+
+
+@pytest.mark.unit
+class TestErrorPayload:
+    """Tests for _error_payload helper function."""
+
+    def test_minimal_payload(self):
+        result = mcp_tools._error_payload(source="test", message="error occurred")
+        assert result == {"error": "error occurred", "source": "test"}
+
+    def test_with_symbol(self):
+        result = mcp_tools._error_payload(
+            source="upbit", message="not found", symbol="KRW-BTC"
+        )
+        assert result == {
+            "error": "not found",
+            "source": "upbit",
+            "symbol": "KRW-BTC",
+        }
+
+    def test_with_all_fields(self):
+        result = mcp_tools._error_payload(
+            source="yahoo",
+            message="API error",
+            symbol="AAPL",
+            instrument_type="equity_us",
+            query="search query",
+        )
+        assert result == {
+            "error": "API error",
+            "source": "yahoo",
+            "symbol": "AAPL",
+            "instrument_type": "equity_us",
+            "query": "search query",
+        }
+
+    def test_none_values_excluded(self):
+        result = mcp_tools._error_payload(
+            source="kis", message="error", symbol=None, instrument_type=None
+        )
+        assert "symbol" not in result
+        assert "instrument_type" not in result
+
+
+@pytest.mark.unit
+class TestNormalizeRows:
+    """Tests for _normalize_rows helper function."""
+
+    def test_empty_dataframe(self):
+        df = pd.DataFrame()
+        assert mcp_tools._normalize_rows(df) == []
+
+    def test_single_row(self):
+        df = pd.DataFrame([{"a": 1, "b": "text"}])
+        result = mcp_tools._normalize_rows(df)
+        assert result == [{"a": 1, "b": "text"}]
+
+    def test_multiple_rows(self):
+        df = pd.DataFrame([{"x": 1}, {"x": 2}, {"x": 3}])
+        result = mcp_tools._normalize_rows(df)
+        assert len(result) == 3
+        assert result[0]["x"] == 1
+        assert result[2]["x"] == 3
+
+    def test_normalizes_values(self):
+        import datetime
+
+        df = pd.DataFrame(
+            [
+                {
+                    "date": datetime.date(2024, 1, 15),
+                    "value": float("nan"),
+                    "count": 42,
+                }
+            ]
+        )
+        result = mcp_tools._normalize_rows(df)
+        assert result[0]["date"] == "2024-01-15"
+        assert result[0]["value"] is None
+        assert result[0]["count"] == 42
