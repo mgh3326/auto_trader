@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 from app.core.config import settings
+from app.services import naver_finance
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
@@ -175,7 +176,9 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
     """Fetch Korean equity quote from KIS."""
     kis = KISClient()
     df = await kis.inquire_daily_itemchartprice(
-        code=symbol, market="J", n=1  # J = 주식/ETF/ETN
+        code=symbol,
+        market="J",
+        n=1,  # J = 주식/ETF/ETN
     )
     if df.empty:
         raise ValueError(f"Symbol '{symbol}' not found")
@@ -331,7 +334,9 @@ def _calculate_ema(
     return result
 
 
-def _calculate_rsi(close: pd.Series, period: int = DEFAULT_RSI_PERIOD) -> dict[str, float | None]:
+def _calculate_rsi(
+    close: pd.Series, period: int = DEFAULT_RSI_PERIOD
+) -> dict[str, float | None]:
     """Calculate Relative Strength Index."""
     if len(close) < period + 1:
         return {str(period): None}
@@ -378,7 +383,9 @@ def _calculate_macd(
 
 
 def _calculate_bollinger(
-    close: pd.Series, period: int = DEFAULT_BOLLINGER_PERIOD, std: float = DEFAULT_BOLLINGER_STD
+    close: pd.Series,
+    period: int = DEFAULT_BOLLINGER_PERIOD,
+    std: float = DEFAULT_BOLLINGER_STD,
 ) -> dict[str, float | None]:
     """Calculate Bollinger Bands (upper, middle, lower)."""
     if len(close) < period:
@@ -425,7 +432,15 @@ def _calculate_pivot(
 ) -> dict[str, float | None]:
     """Calculate Pivot Points (classic) based on previous day's HLC."""
     if len(close) < 2:
-        return {"p": None, "r1": None, "r2": None, "r3": None, "s1": None, "s2": None, "s3": None}
+        return {
+            "p": None,
+            "r1": None,
+            "r2": None,
+            "r3": None,
+            "s1": None,
+            "s2": None,
+            "s3": None,
+        }
 
     # Use previous day's data
     prev_high = float(high.iloc[-2])
@@ -500,8 +515,13 @@ def _compute_indicators(
                 results["pivot"] = _calculate_pivot(high, low, close)
             else:
                 results["pivot"] = {
-                    "p": None, "r1": None, "r2": None, "r3": None,
-                    "s1": None, "s2": None, "s3": None,
+                    "p": None,
+                    "r1": None,
+                    "r2": None,
+                    "r3": None,
+                    "s1": None,
+                    "s2": None,
+                    "s3": None,
                 }
 
     return results
@@ -551,7 +571,11 @@ async def _fetch_ohlcv_crypto_paginated(
 
     # Concatenate all batches, sort by date, and remove duplicates
     combined = pd.concat(all_dfs, ignore_index=True)
-    combined = combined.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
+    combined = (
+        combined.drop_duplicates(subset=["date"])
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
 
     return combined
 
@@ -574,7 +598,9 @@ async def _fetch_ohlcv_for_indicators(
         )
     else:  # equity_us
         capped_count = min(count, 250)
-        df = await yahoo_service.fetch_ohlcv(ticker=symbol, days=capped_count, period="day")
+        df = await yahoo_service.fetch_ohlcv(
+            ticker=symbol, days=capped_count, period="day"
+        )
 
     return df
 
@@ -592,9 +618,7 @@ def _get_finnhub_client() -> finnhub.Client:
     return finnhub.Client(api_key=api_key)
 
 
-async def _fetch_news_finnhub(
-    symbol: str, market: str, limit: int
-) -> dict[str, Any]:
+async def _fetch_news_finnhub(symbol: str, market: str, limit: int) -> dict[str, Any]:
     """Fetch news from Finnhub API.
 
     Args:
@@ -629,17 +653,21 @@ async def _fetch_news_finnhub(
     # Transform to consistent format
     result_items = []
     for item in news_items:
-        result_items.append({
-            "title": item.get("headline", ""),
-            "source": item.get("source", ""),
-            "datetime": datetime.datetime.fromtimestamp(
-                item.get("datetime", 0)
-            ).isoformat() if item.get("datetime") else None,
-            "url": item.get("url", ""),
-            "summary": item.get("summary", ""),
-            "sentiment": item.get("sentiment"),  # May be None
-            "related": item.get("related", ""),
-        })
+        result_items.append(
+            {
+                "title": item.get("headline", ""),
+                "source": item.get("source", ""),
+                "datetime": datetime.datetime.fromtimestamp(
+                    item.get("datetime", 0)
+                ).isoformat()
+                if item.get("datetime")
+                else None,
+                "url": item.get("url", ""),
+                "summary": item.get("summary", ""),
+                "sentiment": item.get("sentiment"),  # May be None
+                "related": item.get("related", ""),
+            }
+        )
 
     return {
         "symbol": symbol,
@@ -711,7 +739,9 @@ async def _fetch_financials_finnhub(
     }
     finnhub_statement = statement_map.get(statement)
     if not finnhub_statement:
-        raise ValueError(f"Invalid statement type '{statement}'. Use: income, balance, cashflow")
+        raise ValueError(
+            f"Invalid statement type '{statement}'. Use: income, balance, cashflow"
+        )
 
     def fetch_sync() -> dict[str, Any]:
         return client.financials_reported(
@@ -738,14 +768,16 @@ async def _fetch_financials_finnhub(
             if label and value is not None:
                 financials[label] = value
 
-        reports.append({
-            "year": report.get("year"),
-            "quarter": report.get("quarter"),
-            "filed_date": report.get("filedDate"),
-            "period_start": report.get("startDate"),
-            "period_end": report.get("endDate"),
-            "data": financials,
-        })
+        reports.append(
+            {
+                "year": report.get("year"),
+                "quarter": report.get("quarter"),
+                "filed_date": report.get("filedDate"),
+                "period_start": report.get("startDate"),
+                "period_end": report.get("endDate"),
+                "data": financials,
+            }
+        )
 
     return {
         "symbol": symbol,
@@ -800,16 +832,18 @@ async def _fetch_insider_transactions_finnhub(
             "C": "Conversion",
             "J": "Other",
         }
-        transactions.append({
-            "name": txn.get("name", ""),
-            "transaction_type": txn_type_map.get(txn_code, txn_code),
-            "transaction_code": txn_code,
-            "shares": txn.get("share"),
-            "change": txn.get("change"),  # Net change in shares
-            "price": txn.get("transactionPrice"),
-            "date": txn.get("transactionDate"),
-            "filing_date": txn.get("filingDate"),
-        })
+        transactions.append(
+            {
+                "name": txn.get("name", ""),
+                "transaction_type": txn_type_map.get(txn_code, txn_code),
+                "transaction_code": txn_code,
+                "shares": txn.get("share"),
+                "change": txn.get("change"),  # Net change in shares
+                "price": txn.get("transactionPrice"),
+                "date": txn.get("transactionDate"),
+                "filing_date": txn.get("filingDate"),
+            }
+        )
 
     return {
         "symbol": symbol,
@@ -866,17 +900,21 @@ async def _fetch_earnings_calendar_finnhub(
 
     earnings = []
     for item in result.get("earningsCalendar", []):
-        earnings.append({
-            "symbol": item.get("symbol", ""),
-            "date": item.get("date"),
-            "hour": item.get("hour", ""),  # "bmo" (before market open), "amc" (after market close)
-            "eps_estimate": item.get("epsEstimate"),
-            "eps_actual": item.get("epsActual"),
-            "revenue_estimate": item.get("revenueEstimate"),
-            "revenue_actual": item.get("revenueActual"),
-            "quarter": item.get("quarter"),
-            "year": item.get("year"),
-        })
+        earnings.append(
+            {
+                "symbol": item.get("symbol", ""),
+                "date": item.get("date"),
+                "hour": item.get(
+                    "hour", ""
+                ),  # "bmo" (before market open), "amc" (after market close)
+                "eps_estimate": item.get("epsEstimate"),
+                "eps_actual": item.get("epsActual"),
+                "revenue_estimate": item.get("revenueEstimate"),
+                "revenue_actual": item.get("revenueActual"),
+                "quarter": item.get("quarter"),
+                "year": item.get("year"),
+            }
+        )
 
     return {
         "symbol": symbol,
@@ -886,6 +924,129 @@ async def _fetch_earnings_calendar_finnhub(
         "to_date": to_date,
         "count": len(earnings),
         "earnings": earnings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Naver Finance Helpers (Korean Stocks)
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_news_naver(symbol: str, limit: int) -> dict[str, Any]:
+    """Fetch news from Naver Finance for Korean stocks.
+
+    Args:
+        symbol: Korean stock code (6 digits, e.g., "005930")
+        limit: Maximum number of news items to return
+
+    Returns:
+        Dictionary with news data
+    """
+    news_items = await naver_finance.fetch_news(symbol, limit=limit)
+
+    return {
+        "symbol": symbol,
+        "market": "kr",
+        "source": "naver",
+        "count": len(news_items),
+        "news": news_items,
+    }
+
+
+async def _fetch_company_profile_naver(symbol: str) -> dict[str, Any]:
+    """Fetch company profile from Naver Finance for Korean stocks.
+
+    Args:
+        symbol: Korean stock code (6 digits, e.g., "005930")
+
+    Returns:
+        Dictionary with company profile data
+    """
+    profile = await naver_finance.fetch_company_profile(symbol)
+
+    return {
+        "instrument_type": "equity_kr",
+        "source": "naver",
+        **profile,
+    }
+
+
+async def _fetch_financials_naver(
+    symbol: str, statement: str, freq: str
+) -> dict[str, Any]:
+    """Fetch financial statements from Naver Finance for Korean stocks.
+
+    Args:
+        symbol: Korean stock code (6 digits, e.g., "005930")
+        statement: Statement type - "income", "balance", or "cashflow"
+        freq: Frequency - "annual" or "quarterly"
+
+    Returns:
+        Dictionary with financial statement data
+    """
+    financials = await naver_finance.fetch_financials(symbol, statement, freq)
+
+    return {
+        "instrument_type": "equity_kr",
+        "source": "naver",
+        **financials,
+    }
+
+
+async def _fetch_investor_trends_naver(symbol: str, days: int) -> dict[str, Any]:
+    """Fetch investor trends from Naver Finance for Korean stocks.
+
+    Args:
+        symbol: Korean stock code (6 digits, e.g., "005930")
+        days: Number of days of data to fetch
+
+    Returns:
+        Dictionary with investor trend data
+    """
+    trends = await naver_finance.fetch_investor_trends(symbol, days=days)
+
+    return {
+        "instrument_type": "equity_kr",
+        "source": "naver",
+        **trends,
+    }
+
+
+async def _fetch_investment_opinions_naver(symbol: str, limit: int) -> dict[str, Any]:
+    """Fetch investment opinions from Naver Finance for Korean stocks.
+
+    Args:
+        symbol: Korean stock code (6 digits, e.g., "005930")
+        limit: Maximum number of opinions to return
+
+    Returns:
+        Dictionary with investment opinion data
+    """
+    opinions = await naver_finance.fetch_investment_opinions(symbol, limit=limit)
+
+    return {
+        "instrument_type": "equity_kr",
+        "source": "naver",
+        **opinions,
+    }
+
+
+async def _fetch_valuation_naver(symbol: str) -> dict[str, Any]:
+    """Fetch valuation metrics from Naver Finance for Korean stocks.
+
+    Args:
+        symbol: Korean stock code (6 digits, e.g., "005930")
+
+    Returns:
+        Dictionary with valuation metrics (PER, PBR, ROE, dividend_yield,
+        52-week high/low, current price, current_position_52w)
+    """
+    valuation = await naver_finance.fetch_valuation(symbol)
+
+    return {
+        "instrument_type": "equity_kr",
+        "source": "naver",
+        **valuation,
     }
 
 
@@ -910,25 +1071,29 @@ async def _search_master_data(
 
         for name, code in kospi.items():
             if query_lower in name.lower() or query_upper in code:
-                results.append({
-                    "symbol": code,
-                    "name": name,
-                    "instrument_type": "equity_kr",
-                    "exchange": "KOSPI",
-                    "is_active": True,
-                })
+                results.append(
+                    {
+                        "symbol": code,
+                        "name": name,
+                        "instrument_type": "equity_kr",
+                        "exchange": "KOSPI",
+                        "is_active": True,
+                    }
+                )
                 if len(results) >= limit:
                     return results
 
         for name, code in kosdaq.items():
             if query_lower in name.lower() or query_upper in code:
-                results.append({
-                    "symbol": code,
-                    "name": name,
-                    "instrument_type": "equity_kr",
-                    "exchange": "KOSDAQ",
-                    "is_active": True,
-                })
+                results.append(
+                    {
+                        "symbol": code,
+                        "name": name,
+                        "instrument_type": "equity_kr",
+                        "exchange": "KOSDAQ",
+                        "is_active": True,
+                    }
+                )
                 if len(results) >= limit:
                     return results
 
@@ -947,13 +1112,15 @@ async def _search_master_data(
                 or query_lower in name_kr.lower()
                 or query_lower in name_en.lower()
             ):
-                results.append({
-                    "symbol": symbol,
-                    "name": name_kr or name_en or symbol,
-                    "instrument_type": "equity_us",
-                    "exchange": exchange,
-                    "is_active": True,
-                })
+                results.append(
+                    {
+                        "symbol": symbol,
+                        "name": name_kr or name_en or symbol,
+                        "instrument_type": "equity_us",
+                        "exchange": exchange,
+                        "is_active": True,
+                    }
+                )
                 if len(results) >= limit:
                     return results
 
@@ -964,13 +1131,15 @@ async def _search_master_data(
             name_to_pair = crypto_maps.get("NAME_TO_PAIR_KR", {})
             for name, pair in name_to_pair.items():
                 if query_lower in name.lower() or query_upper in pair.upper():
-                    results.append({
-                        "symbol": pair,
-                        "name": name,
-                        "instrument_type": "crypto",
-                        "exchange": "Upbit",
-                        "is_active": True,
-                    })
+                    results.append(
+                        {
+                            "symbol": pair,
+                            "name": name,
+                            "instrument_type": "crypto",
+                            "exchange": "Upbit",
+                            "is_active": True,
+                        }
+                    )
                     if len(results) >= limit:
                         return results
         except Exception:
@@ -1080,7 +1249,9 @@ def register_tools(mcp: FastMCP) -> None:
                     symbol, count, period, parsed_end_date
                 )
             else:  # equity_us
-                return await _fetch_ohlcv_equity_us(symbol, count, period, parsed_end_date)
+                return await _fetch_ohlcv_equity_us(
+                    symbol, count, period, parsed_end_date
+                )
         except Exception as exc:
             return _error_payload(
                 source=source,
@@ -1124,7 +1295,13 @@ def register_tools(mcp: FastMCP) -> None:
 
         # Validate indicator names
         valid_indicators: set[IndicatorType] = {
-            "sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot"
+            "sma",
+            "ema",
+            "rsi",
+            "macd",
+            "bollinger",
+            "atr",
+            "pivot",
         }
         normalized_indicators: list[IndicatorType] = []
         for ind in indicators:
@@ -1148,7 +1325,9 @@ def register_tools(mcp: FastMCP) -> None:
                 raise ValueError(f"No data available for symbol '{symbol}'")
 
             # Get current price from the latest row
-            current_price = float(df["close"].iloc[-1]) if "close" in df.columns else None
+            current_price = (
+                float(df["close"].iloc[-1]) if "close" in df.columns else None
+            )
 
             # Compute requested indicators
             indicator_results = _compute_indicators(df, normalized_indicators)
@@ -1175,7 +1354,7 @@ def register_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="get_news",
-        description="Get recent news for a US stock or cryptocurrency. Returns title, source, datetime, url, summary, and sentiment.",
+        description="Get recent news for a stock or cryptocurrency. Supports US stocks (Finnhub), Korean stocks (Naver Finance), and crypto (Finnhub).",
     )
     async def get_news(
         symbol: str,
@@ -1185,86 +1364,150 @@ def register_tools(mcp: FastMCP) -> None:
         """Get recent news for a symbol.
 
         Args:
-            symbol: Stock symbol (e.g., "AAPL") or "crypto" for crypto news
-            market: Market type - "us" (default) or "crypto"
+            symbol: Stock symbol (e.g., "AAPL" for US, "005930" for Korean) or "crypto"
+            market: Market type - "us", "kr", or "crypto" (auto-detected if not specified)
             limit: Maximum number of news items (default: 10, max: 50)
 
         Returns:
-            Dictionary with news items including title, source, datetime, url, summary
+            Dictionary with news items including title, source, datetime, url
         """
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
 
+        # Auto-detect market if not specified
+        if market is None:
+            if _is_korean_equity_code(symbol):
+                market = "kr"
+            elif _is_crypto_market(symbol):
+                market = "crypto"
+            else:
+                market = "us"
+
         # Normalize market type
-        normalized_market = (market or "us").strip().lower()
+        normalized_market = market.strip().lower()
         if normalized_market in ("crypto", "upbit", "krw", "usdt"):
             normalized_market = "crypto"
+        elif normalized_market in (
+            "kr",
+            "krx",
+            "korea",
+            "kospi",
+            "kosdaq",
+            "kis",
+            "equity_kr",
+            "naver",
+        ):
+            normalized_market = "kr"
         elif normalized_market in ("us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"):
             normalized_market = "us"
         else:
-            raise ValueError("market must be 'us' or 'crypto'")
+            raise ValueError("market must be 'us', 'kr', or 'crypto'")
 
         capped_limit = min(max(limit, 1), 50)
 
         try:
-            return await _fetch_news_finnhub(symbol, normalized_market, capped_limit)
+            if normalized_market == "kr":
+                return await _fetch_news_naver(symbol, capped_limit)
+            else:
+                return await _fetch_news_finnhub(
+                    symbol, normalized_market, capped_limit
+                )
         except Exception as exc:
+            source = "naver" if normalized_market == "kr" else "finnhub"
+            instrument_type = {
+                "kr": "equity_kr",
+                "us": "equity_us",
+                "crypto": "crypto",
+            }.get(normalized_market, "equity_us")
             return _error_payload(
-                source="finnhub",
+                source=source,
                 message=str(exc),
                 symbol=symbol,
-                instrument_type="crypto" if normalized_market == "crypto" else "equity_us",
+                instrument_type=instrument_type,
             )
 
     @mcp.tool(
         name="get_company_profile",
-        description="Get company profile for a US stock. Returns name, sector, industry, market cap, description, website. US stocks only.",
+        description="Get company profile for a US or Korean stock. Returns name, sector, industry, market cap, and financial ratios.",
     )
-    async def get_company_profile(symbol: str) -> dict[str, Any]:
-        """Get company profile for a US stock.
+    async def get_company_profile(
+        symbol: str, market: str | None = None
+    ) -> dict[str, Any]:
+        """Get company profile for a stock.
 
         Args:
-            symbol: US stock symbol (e.g., "AAPL")
+            symbol: Stock symbol (e.g., "AAPL" for US, "005930" for Korean)
+            market: Market type - "us" or "kr" (auto-detected if not specified)
 
         Returns:
-            Dictionary with company profile including name, sector, market_cap, website
+            Dictionary with company profile including name, sector, market_cap
         """
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
 
-        # Validate this is a US equity symbol
+        # Crypto not supported
         if _is_crypto_market(symbol):
-            raise ValueError("Company profile is only available for US stocks")
-        if _is_korean_equity_code(symbol):
-            raise ValueError("Company profile is only available for US stocks")
+            raise ValueError("Company profile is not available for cryptocurrencies")
+
+        # Auto-detect market if not specified
+        if market is None:
+            if _is_korean_equity_code(symbol):
+                market = "kr"
+            else:
+                market = "us"
+
+        # Normalize market type
+        normalized_market = market.strip().lower()
+        if normalized_market in (
+            "kr",
+            "krx",
+            "korea",
+            "kospi",
+            "kosdaq",
+            "kis",
+            "equity_kr",
+            "naver",
+        ):
+            normalized_market = "kr"
+        elif normalized_market in ("us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"):
+            normalized_market = "us"
+        else:
+            raise ValueError("market must be 'us' or 'kr'")
 
         try:
-            return await _fetch_company_profile_finnhub(symbol)
+            if normalized_market == "kr":
+                return await _fetch_company_profile_naver(symbol)
+            else:
+                return await _fetch_company_profile_finnhub(symbol)
         except Exception as exc:
+            source = "naver" if normalized_market == "kr" else "finnhub"
+            instrument_type = "equity_kr" if normalized_market == "kr" else "equity_us"
             return _error_payload(
-                source="finnhub",
+                source=source,
                 message=str(exc),
                 symbol=symbol,
-                instrument_type="equity_us",
+                instrument_type=instrument_type,
             )
 
     @mcp.tool(
         name="get_financials",
-        description="Get financial statements for a US stock. Supports income statement, balance sheet, and cash flow. US stocks only.",
+        description="Get financial statements for a US or Korean stock. Supports income statement, balance sheet, and cash flow.",
     )
     async def get_financials(
         symbol: str,
         statement: str = "income",
         freq: str = "annual",
+        market: str | None = None,
     ) -> dict[str, Any]:
-        """Get financial statements for a US stock.
+        """Get financial statements for a stock.
 
         Args:
-            symbol: US stock symbol (e.g., "AAPL")
+            symbol: Stock symbol (e.g., "AAPL" for US, "005930" for Korean)
             statement: Statement type - "income", "balance", or "cashflow" (default: "income")
             freq: Frequency - "annual" or "quarterly" (default: "annual")
+            market: Market type - "us" or "kr" (auto-detected if not specified)
 
         Returns:
             Dictionary with financial statement data
@@ -1281,20 +1524,50 @@ def register_tools(mcp: FastMCP) -> None:
         if freq not in ("annual", "quarterly"):
             raise ValueError("freq must be 'annual' or 'quarterly'")
 
-        # Validate this is a US equity symbol
+        # Crypto not supported
         if _is_crypto_market(symbol):
-            raise ValueError("Financial statements are only available for US stocks")
-        if _is_korean_equity_code(symbol):
-            raise ValueError("Financial statements are only available for US stocks")
+            raise ValueError(
+                "Financial statements are not available for cryptocurrencies"
+            )
+
+        # Auto-detect market if not specified
+        if market is None:
+            if _is_korean_equity_code(symbol):
+                market = "kr"
+            else:
+                market = "us"
+
+        # Normalize market type
+        normalized_market = market.strip().lower()
+        if normalized_market in (
+            "kr",
+            "krx",
+            "korea",
+            "kospi",
+            "kosdaq",
+            "kis",
+            "equity_kr",
+            "naver",
+        ):
+            normalized_market = "kr"
+        elif normalized_market in ("us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"):
+            normalized_market = "us"
+        else:
+            raise ValueError("market must be 'us' or 'kr'")
 
         try:
-            return await _fetch_financials_finnhub(symbol, statement, freq)
+            if normalized_market == "kr":
+                return await _fetch_financials_naver(symbol, statement, freq)
+            else:
+                return await _fetch_financials_finnhub(symbol, statement, freq)
         except Exception as exc:
+            source = "naver" if normalized_market == "kr" else "finnhub"
+            instrument_type = "equity_kr" if normalized_market == "kr" else "equity_us"
             return _error_payload(
-                source="finnhub",
+                source=source,
                 message=str(exc),
                 symbol=symbol,
-                instrument_type="equity_us",
+                instrument_type=instrument_type,
             )
 
     @mcp.tool(
@@ -1385,4 +1658,130 @@ def register_tools(mcp: FastMCP) -> None:
                 message=str(exc),
                 symbol=symbol,
                 instrument_type="equity_us",
+            )
+
+    # ---------------------------------------------------------------------------
+    # Naver Finance Tools (Korean Stocks Only)
+    # ---------------------------------------------------------------------------
+
+    @mcp.tool(
+        name="get_investor_trends",
+        description="Get foreign and institutional investor trading trends for a Korean stock. Returns daily net buy/sell data. Korean stocks only.",
+    )
+    async def get_investor_trends(
+        symbol: str,
+        days: int = 20,
+    ) -> dict[str, Any]:
+        """Get investor trading trends for a Korean stock.
+
+        Args:
+            symbol: Korean stock code (6 digits, e.g., "005930")
+            days: Number of days of data (default: 20, max: 60)
+
+        Returns:
+            Daily investor flow data including foreign, institutional net trades
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        if not _is_korean_equity_code(symbol):
+            raise ValueError(
+                "Investor trends are only available for Korean stocks "
+                "(6-digit codes like '005930')"
+            )
+
+        capped_days = min(max(days, 1), 60)
+
+        try:
+            return await _fetch_investor_trends_naver(symbol, capped_days)
+        except Exception as exc:
+            return _error_payload(
+                source="naver",
+                message=str(exc),
+                symbol=symbol,
+                instrument_type="equity_kr",
+            )
+
+    @mcp.tool(
+        name="get_investment_opinions",
+        description="Get securities firm investment opinions and target prices for a Korean stock. Returns analyst ratings and price targets. Korean stocks only.",
+    )
+    async def get_investment_opinions(
+        symbol: str,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Get investment opinions for a Korean stock.
+
+        Args:
+            symbol: Korean stock code (6 digits, e.g., "005930")
+            limit: Maximum number of opinions (default: 10, max: 30)
+
+        Returns:
+            Investment opinions including firm name, target price, rating, date
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        if not _is_korean_equity_code(symbol):
+            raise ValueError(
+                "Investment opinions are only available for Korean stocks "
+                "(6-digit codes like '005930')"
+            )
+
+        capped_limit = min(max(limit, 1), 30)
+
+        try:
+            return await _fetch_investment_opinions_naver(symbol, capped_limit)
+        except Exception as exc:
+            return _error_payload(
+                source="naver",
+                message=str(exc),
+                symbol=symbol,
+                instrument_type="equity_kr",
+            )
+
+    @mcp.tool(
+        name="get_valuation",
+        description="Get valuation metrics for a Korean stock. Returns PER, PBR, ROE, dividend yield, 52-week high/low, current price, and position within 52-week range. Korean stocks only.",
+    )
+    async def get_valuation(symbol: str) -> dict[str, Any]:
+        """Get valuation metrics for a Korean stock.
+
+        Args:
+            symbol: Korean stock code (6 digits, e.g., "005930" for Samsung Electronics)
+
+        Returns:
+            Dictionary with valuation metrics:
+            - symbol: Stock code
+            - name: Company name
+            - current_price: Current stock price
+            - per: Price-to-Earnings Ratio
+            - pbr: Price-to-Book Ratio
+            - roe: Return on Equity (%) - ROE(%)
+            - roe_controlling: Return on Equity for controlling shareholders (%) - ROE(지배주주)
+            - dividend_yield: Dividend yield (as decimal, e.g., 0.02 for 2%)
+            - high_52w: 52-week high price
+            - low_52w: 52-week low price
+            - current_position_52w: Position within 52-week range (0=low, 1=high)
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        if not _is_korean_equity_code(symbol):
+            raise ValueError(
+                "Valuation metrics are only available for Korean stocks "
+                "(6-digit codes like '005930')"
+            )
+
+        try:
+            return await _fetch_valuation_naver(symbol)
+        except Exception as exc:
+            return _error_payload(
+                source="naver",
+                message=str(exc),
+                symbol=symbol,
+                instrument_type="equity_kr",
             )

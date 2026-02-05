@@ -72,7 +72,11 @@ async def test_search_symbol_clamps_limit_and_shapes(monkeypatch):
     monkeypatch.setattr(
         mcp_tools,
         "get_us_stocks_data",
-        lambda: {"symbol_to_exchange": {}, "symbol_to_name_kr": {}, "symbol_to_name_en": {}},
+        lambda: {
+            "symbol_to_exchange": {},
+            "symbol_to_name_kr": {},
+            "symbol_to_name_en": {},
+        },
     )
 
     result = await tools["search_symbol"]("삼성", limit=500)
@@ -318,7 +322,9 @@ async def test_get_quote_market_crypto_requires_prefix():
 async def test_get_quote_market_kr_requires_digits():
     tools = build_tools()
 
-    with pytest.raises(ValueError, match="korean equity symbols must be 6 alphanumeric"):
+    with pytest.raises(
+        ValueError, match="korean equity symbols must be 6 alphanumeric"
+    ):
         await tools["get_quote"]("AAPL", market="kr")
 
 
@@ -553,7 +559,9 @@ async def test_get_ohlcv_raises_on_invalid_end_date():
 async def test_get_ohlcv_market_kr_requires_digits():
     tools = build_tools()
 
-    with pytest.raises(ValueError, match="korean equity symbols must be 6 alphanumeric"):
+    with pytest.raises(
+        ValueError, match="korean equity symbols must be 6 alphanumeric"
+    ):
         await tools["get_ohlcv"]("AAPL", market="kr")
 
 
@@ -904,13 +912,15 @@ def _sample_ohlcv_df(n: int = 250, include_date: bool = True) -> pd.DataFrame:
     base_price = 100.0
     prices = base_price + np.cumsum(np.random.randn(n) * 2)
 
-    df = pd.DataFrame({
-        "open": prices + np.random.randn(n) * 0.5,
-        "high": prices + abs(np.random.randn(n) * 1.5),
-        "low": prices - abs(np.random.randn(n) * 1.5),
-        "close": prices,
-        "volume": np.random.randint(1000, 10000, n),
-    })
+    df = pd.DataFrame(
+        {
+            "open": prices + np.random.randn(n) * 0.5,
+            "high": prices + abs(np.random.randn(n) * 1.5),
+            "low": prices - abs(np.random.randn(n) * 1.5),
+            "close": prices,
+            "volume": np.random.randint(1000, 10000, n),
+        }
+    )
 
     if include_date:
         # Generate dates going back from today
@@ -1531,21 +1541,25 @@ class TestIndicatorEdgeCases:
     def test_atr_reflects_volatility(self):
         """Test ATR increases with larger price ranges."""
         # Low volatility
-        df_low = pd.DataFrame({
-            "high": [101.0] * 50,
-            "low": [99.0] * 50,
-            "close": [100.0] * 50,
-        })
+        df_low = pd.DataFrame(
+            {
+                "high": [101.0] * 50,
+                "low": [99.0] * 50,
+                "close": [100.0] * 50,
+            }
+        )
         result_low = mcp_tools._calculate_atr(
             df_low["high"], df_low["low"], df_low["close"]
         )
 
         # High volatility
-        df_high = pd.DataFrame({
-            "high": [110.0] * 50,
-            "low": [90.0] * 50,
-            "close": [100.0] * 50,
-        })
+        df_high = pd.DataFrame(
+            {
+                "high": [110.0] * 50,
+                "low": [90.0] * 50,
+                "close": [100.0] * 50,
+            }
+        )
         result_high = mcp_tools._calculate_atr(
             df_high["high"], df_high["low"], df_high["close"]
         )
@@ -1767,15 +1781,8 @@ class TestGetCompanyProfile:
         """Test that crypto symbols are rejected."""
         tools = build_tools()
 
-        with pytest.raises(ValueError, match="only available for US stocks"):
+        with pytest.raises(ValueError, match="not available for cryptocurrencies"):
             await tools["get_company_profile"]("KRW-BTC")
-
-    async def test_korean_symbol_raises_error(self):
-        """Test that Korean equity symbols are rejected."""
-        tools = build_tools()
-
-        with pytest.raises(ValueError, match="only available for US stocks"):
-            await tools["get_company_profile"]("005930")
 
     async def test_success(self, monkeypatch):
         """Test successful company profile fetch."""
@@ -1862,7 +1869,7 @@ class TestGetFinancials:
         """Test that crypto symbols are rejected."""
         tools = build_tools()
 
-        with pytest.raises(ValueError, match="only available for US stocks"):
+        with pytest.raises(ValueError, match="not available for cryptocurrencies"):
             await tools["get_financials"]("KRW-BTC")
 
     async def test_success(self, monkeypatch):
@@ -1897,7 +1904,9 @@ class TestGetFinancials:
         monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
         monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
 
-        result = await tools["get_financials"]("AAPL", statement="income", freq="annual")
+        result = await tools["get_financials"](
+            "AAPL", statement="income", freq="annual"
+        )
 
         assert result["symbol"] == "AAPL"
         assert result["statement"] == "income"
@@ -1992,7 +2001,11 @@ class TestGetInsiderTransactions:
                 {"name": "Exec 1", "transactionCode": "P", "share": 1000},
                 {"name": "Exec 2", "transactionCode": "A", "share": 500},
                 {"name": "Exec 3", "transactionCode": "M", "share": 200},
-                {"name": "Exec 4", "transactionCode": "X", "share": 100},  # Unknown code
+                {
+                    "name": "Exec 4",
+                    "transactionCode": "X",
+                    "share": 100,
+                },  # Unknown code
             ]
         }
 
@@ -2200,3 +2213,488 @@ class TestGetEarningsCalendar:
 
         assert result["count"] == 0
         assert result["earnings"] == []
+
+
+# ---------------------------------------------------------------------------
+# Naver Finance (Korean Market) Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetNewsKorea:
+    """Test get_news tool with Korean market."""
+
+    async def test_korean_stock_news(self, monkeypatch):
+        """Test fetching news for Korean stock."""
+        tools = build_tools()
+
+        mock_news = [
+            {
+                "title": "삼성전자, 신제품 발표",
+                "source": "연합뉴스",
+                "datetime": "2024-01-15",
+                "url": "https://finance.naver.com/news/1",
+            },
+        ]
+
+        async def mock_fetch_news(code, limit):
+            return mock_news
+
+        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_news", mock_fetch_news)
+
+        result = await tools["get_news"]("005930", market="kr")
+
+        assert result["symbol"] == "005930"
+        assert result["source"] == "naver"
+        assert result["market"] == "kr"
+        assert len(result["news"]) == 1
+        assert result["news"][0]["title"] == "삼성전자, 신제품 발표"
+
+    async def test_auto_detect_korean_market(self, monkeypatch):
+        """Test auto-detection of Korean market from 6-digit code."""
+        tools = build_tools()
+
+        async def mock_fetch_news(code, limit):
+            return []
+
+        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_news", mock_fetch_news)
+
+        # Should auto-detect Korean market from 6-digit code
+        result = await tools["get_news"]("005930")
+
+        assert result["source"] == "naver"
+        assert result["market"] == "kr"
+
+    async def test_error_handling(self, monkeypatch):
+        """Test error handling for Korean news fetch."""
+        tools = build_tools()
+
+        async def mock_fetch_news(code, limit):
+            raise ValueError("Network error")
+
+        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_news", mock_fetch_news)
+
+        result = await tools["get_news"]("005930", market="kr")
+
+        assert "error" in result
+        assert result["source"] == "naver"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetCompanyProfileKorea:
+    """Test get_company_profile tool with Korean market."""
+
+    async def test_korean_stock_profile(self, monkeypatch):
+        """Test fetching company profile for Korean stock."""
+        tools = build_tools()
+
+        mock_profile = {
+            "symbol": "005930",
+            "name": "삼성전자",
+            "exchange": "KOSPI",
+            "sector": "전기전자",
+            "market_cap": 400_0000_0000_0000,
+            "per": 15.23,
+            "pbr": 1.45,
+        }
+
+        async def mock_fetch_profile(code):
+            return mock_profile
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_company_profile", mock_fetch_profile
+        )
+
+        result = await tools["get_company_profile"]("005930")
+
+        assert result["symbol"] == "005930"
+        assert result["source"] == "naver"
+        assert result["instrument_type"] == "equity_kr"
+        assert result["name"] == "삼성전자"
+
+    async def test_auto_detect_korean_market(self, monkeypatch):
+        """Test auto-detection of Korean market from 6-digit code."""
+        tools = build_tools()
+
+        async def mock_fetch_profile(code):
+            return {"symbol": code, "name": "테스트"}
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_company_profile", mock_fetch_profile
+        )
+
+        result = await tools["get_company_profile"]("005930")
+
+        assert result["source"] == "naver"
+        assert result["instrument_type"] == "equity_kr"
+
+    async def test_explicit_us_market_for_korean_looking_symbol(self, monkeypatch):
+        """Test explicit US market override."""
+        tools = build_tools()
+
+        mock_profile = {
+            "name": "US Company",
+            "ticker": "123456",
+        }
+
+        class MockClient:
+            def __init__(self, api_key):
+                pass
+
+            def company_profile2(self, symbol):
+                return mock_profile
+
+        monkeypatch.setattr(mcp_tools.settings, "finnhub_api_key", "test_key")
+        monkeypatch.setattr(mcp_tools.finnhub, "Client", MockClient)
+
+        # Even though 123456 looks like Korean code, explicit market=us should use Finnhub
+        result = await tools["get_company_profile"]("123456", market="us")
+
+        assert result["source"] == "finnhub"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetFinancialsKorea:
+    """Test get_financials tool with Korean market."""
+
+    async def test_korean_stock_financials(self, monkeypatch):
+        """Test fetching financials for Korean stock."""
+        tools = build_tools()
+
+        mock_financials = {
+            "symbol": "005930",
+            "statement": "income",
+            "freq": "annual",
+            "currency": "KRW",
+            "periods": ["2023/12", "2022/12"],
+            "metrics": {
+                "매출액": [300_0000_0000_0000, 280_0000_0000_0000],
+                "영업이익": [50_0000_0000_0000, 45_0000_0000_0000],
+            },
+        }
+
+        async def mock_fetch_financials(code, statement, freq):
+            return mock_financials
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_financials", mock_fetch_financials
+        )
+
+        result = await tools["get_financials"]("005930", statement="income")
+
+        assert result["symbol"] == "005930"
+        assert result["source"] == "naver"
+        assert result["instrument_type"] == "equity_kr"
+        assert "매출액" in result["metrics"]
+
+    async def test_auto_detect_korean_market(self, monkeypatch):
+        """Test auto-detection of Korean market from 6-digit code."""
+        tools = build_tools()
+
+        async def mock_fetch_financials(code, statement, freq):
+            return {"symbol": code, "statement": statement, "freq": freq}
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_financials", mock_fetch_financials
+        )
+
+        result = await tools["get_financials"]("005930")
+
+        assert result["source"] == "naver"
+        assert result["instrument_type"] == "equity_kr"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetInvestorTrends:
+    """Test get_investor_trends tool."""
+
+    async def test_success(self, monkeypatch):
+        """Test successful investor trends fetch."""
+        tools = build_tools()
+
+        mock_trends = {
+            "symbol": "005930",
+            "days": 20,
+            "data": [
+                {
+                    "date": "2024-01-15",
+                    "close": 75000,
+                    "change": 500,
+                    "volume": 10000000,
+                    "foreign_net": -500000,
+                    "institutional_net": 1000000,
+                },
+                {
+                    "date": "2024-01-14",
+                    "close": 74500,
+                    "change": -300,
+                    "volume": 8000000,
+                    "foreign_net": 300000,
+                    "institutional_net": -200000,
+                },
+            ],
+        }
+
+        async def mock_fetch_trends(code, days):
+            return mock_trends
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_investor_trends", mock_fetch_trends
+        )
+
+        result = await tools["get_investor_trends"]("005930", days=20)
+
+        assert result["symbol"] == "005930"
+        assert result["instrument_type"] == "equity_kr"
+        assert result["source"] == "naver"
+        assert len(result["data"]) == 2
+        assert result["data"][0]["foreign_net"] == -500000
+
+    async def test_rejects_us_symbol(self):
+        """Test that US symbols are rejected."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="only available for Korean stocks"):
+            await tools["get_investor_trends"]("AAPL")
+
+    async def test_rejects_crypto_symbol(self):
+        """Test that crypto symbols are rejected."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="only available for Korean stocks"):
+            await tools["get_investor_trends"]("KRW-BTC")
+
+    async def test_empty_symbol_raises_error(self):
+        """Test that empty symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_investor_trends"]("")
+
+    async def test_days_capped(self, monkeypatch):
+        """Test that days are capped at 60."""
+        tools = build_tools()
+
+        captured_days = None
+
+        async def mock_fetch_trends(code, days):
+            nonlocal captured_days
+            captured_days = days
+            return {"symbol": code, "days": days, "data": []}
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_investor_trends", mock_fetch_trends
+        )
+
+        await tools["get_investor_trends"]("005930", days=100)
+
+        assert captured_days == 60
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetInvestmentOpinions:
+    """Test get_investment_opinions tool."""
+
+    async def test_success(self, monkeypatch):
+        """Test successful investment opinions fetch."""
+        tools = build_tools()
+
+        mock_opinions = {
+            "symbol": "005930",
+            "count": 2,
+            "opinions": [
+                {
+                    "stock_name": "삼성전자",
+                    "title": "반도체 업황 개선 전망",
+                    "firm": "삼성증권",
+                    "rating": "매수",
+                    "target_price": 85000,
+                    "date": "2024-01-15",
+                },
+                {
+                    "stock_name": "삼성전자",
+                    "title": "실적 호조 지속",
+                    "firm": "미래에셋",
+                    "rating": "Strong Buy",
+                    "target_price": 90000,
+                    "date": "2024-01-14",
+                },
+            ],
+        }
+
+        async def mock_fetch_opinions(code, limit):
+            return mock_opinions
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_investment_opinions", mock_fetch_opinions
+        )
+
+        result = await tools["get_investment_opinions"]("005930", limit=10)
+
+        assert result["symbol"] == "005930"
+        assert result["instrument_type"] == "equity_kr"
+        assert result["source"] == "naver"
+        assert result["count"] == 2
+        assert result["opinions"][0]["firm"] == "삼성증권"
+
+    async def test_rejects_us_symbol(self):
+        """Test that US symbols are rejected."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="only available for Korean stocks"):
+            await tools["get_investment_opinions"]("AAPL")
+
+    async def test_rejects_crypto_symbol(self):
+        """Test that crypto symbols are rejected."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="only available for Korean stocks"):
+            await tools["get_investment_opinions"]("KRW-BTC")
+
+    async def test_empty_symbol_raises_error(self):
+        """Test that empty symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_investment_opinions"]("")
+
+    async def test_limit_capped(self, monkeypatch):
+        """Test that limit is capped at 30."""
+        tools = build_tools()
+
+        captured_limit = None
+
+        async def mock_fetch_opinions(code, limit):
+            nonlocal captured_limit
+            captured_limit = limit
+            return {"symbol": code, "count": 0, "opinions": []}
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_investment_opinions", mock_fetch_opinions
+        )
+
+        await tools["get_investment_opinions"]("005930", limit=100)
+
+        assert captured_limit == 30
+
+
+@pytest.mark.asyncio
+class TestGetValuation:
+    """Test get_valuation tool."""
+
+    async def test_successful_valuation_fetch(self, monkeypatch):
+        """Test successful valuation fetch for Korean stock."""
+        tools = build_tools()
+
+        mock_valuation = {
+            "symbol": "005930",
+            "name": "삼성전자",
+            "current_price": 75000,
+            "per": 12.5,
+            "pbr": 1.2,
+            "roe": 18.5,
+            "roe_controlling": 17.2,
+            "dividend_yield": 0.02,
+            "high_52w": 90000,
+            "low_52w": 60000,
+            "current_position_52w": 0.5,
+        }
+
+        async def mock_fetch_valuation(code):
+            return mock_valuation
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_valuation", mock_fetch_valuation
+        )
+
+        result = await tools["get_valuation"]("005930")
+
+        assert result["symbol"] == "005930"
+        assert result["name"] == "삼성전자"
+        assert result["current_price"] == 75000
+        assert result["per"] == 12.5
+        assert result["pbr"] == 1.2
+        assert result["roe"] == 18.5
+        assert result["roe_controlling"] == 17.2
+        assert result["dividend_yield"] == 0.02
+        assert result["high_52w"] == 90000
+        assert result["low_52w"] == 60000
+        assert result["current_position_52w"] == 0.5
+        assert result["instrument_type"] == "equity_kr"
+        assert result["source"] == "naver"
+
+    async def test_rejects_us_equity(self):
+        """Test that US equity symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Korean stocks"):
+            await tools["get_valuation"]("AAPL")
+
+    async def test_rejects_crypto(self):
+        """Test that crypto symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Korean stocks"):
+            await tools["get_valuation"]("KRW-BTC")
+
+    async def test_empty_symbol_raises_error(self):
+        """Test that empty symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_valuation"]("")
+
+    async def test_valuation_with_null_values(self, monkeypatch):
+        """Test valuation response with some null values."""
+        tools = build_tools()
+
+        mock_valuation = {
+            "symbol": "298040",
+            "name": "효성중공업",
+            "current_price": 450000,
+            "per": None,
+            "pbr": 2.1,
+            "roe": None,
+            "roe_controlling": None,
+            "dividend_yield": 0.005,
+            "high_52w": 500000,
+            "low_52w": 200000,
+            "current_position_52w": 0.83,
+        }
+
+        async def mock_fetch_valuation(code):
+            return mock_valuation
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_valuation", mock_fetch_valuation
+        )
+
+        result = await tools["get_valuation"]("298040")
+
+        assert result["symbol"] == "298040"
+        assert result["per"] is None
+        assert result["roe"] is None
+        assert result["current_position_52w"] == 0.83
+
+    async def test_error_handling(self, monkeypatch):
+        """Test error handling when fetch fails."""
+        tools = build_tools()
+
+        async def mock_fetch_valuation(code):
+            raise Exception("Network error")
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_valuation", mock_fetch_valuation
+        )
+
+        result = await tools["get_valuation"]("005930")
+
+        assert "error" in result
+        assert result["source"] == "naver"
+        assert result["symbol"] == "005930"
+        assert result["instrument_type"] == "equity_kr"
