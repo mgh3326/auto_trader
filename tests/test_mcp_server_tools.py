@@ -3037,3 +3037,139 @@ class TestGetShortInterest:
         assert result["short_data"] == []
         assert result["avg_short_ratio"] is None
         assert "short_balance" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetKimchiPremium:
+    """Test get_kimchi_premium tool."""
+
+    def _patch_all(self, monkeypatch, upbit_prices, binance_resp, exchange_rate):
+        """Helper to monkeypatch Upbit, Binance, and exchange rate."""
+
+        async def mock_upbit(markets):
+            return upbit_prices
+
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "fetch_multiple_current_prices",
+            mock_upbit,
+        )
+
+        class MockResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+            def __init__(self, data):
+                self._data = data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "binance" in url:
+                    return MockResponse(binance_resp)
+                # exchange rate
+                return MockResponse({"rates": {"KRW": exchange_rate}})
+
+        monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
+
+    async def test_single_symbol(self, monkeypatch):
+        """Test kimchi premium for a single coin."""
+        tools = build_tools()
+
+        self._patch_all(
+            monkeypatch,
+            upbit_prices={"KRW-BTC": 150_000_000},
+            binance_resp=[{"symbol": "BTCUSDT", "price": "102000.50"}],
+            exchange_rate=1450.0,
+        )
+
+        result = await tools["get_kimchi_premium"]("BTC")
+
+        assert result["source"] == "upbit+binance"
+        assert result["exchange_rate"] == 1450.0
+        assert result["count"] == 1
+        item = result["data"][0]
+        assert item["symbol"] == "BTC"
+        assert item["upbit_krw"] == 150_000_000
+        assert item["binance_usdt"] == 102000.50
+        # (150_000_000 - 102000.50*1450) / (102000.50*1450) * 100
+        expected_premium = round(
+            (150_000_000 - 102000.50 * 1450) / (102000.50 * 1450) * 100, 2
+        )
+        assert item["premium_pct"] == expected_premium
+
+    async def test_default_symbols(self, monkeypatch):
+        """Test default multi-coin fetch when no symbol specified."""
+        tools = build_tools()
+
+        # Upbit returns only BTC and ETH (simulating some missing)
+        upbit = {"KRW-BTC": 150_000_000, "KRW-ETH": 4_500_000}
+        binance = [
+            {"symbol": "BTCUSDT", "price": "102000"},
+            {"symbol": "ETHUSDT", "price": "3050"},
+        ]
+
+        self._patch_all(
+            monkeypatch,
+            upbit_prices=upbit,
+            binance_resp=binance,
+            exchange_rate=1450.0,
+        )
+
+        result = await tools["get_kimchi_premium"]()
+
+        assert result["instrument_type"] == "crypto"
+        # Only BTC and ETH have data on both exchanges
+        assert result["count"] == 2
+        symbols = [d["symbol"] for d in result["data"]]
+        assert "BTC" in symbols
+        assert "ETH" in symbols
+
+    async def test_strips_krw_prefix(self, monkeypatch):
+        """Test that KRW- prefix is stripped from symbol."""
+        tools = build_tools()
+
+        self._patch_all(
+            monkeypatch,
+            upbit_prices={"KRW-ETH": 4_500_000},
+            binance_resp=[{"symbol": "ETHUSDT", "price": "3050"}],
+            exchange_rate=1450.0,
+        )
+
+        result = await tools["get_kimchi_premium"]("KRW-ETH")
+
+        assert result["count"] == 1
+        assert result["data"][0]["symbol"] == "ETH"
+
+    async def test_error_handling(self, monkeypatch):
+        """Test error handling when external API fails."""
+        tools = build_tools()
+
+        async def mock_upbit(markets):
+            raise Exception("Upbit API down")
+
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "fetch_multiple_current_prices",
+            mock_upbit,
+        )
+
+        result = await tools["get_kimchi_premium"]("BTC")
+
+        assert "error" in result
+        assert result["source"] == "upbit+binance"
+        assert result["instrument_type"] == "crypto"

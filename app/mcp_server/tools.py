@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 from typing import TYPE_CHECKING, Any, Literal
 
 import finnhub
+import httpx
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -1283,6 +1285,97 @@ async def _search_master_data(
     return results
 
 
+DEFAULT_KIMCHI_SYMBOLS = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "AVAX", "DOT"]
+
+BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price"
+
+# exchangerate-api.com (free, no key required)
+EXCHANGE_RATE_URL = "https://open.er-api.com/v6/latest/USD"
+
+
+async def _fetch_exchange_rate_usd_krw() -> float:
+    """Fetch current USD/KRW exchange rate."""
+    async with httpx.AsyncClient(timeout=10) as cli:
+        r = await cli.get(EXCHANGE_RATE_URL)
+        r.raise_for_status()
+        data = r.json()
+        rate = data["rates"]["KRW"]
+        return float(rate)
+
+
+async def _fetch_binance_prices(symbols: list[str]) -> dict[str, float]:
+    """Fetch USDT prices from Binance for given symbols.
+
+    Returns dict like {"BTC": 102000.5, "ETH": 3050.2}.
+    """
+    pairs = [f"{s}USDT" for s in symbols]
+    async with httpx.AsyncClient(timeout=10) as cli:
+        # Binance expects compact JSON without spaces for the symbols param
+        symbols_json = json.dumps(pairs, separators=(",", ":"))
+        r = await cli.get(
+            BINANCE_TICKER_URL,
+            params={"symbols": symbols_json},
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    result: dict[str, float] = {}
+    for item in data:
+        pair: str = item["symbol"]  # e.g. "BTCUSDT"
+        if pair.endswith("USDT"):
+            sym = pair[: -len("USDT")]
+            result[sym] = float(item["price"])
+    return result
+
+
+async def _fetch_kimchi_premium(symbols: list[str]) -> dict[str, Any]:
+    """Calculate kimchi premium for given crypto symbols.
+
+    Compares Upbit KRW prices with Binance USDT prices * USD/KRW rate.
+    """
+    upbit_markets = [f"KRW-{s}" for s in symbols]
+
+    # Fetch all three data sources concurrently
+    upbit_prices, binance_prices, exchange_rate = await asyncio.gather(
+        upbit_service.fetch_multiple_current_prices(upbit_markets),
+        _fetch_binance_prices(symbols),
+        _fetch_exchange_rate_usd_krw(),
+    )
+
+    data: list[dict[str, Any]] = []
+    for sym in symbols:
+        upbit_key = f"KRW-{sym}"
+        upbit_krw = upbit_prices.get(upbit_key)
+        binance_usdt = binance_prices.get(sym)
+
+        if upbit_krw is None or binance_usdt is None:
+            continue
+
+        binance_krw = binance_usdt * exchange_rate
+        premium_pct = round((upbit_krw - binance_krw) / binance_krw * 100, 2)
+
+        data.append(
+            {
+                "symbol": sym,
+                "upbit_krw": upbit_krw,
+                "binance_usdt": binance_usdt,
+                "binance_krw": round(binance_krw, 0),
+                "premium_pct": premium_pct,
+            }
+        )
+
+    now = datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+    return {
+        "instrument_type": "crypto",
+        "source": "upbit+binance",
+        "timestamp": now,
+        "exchange_rate": exchange_rate,
+        "count": len(data),
+        "data": data,
+    }
+
+
 def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="search_symbol",
@@ -2016,4 +2109,41 @@ def register_tools(mcp: FastMCP) -> None:
                 message=str(exc),
                 symbol=symbol,
                 instrument_type="equity_kr",
+            )
+
+    @mcp.tool(
+        name="get_kimchi_premium",
+        description="Get kimchi premium (김치 프리미엄) for cryptocurrencies. Compares Upbit KRW prices with Binance USDT prices to calculate the Korean exchange premium percentage.",
+    )
+    async def get_kimchi_premium(
+        symbol: str | None = None,
+    ) -> dict[str, Any]:
+        """Get kimchi premium for cryptocurrencies.
+
+        Args:
+            symbol: Coin symbol (e.g., "BTC", "ETH"). If not specified,
+                     returns data for major coins (BTC, ETH, XRP, SOL, etc.)
+
+        Returns:
+            Dictionary with kimchi premium data including exchange rate,
+            Upbit/Binance prices, and premium percentage for each coin.
+        """
+        if symbol:
+            sym = symbol.strip().upper()
+            # Strip KRW- or USDT- prefix if provided
+            if sym.startswith("KRW-"):
+                sym = sym[4:]
+            elif sym.startswith("USDT-"):
+                sym = sym[5:]
+            symbols = [sym]
+        else:
+            symbols = list(DEFAULT_KIMCHI_SYMBOLS)
+
+        try:
+            return await _fetch_kimchi_premium(symbols)
+        except Exception as exc:
+            return _error_payload(
+                source="upbit+binance",
+                message=str(exc),
+                instrument_type="crypto",
             )
