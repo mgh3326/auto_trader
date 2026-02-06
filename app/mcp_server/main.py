@@ -11,7 +11,10 @@ from app.mcp_server.tools import register_tools
 # 모듈 레벨에서 서버 객체 생성 (fastmcp dev에서 접근 가능)
 mcp = FastMCP(
     name="auto_trader-mcp",
-    instructions="Read-only market data tools for auto_trader (symbol search, quotes, OHLCV, volume profile).",
+    instructions=(
+        "Read-only market and holdings lookup tools for auto_trader "
+        "(symbol search, quote, holdings, OHLCV, indicators)."
+    ),
     version="0.1.0",
     stateless_http=False,
 )

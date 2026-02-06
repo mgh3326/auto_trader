@@ -15,10 +15,15 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
+from app.core.symbol import to_db_symbol
+from app.mcp_server.env_utils import _env_int
+from app.models.manual_holdings import MarketType
 from app.services import naver_finance
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
+from app.services.manual_holdings_service import ManualHoldingsService
 from data.coins_info import get_or_refresh_maps
 
 # 마스터 데이터 (lazy loading)
@@ -159,6 +164,496 @@ def _normalize_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
         {str(key): _normalize_value(value) for key, value in row.items()}
         for row in df.to_dict(orient="records")
     ]
+
+
+_MCP_USER_ID = _env_int("MCP_USER_ID", 1)
+_DEFAULT_ACCOUNT_KEYS = {"default", "default_account", "기본계좌", "기본_계좌"}
+_INSTRUMENT_TO_MARKET = {
+    "equity_kr": "kr",
+    "equity_us": "us",
+    "crypto": "crypto",
+}
+_ACCOUNT_FILTER_ALIASES = {
+    "kis": {"kis", "korea_investment", "한국투자", "한국투자증권"},
+    "upbit": {"upbit", "업비트"},
+    "toss": {"toss", "토스"},
+    "samsung_pension": {"samsung_pension", "samsung_pension_account"},
+    "isa": {"isa"},
+}
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _normalize_account_key(value: str | None) -> str:
+    if not value:
+        return ""
+    normalized = value.strip().lower()
+    return "".join(ch if ch.isalnum() else "_" for ch in normalized).strip("_")
+
+
+def _canonical_account_id(broker: str, account_name: str | None) -> str:
+    broker_key = _normalize_account_key(broker)
+    account_key = _normalize_account_key(account_name)
+
+    if not account_key or account_key in _DEFAULT_ACCOUNT_KEYS:
+        return broker_key
+
+    raw_name = (account_name or "").strip().lower()
+    if "isa" in account_key:
+        return "isa"
+    if ("samsung" in account_key and "pension" in account_key) or (
+        "삼성" in raw_name and "연금" in raw_name
+    ):
+        return "samsung_pension"
+
+    return account_key
+
+
+def _normalize_account_filter(account: str | None) -> str | None:
+    key = _normalize_account_key(account)
+    if not key:
+        return None
+    for canonical, aliases in _ACCOUNT_FILTER_ALIASES.items():
+        if key == canonical or key in aliases:
+            return canonical
+    return key
+
+
+def _match_account_filter(position: dict[str, Any], account_filter: str | None) -> bool:
+    if not account_filter:
+        return True
+
+    account_keys = {
+        _normalize_account_filter(position.get("account")),
+        _normalize_account_filter(position.get("broker")),
+        _normalize_account_filter(position.get("account_name")),
+    }
+    account_keys.discard(None)
+
+    account_keys.add(
+        _canonical_account_id(
+            str(position.get("broker", "")),
+            str(position.get("account_name", "")),
+        )
+    )
+
+    return account_filter in account_keys
+
+
+def _parse_holdings_market_filter(market: str | None) -> str | None:
+    if market is None or not market.strip():
+        return None
+    market_type = _normalize_market(market)
+    if market_type is None:
+        raise ValueError("market must be one of: kr, us, crypto")
+    return market_type
+
+
+def _manual_market_to_instrument_type(market_type: MarketType) -> str:
+    if market_type == MarketType.KR:
+        return "equity_kr"
+    if market_type == MarketType.US:
+        return "equity_us"
+    if market_type == MarketType.CRYPTO:
+        return "crypto"
+    raise ValueError(f"Unsupported market type: {market_type}")
+
+
+def _instrument_to_manual_market_type(market_type: str | None) -> MarketType | None:
+    if market_type == "equity_kr":
+        return MarketType.KR
+    if market_type == "equity_us":
+        return MarketType.US
+    if market_type == "crypto":
+        return MarketType.CRYPTO
+    return None
+
+
+def _normalize_position_symbol(symbol: str, instrument_type: str) -> str:
+    normalized = symbol.strip().upper()
+    if instrument_type == "crypto" and normalized and "-" not in normalized:
+        return f"KRW-{normalized}"
+    if instrument_type == "equity_us":
+        return to_db_symbol(normalized).upper()
+    return normalized
+
+
+def _position_to_output(position: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": position["symbol"],
+        "name": position["name"],
+        "market": position["market"],
+        "quantity": position["quantity"],
+        "avg_buy_price": position["avg_buy_price"],
+        "current_price": position["current_price"],
+        "evaluation_amount": position["evaluation_amount"],
+        "profit_loss": position["profit_loss"],
+        "profit_rate": position["profit_rate"],
+    }
+
+
+def _is_position_symbol_match(
+    *,
+    position_symbol: str,
+    query_symbol: str,
+    instrument_type: str,
+) -> bool:
+    if instrument_type == "crypto":
+        pos_norm = _normalize_position_symbol(position_symbol, "crypto")
+        query_norm = _normalize_position_symbol(query_symbol, "crypto")
+        if pos_norm == query_norm:
+            return True
+        pos_base = pos_norm.split("-", 1)[-1]
+        query_base = query_norm.split("-", 1)[-1]
+        return pos_base == query_base
+
+    if instrument_type == "equity_us":
+        return to_db_symbol(position_symbol).upper() == to_db_symbol(query_symbol).upper()
+
+    return position_symbol.upper() == query_symbol.upper()
+
+
+def _recalculate_profit_fields(position: dict[str, Any]) -> None:
+    current_price = position.get("current_price")
+    quantity = _to_float(position.get("quantity"))
+    avg_buy_price = _to_float(position.get("avg_buy_price"))
+
+    if current_price is None or quantity <= 0:
+        position["current_price"] = None
+        position["evaluation_amount"] = None
+        position["profit_loss"] = None
+        position["profit_rate"] = None
+        return
+
+    current_price = _to_float(current_price)
+    position["current_price"] = current_price
+    position["evaluation_amount"] = round(current_price * quantity, 2)
+
+    if avg_buy_price > 0:
+        profit_loss = (current_price - avg_buy_price) * quantity
+        position["profit_loss"] = round(profit_loss, 2)
+        position["profit_rate"] = round(
+            ((current_price - avg_buy_price) / avg_buy_price) * 100, 2
+        )
+    else:
+        position["profit_loss"] = None
+        position["profit_rate"] = None
+
+
+async def _collect_kis_positions(
+    market_filter: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if market_filter == "crypto":
+        return [], []
+
+    positions: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    kis = KISClient()
+
+    if market_filter in (None, "equity_kr"):
+        try:
+            kr_stocks = await kis.fetch_my_stocks()
+            for stock in kr_stocks:
+                quantity = _to_float(stock.get("hldg_qty"))
+                if quantity <= 0:
+                    continue
+
+                positions.append(
+                    {
+                        "account": "kis",
+                        "account_name": "기본 계좌",
+                        "broker": "kis",
+                        "source": "kis_api",
+                        "instrument_type": "equity_kr",
+                        "market": "kr",
+                        "symbol": _normalize_position_symbol(
+                            str(stock.get("pdno", "")),
+                            "equity_kr",
+                        ),
+                        "name": stock.get("prdt_name") or stock.get("pdno"),
+                        "quantity": quantity,
+                        "avg_buy_price": _to_float(stock.get("pchs_avg_pric")),
+                        "current_price": _to_float(stock.get("prpr"), default=0.0)
+                        or None,
+                        "evaluation_amount": _to_float(stock.get("evlu_amt")),
+                        "profit_loss": _to_float(stock.get("evlu_pfls_amt")),
+                        "profit_rate": _to_float(stock.get("evlu_pfls_rt")),
+                    }
+                )
+        except Exception as exc:
+            errors.append({"source": "kis", "market": "kr", "error": str(exc)})
+
+    if market_filter in (None, "equity_us"):
+        try:
+            us_stocks = await kis.fetch_my_us_stocks()
+            for stock in us_stocks:
+                quantity = _to_float(stock.get("ovrs_cblc_qty"))
+                if quantity <= 0:
+                    continue
+
+                positions.append(
+                    {
+                        "account": "kis",
+                        "account_name": "기본 계좌",
+                        "broker": "kis",
+                        "source": "kis_api",
+                        "instrument_type": "equity_us",
+                        "market": "us",
+                        "symbol": _normalize_position_symbol(
+                            str(stock.get("ovrs_pdno", "")),
+                            "equity_us",
+                        ),
+                        "name": stock.get("ovrs_item_name") or stock.get("ovrs_pdno"),
+                        "quantity": quantity,
+                        "avg_buy_price": _to_float(stock.get("pchs_avg_pric")),
+                        "current_price": _to_float(stock.get("now_pric2"), default=0.0)
+                        or None,
+                        "evaluation_amount": _to_float(stock.get("ovrs_stck_evlu_amt")),
+                        "profit_loss": _to_float(stock.get("frcr_evlu_pfls_amt")),
+                        "profit_rate": _to_float(stock.get("evlu_pfls_rt")),
+                    }
+                )
+        except Exception as exc:
+            errors.append({"source": "kis", "market": "us", "error": str(exc)})
+
+    return positions, errors
+
+
+async def _collect_upbit_positions(
+    market_filter: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if market_filter not in (None, "crypto"):
+        return [], []
+
+    positions: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    try:
+        coin_name_map: dict[str, str] = {}
+        try:
+            crypto_maps = await get_or_refresh_maps()
+            coin_name_map = crypto_maps.get("COIN_TO_NAME_KR", {}) or {}
+        except Exception:
+            coin_name_map = {}
+
+        coins = await upbit_service.fetch_my_coins()
+        for coin in coins:
+            currency = str(coin.get("currency", "")).upper().strip()
+            if not currency or currency == "KRW":
+                continue
+
+            quantity = _to_float(coin.get("balance")) + _to_float(coin.get("locked"))
+            if quantity <= 0:
+                continue
+
+            unit_currency = str(coin.get("unit_currency", "KRW")).upper().strip()
+            symbol = _normalize_position_symbol(
+                f"{unit_currency or 'KRW'}-{currency}", "crypto"
+            )
+
+            positions.append(
+                {
+                    "account": "upbit",
+                    "account_name": "기본 계좌",
+                    "broker": "upbit",
+                    "source": "upbit_api",
+                    "instrument_type": "crypto",
+                    "market": "crypto",
+                    "symbol": symbol,
+                    "name": coin_name_map.get(currency, symbol),
+                    "quantity": quantity,
+                    "avg_buy_price": _to_float(coin.get("avg_buy_price")),
+                    "current_price": None,
+                    "evaluation_amount": None,
+                    "profit_loss": None,
+                    "profit_rate": None,
+                }
+            )
+    except Exception as exc:
+        errors.append({"source": "upbit", "market": "crypto", "error": str(exc)})
+
+    return positions, errors
+
+
+async def _collect_manual_positions(
+    *,
+    user_id: int,
+    market_filter: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    positions: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    try:
+        manual_market = _instrument_to_manual_market_type(market_filter)
+        async with AsyncSessionLocal() as db:
+            service = ManualHoldingsService(db)
+            holdings = await service.get_holdings_by_user(
+                user_id=user_id, market_type=manual_market
+            )
+
+        for holding in holdings:
+            instrument_type = _manual_market_to_instrument_type(holding.market_type)
+            symbol = _normalize_position_symbol(holding.ticker, instrument_type)
+            quantity = _to_float(holding.quantity)
+            if quantity <= 0:
+                continue
+
+            broker = holding.broker_account.broker_type.value
+            account_name = holding.broker_account.account_name
+            account = _canonical_account_id(broker, account_name)
+
+            positions.append(
+                {
+                    "account": account,
+                    "account_name": account_name or "기본 계좌",
+                    "broker": broker,
+                    "source": "manual",
+                    "instrument_type": instrument_type,
+                    "market": _INSTRUMENT_TO_MARKET[instrument_type],
+                    "symbol": symbol,
+                    "name": holding.display_name or symbol,
+                    "quantity": quantity,
+                    "avg_buy_price": _to_float(holding.avg_price),
+                    "current_price": None,
+                    "evaluation_amount": None,
+                    "profit_loss": None,
+                    "profit_rate": None,
+                }
+            )
+    except Exception as exc:
+        errors.append({"source": "manual_holdings", "error": str(exc)})
+
+    return positions, errors
+
+
+async def _fetch_price_map_for_positions(
+    positions: list[dict[str, Any]],
+) -> dict[tuple[str, str], float]:
+    price_map: dict[tuple[str, str], float] = {}
+
+    crypto_symbols = sorted(
+        {
+            position["symbol"]
+            for position in positions
+            if position["instrument_type"] == "crypto"
+        }
+    )
+    if crypto_symbols:
+        try:
+            prices = await upbit_service.fetch_multiple_current_prices(crypto_symbols)
+            for symbol, price in prices.items():
+                if price is not None:
+                    price_map[("crypto", symbol.upper())] = float(price)
+        except Exception:
+            pass
+
+    async def fetch_equity_price(
+        instrument_type: str, symbol: str
+    ) -> tuple[str, str, float | None]:
+        try:
+            if instrument_type == "equity_kr":
+                quote = await _fetch_quote_equity_kr(symbol)
+            else:
+                quote = await _fetch_quote_equity_us(symbol)
+            price = quote.get("price")
+            return instrument_type, symbol, float(price) if price is not None else None
+        except Exception:
+            return instrument_type, symbol, None
+
+    equity_tasks = [
+        fetch_equity_price(instrument_type, symbol)
+        for instrument_type, symbol in sorted(
+            {
+                (position["instrument_type"], position["symbol"])
+                for position in positions
+                if position["instrument_type"] in {"equity_kr", "equity_us"}
+            }
+        )
+    ]
+
+    if equity_tasks:
+        results = await asyncio.gather(*equity_tasks)
+        for instrument_type, symbol, price in results:
+            if price is not None:
+                price_map[(instrument_type, symbol)] = price
+
+    return price_map
+
+
+async def _collect_portfolio_positions(
+    *,
+    account: str | None,
+    market: str | None,
+    include_current_price: bool,
+    user_id: int = _MCP_USER_ID,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
+    market_filter = _parse_holdings_market_filter(market)
+    account_filter = _normalize_account_filter(account)
+
+    tasks: list[asyncio.Future[Any] | asyncio.Task[Any] | Any] = []
+    if market_filter != "crypto":
+        tasks.append(_collect_kis_positions(market_filter))
+    if market_filter in (None, "crypto"):
+        tasks.append(_collect_upbit_positions(market_filter))
+    tasks.append(_collect_manual_positions(user_id=user_id, market_filter=market_filter))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    positions: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for result in results:
+        if isinstance(result, Exception):
+            errors.append({"source": "holdings", "error": str(result)})
+            continue
+        source_positions, source_errors = result
+        positions.extend(source_positions)
+        errors.extend(source_errors)
+
+    if market_filter:
+        positions = [
+            position
+            for position in positions
+            if position["instrument_type"] == market_filter
+        ]
+
+    if account_filter:
+        positions = [
+            position
+            for position in positions
+            if _match_account_filter(position, account_filter)
+        ]
+
+    if include_current_price and positions:
+        price_map = await _fetch_price_map_for_positions(positions)
+        for position in positions:
+            price = price_map.get((position["instrument_type"], position["symbol"]))
+            if price is not None:
+                position["current_price"] = price
+            _recalculate_profit_fields(position)
+    else:
+        for position in positions:
+            position["current_price"] = None
+            position["evaluation_amount"] = None
+            position["profit_loss"] = None
+            position["profit_rate"] = None
+
+    positions.sort(
+        key=lambda position: (
+            position["account"],
+            position["market"],
+            position["symbol"],
+        )
+    )
+
+    return positions, errors, market_filter, account_filter
 
 
 async def _fetch_quote_crypto(symbol: str) -> dict[str, Any]:
@@ -2143,6 +2638,137 @@ def register_tools(mcp: FastMCP) -> None:
                 symbol=symbol,
                 instrument_type=market_type,
             )
+
+    @mcp.tool(
+        name="get_holdings",
+        description=(
+            "Get holdings grouped by account. Supports account filter "
+            "(kis/upbit/toss/samsung_pension/isa) and market filter (kr/us/crypto). "
+            "Cash balances are excluded."
+        ),
+    )
+    async def get_holdings(
+        account: str | None = None,
+        market: str | None = None,
+        include_current_price: bool = True,
+    ) -> dict[str, Any]:
+        (
+            positions,
+            errors,
+            resolved_market_filter,
+            resolved_account_filter,
+        ) = await _collect_portfolio_positions(
+            account=account,
+            market=market,
+            include_current_price=include_current_price,
+        )
+
+        grouped_accounts: dict[str, dict[str, Any]] = {}
+        for position in positions:
+            account_id = position["account"]
+            grouped = grouped_accounts.setdefault(
+                account_id,
+                {
+                    "account": account_id,
+                    "broker": position["broker"],
+                    "account_name": position["account_name"],
+                    "positions": [],
+                },
+            )
+            grouped["positions"].append(_position_to_output(position))
+
+        accounts = [grouped_accounts[key] for key in sorted(grouped_accounts.keys())]
+
+        return {
+            "filters": {
+                "account": resolved_account_filter,
+                "market": _INSTRUMENT_TO_MARKET.get(resolved_market_filter),
+                "include_current_price": include_current_price,
+            },
+            "total_accounts": len(accounts),
+            "total_positions": len(positions),
+            "accounts": accounts,
+            "errors": errors,
+        }
+
+    @mcp.tool(
+        name="get_position",
+        description=(
+            "Check whether a symbol is currently held and return detailed positions "
+            "across all accounts. If no position exists, returns status='미보유'."
+        ),
+    )
+    async def get_position(
+        symbol: str,
+        market: str | None = None,
+    ) -> dict[str, Any]:
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        parsed_market = _parse_holdings_market_filter(market)
+        if parsed_market == "equity_us":
+            query_symbol = _normalize_position_symbol(symbol, "equity_us")
+        elif parsed_market == "equity_kr":
+            query_symbol = _normalize_position_symbol(symbol, "equity_kr")
+        elif parsed_market == "crypto":
+            query_symbol = _normalize_position_symbol(symbol, "crypto")
+        else:
+            query_symbol = symbol.strip().upper()
+
+        positions, errors, _, _ = await _collect_portfolio_positions(
+            account=None,
+            market=market,
+            include_current_price=True,
+        )
+
+        matched_positions = [
+            position
+            for position in positions
+            if _is_position_symbol_match(
+                position_symbol=position["symbol"],
+                query_symbol=query_symbol,
+                instrument_type=position["instrument_type"],
+            )
+        ]
+
+        if not matched_positions:
+            return {
+                "symbol": query_symbol,
+                "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
+                "has_position": False,
+                "status": "미보유",
+                "position_count": 0,
+                "positions": [],
+                "errors": errors,
+            }
+
+        matched_positions.sort(
+            key=lambda position: (
+                position["account"],
+                position["market"],
+                position["symbol"],
+            )
+        )
+
+        return {
+            "symbol": query_symbol,
+            "market": _INSTRUMENT_TO_MARKET.get(parsed_market),
+            "has_position": True,
+            "status": "보유",
+            "position_count": len(matched_positions),
+            "accounts": sorted({position["account"] for position in matched_positions}),
+            "positions": [
+                {
+                    "account": position["account"],
+                    "broker": position["broker"],
+                    "account_name": position["account_name"],
+                    **_position_to_output(position),
+                }
+                for position in matched_positions
+            ],
+            "errors": errors,
+        }
 
     @mcp.tool(
         name="get_ohlcv",

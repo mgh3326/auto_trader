@@ -65,13 +65,14 @@ uv run uvicorn app.main:app --reload
 
 ### MCP 서버 실행
 
-MCP 서버는 시장 데이터 조회용 read-only 도구를 제공합니다.
+MCP 서버는 시장/보유종목 조회용 read-only 도구를 제공합니다.
 
 필수 환경 변수:
 - `MCP_TYPE` (기본: streamable-http)
 - `MCP_HOST` (기본: 0.0.0.0)
 - `MCP_PORT` (기본: 8765)
 - `MCP_PATH` (기본: /mcp)
+- `MCP_USER_ID` (기본: 1, 수동 보유종목 조회용)
 
 Docker (production compose):
 ```bash

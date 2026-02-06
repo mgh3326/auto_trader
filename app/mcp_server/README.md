@@ -5,6 +5,8 @@ Read-only MCP tools (market data) exposed via `fastmcp`.
 ## Tools
 - `search_symbol(query, limit=20)`
 - `get_quote(symbol, market=None)`
+- `get_holdings(account=None, market=None, include_current_price=True)`
+- `get_position(symbol, market=None)`
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None)`
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 
@@ -19,6 +21,7 @@ Environment variables:
 - `MCP_HOST` : `0.0.0.0`
 - `MCP_PORT` : `8765`
 - `MCP_PATH` : `/mcp`
+- `MCP_USER_ID` : `1` (manual holdings 조회에 사용할 기본 사용자 ID)
 
 Example:
 ```bash

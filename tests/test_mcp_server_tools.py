@@ -4566,3 +4566,293 @@ class TestSimulateAvgCost:
         # avg == market → breakeven 0%
         assert s["breakeven_change_pct"] == 0.0
         assert s["unrealized_pnl"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# get_holdings / get_position
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return [
+                {
+                    "pdno": "005930",
+                    "prdt_name": "삼성전자",
+                    "hldg_qty": "2",
+                    "pchs_avg_pric": "70000",
+                    "prpr": "70500",
+                    "evlu_amt": "141000",
+                    "evlu_pfls_amt": "1000",
+                    "evlu_pfls_rt": "0.71",
+                }
+            ]
+
+        async def fetch_my_us_stocks(self):
+            return [
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_item_name": "Apple",
+                    "ovrs_cblc_qty": "1",
+                    "pchs_avg_pric": "200",
+                    "now_pric2": "210",
+                    "ovrs_stck_evlu_amt": "210",
+                    "frcr_evlu_pfls_amt": "10",
+                    "evlu_pfls_rt": "5",
+                }
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "unit_currency": "KRW",
+                    "balance": "0.1",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                },
+                {"currency": "KRW", "balance": "1000"},
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_or_refresh_maps",
+        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인"}}),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_manual_positions",
+        AsyncMock(
+            return_value=(
+                [
+                    {
+                        "account": "toss",
+                        "account_name": "기본 계좌",
+                        "broker": "toss",
+                        "source": "manual",
+                        "instrument_type": "equity_kr",
+                        "market": "kr",
+                        "symbol": "005930",
+                        "name": "삼성전자(토스)",
+                        "quantity": 1.0,
+                        "avg_buy_price": 69000.0,
+                        "current_price": None,
+                        "evaluation_amount": None,
+                        "profit_loss": None,
+                        "profit_rate": None,
+                    }
+                ],
+                [],
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_tools, "_fetch_quote_equity_kr", AsyncMock(return_value={"price": 71000.0})
+    )
+    monkeypatch.setattr(
+        mcp_tools, "_fetch_quote_equity_us", AsyncMock(return_value={"price": 220.0})
+    )
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 60000000.0}),
+    )
+
+    result = await tools["get_holdings"]()
+
+    assert result["total_accounts"] == 3
+    assert result["total_positions"] == 4
+
+    kis_account = next(item for item in result["accounts"] if item["account"] == "kis")
+    kis_kr = next(item for item in kis_account["positions"] if item["symbol"] == "005930")
+    assert kis_kr["current_price"] == 71000.0
+    assert kis_kr["evaluation_amount"] == 142000.0
+    assert kis_kr["profit_loss"] == 2000.0
+    assert kis_kr["profit_rate"] == 1.43
+
+    upbit_account = next(
+        item for item in result["accounts"] if item["account"] == "upbit"
+    )
+    btc = upbit_account["positions"][0]
+    assert btc["symbol"] == "KRW-BTC"
+    assert btc["name"] == "비트코인"
+    assert btc["current_price"] == 60000000.0
+    assert btc["evaluation_amount"] == 6000000.0
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_filters_account_market_and_disables_prices(monkeypatch):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return []
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "ETH",
+                    "unit_currency": "KRW",
+                    "balance": "1.5",
+                    "locked": "0.5",
+                    "avg_buy_price": "4000000",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_or_refresh_maps",
+        AsyncMock(return_value={"COIN_TO_NAME_KR": {"ETH": "이더리움"}}),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    quote_mock = AsyncMock(return_value={"KRW-ETH": 4300000.0})
+    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_multiple_current_prices", quote_mock)
+
+    result = await tools["get_holdings"](
+        account="upbit", market="crypto", include_current_price=False
+    )
+
+    assert result["total_accounts"] == 1
+    assert result["total_positions"] == 1
+    assert result["accounts"][0]["account"] == "upbit"
+
+    eth = result["accounts"][0]["positions"][0]
+    assert eth["symbol"] == "KRW-ETH"
+    assert eth["current_price"] is None
+    assert eth["evaluation_amount"] is None
+    assert eth["profit_loss"] is None
+    assert eth["profit_rate"] is None
+    quote_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_position_returns_positions_and_not_holding_status(monkeypatch):
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "account": "kis",
+            "account_name": "기본 계좌",
+            "broker": "kis",
+            "source": "kis_api",
+            "instrument_type": "equity_kr",
+            "market": "kr",
+            "symbol": "005930",
+            "name": "삼성전자",
+            "quantity": 2.0,
+            "avg_buy_price": 70000.0,
+            "current_price": 71000.0,
+            "evaluation_amount": 142000.0,
+            "profit_loss": 2000.0,
+            "profit_rate": 1.43,
+        },
+        {
+            "account": "toss",
+            "account_name": "기본 계좌",
+            "broker": "toss",
+            "source": "manual",
+            "instrument_type": "equity_kr",
+            "market": "kr",
+            "symbol": "005930",
+            "name": "삼성전자(토스)",
+            "quantity": 1.0,
+            "avg_buy_price": 69000.0,
+            "current_price": 71000.0,
+            "evaluation_amount": 71000.0,
+            "profit_loss": 2000.0,
+            "profit_rate": 2.9,
+        },
+        {
+            "account": "upbit",
+            "account_name": "기본 계좌",
+            "broker": "upbit",
+            "source": "upbit_api",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "symbol": "KRW-BTC",
+            "name": "비트코인",
+            "quantity": 0.1,
+            "avg_buy_price": 50000000.0,
+            "current_price": 60000000.0,
+            "evaluation_amount": 6000000.0,
+            "profit_loss": 1000000.0,
+            "profit_rate": 20.0,
+        },
+    ]
+
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "equity_kr", None)),
+    )
+
+    result = await tools["get_position"]("005930", market="kr")
+    assert result["has_position"] is True
+    assert result["status"] == "보유"
+    assert result["position_count"] == 2
+    assert sorted(result["accounts"]) == ["kis", "toss"]
+
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "equity_us", None)),
+    )
+    not_holding = await tools["get_position"]("NVDA", market="us")
+    assert not_holding["has_position"] is False
+    assert not_holding["status"] == "미보유"
+
+
+@pytest.mark.asyncio
+async def test_get_position_crypto_accepts_symbol_without_prefix(monkeypatch):
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "account": "upbit",
+            "account_name": "기본 계좌",
+            "broker": "upbit",
+            "source": "upbit_api",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "symbol": "KRW-BTC",
+            "name": "비트코인",
+            "quantity": 0.1,
+            "avg_buy_price": 50000000.0,
+            "current_price": 60000000.0,
+            "evaluation_amount": 6000000.0,
+            "profit_loss": 1000000.0,
+            "profit_rate": 20.0,
+        }
+    ]
+
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+
+    result = await tools["get_position"]("BTC", market="crypto")
+    assert result["has_position"] is True
+    assert result["position_count"] == 1
+    assert result["positions"][0]["symbol"] == "KRW-BTC"
