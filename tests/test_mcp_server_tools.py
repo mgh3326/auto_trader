@@ -2525,6 +2525,11 @@ class TestGetInvestmentOpinions:
                     "date": "2024-01-14",
                 },
             ],
+            "current_price": 75000,
+            "avg_target_price": 87500,
+            "max_target_price": 90000,
+            "min_target_price": 85000,
+            "upside_potential": 16.67,
         }
 
         async def mock_fetch_opinions(code, limit):
@@ -2541,6 +2546,12 @@ class TestGetInvestmentOpinions:
         assert result["source"] == "naver"
         assert result["count"] == 2
         assert result["opinions"][0]["firm"] == "삼성증권"
+        # Check new target price statistics
+        assert result["current_price"] == 75000
+        assert result["avg_target_price"] == 87500
+        assert result["max_target_price"] == 90000
+        assert result["min_target_price"] == 85000
+        assert result["upside_potential"] == 16.67
 
     async def test_rejects_us_symbol(self):
         """Test that US symbols are rejected."""
@@ -2572,7 +2583,16 @@ class TestGetInvestmentOpinions:
         async def mock_fetch_opinions(code, limit):
             nonlocal captured_limit
             captured_limit = limit
-            return {"symbol": code, "count": 0, "opinions": []}
+            return {
+                "symbol": code,
+                "count": 0,
+                "opinions": [],
+                "current_price": None,
+                "avg_target_price": None,
+                "max_target_price": None,
+                "min_target_price": None,
+                "upside_potential": None,
+            }
 
         monkeypatch.setattr(
             mcp_tools.naver_finance, "fetch_investment_opinions", mock_fetch_opinions

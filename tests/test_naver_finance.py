@@ -36,6 +36,14 @@ class TestParseNaverDate:
         result = naver_finance._parse_naver_date("1.5")
         assert result == f"{date.today().year}-01-05"
 
+    def test_two_digit_year_format(self) -> None:
+        """Test YY.MM.DD format (e.g., "26.01.30" → "2026-01-30")."""
+        assert naver_finance._parse_naver_date("26.01.30") == "2026-01-30"
+        assert naver_finance._parse_naver_date("24.12.25") == "2024-12-25"
+        assert naver_finance._parse_naver_date("25.1.5") == "2025-01-05"
+        # Edge case: year 00 → 2000
+        assert naver_finance._parse_naver_date("00.06.15") == "2000-06-15"
+
     def test_none_for_empty(self) -> None:
         assert naver_finance._parse_naver_date("") is None
         assert naver_finance._parse_naver_date(None) is None
@@ -196,23 +204,91 @@ SAMPLE_INVESTMENT_OPINIONS_HTML = """
 <table class="type_1">
     <tbody>
         <tr>
-            <td>삼성전자</td>
-            <td><a href="/research/company_read.naver?id=1">반도체 업황 개선 전망</a></td>
+            <td><a href="/item/main.naver?code=005930">삼성전자</a></td>
+            <td><a href="company_read.naver?nid=12345&page=1">반도체 업황 개선 전망</a></td>
             <td>삼성증권</td>
-            <td>매수</td>
-            <td>85,000</td>
-            <td>2024.01.15</td>
+            <td><a href="https://example.com/report1.pdf"></a></td>
+            <td class="date">26.01.15</td>
+            <td>1234</td>
         </tr>
         <tr>
-            <td>삼성전자</td>
-            <td><a href="/research/company_read.naver?id=2">실적 호조 지속</a></td>
+            <td><a href="/item/main.naver?code=005930">삼성전자</a></td>
+            <td><a href="company_read.naver?nid=12346&page=1">실적 호조 지속</a></td>
             <td>미래에셋</td>
-            <td>Strong Buy</td>
-            <td>90,000</td>
-            <td>2024.01.14</td>
+            <td><a href="https://example.com/report2.pdf"></a></td>
+            <td class="date">26.01.14</td>
+            <td>5678</td>
         </tr>
     </tbody>
 </table>
+</body>
+</html>
+"""
+
+SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1 = """
+<html>
+<body>
+<table class="type_1" summary="종목분석 리포트 본문내용">
+    <tr>
+        <th class="view_sbj">
+            <span><em>삼성전자</em></span>
+            반도체 업황 개선 전망
+            <p class="source">삼성증권 | 2026.01.15</p>
+        </th>
+    </tr>
+    <tr>
+        <td colspan="2">
+            <div class="view_info">
+                <div class="view_info_1">
+                    목표가 <em class="money"><strong>85,000</strong></em>
+                    <span class="division">|</span>
+                    투자의견 <em class="coment">매수</em>
+                </div>
+            </div>
+        </td>
+    </tr>
+</table>
+</body>
+</html>
+"""
+
+SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2 = """
+<html>
+<body>
+<table class="type_1" summary="종목분석 리포트 본문내용">
+    <tr>
+        <th class="view_sbj">
+            <span><em>삼성전자</em></span>
+            실적 호조 지속
+            <p class="source">미래에셋 | 2026.01.14</p>
+        </th>
+    </tr>
+    <tr>
+        <td colspan="2">
+            <div class="view_info">
+                <div class="view_info_1">
+                    목표가 <em class="money"><strong>90,000</strong></em>
+                    <span class="division">|</span>
+                    투자의견 <em class="coment">Strong Buy</em>
+                </div>
+            </div>
+        </td>
+    </tr>
+</table>
+</body>
+</html>
+"""
+
+SAMPLE_CURRENT_PRICE_HTML = """
+<html>
+<body>
+<div class="wrap_company">
+    <h2><a>삼성전자</a></h2>
+</div>
+<p class="no_today">
+    <span class="blind">현재가</span>
+    <em><span class="blind">75,000</span></em>
+</p>
 </body>
 </html>
 """
@@ -430,7 +506,18 @@ class TestFetchInvestmentOpinions:
         async def mock_fetch_html(
             url: str, params: dict | None = None
         ) -> BeautifulSoup:
-            return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
+            # Return different HTML based on URL
+            if "company_list.naver" in url:
+                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
+            elif "company_read.naver" in url:
+                nid = (params or {}).get("nid", "")
+                if nid == "12345":
+                    return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml")
+                elif nid == "12346":
+                    return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml")
+            elif "main.naver" in url:
+                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
+            return BeautifulSoup("<html></html>", "lxml")
 
         monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
 
@@ -447,19 +534,94 @@ class TestFetchInvestmentOpinions:
         assert op1["firm"] == "삼성증권"
         assert op1["rating"] == "매수"
         assert op1["target_price"] == 85000
-        assert op1["date"] == "2024-01-15"
+        assert op1["date"] == "2026-01-15"
+
+        # Second opinion
+        op2 = result["opinions"][1]
+        assert op2["rating"] == "Strong Buy"
+        assert op2["target_price"] == 90000
+
+        # Check statistics
+        assert result["current_price"] == 75000
+        assert result["avg_target_price"] == 87500  # (85000 + 90000) / 2
+        assert result["max_target_price"] == 90000
+        assert result["min_target_price"] == 85000
+        # upside_potential: (87500 - 75000) / 75000 * 100 = 16.67%
+        assert abs(result["upside_potential"] - 16.67) < 0.01
 
     async def test_limit_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
             url: str, params: dict | None = None
         ) -> BeautifulSoup:
-            return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
+            if "company_list.naver" in url:
+                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
+            elif "company_read.naver" in url:
+                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml")
+            elif "main.naver" in url:
+                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
+            return BeautifulSoup("<html></html>", "lxml")
 
         monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
 
         result = await naver_finance.fetch_investment_opinions("005930", limit=1)
 
         assert result["count"] == 1
+
+    async def test_empty_table(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test with no opinions found."""
+        async def mock_fetch_html(
+            url: str, params: dict | None = None
+        ) -> BeautifulSoup:
+            return BeautifulSoup("<html><table class='type_1'></table></html>", "lxml")
+
+        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+
+        result = await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+        assert result["count"] == 0
+        assert result["opinions"] == []
+        assert result["avg_target_price"] is None
+        assert result["max_target_price"] is None
+        assert result["min_target_price"] is None
+        assert result["upside_potential"] is None
+
+    async def test_missing_target_price(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test when some reports don't have target price."""
+        detail_without_target = """
+        <html><body>
+        <div class="view_info_1">
+            목표가 <em class="money"><strong></strong></em>
+            투자의견 <em class="coment">없음</em>
+        </div>
+        </body></html>
+        """
+
+        async def mock_fetch_html(
+            url: str, params: dict | None = None
+        ) -> BeautifulSoup:
+            if "company_list.naver" in url:
+                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
+            elif "company_read.naver" in url:
+                nid = (params or {}).get("nid", "")
+                if nid == "12345":
+                    return BeautifulSoup(detail_without_target, "lxml")
+                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml")
+            elif "main.naver" in url:
+                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
+            return BeautifulSoup("<html></html>", "lxml")
+
+        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+
+        result = await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+        # First opinion has no target price, second has 90000
+        assert result["opinions"][0]["target_price"] is None
+        assert result["opinions"][1]["target_price"] == 90000
+
+        # Stats should only use the one with target price
+        assert result["avg_target_price"] == 90000
+        assert result["max_target_price"] == 90000
+        assert result["min_target_price"] == 90000
 
 
 @pytest.mark.asyncio
@@ -524,9 +686,7 @@ class TestFetchShortInterest:
     """Tests for fetch_short_interest function."""
 
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test successful short interest data fetch."""
-        import pandas as pd
-
+        """Test successful short interest data fetch via KRX API."""
         # Mock the company name fetch
         async def mock_fetch_html(
             url: str, params: dict | None = None
@@ -535,37 +695,49 @@ class TestFetchShortInterest:
 
         monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
 
-        # Mock pykrx functions
-        def mock_get_shorting_status(fromdate: str, todate: str, ticker: str) -> pd.DataFrame:
-            return pd.DataFrame(
+        # Mock KRX API response
+        krx_response = {
+            "OutBlock_1": [
                 {
-                    "공매도거래대금": [1_000_000_000, 800_000_000],
-                    "총거래대금": [20_000_000_000, 15_000_000_000],
-                    "비중": [5.0, 5.33],
+                    "TRD_DD": "2024/01/15",
+                    "CVSRTSELL_TRDVOL": "100,000",
+                    "CVSRTSELL_TRDVAL": "1,000,000,000",
+                    "STR_CONST_VAL1": "1,234,567",
+                    "STR_CONST_VAL2": "98,765,432,100",
                 },
-                index=pd.to_datetime(["2024-01-15", "2024-01-14"]),
-            )
-
-        def mock_get_shorting_balance(fromdate: str, todate: str, ticker: str) -> pd.DataFrame:
-            return pd.DataFrame(
                 {
-                    "공매도잔고": [1_234_567],
-                    "공매도금액": [98_765_432_100],
-                    "비중": [0.5],
+                    "TRD_DD": "2024/01/14",
+                    "CVSRTSELL_TRDVOL": "80,000",
+                    "CVSRTSELL_TRDVAL": "800,000,000",
+                    "STR_CONST_VAL1": "-",
+                    "STR_CONST_VAL2": "-",
                 },
-                index=pd.to_datetime(["2024-01-15"]),
-            )
+            ]
+        }
 
-        # Mock the pykrx.stock module
-        class MockPykrxStock:
-            get_shorting_status_by_date = staticmethod(mock_get_shorting_status)
-            get_shorting_balance_by_date = staticmethod(mock_get_shorting_balance)
+        class MockResponse:
+            status_code = 200
 
-        import sys
-        mock_pykrx = type(sys)("pykrx")
-        mock_pykrx.stock = MockPykrxStock
-        monkeypatch.setitem(sys.modules, "pykrx", mock_pykrx)
-        monkeypatch.setitem(sys.modules, "pykrx.stock", MockPykrxStock)
+            def json(self) -> dict:
+                return krx_response
+
+        async def mock_post(self, url: str, **kwargs) -> MockResponse:
+            return MockResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+        # Mock daily volumes for short_ratio calculation
+        async def mock_daily_volumes(
+            code: str, days: int
+        ) -> dict[str, int]:
+            return {
+                "2024-01-15": 2_000_000,  # total volume
+                "2024-01-14": 1_600_000,  # total volume
+            }
+
+        monkeypatch.setattr(naver_finance, "_fetch_daily_volumes", mock_daily_volumes)
 
         result = await naver_finance.fetch_short_interest("005930", days=20)
 
@@ -576,21 +748,29 @@ class TestFetchShortInterest:
         # Check first day data
         day1 = result["short_data"][0]
         assert day1["date"] == "2024-01-15"
+        assert day1["short_volume"] == 100_000
         assert day1["short_amount"] == 1_000_000_000
-        assert day1["total_amount"] == 20_000_000_000
+        assert day1["total_volume"] == 2_000_000
+        # short_ratio = 100,000 / 2,000,000 * 100 = 5.0%
         assert day1["short_ratio"] == 5.0
 
-        # Check average ratio
-        assert result["avg_short_ratio"] == 5.17  # (5.0 + 5.33) / 2 rounded
+        # Check second day data
+        day2 = result["short_data"][1]
+        assert day2["date"] == "2024-01-14"
+        assert day2["total_volume"] == 1_600_000
+        # short_ratio = 80,000 / 1,600,000 * 100 = 5.0%
+        assert day2["short_ratio"] == 5.0
 
-        # Check balance data
+        # Check average short ratio
+        assert result["avg_short_ratio"] == 5.0  # (5.0 + 5.0) / 2
+
+        # Check balance data (from first entry with balance)
         assert "short_balance" in result
         assert result["short_balance"]["balance_shares"] == 1_234_567
 
-    async def test_empty_data(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test with empty short selling data."""
-        import pandas as pd
-
+    async def test_short_ratio_rounding_with_missing_volume(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         async def mock_fetch_html(
             url: str, params: dict | None = None
         ) -> BeautifulSoup:
@@ -598,21 +778,94 @@ class TestFetchShortInterest:
 
         monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
 
-        def mock_get_shorting_status(fromdate: str, todate: str, ticker: str) -> pd.DataFrame:
-            return pd.DataFrame()
+        krx_response = {
+            "OutBlock_1": [
+                {
+                    "TRD_DD": "2024/01/15",
+                    "CVSRTSELL_TRDVOL": "100,000",
+                    "CVSRTSELL_TRDVAL": "1,000,000,000",
+                    "STR_CONST_VAL1": "1,234,567",
+                    "STR_CONST_VAL2": "98,765,432,100",
+                },
+                {
+                    "TRD_DD": "2024/01/14",
+                    "CVSRTSELL_TRDVOL": "80,000",
+                    "CVSRTSELL_TRDVAL": "800,000,000",
+                    "STR_CONST_VAL1": "-",
+                    "STR_CONST_VAL2": "-",
+                },
+            ]
+        }
 
-        def mock_get_shorting_balance(fromdate: str, todate: str, ticker: str) -> pd.DataFrame:
-            return pd.DataFrame()
+        class MockResponse:
+            status_code = 200
 
-        class MockPykrxStock:
-            get_shorting_status_by_date = staticmethod(mock_get_shorting_status)
-            get_shorting_balance_by_date = staticmethod(mock_get_shorting_balance)
+            def json(self) -> dict:
+                return krx_response
 
-        import sys
-        mock_pykrx = type(sys)("pykrx")
-        mock_pykrx.stock = MockPykrxStock
-        monkeypatch.setitem(sys.modules, "pykrx", mock_pykrx)
-        monkeypatch.setitem(sys.modules, "pykrx.stock", MockPykrxStock)
+        async def mock_post(self, url: str, **kwargs) -> MockResponse:
+            return MockResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+        async def mock_daily_volumes(code: str, days: int) -> dict[str, int]:
+            return {
+                "2024-01-15": 3_000_000,
+            }
+
+        monkeypatch.setattr(naver_finance, "_fetch_daily_volumes", mock_daily_volumes)
+
+        result = await naver_finance.fetch_short_interest("005930", days=20)
+
+        day1 = result["short_data"][0]
+        assert day1["total_volume"] == 3_000_000
+        assert day1["short_ratio"] == 3.33
+
+        day2 = result["short_data"][1]
+        assert day2.get("total_volume") is None
+        assert day2.get("short_ratio") is None
+
+        assert result["avg_short_ratio"] == 3.33
+
+    async def test_empty_data(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test with empty short selling data from KRX."""
+        async def mock_fetch_html(
+            url: str, params: dict | None = None
+        ) -> BeautifulSoup:
+            return BeautifulSoup(SAMPLE_SHORT_INTEREST_HTML, "lxml")
+
+        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+
+        async def mock_daily_volumes(code: str, days: int) -> dict[str, int]:
+            return {}
+
+        monkeypatch.setattr(naver_finance, "_fetch_daily_volumes", mock_daily_volumes)
+
+        # Mock empty KRX API response
+        class MockResponse:
+            status_code = 200
+
+            def json(self) -> dict:
+                return {"OutBlock_1": []}
+
+        async def mock_post(self, url: str, **kwargs) -> MockResponse:
+            return MockResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+        # Also mock pykrx fallback to return empty
+        async def mock_pykrx_fetch(
+            code: str, days: int
+        ) -> tuple[list, dict | None]:
+            return [], None
+
+        monkeypatch.setattr(
+            naver_finance, "_fetch_short_data_from_pykrx", mock_pykrx_fetch
+        )
 
         result = await naver_finance.fetch_short_interest("005930", days=20)
 
@@ -621,8 +874,8 @@ class TestFetchShortInterest:
         assert result["avg_short_ratio"] is None
         assert "short_balance" not in result
 
-    async def test_pykrx_exception_handling(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test handling of pykrx exceptions."""
+    async def test_krx_exception_handling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test handling of KRX API exceptions."""
         async def mock_fetch_html(
             url: str, params: dict | None = None
         ) -> BeautifulSoup:
@@ -630,21 +883,28 @@ class TestFetchShortInterest:
 
         monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
 
-        def mock_get_shorting_status(fromdate: str, todate: str, ticker: str) -> None:
+        async def mock_daily_volumes(code: str, days: int) -> dict[str, int]:
+            return {}
+
+        monkeypatch.setattr(naver_finance, "_fetch_daily_volumes", mock_daily_volumes)
+
+        # Mock KRX API to raise exception
+        async def mock_post(self, url: str, **kwargs) -> None:
             raise Exception("Network error")
 
-        def mock_get_shorting_balance(fromdate: str, todate: str, ticker: str) -> None:
-            raise Exception("Network error")
+        import httpx
 
-        class MockPykrxStock:
-            get_shorting_status_by_date = staticmethod(mock_get_shorting_status)
-            get_shorting_balance_by_date = staticmethod(mock_get_shorting_balance)
+        monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
 
-        import sys
-        mock_pykrx = type(sys)("pykrx")
-        mock_pykrx.stock = MockPykrxStock
-        monkeypatch.setitem(sys.modules, "pykrx", mock_pykrx)
-        monkeypatch.setitem(sys.modules, "pykrx.stock", MockPykrxStock)
+        # Also mock pykrx fallback to return empty
+        async def mock_pykrx_fetch(
+            code: str, days: int
+        ) -> tuple[list, dict | None]:
+            return [], None
+
+        monkeypatch.setattr(
+            naver_finance, "_fetch_short_data_from_pykrx", mock_pykrx_fetch
+        )
 
         # Should not raise, but return empty data
         result = await naver_finance.fetch_short_interest("005930", days=20)

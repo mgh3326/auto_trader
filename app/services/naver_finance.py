@@ -47,7 +47,10 @@ def _parse_naver_date(date_str: str | None) -> str | None:
     """Parse Naver Finance date formats to ISO format.
 
     Args:
-        date_str: Date string in various formats (e.g., "2024.01.15", "01.15")
+        date_str: Date string in various formats:
+            - "2024.01.15" (full 4-digit year)
+            - "24.01.15" (2-digit year)
+            - "01.15" (month.day only)
 
     Returns:
         ISO format date string (e.g., "2024-01-15") or None
@@ -59,14 +62,22 @@ def _parse_naver_date(date_str: str | None) -> str | None:
     if not date_str:
         return None
 
-    # Full date format: 2024.01.15 or 2024-01-15 or 2024/01/15
+    # Full date format with 4-digit year: 2024.01.15 or 2024-01-15 or 2024/01/15
     match = re.match(r"(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})", date_str)
     if match:
         year, month, day = match.groups()
         return f"{year}-{int(month):02d}-{int(day):02d}"
 
-    # Short date format (assumes current year): 01.15 or 01-15
-    match = re.match(r"(\d{1,2})[.\-/](\d{1,2})", date_str)
+    # Short year format: YY.MM.DD (e.g., "26.01.30" → "2026-01-30")
+    match = re.match(r"(\d{2})[.\-/](\d{1,2})[.\-/](\d{1,2})", date_str)
+    if match:
+        yy, month, day = match.groups()
+        # Convert 2-digit year to 4-digit (00-99 → 2000-2099)
+        year = 2000 + int(yy)
+        return f"{year}-{int(month):02d}-{int(day):02d}"
+
+    # Month.day only format (assumes current year): 01.15 or 01-15
+    match = re.match(r"(\d{1,2})[.\-/](\d{1,2})$", date_str)
     if match:
         year = date.today().year
         month, day = match.groups()
@@ -553,17 +564,101 @@ async def fetch_investor_trends(code: str, days: int = 20) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+async def _fetch_report_detail(nid: str) -> dict[str, Any] | None:
+    """Fetch individual report page to get target price and rating.
+
+    Args:
+        nid: Report ID from Naver Finance
+
+    Returns:
+        Dictionary with target_price and rating, or None if not found
+    """
+    url = f"{NAVER_FINANCE_BASE}/research/company_read.naver"
+
+    try:
+        soup = await _fetch_html(url, params={"nid": nid})
+
+        result: dict[str, Any] = {
+            "target_price": None,
+            "rating": None,
+        }
+
+        # Find view_info_1 div which contains target price and rating
+        # Structure: <div class="view_info_1">
+        #     목표가 <em class="money"><strong>183,000</strong></em>
+        #     투자의견 <em class="coment">매수</em>
+        # </div>
+        info_div = soup.select_one("div.view_info_1")
+        if info_div:
+            # Target price from em.money > strong
+            target_elem = info_div.select_one("em.money strong")
+            if target_elem:
+                result["target_price"] = _parse_korean_number(
+                    target_elem.get_text(strip=True)
+                )
+
+            # Rating from em.coment
+            rating_elem = info_div.select_one("em.coment")
+            if rating_elem:
+                result["rating"] = rating_elem.get_text(strip=True)
+
+        return result
+
+    except Exception:
+        return None
+
+
+async def _fetch_current_price(code: str) -> int | None:
+    """Fetch current stock price from Naver Finance main page.
+
+    Args:
+        code: 6-digit Korean stock code
+
+    Returns:
+        Current price as integer, or None if not found
+    """
+    try:
+        url = f"{NAVER_FINANCE_ITEM}/main.naver"
+        soup = await _fetch_html(url, params={"code": code})
+
+        # Try span.blind inside p.no_today
+        price_elem = soup.select_one("p.no_today em span.blind")
+        if price_elem:
+            price = _parse_korean_number(price_elem.get_text(strip=True))
+            if price:
+                return int(price)
+
+        # Fallback: try p.no_today directly
+        no_today = soup.select_one("p.no_today")
+        if no_today:
+            price = _parse_korean_number(no_today.get_text(strip=True))
+            if price:
+                return int(price)
+
+        return None
+
+    except Exception:
+        return None
+
+
 async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any]:
     """Fetch securities firm investment opinions and target prices.
 
     URL: finance.naver.com/research/company_list.naver
+    Individual reports: finance.naver.com/research/company_read.naver?nid={nid}
 
     Args:
         code: 6-digit Korean stock code
         limit: Maximum number of opinions to return
 
     Returns:
-        Investment opinions with target price, rating, firm, and date
+        Investment opinions with target price, rating, firm, date, and statistics:
+        - opinions: List of individual opinions with target_price and rating
+        - avg_target_price: Average target price from all opinions with target_price
+        - max_target_price: Maximum target price
+        - min_target_price: Minimum target price
+        - current_price: Current stock price
+        - upside_potential: (avg_target_price - current_price) / current_price * 100
     """
     # Search for company-specific research reports
     url = f"{NAVER_FINANCE_BASE}/research/company_list.naver"
@@ -573,18 +668,33 @@ async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any
         "symbol": code,
         "count": 0,
         "opinions": [],
+        "current_price": None,
+        "avg_target_price": None,
+        "max_target_price": None,
+        "min_target_price": None,
+        "upside_potential": None,
     }
 
     # Parse research report table - <table class="type_1">
+    # Current structure (as of 2025):
+    # Cell 0: 종목명 (link)
+    # Cell 1: 리포트 제목 (link with nid)
+    # Cell 2: 증권사
+    # Cell 3: PDF 링크 (empty text)
+    # Cell 4: 날짜
+    # Cell 5: 조회수
     table = soup.select_one("table.type_1")
     if not table:
         return opinions
 
+    # Collect report info first
+    report_infos: list[dict[str, Any]] = []
+
     rows = table.select("tbody tr, tr")
     for row in rows:
         cells = row.select("td")
-        # Expected columns: 종목명, 리포트 제목, 증권사, 의견, 목표가, 등록일
-        if len(cells) < 6:
+        # Need at least 5 cells (종목명, 제목, 증권사, PDF, 날짜)
+        if len(cells) < 5:
             continue
 
         try:
@@ -593,33 +703,80 @@ async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any
             if not title_elem:
                 continue
 
-            opinion = {
+            # Extract report ID from href
+            href = title_elem.get("href") or ""
+            href_str = href if isinstance(href, str) else ""
+            nid_match = re.search(r"nid=(\d+)", href_str)
+            if not nid_match:
+                continue
+
+            nid = nid_match.group(1)
+
+            report_info = {
+                "nid": nid,
                 "stock_name": cells[0].get_text(strip=True),
                 "title": title_elem.get_text(strip=True),
                 "firm": cells[2].get_text(strip=True),
-                "rating": cells[3].get_text(strip=True),
-                "target_price": _parse_korean_number(cells[4].get_text(strip=True)),
-                "date": _parse_naver_date(cells[5].get_text(strip=True)),
-            }
-
-            # Get report URL
-            href = title_elem.get("href") or ""
-            href_str = href if isinstance(href, str) else ""
-            if href_str:
-                opinion["url"] = (
+                "date": _parse_naver_date(cells[4].get_text(strip=True)),
+                "url": (
                     href_str
                     if href_str.startswith("http")
-                    else NAVER_FINANCE_BASE + href_str
-                )
+                    else NAVER_FINANCE_BASE + "/research/" + href_str
+                ),
+            }
 
-            opinions["opinions"].append(opinion)
+            report_infos.append(report_info)
 
-            if len(opinions["opinions"]) >= limit:
+            if len(report_infos) >= limit:
                 break
         except (IndexError, ValueError):
             continue
 
+    # Fetch details for each report (target_price and rating)
+    # Use asyncio.gather for concurrent fetching
+    if report_infos:
+        detail_tasks = [_fetch_report_detail(info["nid"]) for info in report_infos]
+        details = await asyncio.gather(*detail_tasks, return_exceptions=True)
+
+        for info, detail in zip(report_infos, details):
+            opinion = {
+                "stock_name": info["stock_name"],
+                "title": info["title"],
+                "firm": info["firm"],
+                "date": info["date"],
+                "url": info["url"],
+                "target_price": None,
+                "rating": None,
+            }
+
+            if isinstance(detail, dict):
+                opinion["target_price"] = detail.get("target_price")
+                opinion["rating"] = detail.get("rating")
+
+            opinions["opinions"].append(opinion)
+
     opinions["count"] = len(opinions["opinions"])
+
+    # Calculate target price statistics
+    target_prices = [
+        op["target_price"]
+        for op in opinions["opinions"]
+        if op.get("target_price") is not None
+    ]
+
+    if target_prices:
+        opinions["avg_target_price"] = int(sum(target_prices) / len(target_prices))
+        opinions["max_target_price"] = max(target_prices)
+        opinions["min_target_price"] = min(target_prices)
+
+        # Fetch current price for upside_potential calculation
+        current_price = await _fetch_current_price(code)
+        if current_price:
+            opinions["current_price"] = current_price
+            opinions["upside_potential"] = round(
+                (opinions["avg_target_price"] - current_price) / current_price * 100, 2
+            )
+
     return opinions
 
 
@@ -770,13 +927,13 @@ async def fetch_valuation(code: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_short_data_from_naver(
+async def _fetch_short_data_from_krx(
     code: str, days: int
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Fetch short selling data directly from Naver Finance.
+    """Fetch short selling data directly from KRX API.
 
-    Naver Finance provides short selling data via an iframe at:
-    https://finance.naver.com/item/sise_short.naver?code={code}
+    KRX provides short selling data via their data marketplace API.
+    Naver Finance embeds this data via iframe.
 
     Args:
         code: 6-digit Korean stock code
@@ -788,68 +945,95 @@ async def _fetch_short_data_from_naver(
     short_data_list: list[dict[str, Any]] = []
     balance_data: dict[str, Any] | None = None
 
-    # Naver Finance short selling page
-    # This page shows short selling data in a table
-    url = f"{NAVER_FINANCE_ITEM}/sise_short.naver"
+    # Calculate date range
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days * 2)  # Extra days for weekends/holidays
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Origin": "https://data.krx.co.kr",
+        "Referer": (
+            f"https://data.krx.co.kr/comm/srt/srtLoader/index.cmd"
+            f"?screenId=MDCSTAT300&isuCd={code}"
+        ),
+        "X-Requested-With": "XMLHttpRequest",
+    }
 
     try:
-        soup = await _fetch_html(url, params={"code": code})
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
 
-        # Find the data table - it has class "type2" typically
-        # The table structure varies but usually has columns:
-        # 날짜, 종가, 전일비, 거래량, 공매도량, 공매도금액, 공매도비중
-        table = soup.select_one("table.type2")
+            # ISIN check digit varies per stock (0-9)
+            # Try common check digits first: 3, 2, 0, 1, 4-9
+            check_digits = [3, 2, 0, 1, 4, 5, 6, 7, 8, 9]
+            result_data: list[dict[str, Any]] = []
 
-        if table:
-            rows = table.select("tr")
-            for row in rows:
-                cells = row.select("td")
-                # Need at least 7 cells for full data
-                if len(cells) >= 7:
-                    try:
-                        date_text = cells[0].get_text(strip=True)
-                        if not date_text or not date_text[0].isdigit():
-                            continue
+            for check_digit in check_digits:
+                isin = f"KR7{code}00{check_digit}"
 
-                        # Parse each column
-                        close_price = _parse_korean_number(cells[1].get_text(strip=True))
-                        total_volume = _parse_korean_number(cells[3].get_text(strip=True))
-                        short_volume = _parse_korean_number(cells[4].get_text(strip=True))
-                        short_amount = _parse_korean_number(cells[5].get_text(strip=True))
-
-                        # Short ratio might be in different positions
-                        short_ratio_text = cells[6].get_text(strip=True)
-                        short_ratio = _parse_korean_number(short_ratio_text.replace("%", ""))
-
-                        short_data_list.append(
-                            {
-                                "date": _parse_naver_date(date_text),
-                                "short_volume": int(short_volume) if short_volume else None,
-                                "short_amount": int(short_amount) if short_amount else None,
-                                "short_ratio": float(short_ratio) if short_ratio else None,
-                                "total_volume": int(total_volume) if total_volume else None,
-                                "close_price": int(close_price) if close_price else None,
-                            }
-                        )
-
-                        if len(short_data_list) >= days:
-                            break
-                    except (IndexError, ValueError):
-                        continue
-
-        # Try to get short balance from a summary section if available
-        balance_section = soup.select_one("div.short_balance, table.short_balance")
-        if balance_section:
-            # Extract balance info if available
-            balance_text = balance_section.get_text()
-            balance_match = re.search(r"공매도\s*잔고[:\s]*(\d[\d,]*)", balance_text)
-            if balance_match:
-                balance_data = {
-                    "balance_shares": _parse_korean_number(balance_match.group(1)),
+                data = {
+                    "bld": "dbms/MDC/STAT/srt/MDCSTAT30001",
+                    "locale": "ko_KR",
+                    "isuCd": isin,
+                    "strtDd": start_date.strftime("%Y%m%d"),
+                    "endDd": end_date.strftime("%Y%m%d"),
+                    "share": "1",
+                    "csvxls_is498": "false",
                 }
 
+                resp = await client.post(url, data=data, headers=headers)
+
+                if resp.status_code == 200:
+                    result = resp.json()
+                    if isinstance(result, dict) and "OutBlock_1" in result:
+                        result_data = result["OutBlock_1"]
+                        if result_data:
+                            break  # Found data, stop trying other check digits
+
+            # Parse the result data
+            for item in result_data:
+                # Parse date: "2025/02/03" -> "2025-02-03"
+                date_str = item.get("TRD_DD", "").replace("/", "-")
+
+                # Parse values (remove commas)
+                short_volume = _parse_korean_number(item.get("CVSRTSELL_TRDVOL"))
+                short_amount = _parse_korean_number(item.get("CVSRTSELL_TRDVAL"))
+                balance_shares = _parse_korean_number(item.get("STR_CONST_VAL1"))
+                balance_amount = _parse_korean_number(item.get("STR_CONST_VAL2"))
+
+                short_data_list.append(
+                    {
+                        "date": date_str,
+                        "short_volume": int(short_volume) if short_volume else None,
+                        "short_amount": int(short_amount) if short_amount else None,
+                        "short_ratio": None,  # Not directly provided
+                        "total_volume": None,  # Not in this API
+                        "balance_shares": (
+                            int(balance_shares) if balance_shares else None
+                        ),
+                        "balance_amount": (
+                            int(balance_amount) if balance_amount else None
+                        ),
+                    }
+                )
+
+            # Get latest balance data (find first entry with balance)
+            for entry in short_data_list:
+                if entry.get("balance_shares"):
+                    balance_data = {
+                        "balance_shares": entry["balance_shares"],
+                        "balance_amount": entry.get("balance_amount"),
+                    }
+                    break
+
     except Exception:
-        # If Naver fetch fails, try alternative sources
         pass
 
     return short_data_list, balance_data
@@ -940,12 +1124,63 @@ async def _fetch_short_data_from_pykrx(
     return await asyncio.to_thread(_fetch_sync)
 
 
+async def _fetch_daily_volumes(code: str, days: int) -> dict[str, int]:
+    """Fetch daily trading volumes from Naver Finance.
+
+    Args:
+        code: 6-digit Korean stock code
+        days: Number of days to fetch
+
+    Returns:
+        Dictionary mapping date (YYYY-MM-DD) to volume
+    """
+    volumes: dict[str, int] = {}
+
+    try:
+        # Fetch multiple pages if needed (10 rows per page)
+        pages_needed = (days // 10) + 2  # Extra pages for weekends/holidays
+
+        for page in range(1, pages_needed + 1):
+            url = f"{NAVER_FINANCE_ITEM}/sise_day.naver"
+            soup = await _fetch_html(url, params={"code": code, "page": page})
+
+            # Parse table rows
+            rows = soup.select("table.type2 tr")
+            for row in rows:
+                cells = row.select("td")
+                if len(cells) < 7:
+                    continue
+
+                # Columns: 날짜, 종가, 전일비, 시가, 고가, 저가, 거래량
+                date_text = cells[0].get_text(strip=True)
+                volume_text = cells[6].get_text(strip=True)
+
+                if not date_text or not date_text[0].isdigit():
+                    continue
+
+                parsed_date = _parse_naver_date(date_text)
+                volume = _parse_korean_number(volume_text)
+
+                if parsed_date and volume:
+                    volumes[parsed_date] = int(volume)
+
+            if len(volumes) >= days:
+                break
+
+    except Exception:
+        pass
+
+    return volumes
+
+
 async def fetch_short_interest(code: str, days: int = 20) -> dict[str, Any]:
     """Fetch short selling data for a Korean stock.
 
     Tries multiple data sources in order:
-    1. Naver Finance (direct crawling)
-    2. KRX via pykrx library
+    1. KRX API (most reliable for short selling data)
+    2. pykrx library as fallback
+
+    Also fetches daily volumes from Naver Finance to calculate short_ratio.
 
     Args:
         code: 6-digit Korean stock code (e.g., "005930")
@@ -959,30 +1194,53 @@ async def fetch_short_interest(code: str, days: int = 20) -> dict[str, Any]:
         - avg_short_ratio: Average short ratio over the period
         - short_balance: Short balance (if available)
     """
-    # Fetch company name
+    # Fetch company name and daily volumes concurrently
     name = None
-    try:
-        url = f"{NAVER_FINANCE_ITEM}/main.naver"
-        soup = await _fetch_html(url, params={"code": code})
-        name_elem = soup.select_one("div.wrap_company h2 a")
-        if name_elem:
-            name = name_elem.get_text(strip=True)
-    except Exception:
-        pass
 
-    # Try Naver Finance first
-    short_data, balance_data = await _fetch_short_data_from_naver(code, days)
+    async def fetch_name() -> str | None:
+        try:
+            url = f"{NAVER_FINANCE_ITEM}/main.naver"
+            soup = await _fetch_html(url, params={"code": code})
+            name_elem = soup.select_one("div.wrap_company h2 a")
+            if name_elem:
+                return name_elem.get_text(strip=True)
+        except Exception:
+            pass
+        return None
 
-    # If Naver didn't return data, try pykrx
+    # Fetch name, volumes, and short data concurrently
+    name_task = fetch_name()
+    volumes_task = _fetch_daily_volumes(code, days)
+    short_task = _fetch_short_data_from_krx(code, days)
+
+    name, daily_volumes, (short_data, balance_data) = await asyncio.gather(
+        name_task, volumes_task, short_task
+    )
+
+    # If KRX API didn't return data, try pykrx as fallback
     if not short_data:
         short_data, balance_data = await _fetch_short_data_from_pykrx(code, days)
 
     # Sort by date descending and limit to requested days
     short_data = sorted(short_data, key=lambda x: x["date"] or "", reverse=True)[:days]
 
+    # Enrich short_data with total_volume and calculate short_ratio
+    for entry in short_data:
+        entry_date = entry.get("date")
+        if entry_date and entry_date in daily_volumes:
+            entry["total_volume"] = daily_volumes[entry_date]
+
+            # Calculate short_ratio if we have both short_volume and total_volume
+            short_vol = entry.get("short_volume")
+            total_vol = entry["total_volume"]
+            if short_vol and total_vol and total_vol > 0:
+                entry["short_ratio"] = round(short_vol / total_vol * 100, 2)
+
     # Calculate average short ratio
     avg_short_ratio: float | None = None
-    valid_ratios = [d["short_ratio"] for d in short_data if d.get("short_ratio") is not None]
+    valid_ratios = [
+        d["short_ratio"] for d in short_data if d.get("short_ratio") is not None
+    ]
     if valid_ratios:
         avg_short_ratio = round(sum(valid_ratios) / len(valid_ratios), 2)
 
