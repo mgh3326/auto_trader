@@ -4032,3 +4032,428 @@ class TestGetFibonacciTool:
 
         assert result["symbol"] == "PLTR"
         assert "levels" in result
+
+
+# ---------------------------------------------------------------------------
+# get_sector_peers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestGetSectorPeers:
+    async def test_raises_on_empty_symbol(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_sector_peers"]("")
+
+    async def test_raises_on_crypto_symbol(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="not available for cryptocurrencies"):
+            await tools["get_sector_peers"]("KRW-BTC")
+
+    async def test_raises_on_invalid_market(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="market must be"):
+            await tools["get_sector_peers"]("005930", market="invalid")
+
+    async def test_korean_equity_success(self, monkeypatch):
+        tools = build_tools()
+
+        mock_data = {
+            "symbol": "298040",
+            "name": "효성중공업",
+            "sector": "전기장비",
+            "industry_code": 306,
+            "current_price": 2195000,
+            "change_pct": -5.96,
+            "per": 46.93,
+            "pbr": 9.36,
+            "market_cap": 204581_0000_0000,
+            "peers": [
+                {
+                    "symbol": "267260",
+                    "name": "HD현대일렉트릭",
+                    "current_price": 833000,
+                    "change_pct": -4.58,
+                    "per": 48.68,
+                    "pbr": 16.86,
+                    "market_cap": 300272_6300_0000,
+                },
+                {
+                    "symbol": "010120",
+                    "name": "LS ELECTRIC",
+                    "current_price": 585000,
+                    "change_pct": -5.49,
+                    "per": 35.0,
+                    "pbr": 5.2,
+                    "market_cap": 175500_0000_0000,
+                },
+            ],
+        }
+        mock_fetch = AsyncMock(return_value=mock_data)
+        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_sector_peers", mock_fetch)
+
+        result = await tools["get_sector_peers"]("298040")
+
+        assert result["instrument_type"] == "equity_kr"
+        assert result["source"] == "naver"
+        assert result["symbol"] == "298040"
+        assert result["name"] == "효성중공업"
+        assert result["sector"] == "전기장비"
+        assert len(result["peers"]) == 2
+        assert result["peers"][0]["symbol"] == "267260"
+
+        comp = result["comparison"]
+        assert comp["avg_per"] is not None
+        assert comp["avg_pbr"] is not None
+        assert comp["target_per_rank"] is not None
+        assert comp["target_pbr_rank"] is not None
+
+    async def test_korean_equity_error_returns_payload(self, monkeypatch):
+        tools = build_tools()
+        mock_fetch = AsyncMock(side_effect=RuntimeError("naver down"))
+        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_sector_peers", mock_fetch)
+
+        result = await tools["get_sector_peers"]("298040")
+
+        assert "error" in result
+        assert result["source"] == "naver"
+        assert result["symbol"] == "298040"
+        assert result["instrument_type"] == "equity_kr"
+
+    async def test_us_equity_success(self, monkeypatch):
+        tools = build_tools()
+
+        # Mock Finnhub client
+        class MockFinnhubClient:
+            def company_peers(self, symbol):
+                return ["MSFT", "GOOGL", "META"]
+
+        monkeypatch.setattr(mcp_tools, "_get_finnhub_client", lambda: MockFinnhubClient())
+
+        # Mock yfinance
+        _yf_data = {
+            "AAPL": {
+                "shortName": "Apple Inc.",
+                "currentPrice": 180,
+                "previousClose": 178,
+                "trailingPE": 30,
+                "priceToBook": 45,
+                "marketCap": 3_000_000_000_000,
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+            },
+            "MSFT": {
+                "shortName": "Microsoft",
+                "currentPrice": 400,
+                "previousClose": 398,
+                "trailingPE": 35,
+                "priceToBook": 12,
+                "marketCap": 3_100_000_000_000,
+                "sector": "Technology",
+                "industry": "Software",
+            },
+            "GOOGL": {
+                "shortName": "Alphabet",
+                "currentPrice": 150,
+                "previousClose": 149,
+                "trailingPE": 25,
+                "priceToBook": 6,
+                "marketCap": 2_000_000_000_000,
+                "sector": "Technology",
+                "industry": "Internet",
+            },
+            "META": {
+                "shortName": "Meta Platforms",
+                "currentPrice": 500,
+                "previousClose": 495,
+                "trailingPE": 28,
+                "priceToBook": 8,
+                "marketCap": 1_300_000_000_000,
+                "sector": "Technology",
+                "industry": "Internet",
+            },
+        }
+
+        original_yf = mcp_tools.yf
+
+        class MockTicker:
+            def __init__(self, ticker):
+                self._ticker = ticker
+
+            @property
+            def info(self):
+                return _yf_data.get(self._ticker, {})
+
+        monkeypatch.setattr(mcp_tools.yf, "Ticker", MockTicker)
+
+        result = await tools["get_sector_peers"]("AAPL")
+
+        assert result["instrument_type"] == "equity_us"
+        assert result["source"] == "finnhub+yfinance"
+        assert result["symbol"] == "AAPL"
+        assert result["name"] == "Apple Inc."
+        assert result["sector"] == "Technology"
+        assert len(result["peers"]) == 3
+        # Sorted by market_cap desc
+        assert result["peers"][0]["symbol"] == "MSFT"
+
+        comp = result["comparison"]
+        assert comp["avg_per"] is not None
+        assert comp["avg_pbr"] is not None
+
+    async def test_us_equity_error_returns_payload(self, monkeypatch):
+        tools = build_tools()
+
+        def raise_err():
+            raise RuntimeError("finnhub down")
+
+        monkeypatch.setattr(
+            mcp_tools,
+            "_get_finnhub_client",
+            lambda: type("C", (), {"company_peers": lambda self, symbol: raise_err()})(),
+        )
+
+        result = await tools["get_sector_peers"]("AAPL")
+
+        assert "error" in result
+        assert result["source"] == "finnhub+yfinance"
+
+    async def test_auto_detects_korean_market(self, monkeypatch):
+        tools = build_tools()
+        mock_fetch = AsyncMock(
+            return_value={
+                "symbol": "005930",
+                "name": "삼성전자",
+                "sector": "반도체",
+                "industry_code": 278,
+                "current_price": 80000,
+                "change_pct": -1.0,
+                "per": 20.0,
+                "pbr": 1.5,
+                "market_cap": 500_0000_0000_0000,
+                "peers": [],
+            }
+        )
+        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_sector_peers", mock_fetch)
+
+        result = await tools["get_sector_peers"]("005930")
+
+        assert result["instrument_type"] == "equity_kr"
+        mock_fetch.assert_awaited_once_with("005930", limit=5)
+
+    async def test_limit_capped_at_20(self, monkeypatch):
+        tools = build_tools()
+        mock_fetch = AsyncMock(
+            return_value={
+                "symbol": "005930",
+                "name": "삼성전자",
+                "sector": "반도체",
+                "industry_code": 278,
+                "current_price": 80000,
+                "change_pct": -1.0,
+                "per": 20.0,
+                "pbr": 1.5,
+                "market_cap": 500_0000_0000_0000,
+                "peers": [],
+            }
+        )
+        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_sector_peers", mock_fetch)
+
+        await tools["get_sector_peers"]("005930", limit=50)
+
+        # Should be capped at 20
+        mock_fetch.assert_awaited_once_with("005930", limit=20)
+
+    async def test_comparison_ranking_correct(self, monkeypatch):
+        """Verify PER/PBR ranks are computed correctly (ascending order)."""
+        tools = build_tools()
+
+        mock_data = {
+            "symbol": "298040",
+            "name": "효성중공업",
+            "sector": "전기장비",
+            "industry_code": 306,
+            "current_price": 2195000,
+            "change_pct": -5.96,
+            "per": 20.0,  # lowest PER
+            "pbr": 5.0,   # middle PBR
+            "market_cap": 200000_0000_0000,
+            "peers": [
+                {
+                    "symbol": "A",
+                    "name": "Peer A",
+                    "current_price": 100000,
+                    "change_pct": 1.0,
+                    "per": 30.0,
+                    "pbr": 3.0,  # lowest PBR
+                    "market_cap": 300000_0000_0000,
+                },
+                {
+                    "symbol": "B",
+                    "name": "Peer B",
+                    "current_price": 200000,
+                    "change_pct": -1.0,
+                    "per": 40.0,
+                    "pbr": 10.0,  # highest PBR
+                    "market_cap": 100000_0000_0000,
+                },
+            ],
+        }
+        monkeypatch.setattr(
+            mcp_tools.naver_finance,
+            "fetch_sector_peers",
+            AsyncMock(return_value=mock_data),
+        )
+
+        result = await tools["get_sector_peers"]("298040")
+        comp = result["comparison"]
+
+        # PER: target=20 is rank 1/3 (lowest = best)
+        assert comp["target_per_rank"] == "1/3"
+        # PBR: target=5 is rank 2/3 (middle)
+        assert comp["target_pbr_rank"] == "2/3"
+        # avg_per = (20+30+40)/3 = 30
+        assert comp["avg_per"] == 30.0
+        # avg_pbr = (5+3+10)/3 = 6.0
+        assert comp["avg_pbr"] == 6.0
+
+
+# ---------------------------------------------------------------------------
+# simulate_avg_cost
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestSimulateAvgCost:
+    """Tests for simulate_avg_cost tool."""
+
+    async def test_basic_simulation_with_market_price(self):
+        tools = build_tools()
+        result = await tools["simulate_avg_cost"](
+            holdings={"price": 2400000, "quantity": 1},
+            plans=[
+                {"price": 2050000, "quantity": 1},
+                {"price": 1900000, "quantity": 1},
+            ],
+            current_market_price=2157000,
+            target_price=3080000,
+        )
+
+        # current_position
+        cp = result["current_position"]
+        assert cp["avg_price"] == 2400000
+        assert cp["total_quantity"] == 1
+        assert cp["total_invested"] == 2400000
+        assert cp["unrealized_pnl"] == -243000.0
+        assert cp["unrealized_pnl_pct"] == -10.12
+
+        assert result["current_market_price"] == 2157000
+
+        # step 1
+        s1 = result["steps"][0]
+        assert s1["step"] == 1
+        assert s1["buy_price"] == 2050000
+        assert s1["buy_quantity"] == 1
+        assert s1["new_avg_price"] == 2225000
+        assert s1["total_quantity"] == 2
+        assert s1["total_invested"] == 4450000
+        assert s1["breakeven_change_pct"] == 3.15
+        assert s1["unrealized_pnl"] == -136000.0
+        assert s1["unrealized_pnl_pct"] == -3.06
+
+        # step 2
+        s2 = result["steps"][1]
+        assert s2["step"] == 2
+        assert s2["new_avg_price"] == 2116666.67
+        assert s2["total_quantity"] == 3
+        assert s2["total_invested"] == 6350000
+        # avg 2116666.67 / mkt 2157000 - 1 = -1.87%
+        assert s2["breakeven_change_pct"] == -1.87
+
+        # target_analysis
+        ta = result["target_analysis"]
+        assert ta["target_price"] == 3080000
+        assert ta["final_avg_price"] == 2116666.67
+        assert ta["total_return_pct"] == 45.51
+
+    async def test_without_market_price(self):
+        """Without current_market_price, P&L and breakeven fields are absent."""
+        tools = build_tools()
+        result = await tools["simulate_avg_cost"](
+            holdings={"price": 50000, "quantity": 10},
+            plans=[{"price": 40000, "quantity": 10}],
+        )
+
+        cp = result["current_position"]
+        assert cp["avg_price"] == 50000
+        assert "unrealized_pnl" not in cp
+
+        s1 = result["steps"][0]
+        assert s1["new_avg_price"] == 45000
+        assert "breakeven_change_pct" not in s1
+        assert "current_market_price" not in result
+        assert "target_analysis" not in result
+
+    async def test_with_target_only(self):
+        """target_price without current_market_price still computes return."""
+        tools = build_tools()
+        result = await tools["simulate_avg_cost"](
+            holdings={"price": 100, "quantity": 5},
+            plans=[{"price": 80, "quantity": 5}],
+            target_price=120,
+        )
+
+        ta = result["target_analysis"]
+        assert ta["final_avg_price"] == 90
+        assert ta["profit_per_unit"] == 30
+        assert ta["total_profit"] == 300
+        assert ta["total_return_pct"] == 33.33
+
+    async def test_validation_missing_holdings_fields(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="holdings must contain"):
+            await tools["simulate_avg_cost"](
+                holdings={"price": 100},
+                plans=[{"price": 90, "quantity": 1}],
+            )
+
+    async def test_validation_empty_plans(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="plans must contain"):
+            await tools["simulate_avg_cost"](
+                holdings={"price": 100, "quantity": 1},
+                plans=[],
+            )
+
+    async def test_validation_negative_price(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="must be > 0"):
+            await tools["simulate_avg_cost"](
+                holdings={"price": -100, "quantity": 1},
+                plans=[{"price": 90, "quantity": 1}],
+            )
+
+    async def test_validation_plan_missing_fields(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match=r"plans\[0\] must contain"):
+            await tools["simulate_avg_cost"](
+                holdings={"price": 100, "quantity": 1},
+                plans=[{"price": 90}],
+            )
+
+    async def test_single_plan(self):
+        tools = build_tools()
+        result = await tools["simulate_avg_cost"](
+            holdings={"price": 1000, "quantity": 2},
+            plans=[{"price": 800, "quantity": 2}],
+            current_market_price=900,
+        )
+
+        assert len(result["steps"]) == 1
+        s = result["steps"][0]
+        assert s["new_avg_price"] == 900
+        assert s["total_quantity"] == 4
+        # avg == market → breakeven 0%
+        assert s["breakeven_change_pct"] == 0.0
+        assert s["unrealized_pnl"] == 0.0

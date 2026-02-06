@@ -1260,6 +1260,193 @@ async def _fetch_valuation_yfinance(symbol: str) -> dict[str, Any]:
     }
 
 
+async def _fetch_sector_peers_naver(
+    symbol: str, limit: int
+) -> dict[str, Any]:
+    """Fetch sector peers for a Korean stock via Naver Finance.
+
+    Args:
+        symbol: Korean stock code (6 digits, e.g., "298040")
+        limit: Max number of peers to return
+
+    Returns:
+        Dictionary with target info, peers list, and comparison metrics
+    """
+    data = await naver_finance.fetch_sector_peers(symbol, limit=limit)
+
+    peers = data["peers"]
+
+    # Build comparison metrics
+    target_per = data.get("per")
+    target_pbr = data.get("pbr")
+
+    all_pers = [v for v in [target_per] + [p.get("per") for p in peers] if v is not None and v > 0]
+    all_pbrs = [v for v in [target_pbr] + [p.get("pbr") for p in peers] if v is not None and v > 0]
+
+    avg_per = round(sum(all_pers) / len(all_pers), 2) if all_pers else None
+    avg_pbr = round(sum(all_pbrs) / len(all_pbrs), 2) if all_pbrs else None
+
+    target_per_rank = None
+    if target_per is not None and target_per > 0 and all_pers:
+        sorted_pers = sorted(all_pers)
+        target_per_rank = f"{sorted_pers.index(target_per) + 1}/{len(sorted_pers)}"
+
+    target_pbr_rank = None
+    if target_pbr is not None and target_pbr > 0 and all_pbrs:
+        sorted_pbrs = sorted(all_pbrs)
+        target_pbr_rank = f"{sorted_pbrs.index(target_pbr) + 1}/{len(sorted_pbrs)}"
+
+    return {
+        "instrument_type": "equity_kr",
+        "source": "naver",
+        "symbol": symbol,
+        "name": data.get("name"),
+        "sector": data.get("sector"),
+        "current_price": data.get("current_price"),
+        "change_pct": data.get("change_pct"),
+        "per": target_per,
+        "pbr": target_pbr,
+        "market_cap": data.get("market_cap"),
+        "peers": peers,
+        "comparison": {
+            "avg_per": avg_per,
+            "avg_pbr": avg_pbr,
+            "target_per_rank": target_per_rank,
+            "target_pbr_rank": target_pbr_rank,
+        },
+    }
+
+
+async def _fetch_sector_peers_us(
+    symbol: str, limit: int
+) -> dict[str, Any]:
+    """Fetch sector peers for a US stock via Finnhub + yfinance.
+
+    Args:
+        symbol: US stock ticker (e.g., "AAPL")
+        limit: Max number of peers to return
+
+    Returns:
+        Dictionary with target info, peers list, and comparison metrics
+    """
+    client = _get_finnhub_client()
+    upper_symbol = symbol.upper()
+
+    # Step 1: Get peer tickers from Finnhub
+    peer_tickers: list[str] = await asyncio.to_thread(
+        client.company_peers, upper_symbol
+    )
+    peer_tickers = [t for t in peer_tickers if t.upper() != upper_symbol]
+    peer_tickers = peer_tickers[: limit + 5]
+
+    # Step 2: Fetch yfinance info concurrently for target + peers
+    all_tickers = [upper_symbol] + peer_tickers
+
+    async def _fetch_yf_info(ticker: str) -> tuple[str, dict[str, Any] | None]:
+        try:
+            info: dict[str, Any] = await asyncio.to_thread(
+                lambda t=ticker: yf.Ticker(t).info
+            )
+            return (ticker, info)
+        except Exception:
+            return (ticker, None)
+
+    results = await asyncio.gather(*[_fetch_yf_info(t) for t in all_tickers])
+    info_map = {t: info for t, info in results if info}
+
+    # Step 3: Build target info
+    target_info = info_map.get(upper_symbol, {})
+    target_name = target_info.get("shortName") or target_info.get("longName")
+    target_sector = target_info.get("sector")
+    target_industry = target_info.get("industry")
+    target_price = target_info.get("currentPrice")
+    target_prev = target_info.get("previousClose") or target_info.get(
+        "regularMarketPreviousClose"
+    )
+    target_change_pct = (
+        round((target_price - target_prev) / target_prev * 100, 2)
+        if target_price and target_prev and target_prev > 0
+        else None
+    )
+    target_per = target_info.get("trailingPE")
+    target_pbr = target_info.get("priceToBook")
+    target_mcap = target_info.get("marketCap")
+
+    # Step 4: Build peers
+    peers: list[dict[str, Any]] = []
+    for ticker in peer_tickers:
+        info = info_map.get(ticker)
+        if info is None:
+            continue
+        price = info.get("currentPrice")
+        prev = info.get("previousClose") or info.get("regularMarketPreviousClose")
+        change_pct = (
+            round((price - prev) / prev * 100, 2)
+            if price and prev and prev > 0
+            else None
+        )
+        peers.append(
+            {
+                "symbol": ticker,
+                "name": info.get("shortName") or info.get("longName"),
+                "current_price": price,
+                "change_pct": change_pct,
+                "per": info.get("trailingPE"),
+                "pbr": info.get("priceToBook"),
+                "market_cap": info.get("marketCap"),
+            }
+        )
+
+    peers.sort(key=lambda x: x.get("market_cap") or 0, reverse=True)
+    peers = peers[:limit]
+
+    # Step 5: Comparison metrics
+    all_pers = [
+        v
+        for v in [target_per] + [p.get("per") for p in peers]
+        if v is not None and v > 0
+    ]
+    all_pbrs = [
+        v
+        for v in [target_pbr] + [p.get("pbr") for p in peers]
+        if v is not None and v > 0
+    ]
+
+    avg_per = round(sum(all_pers) / len(all_pers), 2) if all_pers else None
+    avg_pbr = round(sum(all_pbrs) / len(all_pbrs), 2) if all_pbrs else None
+
+    target_per_rank = None
+    if target_per is not None and target_per > 0 and all_pers:
+        sorted_pers = sorted(all_pers)
+        target_per_rank = f"{sorted_pers.index(target_per) + 1}/{len(sorted_pers)}"
+
+    target_pbr_rank = None
+    if target_pbr is not None and target_pbr > 0 and all_pbrs:
+        sorted_pbrs = sorted(all_pbrs)
+        target_pbr_rank = f"{sorted_pbrs.index(target_pbr) + 1}/{len(sorted_pbrs)}"
+
+    return {
+        "instrument_type": "equity_us",
+        "source": "finnhub+yfinance",
+        "symbol": upper_symbol,
+        "name": target_name,
+        "sector": target_sector,
+        "industry": target_industry,
+        "current_price": target_price,
+        "change_pct": target_change_pct,
+        "per": target_per,
+        "pbr": target_pbr,
+        "market_cap": target_mcap,
+        "peers": peers,
+        "comparison": {
+            "avg_per": avg_per,
+            "avg_pbr": avg_pbr,
+            "target_per_rank": target_per_rank,
+            "target_pbr_rank": target_pbr_rank,
+        },
+    }
+
+
 async def _search_master_data(
     query: str, limit: int, instrument_type: str | None = None
 ) -> list[dict[str, Any]]:
@@ -2687,3 +2874,220 @@ def register_tools(mcp: FastMCP) -> None:
                 symbol=symbol,
                 instrument_type=market_type,
             )
+
+    # ------------------------------------------------------------------
+    # get_sector_peers
+    # ------------------------------------------------------------------
+
+    @mcp.tool(
+        name="get_sector_peers",
+        description=(
+            "Get sector peer stocks for comparison. "
+            "Returns peer stocks in the same sector/industry with current price, "
+            "PER, PBR, market cap, and comparison metrics (avg PER/PBR, ranking). "
+            "Supports Korean stocks (via Naver Finance) and US stocks (via Finnhub + yfinance). "
+            "Not available for cryptocurrencies."
+        ),
+    )
+    async def get_sector_peers(
+        symbol: str,
+        market: str = "",
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        """Get sector peer stocks for a stock.
+
+        Args:
+            symbol: Stock symbol (e.g., "005930" for Korean, "AAPL" for US)
+            market: Market hint - "kr" or "us" (auto-detected if empty)
+            limit: Number of peer stocks to return (default: 5, max: 20)
+
+        Returns:
+            Dictionary with target stock info, peer stocks list, and
+            comparison metrics (avg_per, avg_pbr, rankings).
+
+        Examples:
+            get_sector_peers("298040")            # 효성중공업 (Korean)
+            get_sector_peers("AAPL")              # Apple (US)
+            get_sector_peers("005930", limit=10)  # 삼성전자 with 10 peers
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        if _is_crypto_market(symbol):
+            raise ValueError(
+                "Sector peers are not available for cryptocurrencies"
+            )
+
+        capped_limit = min(max(limit, 1), 20)
+
+        # Determine market
+        market_str = (market or "").strip().lower()
+        if market_str in (
+            "kr", "krx", "korea", "kospi", "kosdaq", "kis", "naver",
+        ):
+            resolved_market = "kr"
+        elif market_str in ("us", "usa", "nyse", "nasdaq", "yahoo"):
+            resolved_market = "us"
+        elif market_str == "":
+            # Auto-detect
+            if _is_korean_equity_code(symbol):
+                resolved_market = "kr"
+            elif _is_us_equity_symbol(symbol):
+                resolved_market = "us"
+            else:
+                raise ValueError(
+                    f"Cannot auto-detect market for symbol '{symbol}'. "
+                    "Please specify market='kr' or market='us'."
+                )
+        else:
+            raise ValueError("market must be 'kr' or 'us'")
+
+        try:
+            if resolved_market == "kr":
+                return await _fetch_sector_peers_naver(symbol, capped_limit)
+            else:
+                return await _fetch_sector_peers_us(symbol, capped_limit)
+        except Exception as exc:
+            source = "naver" if resolved_market == "kr" else "finnhub+yfinance"
+            instrument_type = (
+                "equity_kr" if resolved_market == "kr" else "equity_us"
+            )
+            return _error_payload(
+                source=source,
+                message=str(exc),
+                symbol=symbol,
+                instrument_type=instrument_type,
+            )
+
+    # ------------------------------------------------------------------
+    # simulate_avg_cost
+    # ------------------------------------------------------------------
+
+    @mcp.tool(
+        name="simulate_avg_cost",
+        description=(
+            "Simulate dollar-cost averaging / adding to a position. "
+            "Given current holdings and a list of additional buy plans, "
+            "calculates the new average cost, breakeven change %, and "
+            "unrealised P&L at each step.  Optionally computes return "
+            "at a target price.  Works for any asset (stocks, crypto, etc.)."
+        ),
+    )
+    async def simulate_avg_cost(
+        holdings: dict[str, float],
+        plans: list[dict[str, float]],
+        current_market_price: float | None = None,
+        target_price: float | None = None,
+    ) -> dict[str, Any]:
+        """Simulate averaging-down / dollar-cost averaging.
+
+        Args:
+            holdings: Current position - {"price": buy_price, "quantity": qty}
+            plans: List of planned buys - [{"price": ..., "quantity": ...}, ...]
+            current_market_price: Current market price (optional).
+                Used to calculate unrealised P&L and breakeven change %.
+                If omitted, those fields are null.
+            target_price: Target sell price (optional).
+                If given, calculates projected return at that price.
+
+        Returns:
+            Dictionary with current_position, steps, and optional target_analysis.
+        """
+        # --- validate holdings ---
+        h_price = holdings.get("price")
+        h_qty = holdings.get("quantity")
+        if h_price is None or h_qty is None:
+            raise ValueError(
+                "holdings must contain 'price' and 'quantity'"
+            )
+        h_price = float(h_price)
+        h_qty = float(h_qty)
+        if h_price <= 0 or h_qty <= 0:
+            raise ValueError("holdings price and quantity must be > 0")
+
+        # --- validate plans ---
+        if not plans:
+            raise ValueError("plans must contain at least one entry")
+        validated_plans: list[tuple[float, float]] = []
+        for i, p in enumerate(plans):
+            pp = p.get("price")
+            pq = p.get("quantity")
+            if pp is None or pq is None:
+                raise ValueError(
+                    f"plans[{i}] must contain 'price' and 'quantity'"
+                )
+            pp, pq = float(pp), float(pq)
+            if pp <= 0 or pq <= 0:
+                raise ValueError(
+                    f"plans[{i}] price and quantity must be > 0"
+                )
+            validated_plans.append((pp, pq))
+
+        mkt = float(current_market_price) if current_market_price is not None else None
+
+        # --- current position ---
+        total_qty = h_qty
+        total_invested = round(h_price * h_qty, 2)
+        avg_price = round(total_invested / total_qty, 2)
+
+        current_position: dict[str, Any] = {
+            "avg_price": avg_price,
+            "total_quantity": total_qty,
+            "total_invested": total_invested,
+        }
+        if mkt is not None:
+            pnl = round((mkt - avg_price) * total_qty, 2)
+            pnl_pct = round((mkt / avg_price - 1) * 100, 2)
+            current_position["unrealized_pnl"] = pnl
+            current_position["unrealized_pnl_pct"] = pnl_pct
+
+        # --- steps ---
+        steps: list[dict[str, Any]] = []
+        for idx, (bp, bq) in enumerate(validated_plans, start=1):
+            total_invested = round(total_invested + bp * bq, 2)
+            total_qty = round(total_qty + bq, 10)
+            avg_price = round(total_invested / total_qty, 2)
+
+            step: dict[str, Any] = {
+                "step": idx,
+                "buy_price": bp,
+                "buy_quantity": bq,
+                "new_avg_price": avg_price,
+                "total_quantity": total_qty,
+                "total_invested": total_invested,
+            }
+            if mkt is not None:
+                breakeven_pct = round((avg_price / mkt - 1) * 100, 2)
+                pnl = round((mkt - avg_price) * total_qty, 2)
+                pnl_pct = round((mkt / avg_price - 1) * 100, 2)
+                step["breakeven_change_pct"] = breakeven_pct
+                step["unrealized_pnl"] = pnl
+                step["unrealized_pnl_pct"] = pnl_pct
+
+            steps.append(step)
+
+        # --- target analysis ---
+        result: dict[str, Any] = {
+            "current_position": current_position,
+            "steps": steps,
+        }
+        if mkt is not None:
+            result["current_market_price"] = mkt
+
+        if target_price is not None:
+            tp = float(target_price)
+            if tp <= 0:
+                raise ValueError("target_price must be > 0")
+            profit_per_unit = round(tp - avg_price, 2)
+            total_profit = round(profit_per_unit * total_qty, 2)
+            total_return_pct = round((tp / avg_price - 1) * 100, 2)
+            result["target_analysis"] = {
+                "target_price": tp,
+                "final_avg_price": avg_price,
+                "profit_per_unit": profit_per_unit,
+                "total_profit": total_profit,
+                "total_return_pct": total_return_pct,
+            }
+
+        return result

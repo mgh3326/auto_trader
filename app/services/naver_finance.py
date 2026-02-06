@@ -1255,3 +1255,236 @@ async def fetch_short_interest(code: str, days: int = 20) -> dict[str, Any]:
         result["short_balance"] = balance_data
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Sector Peers
+# ---------------------------------------------------------------------------
+
+NAVER_MOBILE_API = "https://m.stock.naver.com/api/stock"
+
+
+def _parse_total_infos(total_infos: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract key metrics from the ``totalInfos`` list returned by Naver mobile API.
+
+    Args:
+        total_infos: List of dicts with ``code``, ``key``, ``value`` fields.
+
+    Returns:
+        Dict with parsed ``per``, ``pbr``, ``market_cap`` etc.
+    """
+    result: dict[str, Any] = {}
+    code_map = {
+        "per": "per",
+        "pbr": "pbr",
+        "eps": "eps",
+        "bps": "bps",
+        "marketValue": "market_cap",
+        "dividendYieldRatio": "dividend_yield",
+    }
+    for item in total_infos:
+        code = item.get("code", "")
+        if code not in code_map:
+            continue
+        raw = item.get("value", "")
+        # Strip trailing unit suffixes (배, 원, %)
+        cleaned = re.sub(r"[배원%]", "", raw).strip() if raw else None
+        result[code_map[code]] = _parse_korean_number(cleaned)
+    return result
+
+
+async def _fetch_integration(
+    code: str,
+    client: httpx.AsyncClient,
+) -> dict[str, Any]:
+    """Fetch the Naver mobile basic + integration endpoints for a single stock.
+
+    Returns a dict with ``name``, ``per``, ``pbr``, ``market_cap``, ``current_price``,
+    ``change_pct``, ``industry_code``, ``peers_raw``.
+    """
+    r_basic, r_integ = await asyncio.gather(
+        client.get(f"{NAVER_MOBILE_API}/{code}/basic"),
+        client.get(f"{NAVER_MOBILE_API}/{code}/integration"),
+    )
+    r_basic.raise_for_status()
+    r_integ.raise_for_status()
+
+    basic = r_basic.json()
+    integ = r_integ.json()
+
+    metrics = _parse_total_infos(integ.get("totalInfos", []))
+    name = basic.get("stockName") or integ.get("stockName")
+
+    # Current price & change from basic endpoint
+    close_raw = basic.get("closePrice")
+    change_pct_raw = basic.get("fluctuationsRatio")
+    current_price = _parse_korean_number(close_raw) if close_raw else None
+    change_pct: float | None = None
+    if change_pct_raw is not None:
+        try:
+            change_pct = float(str(change_pct_raw).replace(",", ""))
+        except (ValueError, TypeError):
+            pass
+
+    return {
+        "symbol": code,
+        "name": name,
+        "per": metrics.get("per"),
+        "pbr": metrics.get("pbr"),
+        "market_cap": metrics.get("market_cap"),
+        "current_price": current_price,
+        "change_pct": change_pct,
+        "industry_code": integ.get("industryCode"),
+        "peers_raw": integ.get("industryCompareInfo", []),
+    }
+
+
+async def fetch_sector_peers(
+    code: str,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Fetch sector peer stocks for a Korean equity via Naver mobile API.
+
+    Steps:
+        1. Call ``/api/stock/{code}/integration`` to get industry code, peer list,
+           and the target stock's own metrics.
+        2. For each peer, call the same endpoint concurrently to retrieve PER / PBR.
+        3. Sort peers by market-cap descending and return the top *limit*.
+
+    If the integration API returns fewer peers than *limit*, falls back to
+    scraping the sector detail page to discover additional stock codes, then
+    fetches their data via the integration API.
+
+    Args:
+        code: 6-digit Korean stock code (e.g. ``"298040"``).
+        limit: Maximum number of peers to return.
+
+    Returns:
+        Dict with ``symbol``, ``name``, ``sector``, ``peers`` list, and
+        ``comparison`` metrics.
+    """
+    async with httpx.AsyncClient(
+        headers=DEFAULT_HEADERS,
+        timeout=10,
+    ) as client:
+        target = await _fetch_integration(code, client)
+        sector_name: str | None = None
+
+        # ---- Collect peer codes from integration response ----
+        peer_codes: list[str] = []
+        for p in target["peers_raw"]:
+            pc = p.get("itemCode", "")
+            if pc and pc != code:
+                peer_codes.append(pc)
+
+        # If we need more peers, scrape the sector detail page
+        industry_code = target.get("industry_code")
+        if len(peer_codes) < limit and industry_code:
+            extra_codes = await _fetch_sector_stock_codes(
+                str(industry_code), client
+            )
+            seen = {code, *peer_codes}
+            for ec in extra_codes:
+                if ec not in seen:
+                    peer_codes.append(ec)
+                    seen.add(ec)
+
+        # ---- Fetch integration data for each peer concurrently ----
+        peer_codes = peer_codes[: limit + 5]  # fetch extras in case some fail
+
+        async def _safe_fetch(pc: str) -> dict[str, Any] | None:
+            try:
+                return await _fetch_integration(pc, client)
+            except Exception:
+                return None
+
+        peer_results = await asyncio.gather(*[_safe_fetch(pc) for pc in peer_codes])
+
+        # Resolve sector name from the sector page title
+        if industry_code:
+            sector_name = await _fetch_sector_name(str(industry_code), client)
+
+    # ---- Build peer list ----
+    peers: list[dict[str, Any]] = []
+    for pr in peer_results:
+        if pr is None:
+            continue
+        peers.append(
+            {
+                "symbol": pr["symbol"],
+                "name": pr["name"],
+                "current_price": pr["current_price"],
+                "change_pct": pr["change_pct"],
+                "per": pr["per"],
+                "pbr": pr["pbr"],
+                "market_cap": pr["market_cap"],
+            }
+        )
+
+    # Sort by market_cap desc (None last)
+    peers.sort(key=lambda x: x.get("market_cap") or 0, reverse=True)
+    peers = peers[:limit]
+
+    return {
+        "symbol": code,
+        "name": target["name"],
+        "sector": sector_name,
+        "industry_code": industry_code,
+        "current_price": target["current_price"],
+        "change_pct": target["change_pct"],
+        "per": target["per"],
+        "pbr": target["pbr"],
+        "market_cap": target["market_cap"],
+        "peers": peers,
+    }
+
+
+async def _fetch_sector_stock_codes(
+    sector_code: str,
+    client: httpx.AsyncClient,
+) -> list[str]:
+    """Scrape stock codes from the Naver sector detail page.
+
+    URL: ``finance.naver.com/sise/sise_group_detail.naver?type=upjong&no={sector_code}``
+    """
+    url = f"{NAVER_FINANCE_BASE}/sise/sise_group_detail.naver"
+    try:
+        r = await client.get(url, params={"type": "upjong", "no": sector_code})
+        r.encoding = "euc-kr"
+        soup = BeautifulSoup(r.text, "lxml")
+
+        table = soup.select_one("table.type_5")
+        if not table:
+            return []
+
+        codes: list[str] = []
+        for a in table.select("a[href*='code=']"):
+            m = re.search(r"code=(\w{6})", a.get("href", ""))
+            if m:
+                codes.append(m.group(1))
+        return codes
+    except Exception:
+        return []
+
+
+async def _fetch_sector_name(
+    sector_code: str,
+    client: httpx.AsyncClient,
+) -> str | None:
+    """Fetch sector name from the Naver sector detail page ``<title>`` tag.
+
+    The title has the format ``"전기장비 : Npay 증권"``.
+    """
+    url = f"{NAVER_FINANCE_BASE}/sise/sise_group_detail.naver"
+    try:
+        r = await client.get(url, params={"type": "upjong", "no": sector_code})
+        r.encoding = "euc-kr"
+        soup = BeautifulSoup(r.text, "lxml")
+        title_elem = soup.select_one("title")
+        if title_elem:
+            raw = title_elem.get_text(strip=True)
+            # "전기장비 : Npay 증권" → "전기장비"
+            return raw.split(":")[0].strip() if ":" in raw else raw
+        return None
+    except Exception:
+        return None
