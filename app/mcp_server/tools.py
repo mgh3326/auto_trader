@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import finnhub
 import numpy as np
 import pandas as pd
+import yfinance as yf
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -1050,6 +1051,50 @@ async def _fetch_valuation_naver(symbol: str) -> dict[str, Any]:
     }
 
 
+async def _fetch_valuation_yfinance(symbol: str) -> dict[str, Any]:
+    """Fetch valuation metrics from yfinance for US stocks.
+
+    Args:
+        symbol: US stock ticker (e.g., "AAPL", "MSFT")
+
+    Returns:
+        Dictionary with valuation metrics (PER, PBR, ROE, dividend_yield,
+        52-week high/low, current price, current_position_52w)
+    """
+    loop = asyncio.get_running_loop()
+    ticker = yf.Ticker(symbol)
+    info: dict[str, Any] = await loop.run_in_executor(None, lambda: ticker.info)
+
+    current_price = info.get("currentPrice")
+    high_52w = info.get("fiftyTwoWeekHigh")
+    low_52w = info.get("fiftyTwoWeekLow")
+
+    # Calculate 52-week position
+    current_position_52w = None
+    if current_price is not None and high_52w is not None and low_52w is not None:
+        if high_52w > low_52w:
+            current_position_52w = round((current_price - low_52w) / (high_52w - low_52w), 2)
+
+    # ROE is returned as a decimal (e.g. 1.47 = 147%), convert to percentage
+    roe_raw = info.get("returnOnEquity")
+    roe = round(roe_raw * 100, 2) if roe_raw is not None else None
+
+    return {
+        "instrument_type": "equity_us",
+        "source": "yfinance",
+        "symbol": symbol.upper(),
+        "name": info.get("shortName") or info.get("longName"),
+        "current_price": current_price,
+        "per": info.get("trailingPE"),
+        "pbr": info.get("priceToBook"),
+        "roe": roe,
+        "dividend_yield": info.get("dividendYield"),
+        "high_52w": high_52w,
+        "low_52w": low_52w,
+        "current_position_52w": current_position_52w,
+    }
+
+
 async def _search_master_data(
     query: str, limit: int, instrument_type: str | None = None
 ) -> list[dict[str, Any]]:
@@ -1744,13 +1789,16 @@ def register_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="get_valuation",
-        description="Get valuation metrics for a Korean stock. Returns PER, PBR, ROE, dividend yield, 52-week high/low, current price, and position within 52-week range. Korean stocks only.",
+        description="Get valuation metrics for a US or Korean stock. Returns PER, PBR, ROE, dividend yield, 52-week high/low, current price, and position within 52-week range.",
     )
-    async def get_valuation(symbol: str) -> dict[str, Any]:
-        """Get valuation metrics for a Korean stock.
+    async def get_valuation(
+        symbol: str, market: str | None = None
+    ) -> dict[str, Any]:
+        """Get valuation metrics for a stock.
 
         Args:
-            symbol: Korean stock code (6 digits, e.g., "005930" for Samsung Electronics)
+            symbol: Stock symbol (e.g., "AAPL" for US, "005930" for Korean)
+            market: Market type - "us" or "kr" (auto-detected if not specified)
 
         Returns:
             Dictionary with valuation metrics:
@@ -1759,8 +1807,7 @@ def register_tools(mcp: FastMCP) -> None:
             - current_price: Current stock price
             - per: Price-to-Earnings Ratio
             - pbr: Price-to-Book Ratio
-            - roe: Return on Equity (%) - ROE(%)
-            - roe_controlling: Return on Equity for controlling shareholders (%) - ROE(지배주주)
+            - roe: Return on Equity (%)
             - dividend_yield: Dividend yield (as decimal, e.g., 0.02 for 2%)
             - high_52w: 52-week high price
             - low_52w: 52-week low price
@@ -1770,20 +1817,39 @@ def register_tools(mcp: FastMCP) -> None:
         if not symbol:
             raise ValueError("symbol is required")
 
-        if not _is_korean_equity_code(symbol):
-            raise ValueError(
-                "Valuation metrics are only available for Korean stocks "
-                "(6-digit codes like '005930')"
-            )
+        if _is_crypto_market(symbol):
+            raise ValueError("Valuation metrics are not available for cryptocurrencies")
+
+        # Auto-detect market if not specified
+        if market is None:
+            if _is_korean_equity_code(symbol):
+                market = "kr"
+            else:
+                market = "us"
+
+        normalized_market = market.strip().lower()
+        if normalized_market in (
+            "kr", "krx", "korea", "kospi", "kosdaq", "kis", "equity_kr", "naver",
+        ):
+            normalized_market = "kr"
+        elif normalized_market in ("us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"):
+            normalized_market = "us"
+        else:
+            raise ValueError("market must be 'us' or 'kr'")
 
         try:
-            return await _fetch_valuation_naver(symbol)
+            if normalized_market == "kr":
+                return await _fetch_valuation_naver(symbol)
+            else:
+                return await _fetch_valuation_yfinance(symbol)
         except Exception as exc:
+            source = "naver" if normalized_market == "kr" else "yfinance"
+            instrument_type = "equity_kr" if normalized_market == "kr" else "equity_us"
             return _error_payload(
-                source="naver",
+                source=source,
                 message=str(exc),
                 symbol=symbol,
-                instrument_type="equity_kr",
+                instrument_type=instrument_type,
             )
 
     @mcp.tool(

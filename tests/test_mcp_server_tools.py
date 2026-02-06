@@ -2648,18 +2648,76 @@ class TestGetValuation:
         assert result["instrument_type"] == "equity_kr"
         assert result["source"] == "naver"
 
-    async def test_rejects_us_equity(self):
-        """Test that US equity symbol raises ValueError."""
+    async def test_successful_us_valuation_fetch(self, monkeypatch):
+        """Test successful valuation fetch for US stock via yfinance."""
         tools = build_tools()
 
-        with pytest.raises(ValueError, match="Korean stocks"):
-            await tools["get_valuation"]("AAPL")
+        mock_info = {
+            "shortName": "Apple Inc.",
+            "currentPrice": 185.5,
+            "trailingPE": 28.5,
+            "priceToBook": 45.2,
+            "returnOnEquity": 1.473,
+            "dividendYield": 0.005,
+            "fiftyTwoWeekHigh": 199.62,
+            "fiftyTwoWeekLow": 164.08,
+        }
+
+        class MockTicker:
+            @property
+            def info(self):
+                return mock_info
+
+        monkeypatch.setattr("app.mcp_server.tools.yf.Ticker", lambda s: MockTicker())
+
+        result = await tools["get_valuation"]("AAPL")
+
+        assert result["symbol"] == "AAPL"
+        assert result["name"] == "Apple Inc."
+        assert result["current_price"] == 185.5
+        assert result["per"] == 28.5
+        assert result["pbr"] == 45.2
+        assert result["roe"] == 147.3
+        assert result["dividend_yield"] == 0.005
+        assert result["high_52w"] == 199.62
+        assert result["low_52w"] == 164.08
+        assert result["current_position_52w"] == 0.6
+        assert result["instrument_type"] == "equity_us"
+        assert result["source"] == "yfinance"
+
+    async def test_us_valuation_with_explicit_market(self, monkeypatch):
+        """Test US valuation with explicit market parameter."""
+        tools = build_tools()
+
+        mock_info = {
+            "shortName": "NVIDIA Corp",
+            "currentPrice": 500.0,
+            "trailingPE": 60.0,
+            "priceToBook": 30.0,
+            "returnOnEquity": 0.85,
+            "dividendYield": 0.001,
+            "fiftyTwoWeekHigh": 550.0,
+            "fiftyTwoWeekLow": 300.0,
+        }
+
+        class MockTicker:
+            @property
+            def info(self):
+                return mock_info
+
+        monkeypatch.setattr("app.mcp_server.tools.yf.Ticker", lambda s: MockTicker())
+
+        result = await tools["get_valuation"]("NVDA", market="us")
+
+        assert result["symbol"] == "NVDA"
+        assert result["instrument_type"] == "equity_us"
+        assert result["roe"] == 85.0
 
     async def test_rejects_crypto(self):
         """Test that crypto symbol raises ValueError."""
         tools = build_tools()
 
-        with pytest.raises(ValueError, match="Korean stocks"):
+        with pytest.raises(ValueError, match="cryptocurrencies"):
             await tools["get_valuation"]("KRW-BTC")
 
     async def test_empty_symbol_raises_error(self):
@@ -2718,6 +2776,31 @@ class TestGetValuation:
         assert result["source"] == "naver"
         assert result["symbol"] == "005930"
         assert result["instrument_type"] == "equity_kr"
+
+    async def test_us_error_handling(self, monkeypatch):
+        """Test error handling when yfinance fetch fails."""
+        tools = build_tools()
+
+        class MockTicker:
+            @property
+            def info(self):
+                raise Exception("API error")
+
+        monkeypatch.setattr("app.mcp_server.tools.yf.Ticker", lambda s: MockTicker())
+
+        result = await tools["get_valuation"]("AAPL")
+
+        assert "error" in result
+        assert result["source"] == "yfinance"
+        assert result["symbol"] == "AAPL"
+        assert result["instrument_type"] == "equity_us"
+
+    async def test_invalid_market_raises_error(self):
+        """Test that invalid market raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="must be 'us' or 'kr'"):
+            await tools["get_valuation"]("AAPL", market="invalid")
 
 
 @pytest.mark.asyncio
