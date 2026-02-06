@@ -1032,6 +1032,96 @@ async def _fetch_investment_opinions_naver(symbol: str, limit: int) -> dict[str,
     }
 
 
+async def _fetch_investment_opinions_yfinance(
+    symbol: str, limit: int
+) -> dict[str, Any]:
+    """Fetch analyst opinions from yfinance for US stocks.
+
+    Uses Ticker.analyst_price_targets for consensus targets
+    and Ticker.upgrades_downgrades for individual firm recommendations.
+
+    Args:
+        symbol: US stock ticker (e.g., "AAPL")
+        limit: Maximum number of recommendations to return
+
+    Returns:
+        Dictionary with analyst opinion data
+    """
+    loop = asyncio.get_running_loop()
+    ticker = yf.Ticker(symbol)
+
+    def _collect() -> tuple[dict | None, Any, dict | None]:
+        targets = None
+        try:
+            targets = ticker.analyst_price_targets
+        except Exception:
+            pass
+
+        ud = None
+        try:
+            ud = ticker.upgrades_downgrades
+        except Exception:
+            pass
+
+        info = None
+        try:
+            info = ticker.info
+        except Exception:
+            pass
+        return targets, ud, info
+
+    targets, ud, info = await loop.run_in_executor(None, _collect)
+
+    current_price = (info or {}).get("currentPrice")
+
+    # --- price targets ---
+    avg_target: float | None = None
+    max_target: float | None = None
+    min_target: float | None = None
+    if isinstance(targets, dict):
+        avg_target = targets.get("mean") or targets.get("median")
+        max_target = targets.get("high")
+        min_target = targets.get("low")
+        if current_price is None:
+            current_price = targets.get("current")
+
+    upside: float | None = None
+    if current_price and avg_target:
+        upside = round((avg_target - current_price) / current_price * 100, 2)
+
+    # --- recent recommendations ---
+    recommendations: list[dict[str, Any]] = []
+    if ud is not None and not ud.empty:
+        df = ud.head(limit).reset_index()
+        for _, row in df.iterrows():
+            rec: dict[str, Any] = {
+                "firm": row.get("Firm"),
+                "rating": row.get("ToGrade"),
+                "date": (
+                    row["GradeDate"].strftime("%Y-%m-%d")
+                    if hasattr(row.get("GradeDate", None), "strftime")
+                    else str(row.get("GradeDate", ""))[:10]
+                ),
+            }
+            pt = row.get("currentPriceTarget")
+            if pt and pt > 0:
+                rec["target_price"] = float(pt)
+            recommendations.append(rec)
+
+    return {
+        "instrument_type": "equity_us",
+        "source": "yfinance",
+        "symbol": symbol.upper(),
+        "current_price": current_price,
+        "avg_target_price": avg_target,
+        "max_target_price": max_target,
+        "min_target_price": min_target,
+        "upside_potential": upside,
+        "count": len(recommendations),
+        "recommendations": recommendations,
+    }
+
+
 async def _fetch_valuation_naver(symbol: str) -> dict[str, Any]:
     """Fetch valuation metrics from Naver Finance for Korean stocks.
 
@@ -1750,17 +1840,19 @@ def register_tools(mcp: FastMCP) -> None:
 
     @mcp.tool(
         name="get_investment_opinions",
-        description="Get securities firm investment opinions and target prices for a Korean stock. Returns analyst ratings and price targets. Korean stocks only.",
+        description="Get securities firm investment opinions and target prices for a US or Korean stock. Returns analyst ratings, price targets, and upside potential.",
     )
     async def get_investment_opinions(
         symbol: str,
         limit: int = 10,
+        market: str | None = None,
     ) -> dict[str, Any]:
-        """Get investment opinions for a Korean stock.
+        """Get investment opinions for a stock.
 
         Args:
-            symbol: Korean stock code (6 digits, e.g., "005930")
+            symbol: Stock symbol (e.g., "AAPL" for US, "005930" for Korean)
             limit: Maximum number of opinions (default: 10, max: 30)
+            market: Market type - "us" or "kr" (auto-detected if not specified)
 
         Returns:
             Investment opinions including firm name, target price, rating, date
@@ -1769,22 +1861,43 @@ def register_tools(mcp: FastMCP) -> None:
         if not symbol:
             raise ValueError("symbol is required")
 
-        if not _is_korean_equity_code(symbol):
+        if _is_crypto_market(symbol):
             raise ValueError(
-                "Investment opinions are only available for Korean stocks "
-                "(6-digit codes like '005930')"
+                "Investment opinions are not available for cryptocurrencies"
             )
+
+        # Auto-detect market if not specified
+        if market is None:
+            if _is_korean_equity_code(symbol):
+                market = "kr"
+            else:
+                market = "us"
+
+        normalized_market = market.strip().lower()
+        if normalized_market in (
+            "kr", "krx", "korea", "kospi", "kosdaq", "kis", "equity_kr", "naver",
+        ):
+            normalized_market = "kr"
+        elif normalized_market in ("us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"):
+            normalized_market = "us"
+        else:
+            raise ValueError("market must be 'us' or 'kr'")
 
         capped_limit = min(max(limit, 1), 30)
 
         try:
-            return await _fetch_investment_opinions_naver(symbol, capped_limit)
+            if normalized_market == "kr":
+                return await _fetch_investment_opinions_naver(symbol, capped_limit)
+            else:
+                return await _fetch_investment_opinions_yfinance(symbol, capped_limit)
         except Exception as exc:
+            source = "naver" if normalized_market == "kr" else "yfinance"
+            instrument_type = "equity_kr" if normalized_market == "kr" else "equity_us"
             return _error_payload(
-                source="naver",
+                source=source,
                 message=str(exc),
                 symbol=symbol,
-                instrument_type="equity_kr",
+                instrument_type=instrument_type,
             )
 
     @mcp.tool(

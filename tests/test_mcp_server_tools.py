@@ -2553,18 +2553,103 @@ class TestGetInvestmentOpinions:
         assert result["min_target_price"] == 85000
         assert result["upside_potential"] == 16.67
 
-    async def test_rejects_us_symbol(self):
-        """Test that US symbols are rejected."""
+    async def test_successful_us_opinions_fetch(self, monkeypatch):
+        """Test successful investment opinions fetch for US stock via yfinance."""
         tools = build_tools()
 
-        with pytest.raises(ValueError, match="only available for Korean stocks"):
-            await tools["get_investment_opinions"]("AAPL")
+        mock_targets = {
+            "current": 185.5,
+            "high": 250.0,
+            "low": 180.0,
+            "mean": 210.5,
+            "median": 212.0,
+        }
+
+        mock_ud = pd.DataFrame(
+            [
+                {
+                    "GradeDate": pd.Timestamp("2025-01-15"),
+                    "Firm": "Morgan Stanley",
+                    "ToGrade": "Overweight",
+                    "FromGrade": "Equal-Weight",
+                    "Action": "up",
+                    "currentPriceTarget": 230.0,
+                    "priorPriceTarget": 200.0,
+                },
+                {
+                    "GradeDate": pd.Timestamp("2025-01-10"),
+                    "Firm": "Goldman Sachs",
+                    "ToGrade": "Buy",
+                    "FromGrade": "Buy",
+                    "Action": "main",
+                    "currentPriceTarget": 220.0,
+                    "priorPriceTarget": 210.0,
+                },
+            ]
+        ).set_index("GradeDate")
+
+        mock_info = {"currentPrice": 185.5}
+
+        class MockTicker:
+            @property
+            def analyst_price_targets(self):
+                return mock_targets
+
+            @property
+            def upgrades_downgrades(self):
+                return mock_ud
+
+            @property
+            def info(self):
+                return mock_info
+
+        monkeypatch.setattr("app.mcp_server.tools.yf.Ticker", lambda s: MockTicker())
+
+        result = await tools["get_investment_opinions"]("AAPL")
+
+        assert result["symbol"] == "AAPL"
+        assert result["instrument_type"] == "equity_us"
+        assert result["source"] == "yfinance"
+        assert result["current_price"] == 185.5
+        assert result["avg_target_price"] == 210.5
+        assert result["max_target_price"] == 250.0
+        assert result["min_target_price"] == 180.0
+        assert result["upside_potential"] == 13.48
+        assert result["count"] == 2
+        assert result["recommendations"][0]["firm"] == "Morgan Stanley"
+        assert result["recommendations"][0]["rating"] == "Overweight"
+        assert result["recommendations"][0]["date"] == "2025-01-15"
+        assert result["recommendations"][0]["target_price"] == 230.0
+
+    async def test_us_opinions_error_handling(self, monkeypatch):
+        """Test error handling when yfinance fetch fails."""
+        tools = build_tools()
+
+        class MockTicker:
+            @property
+            def analyst_price_targets(self):
+                raise Exception("API error")
+
+            @property
+            def upgrades_downgrades(self):
+                raise Exception("API error")
+
+            @property
+            def info(self):
+                raise Exception("API error")
+
+        monkeypatch.setattr("app.mcp_server.tools.yf.Ticker", lambda s: MockTicker())
+
+        # Should not raise — errors are caught gracefully and return partial data
+        result = await tools["get_investment_opinions"]("AAPL")
+        assert result["symbol"] == "AAPL"
+        assert result["instrument_type"] == "equity_us"
 
     async def test_rejects_crypto_symbol(self):
         """Test that crypto symbols are rejected."""
         tools = build_tools()
 
-        with pytest.raises(ValueError, match="only available for Korean stocks"):
+        with pytest.raises(ValueError, match="cryptocurrencies"):
             await tools["get_investment_opinions"]("KRW-BTC")
 
     async def test_empty_symbol_raises_error(self):
@@ -2601,6 +2686,13 @@ class TestGetInvestmentOpinions:
         await tools["get_investment_opinions"]("005930", limit=100)
 
         assert captured_limit == 30
+
+    async def test_invalid_market_raises_error(self):
+        """Test that invalid market raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="must be 'us' or 'kr'"):
+            await tools["get_investment_opinions"]("AAPL", market="invalid")
 
 
 @pytest.mark.asyncio
