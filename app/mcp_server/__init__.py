@@ -5,4 +5,5 @@ Initial MVP tools:
 - search_symbol
 - get_quote
 - get_ohlcv
+- get_volume_profile
 """

@@ -682,6 +682,183 @@ async def _fetch_ohlcv_for_indicators(
 
 
 # ---------------------------------------------------------------------------
+# Volume Profile Calculations
+# ---------------------------------------------------------------------------
+
+
+def _normalize_number(value: float, decimals: int = 6) -> float | int:
+    """Normalize float output to readable numeric values."""
+    rounded = round(float(value), decimals)
+    if abs(rounded - round(rounded)) < 10 ** (-decimals):
+        return int(round(rounded))
+    return rounded
+
+
+async def _fetch_ohlcv_for_volume_profile(
+    symbol: str, market_type: str, period_days: int
+) -> pd.DataFrame:
+    """Fetch daily OHLCV data for volume profile analysis."""
+    if market_type == "crypto":
+        return await _fetch_ohlcv_crypto_paginated(
+            symbol=symbol, count=period_days, period="day"
+        )
+    if market_type == "equity_kr":
+        kis = KISClient()
+        return await kis.inquire_daily_itemchartprice(
+            code=symbol, market="J", n=period_days, period="D"
+        )
+    return await yahoo_service.fetch_ohlcv(
+        ticker=symbol, days=period_days, period="day"
+    )
+
+
+def _calculate_volume_profile(
+    df: pd.DataFrame,
+    bins: int,
+    value_area_ratio: float = 0.70,
+) -> dict[str, Any]:
+    """Calculate price-by-volume distribution from OHLCV candles."""
+    if bins < 2:
+        raise ValueError("bins must be >= 2")
+    if not 0 < value_area_ratio <= 1:
+        raise ValueError("value_area_ratio must be between 0 and 1")
+
+    required = {"low", "high", "volume"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    if df.empty:
+        raise ValueError("No OHLCV data available")
+
+    low = pd.to_numeric(df["low"], errors="coerce")
+    high = pd.to_numeric(df["high"], errors="coerce")
+    volume = pd.to_numeric(df["volume"], errors="coerce")
+
+    valid_mask = (~low.isna()) & (~high.isna()) & (~volume.isna())
+    if not valid_mask.any():
+        raise ValueError("No valid OHLCV rows with low/high/volume")
+
+    low_values = low[valid_mask].astype(float).to_numpy()
+    high_values = high[valid_mask].astype(float).to_numpy()
+    candle_low = np.minimum(low_values, high_values)
+    candle_high = np.maximum(low_values, high_values)
+    candle_volume = volume[valid_mask].astype(float).to_numpy()
+
+    price_low = float(candle_low.min())
+    price_high = float(candle_high.max())
+
+    if price_high <= price_low:
+        # Flat-price edge case: make a tiny synthetic range for binning math.
+        epsilon = max(abs(price_low) * 1e-6, 1e-6)
+        bin_edges = np.linspace(
+            price_low - epsilon / 2,
+            price_high + epsilon / 2,
+            bins + 1,
+        )
+    else:
+        bin_edges = np.linspace(price_low, price_high, bins + 1)
+
+    bin_volumes = np.zeros(bins, dtype=float)
+
+    for low_i, high_i, vol_i in zip(
+        candle_low, candle_high, candle_volume, strict=False
+    ):
+        if vol_i <= 0:
+            continue
+
+        if high_i <= low_i:
+            idx = int(
+                np.clip(np.searchsorted(bin_edges, low_i, side="right") - 1, 0, bins - 1)
+            )
+            bin_volumes[idx] += vol_i
+            continue
+
+        overlaps = np.minimum(bin_edges[1:], high_i) - np.maximum(bin_edges[:-1], low_i)
+        overlaps = np.clip(overlaps, 0.0, None)
+        overlap_sum = float(overlaps.sum())
+
+        if overlap_sum <= 0:
+            mid_price = (low_i + high_i) / 2
+            idx = int(
+                np.clip(
+                    np.searchsorted(bin_edges, mid_price, side="right") - 1,
+                    0,
+                    bins - 1,
+                )
+            )
+            bin_volumes[idx] += vol_i
+            continue
+
+        bin_volumes += vol_i * (overlaps / overlap_sum)
+
+    total_volume = float(bin_volumes.sum())
+    if total_volume <= 0:
+        raise ValueError("Total volume is zero for the selected period")
+
+    bin_volume_pct = (bin_volumes / total_volume) * 100
+    poc_index = int(np.argmax(bin_volumes))
+
+    target_volume = total_volume * value_area_ratio
+    covered_volume = float(bin_volumes[poc_index])
+    left_index = poc_index
+    right_index = poc_index
+
+    while covered_volume < target_volume and (
+        left_index > 0 or right_index < bins - 1
+    ):
+        left_vol = bin_volumes[left_index - 1] if left_index > 0 else -np.inf
+        right_vol = (
+            bin_volumes[right_index + 1] if right_index < bins - 1 else -np.inf
+        )
+
+        if right_vol > left_vol:
+            right_index += 1
+            covered_volume += float(bin_volumes[right_index])
+        else:
+            if left_index > 0:
+                left_index -= 1
+                covered_volume += float(bin_volumes[left_index])
+            elif right_index < bins - 1:
+                right_index += 1
+                covered_volume += float(bin_volumes[right_index])
+            else:
+                break
+
+    profile = [
+        {
+            "price_low": _normalize_number(bin_edges[idx], decimals=6),
+            "price_high": _normalize_number(bin_edges[idx + 1], decimals=6),
+            "volume": _normalize_number(bin_volumes[idx], decimals=2),
+            "volume_pct": _normalize_number(bin_volume_pct[idx], decimals=2),
+        }
+        for idx in range(bins)
+    ]
+
+    return {
+        "price_range": {
+            "low": _normalize_number(price_low, decimals=6),
+            "high": _normalize_number(price_high, decimals=6),
+        },
+        "poc": {
+            "price": _normalize_number(
+                (bin_edges[poc_index] + bin_edges[poc_index + 1]) / 2,
+                decimals=6,
+            ),
+            "volume": _normalize_number(bin_volumes[poc_index], decimals=2),
+        },
+        "value_area": {
+            "high": _normalize_number(bin_edges[right_index + 1], decimals=6),
+            "low": _normalize_number(bin_edges[left_index], decimals=6),
+            "volume_pct": _normalize_number(
+                (covered_volume / total_volume) * 100, decimals=2
+            ),
+        },
+        "profile": profile,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Finnhub API Helpers
 # ---------------------------------------------------------------------------
 
@@ -2021,6 +2198,70 @@ def register_tools(mcp: FastMCP) -> None:
                 return await _fetch_ohlcv_equity_us(
                     symbol, count, period, parsed_end_date
                 )
+        except Exception as exc:
+            return _error_payload(
+                source=source,
+                message=str(exc),
+                symbol=symbol,
+                instrument_type=market_type,
+            )
+
+    @mcp.tool(
+        name="get_volume_profile",
+        description="Get volume profile (price-by-volume distribution) for a symbol. Distributes each candle volume across low-high price range and computes POC and 70% value area.",
+    )
+    async def get_volume_profile(
+        symbol: str,
+        market: str | None = None,
+        period: int = 60,
+        bins: int = 20,
+    ) -> dict[str, Any]:
+        """Get volume profile from daily OHLCV.
+
+        Args:
+            symbol: Symbol to query (e.g., "298040", "PLTR", "KRW-BTC")
+            market: Market hint - kr/us/crypto (optional, auto-detected from symbol)
+            period: Analysis period in days (default: 60)
+            bins: Number of price bins (default: 20)
+
+        Returns:
+            Dictionary with price range, POC, value area, and per-bin profile
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        period = int(period)
+        bins = int(bins)
+        if period <= 0:
+            raise ValueError("period must be > 0")
+        if bins < 2:
+            raise ValueError("bins must be >= 2")
+        if bins > 200:
+            raise ValueError("bins must be <= 200")
+
+        market_type, symbol = _resolve_market_type(symbol, market)
+
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
+
+        try:
+            df = await _fetch_ohlcv_for_volume_profile(
+                symbol=symbol,
+                market_type=market_type,
+                period_days=period,
+            )
+            if df.empty:
+                raise ValueError(f"No OHLCV data available for symbol '{symbol}'")
+
+            profile_data = _calculate_volume_profile(
+                df, bins=bins, value_area_ratio=0.70
+            )
+            return {
+                "symbol": symbol,
+                "period_days": period,
+                **profile_data,
+            }
         except Exception as exc:
             return _error_payload(
                 source=source,

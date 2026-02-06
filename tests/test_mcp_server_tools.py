@@ -576,6 +576,115 @@ async def test_get_ohlcv_market_us_rejects_crypto_prefix():
 
 
 @pytest.mark.unit
+def test_calculate_volume_profile_distributes_volume_proportionally():
+    df = pd.DataFrame(
+        [
+            {
+                "low": 0.0,
+                "high": 10.0,
+                "volume": 100.0,
+            }
+        ]
+    )
+
+    result = mcp_tools._calculate_volume_profile(df, bins=2, value_area_ratio=0.70)
+
+    assert result["price_range"] == {"low": 0, "high": 10}
+    assert result["poc"]["volume"] == 50
+    assert result["profile"][0]["volume"] == 50
+    assert result["profile"][1]["volume"] == 50
+    assert result["profile"][0]["volume_pct"] == 50
+    assert result["profile"][1]["volume_pct"] == 50
+
+
+@pytest.mark.asyncio
+async def test_get_volume_profile_korean_equity(monkeypatch):
+    tools = build_tools()
+    df = pd.DataFrame(
+        [
+            {"date": "2024-01-01", "low": 1700.0, "high": 1800.0, "volume": 1000},
+            {"date": "2024-01-02", "low": 1750.0, "high": 1900.0, "volume": 2000},
+            {"date": "2024-01-03", "low": 1850.0, "high": 1950.0, "volume": 1500},
+        ]
+    )
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n, period):
+            return df
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+    result = await tools["get_volume_profile"]("298040", period=60, bins=10)
+
+    assert result["symbol"] == "298040"
+    assert result["period_days"] == 60
+    assert len(result["profile"]) == 10
+    assert result["price_range"]["low"] == 1700
+    assert result["price_range"]["high"] == 1950
+    assert result["value_area"]["volume_pct"] >= 70
+    assert pytest.approx(
+        sum(float(item["volume_pct"]) for item in result["profile"]), rel=1e-3
+    ) == 100
+
+
+@pytest.mark.asyncio
+async def test_get_volume_profile_us_equity(monkeypatch):
+    tools = build_tools()
+    df = pd.DataFrame(
+        [
+            {"date": "2024-01-01", "low": 20.0, "high": 22.0, "volume": 1000000},
+            {"date": "2024-01-02", "low": 21.5, "high": 24.0, "volume": 1200000},
+            {"date": "2024-01-03", "low": 23.0, "high": 25.0, "volume": 900000},
+        ]
+    )
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_volume_profile"]("PLTR", period=30, bins=12)
+
+    mock_fetch.assert_awaited_once_with(ticker="PLTR", days=30, period="day")
+    assert result["symbol"] == "PLTR"
+    assert result["period_days"] == 30
+    assert len(result["profile"]) == 12
+    assert result["price_range"]["low"] == 20
+    assert result["price_range"]["high"] == 25
+    assert result["poc"]["volume"] > 0
+
+
+@pytest.mark.asyncio
+async def test_get_volume_profile_returns_error_payload(monkeypatch):
+    tools = build_tools()
+    mock_fetch = AsyncMock(side_effect=RuntimeError("yahoo timeout"))
+    monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_volume_profile"]("PLTR", period=60, bins=20)
+
+    assert result == {
+        "error": "yahoo timeout",
+        "source": "yahoo",
+        "symbol": "PLTR",
+        "instrument_type": "equity_us",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_volume_profile_raises_on_invalid_input():
+    tools = build_tools()
+
+    with pytest.raises(ValueError, match="symbol is required"):
+        await tools["get_volume_profile"]("")
+
+    with pytest.raises(ValueError, match="period must be > 0"):
+        await tools["get_volume_profile"]("PLTR", period=0)
+
+    with pytest.raises(ValueError, match="bins must be >= 2"):
+        await tools["get_volume_profile"]("PLTR", bins=1)
+
+    with pytest.raises(ValueError, match="bins must be <= 200"):
+        await tools["get_volume_profile"]("PLTR", bins=201)
+
+
+@pytest.mark.unit
 class TestNormalizeMarket:
     """Tests for _normalize_market helper function."""
 

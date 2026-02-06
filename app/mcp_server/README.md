@@ -5,7 +5,8 @@ Read-only MCP tools (market data) exposed via `fastmcp`.
 ## Tools
 - `search_symbol(query, limit=20)`
 - `get_quote(symbol, market=None)`
-- `get_ohlcv(symbol, days=100, market=None)`
+- `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None)`
+- `get_volume_profile(symbol, market=None, period=60, bins=20)`
 
 Market routing:
 - `market` can override routing: `crypto|upbit`, `kr|kis|krx|kospi|kosdaq`, `us|yahoo|nasdaq|nyse`
