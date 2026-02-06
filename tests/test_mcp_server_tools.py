@@ -3173,3 +3173,862 @@ class TestGetKimchiPremium:
         assert "error" in result
         assert result["source"] == "upbit+binance"
         assert result["instrument_type"] == "crypto"
+
+
+# ---------------------------------------------------------------------------
+# Funding Rate Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetFundingRate:
+    """Test get_funding_rate tool."""
+
+    def _patch_binance(self, monkeypatch, premium_resp, history_resp):
+        """Helper to monkeypatch Binance futures API responses."""
+
+        class MockResponse:
+            def __init__(self, data):
+                self._data = data
+                self.status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "premiumIndex" in url:
+                    return MockResponse(premium_resp)
+                return MockResponse(history_resp)
+
+        monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
+
+    async def test_successful_fetch(self, monkeypatch):
+        """Test successful funding rate fetch for BTC."""
+        tools = build_tools()
+
+        premium = {
+            "symbol": "BTCUSDT",
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 1707235200000,  # 2024-02-06T16:00:00Z
+        }
+        history = [
+            {
+                "symbol": "BTCUSDT",
+                "fundingRate": "0.0001",
+                "fundingTime": 1707206400000,  # 2024-02-06T08:00:00Z
+            },
+            {
+                "symbol": "BTCUSDT",
+                "fundingRate": "0.00015",
+                "fundingTime": 1707177600000,  # 2024-02-06T00:00:00Z
+            },
+        ]
+
+        self._patch_binance(monkeypatch, premium, history)
+
+        result = await tools["get_funding_rate"]("BTC")
+
+        assert result["symbol"] == "BTCUSDT"
+        assert result["current_funding_rate"] == 0.0001
+        assert result["current_funding_rate_pct"] == 0.01
+        assert result["next_funding_time"] is not None
+        assert len(result["funding_history"]) == 2
+        assert result["funding_history"][0]["rate"] == 0.0001
+        assert result["funding_history"][0]["rate_pct"] == 0.01
+        assert result["avg_funding_rate_pct"] is not None
+        assert "interpretation" in result
+
+    async def test_strips_krw_prefix(self, monkeypatch):
+        """Test that KRW- prefix is stripped from symbol."""
+        tools = build_tools()
+
+        premium = {
+            "symbol": "ETHUSDT",
+            "lastFundingRate": "0.0002",
+            "nextFundingTime": 0,
+        }
+        history = []
+
+        self._patch_binance(monkeypatch, premium, history)
+
+        result = await tools["get_funding_rate"]("KRW-ETH")
+
+        assert result["symbol"] == "ETHUSDT"
+
+    async def test_strips_usdt_suffix(self, monkeypatch):
+        """Test that USDT suffix is stripped from symbol."""
+        tools = build_tools()
+
+        premium = {
+            "symbol": "BTCUSDT",
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 0,
+        }
+        history = []
+
+        self._patch_binance(monkeypatch, premium, history)
+
+        result = await tools["get_funding_rate"]("BTCUSDT")
+
+        assert result["symbol"] == "BTCUSDT"
+
+    async def test_empty_symbol_raises_error(self):
+        """Test that empty symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_funding_rate"]("")
+
+    async def test_limit_capped_at_100(self, monkeypatch):
+        """Test that limit is capped at 100."""
+        tools = build_tools()
+
+        captured_params = {}
+
+        class MockResponse:
+            def __init__(self, data):
+                self._data = data
+                self.status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "fundingRate" in url and "premiumIndex" not in url:
+                    captured_params.update(params or {})
+                    return MockResponse([])
+                return MockResponse({
+                    "symbol": "BTCUSDT",
+                    "lastFundingRate": "0.0001",
+                    "nextFundingTime": 0,
+                })
+
+        monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
+
+        await tools["get_funding_rate"]("BTC", limit=200)
+
+        assert captured_params["limit"] == 100
+
+    async def test_error_handling(self, monkeypatch):
+        """Test error handling when Binance API fails."""
+        tools = build_tools()
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                raise Exception("Binance API down")
+
+        monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
+
+        result = await tools["get_funding_rate"]("BTC")
+
+        assert "error" in result
+        assert result["source"] == "binance"
+        assert result["symbol"] == "BTCUSDT"
+        assert result["instrument_type"] == "crypto"
+
+    async def test_avg_funding_rate_calculation(self, monkeypatch):
+        """Test average funding rate calculation."""
+        tools = build_tools()
+
+        premium = {
+            "symbol": "BTCUSDT",
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 0,
+        }
+        history = [
+            {"symbol": "BTCUSDT", "fundingRate": "0.0002", "fundingTime": 1707206400000},
+            {"symbol": "BTCUSDT", "fundingRate": "0.0004", "fundingTime": 1707177600000},
+        ]
+
+        self._patch_binance(monkeypatch, premium, history)
+
+        result = await tools["get_funding_rate"]("BTC", limit=2)
+
+        # avg = (0.0002 + 0.0004) / 2 * 100 = 0.03
+        assert result["avg_funding_rate_pct"] == 0.03
+
+    async def test_empty_history(self, monkeypatch):
+        """Test response with empty history."""
+        tools = build_tools()
+
+        premium = {
+            "symbol": "BTCUSDT",
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 0,
+        }
+
+        self._patch_binance(monkeypatch, premium, [])
+
+        result = await tools["get_funding_rate"]("BTC")
+
+        assert result["funding_history"] == []
+        assert result["avg_funding_rate_pct"] is None
+
+    async def test_interpretation_present(self, monkeypatch):
+        """Test that interpretation is included in response."""
+        tools = build_tools()
+
+        premium = {
+            "symbol": "BTCUSDT",
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 0,
+        }
+
+        self._patch_binance(monkeypatch, premium, [])
+
+        result = await tools["get_funding_rate"]("BTC")
+
+        assert "interpretation" in result
+        assert "positive" in result["interpretation"]
+        assert "negative" in result["interpretation"]
+
+
+# ---------------------------------------------------------------------------
+# Market Index Helpers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestParseNaverNum:
+    """Tests for _parse_naver_num and _parse_naver_int."""
+
+    def test_none(self):
+        assert mcp_tools._parse_naver_num(None) is None
+        assert mcp_tools._parse_naver_int(None) is None
+
+    def test_numeric(self):
+        assert mcp_tools._parse_naver_num(1234.5) == 1234.5
+        assert mcp_tools._parse_naver_num(100) == 100.0
+        assert mcp_tools._parse_naver_int(42) == 42
+
+    def test_string_with_commas(self):
+        assert mcp_tools._parse_naver_num("2,450.50") == 2450.50
+        assert mcp_tools._parse_naver_num("-45.30") == -45.30
+        assert mcp_tools._parse_naver_int("450,000,000") == 450000000
+
+    def test_invalid_string(self):
+        assert mcp_tools._parse_naver_num("abc") is None
+        assert mcp_tools._parse_naver_int("abc") is None
+
+
+@pytest.mark.unit
+class TestIndexMeta:
+    """Tests for _INDEX_META and _DEFAULT_INDICES."""
+
+    def test_all_default_indices_have_meta(self):
+        for sym in mcp_tools._DEFAULT_INDICES:
+            assert sym in mcp_tools._INDEX_META
+
+    def test_korean_indices_have_naver_code(self):
+        for sym in ("KOSPI", "KOSDAQ"):
+            meta = mcp_tools._INDEX_META[sym]
+            assert meta["source"] == "naver"
+            assert "naver_code" in meta
+
+    def test_us_indices_have_yf_ticker(self):
+        for sym in ("SPX", "NASDAQ", "DJI"):
+            meta = mcp_tools._INDEX_META[sym]
+            assert meta["source"] == "yfinance"
+            assert "yf_ticker" in meta
+
+    def test_aliases(self):
+        assert (
+            mcp_tools._INDEX_META["SPX"]["yf_ticker"]
+            == mcp_tools._INDEX_META["SP500"]["yf_ticker"]
+        )
+        assert (
+            mcp_tools._INDEX_META["DJI"]["yf_ticker"]
+            == mcp_tools._INDEX_META["DOW"]["yf_ticker"]
+        )
+
+
+# ---------------------------------------------------------------------------
+# get_market_index Tool
+# ---------------------------------------------------------------------------
+
+
+def _naver_basic_json(
+    close="2,450.50",
+    change="-45.30",
+    change_pct="-1.82",
+    open_price="2,495.00",
+    high="2,498.00",
+    low="2,440.00",
+    volume="450,000,000",
+):
+    return {
+        "closePrice": close,
+        "compareToPreviousClosePrice": change,
+        "fluctuationsRatio": change_pct,
+        "openPrice": open_price,
+        "highPrice": high,
+        "lowPrice": low,
+        "accumulatedTradingVolume": volume,
+    }
+
+
+def _naver_price_history(n=3):
+    items = []
+    for i in range(n):
+        items.append(
+            {
+                "localTradedAt": f"2026-02-0{i + 1}",
+                "closePrice": f"{2400 + i * 10}",
+                "openPrice": f"{2390 + i * 10}",
+                "highPrice": f"{2420 + i * 10}",
+                "lowPrice": f"{2380 + i * 10}",
+                "accumulatedTradingVolume": f"{400_000_000 + i * 10_000_000}",
+            }
+        )
+    return items
+
+
+class _FakeResponse:
+    """Fake httpx.Response for mocking."""
+
+    def __init__(self, json_data, status_code=200):
+        self._json_data = json_data
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                "error", request=None, response=self  # type: ignore[arg-type]
+            )
+
+    def json(self):
+        return self._json_data
+
+
+@pytest.mark.asyncio
+class TestGetMarketIndex:
+    """Tests for get_market_index tool."""
+
+    def _patch_naver(self, monkeypatch, basic_json, price_json):
+        """Patch httpx.AsyncClient.get for naver API calls.
+
+        Note: _fetch_index_kr_current calls both /basic and /price (pageSize=1),
+        while _fetch_index_kr_history calls /price with a larger pageSize.
+        """
+        import httpx as _httpx
+
+        async def fake_get(self_cli, url, **kwargs):
+            if "/basic" in url:
+                return _FakeResponse(basic_json)
+            elif "/price" in url:
+                return _FakeResponse(price_json)
+            raise ValueError(f"Unexpected URL: {url}")
+
+        monkeypatch.setattr(_httpx.AsyncClient, "get", fake_get)
+
+    def _patch_yfinance(self, monkeypatch, last_price=5500.0, prev_close=5450.0):
+        """Patch yfinance for US index."""
+
+        class MockFastInfo:
+            pass
+
+        info = MockFastInfo()
+        info.last_price = last_price
+        info.regular_market_previous_close = prev_close
+        info.open = 5460.0
+        info.day_high = 5510.0
+        info.day_low = 5430.0
+        info.last_volume = 3_500_000_000
+
+        class MockTicker:
+            fast_info = info
+
+        monkeypatch.setattr("yfinance.Ticker", lambda symbol: MockTicker())
+
+    def _patch_yf_download(self, monkeypatch, rows=3):
+        """Patch yf.download for US index history."""
+        dates = pd.date_range("2026-02-01", periods=rows, freq="D")
+        df = pd.DataFrame(
+            {
+                "Date": dates,
+                "Open": [5460 + i * 10 for i in range(rows)],
+                "High": [5510 + i * 10 for i in range(rows)],
+                "Low": [5430 + i * 10 for i in range(rows)],
+                "Close": [5500 + i * 10 for i in range(rows)],
+                "Volume": [3_500_000_000 + i * 100_000 for i in range(rows)],
+            }
+        ).set_index("Date")
+
+        monkeypatch.setattr("yfinance.download", lambda *a, **kw: df)
+
+    async def test_single_kr_index(self, monkeypatch):
+        """Test fetching a single Korean index (KOSPI)."""
+        tools = build_tools()
+        basic = _naver_basic_json()
+        history = _naver_price_history(3)
+        # _fetch_index_kr_current calls /price?pageSize=1 and /basic
+        # _fetch_index_kr_history calls /price with the full count
+        # Both share the same mock that returns `history` for any /price call
+        self._patch_naver(monkeypatch, basic, history)
+
+        result = await tools["get_market_index"](symbol="KOSPI")
+
+        assert "indices" in result
+        assert len(result["indices"]) == 1
+        idx = result["indices"][0]
+        assert idx["symbol"] == "KOSPI"
+        assert idx["name"] == "코스피"
+        assert idx["current"] == 2450.50
+        assert idx["change"] == -45.30
+        assert idx["change_pct"] == -1.82
+        assert idx["source"] == "naver"
+        # open/high/low come from the first price record
+        assert idx["open"] == 2390.0
+        assert idx["high"] == 2420.0
+        assert idx["low"] == 2380.0
+
+        assert "history" in result
+        assert len(result["history"]) == 3
+        assert result["history"][0]["date"] == "2026-02-01"
+
+    async def test_single_us_index(self, monkeypatch):
+        """Test fetching a single US index (NASDAQ)."""
+        tools = build_tools()
+        self._patch_yfinance(monkeypatch, last_price=17500.0, prev_close=17400.0)
+        self._patch_yf_download(monkeypatch, rows=5)
+
+        result = await tools["get_market_index"](symbol="NASDAQ")
+
+        assert "indices" in result
+        assert len(result["indices"]) == 1
+        idx = result["indices"][0]
+        assert idx["symbol"] == "NASDAQ"
+        assert idx["name"] == "NASDAQ Composite"
+        assert idx["current"] == 17500.0
+        assert idx["change"] == 100.0
+        assert idx["change_pct"] == pytest.approx(0.57, abs=0.01)
+        assert idx["source"] == "yfinance"
+
+        assert "history" in result
+        assert len(result["history"]) == 5
+
+    async def test_all_indices_no_symbol(self, monkeypatch):
+        """Test fetching all major indices when no symbol specified."""
+        tools = build_tools()
+
+        # Patch both naver (for KOSPI, KOSDAQ) and yfinance (for SPX, NASDAQ)
+        import httpx as _httpx
+
+        async def fake_get(self_cli, url, **kwargs):
+            if "/basic" in url:
+                return _FakeResponse(_naver_basic_json())
+            elif "/price" in url:
+                return _FakeResponse(_naver_price_history(1))
+            raise ValueError(f"Unexpected URL: {url}")
+
+        monkeypatch.setattr(_httpx.AsyncClient, "get", fake_get)
+        self._patch_yfinance(monkeypatch)
+
+        result = await tools["get_market_index"]()
+
+        assert "indices" in result
+        assert len(result["indices"]) == 4
+        assert "history" not in result
+
+        # Verify we got both Korean and US indices
+        symbols = [idx.get("symbol") for idx in result["indices"]]
+        assert "KOSPI" in symbols
+        assert "KOSDAQ" in symbols
+
+    async def test_alias_sp500(self, monkeypatch):
+        """Test SP500 alias resolves to same as SPX."""
+        tools = build_tools()
+        self._patch_yfinance(monkeypatch)
+        self._patch_yf_download(monkeypatch)
+
+        result = await tools["get_market_index"](symbol="SP500")
+
+        assert result["indices"][0]["symbol"] == "SP500"
+        assert result["indices"][0]["name"] == "S&P 500"
+
+    async def test_alias_dow(self, monkeypatch):
+        """Test DOW alias resolves to same as DJI."""
+        tools = build_tools()
+        self._patch_yfinance(monkeypatch)
+        self._patch_yf_download(monkeypatch)
+
+        result = await tools["get_market_index"](symbol="DOW")
+
+        assert result["indices"][0]["symbol"] == "DOW"
+        assert result["indices"][0]["name"] == "다우존스"
+
+    async def test_unknown_symbol_raises_error(self):
+        """Test that unknown index symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Unknown index symbol"):
+            await tools["get_market_index"](symbol="UNKNOWN")
+
+    async def test_invalid_period_raises_error(self):
+        """Test that invalid period raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="period must be"):
+            await tools["get_market_index"](symbol="KOSPI", period="hour")
+
+    async def test_case_insensitive_symbol(self, monkeypatch):
+        """Test that symbol is case-insensitive."""
+        tools = build_tools()
+        self._patch_naver(monkeypatch, _naver_basic_json(), _naver_price_history(2))
+
+        result = await tools["get_market_index"](symbol="kospi")
+
+        assert result["indices"][0]["symbol"] == "KOSPI"
+
+    async def test_count_capped_at_100(self, monkeypatch):
+        """Test that count is capped at 100."""
+        tools = build_tools()
+        history_items = _naver_price_history(3)
+        self._patch_naver(monkeypatch, _naver_basic_json(), history_items)
+
+        result = await tools["get_market_index"](
+            symbol="KOSPI", count=500
+        )
+
+        # Should not raise, count is internally capped
+        assert "indices" in result
+
+    async def test_count_minimum_1(self, monkeypatch):
+        """Test that count minimum is 1."""
+        tools = build_tools()
+        self._patch_naver(monkeypatch, _naver_basic_json(), _naver_price_history(1))
+
+        result = await tools["get_market_index"](
+            symbol="KOSPI", count=-5
+        )
+
+        assert "indices" in result
+
+    async def test_period_week(self, monkeypatch):
+        """Test weekly period."""
+        tools = build_tools()
+        self._patch_naver(monkeypatch, _naver_basic_json(), _naver_price_history(2))
+
+        result = await tools["get_market_index"](
+            symbol="KOSDAQ", period="week"
+        )
+
+        assert "history" in result
+
+    async def test_period_month(self, monkeypatch):
+        """Test monthly period."""
+        tools = build_tools()
+        self._patch_yfinance(monkeypatch)
+        self._patch_yf_download(monkeypatch, rows=3)
+
+        result = await tools["get_market_index"](
+            symbol="SPX", period="month"
+        )
+
+        assert "history" in result
+
+    async def test_error_returns_error_payload(self, monkeypatch):
+        """Test that API errors return error payload."""
+        tools = build_tools()
+
+        import httpx as _httpx
+
+        async def fake_get(self_cli, url, **kwargs):
+            raise RuntimeError("naver API down")
+
+        monkeypatch.setattr(_httpx.AsyncClient, "get", fake_get)
+
+        result = await tools["get_market_index"](symbol="KOSPI")
+
+        assert "error" in result
+        assert result["source"] == "naver"
+        assert result["symbol"] == "KOSPI"
+
+    async def test_all_indices_partial_failure(self, monkeypatch):
+        """Test that partial failures in bulk query still return data."""
+        tools = build_tools()
+
+        import httpx as _httpx
+
+        # Naver fails, yfinance succeeds
+        async def fake_get(self_cli, url, **kwargs):
+            raise RuntimeError("naver down")
+
+        monkeypatch.setattr(_httpx.AsyncClient, "get", fake_get)
+        self._patch_yfinance(monkeypatch)
+
+        result = await tools["get_market_index"]()
+
+        assert len(result["indices"]) == 4
+        # Korean indices should have errors
+        kr_results = [
+            idx for idx in result["indices"] if idx.get("symbol") in ("KOSPI", "KOSDAQ")
+        ]
+        for kr in kr_results:
+            assert "error" in kr
+
+    async def test_us_history_empty_df(self, monkeypatch):
+        """Test US index with empty download result."""
+        tools = build_tools()
+        self._patch_yfinance(monkeypatch)
+        monkeypatch.setattr(
+            "yfinance.download", lambda *a, **kw: pd.DataFrame()
+        )
+
+        result = await tools["get_market_index"](symbol="DJI")
+
+        assert result["history"] == []
+
+    async def test_strip_whitespace_symbol(self, monkeypatch):
+        """Test that whitespace around symbol is stripped."""
+        tools = build_tools()
+        self._patch_naver(monkeypatch, _naver_basic_json(), _naver_price_history(2))
+
+        result = await tools["get_market_index"](symbol="  KOSPI  ")
+
+        assert result["indices"][0]["symbol"] == "KOSPI"
+
+
+# ---------------------------------------------------------------------------
+# _calculate_fibonacci unit tests
+# ---------------------------------------------------------------------------
+
+
+def _fib_df_uptrend(n: int = 60) -> pd.DataFrame:
+    """Create OHLCV DataFrame where low comes first, then high (uptrend)."""
+    import datetime as dt
+
+    import numpy as np
+
+    dates = [dt.date.today() - dt.timedelta(days=n - 1 - i) for i in range(n)]
+    # Price goes from 100 up to ~200
+    close = np.linspace(100, 200, n)
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "open": close - 1,
+            "high": close + 2,
+            "low": close - 3,
+            "close": close,
+            "volume": [1000] * n,
+        }
+    )
+
+
+def _fib_df_downtrend(n: int = 60) -> pd.DataFrame:
+    """Create OHLCV DataFrame where high comes first, then low (downtrend)."""
+    import datetime as dt
+
+    import numpy as np
+
+    dates = [dt.date.today() - dt.timedelta(days=n - 1 - i) for i in range(n)]
+    # Price goes from 200 down to ~100
+    close = np.linspace(200, 100, n)
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "open": close + 1,
+            "high": close + 3,
+            "low": close - 2,
+            "close": close,
+            "volume": [1000] * n,
+        }
+    )
+
+
+@pytest.mark.unit
+class TestCalculateFibonacci:
+    """Tests for _calculate_fibonacci helper."""
+
+    def test_uptrend_retracement_from_high(self):
+        df = _fib_df_uptrend()
+        current_price = float(df["close"].iloc[-1])
+        result = mcp_tools._calculate_fibonacci(df, current_price)
+
+        assert result["trend"] == "retracement_from_high"
+        assert result["swing_high"]["price"] > result["swing_low"]["price"]
+        # 0% level = swing high, 100% level = swing low
+        assert result["levels"]["0.0"] > result["levels"]["1.0"]
+
+    def test_downtrend_bounce_from_low(self):
+        df = _fib_df_downtrend()
+        current_price = float(df["close"].iloc[-1])
+        result = mcp_tools._calculate_fibonacci(df, current_price)
+
+        assert result["trend"] == "bounce_from_low"
+        assert result["swing_high"]["price"] > result["swing_low"]["price"]
+        # 0% level = swing low, 100% level = swing high
+        assert result["levels"]["0.0"] < result["levels"]["1.0"]
+
+    def test_all_seven_levels_present(self):
+        df = _fib_df_uptrend()
+        result = mcp_tools._calculate_fibonacci(df, 150.0)
+
+        expected_keys = {"0.0", "0.236", "0.382", "0.5", "0.618", "0.786", "1.0"}
+        assert set(result["levels"].keys()) == expected_keys
+
+    def test_nearest_support_and_resistance(self):
+        df = _fib_df_uptrend()
+        swing_high = float(df["high"].max())
+        swing_low = float(df["low"].min())
+        mid = (swing_high + swing_low) / 2
+        result = mcp_tools._calculate_fibonacci(df, mid)
+
+        if result["nearest_support"] is not None:
+            assert result["nearest_support"]["price"] < mid
+        if result["nearest_resistance"] is not None:
+            assert result["nearest_resistance"]["price"] > mid
+
+    def test_dates_are_strings(self):
+        df = _fib_df_uptrend()
+        result = mcp_tools._calculate_fibonacci(df, 150.0)
+
+        assert isinstance(result["swing_high"]["date"], str)
+        assert isinstance(result["swing_low"]["date"], str)
+        # ISO date format check
+        assert len(result["swing_high"]["date"]) == 10
+        assert len(result["swing_low"]["date"]) == 10
+
+    def test_price_at_exact_level_no_crash(self):
+        """If current price matches a level exactly, no crash."""
+        df = _fib_df_uptrend()
+        swing_high = float(df["high"].max())
+        result = mcp_tools._calculate_fibonacci(df, swing_high)
+
+        assert result["current_price"] == swing_high
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestGetFibonacciTool:
+    """Tests for get_fibonacci MCP tool."""
+
+    async def test_crypto(self, monkeypatch):
+        tools = build_tools()
+        df = _fib_df_uptrend()
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_fibonacci"]("KRW-BTC")
+
+        assert result["symbol"] == "KRW-BTC"
+        assert "trend" in result
+        assert "levels" in result
+        assert "swing_high" in result
+        assert "swing_low" in result
+        assert "current_price" in result
+        assert "nearest_support" in result
+        assert "nearest_resistance" in result
+
+    async def test_korean_equity(self, monkeypatch):
+        tools = build_tools()
+        df = _fib_df_downtrend()
+
+        class DummyKISClient:
+            async def inquire_daily_itemchartprice(self, code, market, n, period):
+                return df
+
+        monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+
+        result = await tools["get_fibonacci"]("005930")
+
+        assert result["symbol"] == "005930"
+        assert result["trend"] == "bounce_from_low"
+
+    async def test_us_equity(self, monkeypatch):
+        tools = build_tools()
+        df = _fib_df_uptrend()
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_fibonacci"]("AAPL")
+
+        assert result["symbol"] == "AAPL"
+        assert "levels" in result
+
+    async def test_custom_period(self, monkeypatch):
+        tools = build_tools()
+        df = _fib_df_uptrend(n=30)
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_fibonacci"]("KRW-BTC", period=30)
+
+        assert "levels" in result
+
+    async def test_raises_on_empty_symbol(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["get_fibonacci"]("")
+
+    async def test_raises_on_invalid_period(self):
+        tools = build_tools()
+        with pytest.raises(ValueError, match="period must be > 0"):
+            await tools["get_fibonacci"]("AAPL", period=0)
+
+    async def test_error_payload_on_failure(self, monkeypatch):
+        tools = build_tools()
+        mock_fetch = AsyncMock(side_effect=RuntimeError("API error"))
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_fibonacci"]("KRW-BTC")
+
+        assert "error" in result
+        assert result["source"] == "upbit"
+
+    async def test_empty_df_returns_error(self, monkeypatch):
+        tools = build_tools()
+        mock_fetch = AsyncMock(return_value=pd.DataFrame())
+        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_fibonacci"]("KRW-BTC")
+
+        assert "error" in result
+        assert "No data" in result["error"]
+
+    async def test_market_hint(self, monkeypatch):
+        tools = build_tools()
+        df = _fib_df_uptrend()
+        mock_fetch = AsyncMock(return_value=df)
+        monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
+
+        result = await tools["get_fibonacci"]("PLTR", market="us")
+
+        assert result["symbol"] == "PLTR"
+        assert "levels" in result

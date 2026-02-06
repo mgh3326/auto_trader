@@ -470,6 +470,79 @@ def _calculate_pivot(
     }
 
 
+FIBONACCI_LEVELS = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+
+
+def _calculate_fibonacci(
+    df: pd.DataFrame, current_price: float
+) -> dict[str, Any]:
+    """Calculate Fibonacci retracement levels from OHLCV DataFrame.
+
+    Detects swing high/low, determines trend direction, and computes
+    retracement levels with nearest support/resistance.
+    """
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+
+    swing_high_price = round(float(high.max()), 2)
+    swing_low_price = round(float(low.min()), 2)
+
+    # Use positional index for ordering comparison
+    swing_high_pos = int(high.values.argmax())
+    swing_low_pos = int(low.values.argmin())
+
+    # Determine dates
+    def _to_date_str(row: pd.Series) -> str:
+        d = row.get("date")
+        if d is None:
+            return ""
+        if isinstance(d, str):
+            return d[:10]
+        if isinstance(d, (datetime.date, datetime.datetime, pd.Timestamp)):
+            return d.strftime("%Y-%m-%d")
+        return str(d)[:10]
+
+    swing_high_date = _to_date_str(df.iloc[swing_high_pos])
+    swing_low_date = _to_date_str(df.iloc[swing_low_pos])
+
+    # Trend: if high came after low → retracement from high, else bounce from low
+    if swing_high_pos > swing_low_pos:
+        trend = "retracement_from_high"
+        # Levels go from high (0%) down to low (100%)
+        levels = {
+            str(lvl): round(swing_high_price - lvl * (swing_high_price - swing_low_price), 2)
+            for lvl in FIBONACCI_LEVELS
+        }
+    else:
+        trend = "bounce_from_low"
+        # Levels go from low (0%) up to high (100%)
+        levels = {
+            str(lvl): round(swing_low_price + lvl * (swing_high_price - swing_low_price), 2)
+            for lvl in FIBONACCI_LEVELS
+        }
+
+    # Find nearest support (level price just below current) and resistance (just above)
+    nearest_support: dict[str, Any] | None = None
+    nearest_resistance: dict[str, Any] | None = None
+
+    sorted_levels = sorted(levels.items(), key=lambda x: x[1])
+    for level_str, price in sorted_levels:
+        if price < current_price:
+            nearest_support = {"level": level_str, "price": price}
+        elif price > current_price and nearest_resistance is None:
+            nearest_resistance = {"level": level_str, "price": price}
+
+    return {
+        "swing_high": {"price": swing_high_price, "date": swing_high_date},
+        "swing_low": {"price": swing_low_price, "date": swing_low_date},
+        "trend": trend,
+        "current_price": current_price,
+        "levels": levels,
+        "nearest_support": nearest_support,
+        "nearest_resistance": nearest_resistance,
+    }
+
+
 def _compute_indicators(
     df: pd.DataFrame, indicators: list[IndicatorType]
 ) -> dict[str, dict[str, float | None]]:
@@ -1288,6 +1361,8 @@ async def _search_master_data(
 DEFAULT_KIMCHI_SYMBOLS = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "AVAX", "DOT"]
 
 BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price"
+BINANCE_PREMIUM_INDEX_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
+BINANCE_FUNDING_RATE_URL = "https://fapi.binance.com/fapi/v1/fundingRate"
 
 # exchangerate-api.com (free, no key required)
 EXCHANGE_RATE_URL = "https://open.er-api.com/v6/latest/USD"
@@ -1373,6 +1448,285 @@ async def _fetch_kimchi_premium(symbols: list[str]) -> dict[str, Any]:
         "exchange_rate": exchange_rate,
         "count": len(data),
         "data": data,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Market Index Constants & Helpers
+# ---------------------------------------------------------------------------
+
+_INDEX_META: dict[str, dict[str, str]] = {
+    # Korean indices (naver mobile API)
+    "KOSPI": {"name": "코스피", "source": "naver", "naver_code": "KOSPI"},
+    "KOSDAQ": {"name": "코스닥", "source": "naver", "naver_code": "KOSDAQ"},
+    # US indices (yfinance)
+    "SPX": {"name": "S&P 500", "source": "yfinance", "yf_ticker": "^GSPC"},
+    "SP500": {"name": "S&P 500", "source": "yfinance", "yf_ticker": "^GSPC"},
+    "NASDAQ": {"name": "NASDAQ Composite", "source": "yfinance", "yf_ticker": "^IXIC"},
+    "DJI": {"name": "다우존스", "source": "yfinance", "yf_ticker": "^DJI"},
+    "DOW": {"name": "다우존스", "source": "yfinance", "yf_ticker": "^DJI"},
+}
+
+_DEFAULT_INDICES = ["KOSPI", "KOSDAQ", "SPX", "NASDAQ"]
+
+NAVER_INDEX_BASIC_URL = "https://m.stock.naver.com/api/index/{code}/basic"
+NAVER_INDEX_PRICE_URL = "https://m.stock.naver.com/api/index/{code}/price"
+
+
+def _parse_naver_num(value: Any) -> float | None:
+    """Parse a naver number which may be a string with commas."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).replace(",", ""))
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_naver_int(value: Any) -> int | None:
+    """Parse a naver integer which may be a string with commas."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(float(str(value).replace(",", "")))
+    except (ValueError, TypeError):
+        return None
+
+
+async def _fetch_index_kr_current(naver_code: str, name: str) -> dict[str, Any]:
+    """Fetch current Korean index data from Naver Finance mobile API.
+
+    Combines /basic (realtime close/change) with the latest /price record
+    (open/high/low) since the basic endpoint does not include OHLV for indices.
+    """
+    basic_url = NAVER_INDEX_BASIC_URL.format(code=naver_code)
+    price_url = NAVER_INDEX_PRICE_URL.format(code=naver_code)
+
+    async with httpx.AsyncClient(timeout=10) as cli:
+        basic_resp, price_resp = await asyncio.gather(
+            cli.get(basic_url, headers={"User-Agent": "Mozilla/5.0"}),
+            cli.get(
+                price_url,
+                params={"pageSize": 1, "page": 1},
+                headers={"User-Agent": "Mozilla/5.0"},
+            ),
+        )
+        basic_resp.raise_for_status()
+        price_resp.raise_for_status()
+
+        basic = basic_resp.json()
+        price_list = price_resp.json()
+
+    latest = price_list[0] if price_list else {}
+
+    return {
+        "symbol": naver_code,
+        "name": name,
+        "current": _parse_naver_num(basic.get("closePrice")),
+        "change": _parse_naver_num(basic.get("compareToPreviousClosePrice")),
+        "change_pct": _parse_naver_num(basic.get("fluctuationsRatio")),
+        "open": _parse_naver_num(latest.get("openPrice")),
+        "high": _parse_naver_num(latest.get("highPrice")),
+        "low": _parse_naver_num(latest.get("lowPrice")),
+        "volume": _parse_naver_int(latest.get("accumulatedTradingVolume")),
+        "source": "naver",
+    }
+
+
+async def _fetch_index_kr_history(
+    naver_code: str, count: int, period: str
+) -> list[dict[str, Any]]:
+    """Fetch Korean index OHLCV history from Naver Finance mobile API."""
+    url = NAVER_INDEX_PRICE_URL.format(code=naver_code)
+    period_map = {"day": "day", "week": "week", "month": "month"}
+    timeframe = period_map.get(period, "day")
+
+    async with httpx.AsyncClient(timeout=10) as cli:
+        r = await cli.get(
+            url,
+            params={"pageSize": count, "page": 1, "timeframe": timeframe},
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        r.raise_for_status()
+        data = r.json()
+
+    history: list[dict[str, Any]] = []
+    for item in data:
+        history.append(
+            {
+                "date": item.get("localTradedAt", ""),
+                "close": _parse_naver_num(item.get("closePrice")),
+                "open": _parse_naver_num(item.get("openPrice")),
+                "high": _parse_naver_num(item.get("highPrice")),
+                "low": _parse_naver_num(item.get("lowPrice")),
+                "volume": _parse_naver_int(item.get("accumulatedTradingVolume")),
+            }
+        )
+    return history
+
+
+async def _fetch_index_us_current(
+    yf_ticker: str, name: str, symbol: str
+) -> dict[str, Any]:
+    """Fetch current US index data from yfinance."""
+    loop = asyncio.get_running_loop()
+    ticker_obj = yf.Ticker(yf_ticker)
+    info = await loop.run_in_executor(None, lambda: ticker_obj.fast_info)
+
+    current = getattr(info, "last_price", None)
+    previous_close = getattr(info, "regular_market_previous_close", None)
+
+    change: float | None = None
+    change_pct: float | None = None
+    if current is not None and previous_close is not None and previous_close != 0:
+        change = round(current - previous_close, 2)
+        change_pct = round((current - previous_close) / previous_close * 100, 2)
+
+    return {
+        "symbol": symbol,
+        "name": name,
+        "current": current,
+        "change": change,
+        "change_pct": change_pct,
+        "open": getattr(info, "open", None),
+        "high": getattr(info, "day_high", None),
+        "low": getattr(info, "day_low", None),
+        "volume": getattr(info, "last_volume", None),
+        "source": "yfinance",
+    }
+
+
+async def _fetch_index_us_history(
+    yf_ticker: str, count: int, period: str
+) -> list[dict[str, Any]]:
+    """Fetch US index OHLCV history from yfinance."""
+    loop = asyncio.get_running_loop()
+    period_map = {"day": "1d", "week": "1wk", "month": "1mo"}
+    interval = period_map.get(period, "1d")
+
+    multiplier = {"day": 2, "week": 10, "month": 40}.get(period, 2)
+    end = datetime.date.today() + datetime.timedelta(days=1)
+    start = end - datetime.timedelta(days=count * multiplier)
+
+    def download() -> pd.DataFrame:
+        df = yf.download(
+            yf_ticker,
+            start=start,
+            end=end,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+        )
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0].lower() for c in df.columns]
+        else:
+            df.columns = [c.lower() for c in df.columns]
+        return df.reset_index(names="date")
+
+    df = await loop.run_in_executor(None, download)
+
+    if df.empty:
+        return []
+
+    df = df.tail(count).reset_index(drop=True)
+
+    history: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
+        d = row.get("date")
+        date_str = (
+            d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+        )
+        history.append(
+            {
+                "date": date_str,
+                "close": float(row["close"]) if pd.notna(row.get("close")) else None,
+                "open": float(row["open"]) if pd.notna(row.get("open")) else None,
+                "high": float(row["high"]) if pd.notna(row.get("high")) else None,
+                "low": float(row["low"]) if pd.notna(row.get("low")) else None,
+                "volume": (
+                    int(row["volume"]) if pd.notna(row.get("volume")) else None
+                ),
+            }
+        )
+    return history
+
+
+async def _fetch_funding_rate(symbol: str, limit: int) -> dict[str, Any]:
+    """Fetch current funding rate and history from Binance Futures API.
+
+    Args:
+        symbol: Coin symbol (e.g., "BTC", "ETH") — USDT suffix is appended automatically.
+        limit: Number of historical funding rate entries to return.
+
+    Returns:
+        Dictionary with current funding rate, next funding time, and history.
+    """
+    pair = f"{symbol.upper()}USDT"
+
+    async with httpx.AsyncClient(timeout=10) as cli:
+        # Fetch current premium index and funding rate history concurrently
+        premium_resp, history_resp = await asyncio.gather(
+            cli.get(BINANCE_PREMIUM_INDEX_URL, params={"symbol": pair}),
+            cli.get(BINANCE_FUNDING_RATE_URL, params={"symbol": pair, "limit": limit}),
+        )
+        premium_resp.raise_for_status()
+        history_resp.raise_for_status()
+
+        premium: dict[str, Any] = premium_resp.json()
+        history: list[dict[str, Any]] = history_resp.json()
+
+    # Parse current funding rate
+    current_rate = float(premium.get("lastFundingRate", 0))
+    next_funding_ts = int(premium.get("nextFundingTime", 0))
+    next_funding_time = (
+        datetime.datetime.fromtimestamp(
+            next_funding_ts / 1000, tz=datetime.timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if next_funding_ts
+        else None
+    )
+
+    # Build history entries
+    funding_history: list[dict[str, Any]] = []
+    rates_for_avg: list[float] = []
+    for entry in history:
+        rate = float(entry.get("fundingRate", 0))
+        ts = int(entry.get("fundingTime", 0))
+        time_str = (
+            datetime.datetime.fromtimestamp(
+                ts / 1000, tz=datetime.timezone.utc
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if ts
+            else None
+        )
+        funding_history.append({
+            "time": time_str,
+            "rate": rate,
+            "rate_pct": round(rate * 100, 4),
+        })
+        rates_for_avg.append(rate)
+
+    avg_rate = (
+        round(sum(rates_for_avg) / len(rates_for_avg) * 100, 4)
+        if rates_for_avg
+        else None
+    )
+
+    return {
+        "symbol": pair,
+        "current_funding_rate": current_rate,
+        "current_funding_rate_pct": round(current_rate * 100, 4),
+        "next_funding_time": next_funding_time,
+        "funding_history": funding_history,
+        "avg_funding_rate_pct": avg_rate,
+        "interpretation": {
+            "positive": "롱이 숏에게 지불 (롱 과열 — 시장이 과도하게 강세)",
+            "negative": "숏이 롱에게 지불 (숏 과열 — 시장이 과도하게 약세)",
+        },
     }
 
 
@@ -2146,4 +2500,190 @@ def register_tools(mcp: FastMCP) -> None:
                 source="upbit+binance",
                 message=str(exc),
                 instrument_type="crypto",
+            )
+
+    @mcp.tool(
+        name="get_funding_rate",
+        description="Get futures funding rate for a cryptocurrency from Binance. Returns current funding rate, next funding time, historical rates, and interpretation. Positive = longs pay shorts (long overheated), Negative = shorts pay longs (short overheated).",
+    )
+    async def get_funding_rate(
+        symbol: str,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Get futures funding rate for a cryptocurrency.
+
+        Args:
+            symbol: Coin symbol (e.g., "BTC", "ETH"). KRW-/USDT- prefix is stripped automatically.
+            limit: Number of historical funding rate entries (default: 10, max: 100)
+
+        Returns:
+            Dictionary with current funding rate, next funding time, history, and interpretation.
+        """
+        symbol = (symbol or "").strip().upper()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        # Strip common prefixes
+        if symbol.startswith("KRW-"):
+            symbol = symbol[4:]
+        elif symbol.startswith("USDT-"):
+            symbol = symbol[5:]
+        # Strip USDT suffix if user passed e.g. "BTCUSDT"
+        if symbol.endswith("USDT"):
+            symbol = symbol[: -len("USDT")]
+
+        capped_limit = min(max(limit, 1), 100)
+
+        try:
+            return await _fetch_funding_rate(symbol, capped_limit)
+        except Exception as exc:
+            return _error_payload(
+                source="binance",
+                message=str(exc),
+                symbol=f"{symbol}USDT",
+                instrument_type="crypto",
+            )
+
+    @mcp.tool(
+        name="get_market_index",
+        description="Get market index data. Supports KOSPI, KOSDAQ (Naver Finance) and SPX/SP500, NASDAQ, DJI/DOW (yfinance). Without symbol returns current data for all major indices. With symbol returns current data + OHLCV history.",
+    )
+    async def get_market_index(
+        symbol: str | None = None,
+        period: str = "day",
+        count: int = 20,
+    ) -> dict[str, Any]:
+        """Get market index data.
+
+        Args:
+            symbol: Index symbol (e.g., "KOSPI", "KOSDAQ", "SPX", "NASDAQ", "DJI").
+                    If not specified, returns current data for major indices.
+            period: OHLCV period - "day" (default), "week", "month"
+            count: Number of OHLCV history records (default: 20, max: 100)
+
+        Returns:
+            Dictionary with indices (current data) and optionally history (OHLCV)
+        """
+        period = (period or "day").strip().lower()
+        if period not in ("day", "week", "month"):
+            raise ValueError("period must be 'day', 'week', or 'month'")
+
+        capped_count = min(max(count, 1), 100)
+
+        if symbol:
+            sym = symbol.strip().upper()
+            meta = _INDEX_META.get(sym)
+            if meta is None:
+                valid = sorted({k for k in _INDEX_META})
+                raise ValueError(
+                    f"Unknown index symbol '{sym}'. Supported: {', '.join(valid)}"
+                )
+
+            try:
+                if meta["source"] == "naver":
+                    current_data, history = await asyncio.gather(
+                        _fetch_index_kr_current(meta["naver_code"], meta["name"]),
+                        _fetch_index_kr_history(
+                            meta["naver_code"], capped_count, period
+                        ),
+                    )
+                else:
+                    current_data, history = await asyncio.gather(
+                        _fetch_index_us_current(
+                            meta["yf_ticker"], meta["name"], sym
+                        ),
+                        _fetch_index_us_history(
+                            meta["yf_ticker"], capped_count, period
+                        ),
+                    )
+                return {"indices": [current_data], "history": history}
+            except Exception as exc:
+                return _error_payload(
+                    source=meta["source"], message=str(exc), symbol=sym
+                )
+        else:
+            tasks = []
+            for idx_sym in _DEFAULT_INDICES:
+                meta = _INDEX_META[idx_sym]
+                if meta["source"] == "naver":
+                    tasks.append(
+                        _fetch_index_kr_current(meta["naver_code"], meta["name"])
+                    )
+                else:
+                    tasks.append(
+                        _fetch_index_us_current(
+                            meta["yf_ticker"], meta["name"], idx_sym
+                        )
+                    )
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            indices: list[dict[str, Any]] = []
+            for i, r in enumerate(results):
+                if isinstance(r, Exception):
+                    indices.append(
+                        {"symbol": _DEFAULT_INDICES[i], "error": str(r)}
+                    )
+                else:
+                    indices.append(r)
+
+            return {"indices": indices}
+
+    @mcp.tool(
+        name="get_fibonacci",
+        description="Calculate Fibonacci retracement levels for a symbol. Automatically detects swing high/low within the period and computes 0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100% levels with nearest support/resistance relative to the current price.",
+    )
+    async def get_fibonacci(
+        symbol: str,
+        market: str | None = None,
+        period: int = 60,
+    ) -> dict[str, Any]:
+        """Calculate Fibonacci retracement levels.
+
+        Args:
+            symbol: Symbol to query (e.g., "005930", "AAPL", "KRW-BTC")
+            market: Market hint - kr/us/crypto (optional, auto-detected from symbol)
+            period: Number of days to search for swing high/low (default: 60)
+
+        Returns:
+            Dictionary with swing high/low, trend, Fibonacci levels,
+            nearest support and resistance relative to current price.
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        period = int(period)
+        if period <= 0:
+            raise ValueError("period must be > 0")
+
+        market_type, symbol = _resolve_market_type(symbol, market)
+
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
+
+        try:
+            df = await _fetch_ohlcv_for_indicators(
+                symbol, market_type, count=period
+            )
+
+            if df.empty:
+                raise ValueError(f"No data available for symbol '{symbol}'")
+
+            for col in ("high", "low", "close"):
+                if col not in df.columns:
+                    raise ValueError(f"Missing required column: {col}")
+
+            current_price = round(float(df["close"].iloc[-1]), 2)
+            fib = _calculate_fibonacci(df, current_price)
+            fib["symbol"] = symbol
+
+            return fib
+
+        except Exception as exc:
+            return _error_payload(
+                source=source,
+                message=str(exc),
+                symbol=symbol,
+                instrument_type=market_type,
             )
