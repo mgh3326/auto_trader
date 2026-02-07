@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     # Redis 설정
     redis_url: str | None = None  # .env에서 설정하거나 None으로 두면 개별 설정 사용
     redis_host: str = "localhost"
-    redis_port: int = 6379
+    redis_port: int = 6381
     redis_db: int = 0
     redis_password: str | None = None
     redis_ssl: bool = False

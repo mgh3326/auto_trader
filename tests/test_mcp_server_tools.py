@@ -5646,3 +5646,303 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
     assert strong_supports
     assert strong_resistances
     assert "volume_poc" in strong_supports[0]["sources"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_upbit_buy_limit_dry_run(monkeypatch):
+    """Test Upbit buy limit order in dry_run mode."""
+    tools = build_tools()
+
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols):
+            return {"KRW-BTC": 50000000.0}
+
+        async def fetch_my_coins(self):
+            return [{"currency": "KRW", "balance": 2000000.0}]
+
+    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
+    monkeypatch.setattr(
+        mcp_tools,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "side": "buy",
+                "order_type": "limit",
+                "price": 45000000.0,
+                "quantity": 0.02,
+                "estimated_value": 900000.0,
+                "fee": 4500.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="limit",
+        quantity=0.02,
+        price=45000000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["symbol"] == "KRW-BTC"
+    assert result["side"] == "buy"
+    assert result["order_type"] == "limit"
+    assert result["price"] == 45000000.0
+    assert result["quantity"] == 0.02
+    assert result["estimated_value"] == 900000.0
+    assert result["fee"] == 4500.0
+
+
+@pytest.mark.asyncio
+async def test_place_order_upbit_buy_market_dry_run(monkeypatch):
+    """Test Upbit buy market order in dry_run mode."""
+    tools = build_tools()
+
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols):
+            return {"KRW-BTC": 50000000.0}
+
+        async def fetch_my_coins(self):
+            return [{"currency": "KRW", "balance": 2000000.0}]
+
+    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
+    monkeypatch.setattr(
+        mcp_tools,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "side": "buy",
+                "order_type": "market",
+                "price": 50000000.0,
+                "quantity": 0.04,
+                "estimated_value": 2000000.0,
+                "fee": 10000.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="market",
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["order_type"] == "market"
+    assert result["price"] == 50000000.0
+    assert result["quantity"] == 0.04
+
+
+@pytest.mark.asyncio
+async def test_place_order_sell_limit_price_below_minimum(monkeypatch):
+    """Test that sell limit order below 1% minimum is rejected."""
+    tools = build_tools()
+
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols):
+            return {"KRW-BTC": 50000000.0}
+
+        async def fetch_my_coins(self):
+            return [{"currency": "BTC", "balance": 0.1, "avg_buy_price": 40000000.0}]
+
+    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
+    monkeypatch.setattr(
+        mcp_tools,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "estimated_value": 50000.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="limit",
+        quantity=0.1,
+        price=39600000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is False
+    assert "error" in result
+    assert "below minimum" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_market_buy_calculates_quantity(monkeypatch):
+    """Test that market buy order calculates quantity correctly."""
+    tools = build_tools()
+
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols):
+            return {"KRW-BTC": 50000000.0}
+
+        async def fetch_my_coins(self):
+            return [{"currency": "KRW", "balance": 2000000.0}]
+
+    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="market",
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["order_type"] == "market"
+    assert result["quantity"] == 0.04
+    assert result["price"] == 50000000.0
+    assert result["estimated_value"] == 2000000.0
+
+
+@pytest.mark.asyncio
+async def test_place_order_market_sell_uses_full_quantity(monkeypatch):
+    """Test that market sell order uses full holdings."""
+    tools = build_tools()
+
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols):
+            return {"KRW-BTC": 50000000.0}
+
+        async def fetch_my_coins(self):
+            return [{"currency": "BTC", "balance": 0.5, "avg_buy_price": 40000000.0}]
+
+    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
+    monkeypatch.setattr(
+        mcp_tools,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "estimated_value": 25000000.0,
+                "realized_pnl": 5000000.0,
+                "avg_buy_price": 40000000.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="market",
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["order_type"] == "market"
+    assert result["quantity"] == 0.5
+    assert result["realized_pnl"] == 5000000.0
+
+
+@pytest.mark.asyncio
+async def test_place_order_insufficient_balance_upbit(monkeypatch):
+    """Test that buying with insufficient Upbit balance shows deposit guidance."""
+    tools = build_tools()
+
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols):
+            return {"KRW-BTC": 50000000.0}
+
+        async def fetch_my_coins(self):
+            return [{"currency": "KRW", "balance": 50000.0}]
+
+    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="market",
+        dry_run=True,
+    )
+
+    assert result["success"] is False, (
+        f"Expected success=False, got {result.get('success')}"
+    )
+    assert "error" in result
+    assert "Insufficient" in result["error"]
+    assert "deposit" in result["error"].lower()
+    assert "Upbit" in result["error"]
+
+    assert "Upbit" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
+    """Test that buying with insufficient KIS domestic balance shows deposit guidance."""
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def inquire_balance(self):
+            return [{"crcy_cd": "KRW", "dncl_amt_2": "100000.0"}]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient())
+    monkeypatch.setattr(
+        mcp_tools,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "estimated_value": 5000000.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=5000000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is False
+    assert "error" in result
+    assert "Insufficient" in result["error"]
+    assert "KIS domestic account" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
+    """Test that buying with insufficient KIS overseas balance shows deposit guidance."""
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def inquire_overseas_margin(self):
+            return [{"crcy_cd": "USD", "frcr_dncl_amt_2": "100.0"}]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient())
+    monkeypatch.setattr(
+        mcp_tools,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "estimated_value": 500.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="AAPL",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=500.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is False
+    assert "error" in result
+    assert "Insufficient" in result["error"]
+    assert "KIS overseas account" in result["error"]
+    assert "deposit" in result["error"].lower()

@@ -4546,9 +4546,11 @@ def register_tools(mcp: FastMCP) -> None:
             if value_area_low is not None and value_area_low > 0:
                 price_levels.append((value_area_low, "volume_value_area_low"))
 
-            bollinger = (indicator_result.get("indicators") or {}).get(
-                "bollinger"
-            ) or {}
+            bollinger = indicator_result.get("bollinger")
+            if not isinstance(bollinger, dict):
+                bollinger = (indicator_result.get("indicators") or {}).get(
+                    "bollinger"
+                ) or {}
             bb_upper = _to_optional_float(bollinger.get("upper"))
             bb_middle = _to_optional_float(bollinger.get("middle"))
             bb_lower = _to_optional_float(bollinger.get("lower"))
@@ -4661,6 +4663,565 @@ def register_tools(mcp: FastMCP) -> None:
                 symbol=symbol,
                 instrument_type=instrument_type,
             )
+
+    # ------------------------------------------------------------------
+    # place_order
+    # ------------------------------------------------------------------
+
+    @mcp.tool(
+        name="place_order",
+        description=(
+            "Place buy/sell orders for stocks or crypto. "
+            "Supports Upbit (crypto) and KIS (KR/US equities). "
+            "Always returns dry_run preview unless explicitly set to False. "
+            "Safety limits: max 1M KRW per order, max 20 orders/day. "
+            "dry_run=True by default for safety."
+        ),
+    )
+    async def place_order(
+        symbol: str,
+        side: Literal["buy", "sell"],
+        order_type: Literal["limit", "market"] = "limit",
+        quantity: float | None = None,
+        price: float | None = None,
+        dry_run: bool = True,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Place buy/sell order with safety checks.
+
+        Args:
+            symbol: Stock/crypto symbol (e.g., "KRW-BTC", "005930", "AAPL")
+            side: "buy" or "sell"
+            order_type: "limit" or "market" (default: limit)
+            quantity: Order quantity (required for limit orders, None for sell-all)
+            price: Order price (required for limit orders, None for market orders)
+            dry_run: Preview order without execution (default: True)
+            reason: Order reason for logging
+
+        Returns:
+            Order preview (dry_run=True) or execution result (dry_run=False)
+        """
+        MAX_ORDER_AMOUNT_KRW = 1000000
+        MAX_ORDERS_PER_DAY = 20
+
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        side_lower = side.lower().strip()
+        if side_lower not in ("buy", "sell"):
+            raise ValueError("side must be 'buy' or 'sell'")
+
+        order_type_lower = order_type.lower().strip()
+        if order_type_lower not in ("limit", "market"):
+            raise ValueError("order_type must be 'limit' or 'market'")
+
+        if order_type_lower == "limit" and price is None:
+            raise ValueError("price is required for limit orders")
+
+        if order_type_lower == "limit" and quantity is None:
+            raise ValueError("quantity is required for limit orders")
+
+        market_type, normalized_symbol = _resolve_market_type(symbol, None)
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
+        source = source_map[market_type]
+
+        def _order_error(message: str) -> dict[str, Any]:
+            return {
+                "success": False,
+                **_error_payload(
+                    source=source,
+                    message=message,
+                    symbol=normalized_symbol,
+                    instrument_type=market_type,
+                ),
+            }
+
+        try:
+            try:
+                current_price = await _get_current_price_for_order(
+                    normalized_symbol, market_type
+                )
+            except Exception:
+                if order_type_lower == "limit" and price is not None:
+                    current_price = float(price)
+                else:
+                    raise
+
+            if current_price is None:
+                if order_type_lower == "limit" and price is not None:
+                    current_price = float(price)
+                else:
+                    raise ValueError(f"Failed to get current price for {symbol}")
+
+            holdings: dict[str, Any] | None = None
+            order_quantity = quantity
+
+            if side_lower == "sell":
+                holdings = await _get_holdings_for_order(normalized_symbol, market_type)
+                if not holdings:
+                    return _order_error(f"No holdings found for {symbol}")
+
+                available_quantity = _to_float(holdings.get("quantity"), default=0.0)
+                order_quantity = (
+                    available_quantity
+                    if quantity is None
+                    else min(quantity, available_quantity)
+                )
+
+                if order_type_lower == "limit" and price is not None:
+                    avg_price = _to_float(holdings.get("avg_price"), default=0.0)
+                    min_sell_price = avg_price * 1.01
+                    if price < min_sell_price:
+                        return _order_error(
+                            f"Sell price {price} below minimum "
+                            f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
+                        )
+                    if price < current_price:
+                        return _order_error(
+                            f"Sell price {price} below current price {current_price}"
+                        )
+
+            preview_fn = globals().get("_preview_order", _preview_order)
+            dry_run_result = await preview_fn(
+                symbol=normalized_symbol,
+                side=side_lower,
+                order_type=order_type_lower,
+                quantity=order_quantity,
+                price=price,
+                current_price=current_price,
+                market_type=market_type,
+            )
+
+            if not isinstance(dry_run_result, dict):
+                raise ValueError("Order preview returned invalid result")
+
+            if dry_run_result.get("error"):
+                return _order_error(str(dry_run_result["error"]))
+
+            if (
+                side_lower == "sell"
+                and order_quantity is not None
+                and dry_run_result.get("quantity") is None
+            ):
+                dry_run_result["quantity"] = order_quantity
+
+            dry_run_result.setdefault("symbol", normalized_symbol)
+            dry_run_result.setdefault("side", side_lower)
+            dry_run_result.setdefault("order_type", order_type_lower)
+            if dry_run_result.get("price") is None:
+                dry_run_result["price"] = (
+                    current_price if order_type_lower == "market" else price
+                )
+
+            order_amount = _to_float(dry_run_result.get("estimated_value"), default=0.0)
+
+            if side_lower == "buy":
+                balance = await _get_balance_for_order(market_type)
+                if balance < order_amount:
+                    if market_type == "crypto":
+                        message = (
+                            f"Insufficient KRW balance: {balance:,.0f} KRW < {order_amount:,.0f} KRW. "
+                            f"Please deposit KRW from your bank account to Upbit, then retry."
+                        )
+                    elif market_type == "equity_kr":
+                        message = (
+                            f"Insufficient KRW balance: {balance:,.0f} KRW < {order_amount:,.0f} KRW. "
+                            f"Please deposit funds to your KIS domestic account, then retry."
+                        )
+                    else:
+                        message = (
+                            f"Insufficient USD balance: {balance / 1300:,.2f} USD < {order_amount / 1300:,.2f} USD (estimated). "
+                            f"Please deposit USD to your KIS overseas account, then retry."
+                        )
+                    return _order_error(message)
+
+            if dry_run:
+                return {
+                    "success": True,
+                    "dry_run": True,
+                    **dry_run_result,
+                    "message": "Order preview (dry_run=True)",
+                }
+
+            if order_amount > MAX_ORDER_AMOUNT_KRW:
+                return _order_error(
+                    f"Order amount {order_amount:,.0f} KRW exceeds limit {MAX_ORDER_AMOUNT_KRW:,.0f} KRW"
+                )
+
+            if not await _check_daily_order_limit(MAX_ORDERS_PER_DAY):
+                return _order_error(
+                    f"Daily order limit ({MAX_ORDERS_PER_DAY}) exceeded"
+                )
+
+            execution_result = await _execute_order(
+                symbol=normalized_symbol,
+                side=side_lower,
+                order_type=order_type_lower,
+                quantity=order_quantity,
+                price=price,
+                market_type=market_type,
+            )
+
+            await _record_order_history(
+                symbol=normalized_symbol,
+                side=side_lower,
+                order_type=order_type_lower,
+                quantity=order_quantity,
+                price=price,
+                amount=order_amount,
+                reason=reason,
+                dry_run=False,
+            )
+
+            return {
+                "success": True,
+                "dry_run": False,
+                "preview": dry_run_result,
+                "execution": execution_result,
+                "message": "Order placed successfully",
+            }
+
+        except Exception as exc:
+            await _record_order_history(
+                symbol=normalized_symbol,
+                side=side_lower,
+                order_type=order_type_lower,
+                quantity=quantity,
+                price=price,
+                amount=0,
+                reason=reason,
+                dry_run=True,
+                error=str(exc),
+            )
+            return _order_error(str(exc))
+
+    async def _get_current_price_for_order(
+        symbol: str, market_type: str
+    ) -> float | None:
+        if market_type == "crypto":
+            prices = await upbit_service.fetch_multiple_current_prices([symbol])
+            return prices.get(symbol)
+        elif market_type == "equity_kr":
+            quote = await _fetch_quote_equity_kr(symbol)
+            return float(quote.get("price")) if quote.get("price") else None
+        else:
+            quote = await _fetch_quote_equity_us(symbol)
+            return float(quote.get("price")) if quote.get("price") else None
+
+    async def _get_holdings_for_order(
+        symbol: str, market_type: str
+    ) -> dict[str, Any] | None:
+        if market_type == "crypto":
+            coins = await upbit_service.fetch_my_coins()
+            currency = symbol.replace("KRW-", "")
+            for coin in coins:
+                if coin.get("currency") == currency:
+                    balance = float(coin.get("balance", 0))
+                    locked = float(coin.get("locked", 0))
+                    avg_buy_price = float(coin.get("avg_buy_price", 0) or 0)
+                    return {
+                        "quantity": balance + locked,
+                        "avg_price": avg_buy_price,
+                    }
+        else:
+            positions, _, _, _ = await _collect_portfolio_positions(
+                account=None,
+                market="kr" if market_type == "equity_kr" else "us",
+                include_current_price=False,
+            )
+            for position in positions:
+                if position["symbol"] == symbol:
+                    return {
+                        "quantity": float(position.get("quantity", 0)),
+                        "avg_price": float(position.get("avg_buy_price", 0) or 0),
+                    }
+        return None
+
+    async def _get_balance_for_order(market_type: str) -> float:
+        if market_type == "crypto":
+            coins = await upbit_service.fetch_my_coins()
+            for coin in coins:
+                if coin.get("currency") == "KRW":
+                    return float(coin.get("balance", 0))
+        elif market_type == "equity_kr":
+            try:
+                kis = KISClient()
+                balance_data = await kis.inquire_balance()
+                for item in balance_data:
+                    currency = item.get("crcy_cd", "")
+                    if currency == "KRW":
+                        return float(item.get("dncl_amt_2", 0) or 0)
+            except Exception:
+                pass
+        elif market_type == "equity_us":
+            try:
+                kis = KISClient()
+                balance_data = await kis.inquire_overseas_margin()
+                for item in balance_data:
+                    currency = item.get("crcy_cd", "")
+                    if currency == "USD":
+                        return float(item.get("frcr_dncl_amt_2", 0) or 0)
+            except Exception:
+                pass
+        return 0.0
+
+    async def _check_daily_order_limit(max_orders: int) -> bool:
+        try:
+            import redis.asyncio as redis_async
+
+            redis_url = getattr(settings, "redis_url", None)
+            if not redis_url:
+                return True
+
+            redis = await redis_async.from_url(redis_url)
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            key = f"order_count:{today}"
+
+            count = await redis.get(key)
+            if count is None:
+                count = 0
+            else:
+                count = int(count)
+
+            if count >= max_orders:
+                return False
+
+            return True
+        except Exception:
+            return True
+
+    async def _record_order_history(
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float | None,
+        price: float | None,
+        amount: float,
+        reason: str,
+        dry_run: bool,
+        error: str | None = None,
+    ) -> None:
+        try:
+            import redis.asyncio as redis_async
+
+            redis_url = getattr(settings, "redis_url", None)
+            if not redis_url:
+                return
+
+            redis = await redis_async.from_url(redis_url)
+            today = datetime.datetime.now().strftime("%Y-%m-%d")
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            key = f"order_history:{today}"
+            record = {
+                "timestamp": timestamp,
+                "symbol": symbol,
+                "side": side,
+                "order_type": order_type,
+                "quantity": quantity,
+                "price": price,
+                "amount": amount,
+                "reason": reason,
+                "dry_run": dry_run,
+                "error": error,
+            }
+
+            await redis.rpush(key, json.dumps(record))
+            await redis.expire(key, 86400)
+        except Exception:
+            pass
+
+    async def _preview_order(
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float | None,
+        price: float | None,
+        current_price: float,
+        market_type: str,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "symbol": symbol,
+            "side": side,
+            "order_type": order_type,
+            "current_price": current_price,
+        }
+
+        if order_type == "market":
+            execution_price = current_price
+            result["price"] = execution_price
+        else:
+            execution_price = price
+            result["price"] = execution_price
+
+        if side == "buy":
+            if order_type == "market":
+                if price is not None:
+                    estimated_value = _to_float(price, default=0.0)
+                elif quantity is not None:
+                    estimated_value = current_price * quantity
+                else:
+                    balance = await _get_balance_for_order(market_type)
+                    if market_type == "crypto":
+                        min_market_buy_amount = _to_float(
+                            getattr(settings, "upbit_buy_amount", 0), default=0.0
+                        )
+                    else:
+                        min_market_buy_amount = 0.0
+                    estimated_value = (
+                        balance
+                        if balance >= min_market_buy_amount
+                        else min_market_buy_amount
+                    )
+
+                if estimated_value <= 0:
+                    result["error"] = "order amount must be greater than 0"
+                    return result
+
+                order_quantity = estimated_value / current_price
+                result["quantity"] = order_quantity
+                result["estimated_value"] = estimated_value
+                result["fee"] = estimated_value * 0.0005
+                return result
+
+            if price is None:
+                result["error"] = "price is required for limit buy orders"
+                return result
+            if price > current_price:
+                result["error"] = (
+                    f"Buy price {price} exceeds current price {current_price}"
+                )
+                return result
+            if quantity is None:
+                result["error"] = "quantity is required for limit buy orders"
+                return result
+
+            order_quantity = quantity
+            estimated_value = execution_price * order_quantity
+            result["quantity"] = order_quantity
+            result["estimated_value"] = estimated_value
+            result["fee"] = estimated_value * 0.0005
+            return result
+        else:
+            holdings = await _get_holdings_for_order(symbol, market_type)
+            if not holdings:
+                result["error"] = "No holdings found"
+                return result
+
+            avg_price = holdings["avg_price"]
+
+            if order_type == "market":
+                order_quantity = holdings["quantity"]
+                execution_price = current_price
+            else:
+                if price is None:
+                    result["error"] = "price is required for limit sell orders"
+                    return result
+                min_sell_price = avg_price * 1.01
+                if price < min_sell_price:
+                    result["error"] = (
+                        f"Sell price {price} below minimum "
+                        f"(avg_buy_price * 1.01 = {min_sell_price:.0f})"
+                    )
+                    return result
+                if price < current_price:
+                    result["error"] = (
+                        f"Sell price {price} below current price {current_price}"
+                    )
+                    return result
+                order_quantity = holdings["quantity"] if quantity is None else quantity
+                execution_price = price
+
+            estimated_value = execution_price * order_quantity
+            realized_pnl = (execution_price - avg_price) * order_quantity
+
+            result["quantity"] = order_quantity
+            result["estimated_value"] = estimated_value
+            result["fee"] = estimated_value * 0.0005
+            result["realized_pnl"] = realized_pnl
+            result["avg_buy_price"] = avg_price
+
+        return result
+
+    globals()["_preview_order"] = _preview_order
+
+    async def _execute_order(
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float | None,
+        price: float | None,
+        market_type: str,
+    ) -> dict[str, Any]:
+        if market_type == "crypto":
+            if side == "buy":
+                if order_type == "market":
+                    price_str = f"{price:.0f}" if price else "0"
+                    return await upbit_service.place_market_buy_order(symbol, price_str)
+                else:
+                    volume_str = f"{quantity:.8f}"
+                    price_str = f"{price:.0f}"
+                    adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
+                    return await upbit_service.place_buy_order(
+                        symbol, adjusted_price, volume_str, "limit"
+                    )
+            else:
+                holdings = await _get_holdings_for_order(symbol, market_type)
+                if not holdings:
+                    raise ValueError("No holdings found")
+
+                volume = holdings["quantity"] if quantity is None else quantity
+                if order_type == "market":
+                    volume_str = f"{volume:.8f}"
+                    return await upbit_service.place_market_sell_order(
+                        symbol, volume_str
+                    )
+                else:
+                    volume_str = f"{volume:.8f}"
+                    adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
+                    price_str = f"{adjusted_price}"
+                    return await upbit_service.place_sell_order(
+                        symbol, volume_str, price_str
+                    )
+        elif market_type == "equity_kr":
+            kis = KISClient()
+            stock_code = symbol
+            order_quantity = int(quantity) if quantity else 0
+            order_price = int(price) if price else 0
+
+            if side == "buy":
+                return await kis.order_korea_stock(
+                    stock_code=stock_code,
+                    order_type="buy",
+                    quantity=order_quantity,
+                    price=order_price,
+                )
+            else:
+                return await kis.order_korea_stock(
+                    stock_code=stock_code,
+                    order_type="sell",
+                    quantity=order_quantity,
+                    price=order_price,
+                )
+        else:
+            kis = KISClient()
+            exchange_code = "NASD"
+
+            if side == "buy":
+                return await kis.buy_overseas_stock(
+                    symbol=symbol,
+                    exchange_code=exchange_code,
+                    quantity=int(quantity) if quantity else 0,
+                    price=price if price else 0.0,
+                )
+            else:
+                return await kis.sell_overseas_stock(
+                    symbol=symbol,
+                    exchange_code=exchange_code,
+                    quantity=int(quantity) if quantity else 0,
+                    price=price if price else 0.0,
+                )
 
     # ------------------------------------------------------------------
     # simulate_avg_cost

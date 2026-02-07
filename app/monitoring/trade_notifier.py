@@ -8,6 +8,8 @@ Features:
 - Multiple chat ID support
 """
 
+from __future__ import annotations
+
 import logging
 
 import httpx
