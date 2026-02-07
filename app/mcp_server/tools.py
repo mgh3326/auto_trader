@@ -567,8 +567,38 @@ async def _fetch_price_map_for_positions(
     )
 
     if crypto_symbols:
-        for offset in range(0, len(crypto_symbols), _UPBIT_TICKER_BATCH_SIZE):
-            batch_symbols = crypto_symbols[offset : offset + _UPBIT_TICKER_BATCH_SIZE]
+        valid_symbols = list(crypto_symbols)
+        try:
+            tradable_markets = await upbit_service.fetch_all_market_codes(fiat=None)
+            tradable_set = {str(market).upper() for market in tradable_markets}
+            valid_symbols = [
+                symbol for symbol in crypto_symbols if symbol.upper() in tradable_set
+            ]
+            invalid_symbols = [
+                symbol for symbol in crypto_symbols if symbol.upper() not in tradable_set
+            ]
+            for symbol in invalid_symbols:
+                price_errors.append(
+                    {
+                        "source": "upbit",
+                        "market": "crypto",
+                        "symbol": symbol,
+                        "stage": "current_price",
+                        "error": "market not tradable on upbit (possibly delisted)",
+                    }
+                )
+        except Exception as exc:
+            price_errors.append(
+                {
+                    "source": "upbit",
+                    "market": "crypto",
+                    "stage": "current_price",
+                    "error": f"failed to load tradable market list: {exc}",
+                }
+            )
+
+        for offset in range(0, len(valid_symbols), _UPBIT_TICKER_BATCH_SIZE):
+            batch_symbols = valid_symbols[offset : offset + _UPBIT_TICKER_BATCH_SIZE]
             try:
                 prices = await upbit_service.fetch_multiple_current_prices(batch_symbols)
                 for symbol in batch_symbols:
@@ -591,7 +621,6 @@ async def _fetch_price_map_for_positions(
                         }
                     )
             except Exception as exc:
-                # Avoid per-symbol fallback calls to prevent 429 bursts.
                 for symbol in batch_symbols:
                     if ("crypto", symbol.upper()) in price_map:
                         continue
