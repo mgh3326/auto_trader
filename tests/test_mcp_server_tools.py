@@ -4667,10 +4667,12 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
         AsyncMock(return_value={"KRW-BTC": 60000000.0}),
     )
 
-    result = await tools["get_holdings"]()
+    result = await tools["get_holdings"](minimum_value=0)
 
     assert result["total_accounts"] == 3
     assert result["total_positions"] == 4
+    assert result["filtered_count"] == 0
+    assert result["filter_reason"] == "minimum_value < 0"
 
     kis_account = next(item for item in result["accounts"] if item["account"] == "kis")
     kis_kr = next(item for item in kis_account["positions"] if item["symbol"] == "005930")
@@ -4687,6 +4689,253 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
     assert btc["name"] == "비트코인"
     assert btc["current_price"] == 60000000.0
     assert btc["evaluation_amount"] == 6000000.0
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return []
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "unit_currency": "KRW",
+                    "balance": "0.1",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                },
+                {
+                    "currency": "ETH",
+                    "unit_currency": "KRW",
+                    "balance": "2",
+                    "locked": "0",
+                    "avg_buy_price": "4000000",
+                },
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_or_refresh_maps",
+        AsyncMock(
+            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "ETH": "이더리움"}}
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+
+    async def mock_fetch(markets: list[str]) -> dict[str, float]:
+        assert sorted(markets) == ["KRW-BTC", "KRW-ETH"]
+        return {"KRW-BTC": 61000000.0, "KRW-ETH": 4200000.0}
+
+    quote_mock = AsyncMock(side_effect=mock_fetch)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_multiple_current_prices",
+        quote_mock,
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+
+    assert result["total_accounts"] == 1
+    assert result["total_positions"] == 2
+
+    positions_by_symbol = {
+        position["symbol"]: position for position in result["accounts"][0]["positions"]
+    }
+    assert positions_by_symbol["KRW-BTC"]["current_price"] == 61000000.0
+    assert positions_by_symbol["KRW-ETH"]["current_price"] == 4200000.0
+    quote_mock.assert_awaited_once()
+    assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return []
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "unit_currency": "KRW",
+                    "balance": "0.1",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                },
+                {
+                    "currency": "DOGE",
+                    "unit_currency": "KRW",
+                    "balance": "100",
+                    "locked": "0",
+                    "avg_buy_price": "100",
+                },
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_or_refresh_maps",
+        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "DOGE": "도지"}}),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+
+    async def mock_fetch(markets: list[str]) -> dict[str, float]:
+        assert sorted(markets) == ["KRW-BTC", "KRW-DOGE"]
+        return {"KRW-BTC": 62000000.0}
+
+    quote_mock = AsyncMock(side_effect=mock_fetch)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_multiple_current_prices",
+        quote_mock,
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+
+    assert result["total_accounts"] == 1
+    assert result["total_positions"] == 1
+    assert result["filtered_count"] == 1
+    assert result["filter_reason"] == "minimum_value < 1000"
+
+    positions_by_symbol = {
+        position["symbol"]: position for position in result["accounts"][0]["positions"]
+    }
+    assert positions_by_symbol["KRW-BTC"]["current_price"] == 62000000.0
+    assert "KRW-DOGE" not in positions_by_symbol
+
+    assert len(result["errors"]) == 1
+    error = result["errors"][0]
+    assert error["source"] == "upbit"
+    assert error["market"] == "crypto"
+    assert error["symbol"] == "KRW-DOGE"
+    assert error["stage"] == "current_price"
+    assert error["error"] == "price missing in batch ticker response"
+    quote_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return []
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "unit_currency": "KRW",
+                    "balance": "0.1",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                },
+                {
+                    "currency": "ONG",
+                    "unit_currency": "KRW",
+                    "balance": "1",
+                    "locked": "0",
+                    "avg_buy_price": "50",
+                },
+                {
+                    "currency": "XYM",
+                    "unit_currency": "KRW",
+                    "balance": "0.0000007",
+                    "locked": "0",
+                    "avg_buy_price": "100",
+                },
+                {
+                    "currency": "PCI",
+                    "unit_currency": "KRW",
+                    "balance": "0.2",
+                    "locked": "0",
+                    "avg_buy_price": "100",
+                },
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_or_refresh_maps",
+        AsyncMock(
+            return_value={
+                "COIN_TO_NAME_KR": {
+                    "BTC": "비트코인",
+                    "ONG": "온톨로지가스",
+                    "XYM": "심볼",
+                    "PCI": "페이코인",
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+
+    async def mock_fetch(markets: list[str]) -> dict[str, float]:
+        assert sorted(markets) == ["KRW-BTC", "KRW-ONG", "KRW-PCI", "KRW-XYM"]
+        return {
+            "KRW-BTC": 62000000.0,
+            "KRW-ONG": 28.0,
+            "KRW-XYM": 0.1,
+        }
+
+    quote_mock = AsyncMock(side_effect=mock_fetch)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_multiple_current_prices",
+        quote_mock,
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+
+    assert result["filtered_count"] == 3
+    assert result["filter_reason"] == "minimum_value < 1000"
+    assert result["total_positions"] == 1
+    assert result["accounts"][0]["positions"][0]["symbol"] == "KRW-BTC"
+
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["symbol"] == "KRW-PCI"
+    assert result["errors"][0]["error"] == "price missing in batch ticker response"
+    quote_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -4743,6 +4992,8 @@ async def test_get_holdings_filters_account_market_and_disables_prices(monkeypat
     assert eth["evaluation_amount"] is None
     assert eth["profit_loss"] is None
     assert eth["profit_rate"] is None
+    assert result["filtered_count"] == 0
+    assert result["filter_reason"] == "minimum_value filter skipped (include_current_price=False)"
     quote_mock.assert_not_awaited()
 
 

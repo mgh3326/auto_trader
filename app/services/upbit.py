@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import quote, urlencode
 
 import httpx
 import jwt  # pyjwt 라이브러리가 필요합니다 (pip install pyjwt)
@@ -361,10 +362,14 @@ async def fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
     if not market_codes:
         return []
 
-    url = f"{UPBIT_REST}/ticker"
-    params = {"markets": ",".join(market_codes)}
+    query = urlencode(
+        {"markets": ",".join(market_codes)},
+        quote_via=quote,
+        safe=",",
+    )
+    url = f"{UPBIT_REST}/ticker?{query}"
 
-    return await _request_json(url, params)
+    return await _request_json(url)
 
 
 async def fetch_multiple_current_prices(market_codes: list[str]) -> dict[str, float]:

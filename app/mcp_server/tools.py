@@ -180,6 +180,7 @@ _ACCOUNT_FILTER_ALIASES = {
     "samsung_pension": {"samsung_pension", "samsung_pension_account"},
     "isa": {"isa"},
 }
+_UPBIT_TICKER_BATCH_SIZE = 50
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -297,6 +298,24 @@ def _position_to_output(position: dict[str, Any]) -> dict[str, Any]:
         "profit_loss": position["profit_loss"],
         "profit_rate": position["profit_rate"],
     }
+
+
+def _value_for_minimum_filter(position: dict[str, Any]) -> float:
+    evaluation_amount = position.get("evaluation_amount")
+    if evaluation_amount is not None:
+        return _to_float(evaluation_amount, default=0.0)
+
+    # Price lookup failed (current_price is None) -> treat as zero value for filtering.
+    if position.get("current_price") is None:
+        return 0.0
+
+    quantity = _to_float(position.get("quantity"))
+    current_price = _to_float(position.get("current_price"))
+    return quantity * current_price
+
+
+def _format_filter_threshold(value: float) -> str:
+    return f"{value:g}"
 
 
 def _is_position_symbol_match(
@@ -535,24 +554,68 @@ async def _collect_manual_positions(
 
 async def _fetch_price_map_for_positions(
     positions: list[dict[str, Any]],
-) -> dict[tuple[str, str], float]:
+) -> tuple[dict[tuple[str, str], float], list[dict[str, Any]]]:
     price_map: dict[tuple[str, str], float] = {}
+    price_errors: list[dict[str, Any]] = []
 
     crypto_symbols = sorted(
         {
-            position["symbol"]
+            _normalize_position_symbol(position["symbol"], "crypto")
             for position in positions
             if position["instrument_type"] == "crypto"
         }
     )
+
     if crypto_symbols:
-        try:
-            prices = await upbit_service.fetch_multiple_current_prices(crypto_symbols)
-            for symbol, price in prices.items():
-                if price is not None:
-                    price_map[("crypto", symbol.upper())] = float(price)
-        except Exception:
-            pass
+        for offset in range(0, len(crypto_symbols), _UPBIT_TICKER_BATCH_SIZE):
+            batch_symbols = crypto_symbols[offset : offset + _UPBIT_TICKER_BATCH_SIZE]
+            try:
+                prices = await upbit_service.fetch_multiple_current_prices(batch_symbols)
+                for symbol in batch_symbols:
+                    price = prices.get(symbol)
+                    if price is not None:
+                        price_map[("crypto", symbol.upper())] = float(price)
+                missing_symbols_in_batch = [
+                    symbol
+                    for symbol in batch_symbols
+                    if ("crypto", symbol.upper()) not in price_map
+                ]
+                for symbol in missing_symbols_in_batch:
+                    price_errors.append(
+                        {
+                            "source": "upbit",
+                            "market": "crypto",
+                            "symbol": symbol,
+                            "stage": "current_price",
+                            "error": "price missing in batch ticker response",
+                        }
+                    )
+            except Exception as exc:
+                # Avoid per-symbol fallback calls to prevent 429 bursts.
+                for symbol in batch_symbols:
+                    if ("crypto", symbol.upper()) in price_map:
+                        continue
+                    price_errors.append(
+                        {
+                            "source": "upbit",
+                            "market": "crypto",
+                            "symbol": symbol,
+                            "stage": "current_price",
+                            "error": str(exc),
+                        }
+                    )
+
+        # Deduplicate in case the same symbol is repeated across sources.
+        if price_errors:
+            deduped: list[dict[str, Any]] = []
+            seen: set[tuple[str, str]] = set()
+            for item in price_errors:
+                key = (item.get("symbol", ""), item.get("stage", ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(item)
+            price_errors = deduped
 
     async def fetch_equity_price(
         instrument_type: str, symbol: str
@@ -584,7 +647,7 @@ async def _fetch_price_map_for_positions(
             if price is not None:
                 price_map[(instrument_type, symbol)] = price
 
-    return price_map
+    return price_map, price_errors
 
 
 async def _collect_portfolio_positions(
@@ -632,7 +695,8 @@ async def _collect_portfolio_positions(
         ]
 
     if include_current_price and positions:
-        price_map = await _fetch_price_map_for_positions(positions)
+        price_map, price_errors = await _fetch_price_map_for_positions(positions)
+        errors.extend(price_errors)
         for position in positions:
             price = price_map.get((position["instrument_type"], position["symbol"]))
             if price is not None:
@@ -2644,14 +2708,20 @@ def register_tools(mcp: FastMCP) -> None:
         description=(
             "Get holdings grouped by account. Supports account filter "
             "(kis/upbit/toss/samsung_pension/isa) and market filter (kr/us/crypto). "
-            "Cash balances are excluded."
+            "Cash balances are excluded. minimum_value filters out low-value positions "
+            "when include_current_price=True. Response includes filtered_count, "
+            "filter_reason, and per-symbol price lookup errors."
         ),
     )
     async def get_holdings(
         account: str | None = None,
         market: str | None = None,
         include_current_price: bool = True,
+        minimum_value: float | None = 1000.0,
     ) -> dict[str, Any]:
+        if minimum_value is not None and minimum_value < 0:
+            raise ValueError("minimum_value must be >= 0")
+
         (
             positions,
             errors,
@@ -2662,6 +2732,25 @@ def register_tools(mcp: FastMCP) -> None:
             market=market,
             include_current_price=include_current_price,
         )
+
+        filtered_count = 0
+        filter_reason: str | None = None
+
+        if include_current_price and minimum_value is not None:
+            threshold = float(minimum_value)
+            filter_reason = f"minimum_value < {_format_filter_threshold(threshold)}"
+            filtered_positions: list[dict[str, Any]] = []
+            for position in positions:
+                value = _value_for_minimum_filter(position)
+                if value < threshold:
+                    filtered_count += 1
+                    continue
+                filtered_positions.append(position)
+            positions = filtered_positions
+        elif not include_current_price:
+            filter_reason = "minimum_value filter skipped (include_current_price=False)"
+        else:
+            filter_reason = "minimum_value filter disabled"
 
         grouped_accounts: dict[str, dict[str, Any]] = {}
         for position in positions:
@@ -2684,7 +2773,10 @@ def register_tools(mcp: FastMCP) -> None:
                 "account": resolved_account_filter,
                 "market": _INSTRUMENT_TO_MARKET.get(resolved_market_filter),
                 "include_current_price": include_current_price,
+                "minimum_value": minimum_value,
             },
+            "filtered_count": filtered_count,
+            "filter_reason": filter_reason,
             "total_accounts": len(accounts),
             "total_positions": len(positions),
             "accounts": accounts,
