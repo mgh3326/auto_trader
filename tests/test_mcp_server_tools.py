@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock
 
+import httpx
 import pandas as pd
 import pytest
 
@@ -622,9 +623,12 @@ async def test_get_volume_profile_korean_equity(monkeypatch):
     assert result["price_range"]["low"] == 1700
     assert result["price_range"]["high"] == 1950
     assert result["value_area"]["volume_pct"] >= 70
-    assert pytest.approx(
-        sum(float(item["volume_pct"]) for item in result["profile"]), rel=1e-3
-    ) == 100
+    assert (
+        pytest.approx(
+            sum(float(item["volume_pct"]) for item in result["profile"]), rel=1e-3
+        )
+        == 100
+    )
 
 
 @pytest.mark.asyncio
@@ -1154,6 +1158,9 @@ class TestCalculateMACD:
         df = _sample_ohlcv_df(100)
         result = mcp_tools._calculate_macd(df["close"])
 
+        assert result["macd"] is not None
+        assert result["signal"] is not None
+        assert result["histogram"] is not None
         expected_hist = result["macd"] - result["signal"]
         assert abs(result["histogram"] - expected_hist) < 0.01
 
@@ -1171,6 +1178,9 @@ class TestCalculateBollinger:
         assert "lower" in result
         assert all(v is not None for v in result.values())
         # Upper > middle > lower
+        assert result["upper"] is not None
+        assert result["middle"] is not None
+        assert result["lower"] is not None
         assert result["upper"] > result["middle"] > result["lower"]
 
     def test_returns_none_for_insufficient_data(self):
@@ -1186,6 +1196,8 @@ class TestCalculateBollinger:
         bollinger = mcp_tools._calculate_bollinger(df["close"], period=20)
         sma = mcp_tools._calculate_sma(df["close"], periods=[20])
 
+        assert bollinger["middle"] is not None
+        assert sma["20"] is not None
         assert abs(bollinger["middle"] - sma["20"]) < 0.01
 
 
@@ -1238,6 +1250,12 @@ class TestCalculatePivot:
         result = mcp_tools._calculate_pivot(df["high"], df["low"], df["close"])
 
         # R3 > R2 > R1 > P > S1 > S2 > S3
+        assert result["r3"] is not None
+        assert result["r2"] is not None
+        assert result["r1"] is not None
+        assert result["s1"] is not None
+        assert result["s2"] is not None
+        assert result["s3"] is not None
         assert result["r3"] > result["r2"] > result["r1"]
         assert result["s1"] > result["s2"] > result["s3"]
 
@@ -1642,6 +1660,10 @@ class TestIndicatorEdgeCases:
         close_high_vol = pd.Series([100.0 + (i % 2) * 5.0 for i in range(50)])
         result_high = mcp_tools._calculate_bollinger(close_high_vol)
 
+        assert result_low["upper"] is not None
+        assert result_low["lower"] is not None
+        assert result_high["upper"] is not None
+        assert result_high["lower"] is not None
         low_width = result_low["upper"] - result_low["lower"]
         high_width = result_high["upper"] - result_high["lower"]
 
@@ -1673,6 +1695,8 @@ class TestIndicatorEdgeCases:
             df_high["high"], df_high["low"], df_high["close"]
         )
 
+        assert result_high["14"] is not None
+        assert result_low["14"] is not None
         assert result_high["14"] > result_low["14"]
 
     def test_pivot_formula_verification(self):
@@ -3222,10 +3246,15 @@ class TestGetKimchiPremium:
         assert item["premium_pct"] == expected_premium
 
     async def test_default_symbols(self, monkeypatch):
-        """Test default multi-coin fetch when no symbol specified."""
+        """Test batch fetch when symbol is omitted."""
         tools = build_tools()
 
-        # Upbit returns only BTC and ETH (simulating some missing)
+        monkeypatch.setattr(
+            mcp_tools,
+            "_resolve_batch_crypto_symbols",
+            AsyncMock(return_value=["BTC", "ETH"]),
+        )
+
         upbit = {"KRW-BTC": 150_000_000, "KRW-ETH": 4_500_000}
         binance = [
             {"symbol": "BTCUSDT", "price": "102000"},
@@ -3241,12 +3270,13 @@ class TestGetKimchiPremium:
 
         result = await tools["get_kimchi_premium"]()
 
-        assert result["instrument_type"] == "crypto"
-        # Only BTC and ETH have data on both exchanges
-        assert result["count"] == 2
-        symbols = [d["symbol"] for d in result["data"]]
-        assert "BTC" in symbols
-        assert "ETH" in symbols
+        assert isinstance(result, list)
+        assert len(result) == 2
+        symbols = [d["symbol"] for d in result]
+        assert symbols == ["BTC", "ETH"]
+        assert result[0]["upbit_price"] == 150_000_000
+        assert result[0]["binance_price"] == 102000.0
+        assert "premium_pct" in result[0]
 
     async def test_strips_krw_prefix(self, monkeypatch):
         """Test that KRW- prefix is stripped from symbol."""
@@ -3402,6 +3432,71 @@ class TestGetFundingRate:
         with pytest.raises(ValueError, match="symbol is required"):
             await tools["get_funding_rate"]("")
 
+    async def test_batch_fetch_when_symbol_is_none(self, monkeypatch):
+        """Test funding-rate batch response when symbol is omitted."""
+        tools = build_tools()
+
+        monkeypatch.setattr(
+            mcp_tools,
+            "_resolve_batch_crypto_symbols",
+            AsyncMock(return_value=["BTC", "ETH"]),
+        )
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                assert "premiumIndex" in url
+                return MockResponse(
+                    [
+                        {
+                            "symbol": "BTCUSDT",
+                            "lastFundingRate": "0.0001",
+                            "nextFundingTime": 1707235200000,
+                        },
+                        {
+                            "symbol": "ETHUSDT",
+                            "lastFundingRate": "-0.0002",
+                            "nextFundingTime": 1707235200000,
+                        },
+                        {
+                            "symbol": "SOLUSDT",
+                            "lastFundingRate": "0.0003",
+                            "nextFundingTime": 1707235200000,
+                        },
+                    ]
+                )
+
+        monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
+
+        result = await tools["get_funding_rate"]()
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["symbol"] == "BTC"
+        assert result[0]["funding_rate"] == 0.0001
+        assert result[0]["next_funding_time"] is not None
+        assert "interpretation" in result[0]
+
     async def test_limit_capped_at_100(self, monkeypatch):
         """Test that limit is capped at 100."""
         tools = build_tools()
@@ -3433,11 +3528,13 @@ class TestGetFundingRate:
                 if "fundingRate" in url and "premiumIndex" not in url:
                     captured_params.update(params or {})
                     return MockResponse([])
-                return MockResponse({
-                    "symbol": "BTCUSDT",
-                    "lastFundingRate": "0.0001",
-                    "nextFundingTime": 0,
-                })
+                return MockResponse(
+                    {
+                        "symbol": "BTCUSDT",
+                        "lastFundingRate": "0.0001",
+                        "nextFundingTime": 0,
+                    }
+                )
 
         monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
 
@@ -3481,8 +3578,16 @@ class TestGetFundingRate:
             "nextFundingTime": 0,
         }
         history = [
-            {"symbol": "BTCUSDT", "fundingRate": "0.0002", "fundingTime": 1707206400000},
-            {"symbol": "BTCUSDT", "fundingRate": "0.0004", "fundingTime": 1707177600000},
+            {
+                "symbol": "BTCUSDT",
+                "fundingRate": "0.0002",
+                "fundingTime": 1707206400000,
+            },
+            {
+                "symbol": "BTCUSDT",
+                "fundingRate": "0.0004",
+                "fundingTime": 1707177600000,
+            },
         ]
 
         self._patch_binance(monkeypatch, premium, history)
@@ -3638,7 +3743,9 @@ class _FakeResponse:
     def raise_for_status(self):
         if self.status_code >= 400:
             raise httpx.HTTPStatusError(
-                "error", request=None, response=self  # type: ignore[arg-type]
+                "error",
+                request=None,
+                response=self,  # type: ignore[arg-type]
             )
 
     def json(self):
@@ -3831,9 +3938,7 @@ class TestGetMarketIndex:
         history_items = _naver_price_history(3)
         self._patch_naver(monkeypatch, _naver_basic_json(), history_items)
 
-        result = await tools["get_market_index"](
-            symbol="KOSPI", count=500
-        )
+        result = await tools["get_market_index"](symbol="KOSPI", count=500)
 
         # Should not raise, count is internally capped
         assert "indices" in result
@@ -3843,9 +3948,7 @@ class TestGetMarketIndex:
         tools = build_tools()
         self._patch_naver(monkeypatch, _naver_basic_json(), _naver_price_history(1))
 
-        result = await tools["get_market_index"](
-            symbol="KOSPI", count=-5
-        )
+        result = await tools["get_market_index"](symbol="KOSPI", count=-5)
 
         assert "indices" in result
 
@@ -3854,9 +3957,7 @@ class TestGetMarketIndex:
         tools = build_tools()
         self._patch_naver(monkeypatch, _naver_basic_json(), _naver_price_history(2))
 
-        result = await tools["get_market_index"](
-            symbol="KOSDAQ", period="week"
-        )
+        result = await tools["get_market_index"](symbol="KOSDAQ", period="week")
 
         assert "history" in result
 
@@ -3866,9 +3967,7 @@ class TestGetMarketIndex:
         self._patch_yfinance(monkeypatch)
         self._patch_yf_download(monkeypatch, rows=3)
 
-        result = await tools["get_market_index"](
-            symbol="SPX", period="month"
-        )
+        result = await tools["get_market_index"](symbol="SPX", period="month")
 
         assert "history" in result
 
@@ -3916,9 +4015,7 @@ class TestGetMarketIndex:
         """Test US index with empty download result."""
         tools = build_tools()
         self._patch_yfinance(monkeypatch)
-        monkeypatch.setattr(
-            "yfinance.download", lambda *a, **kw: pd.DataFrame()
-        )
+        monkeypatch.setattr("yfinance.download", lambda *a, **kw: pd.DataFrame())
 
         result = await tools["get_market_index"](symbol="DJI")
 
@@ -4238,7 +4335,9 @@ class TestGetSectorPeers:
             def company_peers(self, symbol):
                 return ["MSFT", "GOOGL", "META"]
 
-        monkeypatch.setattr(mcp_tools, "_get_finnhub_client", lambda: MockFinnhubClient())
+        monkeypatch.setattr(
+            mcp_tools, "_get_finnhub_client", lambda: MockFinnhubClient()
+        )
 
         # Mock yfinance
         _yf_data = {
@@ -4320,7 +4419,9 @@ class TestGetSectorPeers:
         monkeypatch.setattr(
             mcp_tools,
             "_get_finnhub_client",
-            lambda: type("C", (), {"company_peers": lambda self, symbol: raise_err()})(),
+            lambda: type(
+                "C", (), {"company_peers": lambda self, symbol: raise_err()}
+            )(),
         )
 
         result = await tools["get_sector_peers"]("AAPL")
@@ -4386,7 +4487,7 @@ class TestGetSectorPeers:
             "current_price": 2195000,
             "change_pct": -5.96,
             "per": 20.0,  # lowest PER
-            "pbr": 5.0,   # middle PBR
+            "pbr": 5.0,  # middle PBR
             "market_cap": 200000_0000_0000,
             "peers": [
                 {
@@ -4537,7 +4638,7 @@ class TestSimulateAvgCost:
 
     async def test_validation_negative_price(self):
         tools = build_tools()
-        with pytest.raises(ValueError, match="must be > 0"):
+        with pytest.raises(ValueError, match="must be >= 0"):
             await tools["simulate_avg_cost"](
                 holdings={"price": -100, "quantity": 1},
                 plans=[{"price": 90, "quantity": 1}],
@@ -4566,6 +4667,44 @@ class TestSimulateAvgCost:
         # avg == market → breakeven 0%
         assert s["breakeven_change_pct"] == 0.0
         assert s["unrealized_pnl"] == 0.0
+
+    async def test_accepts_zero_initial_quantity_and_adds_target_metrics(self):
+        tools = build_tools()
+        result = await tools["simulate_avg_cost"](
+            holdings={"price": 0, "quantity": 0},
+            plans=[
+                {"price": 100, "quantity": 1},
+                {"price": 90, "quantity": 1},
+            ],
+            current_market_price=95,
+            target_price=120,
+        )
+
+        assert result["current_position"]["avg_price"] is None
+        assert result["steps"][0]["target_return_pct"] == 20.0
+        assert "pnl_vs_current" in result["steps"][0]
+        assert result["steps"][1]["new_avg_price"] == 95.0
+        assert result["steps"][1]["target_return_pct"] == 26.32
+
+    async def test_requested_scenario_contains_step_target_return(self):
+        tools = build_tools()
+        result = await tools["simulate_avg_cost"](
+            holdings={"price": 122493036, "quantity": 0.00931179},
+            plans=[
+                {"quantity": 0.01, "price": 100000000},
+                {"quantity": 0.01, "price": 95000000},
+            ],
+            target_price=120000000,
+            current_market_price=101692000,
+        )
+
+        assert len(result["steps"]) == 2
+        for step in result["steps"]:
+            assert "new_avg_price" in step
+            assert "total_quantity" in step
+            assert "total_invested" in step
+            assert "unrealized_pnl" in step
+            assert "target_return_pct" in step
 
 
 # ---------------------------------------------------------------------------
@@ -4680,7 +4819,9 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
     assert result["filter_reason"] == "minimum_value < 0"
 
     kis_account = next(item for item in result["accounts"] if item["account"] == "kis")
-    kis_kr = next(item for item in kis_account["positions"] if item["symbol"] == "005930")
+    kis_kr = next(
+        item for item in kis_account["positions"] if item["symbol"] == "005930"
+    )
     assert kis_kr["current_price"] == 71000.0
     assert kis_kr["evaluation_amount"] == 142000.0
     assert kis_kr["profit_loss"] == 2000.0
@@ -4810,7 +4951,9 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
     monkeypatch.setattr(
         mcp_tools,
         "get_or_refresh_maps",
-        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "DOGE": "도지"}}),
+        AsyncMock(
+            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "DOGE": "도지"}}
+        ),
     )
     monkeypatch.setattr(
         mcp_tools,
@@ -4995,7 +5138,9 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
     monkeypatch.setattr(
         mcp_tools,
         "get_or_refresh_maps",
-        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "PCI": "페이코인"}}),
+        AsyncMock(
+            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "PCI": "페이코인"}}
+        ),
     )
     monkeypatch.setattr(
         mcp_tools,
@@ -5023,12 +5168,12 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
 
     assert result["total_accounts"] == 1
     assert result["total_positions"] == 1
+    assert result["filtered_count"] == 1
+    assert result["filter_reason"] == "minimum_value < 1000"
     assert result["accounts"][0]["positions"][0]["symbol"] == "KRW-BTC"
     assert result["accounts"][0]["positions"][0]["current_price"] == 62000000.0
 
-    assert len(result["errors"]) == 1
-    assert result["errors"][0]["symbol"] == "KRW-PCI"
-    assert "not tradable" in result["errors"][0]["error"]
+    assert result["errors"] == []
     quote_mock.assert_awaited_once()
 
 
@@ -5070,7 +5215,9 @@ async def test_get_holdings_filters_account_market_and_disables_prices(monkeypat
         AsyncMock(return_value=([], [])),
     )
     quote_mock = AsyncMock(return_value={"KRW-ETH": 4300000.0})
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_multiple_current_prices", quote_mock)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service, "fetch_multiple_current_prices", quote_mock
+    )
 
     result = await tools["get_holdings"](
         account="upbit", market="crypto", include_current_price=False
@@ -5087,8 +5234,115 @@ async def test_get_holdings_filters_account_market_and_disables_prices(monkeypat
     assert eth["profit_loss"] is None
     assert eth["profit_rate"] is None
     assert result["filtered_count"] == 0
-    assert result["filter_reason"] == "minimum_value filter skipped (include_current_price=False)"
+    assert (
+        result["filter_reason"]
+        == "minimum_value filter skipped (include_current_price=False)"
+    )
     quote_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_includes_top_level_summary(monkeypatch):
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "account": "upbit",
+            "account_name": "기본 계좌",
+            "broker": "upbit",
+            "source": "upbit_api",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "symbol": "KRW-BTC",
+            "name": "비트코인",
+            "quantity": 0.1,
+            "avg_buy_price": 50000000.0,
+            "current_price": 60000000.0,
+            "evaluation_amount": 6000000.0,
+            "profit_loss": 1000000.0,
+            "profit_rate": 20.0,
+        },
+        {
+            "account": "upbit",
+            "account_name": "기본 계좌",
+            "broker": "upbit",
+            "source": "upbit_api",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "symbol": "KRW-ETH",
+            "name": "이더리움",
+            "quantity": 1.0,
+            "avg_buy_price": 3000000.0,
+            "current_price": 4000000.0,
+            "evaluation_amount": 4000000.0,
+            "profit_loss": 1000000.0,
+            "profit_rate": 33.33,
+        },
+    ]
+
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "crypto", "upbit")),
+    )
+
+    result = await tools["get_holdings"](
+        account="upbit", market="crypto", minimum_value=0
+    )
+
+    summary = result["summary"]
+    assert summary["position_count"] == 2
+    assert summary["total_buy_amount"] == 8000000.0
+    assert summary["total_evaluation"] == 10000000.0
+    assert summary["total_profit_loss"] == 2000000.0
+    assert summary["total_profit_rate"] == 25.0
+    assert summary["weights"][0]["symbol"] == "KRW-BTC"
+    assert summary["weights"][0]["weight_pct"] == 60.0
+    assert summary["weights"][1]["symbol"] == "KRW-ETH"
+    assert summary["weights"][1]["weight_pct"] == 40.0
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_summary_sets_price_dependent_fields_null(monkeypatch):
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "account": "upbit",
+            "account_name": "기본 계좌",
+            "broker": "upbit",
+            "source": "upbit_api",
+            "instrument_type": "crypto",
+            "market": "crypto",
+            "symbol": "KRW-ETH",
+            "name": "이더리움",
+            "quantity": 1.0,
+            "avg_buy_price": 3000000.0,
+            "current_price": None,
+            "evaluation_amount": None,
+            "profit_loss": None,
+            "profit_rate": None,
+        }
+    ]
+
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "crypto", "upbit")),
+    )
+
+    result = await tools["get_holdings"](
+        account="upbit",
+        market="crypto",
+        include_current_price=False,
+    )
+
+    summary = result["summary"]
+    assert summary["total_buy_amount"] == 3000000.0
+    assert summary["total_evaluation"] is None
+    assert summary["total_profit_loss"] is None
+    assert summary["total_profit_rate"] is None
+    assert summary["weights"] is None
 
 
 @pytest.mark.asyncio
@@ -5201,3 +5455,194 @@ async def test_get_position_crypto_accepts_symbol_without_prefix(monkeypatch):
     assert result["has_position"] is True
     assert result["position_count"] == 1
     assert result["positions"][0]["symbol"] == "KRW-BTC"
+
+
+@pytest.mark.asyncio
+class TestGetCryptoProfile:
+    def _reset_cache(self):
+        mcp_tools._COINGECKO_LIST_CACHE["expires_at"] = 0.0
+        mcp_tools._COINGECKO_LIST_CACHE["symbol_to_ids"] = {}
+        mcp_tools._COINGECKO_PROFILE_CACHE.clear()
+
+    async def test_get_crypto_profile_success_and_cache(self, monkeypatch):
+        tools = build_tools()
+        self._reset_cache()
+
+        detail_calls = {"count": 0}
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/bitcoin" in url:
+                    detail_calls["count"] += 1
+                    return MockResponse(
+                        {
+                            "name": "Bitcoin",
+                            "symbol": "btc",
+                            "market_cap_rank": 1,
+                            "categories": ["Store of Value"],
+                            "description": {
+                                "ko": "<p>비트코인은 대표적인 암호화폐입니다.</p>"
+                            },
+                            "market_data": {
+                                "market_cap": {"krw": 2_000_000_000_000_000},
+                                "total_volume": {"krw": 50_000_000_000_000},
+                                "circulating_supply": 19_800_000,
+                                "total_supply": 21_000_000,
+                                "max_supply": 21_000_000,
+                                "ath": {"krw": 140_000_000},
+                                "ath_change_percentage": {"krw": -15.1},
+                                "price_change_percentage_7d_in_currency": {"krw": 2.5},
+                                "price_change_percentage_30d_in_currency": {"krw": 8.2},
+                            },
+                        }
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
+
+        result_first = await tools["get_crypto_profile"]("KRW-BTC")
+        result_second = await tools["get_crypto_profile"]("BTC")
+
+        assert result_first["name"] == "Bitcoin"
+        assert result_first["symbol"] == "BTC"
+        assert result_first["market_cap"] == 2_000_000_000_000_000
+        assert result_first["market_cap_rank"] == 1
+        assert result_first["total_volume_24h"] == 50_000_000_000_000
+        assert result_first["ath"] == 140_000_000
+        assert result_first["price_change_percentage_7d"] == 2.5
+        assert "<" not in (result_first["description"] or "")
+        assert result_second["symbol"] == "BTC"
+        assert detail_calls["count"] == 1
+
+    async def test_get_crypto_profile_unknown_symbol_returns_error(self, monkeypatch):
+        tools = build_tools()
+        self._reset_cache()
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    return MockResponse(
+                        [{"id": "bitcoin", "symbol": "btc", "name": "Bitcoin"}]
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
+
+        result = await tools["get_crypto_profile"]("ZZZ")
+
+        assert "error" in result
+        assert result["source"] == "coingecko"
+        assert result["symbol"] == "ZZZ"
+
+
+@pytest.mark.asyncio
+async def test_get_support_resistance_clusters_levels(monkeypatch):
+    tools = build_tools()
+
+    base_df = pd.DataFrame(
+        [
+            {
+                "date": "2026-02-01",
+                "high": 120.0,
+                "low": 80.0,
+                "close": 100.0,
+                "volume": 1000,
+            }
+        ]
+    )
+
+    monkeypatch.setattr(
+        mcp_tools,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=base_df[["date", "high", "low", "close"]]),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "_fetch_ohlcv_for_volume_profile",
+        AsyncMock(return_value=base_df),
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "_calculate_fibonacci",
+        lambda df, current_price: {
+            "swing_high": {"price": 120.0, "date": "2026-02-01"},
+            "swing_low": {"price": 80.0, "date": "2026-01-01"},
+            "trend": "retracement_from_high",
+            "current_price": 100.0,
+            "levels": {"0.382": 110.0, "0.618": 95.0, "0.786": 89.0},
+            "nearest_support": {"level": "0.618", "price": 95.0},
+            "nearest_resistance": {"level": "0.382", "price": 110.0},
+        },
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "_calculate_volume_profile",
+        lambda df, bins, value_area_ratio=0.70: {
+            "price_range": {"low": 80.0, "high": 120.0},
+            "poc": {"price": 90.0, "volume": 5000.0},
+            "value_area": {"high": 111.0, "low": 89.0, "volume_pct": 70.0},
+            "profile": [],
+        },
+    )
+    monkeypatch.setattr(
+        mcp_tools,
+        "_compute_indicators",
+        lambda df, indicators: {
+            "bollinger": {"upper": 111.0, "middle": 100.0, "lower": 90.0}
+        },
+    )
+
+    result = await tools["get_support_resistance"]("KRW-BTC")
+
+    assert result["symbol"] == "KRW-BTC"
+    assert result["current_price"] == 100.0
+    assert result["supports"]
+    assert result["resistances"]
+
+    strong_supports = [s for s in result["supports"] if s["strength"] == "strong"]
+    strong_resistances = [r for r in result["resistances"] if r["strength"] == "strong"]
+    assert strong_supports
+    assert strong_resistances
+    assert "volume_poc" in strong_supports[0]["sources"]

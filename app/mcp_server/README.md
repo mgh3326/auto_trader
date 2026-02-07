@@ -21,7 +21,7 @@ Filtering rules:
 - If `include_current_price=False`, `minimum_value` filtering is skipped
 - Upbit crypto current prices are fetched via batch ticker request (`/v1/ticker?markets=...`)
 - Before batch ticker request, tradable markets are loaded from `/v1/market/all` and only valid holdings symbols are included in the batch
-- Non-tradable symbols (delisted/unsupported) are excluded from ticker request and recorded in `errors`
+- Non-tradable symbols (delisted/unsupported) are excluded from ticker request and treated as 0 value for `minimum_value` filtering (counted in `filtered_count`)
 - Value is primarily based on `evaluation_amount`
 - If current price lookup fails (`current_price=null`), value is treated as `0` for minimum filtering
 

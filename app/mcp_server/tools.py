@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import re
+import time
 from typing import TYPE_CHECKING, Any, Literal
 
 import finnhub
@@ -192,6 +194,24 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _to_optional_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _to_optional_int(value: Any) -> int | None:
+    try:
+        if value in (None, ""):
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
 def _normalize_account_key(value: str | None) -> str:
     if not value:
         return ""
@@ -318,6 +338,67 @@ def _format_filter_threshold(value: float) -> str:
     return f"{value:g}"
 
 
+def _build_holdings_summary(
+    positions: list[dict[str, Any]], include_current_price: bool
+) -> dict[str, Any]:
+    total_buy_amount = round(
+        sum(
+            _to_float(position.get("avg_buy_price"))
+            * _to_float(position.get("quantity"))
+            for position in positions
+        ),
+        2,
+    )
+
+    if not include_current_price:
+        return {
+            "total_buy_amount": total_buy_amount,
+            "total_evaluation": None,
+            "total_profit_loss": None,
+            "total_profit_rate": None,
+            "position_count": len(positions),
+            "weights": None,
+        }
+
+    total_evaluation = round(
+        sum(_to_float(position.get("evaluation_amount")) for position in positions),
+        2,
+    )
+    total_profit_loss = round(
+        sum(_to_float(position.get("profit_loss")) for position in positions),
+        2,
+    )
+    total_profit_rate = (
+        round((total_profit_loss / total_buy_amount) * 100, 2)
+        if total_buy_amount > 0
+        else None
+    )
+
+    weights: list[dict[str, Any]] = []
+    if total_evaluation > 0:
+        for position in positions:
+            evaluation = _to_float(position.get("evaluation_amount"))
+            if evaluation <= 0:
+                continue
+            weights.append(
+                {
+                    "symbol": position.get("symbol"),
+                    "name": position.get("name"),
+                    "weight_pct": round((evaluation / total_evaluation) * 100, 2),
+                }
+            )
+        weights.sort(key=lambda item: _to_float(item.get("weight_pct")), reverse=True)
+
+    return {
+        "total_buy_amount": total_buy_amount,
+        "total_evaluation": total_evaluation,
+        "total_profit_loss": total_profit_loss,
+        "total_profit_rate": total_profit_rate,
+        "position_count": len(positions),
+        "weights": weights,
+    }
+
+
 def _is_position_symbol_match(
     *,
     position_symbol: str,
@@ -334,7 +415,9 @@ def _is_position_symbol_match(
         return pos_base == query_base
 
     if instrument_type == "equity_us":
-        return to_db_symbol(position_symbol).upper() == to_db_symbol(query_symbol).upper()
+        return (
+            to_db_symbol(position_symbol).upper() == to_db_symbol(query_symbol).upper()
+        )
 
     return position_symbol.upper() == query_symbol.upper()
 
@@ -574,19 +657,6 @@ async def _fetch_price_map_for_positions(
             valid_symbols = [
                 symbol for symbol in crypto_symbols if symbol.upper() in tradable_set
             ]
-            invalid_symbols = [
-                symbol for symbol in crypto_symbols if symbol.upper() not in tradable_set
-            ]
-            for symbol in invalid_symbols:
-                price_errors.append(
-                    {
-                        "source": "upbit",
-                        "market": "crypto",
-                        "symbol": symbol,
-                        "stage": "current_price",
-                        "error": "market not tradable on upbit (possibly delisted)",
-                    }
-                )
         except Exception as exc:
             price_errors.append(
                 {
@@ -600,7 +670,9 @@ async def _fetch_price_map_for_positions(
         for offset in range(0, len(valid_symbols), _UPBIT_TICKER_BATCH_SIZE):
             batch_symbols = valid_symbols[offset : offset + _UPBIT_TICKER_BATCH_SIZE]
             try:
-                prices = await upbit_service.fetch_multiple_current_prices(batch_symbols)
+                prices = await upbit_service.fetch_multiple_current_prices(
+                    batch_symbols
+                )
                 for symbol in batch_symbols:
                     price = prices.get(symbol)
                     if price is not None:
@@ -694,7 +766,9 @@ async def _collect_portfolio_positions(
         tasks.append(_collect_kis_positions(market_filter))
     if market_filter in (None, "crypto"):
         tasks.append(_collect_upbit_positions(market_filter))
-    tasks.append(_collect_manual_positions(user_id=user_id, market_filter=market_filter))
+    tasks.append(
+        _collect_manual_positions(user_id=user_id, market_filter=market_filter)
+    )
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1061,9 +1135,7 @@ def _calculate_pivot(
 FIBONACCI_LEVELS = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
 
 
-def _calculate_fibonacci(
-    df: pd.DataFrame, current_price: float
-) -> dict[str, Any]:
+def _calculate_fibonacci(df: pd.DataFrame, current_price: float) -> dict[str, Any]:
     """Calculate Fibonacci retracement levels from OHLCV DataFrame.
 
     Detects swing high/low, determines trend direction, and computes
@@ -1098,14 +1170,18 @@ def _calculate_fibonacci(
         trend = "retracement_from_high"
         # Levels go from high (0%) down to low (100%)
         levels = {
-            str(lvl): round(swing_high_price - lvl * (swing_high_price - swing_low_price), 2)
+            str(lvl): round(
+                swing_high_price - lvl * (swing_high_price - swing_low_price), 2
+            )
             for lvl in FIBONACCI_LEVELS
         }
     else:
         trend = "bounce_from_low"
         # Levels go from low (0%) up to high (100%)
         levels = {
-            str(lvl): round(swing_low_price + lvl * (swing_high_price - swing_low_price), 2)
+            str(lvl): round(
+                swing_low_price + lvl * (swing_high_price - swing_low_price), 2
+            )
             for lvl in FIBONACCI_LEVELS
         }
 
@@ -1129,6 +1205,107 @@ def _calculate_fibonacci(
         "nearest_support": nearest_support,
         "nearest_resistance": nearest_resistance,
     }
+
+
+def _format_fibonacci_source(level_key: str) -> str:
+    level = _to_optional_float(level_key)
+    if level is None:
+        return f"fib_{level_key}"
+
+    pct = level * 100
+    if abs(pct - round(pct)) < 1e-9:
+        pct_str = str(int(round(pct)))
+    else:
+        pct_str = f"{pct:.1f}".rstrip("0").rstrip(".")
+
+    return f"fib_{pct_str}"
+
+
+def _cluster_price_levels(
+    levels: list[tuple[float, str]],
+    tolerance_pct: float = 0.02,
+) -> list[dict[str, Any]]:
+    if not levels:
+        return []
+
+    clusters: list[dict[str, Any]] = []
+    for price, source in sorted(levels, key=lambda item: item[0]):
+        if price <= 0:
+            continue
+
+        matched_cluster: dict[str, Any] | None = None
+        for cluster in clusters:
+            center = _to_float(cluster.get("center"), default=0.0)
+            if center <= 0:
+                continue
+            if abs(price - center) / center <= tolerance_pct:
+                matched_cluster = cluster
+                break
+
+        if matched_cluster is None:
+            clusters.append(
+                {
+                    "prices": [price],
+                    "sources": [source],
+                    "center": price,
+                }
+            )
+            continue
+
+        prices = matched_cluster["prices"]
+        sources = matched_cluster["sources"]
+        prices.append(price)
+        if source not in sources:
+            sources.append(source)
+        matched_cluster["center"] = sum(prices) / len(prices)
+
+    clustered: list[dict[str, Any]] = []
+    for cluster in clusters:
+        prices = cluster.get("prices", [])
+        if not prices:
+            continue
+
+        level_sources = cluster.get("sources", [])
+        source_count = len(level_sources)
+        if source_count >= 3:
+            strength = "strong"
+        elif source_count == 2:
+            strength = "moderate"
+        else:
+            strength = "weak"
+
+        clustered.append(
+            {
+                "price": round(sum(prices) / len(prices), 2),
+                "strength": strength,
+                "sources": level_sources,
+            }
+        )
+
+    return clustered
+
+
+def _split_support_resistance_levels(
+    clustered_levels: list[dict[str, Any]],
+    current_price: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    supports: list[dict[str, Any]] = []
+    resistances: list[dict[str, Any]] = []
+
+    for level in clustered_levels:
+        price = _to_float(level.get("price"), default=0.0)
+        if price <= 0:
+            continue
+        if price < current_price:
+            supports.append(level)
+        elif price > current_price:
+            resistances.append(level)
+
+    supports.sort(
+        key=lambda item: _to_float(item.get("price"), default=0.0), reverse=True
+    )
+    resistances.sort(key=lambda item: _to_float(item.get("price"), default=0.0))
+    return supports, resistances
 
 
 def _compute_indicators(
@@ -1357,7 +1534,9 @@ def _calculate_volume_profile(
 
         if high_i <= low_i:
             idx = int(
-                np.clip(np.searchsorted(bin_edges, low_i, side="right") - 1, 0, bins - 1)
+                np.clip(
+                    np.searchsorted(bin_edges, low_i, side="right") - 1, 0, bins - 1
+                )
             )
             bin_volumes[idx] += vol_i
             continue
@@ -1392,13 +1571,9 @@ def _calculate_volume_profile(
     left_index = poc_index
     right_index = poc_index
 
-    while covered_volume < target_volume and (
-        left_index > 0 or right_index < bins - 1
-    ):
+    while covered_volume < target_volume and (left_index > 0 or right_index < bins - 1):
         left_vol = bin_volumes[left_index - 1] if left_index > 0 else -np.inf
-        right_vol = (
-            bin_volumes[right_index + 1] if right_index < bins - 1 else -np.inf
-        )
+        right_vol = bin_volumes[right_index + 1] if right_index < bins - 1 else -np.inf
 
         if right_vol > left_vol:
             right_index += 1
@@ -2003,7 +2178,9 @@ async def _fetch_valuation_yfinance(symbol: str) -> dict[str, Any]:
     current_position_52w = None
     if current_price is not None and high_52w is not None and low_52w is not None:
         if high_52w > low_52w:
-            current_position_52w = round((current_price - low_52w) / (high_52w - low_52w), 2)
+            current_position_52w = round(
+                (current_price - low_52w) / (high_52w - low_52w), 2
+            )
 
     # ROE is returned as a decimal (e.g. 1.47 = 147%), convert to percentage
     roe_raw = info.get("returnOnEquity")
@@ -2025,9 +2202,7 @@ async def _fetch_valuation_yfinance(symbol: str) -> dict[str, Any]:
     }
 
 
-async def _fetch_sector_peers_naver(
-    symbol: str, limit: int
-) -> dict[str, Any]:
+async def _fetch_sector_peers_naver(symbol: str, limit: int) -> dict[str, Any]:
     """Fetch sector peers for a Korean stock via Naver Finance.
 
     Args:
@@ -2045,8 +2220,16 @@ async def _fetch_sector_peers_naver(
     target_per = data.get("per")
     target_pbr = data.get("pbr")
 
-    all_pers = [v for v in [target_per] + [p.get("per") for p in peers] if v is not None and v > 0]
-    all_pbrs = [v for v in [target_pbr] + [p.get("pbr") for p in peers] if v is not None and v > 0]
+    all_pers = [
+        v
+        for v in [target_per] + [p.get("per") for p in peers]
+        if v is not None and v > 0
+    ]
+    all_pbrs = [
+        v
+        for v in [target_pbr] + [p.get("pbr") for p in peers]
+        if v is not None and v > 0
+    ]
 
     avg_per = round(sum(all_pers) / len(all_pers), 2) if all_pers else None
     avg_pbr = round(sum(all_pbrs) / len(all_pbrs), 2) if all_pbrs else None
@@ -2082,9 +2265,7 @@ async def _fetch_sector_peers_naver(
     }
 
 
-async def _fetch_sector_peers_us(
-    symbol: str, limit: int
-) -> dict[str, Any]:
+async def _fetch_sector_peers_us(symbol: str, limit: int) -> dict[str, Any]:
     """Fetch sector peers for a US stock via Finnhub + yfinance.
 
     Args:
@@ -2311,6 +2492,18 @@ async def _search_master_data(
 
 
 DEFAULT_KIMCHI_SYMBOLS = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "AVAX", "DOT"]
+DEFAULT_BATCH_CRYPTO_SYMBOLS = [
+    "BTC",
+    "ETH",
+    "XRP",
+    "SOL",
+    "ADA",
+    "DOGE",
+    "AVAX",
+    "DOT",
+    "TRX",
+    "LINK",
+]
 
 BINANCE_TICKER_URL = "https://api.binance.com/api/v3/ticker/price"
 BINANCE_PREMIUM_INDEX_URL = "https://fapi.binance.com/fapi/v1/premiumIndex"
@@ -2318,6 +2511,355 @@ BINANCE_FUNDING_RATE_URL = "https://fapi.binance.com/fapi/v1/fundingRate"
 
 # exchangerate-api.com (free, no key required)
 EXCHANGE_RATE_URL = "https://open.er-api.com/v6/latest/USD"
+
+COINGECKO_COINS_LIST_URL = "https://api.coingecko.com/api/v3/coins/list"
+COINGECKO_COINS_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
+COINGECKO_COIN_DETAIL_URL = "https://api.coingecko.com/api/v3/coins/{coin_id}"
+COINGECKO_CACHE_TTL_SECONDS = 300
+COINGECKO_SYMBOL_ID_OVERRIDES = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "XRP": "ripple",
+    "SOL": "solana",
+    "ADA": "cardano",
+    "DOGE": "dogecoin",
+    "AVAX": "avalanche-2",
+    "DOT": "polkadot",
+    "TRX": "tron",
+    "LINK": "chainlink",
+}
+_COINGECKO_LIST_CACHE: dict[str, Any] = {
+    "expires_at": 0.0,
+    "symbol_to_ids": {},
+}
+_COINGECKO_PROFILE_CACHE: dict[str, dict[str, Any]] = {}
+_COINGECKO_LIST_LOCK = asyncio.Lock()
+_COINGECKO_PROFILE_LOCK = asyncio.Lock()
+
+
+def _normalize_crypto_base_symbol(symbol: str) -> str:
+    normalized = (symbol or "").strip().upper()
+    if not normalized:
+        return ""
+
+    if "-" in normalized:
+        normalized = normalized.split("-", 1)[-1]
+    if normalized.endswith("USDT") and len(normalized) > len("USDT"):
+        normalized = normalized[: -len("USDT")]
+
+    return normalized
+
+
+def _coingecko_cache_valid(expires_at: Any, now: float) -> bool:
+    try:
+        return float(expires_at) > now
+    except Exception:
+        return False
+
+
+async def _get_coingecko_symbol_to_ids() -> dict[str, list[str]]:
+    now = time.time()
+    if _coingecko_cache_valid(_COINGECKO_LIST_CACHE.get("expires_at"), now):
+        cached = _COINGECKO_LIST_CACHE.get("symbol_to_ids")
+        if isinstance(cached, dict):
+            return cached
+
+    async with _COINGECKO_LIST_LOCK:
+        now = time.time()
+        if _coingecko_cache_valid(_COINGECKO_LIST_CACHE.get("expires_at"), now):
+            cached = _COINGECKO_LIST_CACHE.get("symbol_to_ids")
+            if isinstance(cached, dict):
+                return cached
+
+        async with httpx.AsyncClient(timeout=15) as cli:
+            response = await cli.get(
+                COINGECKO_COINS_LIST_URL,
+                params={"include_platform": "false", "status": "active"},
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        symbol_to_ids: dict[str, list[str]] = {}
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                coin_id = str(item.get("id") or "").strip()
+                coin_symbol = str(item.get("symbol") or "").strip().lower()
+                if not coin_id or not coin_symbol:
+                    continue
+                symbol_to_ids.setdefault(coin_symbol, []).append(coin_id)
+
+        _COINGECKO_LIST_CACHE["symbol_to_ids"] = symbol_to_ids
+        _COINGECKO_LIST_CACHE["expires_at"] = now + COINGECKO_CACHE_TTL_SECONDS
+        return symbol_to_ids
+
+
+async def _choose_coingecko_id_by_market_cap(candidate_ids: list[str]) -> str | None:
+    if not candidate_ids:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as cli:
+            response = await cli.get(
+                COINGECKO_COINS_MARKETS_URL,
+                params={
+                    "vs_currency": "krw",
+                    "ids": ",".join(candidate_ids),
+                    "order": "market_cap_desc",
+                    "per_page": len(candidate_ids),
+                    "page": 1,
+                    "sparkline": "false",
+                },
+            )
+            response.raise_for_status()
+            markets = response.json()
+
+        if isinstance(markets, list) and markets:
+            first = markets[0]
+            if isinstance(first, dict):
+                top_id = str(first.get("id") or "").strip()
+                if top_id:
+                    return top_id
+    except Exception:
+        return None
+
+    return None
+
+
+async def _resolve_coingecko_coin_id(symbol: str) -> str:
+    base_symbol = _normalize_crypto_base_symbol(symbol)
+    if not base_symbol:
+        raise ValueError("symbol is required")
+
+    override = COINGECKO_SYMBOL_ID_OVERRIDES.get(base_symbol)
+    if override:
+        return override
+
+    symbol_to_ids = await _get_coingecko_symbol_to_ids()
+    candidates = symbol_to_ids.get(base_symbol.lower(), [])
+    if not candidates:
+        raise ValueError(f"CoinGecko id not found for symbol '{base_symbol}'")
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    base_lower = base_symbol.lower()
+    for coin_id in candidates:
+        if coin_id == base_lower or coin_id.replace("-", "") == base_lower:
+            return coin_id
+
+    top_id = await _choose_coingecko_id_by_market_cap(candidates)
+    if top_id:
+        return top_id
+
+    return sorted(candidates)[0]
+
+
+async def _fetch_coingecko_coin_profile(coin_id: str) -> dict[str, Any]:
+    cache_key = coin_id.strip().lower()
+    if not cache_key:
+        raise ValueError("coin_id is required")
+
+    now = time.time()
+    cached = _COINGECKO_PROFILE_CACHE.get(cache_key)
+    if cached and _coingecko_cache_valid(cached.get("expires_at"), now):
+        data = cached.get("data")
+        if isinstance(data, dict):
+            return data
+
+    async with _COINGECKO_PROFILE_LOCK:
+        now = time.time()
+        cached = _COINGECKO_PROFILE_CACHE.get(cache_key)
+        if cached and _coingecko_cache_valid(cached.get("expires_at"), now):
+            data = cached.get("data")
+            if isinstance(data, dict):
+                return data
+
+        async with httpx.AsyncClient(timeout=15) as cli:
+            response = await cli.get(
+                COINGECKO_COIN_DETAIL_URL.format(coin_id=cache_key),
+                params={
+                    "localization": "false",
+                    "tickers": "false",
+                    "market_data": "true",
+                    "community_data": "false",
+                    "developer_data": "false",
+                    "sparkline": "false",
+                    "include_categories_details": "false",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        _COINGECKO_PROFILE_CACHE[cache_key] = {
+            "expires_at": now + COINGECKO_CACHE_TTL_SECONDS,
+            "data": data,
+        }
+        return data
+
+
+def _to_optional_money(value: Any) -> int | None:
+    numeric = _to_optional_float(value)
+    if numeric is None:
+        return None
+    return int(round(numeric))
+
+
+def _clean_description_one_line(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return None
+
+    if len(text) > 240:
+        text = text[:240].rstrip() + "..."
+    return text
+
+
+def _map_coingecko_profile_to_output(profile: dict[str, Any]) -> dict[str, Any]:
+    market_data = profile.get("market_data") or {}
+    description_map = profile.get("description") or {}
+
+    description = _clean_description_one_line(
+        description_map.get("ko") or description_map.get("en")
+    )
+
+    market_cap_krw = _to_optional_money(
+        (market_data.get("market_cap") or {}).get("krw")
+    )
+    total_volume_krw = _to_optional_money(
+        (market_data.get("total_volume") or {}).get("krw")
+    )
+    ath_krw = _to_optional_money((market_data.get("ath") or {}).get("krw"))
+
+    ath_change_pct = _to_optional_float(
+        (market_data.get("ath_change_percentage") or {}).get("krw")
+    )
+    change_7d = _to_optional_float(
+        (market_data.get("price_change_percentage_7d_in_currency") or {}).get("krw")
+    )
+    if change_7d is None:
+        change_7d = _to_optional_float(market_data.get("price_change_percentage_7d"))
+
+    change_30d = _to_optional_float(
+        (market_data.get("price_change_percentage_30d_in_currency") or {}).get("krw")
+    )
+    if change_30d is None:
+        change_30d = _to_optional_float(market_data.get("price_change_percentage_30d"))
+
+    categories = profile.get("categories")
+    if not isinstance(categories, list):
+        categories = []
+
+    return {
+        "name": profile.get("name"),
+        "symbol": str(profile.get("symbol") or "").upper() or None,
+        "market_cap": market_cap_krw,
+        "market_cap_rank": _to_optional_int(profile.get("market_cap_rank")),
+        "total_volume_24h": total_volume_krw,
+        "circulating_supply": _to_optional_float(market_data.get("circulating_supply")),
+        "total_supply": _to_optional_float(market_data.get("total_supply")),
+        "max_supply": _to_optional_float(market_data.get("max_supply")),
+        "categories": categories,
+        "description": description,
+        "ath": ath_krw,
+        "ath_change_percentage": ath_change_pct,
+        "price_change_percentage_7d": change_7d,
+        "price_change_percentage_30d": change_30d,
+    }
+
+
+async def _resolve_batch_crypto_symbols() -> list[str]:
+    try:
+        coins = await upbit_service.fetch_my_coins()
+        held_symbols: list[str] = []
+        for coin in coins:
+            currency = str(coin.get("currency", "")).upper().strip()
+            if not currency or currency == "KRW":
+                continue
+            quantity = _to_float(coin.get("balance")) + _to_float(coin.get("locked"))
+            if quantity <= 0:
+                continue
+            held_symbols.append(currency)
+
+        if held_symbols:
+            try:
+                tradable_markets = await upbit_service.fetch_all_market_codes(fiat=None)
+                tradable_set = {str(market).upper() for market in tradable_markets}
+                held_symbols = [
+                    symbol for symbol in held_symbols if symbol.upper() in tradable_set
+                ]
+            except Exception:
+                pass
+
+            if held_symbols:
+                return sorted(set(held_symbols))
+    except Exception:
+        pass
+
+    return list(DEFAULT_BATCH_CRYPTO_SYMBOLS)
+
+
+def _funding_interpretation_text(rate: float) -> str:
+    if rate > 0:
+        return "positive (롱이 숏에게 지불, 롱 과열)"
+    if rate < 0:
+        return "negative (숏이 롱에게 지불, 숏 과열)"
+    return "neutral"
+
+
+async def _fetch_funding_rate_batch(symbols: list[str]) -> list[dict[str, Any]]:
+    if not symbols:
+        return []
+
+    pair_to_symbol = {f"{symbol.upper()}USDT": symbol.upper() for symbol in symbols}
+
+    async with httpx.AsyncClient(timeout=10) as cli:
+        response = await cli.get(BINANCE_PREMIUM_INDEX_URL)
+        response.raise_for_status()
+        payload = response.json()
+
+    rows: list[dict[str, Any]] = []
+    data_list: list[dict[str, Any]]
+    if isinstance(payload, list):
+        data_list = [item for item in payload if isinstance(item, dict)]
+    elif isinstance(payload, dict):
+        data_list = [payload]
+    else:
+        data_list = []
+
+    for row in data_list:
+        pair = str(row.get("symbol") or "").upper()
+        base_symbol = pair_to_symbol.get(pair)
+        if not base_symbol:
+            continue
+
+        funding_rate = _to_optional_float(row.get("lastFundingRate"))
+        next_ts = _to_optional_int(row.get("nextFundingTime"))
+        if funding_rate is None or next_ts is None or next_ts <= 0:
+            continue
+
+        next_funding_time = datetime.datetime.fromtimestamp(
+            next_ts / 1000,
+            tz=datetime.timezone.utc,
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        rows.append(
+            {
+                "symbol": base_symbol,
+                "funding_rate": funding_rate,
+                "next_funding_time": next_funding_time,
+                "interpretation": _funding_interpretation_text(funding_rate),
+            }
+        )
+
+    rows.sort(key=lambda item: str(item.get("symbol", "")))
+    return rows
 
 
 async def _fetch_exchange_rate_usd_krw() -> float:
@@ -2565,7 +3107,7 @@ async def _fetch_index_us_history(
     start = end - datetime.timedelta(days=count * multiplier)
 
     def download() -> pd.DataFrame:
-        df = yf.download(
+        raw_df = yf.download(
             yf_ticker,
             start=start,
             end=end,
@@ -2573,6 +3115,10 @@ async def _fetch_index_us_history(
             progress=False,
             auto_adjust=False,
         )
+        if raw_df is None or not isinstance(raw_df, pd.DataFrame):
+            return pd.DataFrame()
+
+        df = raw_df.copy()
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[0].lower() for c in df.columns]
         else:
@@ -2589,9 +3135,10 @@ async def _fetch_index_us_history(
     history: list[dict[str, Any]] = []
     for _, row in df.iterrows():
         d = row.get("date")
-        date_str = (
-            d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
-        )
+        if isinstance(d, (datetime.date, datetime.datetime, pd.Timestamp)):
+            date_str = d.strftime("%Y-%m-%d")
+        else:
+            date_str = str(d)[:10]
         history.append(
             {
                 "date": date_str,
@@ -2599,9 +3146,7 @@ async def _fetch_index_us_history(
                 "open": float(row["open"]) if pd.notna(row.get("open")) else None,
                 "high": float(row["high"]) if pd.notna(row.get("high")) else None,
                 "low": float(row["low"]) if pd.notna(row.get("low")) else None,
-                "volume": (
-                    int(row["volume"]) if pd.notna(row.get("volume")) else None
-                ),
+                "volume": (int(row["volume"]) if pd.notna(row.get("volume")) else None),
             }
         )
     return history
@@ -2655,11 +3200,13 @@ async def _fetch_funding_rate(symbol: str, limit: int) -> dict[str, Any]:
             if ts
             else None
         )
-        funding_history.append({
-            "time": time_str,
-            "rate": rate,
-            "rate_pct": round(rate * 100, 4),
-        })
+        funding_history.append(
+            {
+                "time": time_str,
+                "rate": rate,
+                "rate_pct": round(rate * 100, 4),
+            }
+        )
         rates_for_avg.append(rate)
 
     avg_rate = (
@@ -2796,6 +3343,7 @@ def register_tools(mcp: FastMCP) -> None:
             grouped["positions"].append(_position_to_output(position))
 
         accounts = [grouped_accounts[key] for key in sorted(grouped_accounts.keys())]
+        summary = _build_holdings_summary(positions, include_current_price)
 
         return {
             "filters": {
@@ -2808,6 +3356,7 @@ def register_tools(mcp: FastMCP) -> None:
             "filter_reason": filter_reason,
             "total_accounts": len(accounts),
             "total_positions": len(positions),
+            "summary": summary,
             "accounts": accounts,
             "errors": errors,
         }
@@ -3249,6 +3798,40 @@ def register_tools(mcp: FastMCP) -> None:
             )
 
     @mcp.tool(
+        name="get_crypto_profile",
+        description=(
+            "Get cryptocurrency profile data from CoinGecko. "
+            "Accepts Upbit market code (e.g. KRW-BTC) or plain symbol (e.g. BTC)."
+        ),
+    )
+    async def get_crypto_profile(symbol: str) -> dict[str, Any]:
+        """Get crypto profile for a symbol via CoinGecko."""
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        normalized_symbol = _normalize_crypto_base_symbol(symbol)
+        if not normalized_symbol:
+            raise ValueError("symbol is required")
+
+        try:
+            coin_id = await _resolve_coingecko_coin_id(normalized_symbol)
+            profile = await _fetch_coingecko_coin_profile(coin_id)
+            result = _map_coingecko_profile_to_output(profile)
+            if result.get("symbol") is None:
+                result["symbol"] = normalized_symbol
+            if result.get("name") is None:
+                result["name"] = normalized_symbol
+            return result
+        except Exception as exc:
+            return _error_payload(
+                source="coingecko",
+                message=str(exc),
+                symbol=normalized_symbol,
+                instrument_type="crypto",
+            )
+
+    @mcp.tool(
         name="get_financials",
         description="Get financial statements for a US or Korean stock. Supports income statement, balance sheet, and cash flow.",
     )
@@ -3497,7 +4080,14 @@ def register_tools(mcp: FastMCP) -> None:
 
         normalized_market = market.strip().lower()
         if normalized_market in (
-            "kr", "krx", "korea", "kospi", "kosdaq", "kis", "equity_kr", "naver",
+            "kr",
+            "krx",
+            "korea",
+            "kospi",
+            "kosdaq",
+            "kis",
+            "equity_kr",
+            "naver",
         ):
             normalized_market = "kr"
         elif normalized_market in ("us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"):
@@ -3526,9 +4116,7 @@ def register_tools(mcp: FastMCP) -> None:
         name="get_valuation",
         description="Get valuation metrics for a US or Korean stock. Returns PER, PBR, ROE, dividend yield, 52-week high/low, current price, and position within 52-week range.",
     )
-    async def get_valuation(
-        symbol: str, market: str | None = None
-    ) -> dict[str, Any]:
+    async def get_valuation(symbol: str, market: str | None = None) -> dict[str, Any]:
         """Get valuation metrics for a stock.
 
         Args:
@@ -3564,7 +4152,14 @@ def register_tools(mcp: FastMCP) -> None:
 
         normalized_market = market.strip().lower()
         if normalized_market in (
-            "kr", "krx", "korea", "kospi", "kosdaq", "kis", "equity_kr", "naver",
+            "kr",
+            "krx",
+            "korea",
+            "kospi",
+            "kosdaq",
+            "kis",
+            "equity_kr",
+            "naver",
         ):
             normalized_market = "kr"
         elif normalized_market in ("us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"):
@@ -3646,30 +4241,40 @@ def register_tools(mcp: FastMCP) -> None:
     )
     async def get_kimchi_premium(
         symbol: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | list[dict[str, Any]]:
         """Get kimchi premium for cryptocurrencies.
 
         Args:
             symbol: Coin symbol (e.g., "BTC", "ETH"). If not specified,
-                     returns data for major coins (BTC, ETH, XRP, SOL, etc.)
+                     returns data for held coins (fallback: major coins)
 
         Returns:
             Dictionary with kimchi premium data including exchange rate,
             Upbit/Binance prices, and premium percentage for each coin.
         """
-        if symbol:
-            sym = symbol.strip().upper()
-            # Strip KRW- or USDT- prefix if provided
-            if sym.startswith("KRW-"):
-                sym = sym[4:]
-            elif sym.startswith("USDT-"):
-                sym = sym[5:]
-            symbols = [sym]
-        else:
-            symbols = list(DEFAULT_KIMCHI_SYMBOLS)
-
         try:
-            return await _fetch_kimchi_premium(symbols)
+            if symbol:
+                sym = _normalize_crypto_base_symbol(symbol)
+                if not sym:
+                    raise ValueError("symbol is required")
+                symbols = [sym]
+                return await _fetch_kimchi_premium(symbols)
+
+            symbols = await _resolve_batch_crypto_symbols()
+            payload = await _fetch_kimchi_premium(symbols)
+            rows: list[dict[str, Any]] = []
+            for item in payload.get("data", []):
+                if not isinstance(item, dict):
+                    continue
+                rows.append(
+                    {
+                        "symbol": item.get("symbol"),
+                        "upbit_price": item.get("upbit_krw"),
+                        "binance_price": item.get("binance_usdt"),
+                        "premium_pct": item.get("premium_pct"),
+                    }
+                )
+            return rows
         except Exception as exc:
             return _error_payload(
                 source="upbit+binance",
@@ -3682,40 +4287,39 @@ def register_tools(mcp: FastMCP) -> None:
         description="Get futures funding rate for a cryptocurrency from Binance. Returns current funding rate, next funding time, historical rates, and interpretation. Positive = longs pay shorts (long overheated), Negative = shorts pay longs (short overheated).",
     )
     async def get_funding_rate(
-        symbol: str,
+        symbol: str | None = None,
         limit: int = 10,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | list[dict[str, Any]]:
         """Get futures funding rate for a cryptocurrency.
 
         Args:
             symbol: Coin symbol (e.g., "BTC", "ETH"). KRW-/USDT- prefix is stripped automatically.
+                If omitted, returns batch snapshot for held coins (fallback: major coins).
             limit: Number of historical funding rate entries (default: 10, max: 100)
 
         Returns:
             Dictionary with current funding rate, next funding time, history, and interpretation.
         """
-        symbol = (symbol or "").strip().upper()
-        if not symbol:
+        if symbol is not None and not symbol.strip():
             raise ValueError("symbol is required")
 
-        # Strip common prefixes
-        if symbol.startswith("KRW-"):
-            symbol = symbol[4:]
-        elif symbol.startswith("USDT-"):
-            symbol = symbol[5:]
-        # Strip USDT suffix if user passed e.g. "BTCUSDT"
-        if symbol.endswith("USDT"):
-            symbol = symbol[: -len("USDT")]
-
-        capped_limit = min(max(limit, 1), 100)
-
         try:
-            return await _fetch_funding_rate(symbol, capped_limit)
+            if symbol is None:
+                symbols = await _resolve_batch_crypto_symbols()
+                return await _fetch_funding_rate_batch(symbols)
+
+            normalized_symbol = _normalize_crypto_base_symbol(symbol)
+            if not normalized_symbol:
+                raise ValueError("symbol is required")
+
+            capped_limit = min(max(limit, 1), 100)
+            return await _fetch_funding_rate(normalized_symbol, capped_limit)
         except Exception as exc:
+            normalized_symbol = _normalize_crypto_base_symbol(symbol or "")
             return _error_payload(
                 source="binance",
                 message=str(exc),
-                symbol=f"{symbol}USDT",
+                symbol=f"{normalized_symbol}USDT" if normalized_symbol else None,
                 instrument_type="crypto",
             )
 
@@ -3764,9 +4368,7 @@ def register_tools(mcp: FastMCP) -> None:
                     )
                 else:
                     current_data, history = await asyncio.gather(
-                        _fetch_index_us_current(
-                            meta["yf_ticker"], meta["name"], sym
-                        ),
+                        _fetch_index_us_current(meta["yf_ticker"], meta["name"], sym),
                         _fetch_index_us_history(
                             meta["yf_ticker"], capped_count, period
                         ),
@@ -3796,9 +4398,7 @@ def register_tools(mcp: FastMCP) -> None:
             indices: list[dict[str, Any]] = []
             for i, r in enumerate(results):
                 if isinstance(r, Exception):
-                    indices.append(
-                        {"symbol": _DEFAULT_INDICES[i], "error": str(r)}
-                    )
+                    indices.append({"symbol": _DEFAULT_INDICES[i], "error": str(r)})
                 else:
                     indices.append(r)
 
@@ -3838,9 +4438,7 @@ def register_tools(mcp: FastMCP) -> None:
         source = source_map[market_type]
 
         try:
-            df = await _fetch_ohlcv_for_indicators(
-                symbol, market_type, count=period
-            )
+            df = await _fetch_ohlcv_for_indicators(symbol, market_type, count=period)
 
             if df.empty:
                 raise ValueError(f"No data available for symbol '{symbol}'")
@@ -3866,6 +4464,120 @@ def register_tools(mcp: FastMCP) -> None:
     # ------------------------------------------------------------------
     # get_sector_peers
     # ------------------------------------------------------------------
+
+    @mcp.tool(
+        name="get_support_resistance",
+        description=(
+            "Extract key support/resistance zones by combining Fibonacci levels, "
+            "volume profile (POC/value area), and Bollinger Bands, then clustering "
+            "nearby levels within +/-2%."
+        ),
+    )
+    async def get_support_resistance(
+        symbol: str,
+        market: str | None = None,
+    ) -> dict[str, Any]:
+        """Get support/resistance zones from multi-indicator clustering."""
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        market_type, normalized_symbol = _resolve_market_type(symbol, market)
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
+
+        try:
+            df = await _fetch_ohlcv_for_indicators(
+                normalized_symbol, market_type, count=60
+            )
+            if df.empty:
+                raise ValueError(f"No data available for symbol '{normalized_symbol}'")
+
+            for col in ("high", "low", "close"):
+                if col not in df.columns:
+                    raise ValueError(f"Missing required column: {col}")
+
+            current_price = round(float(df["close"].iloc[-1]), 2)
+
+            fib_result = _calculate_fibonacci(df, current_price)
+            fib_result["symbol"] = normalized_symbol
+
+            volume_profile_df = await _fetch_ohlcv_for_volume_profile(
+                normalized_symbol, market_type, 60
+            )
+            volume_result = _calculate_volume_profile(volume_profile_df, bins=20)
+            volume_result["symbol"] = normalized_symbol
+            volume_result["period_days"] = 60
+
+            indicator_result = _compute_indicators(df, ["bollinger"])
+            indicator_result["symbol"] = normalized_symbol
+            indicator_result["price"] = current_price
+            indicator_result["instrument_type"] = market_type
+            indicator_result["source"] = source
+
+            if not fib_result.get("levels"):
+                raise ValueError("Failed to calculate Fibonacci levels")
+            if current_price is None or current_price <= 0:
+                raise ValueError("failed to resolve current price")
+
+            price_levels: list[tuple[float, str]] = []
+
+            fib_levels = fib_result.get("levels", {})
+            if isinstance(fib_levels, dict):
+                for level_key, price in fib_levels.items():
+                    level_price = _to_optional_float(price)
+                    if level_price is None or level_price <= 0:
+                        continue
+                    price_levels.append(
+                        (level_price, _format_fibonacci_source(str(level_key)))
+                    )
+
+            poc_price = _to_optional_float(
+                (volume_result.get("poc") or {}).get("price")
+            )
+            if poc_price is not None and poc_price > 0:
+                price_levels.append((poc_price, "volume_poc"))
+
+            value_area = volume_result.get("value_area") or {}
+            value_area_high = _to_optional_float(value_area.get("high"))
+            value_area_low = _to_optional_float(value_area.get("low"))
+            if value_area_high is not None and value_area_high > 0:
+                price_levels.append((value_area_high, "volume_value_area_high"))
+            if value_area_low is not None and value_area_low > 0:
+                price_levels.append((value_area_low, "volume_value_area_low"))
+
+            bollinger = (indicator_result.get("indicators") or {}).get(
+                "bollinger"
+            ) or {}
+            bb_upper = _to_optional_float(bollinger.get("upper"))
+            bb_middle = _to_optional_float(bollinger.get("middle"))
+            bb_lower = _to_optional_float(bollinger.get("lower"))
+            if bb_upper is not None and bb_upper > 0:
+                price_levels.append((bb_upper, "bb_upper"))
+            if bb_middle is not None and bb_middle > 0:
+                price_levels.append((bb_middle, "bb_middle"))
+            if bb_lower is not None and bb_lower > 0:
+                price_levels.append((bb_lower, "bb_lower"))
+
+            clustered_levels = _cluster_price_levels(price_levels, tolerance_pct=0.02)
+            supports, resistances = _split_support_resistance_levels(
+                clustered_levels,
+                current_price,
+            )
+
+            return {
+                "symbol": normalized_symbol,
+                "current_price": round(current_price, 2),
+                "supports": supports,
+                "resistances": resistances,
+            }
+        except Exception as exc:
+            return _error_payload(
+                source=source,
+                message=str(exc),
+                symbol=normalized_symbol,
+                instrument_type=market_type,
+            )
 
     @mcp.tool(
         name="get_sector_peers",
@@ -3903,16 +4615,20 @@ def register_tools(mcp: FastMCP) -> None:
             raise ValueError("symbol is required")
 
         if _is_crypto_market(symbol):
-            raise ValueError(
-                "Sector peers are not available for cryptocurrencies"
-            )
+            raise ValueError("Sector peers are not available for cryptocurrencies")
 
         capped_limit = min(max(limit, 1), 20)
 
         # Determine market
         market_str = (market or "").strip().lower()
         if market_str in (
-            "kr", "krx", "korea", "kospi", "kosdaq", "kis", "naver",
+            "kr",
+            "krx",
+            "korea",
+            "kospi",
+            "kosdaq",
+            "kis",
+            "naver",
         ):
             resolved_market = "kr"
         elif market_str in ("us", "usa", "nyse", "nasdaq", "yahoo"):
@@ -3938,9 +4654,7 @@ def register_tools(mcp: FastMCP) -> None:
                 return await _fetch_sector_peers_us(symbol, capped_limit)
         except Exception as exc:
             source = "naver" if resolved_market == "kr" else "finnhub+yfinance"
-            instrument_type = (
-                "equity_kr" if resolved_market == "kr" else "equity_us"
-            )
+            instrument_type = "equity_kr" if resolved_market == "kr" else "equity_us"
             return _error_payload(
                 source=source,
                 message=str(exc),
@@ -3986,13 +4700,11 @@ def register_tools(mcp: FastMCP) -> None:
         h_price = holdings.get("price")
         h_qty = holdings.get("quantity")
         if h_price is None or h_qty is None:
-            raise ValueError(
-                "holdings must contain 'price' and 'quantity'"
-            )
+            raise ValueError("holdings must contain 'price' and 'quantity'")
         h_price = float(h_price)
         h_qty = float(h_qty)
-        if h_price <= 0 or h_qty <= 0:
-            raise ValueError("holdings price and quantity must be > 0")
+        if h_price < 0 or h_qty < 0:
+            raise ValueError("holdings price and quantity must be >= 0")
 
         # --- validate plans ---
         if not plans:
@@ -4002,40 +4714,48 @@ def register_tools(mcp: FastMCP) -> None:
             pp = p.get("price")
             pq = p.get("quantity")
             if pp is None or pq is None:
-                raise ValueError(
-                    f"plans[{i}] must contain 'price' and 'quantity'"
-                )
+                raise ValueError(f"plans[{i}] must contain 'price' and 'quantity'")
             pp, pq = float(pp), float(pq)
             if pp <= 0 or pq <= 0:
-                raise ValueError(
-                    f"plans[{i}] price and quantity must be > 0"
-                )
+                raise ValueError(f"plans[{i}] price and quantity must be > 0")
             validated_plans.append((pp, pq))
 
         mkt = float(current_market_price) if current_market_price is not None else None
+        tp = float(target_price) if target_price is not None else None
+        if tp is not None and tp <= 0:
+            raise ValueError("target_price must be > 0")
 
         # --- current position ---
         total_qty = h_qty
-        total_invested = round(h_price * h_qty, 2)
-        avg_price = round(total_invested / total_qty, 2)
+        total_invested_raw = h_price * h_qty
+        avg_price_raw = (total_invested_raw / total_qty) if total_qty > 0 else None
+        avg_price = round(avg_price_raw, 2) if avg_price_raw is not None else None
 
         current_position: dict[str, Any] = {
             "avg_price": avg_price,
             "total_quantity": total_qty,
-            "total_invested": total_invested,
+            "total_invested": round(total_invested_raw, 2),
         }
-        if mkt is not None:
+        if mkt is not None and avg_price is not None:
             pnl = round((mkt - avg_price) * total_qty, 2)
             pnl_pct = round((mkt / avg_price - 1) * 100, 2)
             current_position["unrealized_pnl"] = pnl
             current_position["unrealized_pnl_pct"] = pnl_pct
+            current_position["pnl_vs_current"] = pnl
+            current_position["pnl_vs_current_pct"] = pnl_pct
+
+        if tp is not None and avg_price is not None:
+            projected_profit = round((tp - avg_price) * total_qty, 2)
+            target_return_pct = round((tp / avg_price - 1) * 100, 2)
+            current_position["target_profit"] = projected_profit
+            current_position["target_return_pct"] = target_return_pct
 
         # --- steps ---
         steps: list[dict[str, Any]] = []
         for idx, (bp, bq) in enumerate(validated_plans, start=1):
-            total_invested = round(total_invested + bp * bq, 2)
+            total_invested_raw += bp * bq
             total_qty = round(total_qty + bq, 10)
-            avg_price = round(total_invested / total_qty, 2)
+            avg_price = round(total_invested_raw / total_qty, 2)
 
             step: dict[str, Any] = {
                 "step": idx,
@@ -4043,7 +4763,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "buy_quantity": bq,
                 "new_avg_price": avg_price,
                 "total_quantity": total_qty,
-                "total_invested": total_invested,
+                "total_invested": round(total_invested_raw, 2),
             }
             if mkt is not None:
                 breakeven_pct = round((avg_price / mkt - 1) * 100, 2)
@@ -4052,6 +4772,14 @@ def register_tools(mcp: FastMCP) -> None:
                 step["breakeven_change_pct"] = breakeven_pct
                 step["unrealized_pnl"] = pnl
                 step["unrealized_pnl_pct"] = pnl_pct
+                step["pnl_vs_current"] = pnl
+                step["pnl_vs_current_pct"] = pnl_pct
+
+            if tp is not None:
+                target_profit = round((tp - avg_price) * total_qty, 2)
+                target_return_pct = round((tp / avg_price - 1) * 100, 2)
+                step["target_profit"] = target_profit
+                step["target_return_pct"] = target_return_pct
 
             steps.append(step)
 
@@ -4063,16 +4791,14 @@ def register_tools(mcp: FastMCP) -> None:
         if mkt is not None:
             result["current_market_price"] = mkt
 
-        if target_price is not None:
-            tp = float(target_price)
-            if tp <= 0:
-                raise ValueError("target_price must be > 0")
-            profit_per_unit = round(tp - avg_price, 2)
+        if tp is not None and steps:
+            final_avg_price = float(steps[-1]["new_avg_price"])
+            profit_per_unit = round(tp - final_avg_price, 2)
             total_profit = round(profit_per_unit * total_qty, 2)
-            total_return_pct = round((tp / avg_price - 1) * 100, 2)
+            total_return_pct = round((tp / final_avg_price - 1) * 100, 2)
             result["target_analysis"] = {
                 "target_price": tp,
-                "final_avg_price": avg_price,
+                "final_avg_price": final_avg_price,
                 "profit_per_unit": profit_per_unit,
                 "total_profit": total_profit,
                 "total_return_pct": total_return_pct,
