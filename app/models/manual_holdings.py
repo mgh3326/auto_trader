@@ -14,6 +14,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Numeric,
+    String,
     Text,
     UniqueConstraint,
     func,
@@ -23,12 +24,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 
-class BrokerType(str, enum.Enum):
-    """브로커 타입"""
+class BrokerType:
+    """브로커 타입 (문자열 상수)"""
 
-    kis = "kis"  # 한국투자증권
-    toss = "toss"  # 토스증권
-    upbit = "upbit"  # 업비트 (암호화폐)
+    KIS = "kis"  # 한국투자증권
+    TOSS = "toss"  # 토스증권
+    UPBIT = "upbit"  # 업비트 (암호화폐)
+    SAMSUNG = "samsung"  # 삼성증권
 
 
 class MarketType(str, enum.Enum):
@@ -56,9 +58,7 @@ class BrokerAccount(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    broker_type: Mapped[BrokerType] = mapped_column(
-        Enum(BrokerType, name="broker_type"), nullable=False
-    )
+    broker_type: Mapped[str] = mapped_column(String(50), nullable=False)
     account_name: Mapped[str] = mapped_column(Text, nullable=False, default="기본 계좌")
     is_mock: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

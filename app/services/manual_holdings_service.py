@@ -84,7 +84,7 @@ class ManualHoldingsService:
         self,
         user_id: int,
         market_type: MarketType | None = None,
-        broker_type: BrokerType | None = None,
+        broker_type: str | None = None,
     ) -> list[ManualHolding]:
         """사용자별 모든 보유 종목 조회"""
         query = (

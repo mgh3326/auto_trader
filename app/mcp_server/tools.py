@@ -26,6 +26,7 @@ from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
+from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from data.coins_info import get_or_refresh_maps
 
 # 마스터 데이터 (lazy loading)
@@ -2844,10 +2845,10 @@ async def _fetch_funding_rate_batch(symbols: list[str]) -> list[dict[str, Any]]:
         if funding_rate is None or next_ts is None or next_ts <= 0:
             continue
 
-        next_funding_time = datetime.datetime.fromtimestamp(
-            next_ts / 1000,
-            tz=datetime.timezone.utc,
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            next_funding_time = datetime.datetime.fromtimestamp(
+                next_funding_ts / 1000,
+                tz=datetime.UTC,
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         rows.append(
             {
@@ -3167,66 +3168,59 @@ async def _fetch_funding_rate(symbol: str, limit: int) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=10) as cli:
         # Fetch current premium index and funding rate history concurrently
         premium_resp, history_resp = await asyncio.gather(
-            cli.get(BINANCE_PREMIUM_INDEX_URL, params={"symbol": pair}),
-            cli.get(BINANCE_FUNDING_RATE_URL, params={"symbol": pair, "limit": limit}),
-        )
+     cli.get(BINANCE_PREMIUM_INDEX_URL, params={"symbol": pair}),
+        cli.get(BINANCE_FUNDING_RATE_URL, params={"symbol": pair, "limit": limit}),
+    )
         premium_resp.raise_for_status()
         history_resp.raise_for_status()
 
-        premium: dict[str, Any] = premium_resp.json()
-        history: list[dict[str, Any]] = history_resp.json()
-
-    # Parse current funding rate
-    current_rate = float(premium.get("lastFundingRate", 0))
-    next_funding_ts = int(premium.get("nextFundingTime", 0))
-    next_funding_time = (
-        datetime.datetime.fromtimestamp(
-            next_funding_ts / 1000, tz=datetime.timezone.utc
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        if next_funding_ts
-        else None
-    )
-
-    # Build history entries
-    funding_history: list[dict[str, Any]] = []
-    rates_for_avg: list[float] = []
-    for entry in history:
-        rate = float(entry.get("fundingRate", 0))
-        ts = int(entry.get("fundingTime", 0))
-        time_str = (
+        # Parse current funding rate
+        current_rate = float(premium_resp.get("lastFundingRate", 0))
+        next_funding_ts = int(premium_resp.get("nextFundingTime", 0))
+        next_funding_time = (
             datetime.datetime.fromtimestamp(
-                ts / 1000, tz=datetime.timezone.utc
+                next_funding_ts / 1000,
+                tz=datetime.UTC,
             ).strftime("%Y-%m-%dT%H:%M:%SZ")
-            if ts
+        )
+
+        # Build history entries
+        funding_history: list[dict[str, Any]] = []
+        rates_for_avg: list[float] = []
+        for entry in history_resp.json():
+            rate = float(entry.get("fundingRate", 0))
+            ts = int(entry.get("fundingTime", 0))
+            time_str = datetime.datetime.fromtimestamp(
+                ts / 1000,
+                tz=datetime.UTC,
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            funding_history.append(
+                {
+                    "time": time_str,
+                    "rate": rate,
+                    "rate_pct": round(rate * 100, 4),
+                }
+            )
+            rates_for_avg.append(rate)
+
+        avg_rate = (
+            round(sum(rates_for_avg) / len(rates_for_avg) * 100, 4)
+            if rates_for_avg
             else None
         )
-        funding_history.append(
-            {
-                "time": time_str,
-                "rate": rate,
-                "rate_pct": round(rate * 100, 4),
-            }
-        )
-        rates_for_avg.append(rate)
 
-    avg_rate = (
-        round(sum(rates_for_avg) / len(rates_for_avg) * 100, 4)
-        if rates_for_avg
-        else None
-    )
-
-    return {
-        "symbol": pair,
-        "current_funding_rate": current_rate,
-        "current_funding_rate_pct": round(current_rate * 100, 4),
-        "next_funding_time": next_funding_time,
-        "funding_history": funding_history,
-        "avg_funding_rate_pct": avg_rate,
-        "interpretation": {
-            "positive": "롱이 숏에게 지불 (롱 과열 — 시장이 과도하게 강세)",
-            "negative": "숏이 롱에게 지불 (숏 과열 — 시장이 과도하게 약세)",
-        },
-    }
+        return {
+            "symbol": pair,
+            "current_funding_rate": current_rate,
+            "current_funding_rate_pct": round(current_rate * 100, 4),
+            "next_funding_time": next_funding_time,
+            "funding_history": funding_history,
+            "avg_funding_rate_pct": avg_rate,
+            "interpretation": {
+                "positive": "롱이 숏에게 지불 (롱 과열 — 시장이 과도하게 강세)",
+                "negative": "숏이 롱에게 지불 (숏 과열 — 시장이 과도하게 약세)",
+            },
+        }
 
 
 def register_tools(mcp: FastMCP) -> None:
@@ -4353,9 +4347,8 @@ def register_tools(mcp: FastMCP) -> None:
             sym = symbol.strip().upper()
             meta = _INDEX_META.get(sym)
             if meta is None:
-                valid = sorted({k for k in _INDEX_META})
                 raise ValueError(
-                    f"Unknown index symbol '{sym}'. Supported: {', '.join(valid)}"
+                    f"Unknown index symbol '{sym}'. Supported: {', '.join(sorted(_INDEX_META))}"
                 )
 
             try:
@@ -5366,3 +5359,52 @@ def register_tools(mcp: FastMCP) -> None:
             }
 
         return result
+
+    @mcp.tool(
+        name="update_manual_holdings",
+        description=(
+            "Update manual holdings from parsed securities app screenshot data. "
+            "The LLM should first analyze the screenshot and extract holdings, "
+            "then pass the structured data to this tool. "
+            "Supports any broker (toss, samsung, etc.) and account type "
+            "(기본 계좌, 퇴직연금, ISA). "
+            "Each holding needs: stock_name, quantity, eval_amount, profit_loss, "
+            "profit_rate, market_section (kr/us), and optional action (upsert/remove). "
+            "Uses upsert by default: updates existing and adds new holdings. "
+            "Use action='remove' to delete fully sold holdings. "
+            "Holdings not in the input are left unchanged (safe for partial screenshots)."
+        ),
+    )
+    async def update_manual_holdings(
+        holdings: list[dict[str, Any]],
+        broker: str = "toss",
+        account_name: str = "기본 계좌",
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        if not holdings:
+            return {
+                "success": False,
+                "error": "holdings list is required",
+                "dry_run": dry_run,
+            }
+
+        try:
+            async with AsyncSessionLocal() as db:
+                service = ScreenshotHoldingsService(db)
+                user_id = _env_int("MCP_USER_ID", 1)
+                result = await service.resolve_and_update(
+                    user_id=user_id,
+                    holdings_data=holdings,
+                    broker=broker,
+                    account_name=account_name,
+                    dry_run=dry_run,
+                )
+                return result
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "dry_run": dry_run,
+                "broker": broker,
+                "account_name": account_name,
+            }
