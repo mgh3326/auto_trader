@@ -1,48 +1,63 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 
-import dart_fss  # 또는 httpx로 OpenDART 직접 호출
+import dart_fss
 
-from app.core.config import settings  # OPEN_DART_API_KEY
+from app.core.config import settings
 from data.disclosures.dart_corp_index import NAME_TO_CORP, prime_index
 
 
-async def init_dart():
-    # 최초 한 번 인덱스 준비
-    await prime_index()
-    dart_fss.set_api_key(api_key=settings.opendart_api_key)
+async def list_filings(korean_name: str, days: int = 3):
+    """Query DART API for corporation filings.
 
+    Args:
+        korean_name: Korean company name (e.g., "삼성전자")
+        days: Number of days to look back (default: 3, max: 365)
 
-async def list_filings(korean_name: str, days: int = 3) -> list[dict]:
-    # 회사명 -> corp_code
+    Returns:
+        List of filing records with date, report name, report number, corp name.
+    """
+    if not NAME_TO_CORP:
+        await prime_index()
+
     corp_code = NAME_TO_CORP.get(korean_name)
     if not corp_code:
         return []
+
     bgn = (dt.date.today() - dt.timedelta(days=days)).strftime("%Y%m%d")
     end = dt.date.today().strftime("%Y%m%d")
-    # dart-fss 사용 예시 (간단화)
-    corp = dart_fss.corp.Corp(corp_code=corp_code)
 
-    # 3A) 권장: Corp 메서드 사용
-    reports = corp.search_filings(bgn_de=bgn, end_de=end, page_count=100)
+    def fetch_sync():
+        corp = dart_fss.corp.Corp(corp_code=corp_code)
+        reports = corp.search_filings(bgn_de=bgn, end_de=end, page_count=100)
+        return [(r.rcept_dt, r.rpt_nm, r.rcp_no, korean_name) for r in reports]
 
-    # 3B) 또는 탑레벨 함수 사용 (동일 결과)
-    # from dart_fss.filings import search as search_filings
-    # reports = search_filings(corp_code=corp.corp_code, bgn_de=bgn, end_de=end, page_count=100)
-    out = []
-    for r in reports:
-        out.append(
+    try:
+        results = await asyncio.to_thread(fetch_sync)
+    except Exception as exc:
+        if not settings.opendart_api_key:
+            return {
+                "success": False,
+                "error": "OPENDART_API_KEY not set. Please set environment variable.",
+                "filings": [],
+            }
+        return {
+            "success": False,
+            "error": str(exc),
+            "filings": [],
+        }
+
+    filings = []
+    for filing_date, report_nm, rcp_no, korean_name in results:
+        filings.append(
             {
-                "date": r.rcp_dt,
-                "report_nm": r.report_nm,
-                "rcp_no": r.rcp_no,
+                "date": f"{filing_date[:4]}-{filing_date[4:6]}-{filing_date[6:8]}",
+                "report_nm": report_nm,
+                "rcp_no": rcp_no,
                 "corp_name": korean_name,
             }
         )
-    return out
-    # 4) 결과 다루기
-    # SearchResults는 인덱싱/슬라이싱 가능, dict로도 변환 가능
-    items = reports.to_dict().get("list", [])
-    for r in items:
-        print(r["rcp_dt"], r["report_nm"], r["rcp_no"])
+
+    return filings

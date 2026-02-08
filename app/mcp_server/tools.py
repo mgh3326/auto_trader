@@ -24,12 +24,11 @@ from app.models.manual_holdings import MarketType
 from app.services import naver_finance
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
+from app.services.disclosures.dart import list_filings
 from app.services.kis import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from data.coins_info import get_or_refresh_maps
-
-# 마스터 데이터 (lazy loading)
 from data.stocks_info import (
     get_kosdaq_name_to_code,
     get_kospi_name_to_code,
@@ -1380,16 +1379,20 @@ def _compute_dca_price_levels(
             start_price = current_price * 0.995
             end_price = min(support_prices)
             step = (end_price - start_price) / (splits - 1)
+            used_supports: set[float] = set()
             for i in range(splits):
                 price = start_price + step * i
                 # Check if any support is near this price (within 2%)
                 near_support = None
                 for supp in support_prices:
+                    if supp in used_supports:
+                        continue
                     if abs(price - supp) / price < 0.02:
                         near_support = supp
                         break
                 if near_support is not None:
                     price = near_support
+                    used_supports.add(near_support)
                 support_levels.append({"price": price, "source": "support"})
             return support_levels
         else:
@@ -1418,15 +1421,45 @@ def _compute_dca_price_levels(
         ]
 
     elif strategy == "aggressive":
-        # First buy at current - 0.5%, rest using support strategy
         first_price = current_price * 0.995
-        rest_levels = _compute_dca_price_levels(
-            "support",
-            splits - 1,
-            current_price,
-            supports,
-        )
-        return [{"price": first_price, "source": "aggressive_first"}] + rest_levels
+        levels: list[dict[str, Any]] = [
+            {"price": first_price, "source": "aggressive_first"}
+        ]
+
+        if splits <= 1:
+            return levels
+
+        support_prices = [s["price"] for s in supports]
+        if support_prices:
+            end_price = min(support_prices)
+        else:
+            end_price = current_price * 0.98
+
+        remaining = splits - 1
+        used_supports: set[float] = set()
+
+        if len(support_prices) >= remaining:
+            for i in range(1, splits):
+                price = first_price + ((end_price - first_price) / (splits - 1)) * i
+                near_support = None
+                for supp in support_prices:
+                    if supp in used_supports:
+                        continue
+                    if abs(price - supp) / price < 0.02 and supp < price:
+                        near_support = supp
+                        break
+                if near_support is not None:
+                    price = near_support
+                    used_supports.add(near_support)
+                source = "support" if near_support else "interpolated"
+                levels.append({"price": price, "source": source})
+        else:
+            step = (end_price - first_price) / remaining
+            for i in range(1, splits):
+                price = first_price + step * i
+                levels.append({"price": price, "source": "interpolated"})
+
+        return levels
 
     else:
         raise ValueError(
@@ -1480,16 +1513,6 @@ def _compute_indicators(
         elif indicator == "pivot":
             if high is not None and low is not None:
                 results["pivot"] = _calculate_pivot(high, low, close)
-            else:
-                results["pivot"] = {
-                    "p": None,
-                    "r1": None,
-                    "r2": None,
-                    "r3": None,
-                    "s1": None,
-                    "s2": None,
-                    "s3": None,
-                }
 
     return results
 
@@ -1858,6 +1881,131 @@ async def _fetch_company_profile_finnhub(symbol: str) -> dict[str, Any]:
     }
 
 
+async def _fetch_sector_peers_finnhub(symbol: str, limit: int) -> dict[str, Any]:
+    """Fetch sector peers from Finnhub API.
+
+    Args:
+        symbol: US stock symbol (e.g., "AAPL")
+        limit: Maximum number of peers to return
+
+    Returns:
+        Dictionary with sector name and peer companies
+    """
+    client = _get_finnhub_client()
+
+    def fetch_sync() -> dict[str, Any]:
+        peers_data = client.company_peers(symbol=symbol.upper())
+        return peers_data
+
+    peers = await asyncio.to_thread(fetch_sync)
+
+    if not peers:
+        raise ValueError(f"Sector peers not found for symbol '{symbol}'")
+
+    # Get company profiles for peers to get sector info
+    def fetch_profiles_sync() -> list[dict[str, Any]]:
+        profiles = []
+        for peer_symbol in peers[:limit]:
+            profile = client.company_profile2(symbol=peer_symbol)
+            if profile:
+                profiles.append(profile)
+        return profiles
+
+    profiles = await asyncio.to_thread(fetch_profiles_sync)
+
+    # Extract sector from first profile
+    sector = None
+    if profiles:
+        sector = profiles[0].get("finnhubIndustry")
+
+    # Transform to consistent format
+    result_peers = []
+    for profile in profiles:
+        result_peers.append(
+            {
+                "symbol": profile.get("ticker", ""),
+                "name": profile.get("name", ""),
+                "market_cap": profile.get("marketCapitalization"),
+                "exchange": profile.get("exchange", ""),
+                "country": profile.get("country", ""),
+            }
+        )
+
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_us",
+        "source": "finnhub",
+        "sector": sector,
+        "peers": result_peers,
+    }
+
+
+async def _fetch_financials_yfinance(
+    symbol: str, statement: str, freq: str
+) -> dict[str, Any]:
+    """Fetch financial statements from yfinance for US stocks.
+
+    Args:
+        symbol: US stock symbol (e.g., "AAPL")
+        statement: Statement type - "income", "balance", or "cashflow"
+        freq: Frequency - "annual" or "quarterly"
+
+    Returns:
+        Dictionary with financial data
+    """
+    loop = asyncio.get_running_loop()
+    ticker = yf.Ticker(symbol)
+
+    def fetch_sync() -> dict[str, Any]:
+        statement_map = {
+            "income": "income_stmt",
+            "balance": "balance_sheet",
+            "cashflow": "cashflow",
+        }
+        yf_stmt_name = statement_map.get(statement)
+        if not yf_stmt_name:
+            raise ValueError(
+                f"Invalid statement type '{statement}'. Use: income, balance, cashflow"
+            )
+
+        freq_attr = f"quarterly_{yf_stmt_name}" if freq == "quarterly" else yf_stmt_name
+
+        if not hasattr(ticker, freq_attr):
+            try:
+                df = getattr(ticker, yf_stmt_name)
+                if df is None or df.empty:
+                    raise ValueError(f"No {statement} data available for '{symbol}'")
+            except Exception as e:
+                raise ValueError(f"Failed to fetch {statement} data: {e}")
+
+        df = getattr(ticker, freq_attr)
+        if df is None or df.empty:
+            raise ValueError(f"No {statement} data available for '{symbol}'")
+
+        financials = {}
+        for col in df.columns:
+            col_key = col.strftime("%Y-%m-%d") if hasattr(col, "strftime") else str(col)
+            period_data = {}
+            for row_label, val in df[col].items():
+                if pd.notna(val):
+                    period_data[str(row_label)] = _normalize_value(val)
+            if period_data:
+                financials[col_key] = period_data
+
+        return financials
+
+    financials = await loop.run_in_executor(None, fetch_sync)
+
+    return {
+        "symbol": symbol.upper(),
+        "instrument_type": "equity_us",
+        "source": "yfinance",
+        "statement": statement,
+        "freq": freq,
+        "data": financials,
+    }
+
+
 async def _fetch_financials_finnhub(
     symbol: str, statement: str, freq: str
 ) -> dict[str, Any]:
@@ -2072,6 +2220,17 @@ async def _fetch_earnings_calendar_finnhub(
 # ---------------------------------------------------------------------------
 # Naver Finance Helpers (Korean Stocks)
 # ---------------------------------------------------------------------------
+
+
+async def _get_quote_impl(symbol: str, market_type: str) -> dict[str, Any] | None:
+    """Fetch quote data for any market type."""
+    if market_type == "crypto":
+        return await _fetch_quote_crypto(symbol)
+    elif market_type == "equity_kr":
+        return await _fetch_quote_equity_kr(symbol)
+    elif market_type == "equity_us":
+        return await _fetch_quote_equity_us(symbol)
+    return None
 
 
 async def _fetch_news_naver(symbol: str, limit: int) -> dict[str, Any]:
@@ -2328,12 +2487,15 @@ async def _fetch_valuation_yfinance(symbol: str) -> dict[str, Any]:
     }
 
 
-async def _fetch_sector_peers_naver(symbol: str, limit: int) -> dict[str, Any]:
+async def _fetch_sector_peers_naver(
+    symbol: str, limit: int, manual_peers: list[str] | None = None
+) -> dict[str, Any]:
     """Fetch sector peers for a Korean stock via Naver Finance.
 
     Args:
         symbol: Korean stock code (6 digits, e.g., "298040")
         limit: Max number of peers to return
+        manual_peers: Optional list of peer tickers to use instead of Naver
 
     Returns:
         Dictionary with target info, peers list, and comparison metrics
@@ -2391,12 +2553,15 @@ async def _fetch_sector_peers_naver(symbol: str, limit: int) -> dict[str, Any]:
     }
 
 
-async def _fetch_sector_peers_us(symbol: str, limit: int) -> dict[str, Any]:
+async def _fetch_sector_peers_us(
+    symbol: str, limit: int, manual_peers: list[str] | None = None
+) -> dict[str, Any]:
     """Fetch sector peers for a US stock via Finnhub + yfinance.
 
     Args:
         symbol: US stock ticker (e.g., "AAPL")
         limit: Max number of peers to return
+        manual_peers: Optional list of peer tickers to use instead of Finnhub
 
     Returns:
         Dictionary with target info, peers list, and comparison metrics
@@ -2404,12 +2569,16 @@ async def _fetch_sector_peers_us(symbol: str, limit: int) -> dict[str, Any]:
     client = _get_finnhub_client()
     upper_symbol = symbol.upper()
 
-    # Step 1: Get peer tickers from Finnhub
-    peer_tickers: list[str] = await asyncio.to_thread(
-        client.company_peers, upper_symbol
-    )
-    peer_tickers = [t for t in peer_tickers if t.upper() != upper_symbol]
-    peer_tickers = peer_tickers[: limit + 5]
+    # Step 1: Get peer tickers from Finnhub or use manual peers
+    if manual_peers:
+        peer_tickers = [t.upper() for t in manual_peers if t.upper() != upper_symbol]
+        peer_tickers = peer_tickers[:limit]
+    else:
+        peer_tickers: list[str] = await asyncio.to_thread(
+            client.company_peers, upper_symbol
+        )
+        peer_tickers = [t for t in peer_tickers if t.upper() != upper_symbol]
+        peer_tickers = peer_tickers[: limit + 5]
 
     # Step 2: Fetch yfinance info concurrently for target + peers
     all_tickers = [upper_symbol] + peer_tickers
@@ -2445,8 +2614,23 @@ async def _fetch_sector_peers_us(symbol: str, limit: int) -> dict[str, Any]:
     target_mcap = target_info.get("marketCap")
 
     # Step 4: Build peers
-    peers: list[dict[str, Any]] = []
+    # Cross-listed filtering: remove peers with same base ticker as any existing peer
+    def get_base_ticker(ticker: str) -> str:
+        if "." in ticker:
+            return ticker.split(".")[0]
+        return ticker
+
+    target_base = get_base_ticker(upper_symbol)
+    seen_bases = {target_base}
+    filtered_tickers = []
     for ticker in peer_tickers:
+        peer_base = get_base_ticker(ticker)
+        if peer_base not in seen_bases:
+            seen_bases.add(peer_base)
+            filtered_tickers.append(ticker)
+
+    peers: list[dict[str, Any]] = []
+    for ticker in filtered_tickers:
         info = info_map.get(ticker)
         if info is None:
             continue
@@ -2466,6 +2650,11 @@ async def _fetch_sector_peers_us(symbol: str, limit: int) -> dict[str, Any]:
                 "per": info.get("trailingPE"),
                 "pbr": info.get("priceToBook"),
                 "market_cap": info.get("marketCap"),
+                "same_industry": (
+                    info.get("industry") == target_industry
+                    if target_industry and info.get("industry")
+                    else None
+                ),
             }
         )
 
@@ -3059,7 +3248,7 @@ async def _fetch_kimchi_premium(symbols: list[str]) -> dict[str, Any]:
             }
         )
 
-    now = datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    now = datetime.datetime.now(tz=datetime.UTC).strftime("%Y-%m-%dT%H:%M:%S")
 
     return {
         "instrument_type": "crypto",
@@ -3684,11 +3873,7 @@ def register_tools(mcp: FastMCP) -> None:
                 instrument_type=market_type,
             )
 
-    @mcp.tool(
-        name="get_indicators",
-        description="Calculate technical indicators for a symbol. Available indicators: sma (Simple Moving Average), ema (Exponential Moving Average), rsi (Relative Strength Index), macd (MACD), bollinger (Bollinger Bands), atr (Average True Range), pivot (Pivot Points).",
-    )
-    async def get_indicators(
+    async def _get_indicators_impl(
         symbol: str,
         indicators: list[str],
         market: str | None = None,
@@ -3771,6 +3956,18 @@ def register_tools(mcp: FastMCP) -> None:
                 symbol=symbol,
                 instrument_type=market_type,
             )
+
+    @mcp.tool(
+        name="get_indicators",
+        description="Calculate technical indicators for a symbol. Available indicators: sma (Simple Moving Average), ema (Exponential Moving Average), rsi (Relative Strength Index), macd (MACD), bollinger (Bollinger Bands), atr (Average True Range), pivot (Pivot Points).",
+    )
+    async def get_indicators(
+        symbol: str,
+        indicators: list[str],
+        market: str | None = None,
+    ) -> dict[str, Any]:
+        """Calculate technical indicators for a symbol."""
+        return await _get_indicators_impl(symbol, indicators, market)
 
     # ---------------------------------------------------------------------------
     # Finnhub Tools (News & Fundamentals)
@@ -4017,9 +4214,12 @@ def register_tools(mcp: FastMCP) -> None:
             if normalized_market == "kr":
                 return await _fetch_financials_naver(symbol, statement, freq)
             else:
-                return await _fetch_financials_finnhub(symbol, statement, freq)
+                try:
+                    return await _fetch_financials_finnhub(symbol, statement, freq)
+                except (ValueError, Exception):
+                    return await _fetch_financials_yfinance(symbol, statement, freq)
         except Exception as exc:
-            source = "naver" if normalized_market == "kr" else "finnhub"
+            source = "naver" if normalized_market == "kr" else "yfinance"
             instrument_type = "equity_kr" if normalized_market == "kr" else "equity_us"
             return _error_payload(
                 source=source,
@@ -4582,15 +4782,7 @@ def register_tools(mcp: FastMCP) -> None:
     # get_sector_peers
     # ------------------------------------------------------------------
 
-    @mcp.tool(
-        name="get_support_resistance",
-        description=(
-            "Extract key support/resistance zones by combining Fibonacci levels, "
-            "volume profile (POC/value area), and Bollinger Bands, then clustering "
-            "nearby levels within +/-2%."
-        ),
-    )
-    async def get_support_resistance(
+    async def _get_support_resistance_impl(
         symbol: str,
         market: str | None = None,
     ) -> dict[str, Any]:
@@ -4699,6 +4891,21 @@ def register_tools(mcp: FastMCP) -> None:
             )
 
     @mcp.tool(
+        name="get_support_resistance",
+        description=(
+            "Extract key support/resistance zones by combining Fibonacci levels, "
+            "volume profile (POC/value area), and Bollinger Bands, then clustering "
+            "nearby levels within +/-2%."
+        ),
+    )
+    async def get_support_resistance(
+        symbol: str,
+        market: str | None = None,
+    ) -> dict[str, Any]:
+        """Get support/resistance zones from multi-indicator clustering."""
+        return await _get_support_resistance_impl(symbol, market)
+
+    @mcp.tool(
         name="get_sector_peers",
         description=(
             "Get sector peer stocks for comparison. "
@@ -4712,6 +4919,7 @@ def register_tools(mcp: FastMCP) -> None:
         symbol: str,
         market: str = "",
         limit: int = 5,
+        manual_peers: list[str] | None = None,
     ) -> dict[str, Any]:
         """Get sector peer stocks for a stock.
 
@@ -4719,6 +4927,7 @@ def register_tools(mcp: FastMCP) -> None:
             symbol: Stock symbol (e.g., "005930" for Korean, "AAPL" for US)
             market: Market hint - "kr" or "us" (auto-detected if empty)
             limit: Number of peer stocks to return (default: 5, max: 20)
+            manual_peers: Optional list of peer tickers to use instead of auto-discovery
 
         Returns:
             Dictionary with target stock info, peer stocks list, and
@@ -4728,6 +4937,7 @@ def register_tools(mcp: FastMCP) -> None:
             get_sector_peers("298040")            # 효성중공업 (Korean)
             get_sector_peers("AAPL")              # Apple (US)
             get_sector_peers("005930", limit=10)  # 삼성전자 with 10 peers
+            get_sector_peers("AAPL", manual_peers=["MSFT", "GOOGL"])  # Manual peers
         """
         symbol = (symbol or "").strip()
         if not symbol:
@@ -4768,9 +4978,11 @@ def register_tools(mcp: FastMCP) -> None:
 
         try:
             if resolved_market == "kr":
-                return await _fetch_sector_peers_naver(symbol, capped_limit)
+                return await _fetch_sector_peers_naver(
+                    symbol, capped_limit, manual_peers
+                )
             else:
-                return await _fetch_sector_peers_us(symbol, capped_limit)
+                return await _fetch_sector_peers_us(symbol, capped_limit, manual_peers)
         except Exception as exc:
             source = "naver" if resolved_market == "kr" else "finnhub+yfinance"
             instrument_type = "equity_kr" if resolved_market == "kr" else "equity_us"
@@ -4785,17 +4997,7 @@ def register_tools(mcp: FastMCP) -> None:
     # place_order
     # ------------------------------------------------------------------
 
-    @mcp.tool(
-        name="place_order",
-        description=(
-            "Place buy/sell orders for stocks or crypto. "
-            "Supports Upbit (crypto) and KIS (KR/US equities). "
-            "Always returns dry_run preview unless explicitly set to False. "
-            "Safety limits: max 1M KRW per order, max 20 orders/day. "
-            "dry_run=True by default for safety."
-        ),
-    )
-    async def place_order(
+    async def _place_order_impl(
         symbol: str,
         side: Literal["buy", "sell"],
         order_type: Literal["limit", "market"] = "limit",
@@ -4969,33 +5171,39 @@ def register_tools(mcp: FastMCP) -> None:
 
             order_amount = _to_float(dry_run_result.get("estimated_value"), default=0.0)
 
+            balance_warning: str | None = None
+
             if side_lower == "buy":
                 balance = await _get_balance_for_order(market_type)
                 if balance < order_amount:
                     if market_type == "crypto":
-                        message = (
+                        balance_warning = (
                             f"Insufficient KRW balance: {balance:,.0f} KRW < {order_amount:,.0f} KRW. "
                             f"Please deposit KRW from your bank account to Upbit, then retry."
                         )
                     elif market_type == "equity_kr":
-                        message = (
+                        balance_warning = (
                             f"Insufficient KRW balance: {balance:,.0f} KRW < {order_amount:,.0f} KRW. "
                             f"Please deposit funds to your KIS domestic account, then retry."
                         )
                     else:
-                        message = (
+                        balance_warning = (
                             f"Insufficient USD balance: {balance / 1300:,.2f} USD < {order_amount / 1300:,.2f} USD (estimated). "
                             f"Please deposit USD to your KIS overseas account, then retry."
                         )
-                    return _order_error(message)
+                    if not dry_run:
+                        return _order_error(balance_warning)
 
             if dry_run:
-                return {
+                result = {
                     "success": True,
                     "dry_run": True,
                     **dry_run_result,
                     "message": "Order preview (dry_run=True)",
                 }
+                if balance_warning:
+                    result["warning"] = balance_warning
+                return result
 
             if order_amount > MAX_ORDER_AMOUNT_KRW:
                 return _order_error(
@@ -5049,6 +5257,31 @@ def register_tools(mcp: FastMCP) -> None:
             )
             return _order_error(str(exc))
 
+    @mcp.tool(
+        name="place_order",
+        description=(
+            "Place buy/sell orders for stocks or crypto. "
+            "Supports Upbit (crypto) and KIS (KR/US equities). "
+            "Always returns dry_run preview unless explicitly set to False. "
+            "Safety limits: max 1M KRW per order, max 20 orders/day. "
+            "dry_run=True by default for safety."
+        ),
+    )
+    async def place_order(
+        symbol: str,
+        side: Literal["buy", "sell"],
+        order_type: Literal["limit", "market"] = "limit",
+        quantity: float | None = None,
+        price: float | None = None,
+        amount: float | None = None,
+        dry_run: bool = True,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Place buy/sell order with safety checks."""
+        return await _place_order_impl(
+            symbol, side, order_type, quantity, price, amount, dry_run, reason
+        )
+
     async def _get_current_price_for_order(
         symbol: str, market_type: str
     ) -> float | None:
@@ -5100,11 +5333,8 @@ def register_tools(mcp: FastMCP) -> None:
         elif market_type == "equity_kr":
             try:
                 kis = KISClient()
-                balance_data = await kis.inquire_balance()
-                for item in balance_data:
-                    currency = item.get("crcy_cd", "")
-                    if currency == "KRW":
-                        return float(item.get("dncl_amt_2", 0) or 0)
+                balance_data = await kis.inquire_integrated_margin()
+                return float(balance_data.get("stck_cash_ord_psbl_amt", 0) or 0)
             except Exception:
                 pass
         elif market_type == "equity_us":
@@ -5431,24 +5661,20 @@ def register_tools(mcp: FastMCP) -> None:
             try:
                 kis = KISClient()
                 balance_data = await kis.inquire_integrated_margin()
-                for item in balance_data:
-                    currency = item.get("crcy_cd", "")
-                    if currency == "KRW":
-                        dncl_amt = float(item.get("dncl_amt_2", 0) or 0)
-                        orderable = float(item.get("stck_cash_ord_psbl_amt", 0) or 0)
-                        accounts.append(
-                            {
-                                "account": "kis_domestic",
-                                "account_name": "기본 계좌",
-                                "broker": "kis",
-                                "currency": "KRW",
-                                "balance": dncl_amt,
-                                "orderable": orderable,
-                                "formatted": f"{int(dncl_amt):,} KRW",
-                            }
-                        )
-                        total_krw += dncl_amt
-                        break
+                dncl_amt = float(balance_data.get("dnca_tot_amt", 0) or 0)
+                orderable = float(balance_data.get("stck_cash_ord_psbl_amt", 0) or 0)
+                accounts.append(
+                    {
+                        "account": "kis_domestic",
+                        "account_name": "기본 계좌",
+                        "broker": "kis",
+                        "currency": "KRW",
+                        "balance": dncl_amt,
+                        "orderable": orderable,
+                        "formatted": f"{int(dncl_amt):,} KRW",
+                    }
+                )
+                total_krw += dncl_amt
             except Exception as exc:
                 errors.append({"source": "kis", "market": "kr", "error": str(exc)})
 
@@ -6009,11 +6235,6 @@ def register_tools(mcp: FastMCP) -> None:
                 "account_name": account_name,
             }
 
-    # Export tool functions for testability (same pattern as _preview_order)
-    globals()["get_support_resistance"] = get_support_resistance
-    globals()["get_indicators"] = get_indicators
-    globals()["place_order"] = place_order
-
     @mcp.tool(
         name="create_dca_plan",
         description=(
@@ -6067,13 +6288,8 @@ def register_tools(mcp: FastMCP) -> None:
         source = source_map[market_type]
 
         try:
-            # Use globals() indirection for testability (same pattern as _preview_order)
-            sr_fn = globals().get("get_support_resistance", get_support_resistance)
-            ind_fn = globals().get("get_indicators", get_indicators)
-            order_fn = globals().get("place_order", place_order)
-
-            # Fetch support/resistance and RSI
-            sr_result = await sr_fn(normalized_symbol, None)
+            # Fetch support/resistance and RSI using _impl functions
+            sr_result = await _get_support_resistance_impl(normalized_symbol, None)
             if "error" in sr_result:
                 return {
                     "success": False,
@@ -6085,7 +6301,9 @@ def register_tools(mcp: FastMCP) -> None:
             current_price = sr_result.get("current_price")
             supports = sr_result.get("supports", [])
 
-            indicator_result = await ind_fn(normalized_symbol, ["rsi"], None)
+            indicator_result = await _get_indicators_impl(
+                normalized_symbol, ["rsi"], None
+            )
             if "error" in indicator_result:
                 return {
                     "success": False,
@@ -6189,8 +6407,8 @@ def register_tools(mcp: FastMCP) -> None:
                             "summary": summary,
                         }
 
-                    # Place order
-                    order_result = await order_fn(
+                    # Place order using _impl function
+                    order_result = await _place_order_impl(
                         symbol=normalized_symbol,
                         side="buy",
                         order_type="limit",
@@ -6237,3 +6455,535 @@ def register_tools(mcp: FastMCP) -> None:
                 "source": source,
                 "dry_run": dry_run,
             }
+
+    async def _get_quote_impl(symbol: str, market_type: str) -> dict[str, Any] | None:
+        """Fetch quote data for any market type."""
+        if market_type == "crypto":
+            return await _fetch_quote_crypto(symbol)
+        elif market_type == "equity_kr":
+            return await _fetch_quote_equity_kr(symbol)
+        elif market_type == "equity_us":
+            return await _fetch_quote_equity_us(symbol)
+        return None
+
+    @mcp.tool(
+        name="analyze_stock",
+        description=(
+            "Comprehensive stock analysis tool. Fetches quote, indicators (RSI, MACD, BB, SMA), "
+            "support/resistance, and market-specific data in parallel. "
+            "For Korean stocks: valuation (Naver), news (Naver), opinions (Naver). "
+            "For US stocks: valuation (yfinance), profile (Finnhub), news (Finnhub), opinions (yfinance). "
+            "For crypto: news (Finnhub). "
+            "Optionally includes sector peers. Returns errors array for failed sections."
+        ),
+    )
+    async def analyze_stock(
+        symbol: str,
+        market: str | None = None,
+        include_peers: bool = False,
+    ) -> dict[str, Any]:
+        """Comprehensive stock analysis with parallel data fetching.
+
+        Args:
+            symbol: Stock symbol (e.g., "005930", "AAPL", "KRW-BTC")
+            market: Market type - "kr", "us", or "crypto" (auto-detected if not specified)
+            include_peers: If True, include sector/industry peers comparison
+
+        Returns:
+            Dictionary with comprehensive analysis including quote, indicators, valuation,
+            news, opinions, and optional sector peers. Failed sections are
+            tracked in errors array.
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        market_type, normalized_symbol = _resolve_market_type(symbol, market)
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
+
+        errors: list[str] = []
+        analysis: dict[str, Any] = {
+            "symbol": normalized_symbol,
+            "market_type": market_type,
+            "source": source,
+        }
+
+        tasks: list[asyncio.Task[Any]] = []
+
+        quote_task = asyncio.create_task(
+            _get_quote_impl(normalized_symbol, market_type),
+        )
+        tasks.append(quote_task)
+
+        indicators_task = asyncio.create_task(
+            _get_indicators_impl(
+                normalized_symbol, ["rsi", "macd", "bollinger", "sma"], None
+            ),
+        )
+        tasks.append(indicators_task)
+
+        sr_task = asyncio.create_task(
+            _get_support_resistance_impl(normalized_symbol, None),
+        )
+        tasks.append(sr_task)
+
+        if market_type == "equity_kr":
+            valuation_task = asyncio.create_task(
+                _fetch_valuation_naver(normalized_symbol),
+            )
+            tasks.append(valuation_task)
+
+            news_task = asyncio.create_task(
+                _fetch_news_naver(normalized_symbol, 5),
+            )
+            tasks.append(news_task)
+
+            opinions_task = asyncio.create_task(
+                _fetch_investment_opinions_naver(normalized_symbol, 10),
+            )
+            tasks.append(opinions_task)
+
+        elif market_type == "equity_us":
+            valuation_task = asyncio.create_task(
+                _fetch_valuation_yfinance(normalized_symbol),
+            )
+            tasks.append(valuation_task)
+
+            profile_task = asyncio.create_task(
+                _fetch_company_profile_finnhub(normalized_symbol),
+            )
+            tasks.append(profile_task)
+
+            news_task = asyncio.create_task(
+                _fetch_news_finnhub(normalized_symbol, "us", 5),
+            )
+            tasks.append(news_task)
+
+            opinions_task = asyncio.create_task(
+                _fetch_investment_opinions_yfinance(normalized_symbol, 10),
+            )
+            tasks.append(opinions_task)
+
+        elif market_type == "crypto":
+            news_task = asyncio.create_task(
+                _fetch_news_finnhub(normalized_symbol, "crypto", 5),
+            )
+            tasks.append(news_task)
+
+        if include_peers and market_type != "crypto":
+            peers_task = asyncio.create_task(
+                get_sector_peers(normalized_symbol, 10),
+            )
+            tasks.append(peers_task)
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        quote = None
+        if not isinstance(results[0], Exception):
+            quote = results[0]
+
+        indicators = None
+        if not isinstance(results[1], Exception) and len(results) > 1:
+            indicators = results[1]
+
+        support_resistance = None
+        if not isinstance(results[2], Exception) and len(results) > 2:
+            support_resistance = results[2]
+
+        if quote:
+            analysis["quote"] = quote
+
+        if indicators:
+            analysis["indicators"] = indicators
+
+        if support_resistance:
+            analysis["support_resistance"] = support_resistance
+
+        task_idx = 3
+        if market_type == "equity_kr":
+            if not isinstance(results[task_idx], Exception):
+                analysis["valuation"] = results[task_idx]
+            task_idx += 1
+
+            if not isinstance(results[task_idx], Exception):
+                analysis["news"] = results[task_idx]
+            task_idx += 1
+
+            if not isinstance(results[task_idx], Exception):
+                analysis["opinions"] = results[task_idx]
+            task_idx += 1
+
+        elif market_type == "equity_us":
+            if not isinstance(results[task_idx], Exception):
+                analysis["valuation"] = results[task_idx]
+            task_idx += 1
+
+            if not isinstance(results[task_idx], Exception):
+                analysis["profile"] = results[task_idx]
+            task_idx += 1
+
+            if not isinstance(results[task_idx], Exception):
+                analysis["news"] = results[task_idx]
+            task_idx += 1
+
+            if not isinstance(results[task_idx], Exception):
+                analysis["opinions"] = results[task_idx]
+            task_idx += 1
+
+        elif market_type == "crypto":
+            if not isinstance(results[task_idx], Exception):
+                analysis["news"] = results[task_idx]
+
+        if include_peers and market_type != "crypto":
+            if not isinstance(results[task_idx], Exception):
+                analysis["sector_peers"] = results[task_idx]
+
+        if errors:
+            analysis["errors"] = errors
+        else:
+            analysis["errors"] = []
+
+        return analysis
+
+    @mcp.tool(
+        name="get_disclosures",
+        description=(
+            "Get DART (OPENDART) disclosure filings for Korean corporations. "
+            "Supports both 6-digit corp codes (e.g., '005930') and Korean company names (e.g., '삼성전자'). "
+            "Returns filing date, report name, report number, and corporation name. "
+            "Default lookback period: 30 days."
+        ),
+    )
+    async def get_disclosures(
+        symbol: str,
+        days: int = 30,
+    ) -> dict[str, Any]:
+        """Get DART disclosure filings for a Korean corporation.
+
+        Args:
+            symbol: Korean company name or 6-digit corp code (e.g., '005930' or '삼성전자')
+            days: Number of days to look back (default: 30, max: 365)
+
+        Returns:
+            Dictionary with filings data or error message.
+        """
+        try:
+            result = await list_filings(symbol, days)
+            # list_filings returns list[dict] or dict[str, Any], normalize to dict
+            if isinstance(result, list):
+                return {"success": True, "filings": result}
+            return result
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "symbol": symbol,
+            }
+
+    @mcp.tool(
+        name="get_correlation",
+        description=(
+            "Calculate Pearson correlation matrix between multiple assets. "
+            "Supports Korean stocks (KIS), US stocks (yfinance), and crypto (Upbit). "
+            "Uses daily closing prices over specified period."
+        ),
+    )
+    async def get_correlation(
+        symbols: list[str],
+        period: int = 60,
+    ) -> dict[str, Any]:
+        """Calculate correlation matrix between multiple assets.
+
+        Args:
+            symbols: List of trading symbols (e.g., ["005930", "AAPL", "KRW-BTC"])
+            period: Number of days to use for calculation (default: 60)
+
+        Returns:
+            Dictionary with correlation matrix and metadata.
+        """
+        if not symbols or len(symbols) < 2:
+            raise ValueError("symbols must contain at least 2 assets")
+
+        if len(symbols) > 10:
+            raise ValueError("Maximum 10 symbols supported for correlation calculation")
+
+        period = max(period, 30)
+        if period > 365:
+            raise ValueError("period must be between 30 and 365 days")
+
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+
+        errors: list[str] = []
+        price_data: dict[str, list[float]] = {}
+        market_types: dict[str, str] = {}
+
+        async def fetch_prices(symbol: str) -> None:
+            """Fetch daily closing prices for a symbol."""
+            try:
+                market_type, normalized_symbol = _resolve_market_type(symbol, None)
+                market_types[normalized_symbol] = market_type
+                source = source_map[market_type]
+
+                df = await _fetch_ohlcv_for_indicators(
+                    normalized_symbol, market_type, count=period
+                )
+                if df.empty:
+                    raise ValueError(f"No data available for symbol '{symbol}'")
+
+                if "close" not in df.columns:
+                    raise ValueError(f"Missing close price data for symbol '{symbol}'")
+
+                prices = df["close"].tolist()
+                price_data[normalized_symbol] = prices
+            except Exception as exc:
+                errors.append(f"{symbol}: {str(exc)}")
+
+        await asyncio.gather(*[fetch_prices(sym) for sym in symbols])
+
+        if len(price_data) < 2:
+            return {
+                "success": False,
+                "error": "Insufficient data to calculate correlation (need at least 2 symbols)",
+            }
+
+        correlation_matrix: list[list[float]] = []
+
+        sorted_symbols = sorted(price_data.keys())
+
+        for i, sym_a in enumerate(sorted_symbols):
+            row: list[float] = []
+            prices_a = price_data[sym_a]
+            min_len = len(prices_a)
+
+            for j, sym_b in enumerate(sorted_symbols):
+                prices_b = price_data[sym_b]
+                actual_len = min(len(prices_b), min_len)
+
+                corr = 0.0
+                if i <= j:
+                    truncated_a = prices_a[-actual_len:]
+                    truncated_b = prices_b[-actual_len:]
+                    corr = (
+                        _calculate_pearson_correlation(truncated_a, truncated_b)
+                        if len(truncated_a) >= 2
+                        else 0.0
+                    )
+                else:
+                    corr = correlation_matrix[j][i]
+
+                row.append(corr)
+            correlation_matrix.append(row)
+
+        metadata = {
+            "period_days": period,
+            "symbols": sorted_symbols,
+            "market_types": {
+                sym: market_types.get(sym, "unknown") for sym in sorted_symbols
+            },
+            "sources": {
+                sym: source_map.get(market_types.get(sym, "equity_us"), "unknown")
+                for sym in sorted_symbols
+            },
+        }
+
+        if errors:
+            return {
+                "success": True,
+                "correlation_matrix": correlation_matrix,
+                "symbols": sorted_symbols,
+                "metadata": metadata,
+                "errors": errors,
+            }
+
+        return {
+            "success": True,
+            "correlation_matrix": correlation_matrix,
+            "symbols": sorted_symbols,
+            "metadata": metadata,
+        }
+
+    def _calculate_pearson_correlation(x: list[float], y: list[float]) -> float:
+        """Calculate Pearson correlation coefficient between two lists."""
+        n = len(x)
+        if n != len(y) or n < 2:
+            return 0.0
+
+        sum_x = sum(x)
+        sum_y = sum(y)
+        sum_xy = sum(xi * yi for xi, yi in zip(x, y))
+        sum_x2 = sum(xi**2 for xi in x)
+        sum_y2 = sum(yi**2 for yi in y)
+
+        numerator = n * sum_xy - sum_x * sum_y
+        denominator_x = n * sum_x2 - sum_x**2
+        denominator_y = n * sum_y2 - sum_y**2
+
+        denominator = (denominator_x * denominator_y) ** 0.5
+
+        if denominator == 0:
+            return 0.0
+
+        return numerator / denominator
+
+    @mcp.tool(
+        name="get_dividends",
+        description=(
+            "Get dividend information for US stocks (via yfinance). "
+            "Returns dividend yield, payout date, and 52-week high/low."
+        ),
+    )
+    async def get_dividends(
+        symbol: str,
+    ) -> dict[str, Any]:
+        """Get dividend information for a US stock.
+
+        Args:
+            symbol: US stock symbol (e.g., "AAPL", "MSFT")
+
+        Returns:
+            Dictionary with dividend data.
+        """
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        ticker = yf.Ticker(symbol.upper())
+
+        def fetch_sync() -> dict[str, Any]:
+            try:
+                info = ticker.info or {}
+
+                dividend_yield = info.get("dividendYield")
+                dividend_rate = info.get("dividendRate")
+                ex_date = info.get("exDividendDate")
+
+                divs = ticker.dividends
+                last_div = None
+                if divs is not None and not divs.empty:
+                    last_date = divs.index[-1]
+                    last_div = {
+                        "date": last_date.strftime("%Y-%m-%d"),
+                        "amount": float(divs.iloc[-1]),
+                    }
+
+                return {
+                    "success": True,
+                    "symbol": symbol.upper(),
+                    "dividend_yield": round(dividend_yield * 100, 4)
+                    if dividend_yield
+                    else None,
+                    "dividend_rate": float(dividend_rate) if dividend_rate else None,
+                    "ex_dividend_date": (
+                        datetime.datetime.fromtimestamp(ex_date).strftime("%Y-%m-%d")
+                        if ex_date
+                        else None
+                    ),
+                    "last_dividend": last_div,
+                }
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "error": str(exc),
+                    "symbol": symbol.upper(),
+                }
+
+        return await asyncio.to_thread(fetch_sync)
+
+    @mcp.tool(
+        name="get_fear_greed_index",
+        description=(
+            "Get the Crypto Fear & Greed Index from Alternative.me. "
+            "Returns current value (0=Extreme Fear, 100=Extreme Greed), "
+            "classification, and historical values. Useful for gauging "
+            "overall crypto market sentiment."
+        ),
+    )
+    async def get_fear_greed_index(days: int = 7) -> dict[str, Any]:
+        """Get the Crypto Fear & Greed Index.
+
+        Args:
+            days: Number of days of historical data to fetch (1-365, default: 7)
+
+        Returns:
+            Dictionary with current index value, classification, and history.
+        """
+        # Validate and clamp days parameter
+        capped_days = min(max(days, 1), 365)
+
+        url = "https://api.alternative.me/fng/"
+        params = {"limit": capped_days}
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+
+            if not data or "data" not in data:
+                return _error_payload(
+                    source="alternative.me",
+                    message="No data received from Fear & Greed API",
+                )
+
+            history_data = data["data"]
+
+            if not history_data:
+                return _error_payload(
+                    source="alternative.me",
+                    message="Empty data array received from Fear & Greed API",
+                )
+
+            # Parse current value (first item is most recent)
+            current = history_data[0]
+            current_value = int(current["value"])
+            current_classification = current["value_classification"]
+            current_timestamp = current["timestamp"]
+            current_date = (
+                datetime.datetime.fromtimestamp(int(current_timestamp)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                if current_timestamp
+                else "Unknown"
+            )
+
+            # Parse history
+            history = []
+            for item in history_data:
+                value = int(item["value"])
+                classification = item["value_classification"]
+                timestamp = item["timestamp"]
+                date = (
+                    datetime.datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d")
+                    if timestamp
+                    else "Unknown"
+                )
+                history.append(
+                    {
+                        "date": date,
+                        "value": value,
+                        "classification": classification,
+                    }
+                )
+
+            return {
+                "success": True,
+                "source": "alternative.me",
+                "current": {
+                    "value": current_value,
+                    "classification": current_classification,
+                    "date": current_date,
+                },
+                "history": history,
+            }
+
+        except httpx.HTTPStatusError as exc:
+            return _error_payload(
+                source="alternative.me",
+                message=f"HTTP error: {exc}",
+            )
+        except Exception as exc:
+            return _error_payload(
+                source="alternative.me",
+                message=str(exc),
+            )

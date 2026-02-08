@@ -60,13 +60,16 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
 
     class MockKISClient:
         async def inquire_integrated_margin(self):
-            return [
-                {
-                    "crcy_cd": "KRW",
-                    "dncl_amt_2": "1000000.0",
-                    "stck_cash_ord_psbl_amt": "800000.0",
-                }
-            ]
+            return {
+                "dnca_tot_amt": 1000000.0,
+                "stck_cash_ord_psbl_amt": 800000.0,
+                "krw_balance": 1000000.0,
+                "usd_objt_amt": 500.0,
+                "usd_ord_psbl_amt": 450.0,
+                "usd_exrt": 1380.0,
+                "currencies": [],
+                "usd_balance": 500.0,
+            }
 
         async def inquire_overseas_margin(self):
             return [
@@ -103,11 +106,20 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
 
     class MockKISClient:
         async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": 1000000.0,
+                "stck_cash_ord_psbl_amt": 800000.0,
+                "krw_balance": 1000000.0,
+                "currencies": [],
+            }
+
+        async def inquire_overseas_margin(self):
             return [
                 {
-                    "crcy_cd": "KRW",
-                    "dncl_amt_2": "1000000.0",
-                    "stck_cash_ord_psbl_amt": "800000.0",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "500.0",
+                    "usd_ord_psbl_amt": "450.0",
+                    "usd_exrt": "1380.0",
                 }
             ]
 
@@ -118,8 +130,9 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
     assert result["summary"]["total_krw"] == 0.0
 
     result = await tools["get_cash_balance"](account="kis")
-    assert len(result["accounts"]) == 1
+    assert len(result["accounts"]) == 2
     assert result["accounts"][0]["account"] == "kis_domestic"
+    assert result["accounts"][1]["account"] == "kis_overseas"
 
 
 @pytest.mark.asyncio
@@ -132,13 +145,12 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
 
     class MockKISClient:
         async def inquire_integrated_margin(self):
-            return [
-                {
-                    "crcy_cd": "KRW",
-                    "dncl_amt_2": "1000000.0",
-                    "stck_cash_ord_psbl_amt": "800000.0",
-                }
-            ]
+            return {
+                "dnca_tot_amt": 1000000.0,
+                "stck_cash_ord_psbl_amt": 800000.0,
+                "krw_balance": 1000000.0,
+                "currencies": [],
+            }
 
         async def inquire_overseas_margin(self):
             return [
@@ -257,8 +269,13 @@ async def test_place_order_with_amount_stock_market_buy(monkeypatch):
         async def order_korea_stock(self, stock_code, order_type, quantity, price):
             return {"odno": "12345", "ord_qty": quantity}
 
-        async def inquire_balance(self):
-            return [{"crcy_cd": "KRW", "dncl_amt_2": "5000000"}]
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": 5000000.0,
+                "stck_cash_ord_psbl_amt": 4500000.0,
+                "krw_balance": 5000000.0,
+                "currencies": [],
+            }
 
     async def fetch_quote(symbol):
         return {"price": 100000.0}
@@ -396,6 +413,92 @@ async def test_get_open_orders_us_equity(monkeypatch):
     assert result["orders"][0]["source"] == "kis"
     assert result["orders"][0]["market"] == "us"
     assert result["orders"][0]["remaining_quantity"] == 50
+
+
+@pytest.mark.asyncio
+async def test_place_order_kr_market_buy_with_correct_mock(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def order_korea_stock(self, stock_code, order_type, quantity, price):
+            return {"odno": "12345", "ord_qty": quantity}
+
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": 5000000.0,
+                "stck_cash_ord_psbl_amt": 4500000.0,
+                "krw_balance": 5000000.0,
+                "currencies": [],
+            }
+
+    async def fetch_quote(symbol):
+        return {"price": 100000.0}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="market",
+        amount=1000000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["quantity"] == 10
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_domestic_flat_dict(monkeypatch):
+    tools = build_tools()
+
+    class MockUpbitService:
+        async def fetch_krw_balance(self):
+            return 500000.0
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": 1000000.0,
+                "stck_cash_ord_psbl_amt": 800000.0,
+                "stck_sbst_ord_psbl_amt": 0.0,
+                "stck_evlu_ord_psbl_amt": 0.0,
+                "usd_objt_amt": 0.0,
+                "usd_ord_psbl_amt": 0.0,
+                "usd_exrt": 0.0,
+                "currencies": [],
+                "krw_balance": 1000000.0,
+                "usd_balance": 0.0,
+            }
+
+        async def inquire_overseas_margin(self):
+            return []
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_krw_balance",
+        MockUpbitService().fetch_krw_balance,
+    )
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"]()
+
+    assert len(result["accounts"]) == 2
+    assert result["summary"]["total_krw"] == 1500000.0
+
+    kis_domestic_account = next(
+        acc for acc in result["accounts"] if acc["account"] == "kis_domestic"
+    )
+    assert kis_domestic_account["balance"] == 1000000.0
+    assert kis_domestic_account["orderable"] == 800000.0
+    assert kis_domestic_account["formatted"] == "1,000,000 KRW"
+    assert kis_domestic_account["currency"] == "KRW"
+
+    upbit_account = next(acc for acc in result["accounts"] if acc["account"] == "upbit")
+    assert upbit_account["balance"] == 500000.0
+    assert upbit_account["formatted"] == "500,000 KRW"
 
 
 @pytest.mark.asyncio
@@ -5070,8 +5173,666 @@ class TestGetSectorPeers:
         # avg_pbr = (5+3+10)/3 = 6.0
         assert comp["avg_pbr"] == 6.0
 
+    async def test_peers_manual_override(self, monkeypatch):
+        """Test manual_peers parameter bypasses Finnhub API."""
+        tools = build_tools()
 
-# ---------------------------------------------------------------------------
+        # Mock yfinance (Finnhub should not be called)
+        _yf_data = {
+            "AAPL": {
+                "shortName": "Apple Inc.",
+                "currentPrice": 180,
+                "previousClose": 178,
+                "trailingPE": 30,
+                "priceToBook": 45,
+                "marketCap": 3_000_000_000_000,
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+            },
+            "MARA": {
+                "shortName": "Marathon Digital",
+                "currentPrice": 15,
+                "previousClose": 14,
+                "trailingPE": None,
+                "priceToBook": None,
+                "marketCap": 2_000_000_000_000,
+                "sector": "Technology",
+                "industry": "Blockchain",
+            },
+            "RIOT": {
+                "shortName": "Riot Platforms",
+                "currentPrice": 12,
+                "previousClose": 13,
+                "trailingPE": None,
+                "priceToBook": None,
+                "marketCap": 1_500_000_000_000,
+                "sector": "Technology",
+                "industry": "Blockchain",
+            },
+        }
+
+        class MockTicker:
+            def __init__(self, ticker):
+                self._ticker = ticker
+
+            @property
+            def info(self):
+                return _yf_data.get(self._ticker, {})
+
+        monkeypatch.setattr(mcp_tools.yf, "Ticker", MockTicker)
+
+        result = await tools["get_sector_peers"]("AAPL", manual_peers=["MARA", "RIOT"])
+
+        assert result["symbol"] == "AAPL"
+        assert result["name"] == "Apple Inc."
+        assert len(result["peers"]) == 2
+        peer_symbols = [p["symbol"] for p in result["peers"]]
+        assert "MARA" in peer_symbols
+        assert "RIOT" in peer_symbols
+
+    async def test_peers_cross_listed_filtered(self, monkeypatch):
+        """Test cross-listed peer filtering removes duplicate base tickers."""
+        tools = build_tools()
+
+        # Mock Finnhub returning cross-listed peers
+        class MockFinnhubClient:
+            def company_peers(self, symbol):
+                return ["MSFT", "MSFT.TO", "GOOGL", "BITF.TO"]
+
+        monkeypatch.setattr(
+            mcp_tools, "_get_finnhub_client", lambda: MockFinnhubClient()
+        )
+
+        # Mock yfinance
+        _yf_data = {
+            "AAPL": {
+                "shortName": "Apple Inc.",
+                "currentPrice": 180,
+                "previousClose": 178,
+                "trailingPE": 30,
+                "priceToBook": 45,
+                "marketCap": 3_000_000_000_000,
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+            },
+            "MSFT": {
+                "shortName": "Microsoft",
+                "currentPrice": 400,
+                "previousClose": 398,
+                "trailingPE": 35,
+                "priceToBook": 12,
+                "marketCap": 3_100_000_000_000,
+                "sector": "Technology",
+                "industry": "Software",
+            },
+            "GOOGL": {
+                "shortName": "Alphabet",
+                "currentPrice": 150,
+                "previousClose": 149,
+                "trailingPE": 25,
+                "priceToBook": 6,
+                "marketCap": 2_000_000_000_000,
+                "sector": "Technology",
+                "industry": "Internet",
+            },
+            "BITF.TO": {
+                "shortName": "Bitfarms",
+                "currentPrice": 2,
+                "previousClose": 2,
+                "trailingPE": 50,
+                "priceToBook": 5,
+                "marketCap": 100_000_000_000,
+                "sector": "Technology",
+                "industry": "Blockchain",
+            },
+            "MSFT.TO": {
+                "shortName": "Microsoft Canada",
+                "currentPrice": 550,
+                "previousClose": 545,
+                "trailingPE": 33,
+                "priceToBook": 11,
+                "marketCap": 3_200_000_000_000,
+                "sector": "Technology",
+                "industry": "Software",
+            },
+        }
+
+        class MockTicker:
+            def __init__(self, ticker):
+                self._ticker = ticker
+
+            @property
+            def info(self):
+                return _yf_data.get(self._ticker, {})
+
+        monkeypatch.setattr(mcp_tools.yf, "Ticker", MockTicker)
+
+        result = await tools["get_sector_peers"]("AAPL")
+
+        # Verify cross-listed filtering: MSFT.TO and BITF.TO should be filtered out
+        # because MSFT and BITF already exist in the peer list
+        peer_symbols = [p["symbol"] for p in result["peers"]]
+        print(f"DEBUG: peer_symbols = {peer_symbols}")  # Debug print
+        assert "MSFT" in peer_symbols
+        assert "GOOGL" in peer_symbols
+        assert "BITF.TO" not in peer_symbols
+        assert "MSFT.TO" not in peer_symbols
+
+    async def test_peers_same_industry_field(self, monkeypatch):
+        """Test same_industry field is correctly computed."""
+        tools = build_tools()
+
+        # Mock Finnhub
+        class MockFinnhubClient:
+            def company_peers(self, symbol):
+                return ["MSFT", "GOOGL", "META"]
+
+        monkeypatch.setattr(
+            mcp_tools, "_get_finnhub_client", lambda: MockFinnhubClient()
+        )
+
+        # Mock yfinance
+        _yf_data = {
+            "AAPL": {
+                "shortName": "Apple Inc.",
+                "currentPrice": 180,
+                "previousClose": 178,
+                "trailingPE": 30,
+                "priceToBook": 45,
+                "marketCap": 3_000_000_000_000,
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+            },
+            "MSFT": {
+                "shortName": "Microsoft",
+                "currentPrice": 400,
+                "previousClose": 398,
+                "trailingPE": 35,
+                "priceToBook": 12,
+                "marketCap": 3_100_000_000_000,
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+            },
+            "GOOGL": {
+                "shortName": "Alphabet",
+                "currentPrice": 150,
+                "previousClose": 149,
+                "trailingPE": 25,
+                "priceToBook": 6,
+                "marketCap": 2_000_000_000_000,
+                "sector": "Technology",
+                "industry": "Internet",
+            },
+            "META": {
+                "shortName": "Meta Platforms",
+                "currentPrice": 500,
+                "previousClose": 495,
+                "trailingPE": 28,
+                "priceToBook": 8,
+                "marketCap": 1_300_000_000_000,
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+            },
+        }
+
+        class MockTicker:
+            def __init__(self, ticker):
+                self._ticker = ticker
+
+            @property
+            def info(self):
+                return _yf_data.get(self._ticker, {})
+
+        monkeypatch.setattr(mcp_tools.yf, "Ticker", MockTicker)
+
+        result = await tools["get_sector_peers"]("AAPL")
+
+        # Verify same_industry field
+        peer_data = {p["symbol"]: p for p in result["peers"]}
+        # MSFT and META have same industry as AAPL (Consumer Electronics)
+        assert peer_data["MSFT"]["same_industry"] is True
+        # GOOGL has different industry (Internet)
+        assert peer_data["GOOGL"]["same_industry"] is False
+
+    # ---------------------------------------------------------------------------
+    # analyze_stock
+    # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestAnalyzeStock:
+    async def test_analyze_stock_us(self, monkeypatch):
+        """Test US stock analysis with all sections."""
+        tools = build_tools()
+
+        # Mock Finnhub client
+        class MockFinnhubClient:
+            def company_profile2(self, symbol):
+                return {
+                    "name": "Apple Inc.",
+                    "sector": "Technology",
+                    "industry": "Consumer Electronics",
+                    "marketcap": 3_000_000_000_000,
+                    "country": "USA",
+                    "ticker": "AAPL",
+                    "exchange": "NASDAQ",
+                }
+
+            def company_news(self, symbol, _from, to, limit):
+                return [
+                    {
+                        "headline": "Apple announces new product",
+                        "source": "TechNews",
+                        "datetime": "2024-01-15T10:00:00Z",
+                        "url": "https://example.com/news1",
+                    },
+                ]
+
+        monkeypatch.setattr(
+            mcp_tools, "_get_finnhub_client", lambda: MockFinnhubClient()
+        )
+
+        # Mock yfinance
+        _yf_data = {
+            "AAPL": {
+                "shortName": "Apple Inc.",
+                "currentPrice": 180,
+                "regularMarketPreviousClose": 178,
+                "trailingPE": 30,
+                "priceToBook": 45,
+                "marketCap": 3_000_000_000_000,
+                "sector": "Technology",
+                "industry": "Consumer Electronics",
+            },
+        }
+
+        class MockTicker:
+            def __init__(self, ticker):
+                self._ticker = ticker
+
+            @property
+            def info(self):
+                return _yf_data.get(self._ticker, {})
+
+            @property
+            def fast_info(self):
+                class FastInfo:
+                    last_price = 180
+                    regular_market_previous_close = 178
+
+                return FastInfo()
+
+        monkeypatch.setattr(mcp_tools.yf, "Ticker", MockTicker)
+
+        # Mock get_quote_impl
+        async def mock_quote(symbol, market):
+            return {
+                "symbol": symbol,
+                "instrument_type": "equity_us",
+                "price": 180,
+                "open": 178,
+                "high": 182,
+                "low": 176,
+                "volume": 50_000_000,
+                "source": "yahoo",
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_quote_impl", mock_quote)
+
+        # Mock get_indicators_impl
+        async def mock_indicators(symbol, indicators, market):
+            return {
+                "symbol": symbol,
+                "rsi": {"14": 65},
+                "macd": {"macd": 5, "signal": 2, "histogram": 2},
+                "bollinger": {"upper": 185, "lower": 175, "middle": 180},
+                "sma": {"20": 179, "50": 175},
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        # Mock get_support_resistance_impl
+        async def mock_sr(symbol, market):
+            return {
+                "symbol": symbol,
+                "supports": [
+                    {"price": 170, "source": "fib_38.2"},
+                    {"price": 165, "source": "fib_61.8"},
+                ],
+                "resistances": [
+                    {"price": 190, "source": "fib_23.6"},
+                    {"price": 200, "source": "fib_38.2"},
+                ],
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+
+        # Mock _fetch_valuation_yfinance
+        async def mock_valuation(symbol):
+            return {
+                "symbol": symbol,
+                "per": 30,
+                "pbr": 1.5,
+                "roe": None,
+                "dividend_yield": 0.5,
+                "high_52w": 200,
+                "low_52w": 140,
+                "current_position_52w": 75,
+            }
+
+        monkeypatch.setattr(mcp_tools, "_fetch_valuation_yfinance", mock_valuation)
+
+        # Mock _fetch_investment_opinions_yfinance
+        async def mock_opinions(symbol, limit):
+            return {
+                "symbol": symbol,
+                "target_price": 195,
+                "max_target_price": 220,
+                "min_target_price": 180,
+                "upside_potential": 8.33,
+            }
+
+        monkeypatch.setattr(
+            mcp_tools, "_fetch_investment_opinions_yfinance", mock_opinions
+        )
+
+        result = await tools["analyze_stock"]("AAPL")
+
+        assert result["symbol"] == "AAPL"
+        assert result["market_type"] == "equity_us"
+        assert "quote" in result
+        assert "indicators" in result
+        assert "support_resistance" in result
+        assert "valuation" in result
+        assert "profile" in result
+        assert "news" in result
+        assert "opinions" in result
+        assert len(result["errors"]) == 0
+
+    async def test_analyze_stock_kr(self, monkeypatch):
+        """Test Korean stock analysis."""
+        tools = build_tools()
+
+        # Mock KIS quote
+        async def mock_quote(symbol, market):
+            return {
+                "symbol": symbol,
+                "instrument_type": "equity_kr",
+                "price": 80000,
+                "open": 79500,
+                "high": 80500,
+                "low": 79000,
+                "volume": 1_000_000,
+                "source": "kis",
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_quote_impl", mock_quote)
+
+        # Mock get_indicators_impl
+        async def mock_indicators(symbol, indicators, market):
+            return {
+                "symbol": symbol,
+                "rsi": {"14": 55},
+                "macd": {"macd": 100, "signal": 1, "histogram": 50},
+                "bollinger": {"upper": 81000, "lower": 79000, "middle": 80000},
+                "sma": {"20": 79800, "50": 79500},
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        # Mock get_support_resistance_impl
+        async def mock_sr(symbol, market):
+            return {
+                "symbol": symbol,
+                "supports": [
+                    {"price": 77000, "source": "fib_23.6"},
+                    {"price": 76000, "source": "fib_61.8"},
+                ],
+                "resistances": [
+                    {"price": 83000, "source": "fib_38.2"},
+                    {"price": 85000, "source": "fib_23.6"},
+                ],
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+
+        # Mock naver functions
+        mock_naver_data = {
+            "symbol": "005930",
+            "name": "삼성전자",
+            "current_price": 80000,
+            "change_pct": -1.25,
+            "per": 15.5,
+            "pbr": 1.2,
+            "market_cap": 500_000_000_0000,
+        }
+
+        async def mock_naver_valuation(symbol):
+            return {
+                "per": 15.5,
+                "pbr": 1.2,
+                "roe": 18.5,
+                "dividend_yield": 2.1,
+                "high_52w": 95000,
+                "low_52w": 68000,
+                "current_position_52w": 75,
+            }
+
+        async def mock_naver_news(symbol, limit):
+            return [
+                {
+                    "title": "삼성전자 신제품 발표",
+                    "url": "https://naver.com/news1",
+                    "source": "매일경제",
+                    "datetime": "2024-01-15",
+                },
+            ]
+
+        async def mock_naver_opinions(symbol, limit):
+            return {
+                "avg_target_price": 85000,
+                "max_target_price": 95000,
+                "min_target_price": 75000,
+                "upside_potential": 6.25,
+            }
+
+        monkeypatch.setattr(mcp_tools, "_fetch_valuation_naver", mock_naver_valuation)
+        monkeypatch.setattr(mcp_tools, "_fetch_news_naver", mock_naver_news)
+        monkeypatch.setattr(
+            mcp_tools, "_fetch_investment_opinions_naver", mock_naver_opinions
+        )
+
+        result = await tools["analyze_stock"]("005930")
+
+        assert result["symbol"] == "005930"
+        assert result["market_type"] == "equity_kr"
+        assert "equity_kr" in result
+        assert result["equity_kr"]["symbol"] == "005930"
+        assert "valuation" in result["equity_kr"]
+        assert "news" in result["equity_kr"]
+        assert "opinions" in result["equity_kr"]
+
+    async def test_analyze_stock_crypto(self, monkeypatch):
+        """Test crypto analysis (no valuation/profile/opinions)."""
+        tools = build_tools()
+
+        async def mock_quote(symbol, market):
+            return {
+                "symbol": symbol,
+                "instrument_type": "crypto",
+                "price": 50_000_000,
+                "open": 49_500_000,
+                "high": 51_000_000,
+                "low": 48_500_000,
+                "volume": 100_000_000,
+                "source": "upbit",
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_quote_impl", mock_quote)
+
+        async def mock_indicators(symbol, indicators, market):
+            return {
+                "symbol": symbol,
+                "rsi": {"14": 45},
+                "macd": {"macd": 50_000_000, "signal": 1, "histogram": 50_000_000},
+                "bollinger": {
+                    "upper": 52_000_000,
+                    "lower": 48_000_000,
+                    "middle": 50_000_000,
+                },
+                "sma": {"20": 49_800_000, "50": 49_500_000},
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        async def mock_sr(symbol, market):
+            return {
+                "symbol": symbol,
+                "supports": [
+                    {"price": 48_000_000, "source": "fib_23.6"},
+                    {"price": 46_500_000, "source": "fib_38.2"},
+                ],
+                "resistances": [
+                    {"price": 52_000_000, "source": "fib_61.8"},
+                    {"price": 55_000_000, "source": "fib_38.2"},
+                ],
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+
+        result = await tools["analyze_stock"]("KRW-BTC")
+
+        assert result["symbol"] == "KRW-BTC"
+        assert result["market_type"] == "crypto"
+        assert result["source"] == "upbit"
+        assert "quote" in result
+        assert "indicators" in result
+        assert "support_resistance" in result
+        # Crypto should not have valuation, profile, opinions
+        assert "valuation" not in result
+        assert "profile" not in result
+        assert "opinions" not in result
+
+    async def test_analyze_stock_partial_failure(self, monkeypatch):
+        """Test graceful degradation when some helpers fail."""
+        tools = build_tools()
+
+        async def mock_quote(symbol, market):
+            return {
+                "symbol": symbol,
+                "instrument_type": "equity_us",
+                "price": 180,
+                "open": 178,
+                "high": 182,
+                "low": 176,
+                "volume": 50_000_000,
+                "source": "yahoo",
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_quote_impl", mock_quote)
+
+        # Mock get_indicators_impl (success)
+        async def mock_indicators(symbol, indicators, market):
+            return {
+                "symbol": symbol,
+                "rsi": {"14": 65},
+                "macd": {"macd": 5, "signal": 2, "histogram": 2},
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        # Mock get_support_resistance_impl (failure)
+        async def mock_sr(symbol, market):
+            raise RuntimeError("Calculation error")
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+
+        # Mock valuation (success)
+        async def mock_valuation(symbol):
+            return {"per": 30, "pbr": 1.5}
+
+        monkeypatch.setattr(mcp_tools, "_fetch_valuation_yfinance", mock_valuation)
+
+        result = await tools["analyze_stock"]("AAPL")
+
+        # Should have quote and indicators
+        assert "quote" in result
+        assert "indicators" in result
+        assert "valuation" in result
+
+        # Should have error for support_resistance
+        assert "support_resistance" not in result
+        assert len(result["errors"]) > 0
+        assert any("support_resistance" in e for e in result["errors"])
+
+    async def test_analyze_stock_include_peers(self, monkeypatch):
+        """Test include_peers parameter adds peers section."""
+        tools = build_tools()
+
+        async def mock_quote(symbol, market):
+            return {
+                "symbol": symbol,
+                "instrument_type": "equity_us",
+                "price": 180,
+                "source": "yahoo",
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_quote_impl", mock_quote)
+
+        async def mock_indicators(symbol, indicators, market):
+            return {"symbol": symbol, "rsi": {"14": 65}}
+
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        async def mock_sr(symbol, market):
+            return {
+                "symbol": symbol,
+                "supports": [{"price": 170, "source": "fib_38.2"}],
+                "resistances": [{"price": 190, "source": "fib_23.6"}],
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+
+        async def mock_valuation(symbol):
+            return {"per": 30, "pbr": 1.5}
+
+        monkeypatch.setattr(mcp_tools, "_fetch_valuation_yfinance", mock_valuation)
+
+        # Mock get_sector_peers
+        class MockFinnhubClient:
+            def company_peers(self, symbol):
+                return ["MSFT", "GOOGL", "META"]
+
+        monkeypatch.setattr(
+            mcp_tools, "_get_finnhub_client", lambda: MockFinnhubClient()
+        )
+
+        _yf_data = {
+            "AAPL": {"shortName": "Apple", "industry": "Consumer Electronics"},
+            "MSFT": {"shortName": "Microsoft", "industry": "Consumer Electronics"},
+            "GOOGL": {"shortName": "Alphabet", "industry": "Internet"},
+            "META": {"shortName": "Meta", "industry": "Consumer Electronics"},
+        }
+
+        class MockTicker:
+            def __init__(self, ticker):
+                self._ticker = ticker
+
+            @property
+            def info(self):
+                return _yf_data.get(self._ticker, {})
+
+        monkeypatch.setattr(mcp_tools.yf, "Ticker", MockTicker)
+
+        result = await tools["analyze_stock"]("AAPL", include_peers=True)
+
+        # Should have peers section
+        assert "sector_peers" in result
+
+    # ---------------------------------------------------------------------------
+
+
 # simulate_avg_cost
 # ---------------------------------------------------------------------------
 
@@ -6420,15 +7181,13 @@ async def test_place_order_insufficient_balance_upbit(monkeypatch):
         dry_run=True,
     )
 
-    assert result["success"] is False, (
-        f"Expected success=False, got {result.get('success')}"
+    assert result["success"] is True, (
+        f"Expected success=True for dry_run, got {result.get('success')}"
     )
-    assert "error" in result
-    assert "Insufficient" in result["error"]
-    assert "deposit" in result["error"].lower()
-    assert "Upbit" in result["error"]
-
-    assert "Upbit" in result["error"]
+    assert "warning" in result
+    assert "Insufficient" in result["warning"]
+    assert "deposit" in result["warning"].lower()
+    assert "Upbit" in result["warning"]
 
 
 @pytest.mark.asyncio
@@ -6437,8 +7196,13 @@ async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
     tools = build_tools()
 
     class DummyKISClient:
-        async def inquire_balance(self):
-            return [{"crcy_cd": "KRW", "dncl_amt_2": "100000.0"}]
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": 100000.0,
+                "stck_cash_ord_psbl_amt": 100000.0,
+                "krw_balance": 100000.0,
+                "currencies": [],
+            }
 
     monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient())
     monkeypatch.setattr(
@@ -6460,10 +7224,10 @@ async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
         dry_run=True,
     )
 
-    assert result["success"] is False
-    assert "error" in result
-    assert "Insufficient" in result["error"]
-    assert "KIS domestic account" in result["error"]
+    assert result["success"] is True
+    assert "warning" in result
+    assert "Insufficient" in result["warning"]
+    assert "KIS domestic account" in result["warning"]
 
 
 @pytest.mark.asyncio
@@ -6495,11 +7259,11 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
         dry_run=True,
     )
 
-    assert result["success"] is False
-    assert "error" in result
-    assert "Insufficient" in result["error"]
-    assert "KIS overseas account" in result["error"]
-    assert "deposit" in result["error"].lower()
+    assert result["success"] is True
+    assert "warning" in result
+    assert "Insufficient" in result["warning"]
+    assert "KIS overseas account" in result["warning"]
+    assert "deposit" in result["warning"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -6660,9 +7424,25 @@ class TestComputeDcaPriceLevels:
         assert len(result) == 3
         assert result[0]["source"] == "aggressive_first"
         assert abs(result[0]["price"] / current_price - 0.995) < 0.001
+        prices = [level["price"] for level in result]
+        assert len(set(prices)) == len(prices), f"Duplicate prices: {prices}"
         # Rest 2 levels from support strategy
-        assert result[1]["source"] in ["support", "equal_spaced"]
-        assert result[2]["source"] in ["support", "equal_spaced"]
+        assert result[1]["source"] in ["support", "equal_spaced", "interpolated"]
+        assert result[2]["source"] in ["support", "equal_spaced", "interpolated"]
+
+    def test_aggressive_strategy_fewer_supports_than_splits(self):
+        """Aggressive with 1 support and 3 splits should interpolate without duplicates."""
+        current_price = 2700000.0
+        supports = [{"price": 2614612.0, "source": "fib_61.8"}]
+        result = mcp_tools._compute_dca_price_levels(
+            "aggressive", 3, current_price, supports
+        )
+        assert len(result) == 3
+        assert result[0]["source"] == "aggressive_first"
+        prices = [level["price"] for level in result]
+        assert len(set(prices)) == len(prices), f"Duplicate prices: {prices}"
+        assert prices == sorted(prices, reverse=True)
+        assert abs(result[-1]["price"] - 2614612.0) < 1.0
 
     def test_invalid_strategy_raises_error(self):
         """Invalid strategy raises ValueError."""
@@ -6983,3 +7763,140 @@ class TestCreateDcaPlan:
         assert result["success"] is False
         assert "error" in result
         assert "exceeds limit" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestGetFearGreedIndex:
+    async def test_fear_greed_success(self, monkeypatch):
+        """Test successful Fear & Greed Index fetch."""
+        tools = build_tools()
+
+        # Mock httpx.AsyncClient
+        class _FakeResponse:
+            def __init__(self, json_data, status_code=200):
+                self._json_data = json_data
+                self.status_code = status_code
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    import httpx
+
+                    raise httpx.HTTPStatusError("error", request=None, response=self)
+
+            def json(self):
+                return self._json_data
+
+        class MockClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                # Return Fear & Greed API response
+                import httpx
+
+                return _FakeResponse(
+                    {
+                        "data": [
+                            {
+                                "value": "25",
+                                "value_classification": "Extreme Fear",
+                                "timestamp": 1706745600,
+                            },
+                            {
+                                "value": "30",
+                                "value_classification": "Fear",
+                                "timestamp": 1706659200,
+                            },
+                            {
+                                "value": "45",
+                                "value_classification": "Neutral",
+                                "timestamp": 1706572800,
+                            },
+                        ]
+                    }
+                )
+
+        monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
+
+        result = await tools["get_fear_greed_index"](days=3)
+
+        assert result["success"] is True
+        assert result["source"] == "alternative.me"
+        assert result["current"]["value"] == 25
+        assert result["current"]["classification"] == "Extreme Fear"
+        assert "date" in result["current"]
+        assert len(result["history"]) == 3
+        assert result["history"][0]["value"] == 25
+        assert result["history"][0]["classification"] == "Extreme Fear"
+        assert result["history"][1]["value"] == 30
+        assert result["history"][1]["classification"] == "Fear"
+
+    async def test_fear_greed_http_error(self, monkeypatch):
+        """Test HTTP error from Fear & Greed API."""
+        tools = build_tools()
+
+        class _FakeResponse:
+            def __init__(self, status_code=500):
+                self.status_code = status_code
+
+            def raise_for_status(self):
+                import httpx
+
+                raise httpx.HTTPStatusError("error", request=None, response=self)
+
+            def json(self):
+                return {}
+
+        class MockClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                return _FakeResponse(status_code=500)
+
+        monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
+
+        result = await tools["get_fear_greed_index"]()
+
+        assert "error" in result
+        assert result["source"] == "alternative.me"
+
+    async def test_fear_greed_empty_data(self, monkeypatch):
+        """Test empty data array from Fear & Greed API."""
+        tools = build_tools()
+
+        class _FakeResponse:
+            def __init__(self, json_data, status_code=200):
+                self._json_data = json_data
+                self.status_code = status_code
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._json_data
+
+        class MockClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                return _FakeResponse({"data": []})
+
+        monkeypatch.setattr("app.mcp_server.tools.httpx.AsyncClient", MockClient)
+
+        result = await tools["get_fear_greed_index"]()
+
+        assert "error" in result
+        assert result["source"] == "alternative.me"
+        assert "empty" in result["error"].lower()
