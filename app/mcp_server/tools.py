@@ -608,7 +608,7 @@ async def _collect_manual_positions(
             if quantity <= 0:
                 continue
 
-            broker = holding.broker_account.broker_type.value
+            broker = holding.broker_account.broker_type
             account_name = holding.broker_account.account_name
             account = _canonical_account_id(broker, account_name)
 
@@ -1297,6 +1297,7 @@ def _split_support_resistance_levels(
         price = _to_float(level.get("price"), default=0.0)
         if price <= 0:
             continue
+        level["distance_pct"] = round((price - current_price) / current_price * 100, 2)
         if price < current_price:
             supports.append(level)
         elif price > current_price:
@@ -1307,6 +1308,130 @@ def _split_support_resistance_levels(
     )
     resistances.sort(key=lambda item: _to_float(item.get("price"), default=0.0))
     return supports, resistances
+
+
+def _compute_rsi_weights(rsi_value: float | None, splits: int) -> list[float]:
+    """Compute DCA weight distribution based on RSI value.
+
+    Args:
+        rsi_value: RSI 14 value (0-100). None means no RSI data.
+        splits: Number of DCA splits (e.g., 3 for 3-step buying)
+
+    Returns:
+        List of weights that sum to 1.0. RSI < 30 gives higher weight
+        to early steps (linear decreasing), RSI > 50 gives higher weight
+        to later steps (linear increasing), 30-50 or None gives equal weights.
+    """
+    if rsi_value is None:
+        # No RSI data: equal distribution
+        return [1.0 / splits] * splits
+
+    if rsi_value < 30:
+        # Oversold: front-weighted (buy more at early/closer steps)
+        # splits=3: raw=[3,2,1] → [0.5, 0.333, 0.167]
+        raw = [splits - i for i in range(splits)]
+        total = sum(raw)
+        return [r / total for r in raw]
+    elif rsi_value > 50:
+        # Overbought: back-weighted (buy more at later/lower steps)
+        # splits=3: raw=[1,2,3] → [0.167, 0.333, 0.5]
+        raw = [i + 1 for i in range(splits)]
+        total = sum(raw)
+        return [r / total for r in raw]
+    else:
+        # Neutral (30-50): equal distribution
+        return [1.0 / splits] * splits
+
+
+def _compute_dca_price_levels(
+    strategy: str,
+    splits: int,
+    current_price: float,
+    supports: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Compute DCA price levels based on strategy and support levels.
+
+    Args:
+        strategy: "support", "equal", or "aggressive"
+        splits: Number of price levels to generate
+        current_price: Current market price
+        supports: List of support levels from get_support_resistance
+
+    Returns:
+        List of dicts with "price" and "source" keys, sorted by price
+        descending (closest to current price first).
+    """
+    support_prices = sorted(
+        [_to_float(level.get("price")) for level in supports if level.get("price")],
+        reverse=True,  # Closest to current price first
+    )
+
+    if strategy == "support":
+        # Use closest support levels, fill gaps with interpolation
+        if len(support_prices) >= splits:
+            # Enough supports: use closest splits
+            return [
+                {"price": price, "source": "support"}
+                for price in support_prices[:splits]
+            ]
+        elif len(support_prices) > 0:
+            # Fewer supports: interpolate between them
+            support_levels: list[dict[str, Any]] = []
+            start_price = current_price * 0.995
+            end_price = min(support_prices)
+            step = (end_price - start_price) / (splits - 1)
+            for i in range(splits):
+                price = start_price + step * i
+                # Check if any support is near this price (within 2%)
+                near_support = None
+                for supp in support_prices:
+                    if abs(price - supp) / price < 0.02:
+                        near_support = supp
+                        break
+                if near_support is not None:
+                    price = near_support
+                support_levels.append({"price": price, "source": "support"})
+            return support_levels
+        else:
+            # No supports: synthetic levels (-2%, -4%, -6%...)
+            return [
+                {
+                    "price": current_price * (1.0 - 0.02 * (i + 1)),
+                    "source": "synthetic",
+                }
+                for i in range(splits)
+            ]
+
+    elif strategy == "equal":
+        # Equal spacing between current_price and lowest support
+        if support_prices:
+            min_price = min(support_prices)
+        else:
+            # No supports: go down to -10%
+            min_price = current_price * 0.90
+
+        start_price = current_price * 0.995
+        step = (min_price - start_price) / (splits - 1)
+        return [
+            {"price": start_price + step * i, "source": "equal_spaced"}
+            for i in range(splits)
+        ]
+
+    elif strategy == "aggressive":
+        # First buy at current - 0.5%, rest using support strategy
+        first_price = current_price * 0.995
+        rest_levels = _compute_dca_price_levels(
+            "support",
+            splits - 1,
+            current_price,
+            supports,
+        )
+        return [{"price": first_price, "source": "aggressive_first"}] + rest_levels
+
+    else:
+        raise ValueError(
+            f"Invalid strategy: {strategy}. Must be 'support', 'equal', or 'aggressive'"
+        )
 
 
 def _compute_indicators(
@@ -5882,4 +6007,233 @@ def register_tools(mcp: FastMCP) -> None:
                 "dry_run": dry_run,
                 "broker": broker,
                 "account_name": account_name,
+            }
+
+    # Export tool functions for testability (same pattern as _preview_order)
+    globals()["get_support_resistance"] = get_support_resistance
+    globals()["get_indicators"] = get_indicators
+    globals()["place_order"] = place_order
+
+    @mcp.tool(
+        name="create_dca_plan",
+        description=(
+            "Create a Dollar Cost Averaging (DCA) buying plan based on "
+            "technical analysis. Uses support/resistance levels and RSI to "
+            "determine optimal buying points. dry_run=True by default for safety. "
+            "When dry_run=False, executes orders sequentially up to 1M KRW per step."
+        ),
+    )
+    async def create_dca_plan(
+        symbol: str,
+        total_amount: float,
+        splits: int = 3,
+        strategy: str = "support",
+        dry_run: bool = True,
+        market: str | None = None,
+    ) -> dict[str, Any]:
+        """Create DCA buying plan with technical analysis.
+
+        Args:
+            symbol: Trading symbol (e.g., "KRW-BTC", "005930", "AAPL")
+            total_amount: Total amount in KRW to invest
+            splits: Number of buying steps (default: 3, range: 2-5)
+            strategy: Strategy for price levels - "support", "equal", or "aggressive"
+            dry_run: Preview only (default: True). Set False to execute orders.
+            market: Market hint (optional, auto-detected from symbol)
+
+        Returns:
+            Dictionary with success status, plans array, and summary.
+            When dry_run=False, includes execution_results for each step.
+        """
+        # Validation
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        if total_amount <= 0:
+            raise ValueError("total_amount must be greater than 0")
+
+        if not (2 <= splits <= 5):
+            raise ValueError("splits must be between 2 and 5")
+
+        valid_strategies = {"support", "equal", "aggressive"}
+        if strategy not in valid_strategies:
+            raise ValueError(
+                f"Invalid strategy '{strategy}'. Must be one of: {', '.join(sorted(valid_strategies))}"
+            )
+
+        market_type, normalized_symbol = _resolve_market_type(symbol, market)
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
+
+        try:
+            # Use globals() indirection for testability (same pattern as _preview_order)
+            sr_fn = globals().get("get_support_resistance", get_support_resistance)
+            ind_fn = globals().get("get_indicators", get_indicators)
+            order_fn = globals().get("place_order", place_order)
+
+            # Fetch support/resistance and RSI
+            sr_result = await sr_fn(normalized_symbol, None)
+            if "error" in sr_result:
+                return {
+                    "success": False,
+                    "error": sr_result["error"],
+                    "source": sr_result.get("source", "get_support_resistance"),
+                    "dry_run": dry_run,
+                }
+
+            current_price = sr_result.get("current_price")
+            supports = sr_result.get("supports", [])
+
+            indicator_result = await ind_fn(normalized_symbol, ["rsi"], None)
+            if "error" in indicator_result:
+                return {
+                    "success": False,
+                    "error": indicator_result["error"],
+                    "source": indicator_result.get("source", "get_indicators"),
+                    "dry_run": dry_run,
+                }
+
+            rsi_data = indicator_result.get("indicators", {}).get("rsi", {})
+            rsi_value = rsi_data.get("14") if rsi_data else None
+
+            # Compute price levels and weights
+            price_levels = _compute_dca_price_levels(
+                strategy, splits, current_price, supports
+            )
+            weights = _compute_rsi_weights(rsi_value, splits)
+
+            # Calculate amounts and quantities
+            plans: list[dict[str, Any]] = []
+            total_quantity = 0.0
+
+            for step, (level, weight) in enumerate(
+                zip(price_levels, weights, strict=True), start=1
+            ):
+                step_amount = total_amount * weight
+                step_price = level["price"]
+                level_source = level["source"]
+
+                # Calculate quantity (truncate for non-crypto)
+                if market_type == "crypto":
+                    quantity = step_amount / step_price
+                else:
+                    quantity = int(step_amount / step_price)
+                    if quantity == 0:
+                        return {
+                            "success": False,
+                            "error": f"Amount {step_amount:.0f} KRW insufficient for 1 unit at price {step_price}",
+                            "dry_run": dry_run,
+                        }
+
+                total_quantity += quantity
+
+                # Calculate distance from current price
+                distance_pct = round(
+                    (step_price - current_price) / current_price * 100, 2
+                )
+
+                plans.append(
+                    {
+                        "step": step,
+                        "price": round(step_price, 2),
+                        "distance_pct": distance_pct,
+                        "amount": round(step_amount, 0),
+                        "quantity": round(quantity, 8)
+                        if market_type == "crypto"
+                        else quantity,
+                        "source": level_source,
+                    }
+                )
+
+            # Build summary
+            avg_target_price = sum(p["price"] for p in plans) / len(plans)
+            min_dist = min(p["distance_pct"] for p in plans)
+            max_dist = max(p["distance_pct"] for p in plans)
+
+            summary = {
+                "symbol": normalized_symbol,
+                "current_price": current_price,
+                "rsi_14": rsi_value,
+                "strategy": strategy,
+                "total_amount": total_amount,
+                "avg_target_price": round(avg_target_price, 2),
+                "total_quantity": (
+                    round(total_quantity, 8)
+                    if market_type == "crypto"
+                    else int(total_quantity)
+                ),
+                "price_range_pct": f"{min_dist:.2f}% ~ {max_dist:.2f}%",
+                "weight_mode": (
+                    "front_heavy"
+                    if rsi_value is not None and rsi_value < 30
+                    else "back_heavy"
+                    if rsi_value is not None and rsi_value > 50
+                    else "equal"
+                ),
+            }
+
+            # Execute orders if not dry_run
+            execution_results: list[dict[str, Any]] = []
+            if not dry_run:
+                for plan_step in plans:
+                    order_amount = plan_step["amount"]
+                    order_price = plan_step["price"]
+
+                    # Safety check: max 1M KRW per step
+                    if order_amount > 1_000_000:
+                        return {
+                            "success": False,
+                            "error": f"Step {plan_step['step']} amount {order_amount:.0f} KRW exceeds limit 1,000,000 KRW",
+                            "dry_run": False,
+                            "summary": summary,
+                        }
+
+                    # Place order
+                    order_result = await order_fn(
+                        symbol=normalized_symbol,
+                        side="buy",
+                        order_type="limit",
+                        amount=order_amount,
+                        price=order_price,
+                        dry_run=False,
+                        reason=f"DCA plan step {plan_step['step']}/{splits}",
+                    )
+
+                    execution_results.append(
+                        {
+                            "step": plan_step["step"],
+                            "success": order_result.get("success", False),
+                            "result": order_result,
+                        }
+                    )
+
+                    # Fail early if any order fails
+                    if not order_result.get("success"):
+                        return {
+                            "success": False,
+                            "error": f"Order failed at step {plan_step['step']}",
+                            "failed_step": plan_step["step"],
+                            "execution_results": execution_results,
+                            "summary": summary,
+                        }
+
+            response: dict[str, Any] = {
+                "success": True,
+                "dry_run": dry_run,
+                "plans": plans,
+                "summary": summary,
+            }
+
+            if not dry_run:
+                response["execution_results"] = execution_results
+
+            return response
+
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "source": source,
+                "dry_run": dry_run,
             }

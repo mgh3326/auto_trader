@@ -225,7 +225,9 @@ async def test_place_order_with_amount_limit_order(monkeypatch):
     monkeypatch.setattr(
         mcp_tools.upbit_service,
         "fetch_my_coins",
-        AsyncMock(return_value=[{"currency": "KRW", "balance": "500000", "locked": "0"}]),
+        AsyncMock(
+            return_value=[{"currency": "KRW", "balance": "500000", "locked": "0"}]
+        ),
     )
     monkeypatch.setattr(
         mcp_tools.upbit_service,
@@ -6187,6 +6189,18 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
     assert strong_resistances
     assert "volume_poc" in strong_supports[0]["sources"]
 
+    # Verify distance_pct is present and correctly calculated
+    for s in result["supports"]:
+        assert "distance_pct" in s
+        expected = round((s["price"] - 100.0) / 100.0 * 100, 2)
+        assert s["distance_pct"] == expected
+        assert s["distance_pct"] < 0  # supports are below current price
+    for r in result["resistances"]:
+        assert "distance_pct" in r
+        expected = round((r["price"] - 100.0) / 100.0 * 100, 2)
+        assert r["distance_pct"] == expected
+        assert r["distance_pct"] > 0  # resistances are above current price
+
 
 @pytest.mark.asyncio
 async def test_place_order_upbit_buy_limit_dry_run(monkeypatch):
@@ -6486,3 +6500,486 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
     assert "Insufficient" in result["error"]
     assert "KIS overseas account" in result["error"]
     assert "deposit" in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# DCA Plan Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestComputeRsiWeights:
+    """Tests for _compute_rsi_weights helper function."""
+
+    def test_oversold_returns_front_heavy_weights(self):
+        """RSI < 30: linear decreasing weights (more early)."""
+        result = mcp_tools._compute_rsi_weights(25.0, 3)
+
+        assert len(result) == 3
+        assert abs(sum(result) - 1.0) < 0.001
+        # Front-heavy: first step gets most weight
+        assert result[0] > result[1] > result[2]
+
+    def test_oversold_with_four_splits(self):
+        """RSI < 30 with splits=4."""
+        result = mcp_tools._compute_rsi_weights(28.0, 4)
+
+        assert len(result) == 4
+        assert abs(sum(result) - 1.0) < 0.001
+        # Front-heavy: first > last, monotonically decreasing
+        assert result[0] > result[-1]
+        assert result[0] > result[1] > result[2] > result[3]
+
+    def test_overbought_returns_back_heavy_weights(self):
+        """RSI > 50: linear increasing weights (more later)."""
+        result = mcp_tools._compute_rsi_weights(65.0, 3)
+
+        assert len(result) == 3
+        assert abs(sum(result) - 1.0) < 0.001
+        # Back-heavy: last step gets most weight
+        assert result[2] > result[1] > result[0]
+
+    def test_neutral_returns_equal_weights(self):
+        """RSI 30-50: equal distribution."""
+        result = mcp_tools._compute_rsi_weights(40.0, 3)
+
+        assert len(result) == 3
+        assert abs(sum(result) - 1.0) < 0.001
+        # All weights equal
+        assert all(abs(w - result[0]) < 0.001 for w in result)
+
+    def test_none_rsi_returns_equal_weights(self):
+        """None RSI: equal distribution (same as neutral)."""
+        result = mcp_tools._compute_rsi_weights(None, 3)
+
+        assert len(result) == 3
+        assert abs(sum(result) - 1.0) < 0.001
+        # All weights equal
+        expected_weight = 1.0 / 3
+        assert all(abs(w - expected_weight) < 0.001 for w in result)
+
+
+@pytest.mark.unit
+class TestComputeDcaPriceLevels:
+    """Tests for _compute_dca_price_levels helper function."""
+
+    def test_support_strategy_with_sufficient_supports(self):
+        """Support strategy with enough support levels."""
+        current_price = 100000.0
+        supports = [
+            {"price": 95000.0, "source": "fib_23.6"},
+            {"price": 90000.0, "source": "fib_38.2"},
+            {"price": 85000.0, "source": "fib_50.0"},
+            {"price": 80000.0, "source": "fib_61.8"},
+        ]
+
+        result = mcp_tools._compute_dca_price_levels(
+            "support", 3, current_price, supports
+        )
+
+        assert len(result) == 3
+        # Should use closest 3 supports
+        assert result[0]["price"] == 95000.0
+        assert result[1]["price"] == 90000.0
+        assert result[2]["price"] == 85000.0
+
+    def test_support_strategy_with_fewer_supports(self):
+        """Support strategy with fewer than splits supports."""
+        current_price = 100000.0
+        supports = [
+            {"price": 90000.0, "source": "fib_38.2"},
+            {"price": 80000.0, "source": "fib_61.8"},
+        ]
+
+        result = mcp_tools._compute_dca_price_levels(
+            "support", 4, current_price, supports
+        )
+
+        assert len(result) == 4
+        # Should interpolate between supports
+        # First levels near supports, last levels interpolated
+        assert all(level["source"] == "support" for level in result)
+
+    def test_support_strategy_with_no_supports(self):
+        """Support strategy with no support levels."""
+        current_price = 100000.0
+        supports = []
+
+        result = mcp_tools._compute_dca_price_levels(
+            "support", 3, current_price, supports
+        )
+
+        assert len(result) == 3
+        # Should create synthetic levels: -2%, -4%, -6%
+        assert result[0]["source"] == "synthetic"
+        assert abs(result[0]["price"] / current_price - 0.98) < 0.01
+        assert abs(result[1]["price"] / current_price - 0.96) < 0.01
+        assert abs(result[2]["price"] / current_price - 0.94) < 0.01
+
+    def test_equal_strategy(self):
+        """Equal strategy with supports."""
+        current_price = 100000.0
+        supports = [
+            {"price": 85000.0, "source": "fib_50.0"},
+        ]
+
+        result = mcp_tools._compute_dca_price_levels(
+            "equal", 3, current_price, supports
+        )
+
+        assert len(result) == 3
+        assert result[0]["source"] == "equal_spaced"
+        # Should space from current_price to min support
+        assert result[0]["price"] < current_price
+        assert result[-1]["price"] == 85000.0
+
+    def test_equal_strategy_without_supports(self):
+        """Equal strategy without supports (goes to -10%)."""
+        current_price = 100000.0
+        supports = []
+
+        result = mcp_tools._compute_dca_price_levels(
+            "equal", 3, current_price, supports
+        )
+
+        assert len(result) == 3
+        assert result[-1]["price"] == 90000.0  # -10%
+
+    def test_aggressive_strategy(self):
+        """Aggressive strategy: first buy at current - 0.5%, rest support."""
+        current_price = 100000.0
+        supports = [
+            {"price": 90000.0, "source": "fib_61.8"},
+            {"price": 80000.0, "source": "fib_61.8"},
+        ]
+
+        result = mcp_tools._compute_dca_price_levels(
+            "aggressive", 3, current_price, supports
+        )
+
+        assert len(result) == 3
+        assert result[0]["source"] == "aggressive_first"
+        assert abs(result[0]["price"] / current_price - 0.995) < 0.001
+        # Rest 2 levels from support strategy
+        assert result[1]["source"] in ["support", "equal_spaced"]
+        assert result[2]["source"] in ["support", "equal_spaced"]
+
+    def test_invalid_strategy_raises_error(self):
+        """Invalid strategy raises ValueError."""
+        current_price = 100000.0
+        supports = []
+
+        with pytest.raises(ValueError, match="Invalid strategy"):
+            mcp_tools._compute_dca_price_levels("invalid", 3, current_price, supports)
+
+
+@pytest.mark.asyncio
+class TestCreateDcaPlan:
+    """Tests for create_dca_plan MCP tool."""
+
+    async def test_support_strategy_dry_run_crypto(self, monkeypatch):
+        """Support strategy with dry_run=True for crypto."""
+        tools = build_tools()
+
+        # Mock get_support_resistance
+        mock_sr_result = {
+            "symbol": "KRW-BTC",
+            "current_price": 100000000.0,
+            "supports": [
+                {"price": 95000000.0, "source": "fib_23.6"},
+                {"price": 90000000.0, "source": "fib_38.2"},
+            ],
+            "resistances": [],
+        }
+
+        async def mock_sr(symbol, market):
+            return mock_sr_result
+
+        # Mock get_indicators (RSI < 30 = oversold → front_heavy)
+        mock_indicator_result = {
+            "symbol": "KRW-BTC",
+            "price": 100000000.0,
+            "indicators": {
+                "rsi": {"14": 25.0},
+            },
+        }
+
+        async def mock_indicators(symbol, indicators, market):
+            return mock_indicator_result
+
+        monkeypatch.setattr(mcp_tools, "get_support_resistance", mock_sr)
+        monkeypatch.setattr(mcp_tools, "get_indicators", mock_indicators)
+
+        result = await tools["create_dca_plan"](
+            symbol="KRW-BTC",
+            total_amount=200000.0,
+            splits=3,
+            strategy="support",
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+        assert "plans" in result
+        assert "summary" in result
+        assert len(result["plans"]) == 3
+
+        # Check summary
+        summary = result["summary"]
+        assert summary["symbol"] == "KRW-BTC"
+        assert summary["current_price"] == 100000000.0
+        assert summary["rsi_14"] == 25.0
+        assert summary["strategy"] == "support"
+        assert summary["total_amount"] == 200000.0
+        assert summary["weight_mode"] == "front_heavy"  # RSI < 30
+
+        # Check plans
+        plans = result["plans"]
+        assert plans[0]["step"] == 1
+        assert plans[0]["source"] in ["support", "fib_23.6"]
+        assert abs(sum(p["amount"] for p in plans) - 200000.0) < 1.0
+
+    async def test_equal_strategy_dry_run_kr_equity(self, monkeypatch):
+        """Equal strategy with dry_run=True for KR equity."""
+        tools = build_tools()
+
+        mock_sr_result = {
+            "symbol": "005930",
+            "current_price": 80000.0,
+            "supports": [
+                {"price": 75000.0, "source": "fib_23.6"},
+            ],
+            "resistances": [],
+        }
+
+        async def mock_sr(symbol, market):
+            return mock_sr_result
+
+        mock_indicator_result = {
+            "symbol": "005930",
+            "price": 80000.0,
+            "indicators": {
+                "rsi": {"14": 45.0},
+            },
+        }
+
+        async def mock_indicators(symbol, indicators, market):
+            return mock_indicator_result
+
+        monkeypatch.setattr(mcp_tools, "get_support_resistance", mock_sr)
+        monkeypatch.setattr(mcp_tools, "get_indicators", mock_indicators)
+
+        result = await tools["create_dca_plan"](
+            symbol="005930",
+            total_amount=1000000.0,
+            splits=4,
+            strategy="equal",
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+        assert len(result["plans"]) == 4
+
+        # KR equity uses integer quantities
+        assert all(isinstance(p["quantity"], int) for p in result["plans"])
+        # Equal weights: neutral RSI (30-50)
+        assert result["summary"]["weight_mode"] == "equal"
+
+    async def test_invalid_symbol_raises_error(self, monkeypatch):
+        """Empty symbol raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await tools["create_dca_plan"](
+                symbol="",
+                total_amount=100000.0,
+                splits=3,
+                dry_run=True,
+            )
+
+    async def test_invalid_splits_raises_error(self, monkeypatch):
+        """splits outside 2-5 range raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="splits must be between 2 and 5"):
+            await tools["create_dca_plan"](
+                symbol="KRW-BTC",
+                total_amount=100000.0,
+                splits=6,
+                dry_run=True,
+            )
+
+    async def test_invalid_strategy_raises_error(self, monkeypatch):
+        """Invalid strategy raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Invalid strategy"):
+            await tools["create_dca_plan"](
+                symbol="KRW-BTC",
+                total_amount=100000.0,
+                splits=3,
+                strategy="invalid",
+                dry_run=True,
+            )
+
+    async def test_get_support_resistance_error_propagates(self, monkeypatch):
+        """Error from get_support_resistance propagates."""
+        tools = build_tools()
+
+        async def mock_sr(symbol, market):
+            return {"error": "API error", "source": "upbit"}
+
+        monkeypatch.setattr(mcp_tools, "get_support_resistance", mock_sr)
+
+        result = await tools["create_dca_plan"](
+            symbol="KRW-BTC",
+            total_amount=100000.0,
+            splits=3,
+            dry_run=True,
+        )
+
+        assert result["success"] is False
+        assert "error" in result
+        assert result["error"] == "API error"
+
+    async def test_get_indicators_error_propagates(self, monkeypatch):
+        """Error from get_indicators propagates."""
+        tools = build_tools()
+
+        # Mock successful get_support_resistance
+        mock_sr_result = {
+            "symbol": "KRW-BTC",
+            "current_price": 100000000.0,
+            "supports": [],
+            "resistances": [],
+        }
+
+        async def mock_sr(symbol, market):
+            return mock_sr_result
+
+        # Mock failing get_indicators
+        async def mock_indicators(symbol, indicators, market):
+            return {"error": "Indicator calculation failed", "source": "upbit"}
+
+        monkeypatch.setattr(mcp_tools, "get_support_resistance", mock_sr)
+        monkeypatch.setattr(mcp_tools, "get_indicators", mock_indicators)
+
+        result = await tools["create_dca_plan"](
+            symbol="KRW-BTC",
+            total_amount=100000.0,
+            splits=3,
+            dry_run=True,
+        )
+
+        assert result["success"] is False
+        assert "error" in result
+        assert result["error"] == "Indicator calculation failed"
+
+    async def test_dry_run_false_calls_place_order(self, monkeypatch):
+        """dry_run=False calls place_order for each step."""
+        tools = build_tools()
+
+        mock_sr_result = {
+            "symbol": "KRW-BTC",
+            "current_price": 100000000.0,
+            "supports": [
+                {"price": 95000000.0, "source": "fib_23.6"},
+                {"price": 90000000.0, "source": "fib_38.2"},
+            ],
+            "resistances": [],
+        }
+
+        async def mock_sr(symbol, market):
+            return mock_sr_result
+
+        mock_indicator_result = {
+            "symbol": "KRW-BTC",
+            "price": 100000000.0,
+            "indicators": {
+                "rsi": {"14": 50.0},
+            },
+        }
+
+        async def mock_indicators(symbol, indicators, market):
+            return mock_indicator_result
+
+        # Track place_order calls
+        place_order_calls = []
+
+        async def mock_place_order(*args, **kwargs):
+            place_order_calls.append({"args": args, "kwargs": kwargs})
+            return {"success": True, "dry_run": False}
+
+        monkeypatch.setattr(mcp_tools, "get_support_resistance", mock_sr)
+        monkeypatch.setattr(mcp_tools, "get_indicators", mock_indicators)
+        monkeypatch.setattr(mcp_tools, "place_order", mock_place_order)
+
+        result = await tools["create_dca_plan"](
+            symbol="KRW-BTC",
+            total_amount=200000.0,
+            splits=2,
+            strategy="support",
+            dry_run=False,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is False
+        assert "execution_results" in result
+        assert len(result["execution_results"]) == 2
+
+        # Check place_order was called correctly
+        assert len(place_order_calls) == 2
+        for call in place_order_calls:
+            assert call["kwargs"]["side"] == "buy"
+            assert call["kwargs"]["order_type"] == "limit"
+            assert call["kwargs"]["dry_run"] is False
+            assert "DCA plan step" in call["kwargs"]["reason"]
+
+    async def test_dry_run_false_max_amount_check(self, monkeypatch):
+        """dry_run=False validates max 1M KRW per step."""
+        tools = build_tools()
+
+        # Create plan with each step > 1M KRW
+        mock_sr_result = {
+            "symbol": "KRW-BTC",
+            "current_price": 100000000.0,
+            "supports": [
+                {"price": 90000000.0, "source": "fib_38.2"},
+                {"price": 80000000.0, "source": "fib_61.8"},
+            ],
+            "resistances": [],
+        }
+
+        async def mock_sr(symbol, market):
+            return mock_sr_result
+
+        mock_indicator_result = {
+            "symbol": "KRW-BTC",
+            "price": 100000000.0,
+            "indicators": {
+                "rsi": {"14": 50.0},
+            },
+        }
+
+        async def mock_indicators(symbol, indicators, market):
+            return mock_indicator_result
+
+        async def mock_place_order(*args, **kwargs):
+            return {"success": True, "dry_run": False}
+
+        monkeypatch.setattr(mcp_tools, "get_support_resistance", mock_sr)
+        monkeypatch.setattr(mcp_tools, "get_indicators", mock_indicators)
+        monkeypatch.setattr(mcp_tools, "place_order", mock_place_order)
+
+        result = await tools["create_dca_plan"](
+            symbol="KRW-BTC",
+            total_amount=3000000.0,  # 3M total, 1.5M per step
+            splits=2,
+            strategy="support",
+            dry_run=False,
+        )
+
+        assert result["success"] is False
+        assert "error" in result
+        assert "exceeds limit" in result["error"].lower()

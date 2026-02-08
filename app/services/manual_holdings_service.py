@@ -266,7 +266,7 @@ class ManualHoldingsService:
             summary["by_market"][market] += 1
 
             # 브로커별 집계
-            broker = holding.broker_account.broker_type.value
+            broker = holding.broker_account.broker_type
             if broker not in summary["by_broker"]:
                 summary["by_broker"][broker] = 0
             summary["by_broker"][broker] += 1
