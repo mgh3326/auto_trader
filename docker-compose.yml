@@ -1,3 +1,4 @@
+name: auto-trader
 services:
   db:
     image: postgres:17
@@ -6,7 +7,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: auto_trader
-    ports: [ "5432:5432" ]
+    ports: [ "5434:5432" ]
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +21,7 @@ services:
   redis:
     image: redis:latest
     container_name: auto_trader_redis
-    ports: [ "6379:6379" ]
+    ports: [ "6381:6379" ]
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes

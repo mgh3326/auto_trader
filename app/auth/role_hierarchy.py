@@ -1,5 +1,7 @@
 """Centralized role hierarchy helpers."""
 
+from __future__ import annotations
+
 from enum import IntEnum
 
 from app.models.trading import UserRole

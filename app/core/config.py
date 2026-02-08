@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     upbit_access_key: str
     upbit_secret_key: str
 
+    # Finnhub API (optional - for news and fundamentals)
+    finnhub_api_key: str | None = None
+
     # Upbit 매수 설정
     upbit_buy_amount: int = 10000  # 분할 매수 금액 (기본 10만원)
     upbit_min_krw_balance: int = upbit_buy_amount + 5000  # 최소 KRW 잔고 (기본 10만원)
@@ -89,7 +92,7 @@ class Settings(BaseSettings):
     # Redis 설정
     redis_url: str | None = None  # .env에서 설정하거나 None으로 두면 개별 설정 사용
     redis_host: str = "localhost"
-    redis_port: int = 6379
+    redis_port: int = 6381
     redis_db: int = 0
     redis_password: str | None = None
     redis_ssl: bool = False

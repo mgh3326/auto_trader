@@ -14,7 +14,6 @@ from sqlalchemy.orm import selectinload
 
 from app.models.manual_holdings import (
     BrokerAccount,
-    BrokerType,
     ManualHolding,
     MarketType,
 )
@@ -84,7 +83,7 @@ class ManualHoldingsService:
         self,
         user_id: int,
         market_type: MarketType | None = None,
-        broker_type: BrokerType | None = None,
+        broker_type: str | None = None,
     ) -> list[ManualHolding]:
         """사용자별 모든 보유 종목 조회"""
         query = (
@@ -266,7 +265,7 @@ class ManualHoldingsService:
             summary["by_market"][market] += 1
 
             # 브로커별 집계
-            broker = holding.broker_account.broker_type.value
+            broker = holding.broker_account.broker_type
             if broker not in summary["by_broker"]:
                 summary["by_broker"][broker] = 0
             summary["by_broker"][broker] += 1

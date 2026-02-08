@@ -1,16 +1,18 @@
 # alembic/env.py
 from __future__ import annotations
+
 from logging.config import fileConfig
-from alembic import context
+
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-# ---- 앱 메타데이터 임포트 (autogenerate 위해 꼭 필요)
-from app.models.base import Base
-import app.models  # 모든 모델이 Base.metadata에 등록되도록
+from alembic import context
 
 # 환경 변수/URL 로딩 (당신의 Settings로 대체)
 from app.core.config import settings
+
+# ---- 앱 메타데이터 임포트 (autogenerate 위해 꼭 필요)
+from app.models.base import Base
 
 config = context.config
 if config.config_file_name is not None:
@@ -63,4 +65,5 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     import asyncio
+
     asyncio.run(run_migrations_online())
