@@ -30,9 +30,10 @@ async def list_filings(korean_name: str, days: int = 3):
     end = dt.date.today().strftime("%Y%m%d")
 
     def fetch_sync():
+        dart_fss.set_api_key(settings.opendart_api_key)
         corp = dart_fss.corp.Corp(corp_code=corp_code)
         reports = corp.search_filings(bgn_de=bgn, end_de=end, page_count=100)
-        return [(r.rcept_dt, r.rpt_nm, r.rcp_no, korean_name) for r in reports]
+        return [(r.rcept_dt, r.report_nm, r.rcept_no, korean_name) for r in reports]
 
     try:
         results = await asyncio.to_thread(fetch_sync)
@@ -50,12 +51,12 @@ async def list_filings(korean_name: str, days: int = 3):
         }
 
     filings = []
-    for filing_date, report_nm, rcp_no, korean_name in results:
+    for filing_date, report_nm, rcept_no, korean_name in results:
         filings.append(
             {
                 "date": f"{filing_date[:4]}-{filing_date[4:6]}-{filing_date[6:8]}",
                 "report_nm": report_nm,
-                "rcp_no": rcp_no,
+                "rcp_no": rcept_no,
                 "corp_name": korean_name,
             }
         )

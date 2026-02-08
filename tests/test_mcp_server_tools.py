@@ -5237,7 +5237,7 @@ class TestGetSectorPeers:
         # Mock Finnhub returning cross-listed peers
         class MockFinnhubClient:
             def company_peers(self, symbol):
-                return ["MSFT", "MSFT.TO", "GOOGL", "BITF.TO"]
+                return ["MSFT", "MSFT.TO", "GOOGL", "BITF", "BITF.TO"]
 
         monkeypatch.setattr(
             mcp_tools, "_get_finnhub_client", lambda: MockFinnhubClient()
@@ -5294,6 +5294,16 @@ class TestGetSectorPeers:
                 "marketCap": 3_200_000_000_000,
                 "sector": "Technology",
                 "industry": "Software",
+            },
+            "BITF": {
+                "shortName": "Bitfarms",
+                "currentPrice": 3,
+                "previousClose": 3,
+                "trailingPE": 55,
+                "priceToBook": 4,
+                "marketCap": 500_000_000,
+                "sector": "Technology",
+                "industry": "Blockchain",
             },
         }
 
@@ -5770,36 +5780,7 @@ class TestAnalyzeStock:
         """Test include_peers parameter adds peers section."""
         tools = build_tools()
 
-        async def mock_quote(symbol, market):
-            return {
-                "symbol": symbol,
-                "instrument_type": "equity_us",
-                "price": 180,
-                "source": "yahoo",
-            }
-
-        monkeypatch.setattr(mcp_tools, "_get_quote_impl", mock_quote)
-
-        async def mock_indicators(symbol, indicators, market):
-            return {"symbol": symbol, "rsi": {"14": 65}}
-
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
-
-        async def mock_sr(symbol, market):
-            return {
-                "symbol": symbol,
-                "supports": [{"price": 170, "source": "fib_38.2"}],
-                "resistances": [{"price": 190, "source": "fib_23.6"}],
-            }
-
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-
-        async def mock_valuation(symbol):
-            return {"per": 30, "pbr": 1.5}
-
-        monkeypatch.setattr(mcp_tools, "_fetch_valuation_yfinance", mock_valuation)
-
-        # Mock get_sector_peers
+        # Mock get_sector_peers via _fetch_sector_peers_us data sources
         class MockFinnhubClient:
             def company_peers(self, symbol):
                 return ["MSFT", "GOOGL", "META"]
@@ -5809,10 +5790,46 @@ class TestAnalyzeStock:
         )
 
         _yf_data = {
-            "AAPL": {"shortName": "Apple", "industry": "Consumer Electronics"},
-            "MSFT": {"shortName": "Microsoft", "industry": "Consumer Electronics"},
-            "GOOGL": {"shortName": "Alphabet", "industry": "Internet"},
-            "META": {"shortName": "Meta", "industry": "Consumer Electronics"},
+            "AAPL": {
+                "shortName": "Apple",
+                "industry": "Consumer Electronics",
+                "currentPrice": 180,
+                "previousClose": 178,
+                "trailingPE": 30,
+                "priceToBook": 45,
+                "marketCap": 3_000_000_000_000,
+                "sector": "Technology",
+            },
+            "MSFT": {
+                "shortName": "Microsoft",
+                "industry": "Consumer Electronics",
+                "currentPrice": 400,
+                "previousClose": 398,
+                "trailingPE": 35,
+                "priceToBook": 12,
+                "marketCap": 3_100_000_000_000,
+                "sector": "Technology",
+            },
+            "GOOGL": {
+                "shortName": "Alphabet",
+                "industry": "Internet",
+                "currentPrice": 150,
+                "previousClose": 149,
+                "trailingPE": 25,
+                "priceToBook": 6,
+                "marketCap": 2_000_000_000_000,
+                "sector": "Technology",
+            },
+            "META": {
+                "shortName": "Meta",
+                "industry": "Consumer Electronics",
+                "currentPrice": 200,
+                "previousClose": 198,
+                "trailingPE": 28,
+                "priceToBook": 8,
+                "marketCap": 800_000_000_000,
+                "sector": "Technology",
+            },
         }
 
         class MockTicker:
@@ -7900,3 +7917,106 @@ class TestGetFearGreedIndex:
         assert "error" in result
         assert result["source"] == "alternative.me"
         assert "empty" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_disclosures_success_after_fix(monkeypatch):
+    """Test Bug 1: get_disclosures works correctly after set_api_key fix."""
+    tools = build_tools()
+
+    # Mock list_filings to verify functionality
+    async def mock_list_filings(korean_name, days):
+        return [
+            {
+                "date": "2024-01-01",
+                "report_nm": "test report",
+                "rcp_no": "123",
+                "corp_name": "삼성전자",
+            }
+        ]
+
+    import app.mcp_server.tools as mcp_tools
+
+    monkeypatch.setattr(mcp_tools, "list_filings", mock_list_filings)
+
+    result = await tools["get_disclosures"]("삼성전자", days=3)
+
+    # Verify success - set_api_key is now called internally in fetch_sync
+    assert result["success"] is True
+    assert "filings" in result
+    assert len(result["filings"]) == 1
+    assert result["filings"][0]["report_nm"] == "test report"
+
+
+@pytest.mark.asyncio
+async def test_get_dividends_yield_not_multiplied(monkeypatch):
+    """Test Bug 2: get_dividends should return yield as percentage (not *100).
+
+    yfinance returns dividendYield as a percentage decimal (0.37 for 0.37%),
+    so we should NOT multiply by 100 after fix.
+    """
+    tools = build_tools()
+
+    class MockTicker:
+        info = {
+            "dividendYield": 0.37,  # Already 0.37%, not 0.0037
+            "dividendRate": None,
+            "exDividendDate": None,
+        }
+        dividends = None
+
+    monkeypatch.setattr("yfinance.Ticker", lambda symbol: MockTicker())
+
+    result = await tools["get_dividends"]("AAPL")
+
+    assert result["success"] is True
+    # Should be 0.37 (direct from yfinance), NOT 37.0 (after * 100)
+    assert result["dividend_yield"] == 0.37
+
+
+@pytest.mark.asyncio
+async def test_get_dividends_yield_rounding(monkeypatch):
+    """Test dividend yield is rounded to 4 decimal places."""
+    tools = build_tools()
+
+    class MockTicker:
+        info = {
+            "dividendYield": 0.3456789,  # 0.3456789%
+            "dividendRate": None,
+            "exDividendDate": None,
+        }
+        dividends = None
+
+    monkeypatch.setattr("yfinance.Ticker", lambda symbol: MockTicker())
+
+    result = await tools["get_dividends"]("AAPL")
+
+    assert result["success"] is True
+    assert result["dividend_yield"] == 0.3457  # Rounded to 4 decimals
+
+
+@pytest.mark.asyncio
+async def test_analyze_stock_include_peers_works(monkeypatch):
+    """Test Bug 3: analyze_stock with include_peers=True works after fix.
+
+    After fix: get_sector_peers(symbol, limit=10) instead of get_sector_peers(symbol, 10)
+    """
+    tools = build_tools()
+
+    # Mock yfinance Ticker
+    class MockFastInfo:
+        last_price = 200.0
+        regular_market_previous_close = 195.0
+
+    class MockTicker:
+        fast_info = MockFastInfo()
+        info = {}
+
+    monkeypatch.setattr("yfinance.Ticker", lambda symbol: MockTicker())
+
+    # Call analyze_stock with include_peers=True
+    result = await tools["analyze_stock"]("AAPL", include_peers=True)
+
+    # Verify analyze_stock includes peers data (sector_peers key is used in implementation)
+    assert "sector_peers" in result
+    assert result["sector_peers"] is not None

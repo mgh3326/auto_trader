@@ -6572,9 +6572,14 @@ def register_tools(mcp: FastMCP) -> None:
             tasks.append(news_task)
 
         if include_peers and market_type != "crypto":
-            peers_task = asyncio.create_task(
-                get_sector_peers(normalized_symbol, 10),
-            )
+            if market_type == "equity_kr":
+                peers_task = asyncio.create_task(
+                    _fetch_sector_peers_naver(normalized_symbol, 10),
+                )
+            else:
+                peers_task = asyncio.create_task(
+                    _fetch_sector_peers_us(normalized_symbol, 10),
+                )
             tasks.append(peers_task)
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -6870,7 +6875,7 @@ def register_tools(mcp: FastMCP) -> None:
                 return {
                     "success": True,
                     "symbol": symbol.upper(),
-                    "dividend_yield": round(dividend_yield * 100, 4)
+                    "dividend_yield": round(dividend_yield, 4)
                     if dividend_yield
                     else None,
                     "dividend_rate": float(dividend_rate) if dividend_rate else None,
