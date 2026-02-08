@@ -2845,10 +2845,10 @@ async def _fetch_funding_rate_batch(symbols: list[str]) -> list[dict[str, Any]]:
         if funding_rate is None or next_ts is None or next_ts <= 0:
             continue
 
-            next_funding_time = datetime.datetime.fromtimestamp(
-                next_funding_ts / 1000,
-                tz=datetime.UTC,
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        next_funding_time = datetime.datetime.fromtimestamp(
+            next_ts / 1000,
+            tz=datetime.UTC,
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         rows.append(
             {
@@ -3168,21 +3168,20 @@ async def _fetch_funding_rate(symbol: str, limit: int) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=10) as cli:
         # Fetch current premium index and funding rate history concurrently
         premium_resp, history_resp = await asyncio.gather(
-     cli.get(BINANCE_PREMIUM_INDEX_URL, params={"symbol": pair}),
-        cli.get(BINANCE_FUNDING_RATE_URL, params={"symbol": pair, "limit": limit}),
-    )
+            cli.get(BINANCE_PREMIUM_INDEX_URL, params={"symbol": pair}),
+            cli.get(BINANCE_FUNDING_RATE_URL, params={"symbol": pair, "limit": limit}),
+        )
         premium_resp.raise_for_status()
         history_resp.raise_for_status()
 
         # Parse current funding rate
-        current_rate = float(premium_resp.get("lastFundingRate", 0))
-        next_funding_ts = int(premium_resp.get("nextFundingTime", 0))
-        next_funding_time = (
-            datetime.datetime.fromtimestamp(
-                next_funding_ts / 1000,
-                tz=datetime.UTC,
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        )
+        premium_data = premium_resp.json()
+        current_rate = float(premium_data.get("lastFundingRate", 0))
+        next_funding_ts = int(premium_data.get("nextFundingTime", 0))
+        next_funding_time = datetime.datetime.fromtimestamp(
+            next_funding_ts / 1000,
+            tz=datetime.UTC,
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Build history entries
         funding_history: list[dict[str, Any]] = []
@@ -4677,6 +4676,7 @@ def register_tools(mcp: FastMCP) -> None:
         order_type: Literal["limit", "market"] = "limit",
         quantity: float | None = None,
         price: float | None = None,
+        amount: float | None = None,
         dry_run: bool = True,
         reason: str = "",
     ) -> dict[str, Any]:
@@ -4688,6 +4688,7 @@ def register_tools(mcp: FastMCP) -> None:
             order_type: "limit" or "market" (default: limit)
             quantity: Order quantity (required for limit orders, None for sell-all)
             price: Order price (required for limit orders, None for market orders)
+            amount: Order amount in KRW (for buy orders only, mutually exclusive with quantity)
             dry_run: Preview order without execution (default: True)
             reason: Order reason for logging
 
@@ -4712,8 +4713,15 @@ def register_tools(mcp: FastMCP) -> None:
         if order_type_lower == "limit" and price is None:
             raise ValueError("price is required for limit orders")
 
-        if order_type_lower == "limit" and quantity is None:
-            raise ValueError("quantity is required for limit orders")
+        if amount is not None and quantity is not None:
+            raise ValueError(
+                "amount and quantity cannot both be specified. Use amount for KRW-based buying or quantity for unit-based buying."
+            )
+
+        if amount is not None and side_lower != "buy":
+            raise ValueError(
+                "amount can only be used for buy orders. Use quantity for sell orders."
+            )
 
         market_type, normalized_symbol = _resolve_market_type(symbol, None)
         source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
@@ -4749,6 +4757,33 @@ def register_tools(mcp: FastMCP) -> None:
 
             holdings: dict[str, Any] | None = None
             order_quantity = quantity
+
+            if side_lower == "buy" and amount is not None:
+                if order_type_lower == "market" and market_type == "crypto":
+                    price = amount
+                elif order_type_lower == "limit" and price is not None:
+                    order_quantity = amount / price
+                    if market_type != "crypto":
+                        order_quantity = int(order_quantity)
+                else:
+                    if current_price is None or current_price <= 0:
+                        raise ValueError(f"Failed to get current price for {symbol}")
+                    order_quantity = amount / current_price
+                    if order_quantity <= 0:
+                        raise ValueError(
+                            f"Calculated quantity {order_quantity} is <= 0. "
+                            f"Check amount ({amount}) and current price ({current_price})"
+                        )
+                    if market_type != "crypto":
+                        order_quantity = int(order_quantity)
+                        if order_quantity == 0:
+                            raise ValueError(
+                                f"Calculated quantity {order_quantity} is 0. "
+                                f"Amount {amount} KRW is insufficient for 1 unit at price {current_price}"
+                            )
+
+            if order_type_lower == "limit" and order_quantity is None:
+                raise ValueError("quantity is required for limit orders")
 
             if side_lower == "sell":
                 holdings = await _get_holdings_for_order(normalized_symbol, market_type)
@@ -5215,6 +5250,446 @@ def register_tools(mcp: FastMCP) -> None:
                     quantity=int(quantity) if quantity else 0,
                     price=price if price else 0.0,
                 )
+
+    # ------------------------------------------------------------------
+    # get_cash_balance
+    # ------------------------------------------------------------------
+
+    @mcp.tool(
+        name="get_cash_balance",
+        description=(
+            "Query available cash balances from all accounts. "
+            "Supports Upbit (KRW), KIS domestic (KRW), and KIS overseas (USD). "
+            "Returns detailed balance information including orderable amounts."
+        ),
+    )
+    async def get_cash_balance(account: str | None = None) -> dict[str, Any]:
+        """Query available cash balances from all accounts.
+
+        Args:
+            account: Optional account filter ("upbit", "kis", "kis_domestic", "kis_overseas")
+                      If None, returns all account balances.
+
+        Returns:
+            Dictionary with accounts list, summary, and errors.
+        """
+        accounts: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        total_krw = 0.0
+        total_usd = 0.0
+
+        account_filter = _normalize_account_filter(account)
+
+        if account_filter is None or account_filter in ("upbit",):
+            try:
+                krw_balance = await upbit_service.fetch_krw_balance()
+                accounts.append(
+                    {
+                        "account": "upbit",
+                        "account_name": "기본 계좌",
+                        "broker": "upbit",
+                        "currency": "KRW",
+                        "balance": krw_balance,
+                        "formatted": f"{int(krw_balance):,} KRW",
+                    }
+                )
+                total_krw += krw_balance
+            except Exception as exc:
+                errors.append(
+                    {"source": "upbit", "market": "crypto", "error": str(exc)}
+                )
+
+        if account_filter is None or account_filter in (
+            "kis",
+            "kis_domestic",
+        ):
+            try:
+                kis = KISClient()
+                balance_data = await kis.inquire_integrated_margin()
+                for item in balance_data:
+                    currency = item.get("crcy_cd", "")
+                    if currency == "KRW":
+                        dncl_amt = float(item.get("dncl_amt_2", 0) or 0)
+                        orderable = float(item.get("stck_cash_ord_psbl_amt", 0) or 0)
+                        accounts.append(
+                            {
+                                "account": "kis_domestic",
+                                "account_name": "기본 계좌",
+                                "broker": "kis",
+                                "currency": "KRW",
+                                "balance": dncl_amt,
+                                "orderable": orderable,
+                                "formatted": f"{int(dncl_amt):,} KRW",
+                            }
+                        )
+                        total_krw += dncl_amt
+                        break
+            except Exception as exc:
+                errors.append({"source": "kis", "market": "kr", "error": str(exc)})
+
+        if account_filter is None or account_filter in (
+            "kis",
+            "kis_overseas",
+        ):
+            try:
+                kis = KISClient()
+                balance_data = await kis.inquire_overseas_margin()
+                for item in balance_data:
+                    currency = item.get("crcy_cd", "")
+                    if currency == "USD":
+                        balance = float(item.get("frcr_dncl_amt_2", 0) or 0)
+                        orderable = float(item.get("usd_ord_psbl_amt", 0) or 0)
+                        exchange_rate = float(item.get("usd_exrt", 0) or 0)
+                        accounts.append(
+                            {
+                                "account": "kis_overseas",
+                                "account_name": "기본 계좌",
+                                "broker": "kis",
+                                "currency": "USD",
+                                "balance": balance,
+                                "orderable": orderable,
+                                "exchange_rate": exchange_rate,
+                                "formatted": f"${balance:.2f} USD",
+                            }
+                        )
+                        total_usd += balance
+                        break
+            except Exception as exc:
+                errors.append({"source": "kis", "market": "us", "error": str(exc)})
+
+        return {
+            "accounts": accounts,
+            "summary": {
+                "total_krw": total_krw,
+                "total_usd": total_usd,
+            },
+            "errors": errors,
+        }
+
+    # ------------------------------------------------------------------
+    # get_open_orders
+    # ------------------------------------------------------------------
+
+    @mcp.tool(
+        name="get_open_orders",
+        description=(
+            "Query pending (uncanceled/unfilled) orders from all accounts. "
+            "Supports filtering by symbol or market. "
+            "Returns normalized order information across crypto, KR, and US equities."
+        ),
+    )
+    async def get_open_orders(
+        symbol: str | None = None, market: str | None = None
+    ) -> dict[str, Any]:
+        """Query pending orders from all accounts.
+
+        Args:
+            symbol: Optional symbol filter (e.g., "KRW-BTC", "005930", "AAPL")
+            market: Optional market filter ("crypto", "kr", "us")
+
+        Returns:
+            Dictionary with orders list, total count, and errors.
+        """
+        orders: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+
+        market_filter = _parse_holdings_market_filter(market)
+
+        if market_filter in (None, "crypto"):
+            try:
+                open_orders = await upbit_service.fetch_open_orders(market=None)
+                for order in open_orders:
+                    order_symbol = order.get("market", "")
+                    if symbol and not _is_position_symbol_match(
+                        position_symbol=order_symbol,
+                        query_symbol=symbol,
+                        instrument_type="crypto",
+                    ):
+                        continue
+
+                    orders.append(
+                        {
+                            "source": "upbit",
+                            "market": "crypto",
+                            "order_id": order.get("uuid", ""),
+                            "symbol": order_symbol,
+                            "side": "buy" if order.get("side") == "bid" else "sell",
+                            "order_type": order.get("ord_type", ""),
+                            "price": float(order.get("price", 0) or 0),
+                            "quantity": float(order.get("volume", 0) or 0),
+                            "remaining_quantity": float(
+                                order.get("remaining_volume", 0) or 0
+                            ),
+                            "created_at": order.get("created_at", ""),
+                        }
+                    )
+            except Exception as exc:
+                errors.append(
+                    {"source": "upbit", "market": "crypto", "error": str(exc)}
+                )
+
+        if market_filter in (None, "equity_kr"):
+            try:
+                kis = KISClient()
+                open_orders = await kis.inquire_korea_orders()
+                for order in open_orders:
+                    order_symbol = str(order.get("pdno", ""))
+                    if symbol and not _is_position_symbol_match(
+                        position_symbol=order_symbol,
+                        query_symbol=symbol,
+                        instrument_type="equity_kr",
+                    ):
+                        continue
+
+                    side_code = order.get("sll_buy_dvsn_cd", "")
+                    side = "buy" if side_code == "02" else "sell"
+
+                    orders.append(
+                        {
+                            "source": "kis",
+                            "market": "kr",
+                            "order_id": order.get("ord_no", ""),
+                            "symbol": order_symbol,
+                            "side": side,
+                            "order_type": "limit",
+                            "price": float(order.get("ord_unpr", 0) or 0),
+                            "quantity": float(order.get("ord_qty", 0) or 0),
+                            "remaining_quantity": float(order.get("ord_qty", 0) or 0),
+                            "created_at": order.get("ord_tmd", ""),
+                        }
+                    )
+            except Exception as exc:
+                errors.append({"source": "kis", "market": "kr", "error": str(exc)})
+
+        if market_filter in (None, "equity_us"):
+            try:
+                kis = KISClient()
+                open_orders = await kis.inquire_overseas_orders("NASD")
+                for order in open_orders:
+                    order_symbol = str(order.get("pdno", ""))
+                    if symbol and not _is_position_symbol_match(
+                        position_symbol=order_symbol,
+                        query_symbol=symbol,
+                        instrument_type="equity_us",
+                    ):
+                        continue
+
+                    side_code = order.get("sll_buy_dvsn_cd", "")
+                    side = "buy" if side_code == "02" else "sell"
+
+                    orders.append(
+                        {
+                            "source": "kis",
+                            "market": "us",
+                            "order_id": order.get("odno", ""),
+                            "symbol": order_symbol,
+                            "side": side,
+                            "order_type": "limit",
+                            "price": float(order.get("ft_ord_unpr3", 0) or 0),
+                            "quantity": float(order.get("ft_ord_qty", 0) or 0),
+                            "remaining_quantity": float(order.get("nccs_qty", 0) or 0),
+                            "created_at": order.get("ord_tmd", ""),
+                        }
+                    )
+            except Exception as exc:
+                errors.append({"source": "kis", "market": "us", "error": str(exc)})
+
+        return {
+            "orders": orders,
+            "total_count": len(orders),
+            "errors": errors,
+        }
+
+    # ------------------------------------------------------------------
+    # cancel_order
+    # ------------------------------------------------------------------
+
+    @mcp.tool(
+        name="cancel_order",
+        description=(
+            "Cancel a pending order. "
+            "Supports Upbit (crypto) and KIS (KR/US equities). "
+            "For KIS orders, automatically retrieves order details if not provided."
+        ),
+    )
+    async def cancel_order(
+        order_id: str,
+        symbol: str | None = None,
+        market: str | None = None,
+    ) -> dict[str, Any]:
+        """Cancel a pending order.
+
+        Args:
+            order_id: Order ID (UUID for Upbit, order number for KIS)
+            symbol: Optional symbol (required for KIS cancel, auto-detected for Upbit UUID)
+            market: Optional market ("crypto", "kr", "us"). Auto-detected if not specified.
+
+        Returns:
+            Cancellation result with success status and details.
+        """
+        order_id = (order_id or "").strip()
+        if not order_id:
+            raise ValueError("order_id is required")
+
+        symbol = (symbol or "").strip() if symbol else None
+        market_type = _parse_holdings_market_filter(market)
+
+        if market_type is None:
+            if symbol:
+                market_type, _ = _resolve_market_type(symbol, None)
+            elif "-" in order_id and len(order_id) == 36:
+                market_type = "crypto"
+            else:
+                raise ValueError(
+                    "market must be specified when symbol is not provided and order_id is not a UUID"
+                )
+
+        try:
+            if market_type == "crypto":
+                results = await upbit_service.cancel_orders([order_id])
+                if results and len(results) > 0:
+                    result = results[0]
+                    if "error" in result:
+                        return {
+                            "success": False,
+                            "order_id": order_id,
+                            "error": result.get("error"),
+                        }
+                    return {
+                        "success": True,
+                        "order_id": order_id,
+                        "cancelled_at": result.get("created_at", ""),
+                    }
+                return {
+                    "success": False,
+                    "order_id": order_id,
+                    "error": "No result from Upbit",
+                }
+
+            elif market_type == "equity_kr":
+                if not symbol:
+                    try:
+                        kis = KISClient()
+                        open_orders = await kis.inquire_korea_orders()
+                        for order in open_orders:
+                            if str(order.get("ord_no", "")) == order_id:
+                                symbol = str(order.get("pdno", ""))
+                                break
+                    except Exception as exc:
+                        return {
+                            "success": False,
+                            "order_id": order_id,
+                            "error": f"Failed to auto-retrieve order details: {exc}",
+                        }
+
+                if not symbol:
+                    return {
+                        "success": False,
+                        "order_id": order_id,
+                        "error": "symbol not found in order",
+                    }
+
+                try:
+                    kis = KISClient()
+                    side_code = "02"  # Default to buy
+                    price = 0
+                    quantity = 1
+
+                    open_orders = await kis.inquire_korea_orders()
+                    for order in open_orders:
+                        if str(order.get("ord_no", "")) == order_id:
+                            side_code = order.get("sll_buy_dvsn_cd", "02")
+                            price = int(float(order.get("ord_unpr", 0) or 0))
+                            quantity = int(float(order.get("ord_qty", 0) or 0))
+                            break
+
+                    order_type_str = "buy" if side_code == "02" else "sell"
+                    result = await kis.cancel_korea_order(
+                        order_number=order_id,
+                        stock_code=symbol,
+                        quantity=quantity,
+                        price=price,
+                        order_type=order_type_str,
+                    )
+                    return {
+                        "success": True,
+                        "order_id": order_id,
+                        "symbol": symbol,
+                        "cancelled_at": result.get("ord_tmd", ""),
+                    }
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "order_id": order_id,
+                        "symbol": symbol,
+                        "error": str(exc),
+                    }
+
+            elif market_type == "equity_us":
+                if not symbol:
+                    try:
+                        kis = KISClient()
+                        open_orders = await kis.inquire_overseas_orders("NASD")
+                        for order in open_orders:
+                            if str(order.get("odno", "")) == order_id:
+                                symbol = str(order.get("pdno", ""))
+                                break
+                    except Exception as exc:
+                        return {
+                            "success": False,
+                            "order_id": order_id,
+                            "error": f"Failed to auto-retrieve order details: {exc}",
+                        }
+
+                if not symbol:
+                    return {
+                        "success": False,
+                        "order_id": order_id,
+                        "error": "symbol not found in order",
+                    }
+
+                try:
+                    kis = KISClient()
+                    quantity = 1
+
+                    open_orders = await kis.inquire_overseas_orders("NASD")
+                    for order in open_orders:
+                        if str(order.get("odno", "")) == order_id:
+                            quantity = int(float(order.get("nccs_qty", 0) or 0))
+                            break
+
+                    result = await kis.cancel_overseas_order(
+                        order_number=order_id,
+                        symbol=symbol,
+                        exchange_code="NASD",
+                        quantity=quantity,
+                    )
+                    return {
+                        "success": True,
+                        "order_id": order_id,
+                        "symbol": symbol,
+                        "cancelled_at": result.get("ord_tmd", ""),
+                    }
+                except Exception as exc:
+                    return {
+                        "success": False,
+                        "order_id": order_id,
+                        "symbol": symbol,
+                        "error": str(exc),
+                    }
+
+            return {
+                "success": False,
+                "order_id": order_id,
+                "error": "Unsupported market type",
+            }
+
+        except Exception as exc:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "error": str(exc),
+            }
 
     # ------------------------------------------------------------------
     # simulate_avg_cost

@@ -51,6 +51,546 @@ def _single_row_df() -> pd.DataFrame:
 
 
 @pytest.mark.asyncio
+async def test_get_cash_balance_all_accounts(monkeypatch):
+    tools = build_tools()
+
+    class MockUpbitService:
+        async def fetch_krw_balance(self):
+            return 500000.0
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return [
+                {
+                    "crcy_cd": "KRW",
+                    "dncl_amt_2": "1000000.0",
+                    "stck_cash_ord_psbl_amt": "800000.0",
+                }
+            ]
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "500.0",
+                    "usd_ord_psbl_amt": "450.0",
+                    "usd_exrt": "1380.0",
+                }
+            ]
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_krw_balance",
+        MockUpbitService().fetch_krw_balance,
+    )
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"]()
+
+    assert len(result["accounts"]) == 3
+    assert result["summary"]["total_krw"] == 1500000.0
+    assert result["summary"]["total_usd"] == 500.0
+    assert len(result["errors"]) == 0
+
+    upbit_account = next(acc for acc in result["accounts"] if acc["account"] == "upbit")
+    assert upbit_account["balance"] == 500000.0
+    assert upbit_account["formatted"] == "500,000 KRW"
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_with_account_filter(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return [
+                {
+                    "crcy_cd": "KRW",
+                    "dncl_amt_2": "1000000.0",
+                    "stck_cash_ord_psbl_amt": "800000.0",
+                }
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="upbit")
+    assert len(result["accounts"]) == 0
+    assert result["summary"]["total_krw"] == 0.0
+
+    result = await tools["get_cash_balance"](account="kis")
+    assert len(result["accounts"]) == 1
+    assert result["accounts"][0]["account"] == "kis_domestic"
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_partial_failure(monkeypatch):
+    tools = build_tools()
+
+    class MockUpbitService:
+        async def fetch_krw_balance(self):
+            raise RuntimeError("Upbit API error")
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return [
+                {
+                    "crcy_cd": "KRW",
+                    "dncl_amt_2": "1000000.0",
+                    "stck_cash_ord_psbl_amt": "800000.0",
+                }
+            ]
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "500.0",
+                    "usd_ord_psbl_amt": "450.0",
+                    "usd_exrt": "1380.0",
+                }
+            ]
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_krw_balance",
+        MockUpbitService().fetch_krw_balance,
+    )
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"]()
+
+    assert len(result["accounts"]) == 2  # KIS domestic + overseas succeeded
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["source"] == "upbit"
+
+
+@pytest.mark.asyncio
+async def test_place_order_with_amount_crypto_market_buy(monkeypatch):
+    tools = build_tools()
+
+    mock = AsyncMock()
+    mock.fetch_multiple_current_prices = AsyncMock(return_value={"KRW-BTC": 50000000.0})
+    mock.fetch_my_coins = AsyncMock(
+        return_value=[{"currency": "KRW", "balance": "500000", "locked": "0"}]
+    )
+    mock.place_market_buy_order = AsyncMock(
+        return_value={
+            "uuid": "test-uuid",
+            "side": "bid",
+            "market": "KRW-BTC",
+            "ord_type": "price",
+            "price": "100000",
+            "volume": "0.002",
+        }
+    )
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_multiple_current_prices",
+        mock.fetch_multiple_current_prices,
+    )
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_my_coins",
+        mock.fetch_my_coins,
+    )
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "place_market_buy_order",
+        mock.place_market_buy_order,
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="market",
+        amount=100000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["quantity"] > 0
+
+
+@pytest.mark.asyncio
+async def test_place_order_with_amount_limit_order(monkeypatch):
+    tools = build_tools()
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 50000000.0}),
+    )
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_my_coins",
+        AsyncMock(return_value=[{"currency": "KRW", "balance": "500000", "locked": "0"}]),
+    )
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "place_buy_order",
+        AsyncMock(return_value={"uuid": "test-uuid", "side": "bid"}),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="limit",
+        amount=100000.0,
+        price=49000000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["quantity"] == pytest.approx(100000.0 / 49000000.0, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_place_order_with_amount_stock_market_buy(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def order_korea_stock(self, stock_code, order_type, quantity, price):
+            return {"odno": "12345", "ord_qty": quantity}
+
+        async def inquire_balance(self):
+            return [{"crcy_cd": "KRW", "dncl_amt_2": "5000000"}]
+
+    async def fetch_quote(symbol):
+        return {"price": 100000.0}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="market",
+        amount=1000000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["quantity"] == 10
+
+
+@pytest.mark.asyncio
+async def test_place_order_amount_and_quantity_both_error():
+    tools = build_tools()
+
+    with pytest.raises(
+        ValueError, match="amount and quantity cannot both be specified"
+    ):
+        await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="market",
+            amount=100000.0,
+            quantity=0.001,
+            dry_run=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_place_order_sell_with_amount_error():
+    tools = build_tools()
+
+    with pytest.raises(ValueError, match="amount can only be used for buy orders"):
+        await tools["place_order"](
+            symbol="KRW-BTC",
+            side="sell",
+            order_type="market",
+            amount=100000.0,
+            dry_run=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_open_orders_crypto(monkeypatch):
+    tools = build_tools()
+
+    class MockUpbitService:
+        async def fetch_open_orders(self, market):
+            return [
+                {
+                    "uuid": "uuid-1",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "price": "50000000.0",
+                    "volume": "0.001",
+                    "remaining_volume": "0.001",
+                    "market": "KRW-BTC",
+                    "created_at": "2024-01-01T00:00:00Z",
+                }
+            ]
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_open_orders",
+        MockUpbitService().fetch_open_orders,
+    )
+
+    result = await tools["get_open_orders"]()
+
+    assert len(result["orders"]) == 1
+    assert result["orders"][0]["source"] == "upbit"
+    assert result["orders"][0]["side"] == "buy"
+    assert result["orders"][0]["order_id"] == "uuid-1"
+
+
+@pytest.mark.asyncio
+async def test_get_open_orders_kr_equity(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "ord_no": "12345",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "005930",
+                    "ord_qty": "10",
+                    "ord_unpr": "80000",
+                    "ord_tmd": "2024-01-01",
+                }
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_open_orders"]()
+
+    assert len(result["orders"]) == 1
+    assert result["orders"][0]["source"] == "kis"
+    assert result["orders"][0]["market"] == "kr"
+    assert result["orders"][0]["side"] == "buy"
+
+
+@pytest.mark.asyncio
+async def test_get_open_orders_us_equity(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_overseas_orders(self, exchange_code):
+            return [
+                {
+                    "odno": "67890",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "AAPL",
+                    "ft_ord_qty": "100",
+                    "ft_ord_unpr3": "200.0",
+                    "nccs_qty": "50",
+                    "ord_tmd": "2024-01-01",
+                }
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_open_orders"]()
+
+    assert len(result["orders"]) == 1
+    assert result["orders"][0]["source"] == "kis"
+    assert result["orders"][0]["market"] == "us"
+    assert result["orders"][0]["remaining_quantity"] == 50
+
+
+@pytest.mark.asyncio
+async def test_get_open_orders_with_symbol_filter(monkeypatch):
+    tools = build_tools()
+
+    class MockUpbitService:
+        async def fetch_open_orders(self, market):
+            return [
+                {
+                    "uuid": "uuid-1",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "price": "50000000.0",
+                    "volume": "0.001",
+                    "remaining_volume": "0.001",
+                    "market": "KRW-BTC",
+                    "created_at": "2024-01-01",
+                },
+                {
+                    "uuid": "uuid-2",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "price": "50000.0",
+                    "volume": "10.0",
+                    "remaining_volume": "10.0",
+                    "market": "KRW-ETH",
+                    "created_at": "2024-01-01",
+                },
+            ]
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_open_orders",
+        MockUpbitService().fetch_open_orders,
+    )
+
+    result = await tools["get_open_orders"](symbol="KRW-BTC")
+
+    assert len(result["orders"]) == 1
+    assert result["orders"][0]["symbol"] == "KRW-BTC"
+
+
+@pytest.mark.asyncio
+async def test_get_open_orders_empty_result(monkeypatch):
+    tools = build_tools()
+
+    class MockUpbitService:
+        async def fetch_open_orders(self, market):
+            return []
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_open_orders",
+        MockUpbitService().fetch_open_orders,
+    )
+
+    result = await tools["get_open_orders"]()
+
+    assert result["total_count"] == 0
+    assert len(result["orders"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_open_orders_partial_failure(monkeypatch):
+    tools = build_tools()
+
+    class MockUpbitService:
+        async def fetch_open_orders(self, market):
+            raise RuntimeError("Upbit API error")
+
+    class MockKISClient:
+        async def inquire_korea_orders(self):
+            return [{"ord_no": "12345", "sll_buy_dvsn_cd": "02", "pdno": "005930"}]
+
+        async def inquire_overseas_orders(self, exchange_code="NASD"):
+            return []
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_open_orders",
+        MockUpbitService().fetch_open_orders,
+    )
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_open_orders"]()
+
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["source"] == "upbit"
+    assert len(result["orders"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_upbit_uuid(monkeypatch):
+    tools = build_tools()
+    test_uuid = "550e8400-e29b-41d4-a716-446655440000"
+
+    class MockUpbitService:
+        async def cancel_orders(self, order_uuids):
+            return [{"uuid": test_uuid, "created_at": "2024-01-01T00:00:00Z"}]
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service, "cancel_orders", MockUpbitService().cancel_orders
+    )
+
+    result = await tools["cancel_order"](order_id=test_uuid)
+
+    assert result["success"] is True
+    assert result["order_id"] == test_uuid
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "ord_no": "12345",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "005930",
+                    "ord_qty": "10",
+                    "ord_unpr": "80000",
+                    "ord_tmd": "2024-01-01",
+                }
+            ]
+
+        async def cancel_korea_order(
+            self, order_number, stock_code, quantity, price, order_type
+        ):
+            return {"ord_no": order_number, "ord_tmd": "2024-01-01 10:00:00"}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["cancel_order"](order_id="12345", symbol="005930", market="kr")
+
+    assert result["success"] is True
+    assert result["symbol"] == "005930"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_kis_overseas(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_overseas_orders(self, exchange_code):
+            return [
+                {
+                    "odno": "67890",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "AAPL",
+                    "ft_ord_qty": "100",
+                    "ft_ord_unpr3": "200.0",
+                    "nccs_qty": "50",
+                    "ord_tmd": "2024-01-01",
+                }
+            ]
+
+        async def cancel_overseas_order(
+            self, order_number, symbol, exchange_code, quantity
+        ):
+            return {"odno": order_number, "ord_tmd": "2024-01-01 10:00:00"}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["cancel_order"](order_id="67890", symbol="AAPL", market="us")
+
+    assert result["success"] is True
+    assert result["symbol"] == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_uuid_auto_detect_market(monkeypatch):
+    tools = build_tools()
+
+    class MockUpbitService:
+        async def cancel_orders(self, order_uuids):
+            return [
+                {
+                    "uuid": "550e8400-e29b-41d4-a716-446655440123",
+                    "created_at": "2024-01-01",
+                }
+            ]
+
+    monkeypatch.setattr(
+        mcp_tools.upbit_service, "cancel_orders", MockUpbitService().cancel_orders
+    )
+
+    uuid = "550e8400-e29b-41d4-a716-446655440123"
+    result = await tools["cancel_order"](order_id=uuid)
+
+    assert result["success"] is True
+    assert result["order_id"] == uuid
+
+
+@pytest.mark.asyncio
 async def test_search_symbol_empty_query_returns_empty():
     tools = build_tools()
 
