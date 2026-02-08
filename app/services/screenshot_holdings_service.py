@@ -52,7 +52,12 @@ class ScreenshotHoldingsService:
             - resolution_method: "alias" | "krx_master" | "us_master" | "fallback"
         """
         market_section = market_section.lower()
-        market_type = MarketType.KR if market_section == "kr" else MarketType.US
+        if market_section == "kr":
+            market_type = MarketType.KR
+        elif market_section == "crypto":
+            market_type = MarketType.CRYPTO
+        else:
+            market_type = MarketType.US
 
         # 1단계: StockAlias DB에서 검색
         alias_service = StockAliasService(self.db)
@@ -215,15 +220,20 @@ class ScreenshotHoldingsService:
 
             # 필수 필드 검증
             if not stock_name:
-                warnings.append(f"Skipping holding: missing stock_name")
+                warnings.append("Skipping holding: missing stock_name")
                 continue
 
             if action == "remove":
                 # 삭제 요청
-                market_type = MarketType.KR if market_section == "kr" else MarketType.US
-                ticker = (await self._resolve_symbol(stock_name, market_section, broker))[
-                    0
-                ]
+                if market_section == "kr":
+                    market_type = MarketType.KR
+                elif market_section == "crypto":
+                    market_type = MarketType.CRYPTO
+                else:
+                    market_type = MarketType.US
+                ticker = (
+                    await self._resolve_symbol(stock_name, market_section, broker)
+                )[0]
 
                 existing = old_map.get((ticker, market_type.value))
                 if existing:

@@ -5028,8 +5028,6 @@ class TestGetSectorPeers:
             },
         }
 
-        original_yf = mcp_tools.yf
-
         class MockTicker:
             def __init__(self, ticker):
                 self._ticker = ticker
@@ -5608,16 +5606,6 @@ class TestAnalyzeStock:
         monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
 
         # Mock naver functions
-        mock_naver_data = {
-            "symbol": "005930",
-            "name": "삼성전자",
-            "current_price": 80000,
-            "change_pct": -1.25,
-            "per": 15.5,
-            "pbr": 1.2,
-            "market_cap": 500_000_000_0000,
-        }
-
         async def mock_naver_valuation(symbol):
             return {
                 "per": 15.5,
@@ -7813,7 +7801,6 @@ class TestGetFearGreedIndex:
 
             async def get(self, url, params=None, **kw):
                 # Return Fear & Greed API response
-                import httpx
 
                 return _FakeResponse(
                     {
@@ -7925,7 +7912,7 @@ async def test_get_disclosures_success_after_fix(monkeypatch):
     tools = build_tools()
 
     # Mock list_filings to verify functionality
-    async def mock_list_filings(korean_name, days):
+    async def mock_list_filings(korean_name, days, limit=20, report_type=None):
         return [
             {
                 "date": "2024-01-01",

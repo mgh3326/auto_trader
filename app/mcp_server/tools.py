@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import logging
 import re
 import time
 from typing import TYPE_CHECKING, Any, Literal
@@ -34,6 +35,8 @@ from data.stocks_info import (
     get_kospi_name_to_code,
     get_us_stocks_data,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _is_korean_equity_code(symbol: str) -> bool:
@@ -106,8 +109,11 @@ def _resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
         return "equity_kr", symbol
 
     if market_type == "equity_us":
+        symbol = symbol.upper()
         if _is_crypto_market(symbol):
             raise ValueError("us equity symbols must not include KRW-/USDT- prefix")
+        if not _is_us_equity_symbol(symbol):
+            raise ValueError("invalid US equity symbol")
         return "equity_us", symbol
 
     # Auto-detect from symbol format
@@ -2658,7 +2664,13 @@ async def _fetch_sector_peers_us(
             }
         )
 
-    peers.sort(key=lambda x: x.get("market_cap") or 0, reverse=True)
+    peers.sort(
+        key=lambda x: (
+            x.get("same_industry") is True,
+            x.get("market_cap") or 0,
+        ),
+        reverse=True,
+    )
     peers = peers[:limit]
 
     # Step 5: Comparison metrics
@@ -2686,6 +2698,8 @@ async def _fetch_sector_peers_us(
         sorted_pbrs = sorted(all_pbrs)
         target_pbr_rank = f"{sorted_pbrs.index(target_pbr) + 1}/{len(sorted_pbrs)}"
 
+    same_industry_count = sum(1 for p in peers if p.get("same_industry"))
+
     return {
         "instrument_type": "equity_us",
         "source": "finnhub+yfinance",
@@ -2699,6 +2713,7 @@ async def _fetch_sector_peers_us(
         "pbr": target_pbr,
         "market_cap": target_mcap,
         "peers": peers,
+        "same_industry_count": same_industry_count,
         "comparison": {
             "avg_per": avg_per,
             "avg_pbr": avg_pbr,
@@ -6657,24 +6672,29 @@ def register_tools(mcp: FastMCP) -> None:
             "Get DART (OPENDART) disclosure filings for Korean corporations. "
             "Supports both 6-digit corp codes (e.g., '005930') and Korean company names (e.g., '삼성전자'). "
             "Returns filing date, report name, report number, and corporation name. "
-            "Default lookback period: 30 days."
+            "Default lookback period: 30 days, default limit: 20 filings. "
+            "Filter by report type: '정기', '주요사항', '발행', '지분', '기타'."
         ),
     )
     async def get_disclosures(
         symbol: str,
         days: int = 30,
+        limit: int = 20,
+        report_type: str | None = None,
     ) -> dict[str, Any]:
         """Get DART disclosure filings for a Korean corporation.
 
         Args:
             symbol: Korean company name or 6-digit corp code (e.g., '005930' or '삼성전자')
             days: Number of days to look back (default: 30, max: 365)
+            limit: Maximum number of filings to return (default: 20, max: 100)
+            report_type: Filter by report type ("정기", "주요사항", "발행", "지분", "기타")
 
         Returns:
             Dictionary with filings data or error message.
         """
         try:
-            result = await list_filings(symbol, days)
+            result = await list_filings(symbol, days, limit, report_type)
             # list_filings returns list[dict] or dict[str, Any], normalize to dict
             if isinstance(result, list):
                 return {"success": True, "filings": result}
@@ -6728,7 +6748,6 @@ def register_tools(mcp: FastMCP) -> None:
             try:
                 market_type, normalized_symbol = _resolve_market_type(symbol, None)
                 market_types[normalized_symbol] = market_type
-                source = source_map[market_type]
 
                 df = await _fetch_ohlcv_for_indicators(
                     normalized_symbol, market_type, count=period
@@ -6816,7 +6835,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         sum_x = sum(x)
         sum_y = sum(y)
-        sum_xy = sum(xi * yi for xi, yi in zip(x, y))
+        sum_xy = sum(xi * yi for xi, yi in zip(x, y, strict=True))
         sum_x2 = sum(xi**2 for xi in x)
         sum_y2 = sum(yi**2 for yi in y)
 

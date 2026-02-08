@@ -4,7 +4,6 @@ from fastmcp import FastMCP
 
 # settings import 시 pydantic-settings가 .env 자동 로드
 from app.core.config import settings  # noqa: F401
-
 from app.mcp_server.env_utils import _env, _env_int
 from app.mcp_server.tools import register_tools
 
@@ -16,7 +15,6 @@ mcp = FastMCP(
         "(symbol search, quote, holdings, OHLCV, indicators)."
     ),
     version="0.1.0",
-    stateless_http=False,
 )
 
 register_tools(mcp)

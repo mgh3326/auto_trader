@@ -9,7 +9,9 @@ class TestEnv:
         monkeypatch.setenv("TEST_VAR", "value")
         assert _env("TEST_VAR") == "value"
 
-    def test_returns_default_when_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_default_when_not_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("TEST_VAR", raising=False)
         assert _env("TEST_VAR", "default") == "default"
 
@@ -24,7 +26,9 @@ class TestEnvInt:
         monkeypatch.setenv("TEST_PORT", "8080")
         assert _env_int("TEST_PORT", 3000) == 8080
 
-    def test_returns_default_when_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_default_when_not_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("TEST_PORT", raising=False)
         assert _env_int("TEST_PORT", 3000) == 3000
 

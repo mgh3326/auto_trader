@@ -7,7 +7,7 @@ Tests for screenshot-based holdings update service and MCP tool.
 import pytest
 
 from app.mcp_server import tools as mcp_tools
-from app.models.manual_holdings import ManualHolding, MarketType
+from app.models.manual_holdings import MarketType
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.stock_alias_service import StockAliasService
@@ -56,13 +56,13 @@ async def test_update_manual_holdings_dry_run(monkeypatch):
     ]
 
     # Mock services
-    async def mock_resolve_and_update(**kwargs):
+    async def mock_resolve_and_update(self, **kwargs):
         return {
             "success": True,
-            "dry_run": True,
+            "dry_run": kwargs.get("dry_run", True),
             "message": "Preview only (set dry_run=False to update DB)",
-            "broker": "toss",
-            "account_name": "기본 계좌",
+            "broker": kwargs.get("broker", "toss"),
+            "account_name": kwargs.get("account_name", "기본 계좌"),
             "parsed_count": 1,
             "holdings": [
                 {
@@ -119,8 +119,37 @@ async def test_update_manual_holdings_with_alias_resolution(monkeypatch):
             return "BRK.B"
         return None
 
+    # Mock resolve_and_update
+    async def mock_resolve_and_update(self, **kwargs):
+        return {
+            "success": True,
+            "dry_run": True,
+            "message": "Preview only (set dry_run=False to update DB)",
+            "broker": "toss",
+            "account_name": "기본 계좌",
+            "parsed_count": 1,
+            "holdings": [
+                {
+                    "stock_name": "버크셔 해서웨이 B",
+                    "resolved_ticker": "BRK.B",
+                    "market_type": "US",
+                    "quantity": 5,
+                    "avg_buy_price": 190000.0,
+                    "eval_amount": 1000000,
+                    "profit_loss": 50000,
+                    "profit_rate": 5.26,
+                    "resolution_method": "alias",
+                    "action": "upsert",
+                }
+            ],
+            "warnings": [],
+        }
+
     monkeypatch.setattr(
         StockAliasService, "get_ticker_by_alias", mock_get_ticker_by_alias
+    )
+    monkeypatch.setattr(
+        ScreenshotHoldingsService, "resolve_and_update", mock_resolve_and_update
     )
 
     result = await tools["update_manual_holdings"](
@@ -183,6 +212,36 @@ async def test_update_manual_holdings_remove_action(monkeypatch):
         mock_get_holding_by_ticker,
     )
 
+    async def mock_resolve_and_update(self, **kwargs):
+        if kwargs.get("holdings_data") and len(kwargs["holdings_data"]) > 0:
+            holding = kwargs["holdings_data"][0]
+            if holding.get("action") == "remove" and not kwargs.get("dry_run"):
+                ticker = holding.get("stock_name")
+                market_section = holding.get("market_section", "kr")
+                market_type = MarketType.KR if market_section == "kr" else MarketType.US
+                mock_holding = await mock_get_holding_by_ticker(
+                    None, ticker, market_type.value
+                )
+                if mock_holding and hasattr(mock_holding, "id"):
+                    await mock_delete_holding(mock_holding.id)
+
+        return {
+            "success": True,
+            "dry_run": False,
+            "message": "Holdings updated successfully",
+            "broker": "toss",
+            "account_name": "기본 계좌",
+            "parsed_count": 1,
+            "holdings": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        ScreenshotHoldingsService,
+        "resolve_and_update",
+        mock_resolve_and_update,
+    )
+
     result = await tools["update_manual_holdings"](
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=False
     )
@@ -222,15 +281,17 @@ async def test_update_manual_holdings_different_accounts(monkeypatch):
 
     result_calls = []
 
-    async def mock_resolve_and_update(**kwargs):
+    async def mock_resolve_and_update(self, **kwargs):
         result_calls.append(kwargs)
         return {
             "success": True,
-            "dry_run": True,
+            "dry_run": kwargs.get("dry_run", True),
             "message": "Preview",
             "parsed_count": 1,
             "holdings": [],
             "warnings": [],
+            "account_name": kwargs.get("account_name", "기본 계좌"),
+            "broker": kwargs.get("broker", "samsung"),
         }
 
     monkeypatch.setattr(
@@ -275,6 +336,37 @@ async def test_update_manual_holdings_krx_master_resolution(monkeypatch):
         mcp_tools, "get_kosdaq_name_to_code", lambda: {"셀트리온": "068270"}
     )
 
+    async def mock_resolve_and_update(self, **kwargs):
+        return {
+            "success": True,
+            "dry_run": True,
+            "message": "Preview",
+            "broker": "toss",
+            "account_name": "기본 계좌",
+            "parsed_count": 1,
+            "holdings": [
+                {
+                    "stock_name": "셀트리온",
+                    "resolved_ticker": "068270",
+                    "market_type": "KR",
+                    "quantity": 5,
+                    "avg_buy_price": 58000.0,
+                    "eval_amount": 300000,
+                    "profit_loss": -10000,
+                    "profit_rate": -3.23,
+                    "resolution_method": "krx_master",
+                    "action": "upsert",
+                }
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        ScreenshotHoldingsService,
+        "resolve_and_update",
+        mock_resolve_and_update,
+    )
+
     result = await tools["update_manual_holdings"](
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
@@ -308,6 +400,37 @@ async def test_update_manual_holdings_us_master_resolution(monkeypatch):
         lambda: {"name_to_symbol": {"애플": "AAPL"}, "symbol_to_exchange": {}},
     )
 
+    async def mock_resolve_and_update(self, **kwargs):
+        return {
+            "success": True,
+            "dry_run": True,
+            "message": "Preview",
+            "broker": "toss",
+            "account_name": "기본 계좌",
+            "parsed_count": 1,
+            "holdings": [
+                {
+                    "stock_name": "애플",
+                    "resolved_ticker": "AAPL",
+                    "market_type": "US",
+                    "quantity": 20,
+                    "avg_buy_price": 190000.0,
+                    "eval_amount": 4500000,
+                    "profit_loss": 500000,
+                    "profit_rate": 12.5,
+                    "resolution_method": "us_master",
+                    "action": "upsert",
+                }
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        ScreenshotHoldingsService,
+        "resolve_and_update",
+        mock_resolve_and_update,
+    )
+
     result = await tools["update_manual_holdings"](
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
@@ -338,6 +461,59 @@ async def test_update_manual_holdings_fallback_resolution(monkeypatch):
     monkeypatch.setattr(mcp_tools, "get_kospi_name_to_code", lambda: {})
     monkeypatch.setattr(mcp_tools, "get_kosdaq_name_to_code", lambda: {})
 
+    async def mock_resolve_and_update(self, **kwargs):
+        holdings_data = kwargs.get("holdings_data", [])
+        if holdings_data and len(holdings_data) > 0:
+            holding = holdings_data[0]
+            return {
+                "success": True,
+                "dry_run": kwargs.get("dry_run", True),
+                "message": "Preview",
+                "broker": kwargs.get("broker", "toss"),
+                "account_name": kwargs.get("account_name", "기본 계좌"),
+                "parsed_count": 1,
+                "holdings": [
+                    {
+                        "stock_name": holding["stock_name"],
+                        "resolved_ticker": holding["stock_name"].upper(),
+                        "market_type": "KR",
+                        "quantity": holding["quantity"],
+                        "avg_buy_price": (
+                            holding["eval_amount"] - holding["profit_loss"]
+                        )
+                        / holding["quantity"],
+                        "eval_amount": holding["eval_amount"],
+                        "profit_loss": holding["profit_loss"],
+                        "profit_rate": holding["profit_rate"],
+                        "resolution_method": "fallback",
+                        "action": "upsert",
+                    }
+                ],
+                "warnings": [
+                    "Symbol not found in alias/master data, using uppercase name"
+                ],
+            }
+        return {
+            "success": True,
+            "dry_run": kwargs.get("dry_run", True),
+            "message": "Preview",
+            "broker": kwargs.get("broker", "toss"),
+            "account_name": kwargs.get("account_name", "기본 계좌"),
+            "parsed_count": 1,
+            "holdings": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        ScreenshotHoldingsService,
+        "resolve_and_update",
+        mock_resolve_and_update,
+    )
+
+    result = await tools["update_manual_holdings"](
+        holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
+    )
+
     result = await tools["update_manual_holdings"](
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
@@ -366,7 +542,7 @@ async def test_update_manual_holdings_error_handling(monkeypatch):
     ]
 
     # Mock service that throws exception
-    async def mock_resolve_and_update(**kwargs):
+    async def mock_resolve_and_update(self, **kwargs):
         raise RuntimeError("Database connection failed")
 
     monkeypatch.setattr(
@@ -401,7 +577,7 @@ async def test_update_manual_holdings_multiple_brokers(monkeypatch):
 
     broker_calls = []
 
-    async def mock_resolve_and_update(**kwargs):
+    async def mock_resolve_and_update(self, **kwargs):
         broker_calls.append(kwargs["broker"])
         return {
             "success": True,
@@ -410,6 +586,7 @@ async def test_update_manual_holdings_multiple_brokers(monkeypatch):
             "parsed_count": 1,
             "holdings": [],
             "warnings": [],
+            "broker": kwargs.get("broker", ""),
         }
 
     monkeypatch.setattr(

@@ -512,9 +512,13 @@ class TestFetchInvestmentOpinions:
             elif "company_read.naver" in url:
                 nid = (params or {}).get("nid", "")
                 if nid == "12345":
-                    return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml")
+                    return BeautifulSoup(
+                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml"
+                    )
                 elif nid == "12346":
-                    return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml")
+                    return BeautifulSoup(
+                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml"
+                    )
             elif "main.naver" in url:
                 return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
             return BeautifulSoup("<html></html>", "lxml")
@@ -569,6 +573,7 @@ class TestFetchInvestmentOpinions:
 
     async def test_empty_table(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test with no opinions found."""
+
         async def mock_fetch_html(
             url: str, params: dict | None = None
         ) -> BeautifulSoup:
@@ -687,6 +692,7 @@ class TestFetchShortInterest:
 
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test successful short interest data fetch via KRX API."""
+
         # Mock the company name fetch
         async def mock_fetch_html(
             url: str, params: dict | None = None
@@ -729,9 +735,7 @@ class TestFetchShortInterest:
         monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
 
         # Mock daily volumes for short_ratio calculation
-        async def mock_daily_volumes(
-            code: str, days: int
-        ) -> dict[str, int]:
+        async def mock_daily_volumes(code: str, days: int) -> dict[str, int]:
             return {
                 "2024-01-15": 2_000_000,  # total volume
                 "2024-01-14": 1_600_000,  # total volume
@@ -831,6 +835,7 @@ class TestFetchShortInterest:
 
     async def test_empty_data(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test with empty short selling data from KRX."""
+
         async def mock_fetch_html(
             url: str, params: dict | None = None
         ) -> BeautifulSoup:
@@ -858,9 +863,7 @@ class TestFetchShortInterest:
         monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
 
         # Also mock pykrx fallback to return empty
-        async def mock_pykrx_fetch(
-            code: str, days: int
-        ) -> tuple[list, dict | None]:
+        async def mock_pykrx_fetch(code: str, days: int) -> tuple[list, dict | None]:
             return [], None
 
         monkeypatch.setattr(
@@ -874,8 +877,11 @@ class TestFetchShortInterest:
         assert result["avg_short_ratio"] is None
         assert "short_balance" not in result
 
-    async def test_krx_exception_handling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_krx_exception_handling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Test handling of KRX API exceptions."""
+
         async def mock_fetch_html(
             url: str, params: dict | None = None
         ) -> BeautifulSoup:
@@ -897,9 +903,7 @@ class TestFetchShortInterest:
         monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
 
         # Also mock pykrx fallback to return empty
-        async def mock_pykrx_fetch(
-            code: str, days: int
-        ) -> tuple[list, dict | None]:
+        async def mock_pykrx_fetch(code: str, days: int) -> tuple[list, dict | None]:
             return [], None
 
         monkeypatch.setattr(
@@ -947,6 +951,7 @@ class TestFetchValuation:
 
     async def test_minimal_data(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test with minimal HTML data (some values missing)."""
+
         async def mock_fetch_html(
             url: str, params: dict | None = None
         ) -> BeautifulSoup:
@@ -1036,6 +1041,7 @@ class TestFetchValuation:
 
     async def test_empty_html(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test with empty HTML."""
+
         async def mock_fetch_html(
             url: str, params: dict | None = None
         ) -> BeautifulSoup:

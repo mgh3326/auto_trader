@@ -37,7 +37,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Revert broker_type from VARCHAR(50) back to enum."""
     # Recreate the enum type
-    broker_type_enum = sa.Enum("kis", "toss", "upbit", name="broker_type")
+    broker_type_enum = sa.Enum("kis", "toss", "upbit", "samsung", name="broker_type")
     broker_type_enum.create(op.get_bind(), checkfirst=True)
 
     # Convert varchar back to enum

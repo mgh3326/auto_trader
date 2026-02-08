@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.manual_holdings import BrokerAccount, BrokerType, MarketType
+from app.models.manual_holdings import BrokerAccount, BrokerType
 
 logger = logging.getLogger(__name__)
 

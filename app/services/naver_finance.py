@@ -81,7 +81,11 @@ def _parse_naver_date(date_str: str | None) -> str | None:
     if match:
         year = date.today().year
         month, day = match.groups()
-        return f"{year}-{int(month):02d}-{int(day):02d}"
+        parsed = f"{year}-{int(month):02d}-{int(day):02d}"
+        if parsed > date.today().isoformat():
+            year -= 1
+            parsed = f"{year}-{int(month):02d}-{int(day):02d}"
+        return parsed
 
     return date_str
 
@@ -738,7 +742,7 @@ async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any
         detail_tasks = [_fetch_report_detail(info["nid"]) for info in report_infos]
         details = await asyncio.gather(*detail_tasks, return_exceptions=True)
 
-        for info, detail in zip(report_infos, details):
+        for info, detail in zip(report_infos, details, strict=True):
             opinion = {
                 "stock_name": info["stock_name"],
                 "title": info["title"],
@@ -835,7 +839,9 @@ async def fetch_valuation(code: str) -> dict[str, Any]:
     # The actual value is in span.blind inside em
     price_elem = main_soup.select_one("p.no_today em span.blind")
     if price_elem:
-        valuation["current_price"] = _parse_korean_number(price_elem.get_text(strip=True))
+        valuation["current_price"] = _parse_korean_number(
+            price_elem.get_text(strip=True)
+        )
 
     # Fallback: try getting from no_today directly
     if valuation["current_price"] is None:
@@ -1059,7 +1065,6 @@ async def _fetch_short_data_from_pykrx(
     def _fetch_sync() -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         """Synchronous function to fetch short selling data from pykrx."""
         import pandas as pd
-
         from pykrx import stock as pykrx_stock
 
         short_data_list: list[dict[str, Any]] = []
@@ -1075,7 +1080,9 @@ async def _fetch_short_data_from_pykrx(
             if df_short is not None and not df_short.empty:
                 for idx, row in df_short.iterrows():
                     date_str = (
-                        idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
+                        idx.strftime("%Y-%m-%d")
+                        if hasattr(idx, "strftime")
+                        else str(idx)
                     )
 
                     def safe_value(val: Any) -> Any:
@@ -1380,9 +1387,7 @@ async def fetch_sector_peers(
         # If we need more peers, scrape the sector detail page
         industry_code = target.get("industry_code")
         if len(peer_codes) < limit and industry_code:
-            extra_codes = await _fetch_sector_stock_codes(
-                str(industry_code), client
-            )
+            extra_codes = await _fetch_sector_stock_codes(str(industry_code), client)
             seen = {code, *peer_codes}
             for ec in extra_codes:
                 if ec not in seen:

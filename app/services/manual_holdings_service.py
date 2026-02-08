@@ -14,7 +14,6 @@ from sqlalchemy.orm import selectinload
 
 from app.models.manual_holdings import (
     BrokerAccount,
-    BrokerType,
     ManualHolding,
     MarketType,
 )

@@ -44,7 +44,9 @@ async def fetch_ohlcv(
         raise ValueError(f"period must be one of {list(period_map.keys())}")
 
     yahoo_ticker = to_yahoo_symbol(ticker)  # DB형식 . -> Yahoo형식 -
-    end = (end_date.date() if end_date else datetime.now(UTC).date()) + timedelta(days=1)
+    end = (end_date.date() if end_date else datetime.now(UTC).date()) + timedelta(
+        days=1
+    )
 
     # 주봉/월봉은 더 넓은 기간 필요
     multiplier = {"day": 2, "week": 10, "month": 40}.get(period, 2)
