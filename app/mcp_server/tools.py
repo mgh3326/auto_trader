@@ -36,6 +36,7 @@ from data.stocks_info import (
     get_kospi_name_to_code,
     get_us_stocks_data,
 )
+from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -3913,11 +3914,8 @@ def register_tools(mcp: FastMCP) -> None:
         elif market_type == "equity_us":
             try:
                 kis = KISClient()
-                balance_data = await kis.inquire_overseas_margin()
-                for item in balance_data:
-                    currency = item.get("crcy_cd", "")
-                    if currency == "USD":
-                        return float(item.get("frcr_dncl_amt_2", 0) or 0)
+                balance_data = await kis.inquire_integrated_margin()
+                return float(balance_data.get("usd_ord_psbl_amt", 0) or 0)
             except Exception:
                 pass
         return 0.0
@@ -4173,7 +4171,7 @@ def register_tools(mcp: FastMCP) -> None:
             return result
         else:
             kis = KISClient()
-            exchange_code = "NASD"
+            exchange_code = get_exchange_by_symbol(symbol) or "NASD"
 
             if side == "buy":
                 return await kis.buy_overseas_stock(
@@ -5750,27 +5748,40 @@ def register_tools(mcp: FastMCP) -> None:
                     {"source": "upbit", "market": "crypto", "error": str(exc)}
                 )
 
+        kis_balance_data = None
+        if account_filter is None or account_filter in (
+            "kis",
+            "kis_domestic",
+            "kis_overseas",
+        ):
+            try:
+                kis = KISClient()
+                kis_balance_data = await kis.inquire_integrated_margin()
+            except Exception as exc:
+                errors.append({"source": "kis", "market": "kr", "error": str(exc)})
+
         if account_filter is None or account_filter in (
             "kis",
             "kis_domestic",
         ):
             try:
-                kis = KISClient()
-                balance_data = await kis.inquire_integrated_margin()
-                dncl_amt = float(balance_data.get("dnca_tot_amt", 0) or 0)
-                orderable = float(balance_data.get("stck_cash_ord_psbl_amt", 0) or 0)
-                accounts.append(
-                    {
-                        "account": "kis_domestic",
-                        "account_name": "기본 계좌",
-                        "broker": "kis",
-                        "currency": "KRW",
-                        "balance": dncl_amt,
-                        "orderable": orderable,
-                        "formatted": f"{int(dncl_amt):,} KRW",
-                    }
-                )
-                total_krw += dncl_amt
+                if kis_balance_data is not None:
+                    dncl_amt = float(kis_balance_data.get("dnca_tot_amt", 0) or 0)
+                    orderable = float(
+                        kis_balance_data.get("stck_cash_ord_psbl_amt", 0) or 0
+                    )
+                    accounts.append(
+                        {
+                            "account": "kis_domestic",
+                            "account_name": "기본 계좌",
+                            "broker": "kis",
+                            "currency": "KRW",
+                            "balance": dncl_amt,
+                            "orderable": orderable,
+                            "formatted": f"{int(dncl_amt):,} KRW",
+                        }
+                    )
+                    total_krw += dncl_amt
             except Exception as exc:
                 errors.append({"source": "kis", "market": "kr", "error": str(exc)})
 
@@ -5779,28 +5790,23 @@ def register_tools(mcp: FastMCP) -> None:
             "kis_overseas",
         ):
             try:
-                kis = KISClient()
-                balance_data = await kis.inquire_overseas_margin()
-                for item in balance_data:
-                    currency = item.get("crcy_cd", "")
-                    if currency == "USD":
-                        balance = float(item.get("frcr_dncl_amt_2", 0) or 0)
-                        orderable = float(item.get("usd_ord_psbl_amt", 0) or 0)
-                        exchange_rate = float(item.get("usd_exrt", 0) or 0)
-                        accounts.append(
-                            {
-                                "account": "kis_overseas",
-                                "account_name": "기본 계좌",
-                                "broker": "kis",
-                                "currency": "USD",
-                                "balance": balance,
-                                "orderable": orderable,
-                                "exchange_rate": exchange_rate,
-                                "formatted": f"${balance:.2f} USD",
-                            }
-                        )
-                        total_usd += balance
-                        break
+                if kis_balance_data is not None:
+                    balance = float(kis_balance_data.get("usd_objt_amt", 0) or 0)
+                    orderable = float(kis_balance_data.get("usd_ord_psbl_amt", 0) or 0)
+                    exchange_rate = float(kis_balance_data.get("usd_exrt", 0) or 0)
+                    accounts.append(
+                        {
+                            "account": "kis_overseas",
+                            "account_name": "기본 계좌",
+                            "broker": "kis",
+                            "currency": "USD",
+                            "balance": balance,
+                            "orderable": orderable,
+                            "exchange_rate": exchange_rate,
+                            "formatted": f"${balance:.2f} USD",
+                        }
+                    )
+                    total_usd += balance
             except Exception as exc:
                 errors.append({"source": "kis", "market": "us", "error": str(exc)})
 

@@ -10,6 +10,7 @@ from app.core.symbol import to_db_symbol
 from app.monitoring.error_reporter import get_error_reporter
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.kis import KISClient
+from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
 from app.services.kis_trading_service import (
     process_kis_domestic_buy_orders_with_analysis,
     process_kis_domestic_sell_orders_with_analysis,
@@ -1106,6 +1107,7 @@ def execute_overseas_buy_order_task(self, symbol: str) -> dict:
             if target_stock:
                 avg_price = float(target_stock["pchs_avg_pric"])
                 current_price = float(target_stock["now_pric2"])
+                exchange_code = target_stock.get("ovrs_excg_cd", "NASD")
             else:
                 try:
                     current_price = await kis.fetch_overseas_price(symbol)
@@ -1115,9 +1117,10 @@ def execute_overseas_buy_order_task(self, symbol: str) -> dict:
                         "success": False,
                         "message": f"현재가 조회 실패: {price_error}",
                     }
+                exchange_code = get_exchange_by_symbol(symbol) or "NASD"
 
             res = await process_kis_overseas_buy_orders_with_analysis(
-                kis, symbol, current_price, avg_price
+                kis, symbol, current_price, avg_price, exchange_code
             )
             return res
         except Exception as e:
@@ -1409,6 +1412,7 @@ def execute_overseas_buy_orders(self) -> dict:
                 name = stock.get("ovrs_item_name")
                 avg_price = float(stock.get("pchs_avg_pric", 0))
                 current_price = float(stock.get("now_pric2", 0))
+                exchange_code = stock.get("ovrs_excg_cd", "NASD")
 
                 self.update_state(
                     state="PROGRESS",
@@ -1423,7 +1427,7 @@ def execute_overseas_buy_orders(self) -> dict:
 
                 try:
                     res = await process_kis_overseas_buy_orders_with_analysis(
-                        kis, symbol, current_price, avg_price
+                        kis, symbol, current_price, avg_price, exchange_code
                     )
                     results.append(
                         {

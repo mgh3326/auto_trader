@@ -63,17 +63,10 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
             return {
                 "dnca_tot_amt": "1000000.0",
                 "stck_cash_ord_psbl_amt": "800000.0",
+                "usd_objt_amt": "500.0",
+                "usd_ord_psbl_amt": "450.0",
+                "usd_exrt": "1380.0",
             }
-
-        async def inquire_overseas_margin(self):
-            return [
-                {
-                    "crcy_cd": "USD",
-                    "frcr_dncl_amt_2": "500.0",
-                    "usd_ord_psbl_amt": "450.0",
-                    "usd_exrt": "1380.0",
-                }
-            ]
 
     monkeypatch.setattr(
         mcp_tools.upbit_service,
@@ -93,6 +86,13 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
     assert upbit_account["balance"] == 500000.0
     assert upbit_account["formatted"] == "500,000 KRW"
 
+    kis_overseas_account = next(
+        acc for acc in result["accounts"] if acc["account"] == "kis_overseas"
+    )
+    assert kis_overseas_account["balance"] == 500.0
+    assert kis_overseas_account["orderable"] == 450.0
+    assert kis_overseas_account["exchange_rate"] == 1380.0
+
 
 @pytest.mark.asyncio
 async def test_get_cash_balance_with_account_filter(monkeypatch):
@@ -103,6 +103,9 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
             return {
                 "dnca_tot_amt": "1000000.0",
                 "stck_cash_ord_psbl_amt": "800000.0",
+                "usd_objt_amt": "500.0",
+                "usd_ord_psbl_amt": "450.0",
+                "usd_exrt": "1380.0",
             }
 
     monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
@@ -112,8 +115,9 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
     assert result["summary"]["total_krw"] == 0.0
 
     result = await tools["get_cash_balance"](account="kis")
-    assert len(result["accounts"]) == 1
+    assert len(result["accounts"]) == 2
     assert result["accounts"][0]["account"] == "kis_domestic"
+    assert result["accounts"][1]["account"] == "kis_overseas"
 
 
 @pytest.mark.asyncio
@@ -129,17 +133,10 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
             return {
                 "dnca_tot_amt": "1000000.0",
                 "stck_cash_ord_psbl_amt": "800000.0",
+                "usd_objt_amt": "500.0",
+                "usd_ord_psbl_amt": "450.0",
+                "usd_exrt": "1380.0",
             }
-
-        async def inquire_overseas_margin(self):
-            return [
-                {
-                    "crcy_cd": "USD",
-                    "frcr_dncl_amt_2": "500.0",
-                    "usd_ord_psbl_amt": "450.0",
-                    "usd_exrt": "1380.0",
-                }
-            ]
 
     monkeypatch.setattr(
         mcp_tools.upbit_service,
@@ -153,6 +150,13 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
     assert len(result["accounts"]) == 2  # KIS domestic + overseas succeeded
     assert len(result["errors"]) == 1
     assert result["errors"][0]["source"] == "upbit"
+
+    kis_overseas_account = next(
+        acc for acc in result["accounts"] if acc["account"] == "kis_overseas"
+    )
+    assert kis_overseas_account["balance"] == 500.0
+    assert kis_overseas_account["orderable"] == 450.0
+    assert kis_overseas_account["exchange_rate"] == 1380.0
 
 
 @pytest.mark.asyncio
@@ -6600,6 +6604,44 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
     assert "Insufficient" in result["warning"]
     assert "KIS overseas account" in result["warning"]
     assert "deposit" in result["warning"].lower()
+
+
+@pytest.mark.asyncio
+async def test_place_order_nyse_exchange_code(monkeypatch):
+    """Test that NYSE stocks (e.g. TSM) use correct exchange code instead of hardcoded NASD."""
+    tools = build_tools()
+
+    buy_calls: list[dict] = []
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {"usd_ord_psbl_amt": "100000", "dnca_tot_amt": "0", "stck_cash_ord_psbl_amt": "0"}
+
+        async def buy_overseas_stock(self, symbol, exchange_code, quantity, price):
+            buy_calls.append(
+                {"symbol": symbol, "exchange_code": exchange_code, "quantity": quantity, "price": price}
+            )
+            return {"odno": "99999", "success": True}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(mcp_tools, "get_exchange_by_symbol", lambda s: "NYSE" if s == "TSM" else None)
+
+    result = await tools["place_order"](
+        symbol="TSM",
+        side="buy",
+        order_type="limit",
+        quantity=10,
+        price=150.0,
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is False
+    assert len(buy_calls) == 1
+    assert buy_calls[0]["symbol"] == "TSM"
+    assert buy_calls[0]["exchange_code"] == "NYSE"
+    assert buy_calls[0]["quantity"] == 10
+    assert buy_calls[0]["price"] == 150.0
 
 
 # ---------------------------------------------------------------------------
