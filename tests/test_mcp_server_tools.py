@@ -1135,96 +1135,6 @@ def test_calculate_volume_profile_distributes_volume_proportionally():
     assert result["profile"][1]["volume_pct"] == 50
 
 
-@pytest.mark.asyncio
-async def test_get_volume_profile_korean_equity(monkeypatch):
-    tools = build_tools()
-    df = pd.DataFrame(
-        [
-            {"date": "2024-01-01", "low": 1700.0, "high": 1800.0, "volume": 1000},
-            {"date": "2024-01-02", "low": 1750.0, "high": 1900.0, "volume": 2000},
-            {"date": "2024-01-03", "low": 1850.0, "high": 1950.0, "volume": 1500},
-        ]
-    )
-
-    class DummyKISClient:
-        async def inquire_daily_itemchartprice(self, code, market, n, period):
-            return df
-
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
-
-    result = await tools["get_volume_profile"]("298040", period=60, bins=10)
-
-    assert result["symbol"] == "298040"
-    assert result["period_days"] == 60
-    assert len(result["profile"]) == 10
-    assert result["price_range"]["low"] == 1700
-    assert result["price_range"]["high"] == 1950
-    assert result["value_area"]["volume_pct"] >= 70
-    assert (
-        pytest.approx(
-            sum(float(item["volume_pct"]) for item in result["profile"]), rel=1e-3
-        )
-        == 100
-    )
-
-
-@pytest.mark.asyncio
-async def test_get_volume_profile_us_equity(monkeypatch):
-    tools = build_tools()
-    df = pd.DataFrame(
-        [
-            {"date": "2024-01-01", "low": 20.0, "high": 22.0, "volume": 1000000},
-            {"date": "2024-01-02", "low": 21.5, "high": 24.0, "volume": 1200000},
-            {"date": "2024-01-03", "low": 23.0, "high": 25.0, "volume": 900000},
-        ]
-    )
-    mock_fetch = AsyncMock(return_value=df)
-    monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
-
-    result = await tools["get_volume_profile"]("PLTR", period=30, bins=12)
-
-    mock_fetch.assert_awaited_once_with(ticker="PLTR", days=30, period="day")
-    assert result["symbol"] == "PLTR"
-    assert result["period_days"] == 30
-    assert len(result["profile"]) == 12
-    assert result["price_range"]["low"] == 20
-    assert result["price_range"]["high"] == 25
-    assert result["poc"]["volume"] > 0
-
-
-@pytest.mark.asyncio
-async def test_get_volume_profile_returns_error_payload(monkeypatch):
-    tools = build_tools()
-    mock_fetch = AsyncMock(side_effect=RuntimeError("yahoo timeout"))
-    monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
-
-    result = await tools["get_volume_profile"]("PLTR", period=60, bins=20)
-
-    assert result == {
-        "error": "yahoo timeout",
-        "source": "yahoo",
-        "symbol": "PLTR",
-        "instrument_type": "equity_us",
-    }
-
-
-@pytest.mark.asyncio
-async def test_get_volume_profile_raises_on_invalid_input():
-    tools = build_tools()
-
-    with pytest.raises(ValueError, match="symbol is required"):
-        await tools["get_volume_profile"]("")
-
-    with pytest.raises(ValueError, match="period must be > 0"):
-        await tools["get_volume_profile"]("PLTR", period=0)
-
-    with pytest.raises(ValueError, match="bins must be >= 2"):
-        await tools["get_volume_profile"]("PLTR", bins=1)
-
-    with pytest.raises(ValueError, match="bins must be <= 200"):
-        await tools["get_volume_profile"]("PLTR", bins=201)
-
-
 @pytest.mark.unit
 class TestNormalizeMarket:
     """Tests for _normalize_market helper function."""
@@ -4677,106 +4587,6 @@ class TestCalculateFibonacci:
         assert result["current_price"] == swing_high
 
 
-@pytest.mark.unit
-@pytest.mark.asyncio
-class TestGetFibonacciTool:
-    """Tests for get_fibonacci MCP tool."""
-
-    async def test_crypto(self, monkeypatch):
-        tools = build_tools()
-        df = _fib_df_uptrend()
-        mock_fetch = AsyncMock(return_value=df)
-        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
-
-        result = await tools["get_fibonacci"]("KRW-BTC")
-
-        assert result["symbol"] == "KRW-BTC"
-        assert "trend" in result
-        assert "levels" in result
-        assert "swing_high" in result
-        assert "swing_low" in result
-        assert "current_price" in result
-        assert "nearest_support" in result
-        assert "nearest_resistance" in result
-
-    async def test_korean_equity(self, monkeypatch):
-        tools = build_tools()
-        df = _fib_df_downtrend()
-
-        class DummyKISClient:
-            async def inquire_daily_itemchartprice(self, code, market, n, period):
-                return df
-
-        monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
-
-        result = await tools["get_fibonacci"]("005930")
-
-        assert result["symbol"] == "005930"
-        assert result["trend"] == "bounce_from_low"
-
-    async def test_us_equity(self, monkeypatch):
-        tools = build_tools()
-        df = _fib_df_uptrend()
-        mock_fetch = AsyncMock(return_value=df)
-        monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
-
-        result = await tools["get_fibonacci"]("AAPL")
-
-        assert result["symbol"] == "AAPL"
-        assert "levels" in result
-
-    async def test_custom_period(self, monkeypatch):
-        tools = build_tools()
-        df = _fib_df_uptrend(n=30)
-        mock_fetch = AsyncMock(return_value=df)
-        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
-
-        result = await tools["get_fibonacci"]("KRW-BTC", period=30)
-
-        assert "levels" in result
-
-    async def test_raises_on_empty_symbol(self):
-        tools = build_tools()
-        with pytest.raises(ValueError, match="symbol is required"):
-            await tools["get_fibonacci"]("")
-
-    async def test_raises_on_invalid_period(self):
-        tools = build_tools()
-        with pytest.raises(ValueError, match="period must be > 0"):
-            await tools["get_fibonacci"]("AAPL", period=0)
-
-    async def test_error_payload_on_failure(self, monkeypatch):
-        tools = build_tools()
-        mock_fetch = AsyncMock(side_effect=RuntimeError("API error"))
-        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
-
-        result = await tools["get_fibonacci"]("KRW-BTC")
-
-        assert "error" in result
-        assert result["source"] == "upbit"
-
-    async def test_empty_df_returns_error(self, monkeypatch):
-        tools = build_tools()
-        mock_fetch = AsyncMock(return_value=pd.DataFrame())
-        monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
-
-        result = await tools["get_fibonacci"]("KRW-BTC")
-
-        assert "error" in result
-        assert "No data" in result["error"]
-
-    async def test_market_hint(self, monkeypatch):
-        tools = build_tools()
-        df = _fib_df_uptrend()
-        mock_fetch = AsyncMock(return_value=df)
-        monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
-
-        result = await tools["get_fibonacci"]("PLTR", market="us")
-
-        assert result["symbol"] == "PLTR"
-        assert "levels" in result
-
-
 # ---------------------------------------------------------------------------
 # get_sector_peers
 # ---------------------------------------------------------------------------
@@ -5517,7 +5327,7 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
     assert result["total_accounts"] == 1
     assert result["total_positions"] == 2
     assert result["filtered_count"] == 0
-    assert result["filter_reason"] == "minimum_value < 1000"
+    assert result["filter_reason"] == "equity_kr < 5000, equity_us < 10, crypto < 5000"
 
     positions_by_symbol = {
         position["symbol"]: position for position in result["accounts"][0]["positions"]
@@ -5630,8 +5440,13 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
     assert result["filtered_count"] == 2
-    assert result["filter_reason"] == "minimum_value < 1000"
+    assert result["filter_reason"] == "equity_kr < 5000, equity_us < 10, crypto < 5000"
     assert result["total_positions"] == 2
+    assert result["filters"]["minimum_value"] == {
+        "equity_kr": 5000.0,
+        "equity_us": 10.0,
+        "crypto": 5000.0,
+    }
 
     positions_by_symbol = {
         position["symbol"]: position for position in result["accounts"][0]["positions"]
@@ -5718,7 +5533,7 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
     assert result["total_accounts"] == 1
     assert result["total_positions"] == 2
     assert result["filtered_count"] == 0
-    assert result["filter_reason"] == "minimum_value < 1000"
+    assert result["filter_reason"] == "equity_kr < 5000, equity_us < 10, crypto < 5000"
 
     positions_by_symbol = {
         position["symbol"]: position for position in result["accounts"][0]["positions"]
@@ -6615,16 +6430,27 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
 
     class MockKISClient:
         async def inquire_integrated_margin(self):
-            return {"usd_ord_psbl_amt": "100000", "dnca_tot_amt": "0", "stck_cash_ord_psbl_amt": "0"}
+            return {
+                "usd_ord_psbl_amt": "100000",
+                "dnca_tot_amt": "0",
+                "stck_cash_ord_psbl_amt": "0",
+            }
 
         async def buy_overseas_stock(self, symbol, exchange_code, quantity, price):
             buy_calls.append(
-                {"symbol": symbol, "exchange_code": exchange_code, "quantity": quantity, "price": price}
+                {
+                    "symbol": symbol,
+                    "exchange_code": exchange_code,
+                    "quantity": quantity,
+                    "price": price,
+                }
             )
             return {"odno": "99999", "success": True}
 
     monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-    monkeypatch.setattr(mcp_tools, "get_exchange_by_symbol", lambda s: "NYSE" if s == "TSM" else None)
+    monkeypatch.setattr(
+        mcp_tools, "get_exchange_by_symbol", lambda s: "NYSE" if s == "TSM" else None
+    )
 
     result = await tools["place_order"](
         symbol="TSM",

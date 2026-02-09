@@ -10,13 +10,13 @@ from app.core.symbol import to_db_symbol
 from app.monitoring.error_reporter import get_error_reporter
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.kis import KISClient
-from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
 from app.services.kis_trading_service import (
     process_kis_domestic_buy_orders_with_analysis,
     process_kis_domestic_sell_orders_with_analysis,
     process_kis_overseas_buy_orders_with_analysis,
     process_kis_overseas_sell_orders_with_analysis,
 )
+from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
 
 ProgressCallback = Callable[[dict[str, str]], None] | None
 logger = logging.getLogger(__name__)

@@ -191,6 +191,11 @@ _ACCOUNT_FILTER_ALIASES = {
     "isa": {"isa"},
 }
 _UPBIT_TICKER_BATCH_SIZE = 50
+_DEFAULT_MINIMUM_VALUES: dict[str, float] = {
+    "equity_kr": 5000.0,
+    "equity_us": 10.0,
+    "crypto": 5000.0,
+}
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -3665,7 +3670,9 @@ def register_tools(mcp: FastMCP) -> None:
             "Get holdings grouped by account. Supports account filter "
             "(kis/upbit/toss/samsung_pension/isa) and market filter (kr/us/crypto). "
             "Cash balances are excluded. minimum_value filters out low-value positions "
-            "when include_current_price=True. Response includes filtered_count, "
+            "when include_current_price=True. When minimum_value is None (default), "
+            "per-currency thresholds are applied: KRW=5000, USD=10. "
+            "Explicit number uses uniform threshold. Response includes filtered_count, "
             "filter_reason, and per-symbol price lookup errors."
         ),
     )
@@ -3673,7 +3680,7 @@ def register_tools(mcp: FastMCP) -> None:
         account: str | None = None,
         market: str | None = None,
         include_current_price: bool = True,
-        minimum_value: float | None = 1000.0,
+        minimum_value: float | None = None,  # None = per-currency defaults
         account_name: str | None = None,
     ) -> dict[str, Any]:
         if minimum_value is not None and minimum_value < 0:
@@ -3705,6 +3712,24 @@ def register_tools(mcp: FastMCP) -> None:
                     continue
                 filtered_positions.append(position)
             positions = filtered_positions
+        elif include_current_price and minimum_value is None:
+            threshold_map = _DEFAULT_MINIMUM_VALUES.copy()
+            filter_reason_parts = []
+            for instrument_type, threshold in threshold_map.items():
+                filter_reason_parts.append(
+                    f"{instrument_type} < {_format_filter_threshold(threshold)}"
+                )
+            filter_reason = ", ".join(filter_reason_parts)
+            filtered_positions: list[dict[str, Any]] = []
+            for position in positions:
+                value = _value_for_minimum_filter(position)
+                instrument_type = position.get("instrument_type")
+                threshold = threshold_map.get(instrument_type, 0.0)
+                if value < threshold:
+                    filtered_count += 1
+                    continue
+                filtered_positions.append(position)
+            positions = filtered_positions
         elif not include_current_price:
             filter_reason = "minimum_value filter skipped (include_current_price=False)"
         else:
@@ -3727,13 +3752,17 @@ def register_tools(mcp: FastMCP) -> None:
         accounts = [grouped_accounts[key] for key in sorted(grouped_accounts.keys())]
         summary = _build_holdings_summary(positions, include_current_price)
 
+        reported_minimum_value = (
+            _DEFAULT_MINIMUM_VALUES.copy() if minimum_value is None else minimum_value
+        )
+
         return {
             "filters": {
                 "account": resolved_account_filter,
                 "account_name": account_name,
                 "market": _INSTRUMENT_TO_MARKET.get(resolved_market_filter),
                 "include_current_price": include_current_price,
-                "minimum_value": minimum_value,
+                "minimum_value": reported_minimum_value,
             },
             "filtered_count": filtered_count,
             "filter_reason": filter_reason,
@@ -4242,70 +4271,6 @@ def register_tools(mcp: FastMCP) -> None:
                 return await _fetch_ohlcv_equity_us(
                     symbol, count, period, parsed_end_date
                 )
-        except Exception as exc:
-            return _error_payload(
-                source=source,
-                message=str(exc),
-                symbol=symbol,
-                instrument_type=market_type,
-            )
-
-    @mcp.tool(
-        name="get_volume_profile",
-        description="Get volume profile (price-by-volume distribution) for a symbol. Distributes each candle volume across low-high price range and computes POC and 70% value area.",
-    )
-    async def get_volume_profile(
-        symbol: str,
-        market: str | None = None,
-        period: int = 60,
-        bins: int = 20,
-    ) -> dict[str, Any]:
-        """Get volume profile from daily OHLCV.
-
-        Args:
-            symbol: Symbol to query (e.g., "298040", "PLTR", "KRW-BTC")
-            market: Market hint - kr/us/crypto (optional, auto-detected from symbol)
-            period: Analysis period in days (default: 60)
-            bins: Number of price bins (default: 20)
-
-        Returns:
-            Dictionary with price range, POC, value area, and per-bin profile
-        """
-        symbol = (symbol or "").strip()
-        if not symbol:
-            raise ValueError("symbol is required")
-
-        period = int(period)
-        bins = int(bins)
-        if period <= 0:
-            raise ValueError("period must be > 0")
-        if bins < 2:
-            raise ValueError("bins must be >= 2")
-        if bins > 200:
-            raise ValueError("bins must be <= 200")
-
-        market_type, symbol = _resolve_market_type(symbol, market)
-
-        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
-        source = source_map[market_type]
-
-        try:
-            df = await _fetch_ohlcv_for_volume_profile(
-                symbol=symbol,
-                market_type=market_type,
-                period_days=period,
-            )
-            if df.empty:
-                raise ValueError(f"No OHLCV data available for symbol '{symbol}'")
-
-            profile_data = _calculate_volume_profile(
-                df, bins=bins, value_area_ratio=0.70
-            )
-            return {
-                "symbol": symbol,
-                "period_days": period,
-                **profile_data,
-            }
         except Exception as exc:
             return _error_payload(
                 source=source,
@@ -5161,63 +5126,6 @@ def register_tools(mcp: FastMCP) -> None:
                     indices.append(r)
 
             return {"indices": indices}
-
-    @mcp.tool(
-        name="get_fibonacci",
-        description="Calculate Fibonacci retracement levels for a symbol. Automatically detects swing high/low within the period and computes 0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100% levels with nearest support/resistance relative to the current price.",
-    )
-    async def get_fibonacci(
-        symbol: str,
-        market: str | None = None,
-        period: int = 60,
-    ) -> dict[str, Any]:
-        """Calculate Fibonacci retracement levels.
-
-        Args:
-            symbol: Symbol to query (e.g., "005930", "AAPL", "KRW-BTC")
-            market: Market hint - kr/us/crypto (optional, auto-detected from symbol)
-            period: Number of days to search for swing high/low (default: 60)
-
-        Returns:
-            Dictionary with swing high/low, trend, Fibonacci levels,
-            nearest support and resistance relative to current price.
-        """
-        symbol = (symbol or "").strip()
-        if not symbol:
-            raise ValueError("symbol is required")
-
-        period = int(period)
-        if period <= 0:
-            raise ValueError("period must be > 0")
-
-        market_type, symbol = _resolve_market_type(symbol, market)
-
-        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
-        source = source_map[market_type]
-
-        try:
-            df = await _fetch_ohlcv_for_indicators(symbol, market_type, count=period)
-
-            if df.empty:
-                raise ValueError(f"No data available for symbol '{symbol}'")
-
-            for col in ("high", "low", "close"):
-                if col not in df.columns:
-                    raise ValueError(f"Missing required column: {col}")
-
-            current_price = round(float(df["close"].iloc[-1]), 2)
-            fib = _calculate_fibonacci(df, current_price)
-            fib["symbol"] = symbol
-
-            return fib
-
-        except Exception as exc:
-            return _error_payload(
-                source=source,
-                message=str(exc),
-                symbol=symbol,
-                instrument_type=market_type,
-            )
 
     # ------------------------------------------------------------------
     # get_sector_peers

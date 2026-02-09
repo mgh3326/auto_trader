@@ -7,5 +7,5 @@ Initial MVP tools:
 - get_holdings
 - get_position
 - get_ohlcv
-- get_volume_profile
+
 """

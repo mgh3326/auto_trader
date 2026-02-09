@@ -96,8 +96,6 @@ class MCPServerImages(BlogImageGenerator):
     <rect x="670" y="235" width="160" height="90" fill="#FCE4EC" stroke="#C2185B" stroke-width="1" rx="6"/>
     <text x="750" y="260" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#AD1457" text-anchor="middle">기술적 분석</text>
     <text x="750" y="278" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="middle">get_indicators</text>
-    <text x="750" y="293" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="middle">get_volume_profile</text>
-    <text x="750" y="308" font-family="Arial, sans-serif" font-size="10" fill="#666666" text-anchor="middle">get_fibonacci +1</text>
 
     <!-- 도구 카테고리 박스들 (2행) -->
     <rect x="130" y="340" width="340" height="90" fill="#F3E5F5" stroke="#7B1FA2" stroke-width="1" rx="6"/>
