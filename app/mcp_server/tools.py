@@ -6575,34 +6575,11 @@ def register_tools(mcp: FastMCP) -> None:
             return await _fetch_quote_equity_us(symbol)
         return None
 
-    @mcp.tool(
-        name="analyze_stock",
-        description=(
-            "Comprehensive stock analysis tool. Fetches quote, indicators (RSI, MACD, BB, SMA), "
-            "support/resistance, and market-specific data in parallel. "
-            "For Korean stocks: valuation (Naver), news (Naver), opinions (Naver). "
-            "For US stocks: valuation (yfinance), profile (Finnhub), news (Finnhub), opinions (yfinance). "
-            "For crypto: news (Finnhub). "
-            "Optionally includes sector peers. Returns errors array for failed sections."
-        ),
-    )
-    async def analyze_stock(
+    async def _analyze_stock_impl(
         symbol: str,
         market: str | None = None,
         include_peers: bool = False,
     ) -> dict[str, Any]:
-        """Comprehensive stock analysis with parallel data fetching.
-
-        Args:
-            symbol: Stock symbol (e.g., "005930", "AAPL", "KRW-BTC")
-            market: Market type - "kr", "us", or "crypto" (auto-detected if not specified)
-            include_peers: If True, include sector/industry peers comparison
-
-        Returns:
-            Dictionary with comprehensive analysis including quote, indicators, valuation,
-            news, opinions, and optional sector peers. Failed sections are
-            tracked in errors array.
-        """
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
@@ -6761,6 +6738,36 @@ def register_tools(mcp: FastMCP) -> None:
         return analysis
 
     @mcp.tool(
+        name="analyze_stock",
+        description=(
+            "Comprehensive stock analysis tool. Fetches quote, indicators (RSI, MACD, BB, SMA), "
+            "support/resistance, and market-specific data in parallel. "
+            "For Korean stocks: valuation (Naver), news (Naver), opinions (Naver). "
+            "For US stocks: valuation (yfinance), profile (Finnhub), news (Finnhub), opinions (yfinance). "
+            "For crypto: news (Finnhub). "
+            "Optionally includes sector peers. Returns errors array for failed sections."
+        ),
+    )
+    async def analyze_stock(
+        symbol: str,
+        market: str | None = None,
+        include_peers: bool = False,
+    ) -> dict[str, Any]:
+        """Comprehensive stock analysis with parallel data fetching.
+
+        Args:
+            symbol: Stock symbol (e.g., "005930", "AAPL", "KRW-BTC")
+            market: Market type - "kr", "us", or "crypto" (auto-detected if not specified)
+            include_peers: If True, include sector/industry peers comparison
+
+        Returns:
+            Dictionary with comprehensive analysis including quote, indicators, valuation,
+            news, opinions, and optional sector peers. Failed sections are
+            tracked in errors array.
+        """
+        return await globals()["_analyze_stock_impl"](symbol, market, include_peers)
+
+    @mcp.tool(
         name="analyze_portfolio",
         description=(
             "Analyze multiple stocks in parallel. "
@@ -6793,12 +6800,12 @@ def register_tools(mcp: FastMCP) -> None:
         errors: list[str] = []
         sem = asyncio.Semaphore(5)
 
-        _as_fn = globals().get("_analyze_stock_fn", analyze_stock)
-
         async def _analyze_one(sym: str) -> dict[str, Any]:
             async with sem:
                 try:
-                    return await _as_fn(sym, market, include_peers)
+                    return await globals()["_analyze_stock_impl"](
+                        sym, market, include_peers
+                    )
                 except Exception as exc:
                     errors.append(f"{sym}: {str(exc)}")
                     return {"symbol": sym, "error": str(exc)}
@@ -7177,4 +7184,4 @@ def register_tools(mcp: FastMCP) -> None:
     globals()["_get_support_resistance_impl"] = _get_support_resistance_impl
     globals()["_get_indicators_impl"] = _get_indicators_impl
     globals()["_place_order_impl"] = _place_order_impl
-    globals()["_analyze_stock_fn"] = analyze_stock
+    globals()["_analyze_stock_impl"] = _analyze_stock_impl

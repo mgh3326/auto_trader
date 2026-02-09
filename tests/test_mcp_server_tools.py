@@ -7289,7 +7289,7 @@ class TestCreateDcaPlan:
             }
             return results.get(sym, {"symbol": sym, "error": f"Not found: {sym}"})
 
-        monkeypatch.setattr(mcp_tools, "_analyze_stock_fn", mock_analyze_stock)
+        monkeypatch.setattr(mcp_tools, "_analyze_stock_impl", mock_analyze_stock)
 
         result = await tools["analyze_portfolio"](
             symbols=["005930", "AAPL", "KRW-BTC"],
@@ -7312,7 +7312,7 @@ class TestCreateDcaPlan:
                 raise ValueError("API error for 005930")
             return {"symbol": sym, "market_type": "equity_us", "source": "yahoo"}
 
-        monkeypatch.setattr(mcp_tools, "_analyze_stock_fn", mock_analyze_stock)
+        monkeypatch.setattr(mcp_tools, "_analyze_stock_impl", mock_analyze_stock)
 
         result = await tools["analyze_portfolio"](
             symbols=["005930", "AAPL", "KRW-BTC"],
