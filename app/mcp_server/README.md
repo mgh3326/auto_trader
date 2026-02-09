@@ -1,6 +1,6 @@
 # auto_trader MCP server
 
-Read-only MCP tools (market data) exposed via `fastmcp`.
+MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
 ## Tools
 - `search_symbol(query, limit=20)`
