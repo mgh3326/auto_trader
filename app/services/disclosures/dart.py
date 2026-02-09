@@ -83,20 +83,17 @@ async def list_filings(
             (r.rcept_dt, r.report_nm, r.rcept_no, korean_name) for r in reports[:limit]
         ]
 
+    if not settings.opendart_api_key:
+        return {
+            "success": False,
+            "error": "OPENDART_API_KEY not set. Please set environment variable.",
+            "filings": [],
+        }
+
     try:
         results = await asyncio.to_thread(fetch_sync)
     except Exception as exc:
-        if not settings.opendart_api_key:
-            return {
-                "success": False,
-                "error": "OPENDART_API_KEY not set. Please set environment variable.",
-                "filings": [],
-            }
-        return {
-            "success": False,
-            "error": str(exc),
-            "filings": [],
-        }
+        return {"success": False, "error": str(exc), "filings": []}
 
     filings = []
     for filing_date, report_nm, rcept_no, korean_name in results:

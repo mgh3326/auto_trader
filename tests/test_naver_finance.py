@@ -30,11 +30,12 @@ class TestParseNaverDate:
         assert naver_finance._parse_naver_date("2024/01/15") == "2024-01-15"
 
     def test_short_date_assumes_current_year(self) -> None:
-        result = naver_finance._parse_naver_date("01.15")
-        assert result == f"{date.today().year}-01-15"
+        # "01.01" is always past or today (never future)
+        result = naver_finance._parse_naver_date("01.01")
+        assert result == f"{date.today().year}-01-01"
 
-        result = naver_finance._parse_naver_date("1.5")
-        assert result == f"{date.today().year}-01-05"
+        result = naver_finance._parse_naver_date("1.1")
+        assert result == f"{date.today().year}-01-01"
 
     def test_two_digit_year_format(self) -> None:
         """Test YY.MM.DD format (e.g., "26.01.30" → "2026-01-30")."""

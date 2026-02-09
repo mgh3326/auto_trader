@@ -514,10 +514,6 @@ async def test_update_manual_holdings_fallback_resolution(monkeypatch):
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
 
-    result = await tools["update_manual_holdings"](
-        holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
-    )
-
     assert result["success"] is True
     holding = result["holdings"][0]
     assert holding["resolved_ticker"] == "알수없는종목".upper()

@@ -285,7 +285,7 @@ class ScreenshotHoldingsService:
             )
 
             if not dry_run:
-                market_enum = MarketType.KR if market_type == "KR" else MarketType.US
+                market_enum = MarketType(market_type)
                 existing = old_map.get((ticker, market_type))
 
                 if existing:

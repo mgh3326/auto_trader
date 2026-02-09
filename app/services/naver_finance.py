@@ -1240,7 +1240,7 @@ async def fetch_short_interest(code: str, days: int = 20) -> dict[str, Any]:
             # Calculate short_ratio if we have both short_volume and total_volume
             short_vol = entry.get("short_volume")
             total_vol = entry["total_volume"]
-            if short_vol and total_vol and total_vol > 0:
+            if short_vol is not None and total_vol and total_vol > 0:
                 entry["short_ratio"] = round(short_vol / total_vol * 100, 2)
 
     # Calculate average short ratio
