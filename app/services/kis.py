@@ -635,6 +635,7 @@ class KISClient:
     ) -> list[dict]:
         """
         보유 주식 목록 조회 (Upbit의 fetch_my_coins와 유사한 기능)
+        연속조회(pagination)를 지원하여 모든 종목을 조회합니다.
 
         Args:
             is_mock: True면 모의투자, False면 실전투자
@@ -705,75 +706,138 @@ class KISClient:
             # 해외주식 잔고조회
             tr_id = OVERSEAS_BALANCE_TR_MOCK if is_mock else OVERSEAS_BALANCE_TR
             url = OVERSEAS_BALANCE_URL
-
-            params = {
-                "CANO": cano,
-                "ACNT_PRDT_CD": acnt_prdt_cd,
-                "OVRS_EXCG_CD": exchange_code,  # 해외거래소코드
-                "TR_CRCY_CD": currency_code,  # 거래통화코드
-                "CTX_AREA_FK200": "",  # 연속조회검색조건200
-                "CTX_AREA_NK200": "",  # 연속조회키200
-            }
+            ctx_key_fk = "CTX_AREA_FK200"
+            ctx_key_nk = "CTX_AREA_NK200"
         else:
             # 국내주식 잔고조회
             tr_id = BALANCE_TR_MOCK if is_mock else BALANCE_TR
             url = BALANCE_URL
+            ctx_key_fk = "CTX_AREA_FK100"
+            ctx_key_nk = "CTX_AREA_NK100"
 
-            params = {
-                "CANO": cano,
-                "ACNT_PRDT_CD": acnt_prdt_cd,
-                "AFHR_FLPR_YN": "N",  # 시간외단일가여부
-                "OFL_YN": "",  # 오프라인여부
-                "INQR_DVSN": "02",  # 조회구분(01:대출일별, 02:종목별)
-                "UNPR_DVSN": "01",  # 단가구분(01:기본, 02:손익단가)
-                "FUND_STTL_ICLD_YN": "N",  # 펀드결제분포함여부
-                "FNCG_AMT_AUTO_RDPT_YN": "N",  # 융자금액자동상환여부
-                "PRCS_DVSN": "01",  # 처리구분(00:전일매매포함, 01:전일매매미포함)
-                "CTX_AREA_FK100": "",  # 연속조회검색조건100
-                "CTX_AREA_NK100": "",  # 연속조회키100
+        all_stocks = []
+        ctx_area_fk = ""
+        ctx_area_nk = ""
+        tr_cont = ""
+        page = 1
+        max_pages = 10
+
+        logging.info(
+            f"{'해외' if is_overseas else '국내'}주식 잔고 조회 시작 - "
+            f"{'거래소: ' + exchange_code if is_overseas else ''}"
+        )
+
+        while page <= max_pages:
+            if is_overseas:
+                params = {
+                    "CANO": cano,
+                    "ACNT_PRDT_CD": acnt_prdt_cd,
+                    "OVRS_EXCG_CD": exchange_code,
+                    "TR_CRCY_CD": currency_code,
+                    ctx_key_fk: ctx_area_fk,
+                    ctx_key_nk: ctx_area_nk,
+                }
+            else:
+                params = {
+                    "CANO": cano,
+                    "ACNT_PRDT_CD": acnt_prdt_cd,
+                    "AFHR_FLPR_YN": "N",
+                    "OFL_YN": "",
+                    "INQR_DVSN": "02",
+                    "UNPR_DVSN": "01",
+                    "FUND_STTL_ICLD_YN": "N",
+                    "FNCG_AMT_AUTO_RDPT_YN": "N",
+                    "PRCS_DVSN": "01",
+                    ctx_key_fk: ctx_area_fk,
+                    ctx_key_nk: ctx_area_nk,
+                }
+
+            hdr = self._hdr_base | {
+                "authorization": f"Bearer {settings.kis_access_token}",
+                "tr_id": tr_id,
+                "tr_cont": tr_cont,
             }
 
-        hdr = self._hdr_base | {
-            "authorization": f"Bearer {settings.kis_access_token}",
-            "tr_id": tr_id,
-        }
-
-        async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(
-                f"{BASE}{url}",
-                headers=hdr,
-                params=params,
+            logging.info(
+                f"페이지 {page} 조회 (tr_cont: '{tr_cont}', "
+                f"{ctx_key_nk}: '{ctx_area_nk[:20] if ctx_area_nk else 'empty'}...')"
             )
 
-        js = r.json()
-
-        if js.get("rt_cd") != "0":
-            if js.get("msg_cd") in [
-                "EGW00123",
-                "EGW00121",
-            ]:  # 토큰 만료 또는 유효하지 않은 토큰
-                # Redis에서 토큰 삭제 후 새로 발급
-                await self._token_manager.clear_token()
-                await self._ensure_token()
-                # 재시도 1회
-                return await self.fetch_my_stocks(
-                    is_mock, is_overseas, exchange_code, currency_code
+            async with httpx.AsyncClient(timeout=5) as cli:
+                r = await cli.get(
+                    f"{BASE}{url}",
+                    headers=hdr,
+                    params=params,
                 )
-            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
-        # output1: 종목별 보유 내역
-        stocks = js.get("output1", [])
+            js = r.json()
+
+            if js.get("rt_cd") != "0":
+                if js.get("msg_cd") in [
+                    "EGW00123",
+                    "EGW00121",
+                ]:
+                    await self._token_manager.clear_token()
+                    await self._ensure_token()
+                    continue
+
+                error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+                logging.error(
+                    f"{'해외' if is_overseas else '국내'}주식 잔고 조회 실패: {error_msg}"
+                )
+                raise RuntimeError(error_msg)
+
+            # output1: 종목별 보유 내역
+            stocks = js.get("output1", [])
+
+            if not stocks:
+                logging.info(f"페이지 {page}에서 더 이상 종목이 없음")
+                break
+
+            all_stocks.extend(stocks)
+            logging.info(
+                f"페이지 {page}: {len(stocks)}건 조회 (누적: {len(all_stocks)}건)"
+            )
+
+            new_ctx_area_fk = js.get(ctx_key_fk, "")
+            new_ctx_area_nk = js.get(ctx_key_nk, "")
+
+            logging.info(
+                f"  반환된 {ctx_key_fk}: '{new_ctx_area_fk[:20] if new_ctx_area_fk else 'empty'}...'"
+            )
+            logging.info(
+                f"  반환된 {ctx_key_nk}: '{new_ctx_area_nk[:20] if new_ctx_area_nk else 'empty'}...'"
+            )
+
+            if not new_ctx_area_nk or new_ctx_area_nk == ctx_area_nk:
+                logging.info("마지막 페이지 도달 (연속조회 키 없음 또는 동일)")
+                break
+
+            ctx_area_fk = new_ctx_area_fk
+            ctx_area_nk = new_ctx_area_nk
+            tr_cont = "N"
+
+            page += 1
+
+            await asyncio.sleep(0.1)
 
         if is_overseas:
             # 해외주식: 보유수량이 0인 종목 제외
-            stocks = [
-                stock for stock in stocks if int(stock.get("ovrs_cblc_qty", 0)) > 0
+            all_stocks = [
+                stock for stock in all_stocks if int(stock.get("ovrs_cblc_qty", 0)) > 0
             ]
         else:
             # 국내주식: 보유수량이 0인 종목 제외
-            stocks = [stock for stock in stocks if int(stock.get("hldg_qty", 0)) > 0]
+            all_stocks = [
+                stock for stock in all_stocks if int(stock.get("hldg_qty", 0)) > 0
+            ]
 
-        return stocks
+        logging.info(
+            f"{'해외' if is_overseas else '국내'}주식 잔고 조회 완료: "
+            f"총 {len(all_stocks)}건 (보유수량 > 0)"
+        )
+
+        return all_stocks
 
     async def fetch_my_overseas_stocks(
         self,
