@@ -122,6 +122,11 @@ async def fetch_ohlcv(
 
     rows = await _request_json(url, params)
 
+    if not rows:
+        return pd.DataFrame(
+            columns=["date", "open", "high", "low", "close", "volume", "value"]
+        )
+
     df = (
         pd.DataFrame(rows)
         .rename(

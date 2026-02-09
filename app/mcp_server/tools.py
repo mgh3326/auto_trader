@@ -763,6 +763,7 @@ async def _collect_portfolio_positions(
     account: str | None,
     market: str | None,
     include_current_price: bool,
+    account_name: str | None = None,
     user_id: int = _MCP_USER_ID,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
     market_filter = _parse_holdings_market_filter(market)
@@ -802,6 +803,14 @@ async def _collect_portfolio_positions(
             position
             for position in positions
             if _match_account_filter(position, account_filter)
+        ]
+
+    if account_name:
+        account_name_filter = account_name.strip().lower()
+        positions = [
+            position
+            for position in positions
+            if account_name_filter in str(position.get("account_name", "")).lower()
         ]
 
     if include_current_price and positions:
@@ -902,6 +911,18 @@ async def _fetch_ohlcv_crypto(
     df = await upbit_service.fetch_ohlcv(
         market=symbol, days=capped_count, period=period, end_date=end_date
     )
+
+    if df.empty:
+        return {
+            "symbol": symbol,
+            "instrument_type": "crypto",
+            "source": "upbit",
+            "period": period,
+            "count": 0,
+            "rows": [],
+            "message": f"No candle data available for {symbol}",
+        }
+
     return {
         "symbol": symbol,
         "instrument_type": "crypto",
@@ -3617,6 +3638,7 @@ def register_tools(mcp: FastMCP) -> None:
         market: str | None = None,
         include_current_price: bool = True,
         minimum_value: float | None = 1000.0,
+        account_name: str | None = None,
     ) -> dict[str, Any]:
         if minimum_value is not None and minimum_value < 0:
             raise ValueError("minimum_value must be >= 0")
@@ -3630,6 +3652,7 @@ def register_tools(mcp: FastMCP) -> None:
             account=account,
             market=market,
             include_current_price=include_current_price,
+            account_name=account_name,
         )
 
         filtered_count = 0
@@ -3671,6 +3694,7 @@ def register_tools(mcp: FastMCP) -> None:
         return {
             "filters": {
                 "account": resolved_account_filter,
+                "account_name": account_name,
                 "market": _INSTRUMENT_TO_MARKET.get(resolved_market_filter),
                 "include_current_price": include_current_price,
                 "minimum_value": minimum_value,
@@ -6115,9 +6139,13 @@ def register_tools(mcp: FastMCP) -> None:
         """
         # --- validate holdings ---
         h_price = holdings.get("price")
+        if h_price is None:
+            h_price = holdings.get("avg_price")
         h_qty = holdings.get("quantity")
         if h_price is None or h_qty is None:
-            raise ValueError("holdings must contain 'price' and 'quantity'")
+            raise ValueError(
+                "holdings must contain 'price' (or 'avg_price') and 'quantity'"
+            )
         h_price = float(h_price)
         h_qty = float(h_qty)
         if h_price < 0 or h_qty < 0:
@@ -6129,9 +6157,13 @@ def register_tools(mcp: FastMCP) -> None:
         validated_plans: list[tuple[float, float]] = []
         for i, p in enumerate(plans):
             pp = p.get("price")
+            if pp is None:
+                pp = p.get("avg_price")
             pq = p.get("quantity")
             if pp is None or pq is None:
-                raise ValueError(f"plans[{i}] must contain 'price' and 'quantity'")
+                raise ValueError(
+                    f"plans[{i}] must contain 'price' (or 'avg_price') and 'quantity'"
+                )
             pp, pq = float(pp), float(pq)
             if pp <= 0 or pq <= 0:
                 raise ValueError(f"plans[{i}] price and quantity must be > 0")
@@ -6288,6 +6320,7 @@ def register_tools(mcp: FastMCP) -> None:
         strategy: str = "support",
         dry_run: bool = True,
         market: str | None = None,
+        execute_steps: list[int] | None = None,
     ) -> dict[str, Any]:
         """Create DCA buying plan with technical analysis.
 
@@ -6298,6 +6331,8 @@ def register_tools(mcp: FastMCP) -> None:
             strategy: Strategy for price levels - "support", "equal", or "aggressive"
             dry_run: Preview only (default: True). Set False to execute orders.
             market: Market hint (optional, auto-detected from symbol)
+            execute_steps: List of step numbers to execute (1-indexed, optional).
+                If specified, overrides dry_run and executes only these steps.
 
         Returns:
             Dictionary with success status, plans array, and summary.
@@ -6319,6 +6354,13 @@ def register_tools(mcp: FastMCP) -> None:
             raise ValueError(
                 f"Invalid strategy '{strategy}'. Must be one of: {', '.join(sorted(valid_strategies))}"
             )
+
+        if execute_steps is not None:
+            invalid_steps = [s for s in execute_steps if not (1 <= s <= splits)]
+            if invalid_steps:
+                raise ValueError(
+                    f"execute_steps must be between 1 and {splits}, got: {invalid_steps}"
+                )
 
         market_type, normalized_symbol = _resolve_market_type(symbol, market)
         source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
@@ -6371,6 +6413,15 @@ def register_tools(mcp: FastMCP) -> None:
                 step_price = level["price"]
                 level_source = level["source"]
 
+                # Apply tick size correction for Korean equity
+                if market_type == "equity_kr":
+                    original_price = step_price
+                    step_price = adjust_tick_size_kr(step_price, "buy")
+                    tick_adjusted = True
+                else:
+                    original_price = None
+                    tick_adjusted = False
+
                 # Calculate quantity (truncate for non-crypto)
                 if market_type == "crypto":
                     quantity = step_amount / step_price
@@ -6403,6 +6454,11 @@ def register_tools(mcp: FastMCP) -> None:
                     }
                 )
 
+                # Add tick adjustment metadata if applied
+                if tick_adjusted and original_price is not None:
+                    plans[-1]["original_price"] = round(original_price, 2)
+                    plans[-1]["tick_adjusted"] = True
+
             # Build summary
             avg_target_price = sum(p["price"] for p in plans) / len(plans)
             min_dist = min(p["distance_pct"] for p in plans)
@@ -6430,10 +6486,19 @@ def register_tools(mcp: FastMCP) -> None:
                 ),
             }
 
-            # Execute orders if not dry_run
+            # Execute orders if not dry_run OR if execute_steps is specified
             execution_results: list[dict[str, Any]] = []
-            if not dry_run:
+            executed_steps: list[int] = []
+            should_execute = not dry_run or (execute_steps is not None)
+
+            if should_execute:
                 for plan_step in plans:
+                    if (
+                        execute_steps is not None
+                        and plan_step["step"] not in execute_steps
+                    ):
+                        continue
+
                     order_amount = plan_step["amount"]
                     order_price = plan_step["price"]
 
@@ -6465,6 +6530,7 @@ def register_tools(mcp: FastMCP) -> None:
                             "result": order_result,
                         }
                     )
+                    executed_steps.append(plan_step["step"])
 
                     # Fail early if any order fails
                     if not order_result.get("success"):
@@ -6485,6 +6551,9 @@ def register_tools(mcp: FastMCP) -> None:
 
             if not dry_run:
                 response["execution_results"] = execution_results
+
+            if should_execute and executed_steps:
+                response["executed_steps"] = executed_steps
 
             return response
 
@@ -6690,6 +6759,72 @@ def register_tools(mcp: FastMCP) -> None:
             analysis["errors"] = []
 
         return analysis
+
+    @mcp.tool(
+        name="analyze_portfolio",
+        description=(
+            "Analyze multiple stocks in parallel. "
+            "Returns individual analysis for each symbol plus portfolio summary. "
+            "Maximum 5 concurrent analyses."
+        ),
+    )
+    async def analyze_portfolio(
+        symbols: list[str],
+        market: str | None = None,
+        include_peers: bool = False,
+    ) -> dict[str, Any]:
+        """Analyze multiple stocks in parallel with portfolio-level summary.
+
+        Args:
+            symbols: List of stock symbols to analyze (e.g., ["005930", "AAPL", "KRW-BTC"])
+            market: Market hint (optional, auto-detected from symbols)
+            include_peers: Include sector/industry peer comparison (optional, default False)
+
+        Returns:
+            Dictionary with individual results and portfolio summary.
+        """
+        if not symbols:
+            raise ValueError("symbols must contain at least one entry")
+
+        if len(symbols) > 10:
+            raise ValueError("symbols must contain at most 10 entries")
+
+        results: dict[str, Any] = {}
+        errors: list[str] = []
+        sem = asyncio.Semaphore(5)
+
+        _as_fn = globals().get("_analyze_stock_fn", analyze_stock)
+
+        async def _analyze_one(sym: str) -> dict[str, Any]:
+            async with sem:
+                try:
+                    return await _as_fn(sym, market, include_peers)
+                except Exception as exc:
+                    errors.append(f"{sym}: {str(exc)}")
+                    return {"symbol": sym, "error": str(exc)}
+
+        analyze_results = await asyncio.gather(*[_analyze_one(s) for s in symbols])
+
+        success_count = 0
+        fail_count = 0
+        for sym, result in zip(symbols, analyze_results, strict=True):
+            results[sym] = result
+            if "error" not in result:
+                success_count += 1
+            else:
+                fail_count += 1
+
+        portfolio_summary = {
+            "total_symbols": len(symbols),
+            "successful": success_count,
+            "failed": fail_count,
+            "errors": errors,
+        }
+
+        return {
+            "results": results,
+            "summary": portfolio_summary,
+        }
 
     @mcp.tool(
         name="get_disclosures",
@@ -7042,3 +7177,4 @@ def register_tools(mcp: FastMCP) -> None:
     globals()["_get_support_resistance_impl"] = _get_support_resistance_impl
     globals()["_get_indicators_impl"] = _get_indicators_impl
     globals()["_place_order_impl"] = _place_order_impl
+    globals()["_analyze_stock_fn"] = analyze_stock

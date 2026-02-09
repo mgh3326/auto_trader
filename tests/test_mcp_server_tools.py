@@ -5405,9 +5405,7 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
     monkeypatch.setattr(
         mcp_tools,
         "get_or_refresh_maps",
-        AsyncMock(
-            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "ETH": "이더리움"}}
-        ),
+        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "ETH": "이더리움"}}),
     )
     monkeypatch.setattr(
         mcp_tools,
@@ -5482,9 +5480,7 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
     monkeypatch.setattr(
         mcp_tools,
         "get_or_refresh_maps",
-        AsyncMock(
-            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "DOGE": "도지"}}
-        ),
+        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "DOGE": "도지"}}),
     )
     monkeypatch.setattr(
         mcp_tools,
@@ -5669,9 +5665,7 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
     monkeypatch.setattr(
         mcp_tools,
         "get_or_refresh_maps",
-        AsyncMock(
-            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "PCI": "페이코인"}}
-        ),
+        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "PCI": "페이코인"}}),
     )
     monkeypatch.setattr(
         mcp_tools,
@@ -6032,9 +6026,7 @@ class TestGetCryptoProfile:
                             "symbol": "btc",
                             "market_cap_rank": 1,
                             "categories": ["Store of Value"],
-                            "description": {
-                                "ko": "<p>비트코인은 대표적인 암호화폐입니다.</p>"
-                            },
+                            "description": {"ko": "<p>비트코인은 대표적인 암호화폐입니다.</p>"},
                             "market_data": {
                                 "market_cap": {"krw": 2_000_000_000_000_000},
                                 "total_volume": {"krw": 50_000_000_000_000},
@@ -6411,9 +6403,9 @@ async def test_place_order_insufficient_balance_upbit(monkeypatch):
         dry_run=True,
     )
 
-    assert result["success"] is True, (
-        f"Expected success=True with warning, got {result}"
-    )
+    assert (
+        result["success"] is True
+    ), f"Expected success=True with warning, got {result}"
     assert result["dry_run"] is True
     assert "warning" in result
     assert "Insufficient" in result["warning"]
@@ -6975,3 +6967,387 @@ class TestCreateDcaPlan:
         assert result["success"] is False
         assert "error" in result
         assert "exceeds limit" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_equity_kr_tick_size_adjustment(self, monkeypatch):
+        """Prices are adjusted to KRX tick size for KR equity."""
+        tools = build_tools()
+
+        # Mock support/resistance with price that needs tick adjustment.
+        # 327272 is in the 200,000-500,000 range → tick size 500
+        # Buy: floor → 327000
+        mock_sr_result = {
+            "symbol": "005930",
+            "current_price": 350000.0,
+            "supports": [
+                {"price": 340000.0, "source": "fib_23.6"},
+                {"price": 327272.0, "source": "fib_38.2"},
+            ],
+            "resistances": [],
+        }
+
+        async def mock_sr(symbol, market):
+            return mock_sr_result
+
+        mock_indicator_result = {
+            "symbol": "005930",
+            "price": 350000.0,
+            "indicators": {
+                "rsi": {"14": 50.0},
+            },
+        }
+
+        async def mock_indicators(symbol, indicators, market):
+            return mock_indicator_result
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        result = await tools["create_dca_plan"](
+            symbol="005930",
+            total_amount=2000000.0,
+            splits=2,
+            strategy="support",
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert len(result["plans"]) == 2
+
+        # First step: 340000 (already valid tick size for 200k-500k range)
+        assert result["plans"][0]["price"] == 340000.0
+
+        # Second step: 327272 adjusted to nearest tick (327000 for buy)
+        assert result["plans"][1]["price"] == 327000.0
+        assert result["plans"][1]["tick_adjusted"] is True
+        assert result["plans"][1]["original_price"] == 327272.0
+
+    async def test_execute_steps_partial_execution(self, monkeypatch):
+        """execute_steps parameter executes only specified steps."""
+        tools = build_tools()
+
+        mock_sr_result = {
+            "symbol": "KRW-BTC",
+            "current_price": 100000000.0,
+            "supports": [
+                {"price": 95000000.0, "source": "fib_23.6"},
+                {"price": 90000000.0, "source": "fib_38.2"},
+                {"price": 85000000.0, "source": "fib_61.8"},
+            ],
+            "resistances": [],
+        }
+
+        async def mock_sr(symbol, market):
+            return mock_sr_result
+
+        mock_indicator_result = {
+            "symbol": "KRW-BTC",
+            "price": 100000000.0,
+            "indicators": {
+                "rsi": {"14": 50.0},
+            },
+        }
+
+        async def mock_indicators(symbol, indicators, market):
+            return mock_indicator_result
+
+        place_order_calls = []
+
+        async def mock_place_order(*args, **kwargs):
+            place_order_calls.append({"args": args, "kwargs": kwargs})
+            return {"success": True, "dry_run": False}
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+        monkeypatch.setattr(mcp_tools, "_place_order_impl", mock_place_order)
+
+        result = await tools["create_dca_plan"](
+            symbol="KRW-BTC",
+            total_amount=300000.0,
+            splits=3,
+            strategy="support",
+            dry_run=True,
+            execute_steps=[1],
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+        assert len(result["plans"]) == 3
+
+        assert result["executed_steps"] == [1]
+        assert len(place_order_calls) == 1
+        assert place_order_calls[0]["kwargs"]["reason"] == "DCA plan step 1/3"
+
+    async def test_execute_steps_multiple_steps(self, monkeypatch):
+        """execute_steps with multiple values executes specified steps."""
+        tools = build_tools()
+
+        mock_sr_result = {
+            "symbol": "KRW-BTC",
+            "current_price": 100000000.0,
+            "supports": [
+                {"price": 95000000.0, "source": "fib_23.6"},
+                {"price": 90000000.0, "source": "fib_38.2"},
+            ],
+            "resistances": [],
+        }
+
+        async def mock_sr(symbol, market):
+            return mock_sr_result
+
+        mock_indicator_result = {
+            "symbol": "KRW-BTC",
+            "price": 100000000.0,
+            "indicators": {
+                "rsi": {"14": 50.0},
+            },
+        }
+
+        async def mock_indicators(symbol, indicators, market):
+            return mock_indicator_result
+
+        place_order_calls = []
+
+        async def mock_place_order(*args, **kwargs):
+            place_order_calls.append({"args": args, "kwargs": kwargs})
+            return {"success": True, "dry_run": False}
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+        monkeypatch.setattr(mcp_tools, "_place_order_impl", mock_place_order)
+
+        result = await tools["create_dca_plan"](
+            symbol="KRW-BTC",
+            total_amount=200000.0,
+            splits=2,
+            strategy="support",
+            dry_run=True,
+            execute_steps=[1, 2],
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+        assert len(result["plans"]) == 2
+
+        assert result["executed_steps"] == [1, 2]
+        assert len(place_order_calls) == 2
+
+    async def test_execute_steps_invalid_range(self, monkeypatch):
+        """execute_steps with invalid step numbers raises ValueError."""
+        tools = build_tools()
+
+        mock_sr_result = {
+            "symbol": "KRW-BTC",
+            "current_price": 100000000.0,
+            "supports": [{"price": 95000000.0, "source": "fib_23.6"}],
+            "resistances": [],
+        }
+
+        async def mock_sr(symbol, market):
+            return mock_sr_result
+
+        mock_indicator_result = {
+            "symbol": "KRW-BTC",
+            "price": 100000000.0,
+            "indicators": {"rsi": {"14": 50.0}},
+        }
+
+        async def mock_indicators(symbol, indicators, market):
+            return mock_indicator_result
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        with pytest.raises(ValueError, match="execute_steps must be between 1 and 3"):
+            await tools["create_dca_plan"](
+                symbol="KRW-BTC",
+                total_amount=200000.0,
+                splits=3,
+                strategy="support",
+                dry_run=True,
+                execute_steps=[1, 4],
+            )
+
+    async def test_get_holdings_filters_by_account_name(self, monkeypatch):
+        """account_name parameter filters positions by account name (case-insensitive, contains)."""
+        tools = build_tools()
+
+        # Mock returns only the position matching "퇴직연금" since
+        # _collect_portfolio_positions does the filtering internally.
+        filtered_positions = [
+            {
+                "account": "kis",
+                "account_name": "퇴직연금",
+                "broker": "kis",
+                "source": "kis_api",
+                "instrument_type": "equity_kr",
+                "market": "kr",
+                "symbol": "005930",
+                "name": "삼성전자",
+                "quantity": 10.0,
+                "avg_buy_price": 70000.0,
+                "current_price": None,
+                "evaluation_amount": None,
+                "profit_loss": None,
+                "profit_rate": None,
+            },
+        ]
+
+        monkeypatch.setattr(
+            mcp_tools,
+            "_collect_portfolio_positions",
+            AsyncMock(return_value=(filtered_positions, [], None, None)),
+        )
+
+        result = await tools["get_holdings"](
+            account=None,
+            market=None,
+            include_current_price=False,
+            account_name="퇴직연금",
+        )
+
+        assert result["filters"]["account_name"] == "퇴직연금"
+        assert len(result["accounts"]) == 1
+        assert result["accounts"][0]["account_name"] == "퇴직연금"
+        assert len(result["accounts"][0]["positions"]) == 1
+
+    async def test_simulate_avg_cost_with_avg_price_alias(self):
+        """avg_price alias works as alternative to price key."""
+        tools = build_tools()
+
+        holdings = {"avg_price": 100000.0, "quantity": 10.0}
+        plans = [
+            {"avg_price": 90000.0, "quantity": 2.0},
+            {"avg_price": 85000.0, "quantity": 3.0},
+        ]
+
+        result = await tools["simulate_avg_cost"](
+            holdings=holdings,
+            plans=plans,
+        )
+
+        # current_position reflects initial holdings (before plans)
+        assert result["current_position"]["avg_price"] == 100000.0
+        assert result["current_position"]["total_quantity"] == 10.0
+        assert result["current_position"]["total_invested"] == 1000000.0
+
+        # Verify steps use avg_price alias correctly
+        assert len(result["steps"]) == 2
+        assert result["steps"][0]["buy_price"] == 90000.0
+        assert result["steps"][1]["buy_price"] == 85000.0
+        # Final avg: (1000000 + 180000 + 255000) / 15 = 95666.67
+        assert result["steps"][1]["new_avg_price"] == 95666.67
+
+    async def test_simulate_avg_cost_price_priority_over_avg_price(self):
+        """When both price and avg_price are present, price takes priority."""
+        tools = build_tools()
+
+        holdings = {"price": 100000.0, "avg_price": 95000.0, "quantity": 10.0}
+        plans = [
+            {"avg_price": 90000.0, "quantity": 2.0},
+        ]
+
+        result = await tools["simulate_avg_cost"](
+            holdings=holdings,
+            plans=plans,
+        )
+
+        # price=100000 takes priority over avg_price=95000
+        assert result["current_position"]["avg_price"] == 100000.0
+        # After step: (1000000 + 180000) / 12 = 98333.33
+        assert result["steps"][0]["new_avg_price"] == 98333.33
+
+    async def test_analyze_portfolio_multiple_symbols(self, monkeypatch):
+        """Analyze multiple symbols in parallel with portfolio summary."""
+        tools = build_tools()
+
+        async def mock_analyze_stock(sym, market, include_peers):
+            results = {
+                "005930": {"symbol": "005930", "market_type": "equity_kr", "source": "kis"},
+                "AAPL": {"symbol": "AAPL", "market_type": "equity_us", "source": "yahoo"},
+                "KRW-BTC": {"symbol": "KRW-BTC", "market_type": "crypto", "source": "upbit"},
+            }
+            return results.get(sym, {"symbol": sym, "error": f"Not found: {sym}"})
+
+        monkeypatch.setattr(mcp_tools, "_analyze_stock_fn", mock_analyze_stock)
+
+        result = await tools["analyze_portfolio"](
+            symbols=["005930", "AAPL", "KRW-BTC"],
+            market=None,
+            include_peers=False,
+        )
+
+        assert result["summary"]["total_symbols"] == 3
+        assert result["summary"]["successful"] == 3
+        assert result["summary"]["failed"] == 0
+        assert len(result["results"]) == 3
+        assert "005930" in result["results"]
+
+    async def test_analyze_portfolio_partial_failure(self, monkeypatch):
+        """Partial failure in portfolio analysis should not affect other symbols."""
+        tools = build_tools()
+
+        async def mock_analyze_stock(sym, market, include_peers):
+            if sym == "005930":
+                raise ValueError("API error for 005930")
+            return {"symbol": sym, "market_type": "equity_us", "source": "yahoo"}
+
+        monkeypatch.setattr(mcp_tools, "_analyze_stock_fn", mock_analyze_stock)
+
+        result = await tools["analyze_portfolio"](
+            symbols=["005930", "AAPL", "KRW-BTC"],
+            market=None,
+            include_peers=False,
+        )
+
+        assert result["summary"]["total_symbols"] == 3
+        assert result["summary"]["successful"] == 2
+        assert result["summary"]["failed"] == 1
+        assert len(result["summary"]["errors"]) == 1
+        assert "005930" in result["summary"]["errors"][0]
+        assert "API error" in result["summary"]["errors"][0]
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_crypto_empty_response(monkeypatch):
+    """Test get_ohlcv with crypto symbol that has no candle data (e.g., KRW-CYBER)."""
+    tools = build_tools()
+
+    mock_fetch = AsyncMock(
+        return_value=pd.DataFrame(
+            columns=["date", "open", "high", "low", "close", "volume", "value"]
+        )
+    )
+    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-CYBER", count=100)
+
+    assert result["symbol"] == "KRW-CYBER"
+    assert result["instrument_type"] == "crypto"
+    assert result["source"] == "upbit"
+    assert result["count"] == 0
+    assert result["rows"] == []
+    assert "message" in result
+    assert "No candle data available" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_get_indicators_crypto_empty_response(monkeypatch):
+    """Test get_indicators with crypto symbol that has no candle data."""
+    tools = build_tools()
+
+    mock_fetch = AsyncMock(
+        return_value=pd.DataFrame(
+            columns=["date", "open", "high", "low", "close", "volume", "value"]
+        )
+    )
+    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_indicators"]("KRW-NEWT", indicators=["rsi"])
+
+    assert "error" in result
+    assert result["symbol"] == "KRW-NEWT"
+    assert result["instrument_type"] == "crypto"
+    assert result["source"] == "upbit"
+    assert "No data available for symbol" in result["error"]
+
