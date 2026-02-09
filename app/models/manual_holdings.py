@@ -24,8 +24,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 
-class BrokerType:
-    """브로커 타입 (문자열 상수)"""
+class BrokerType(str, enum.Enum):
+    """브로커 타입"""
 
     KIS = "kis"  # 한국투자증권
     TOSS = "toss"  # 토스증권

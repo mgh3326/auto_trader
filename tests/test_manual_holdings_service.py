@@ -17,7 +17,7 @@ async def test_create_holding(mock_db):
     account = BrokerAccount(
         id=1,
         user_id=1,
-        broker_type=BrokerType.toss,
+        broker_type=BrokerType.TOSS,
         account_name="Test Account",
     )
 

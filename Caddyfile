@@ -58,6 +58,15 @@
 		}
 	}
 
+	# MCP subpath → MCP server
+	handle /mcp* {
+		reverse_proxy host.docker.internal:8765 {
+			# Headers for proper subpath handling
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
 	# Block API documentation in production
 	handle /docs* {
 		abort
