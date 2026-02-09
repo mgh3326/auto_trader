@@ -5511,15 +5511,19 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
     assert result["total_accounts"] == 1
-    assert result["total_positions"] == 1
-    assert result["filtered_count"] == 1
+    assert result["total_positions"] == 2
+    assert result["filtered_count"] == 0
     assert result["filter_reason"] == "minimum_value < 1000"
 
     positions_by_symbol = {
         position["symbol"]: position for position in result["accounts"][0]["positions"]
     }
     assert positions_by_symbol["KRW-BTC"]["current_price"] == 62000000.0
-    assert "KRW-DOGE" not in positions_by_symbol
+    assert positions_by_symbol["KRW-DOGE"]["current_price"] is None
+    assert (
+        positions_by_symbol["KRW-DOGE"]["price_error"]
+        == "price missing in batch ticker response"
+    )
 
     assert len(result["errors"]) == 1
     error = result["errors"][0]
@@ -5621,10 +5625,20 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
-    assert result["filtered_count"] == 3
+    assert result["filtered_count"] == 2
     assert result["filter_reason"] == "minimum_value < 1000"
-    assert result["total_positions"] == 1
-    assert result["accounts"][0]["positions"][0]["symbol"] == "KRW-BTC"
+    assert result["total_positions"] == 2
+
+    positions_by_symbol = {
+        position["symbol"]: position for position in result["accounts"][0]["positions"]
+    }
+    assert "KRW-BTC" in positions_by_symbol
+    assert "KRW-PCI" in positions_by_symbol
+    assert positions_by_symbol["KRW-PCI"]["current_price"] is None
+    assert (
+        positions_by_symbol["KRW-PCI"]["price_error"]
+        == "price missing in batch ticker response"
+    )
 
     assert len(result["errors"]) == 1
     assert result["errors"][0]["symbol"] == "KRW-PCI"
@@ -5698,11 +5712,18 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
     assert result["total_accounts"] == 1
-    assert result["total_positions"] == 1
-    assert result["filtered_count"] == 1
+    assert result["total_positions"] == 2
+    assert result["filtered_count"] == 0
     assert result["filter_reason"] == "minimum_value < 1000"
-    assert result["accounts"][0]["positions"][0]["symbol"] == "KRW-BTC"
-    assert result["accounts"][0]["positions"][0]["current_price"] == 62000000.0
+
+    positions_by_symbol = {
+        position["symbol"]: position for position in result["accounts"][0]["positions"]
+    }
+    assert positions_by_symbol["KRW-BTC"]["symbol"] == "KRW-BTC"
+    assert positions_by_symbol["KRW-BTC"]["current_price"] == 62000000.0
+    assert positions_by_symbol["KRW-PCI"]["current_price"] is None
+    # PCI was filtered before batch fetch, so no price_error
+    assert "price_error" not in positions_by_symbol["KRW-PCI"]
 
     assert result["errors"] == []
     quote_mock.assert_awaited_once()
@@ -5874,6 +5895,93 @@ async def test_get_holdings_summary_sets_price_dependent_fields_null(monkeypatch
     assert summary["total_profit_loss"] is None
     assert summary["total_profit_rate"] is None
     assert summary["weights"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_preserves_kis_values_on_yahoo_failure(monkeypatch):
+    """Test that KIS-provided evaluation amounts are preserved when Yahoo price fetch fails."""
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return [
+                {
+                    "ovrs_pdno": "AMZN",
+                    "ovrs_item_name": "Amazon.com Inc.",
+                    "ovrs_cblc_qty": "10",
+                    "pchs_avg_pric": "150.0",
+                    "now_pric2": "0",
+                    "ovrs_stck_evlu_amt": "1600.0",
+                    "frcr_evlu_pfls_amt": "100.0",
+                    "evlu_pfls_rt": "6.67",
+                },
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_item_name": "Apple Inc.",
+                    "ovrs_cblc_qty": "5",
+                    "pchs_avg_pric": "180.0",
+                    "now_pric2": "0",
+                    "ovrs_stck_evlu_amt": "9500.0",
+                    "frcr_evlu_pfls_amt": "-500.0",
+                    "evlu_pfls_rt": "-5.26",
+                },
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        mcp_tools,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+
+    async def mock_fetch_yahoo_raise(symbol: str) -> dict[str, object]:
+        raise ValueError(f"Symbol '{symbol}' not found")
+
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", mock_fetch_yahoo_raise)
+
+    result = await tools["get_holdings"](account="kis", market="us")
+
+    assert result["total_accounts"] == 1
+    assert result["total_positions"] == 2
+    assert result["filtered_count"] == 0
+
+    positions_by_symbol = {
+        position["symbol"]: position for position in result["accounts"][0]["positions"]
+    }
+
+    amzn = positions_by_symbol["AMZN"]
+    assert amzn["symbol"] == "AMZN"
+    assert amzn["quantity"] == 10.0
+    assert amzn["avg_buy_price"] == 150.0
+    assert amzn["current_price"] is None
+    assert amzn["price_error"] == "Symbol 'AMZN' not found"
+    assert amzn["evaluation_amount"] == 1600.0
+    assert amzn["profit_loss"] == 100.0
+    assert amzn["profit_rate"] == 6.67
+
+    aapl = positions_by_symbol["AAPL"]
+    assert aapl["symbol"] == "AAPL"
+    assert aapl["quantity"] == 5.0
+    assert aapl["avg_buy_price"] == 180.0
+    assert aapl["current_price"] is None
+    assert aapl["price_error"] == "Symbol 'AAPL' not found"
+    assert aapl["evaluation_amount"] == 9500.0
+    assert aapl["profit_loss"] == -500.0
+    assert aapl["profit_rate"] == -5.26
+
+    assert len(result["errors"]) == 2
+    error_symbols = {error["symbol"] for error in result["errors"]}
+    assert "AMZN" in error_symbols
+    assert "AAPL" in error_symbols
+    for error in result["errors"]:
+        assert error["source"] == "yahoo"
+        assert error["market"] == "us"
+        assert error["stage"] == "current_price"
+        # Check that error message is in expected format (contains the symbol)
+        assert "not found" in error["error"]
 
 
 @pytest.mark.asyncio

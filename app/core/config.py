@@ -1,3 +1,4 @@
+import os
 import random
 from typing import Literal
 
@@ -197,7 +198,7 @@ class Settings(BaseSettings):
     DOCS_ENABLED: bool = True  # 개발 환경: True, 프로덕션: False
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.getenv("ENV_FILE", ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,  # 대소문자 구분 안 함
         env_parse_none_str="None",  # None 문자열 파싱

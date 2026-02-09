@@ -314,7 +314,7 @@ def _normalize_position_symbol(symbol: str, instrument_type: str) -> str:
 
 
 def _position_to_output(position: dict[str, Any]) -> dict[str, Any]:
-    return {
+    output = {
         "symbol": position["symbol"],
         "name": position["name"],
         "market": position["market"],
@@ -325,6 +325,9 @@ def _position_to_output(position: dict[str, Any]) -> dict[str, Any]:
         "profit_loss": position["profit_loss"],
         "profit_rate": position["profit_rate"],
     }
+    if "price_error" in position:
+        output["price_error"] = position["price_error"]
+    return output
 
 
 def _value_for_minimum_filter(position: dict[str, Any]) -> float:
@@ -332,9 +335,9 @@ def _value_for_minimum_filter(position: dict[str, Any]) -> float:
     if evaluation_amount is not None:
         return _to_float(evaluation_amount, default=0.0)
 
-    # Price lookup failed (current_price is None) -> treat as zero value for filtering.
+    # Price lookup failed (current_price is None) -> return infinity to prevent filtering
     if position.get("current_price") is None:
-        return 0.0
+        return float("inf")
 
     quantity = _to_float(position.get("quantity"))
     current_price = _to_float(position.get("current_price"))
@@ -644,9 +647,12 @@ async def _collect_manual_positions(
 
 async def _fetch_price_map_for_positions(
     positions: list[dict[str, Any]],
-) -> tuple[dict[tuple[str, str], float], list[dict[str, Any]]]:
+) -> tuple[
+    dict[tuple[str, str], float], list[dict[str, Any]], dict[tuple[str, str], str]
+]:
     price_map: dict[tuple[str, str], float] = {}
     price_errors: list[dict[str, Any]] = []
+    error_map: dict[tuple[str, str], str] = {}
 
     crypto_symbols = sorted(
         {
@@ -690,26 +696,30 @@ async def _fetch_price_map_for_positions(
                     if ("crypto", symbol.upper()) not in price_map
                 ]
                 for symbol in missing_symbols_in_batch:
+                    error_msg = "price missing in batch ticker response"
+                    error_map[("crypto", symbol.upper())] = error_msg
                     price_errors.append(
                         {
                             "source": "upbit",
                             "market": "crypto",
                             "symbol": symbol,
                             "stage": "current_price",
-                            "error": "price missing in batch ticker response",
+                            "error": error_msg,
                         }
                     )
             except Exception as exc:
                 for symbol in batch_symbols:
                     if ("crypto", symbol.upper()) in price_map:
                         continue
+                    error_msg = str(exc)
+                    error_map[("crypto", symbol.upper())] = error_msg
                     price_errors.append(
                         {
                             "source": "upbit",
                             "market": "crypto",
                             "symbol": symbol,
                             "stage": "current_price",
-                            "error": str(exc),
+                            "error": error_msg,
                         }
                     )
 
@@ -727,16 +737,23 @@ async def _fetch_price_map_for_positions(
 
     async def fetch_equity_price(
         instrument_type: str, symbol: str
-    ) -> tuple[str, str, float | None]:
+    ) -> tuple[str, str, float | None, str | None]:
         try:
             if instrument_type == "equity_kr":
                 quote = await _fetch_quote_equity_kr(symbol)
             else:
                 quote = await _fetch_quote_equity_us(symbol)
             price = quote.get("price")
-            return instrument_type, symbol, float(price) if price is not None else None
-        except Exception:
-            return instrument_type, symbol, None
+            return (
+                instrument_type,
+                symbol,
+                float(price) if price is not None else None,
+                None,
+            )
+        except Exception as exc:
+            error_msg = str(exc)
+            logger.debug(f"Failed to fetch equity price for {symbol}: {error_msg}")
+            return instrument_type, symbol, None, error_msg
 
     equity_tasks = [
         fetch_equity_price(instrument_type, symbol)
@@ -751,11 +768,22 @@ async def _fetch_price_map_for_positions(
 
     if equity_tasks:
         results = await asyncio.gather(*equity_tasks)
-        for instrument_type, symbol, price in results:
+        for instrument_type, symbol, price, error in results:
             if price is not None:
                 price_map[(instrument_type, symbol)] = price
+            elif error is not None:
+                error_map[(instrument_type, symbol)] = error
+                price_errors.append(
+                    {
+                        "source": "yahoo" if instrument_type == "equity_us" else "kis",
+                        "market": "us" if instrument_type == "equity_us" else "kr",
+                        "symbol": symbol,
+                        "stage": "current_price",
+                        "error": error,
+                    }
+                )
 
-    return price_map, price_errors
+    return price_map, price_errors, error_map
 
 
 async def _collect_portfolio_positions(
@@ -814,13 +842,20 @@ async def _collect_portfolio_positions(
         ]
 
     if include_current_price and positions:
-        price_map, price_errors = await _fetch_price_map_for_positions(positions)
+        price_map, price_errors, error_map = await _fetch_price_map_for_positions(
+            positions
+        )
         errors.extend(price_errors)
         for position in positions:
-            price = price_map.get((position["instrument_type"], position["symbol"]))
+            key = (position["instrument_type"], position["symbol"])
+            price = price_map.get(key)
             if price is not None:
                 position["current_price"] = price
-            _recalculate_profit_fields(position)
+                _recalculate_profit_fields(position)
+            else:
+                error = error_map.get(key)
+                if error is not None:
+                    position["price_error"] = error
     else:
         for position in positions:
             position["current_price"] = None
