@@ -155,7 +155,7 @@ docker compose version
 
 1. **DuckDNS 계정 생성**: https://www.duckdns.org
 2. **도메인 생성**:
-   - 원하는 서브도메인 입력 (예: `mgh3326`)
+   - 원하는 서브도메인 입력 (예: `your-subdomain`)
    - 최종 도메인: `your-domain.duckdns.org`
 3. **IP 주소 설정**:
    - "current ip" 필드에 공유기 공인 IP 입력
@@ -172,7 +172,7 @@ docker compose version
 crontab -e
 
 # 5분마다 IP 업데이트 (YOUR_TOKEN을 실제 토큰으로 변경)
-*/5 * * * * curl "https://www.duckdns.org/update?domains=mgh3326&token=YOUR_TOKEN&ip="
+*/5 * * * * curl "https://www.duckdns.org/update?domains=your-subdomain&token=YOUR_TOKEN&ip="
 ```
 
 ### 4. 공유기 포트포워딩

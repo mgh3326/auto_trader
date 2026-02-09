@@ -292,7 +292,7 @@ Caddy는 Let's Encrypt를 통해 자동으로 SSL/TLS 인증서를 발급하고 
 ```bash
 # Caddy 설정
 ACME_EMAIL=your_email@example.com        # Let's Encrypt 인증서 발급용 이메일
-DOMAIN_NAME=your_domain.com              # 실제 도메인 (예: mgh3326.duckdns.org)
+DOMAIN_NAME=your_domain.com              # 실제 도메인 (예: your-subdomain.duckdns.org)
 ```
 
 **2. DNS 레코드 설정**
@@ -309,9 +309,9 @@ A 레코드 예시:
 
 **DuckDNS 사용 시:**
 - https://www.duckdns.org 에서 계정 생성
-- 서브도메인 생성 (예: mgh3326)
+- 서브도메인 생성 (예: your-subdomain)
 - IP 주소를 서버의 공인 IP로 설정
-- 최종 도메인: `mgh3326.duckdns.org`
+- 최종 도메인: `your-subdomain.duckdns.org`
 
 **3. 방화벽 포트 열기**
 
