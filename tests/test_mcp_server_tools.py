@@ -5405,7 +5405,9 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
     monkeypatch.setattr(
         mcp_tools,
         "get_or_refresh_maps",
-        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "ETH": "이더리움"}}),
+        AsyncMock(
+            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "ETH": "이더리움"}}
+        ),
     )
     monkeypatch.setattr(
         mcp_tools,
@@ -5480,7 +5482,9 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
     monkeypatch.setattr(
         mcp_tools,
         "get_or_refresh_maps",
-        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "DOGE": "도지"}}),
+        AsyncMock(
+            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "DOGE": "도지"}}
+        ),
     )
     monkeypatch.setattr(
         mcp_tools,
@@ -5665,7 +5669,9 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
     monkeypatch.setattr(
         mcp_tools,
         "get_or_refresh_maps",
-        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "PCI": "페이코인"}}),
+        AsyncMock(
+            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "PCI": "페이코인"}}
+        ),
     )
     monkeypatch.setattr(
         mcp_tools,
@@ -6026,7 +6032,9 @@ class TestGetCryptoProfile:
                             "symbol": "btc",
                             "market_cap_rank": 1,
                             "categories": ["Store of Value"],
-                            "description": {"ko": "<p>비트코인은 대표적인 암호화폐입니다.</p>"},
+                            "description": {
+                                "ko": "<p>비트코인은 대표적인 암호화폐입니다.</p>"
+                            },
                             "market_data": {
                                 "market_cap": {"krw": 2_000_000_000_000_000},
                                 "total_volume": {"krw": 50_000_000_000_000},
@@ -6403,9 +6411,9 @@ async def test_place_order_insufficient_balance_upbit(monkeypatch):
         dry_run=True,
     )
 
-    assert (
-        result["success"] is True
-    ), f"Expected success=True with warning, got {result}"
+    assert result["success"] is True, (
+        f"Expected success=True with warning, got {result}"
+    )
     assert result["dry_run"] is True
     assert "warning" in result
     assert "Insufficient" in result["warning"]
@@ -7263,9 +7271,21 @@ class TestCreateDcaPlan:
 
         async def mock_analyze_stock(sym, market, include_peers):
             results = {
-                "005930": {"symbol": "005930", "market_type": "equity_kr", "source": "kis"},
-                "AAPL": {"symbol": "AAPL", "market_type": "equity_us", "source": "yahoo"},
-                "KRW-BTC": {"symbol": "KRW-BTC", "market_type": "crypto", "source": "upbit"},
+                "005930": {
+                    "symbol": "005930",
+                    "market_type": "equity_kr",
+                    "source": "kis",
+                },
+                "AAPL": {
+                    "symbol": "AAPL",
+                    "market_type": "equity_us",
+                    "source": "yahoo",
+                },
+                "KRW-BTC": {
+                    "symbol": "KRW-BTC",
+                    "market_type": "crypto",
+                    "source": "upbit",
+                },
             }
             return results.get(sym, {"symbol": sym, "error": f"Not found: {sym}"})
 
@@ -7350,4 +7370,3 @@ async def test_get_indicators_crypto_empty_response(monkeypatch):
     assert result["instrument_type"] == "crypto"
     assert result["source"] == "upbit"
     assert "No data available for symbol" in result["error"]
-
