@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import quote, urlencode
 
 import httpx
 import jwt  # pyjwt 라이브러리가 필요합니다 (pip install pyjwt)
@@ -83,8 +84,10 @@ async def check_krw_balance_sufficient(required_amount: float) -> tuple[bool, fl
 async def fetch_ohlcv(
     market: str = "KRW-BTC",
     days: int = 100,
+    period: str = "day",
+    end_date: datetime | None = None,
 ) -> pd.DataFrame:
-    """최근 *days*개 일봉 OHLCV DataFrame 반환 (Upbit)
+    """최근 *days*개 OHLCV DataFrame 반환 (Upbit)
 
     Parameters
     ----------
@@ -92,20 +95,37 @@ async def fetch_ohlcv(
         업비트 마켓코드 (예: "KRW-BTC", "USDT-ETH")
     days : int, default 100
         가져올 캔들 수 (최대 200)
+    period : str, default "day"
+        캔들 주기 ("day", "week", "month")
+    end_date : datetime | None, default None
+        조회 기준 시간 (None이면 현재 시간)
     """
     if days > 200:
-        raise ValueError("Upbit 일봉 API는 최대 200개까지 요청 가능합니다.")
+        raise ValueError("Upbit API는 최대 200개까지 요청 가능합니다.")
 
-    url = f"{UPBIT_REST}/candles/days"
-    params = {
+    period_map = {
+        "day": "days",
+        "week": "weeks",
+        "month": "months",
+    }
+    if period not in period_map:
+        raise ValueError(f"period must be one of {list(period_map.keys())}")
+
+    url = f"{UPBIT_REST}/candles/{period_map[period]}"
+    params: dict[str, Any] = {
         "market": market,
         "count": days,
     }
-    # convertingPriceUnit 파라미터는 업비트에서 지원하지 않거나 다른 이름일 수 있음
-    # 필요시 아래와 같이 추가 가능
-    # if adjust_price == "true":
-    #     params["convertingPriceUnit"] = "true"
+    if end_date is not None:
+        # Upbit API expects ISO 8601 format: 2023-01-01T00:00:00
+        params["to"] = end_date.strftime("%Y-%m-%dT%H:%M:%S")
+
     rows = await _request_json(url, params)
+
+    if not rows:
+        return pd.DataFrame(
+            columns=["date", "open", "high", "low", "close", "volume", "value"]
+        )
 
     df = (
         pd.DataFrame(rows)
@@ -289,18 +309,22 @@ async def fetch_fundamental_info(market: str = "KRW-BTC") -> dict:
     return {k: v for k, v in fundamental_data.items() if v is not None}
 
 
-async def fetch_all_market_codes(fiat: str = "KRW") -> list[str]:
+async def fetch_all_market_codes(fiat: str | None = "KRW") -> list[str]:
     """
     업비트에서 거래 가능한 모든 마켓 코드를 조회합니다.
-    :param fiat: 조회할 화폐 시장 (기본값: "KRW")
+    :param fiat: 조회할 화폐 시장 (예: "KRW", "USDT"). None이면 전체 시장 반환
     :return: 마켓 코드 리스트 (예: ["KRW-BTC", "KRW-ETH", ...])
     """
     url = f"{UPBIT_REST}/market/all"
     params = {"isDetails": "false"}
     all_markets = await _request_json(url, params)
 
+    if fiat is None:
+        return [m["market"] for m in all_markets]
+
+    fiat_prefix = str(fiat).upper()
     # 지정된 fiat 시장의 마켓 코드만 필터링하여 반환
-    return [m["market"] for m in all_markets if m["market"].startswith(fiat)]
+    return [m["market"] for m in all_markets if m["market"].startswith(fiat_prefix)]
 
 
 async def fetch_top_traded_coins(fiat: str = "KRW") -> list[dict]:
@@ -347,10 +371,14 @@ async def fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
     if not market_codes:
         return []
 
-    url = f"{UPBIT_REST}/ticker"
-    params = {"markets": ",".join(market_codes)}
+    query = urlencode(
+        {"markets": ",".join(market_codes)},
+        quote_via=quote,
+        safe=",",
+    )
+    url = f"{UPBIT_REST}/ticker?{query}"
 
-    return await _request_json(url, params)
+    return await _request_json(url)
 
 
 async def fetch_multiple_current_prices(market_codes: list[str]) -> dict[str, float]:

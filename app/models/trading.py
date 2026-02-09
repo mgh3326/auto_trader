@@ -46,7 +46,7 @@ class Exchange(Base):
     country: Mapped[str | None] = mapped_column(Text)
     tz: Mapped[str] = mapped_column(Text, nullable=False, default="Asia/Seoul")
 
-    instruments: Mapped[list[Instrument]] = relationship(back_populates="exchange")
+    instruments: Mapped[list["Instrument"]] = relationship(back_populates="exchange")
 
 
 class Instrument(Base):

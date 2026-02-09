@@ -19,7 +19,7 @@
 
 ### 요구사항
 
-- Python 3.14+
+- Python 3.13+
 - UV (패키지 관리)
 - PostgreSQL
 - Redis
@@ -62,6 +62,24 @@ uv run alembic upgrade head
 ```bash
 uv run uvicorn app.main:app --reload
 ```
+
+### MCP 서버 실행
+
+MCP 서버는 시장/보유종목 조회용 read-only 도구를 제공합니다.
+
+필수 환경 변수:
+- `MCP_TYPE` (기본: streamable-http)
+- `MCP_HOST` (기본: 0.0.0.0)
+- `MCP_PORT` (기본: 8765)
+- `MCP_PATH` (기본: /mcp)
+- `MCP_USER_ID` (기본: 1, 수동 보유종목 조회용)
+
+Docker (production compose):
+```bash
+docker compose -f docker-compose.prod.yml up -d mcp
+```
+
+자세한 내용은 `app/mcp_server/README.md`를 참고하세요.
 
 ## 사용법
 
@@ -203,7 +221,7 @@ tests/
 GitHub Actions를 통해 자동으로 다음을 실행합니다:
 
 - **린팅**: Ruff 린터 + 포맷터, Pyright 타입 체커
-- **테스트**: Python 3.14에서 테스트 실행 (lint 통과 후)
+- **테스트**: Python 3.13에서 테스트 실행 (lint 통과 후)
 - **보안**: bandit, safety 검사
 - **커버리지**: 테스트 커버리지 리포트 생성
 

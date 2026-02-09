@@ -9,10 +9,10 @@
 #   bash scripts/test-caddy-https.sh [domain]
 #
 # 예시:
-#   bash scripts/test-caddy-https.sh mgh3326.duckdns.org
+#   bash scripts/test-caddy-https.sh your-subdomain.duckdns.org
 #
 # 환경 변수로 도메인 지정 가능:
-#   DOMAIN_NAME=mgh3326.duckdns.org bash scripts/test-caddy-https.sh
+#   DOMAIN_NAME=your-subdomain.duckdns.org bash scripts/test-caddy-https.sh
 # ============================================================================
 
 # set -e  # 에러 발생 시 즉시 종료 (테스트 연속성을 위해 주석 처리)

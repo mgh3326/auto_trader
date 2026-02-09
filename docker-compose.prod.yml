@@ -71,6 +71,33 @@ services:
           memory: 512M
           cpus: '0.25'
 
+  mcp:
+    image: ghcr.io/${GITHUB_REPOSITORY}:production
+    container_name: auto_trader_mcp_prod
+    env_file:
+      - .env.prod
+    environment:
+      MCP_TYPE: ${MCP_TYPE:-streamable-http}
+      MCP_HOST: ${MCP_HOST:-0.0.0.0}
+      MCP_PORT: ${MCP_PORT:-8765}
+      MCP_PATH: ${MCP_PATH:-/mcp}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    # network_mode: host 사용 시 ports 매핑은 적용되지 않습니다.
+    volumes:
+      - ./tmp:/app/tmp
+      - ./logs:/app/logs
+    restart: unless-stopped
+    network_mode: host
+    command: ["python", "-m", "app.mcp_server.main"]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+
   websocket:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
     container_name: auto_trader_ws_prod

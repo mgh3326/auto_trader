@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="630" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#0a0e27;stop-opacity:1" />
+            <stop offset="50%" style="stop-color:#1a1f4e;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#2d3a8c;stop-opacity:1" />
+        </linearGradient>
+    </defs>
+
+    <!-- 배경 -->
+    <rect width="1200" height="630" fill="url(#bgGradient)"/>
+
+    <!-- 제목 -->
+    <text x="600" y="140" font-family="Arial, sans-serif" font-size="52" font-weight="bold" fill="#ffffff" text-anchor="middle">
+        MCP 서버로 AI 트레이딩
+    </text>
+    <text x="600" y="210" font-family="Arial, sans-serif" font-size="52" font-weight="bold" fill="#00d4aa" text-anchor="middle">
+        도구 만들기
+    </text>
+    <!-- 부제목 -->
+    <text x="600" y="290" font-family="Arial, sans-serif" font-size="30" fill="#778da9" text-anchor="middle">
+        Claude가 직접 주식을 분석하고 매매하는 시스템
+    </text>
+
+    <!-- 아이콘들 -->
+    <g transform="translate(390, 380)">
+        <rect x="0" y="0" width="100" height="100" rx="10" fill="#5436DA" opacity="0.9"/>
+        <text x="50" y="55" font-family="Arial, sans-serif" font-size="40" fill="#ffffff" text-anchor="middle">🤖</text>
+        <text x="50" y="85" font-family="Arial, sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">Claude</text>
+        <rect x="130" y="0" width="100" height="100" rx="10" fill="#2196F3" opacity="0.9"/>
+        <text x="180" y="55" font-family="Arial, sans-serif" font-size="40" fill="#ffffff" text-anchor="middle">📊</text>
+        <text x="180" y="85" font-family="Arial, sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">35 Tools</text>
+        <rect x="260" y="0" width="100" height="100" rx="10" fill="#4CAF50" opacity="0.9"/>
+        <text x="310" y="55" font-family="Arial, sans-serif" font-size="40" fill="#ffffff" text-anchor="middle">📈</text>
+        <text x="310" y="85" font-family="Arial, sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">Trading</text>
+        <rect x="390" y="0" width="100" height="100" rx="10" fill="#FF9800" opacity="0.9"/>
+        <text x="440" y="55" font-family="Arial, sans-serif" font-size="40" fill="#ffffff" text-anchor="middle">🔗</text>
+        <text x="440" y="85" font-family="Arial, sans-serif" font-size="14" fill="#ffffff" text-anchor="middle">7 APIs</text>
+    </g>
+    <!-- 하단 기술 스택 -->
+    <text x="600" y="590" font-family="Arial, sans-serif" font-size="20" fill="#778da9" text-anchor="middle">
+        FastMCP • KIS • Upbit • Yahoo • Naver • Finnhub • CoinGecko
+    </text>
+</svg>

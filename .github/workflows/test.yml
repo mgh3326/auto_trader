@@ -10,7 +10,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     env:
-      PYTHON_VERSION: "3.14"
+      PYTHON_VERSION: "3.13"
 
     steps:
     - uses: actions/checkout@v4
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.14"]
+        python-version: ["3.13"]
 
     services:
       postgres:
@@ -117,7 +117,7 @@ jobs:
   security:
     runs-on: ubuntu-latest
     env:
-      PYTHON_VERSION: "3.14"
+      PYTHON_VERSION: "3.13"
 
     steps:
     - uses: actions/checkout@v4

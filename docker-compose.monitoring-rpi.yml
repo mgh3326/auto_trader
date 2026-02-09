@@ -5,8 +5,8 @@
 #   docker compose -f docker-compose.monitoring-rpi.yml up -d
 #
 # Access Points (via Caddy reverse proxy):
-#   - HTTPS: https://mgh3326.duckdns.org (auto-trader app)
-#   - HTTPS: https://mgh3326.duckdns.org/grafana (Grafana UI)
+#   - HTTPS: https://${DOMAIN_NAME} (auto-trader app)
+#   - HTTPS: https://${DOMAIN_NAME}/grafana (Grafana UI)
 #   - Direct access (internal only):
 #     - Grafana UI: http://localhost:3000 (credentials from .env or default: admin/admin)
 #     - OTLP gRPC: localhost:4317 (send traces/metrics here)
