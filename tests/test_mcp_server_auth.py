@@ -1,7 +1,5 @@
 """Tests for MCP server Bearer token authentication."""
 
-import pytest
-
 from app.mcp_server.auth import StaticBearerTokenVerifier, build_auth_provider
 
 

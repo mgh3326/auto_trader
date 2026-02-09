@@ -4916,8 +4916,6 @@ class TestGetSectorPeers:
             },
         }
 
-        original_yf = mcp_tools.yf
-
         class MockTicker:
             def __init__(self, ticker):
                 self._ticker = ticker
