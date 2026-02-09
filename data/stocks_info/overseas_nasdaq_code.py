@@ -1,4 +1,5 @@
 """나스닥 주식 종목 코드 마스터 데이터"""
+
 import json
 import tempfile
 import time
@@ -16,6 +17,15 @@ CACHE_FILE = CACHE_DIR / "nasdaq_master_cache.json"
 LIFETIME = 24 * 3600  # 24시간
 
 
+def _find_member(zf: zipfile.ZipFile, name: str) -> str:
+    """Find a ZIP member by case-insensitive name match."""
+    lower = name.lower()
+    for member in zf.namelist():
+        if member.lower() == lower:
+            return member
+    raise FileNotFoundError(f"{name} not found in ZIP (members: {zf.namelist()})")
+
+
 def _download_and_parse_nasdaq_master() -> dict[str, str]:
     """나스닥 MST 파일을 다운로드하고 파싱하여 종목명-심볼 매핑을 반환"""
 
@@ -29,33 +39,44 @@ def _download_and_parse_nasdaq_master() -> dict[str, str]:
         zip_path = temp_path / "nasmst.cod.zip"
         urllib.request.urlretrieve(
             "https://new.real.download.dws.co.kr/common/master/nasmst.cod.zip",
-            str(zip_path)
+            str(zip_path),
         )
 
         # 압축 해제
         with zipfile.ZipFile(zip_path) as nasdaq_zip:
             nasdaq_zip.extractall(temp_path)
-
-        # MST 파일 파싱
-        cod_file = temp_path / "nasmst.cod"
+            cod_file = temp_path / _find_member(nasdaq_zip, "nasmst.cod")
 
         # 칼럼 정의
         columns = [
-            'National code', 'Exchange id', 'Exchange code', 'Exchange name',
-            'Symbol', 'realtime symbol', 'Korea name', 'English name',
-            'Security type(1:Index,2:Stock,3:ETP(ETF),4:Warrant)',
-            'currency', 'float position', 'data type', 'base price',
-            'Bid order size', 'Ask order size',
-            'market start time(HHMM)', 'market end time(HHMM)',
-            'DR 여부(Y/N)', 'DR 국가코드', '업종분류코드',
-            '지수구성종목 존재 여부(0:구성종목없음,1:구성종목있음)',
-            'Tick size Type',
-            '구분코드(001:ETF,002:ETN,003:ETC,004:Others,005:VIX Underlying ETF,006:VIX Underlying ETN)',
-            'Tick size type 상세'
+            "National code",
+            "Exchange id",
+            "Exchange code",
+            "Exchange name",
+            "Symbol",
+            "realtime symbol",
+            "Korea name",
+            "English name",
+            "Security type(1:Index,2:Stock,3:ETP(ETF),4:Warrant)",
+            "currency",
+            "float position",
+            "data type",
+            "base price",
+            "Bid order size",
+            "Ask order size",
+            "market start time(HHMM)",
+            "market end time(HHMM)",
+            "DR 여부(Y/N)",
+            "DR 국가코드",
+            "업종분류코드",
+            "지수구성종목 존재 여부(0:구성종목없음,1:구성종목있음)",
+            "Tick size Type",
+            "구분코드(001:ETF,002:ETN,003:ETC,004:Others,005:VIX Underlying ETF,006:VIX Underlying ETN)",
+            "Tick size type 상세",
         ]
 
         # DataFrame으로 읽기
-        df = pd.read_table(cod_file, sep='\t', encoding='cp949')
+        df = pd.read_table(cod_file, sep="\t", encoding="cp949")
         df.columns = columns
 
         # 종목명-심볼 매핑 생성 (한글명과 영어명 모두 지원)
@@ -63,16 +84,16 @@ def _download_and_parse_nasdaq_master() -> dict[str, str]:
 
         # 한글명 -> 심볼
         for _, row in df.iterrows():
-            if pd.notna(row['Korea name']) and pd.notna(row['Symbol']):
-                korea_name = str(row['Korea name']).strip()
-                symbol = str(row['Symbol']).strip()
+            if pd.notna(row["Korea name"]) and pd.notna(row["Symbol"]):
+                korea_name = str(row["Korea name"]).strip()
+                symbol = str(row["Symbol"]).strip()
                 if korea_name and symbol:
                     name_to_symbol[korea_name] = symbol
 
             # 영어명 -> 심볼 (한글명이 없거나 추가 참조용)
-            if pd.notna(row['English name']) and pd.notna(row['Symbol']):
-                english_name = str(row['English name']).strip()
-                symbol = str(row['Symbol']).strip()
+            if pd.notna(row["English name"]) and pd.notna(row["Symbol"]):
+                english_name = str(row["English name"]).strip()
+                symbol = str(row["Symbol"]).strip()
                 if english_name and symbol:
                     name_to_symbol[english_name] = symbol
 
@@ -81,13 +102,9 @@ def _download_and_parse_nasdaq_master() -> dict[str, str]:
 
 def _save_cache_data(name_to_symbol: dict[str, str]) -> None:
     """나스닥 데이터를 JSON으로 캐시"""
-    cache_data = {
-        "name_to_symbol": name_to_symbol,
-        "cached_at": time.time()
-    }
+    cache_data = {"name_to_symbol": name_to_symbol, "cached_at": time.time()}
     CACHE_FILE.write_text(
-        json.dumps(cache_data, ensure_ascii=False, indent=2),
-        encoding='utf-8'
+        json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
@@ -97,7 +114,7 @@ def _load_cached_data() -> dict[str, str] | None:
         return None
 
     try:
-        data = json.loads(CACHE_FILE.read_text(encoding='utf-8'))
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
         if time.time() - data["cached_at"] < LIFETIME - 3600:  # 1시간 여유
             return data["name_to_symbol"]
     except (json.JSONDecodeError, KeyError):

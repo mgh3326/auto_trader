@@ -1,4 +1,5 @@
 """미국 주식(NASDAQ, NYSE, AMEX) 통합 종목 코드 마스터 데이터"""
+
 import json
 import tempfile
 import time
@@ -17,10 +18,19 @@ LIFETIME = 24 * 3600  # 24시간
 
 # 거래소 코드 매핑 (KIS API 형식)
 EXCHANGE_CODES = {
-    'nas': 'NASD',  # 나스닥
-    'nys': 'NYSE',  # 뉴욕증권거래소
-    'ams': 'AMEX',  # 아멕스
+    "nas": "NASD",  # 나스닥
+    "nys": "NYSE",  # 뉴욕증권거래소
+    "ams": "AMEX",  # 아멕스
 }
+
+
+def _find_member(zf: zipfile.ZipFile, name: str) -> str:
+    """Find a ZIP member by case-insensitive name match."""
+    lower = name.lower()
+    for member in zf.namelist():
+        if member.lower() == lower:
+            return member
+    raise FileNotFoundError(f"{name} not found in ZIP (members: {zf.namelist()})")
 
 
 def _download_and_parse_us_stocks() -> dict:
@@ -32,10 +42,10 @@ def _download_and_parse_us_stocks() -> dict:
 
         # 각 거래소별 데이터 수집
         all_data = {
-            'name_to_symbol': {},  # 종목명 -> 심볼
-            'symbol_to_exchange': {},  # 심볼 -> 거래소 코드
-            'symbol_to_name_kr': {},  # 심볼 -> 한글명
-            'symbol_to_name_en': {},  # 심볼 -> 영어명
+            "name_to_symbol": {},  # 종목명 -> 심볼
+            "symbol_to_exchange": {},  # 심볼 -> 거래소 코드
+            "symbol_to_name_kr": {},  # 심볼 -> 한글명
+            "symbol_to_name_en": {},  # 심볼 -> 영어명
         }
 
         for file_code, exchange_code in EXCHANGE_CODES.items():
@@ -45,68 +55,75 @@ def _download_and_parse_us_stocks() -> dict:
             zip_path = temp_path / f"{file_code}mst.cod.zip"
             urllib.request.urlretrieve(
                 f"https://new.real.download.dws.co.kr/common/master/{file_code}mst.cod.zip",
-                str(zip_path)
+                str(zip_path),
             )
 
             # 압축 해제
             with zipfile.ZipFile(zip_path) as zip_file:
                 zip_file.extractall(temp_path)
-
-            # MST 파일 파싱
-            cod_file = temp_path / f"{file_code}mst.cod"
+                cod_file = temp_path / _find_member(zip_file, f"{file_code}mst.cod")
 
             columns = [
-                'National code', 'Exchange id', 'Exchange code', 'Exchange name',
-                'Symbol', 'realtime symbol', 'Korea name', 'English name',
-                'Security type(1:Index,2:Stock,3:ETP(ETF),4:Warrant)',
-                'currency', 'float position', 'data type', 'base price',
-                'Bid order size', 'Ask order size',
-                'market start time(HHMM)', 'market end time(HHMM)',
-                'DR 여부(Y/N)', 'DR 국가코드', '업종분류코드',
-                '지수구성종목 존재 여부(0:구성종목없음,1:구성종목있음)',
-                'Tick size Type',
-                '구분코드(001:ETF,002:ETN,003:ETC,004:Others,005:VIX Underlying ETF,006:VIX Underlying ETN)',
-                'Tick size type 상세'
+                "National code",
+                "Exchange id",
+                "Exchange code",
+                "Exchange name",
+                "Symbol",
+                "realtime symbol",
+                "Korea name",
+                "English name",
+                "Security type(1:Index,2:Stock,3:ETP(ETF),4:Warrant)",
+                "currency",
+                "float position",
+                "data type",
+                "base price",
+                "Bid order size",
+                "Ask order size",
+                "market start time(HHMM)",
+                "market end time(HHMM)",
+                "DR 여부(Y/N)",
+                "DR 국가코드",
+                "업종분류코드",
+                "지수구성종목 존재 여부(0:구성종목없음,1:구성종목있음)",
+                "Tick size Type",
+                "구분코드(001:ETF,002:ETN,003:ETC,004:Others,005:VIX Underlying ETF,006:VIX Underlying ETN)",
+                "Tick size type 상세",
             ]
 
-            df = pd.read_table(cod_file, sep='\t', encoding='cp949')
+            df = pd.read_table(cod_file, sep="\t", encoding="cp949")
             df.columns = columns
 
             # 데이터 매핑 구축
             for _, row in df.iterrows():
-                if pd.notna(row['Symbol']):
-                    symbol = str(row['Symbol']).strip()
+                if pd.notna(row["Symbol"]):
+                    symbol = str(row["Symbol"]).strip()
                     if not symbol:
                         continue
 
                     # 심볼 -> 거래소
-                    all_data['symbol_to_exchange'][symbol] = exchange_code
+                    all_data["symbol_to_exchange"][symbol] = exchange_code
 
                     # 심볼 -> 이름
-                    if pd.notna(row['Korea name']):
-                        korea_name = str(row['Korea name']).strip()
+                    if pd.notna(row["Korea name"]):
+                        korea_name = str(row["Korea name"]).strip()
                         if korea_name:
-                            all_data['symbol_to_name_kr'][symbol] = korea_name
-                            all_data['name_to_symbol'][korea_name] = symbol
+                            all_data["symbol_to_name_kr"][symbol] = korea_name
+                            all_data["name_to_symbol"][korea_name] = symbol
 
-                    if pd.notna(row['English name']):
-                        english_name = str(row['English name']).strip()
+                    if pd.notna(row["English name"]):
+                        english_name = str(row["English name"]).strip()
                         if english_name:
-                            all_data['symbol_to_name_en'][symbol] = english_name
-                            all_data['name_to_symbol'][english_name] = symbol
+                            all_data["symbol_to_name_en"][symbol] = english_name
+                            all_data["name_to_symbol"][english_name] = symbol
 
         return all_data
 
 
 def _save_cache_data(data: dict) -> None:
     """미국 주식 데이터를 JSON으로 캐시"""
-    cache_data = {
-        "data": data,
-        "cached_at": time.time()
-    }
+    cache_data = {"data": data, "cached_at": time.time()}
     CACHE_FILE.write_text(
-        json.dumps(cache_data, ensure_ascii=False, indent=2),
-        encoding='utf-8'
+        json.dumps(cache_data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
@@ -116,7 +133,7 @@ def _load_cached_data() -> dict | None:
         return None
 
     try:
-        cache_data = json.loads(CACHE_FILE.read_text(encoding='utf-8'))
+        cache_data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
         if time.time() - cache_data["cached_at"] < LIFETIME - 3600:  # 1시간 여유
             return cache_data["data"]
     except (json.JSONDecodeError, KeyError):
@@ -173,7 +190,7 @@ def get_exchange_by_symbol(symbol: str) -> str | None:
         거래소 코드 ("NASD", "NYSE", "AMEX") 또는 None
     """
     data = get_us_stocks_data()
-    return data['symbol_to_exchange'].get(symbol)
+    return data["symbol_to_exchange"].get(symbol)
 
 
 def get_symbol_by_name(name: str) -> str | None:
@@ -187,7 +204,7 @@ def get_symbol_by_name(name: str) -> str | None:
         심볼 (예: "AAPL") 또는 None
     """
     data = get_us_stocks_data()
-    return data['name_to_symbol'].get(name)
+    return data["name_to_symbol"].get(name)
 
 
 def get_stock_info(symbol: str) -> dict | None:
@@ -207,14 +224,14 @@ def get_stock_info(symbol: str) -> dict | None:
     """
     data = get_us_stocks_data()
 
-    if symbol not in data['symbol_to_exchange']:
+    if symbol not in data["symbol_to_exchange"]:
         return None
 
     return {
-        'symbol': symbol,
-        'exchange': data['symbol_to_exchange'].get(symbol),
-        'name_kr': data['symbol_to_name_kr'].get(symbol),
-        'name_en': data['symbol_to_name_en'].get(symbol),
+        "symbol": symbol,
+        "exchange": data["symbol_to_exchange"].get(symbol),
+        "name_kr": data["symbol_to_name_kr"].get(symbol),
+        "name_en": data["symbol_to_name_en"].get(symbol),
     }
 
 
