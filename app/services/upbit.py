@@ -405,7 +405,7 @@ async def _request_with_auth(
 ) -> Any:
     """인증이 필요한 API 요청을 처리하는 헬퍼 함수"""
     import hashlib
-    from urllib.parse import urlencode
+    from urllib.parse import unquote, urlencode
 
     payload = {
         "access_key": settings.upbit_access_key,
@@ -414,13 +414,13 @@ async def _request_with_auth(
 
     # GET/DELETE 요청: query_params로 query_hash 생성
     if method.upper() in ["GET", "DELETE"] and query_params:
-        query_string = urlencode(query_params, doseq=True)
+        query_string = unquote(urlencode(query_params, doseq=True))
         payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
         payload["query_hash_alg"] = "SHA512"
 
     # POST 요청: body_params로 query_hash 생성
     elif method.upper() == "POST" and body_params:
-        query_string = urlencode(body_params, doseq=True)
+        query_string = unquote(urlencode(body_params, doseq=True))
         payload["query_hash"] = hashlib.sha512(query_string.encode()).hexdigest()
         payload["query_hash_alg"] = "SHA512"
 

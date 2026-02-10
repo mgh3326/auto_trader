@@ -2588,7 +2588,6 @@ class KISClient:
         end_date: str,
         stock_code: str = "",
         side: str = "00",
-        status: str = "00",
         order_number: str = "",
         is_mock: bool = False,
     ) -> list[dict]:
@@ -2600,7 +2599,6 @@ class KISClient:
             end_date: 조회 종료일자 (YYYYMMDD)
             stock_code: 종목코드 (6자리), 공백이면 전체 조회
             side: 매도매수구분 (00:전체, 01:매도, 02:매수)
-            status: 체결구분 (00:전체)
             order_number: 주문번호 (특정 주문만 조회 시)
             is_mock: True면 모의투자, False면 실전투자
 
@@ -2661,17 +2659,15 @@ class KISClient:
                 "INQR_STRT_DT": start_date,
                 "INQR_END_DT": end_date,
                 "SLL_BUY_DVSN_CD": side,
-                "SLL_BUY_DVSN_CD_NAME": "",
-                "PRDT_CD": stock_code,
+                "PDNO": stock_code,
+                "CCLD_DVSN": "00",
+                "INQR_DVSN": "00",
+                "INQR_DVSN_3": "00",
+                "INQR_DVSN_1": "",
                 "ORD_GNO_BRNO": "",
+                "ODNO": order_number,
                 "CTX_AREA_FK100": ctx_area_fk100,
                 "CTX_AREA_NK100": ctx_area_nk100,
-                "ORD_STAT_CD": status,
-                "ORD_GNO": "",
-                "CCLD_DVSN_CD": "00",
-                "FNCG_AMT_AUTO_RDPT_YN": "N",
-                "KRX_FWDG_ORD_ORGNO": order_number,
-                "INQR_DVSN": "00",
             }
 
             logging.info(
@@ -2730,7 +2726,6 @@ class KISClient:
         symbol: str = "%",
         exchange_code: str = "NASD",
         side: str = "00",
-        status: str = "00",
         order_number: str = "",
         is_mock: bool = False,
     ) -> list[dict]:
@@ -2743,8 +2738,7 @@ class KISClient:
             symbol: 종목 심볼 (%: 전체 조회 시 필터링)
             exchange_code: 거래소 코드 (NASD/NYSE/AMEX 등)
             side: 매도매수구분 (00:전체, 01:매도, 02:매수)
-            status: 체결구분 (00:전체)
-            order_number: 주문번호 (특정 주문만 조회 시)
+            order_number: 주문번호 (해외주식은 미지원으로 무시됨)
             is_mock: True면 모의투자, False면 실전투자
 
         Returns:
@@ -2802,21 +2796,18 @@ class KISClient:
             params = {
                 "CANO": cano,
                 "ACNT_PRDT_CD": acnt_prdt_cd,
-                "OVRS_EXCG_CD": exchange_code,
-                "INQR_STRT_DT": start_date,
-                "INQR_END_DT": end_date,
-                "SLL_BUY_DVSN_CD": side,
-                "SLL_BUY_DVSN_CD_NAME": "",
                 "PDNO": to_kis_symbol(symbol) if symbol != "%" else "",
+                "ORD_STRT_DT": start_date,
+                "ORD_END_DT": end_date,
+                "SLL_BUY_DVSN": side,
+                "CCLD_NCCS_DVSN": "00",
+                "OVRS_EXCG_CD": exchange_code,
+                "SORT_SQN": "DS",
+                "ORD_DT": "",
                 "ORD_GNO_BRNO": "",
+                "ODNO": "",
                 "CTX_AREA_FK200": ctx_area_fk200,
                 "CTX_AREA_NK200": ctx_area_nk200,
-                "ORD_STAT_CD": status,
-                "ORD_GNO": "",
-                "CCLD_DVSN_CD": "00",
-                "FNCG_AMT_AUTO_RDPT_YN": "N",
-                "KRX_FWDG_ORD_ORGNO": order_number,
-                "INQR_DVSN": "00",
             }
 
             logging.info(
