@@ -8,6 +8,7 @@ from .manual_holdings import (
     MarketType,
     StockAlias,
 )
+from .news import NewsAnalysisResult, NewsArticle, Sentiment
 from .prompt import PromptResult
 from .symbol_trade_settings import SymbolTradeSettings
 from .trading import Exchange, Instrument, User, UserChannel, UserRole, UserWatchItem
@@ -28,7 +29,9 @@ __all__ = [
     "StockInfo",
     "StockAnalysisResult",
     "SymbolTradeSettings",
-    # Manual Holdings
+    "NewsArticle",
+    "NewsAnalysisResult",
+    "Sentiment",
     "BrokerType",
     "MarketType",
     "BrokerAccount",

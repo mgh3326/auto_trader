@@ -1,0 +1,256 @@
+version: 2.1
+
+orbs:
+  python: circleci/python@2.1.1
+  codecov: codecov/codecov@4.0.1
+
+executors:
+  python-executor:
+    docker:
+      - image: cimg/python:3.13
+    resource_class: medium
+    working_directory: ~/project
+
+  test-executor:
+    docker:
+      - image: cimg/python:3.13
+      - image: postgres:15
+        environment:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: test_db
+      - image: redis:7-alpine
+    resource_class: medium
+    working_directory: ~/project
+
+commands:
+  install-uv:
+    description: "Install UV package manager"
+    steps:
+      - run:
+          name: Install UV
+          command: pip install uv
+
+  setup-deps:
+    description: "Install project dependencies using UV"
+    steps:
+      - restore_cache:
+          keys:
+            - venv-{{ arch }}-{{ checksum "uv.lock" }}-{{ checksum ".tool-versions" }}
+            - venv-{{ arch }}-{{ checksum "uv.lock" }}
+      - run:
+          name: Install dependencies
+          command: |
+            if [ "$GROUP" == "dev" ]; then
+              uv sync --group dev
+            elif [ "$GROUP" == "test" ]; then
+              uv sync --group test
+            else
+              uv sync --all-groups
+            fi
+      - save_cache:
+          key: venv-{{ arch }}-{{ checksum "uv.lock" }}-{{ checksum ".tool-versions" }}
+          paths:
+            - .venv
+
+  setup-test-env:
+    description: "Setup test environment variables"
+    steps:
+      - run:
+          name: Setup test environment
+          command: |
+            chmod +x scripts/setup-test-env.sh
+            bash scripts/setup-test-env.sh
+
+jobs:
+  lint:
+    executor: python-executor
+    environment:
+      GROUP: dev
+    steps:
+      - checkout
+      - install-uv
+      - setup-deps
+      - run:
+          name: Run Ruff linter
+          command: uv run ruff check app/ tests/
+      - run:
+          name: Run Ruff formatter check
+          command: uv run ruff format --check app/ tests/
+      - run:
+          name: Run Pyright type checker
+          command: uv run pyright app/
+
+  test:
+    executor: test-executor
+    environment:
+      GROUP: test
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test_db
+      REDIS_URL: redis://localhost:6379/0
+      OTEL_ENABLED: "false"
+      ERROR_REPORTING_ENABLED: "false"
+    steps:
+      - checkout
+      - install-uv
+      - setup-deps
+      - setup-test-env
+
+      - run:
+          name: Run tests with coverage
+          command: |
+            uv run pytest tests/ -v --cov=app --cov-report=xml --cov-report=html --cov-report=term-missing
+          environment:
+            DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test_db
+            REDIS_URL: redis://localhost:6379/0
+
+      - codecov/upload:
+          file: ./coverage.xml
+          flags: unittests
+
+      - store_artifacts:
+          path: htmlcov
+          destination: coverage-report
+
+      - store_test_results:
+          path: test-results
+
+  security:
+    executor: python-executor
+    environment:
+      GROUP: dev
+    steps:
+      - checkout
+      - install-uv
+      - setup-deps
+
+      - run:
+          name: Run Bandit security linter
+          command: uv run bandit -r app/ -f json -o bandit-report.json || true
+
+      - run:
+          name: Run Safety dependency checker
+          command: uv run safety check --json --output safety-report.json || true
+
+      - store_artifacts:
+          path: bandit-report.json
+          destination: security/bandit-report.json
+
+      - store_artifacts:
+          path: safety-report.json
+          destination: security/safety-report.json
+
+  build:
+    executor: python-executor
+    steps:
+      - checkout
+      - setup_remote_docker:
+          version: 24.0.9
+          docker_layer_caching: true
+
+      - run:
+          name: Build Docker image
+          command: |
+            docker build -t auto-trader:${CIRCLE_SHA1} -f Dockerfile.api .
+
+      - run:
+          name: Run tests in Docker
+          command: |
+            docker run --rm \
+              -e DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/test_db \
+              -e REDIS_URL=redis://localhost:6379/0 \
+              auto-trader:${CIRCLE_SHA1} \
+              uv run pytest tests/ -v --no-cov -m "not integration"
+
+  test-integration:
+    executor: test-executor
+    environment:
+      GROUP: test
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test_db
+      REDIS_URL: redis://localhost:6379/0
+      OTEL_ENABLED: "false"
+      ERROR_REPORTING_ENABLED: "false"
+    steps:
+      - checkout
+      - install-uv
+      - setup-deps
+      - setup-test-env
+
+      - run:
+          name: Run integration tests only
+          command: |
+            uv run pytest tests/ -v -m "integration" --cov=app --cov-append --cov-report=xml
+          environment:
+            DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/test_db
+            REDIS_URL: redis://localhost:6379/0
+
+      - store_test_results:
+          path: test-results
+
+workflows:
+  version: 2
+
+  test-and-lint:
+    jobs:
+      - lint:
+          filters:
+            branches:
+              only:
+                - main
+                - develop
+
+      - security:
+          filters:
+            branches:
+              only:
+                - main
+                - develop
+
+      - test:
+          requires:
+            - lint
+          filters:
+            branches:
+              only:
+                - main
+                - develop
+
+      - test-integration:
+          requires:
+            - test
+          filters:
+            branches:
+              only:
+                - main
+                - develop
+
+      - build:
+          requires:
+            - test
+            - test-integration
+          filters:
+            branches:
+              only:
+                - main
+
+  pr-checks:
+    jobs:
+      - lint
+      - security
+      - test:
+          requires:
+            - lint
+
+  nightly:
+    triggers:
+      - schedule:
+          cron: "0 2 * * *"
+          filters:
+            branches:
+              only:
+                - main
+    jobs:
+      - lint
+      - security
+      - test
+      - test-integration
+      - build

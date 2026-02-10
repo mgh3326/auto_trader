@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ request.state.csrf_token | default('', true) }}">
+    <title>실시간 호가 - Auto Trader</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+
+        .market-selector {
+            max-width: 300px;
+        }
+
+        .orderbook-container {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        .orderbook-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1rem;
+        }
+
+        .orderbook-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .orderbook-subtitle {
+            font-size: 0.85rem;
+            opacity: 0.9;
+            margin: 0.25rem 0 0 0;
+        }
+
+        .orderbook-table {
+            margin-bottom: 0;
+            font-size: 0.9rem;
+        }
+
+        .orderbook-table th {
+            background-color: #e9ecef;
+            font-weight: 600;
+            border-top: none;
+        }
+
+        .ask-row {
+            background-color: #fff5f5;
+            color: #dc3545;
+        }
+
+        .bid-row {
+            background-color: #f0fff4;
+            color: #198754;
+        }
+
+        .ask-header {
+            background-color: #ffe0e0;
+            color: #dc3545;
+            font-weight: 600;
+        }
+
+        .bid-header {
+            background-color: #e0ffe8;
+            color: #198754;
+            font-weight: 600;
+        }
+
+        .spread-row {
+            background-color: #fff3cd;
+            color: #856404;
+            font-weight: 600;
+        }
+
+        .price-up {
+            color: #dc3545;
+        }
+
+        .price-down {
+            color: #198754;
+        }
+
+        .connection-status {
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .status-connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .status-disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .last-update {
+            font-size: 0.8rem;
+            color: #6c757d;
+        }
+
+        .volume-bar {
+            height: 100%;
+            min-width: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .ask-volume-bar {
+            background-color: rgba(220, 53, 69, 0.3);
+        }
+
+        .bid-volume-bar {
+            background-color: rgba(25, 135, 84, 0.3);
+        }
+    </style>
+</head>
+
+<body>
+    {% include 'nav.html' %}
+
+    <div class="container-fluid mt-4">
+        <div class="row">
+            <div class="col-12">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h4>
+                        <i class="bi bi-bookmark-check"></i> 실시간 호가
+                    </h4>
+                    <div class="d-flex align-items-center gap-3">
+                        <div id="connection-status" class="connection-status status-disconnected">
+                            <i class="bi bi-x-circle"></i> 연결 안됨
+                        </div>
+                        <div class="last-update" id="last-update">
+                            마지막 업데이트: -
+                        </div>
+                    </div>
+                </div>
+
+                <div class="market-selector mb-3">
+                    <select class="form-select" id="market-select">
+                        <option value="">마켓 선택...</option>
+                    </select>
+                </div>
+
+                <div class="orderbook-container">
+                    <div class="orderbook-header">
+                        <h5 class="orderbook-title" id="market-title">마켓 선택</h5>
+                        <p class="orderbook-subtitle" id="market-subtitle">마켓을 선택해 주세요</p>
+                    </div>
+
+                    <div id="orderbook-content" style="display: none;">
+                        <table class="table table-sm orderbook-table">
+                            <thead>
+                                <tr>
+                                    <th class="text-end ask-header">호가</th>
+                                    <th class="text-end ask-header">잔량</th>
+                                    <th class="text-center" colspan="2" style="background-color: #fff3cd;">
+                                        매도 호가
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody id="ask-rows">
+                            </tbody>
+                            <tbody>
+                                <tr class="spread-row">
+                                    <td class="text-center" colspan="4">
+                                        <i class="bi bi-arrows-expand"></i>
+                                        호가 스프레드: <span id="spread-value">-</span>
+                                        (<span id="spread-percent">-</span>%)
+                                    </td>
+                                </tr>
+                            </tbody>
+                            <thead>
+                                <tr>
+                                    <th class="text-center" colspan="4" style="background-color: #e0ffe8;">
+                                        매수 호가
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody id="bid-rows">
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div id="orderbook-loading" class="text-center py-5">
+                        <div class="loading-spinner"></div>
+                        <p class="mt-3 text-muted">데이터 로드 중...</p>
+                    </div>
+
+                    <div id="orderbook-empty" class="text-center py-5" style="display: none;">
+                        <i class="bi bi-info-circle" style="font-size: 3rem;"></i>
+                        <p class="mt-3 text-muted">데이터가 없습니다.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let ws = null;
+        let selectedMarket = null;
+        let orderbookData = null;
+
+        function getCsrfToken() {
+            const metaTag = document.querySelector('meta[name="csrf-token"]');
+            if (metaTag && metaTag.content) {
+                return metaTag.content;
+            }
+            const cookieMatch = document.cookie.match(/(?:^|;\s*)(?:csrftoken|csrf_token)=([^;]+)/);
+            if (cookieMatch) {
+                try {
+                    return decodeURIComponent(cookieMatch[1]);
+                } catch (error) {
+                    console.warn('Failed to decode CSRF token cookie', error);
+                    return cookieMatch[1];
+                }
+            }
+            return '';
+        }
+
+        function formatNumber(num) {
+            if (num === null || num === undefined) return '-';
+            return new Intl.NumberFormat('ko-KR', {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0
+            }).format(num);
+        }
+
+        function formatVolume(num) {
+            if (num === null || num === undefined) return '-';
+            if (num >= 1) {
+                return num.toFixed(4);
+            } else {
+                return num.toFixed(8);
+            }
+        }
+
+        async function loadMarkets() {
+            try {
+                const response = await fetch('/orderbook/api/markets');
+                const data = await response.json();
+
+                if (data.markets && data.markets.length > 0) {
+                    const select = document.getElementById('market-select');
+                    select.innerHTML = '<option value="">마켓 선택...</option>';
+
+                    data.markets.forEach(market => {
+                        const option = document.createElement('option');
+                        option.value = market;
+                        option.textContent = market;
+                        select.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load markets:', error);
+            }
+        }
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/orderbook/ws`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                updateConnectionStatus(true);
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'orderbook') {
+                    handleOrderbookData(data);
+                } else if (data.type === 'error') {
+                    console.error('WebSocket error:', data.message);
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                updateConnectionStatus(false);
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function handleOrderbookData(data) {
+            orderbookData = data.data;
+
+            if (selectedMarket) {
+                const marketData = orderbookData[selectedMarket];
+                if (marketData && marketData.orderbook_units) {
+                    renderOrderbook(marketData);
+                } else {
+                    showEmptyOrderbook();
+                }
+            }
+
+            updateLastUpdate();
+        }
+
+        function renderOrderbook(data) {
+            const units = data.orderbook_units || [];
+            const asks = [];
+            const bids = [];
+
+            units.forEach(unit => {
+                if (unit.ask_price && unit.ask_size) {
+                    asks.push({
+                        price: parseFloat(unit.ask_price),
+                        size: parseFloat(unit.ask_size)
+                    });
+                }
+                if (unit.bid_price && unit.bid_size) {
+                    bids.push({
+                        price: parseFloat(unit.bid_price),
+                        size: parseFloat(unit.bid_size)
+                    });
+                }
+            });
+
+            const sortedAsks = asks.sort((a, b) => a.price - b.price).slice(0, 10);
+            const sortedBids = bids.sort((a, b) => b.price - a.price).slice(0, 10);
+
+            renderAskRows(sortedAsks);
+            renderBidRows(sortedBids);
+
+            if (sortedAsks.length > 0 && sortedBids.length > 0) {
+                const bestAsk = sortedAsks[0].price;
+                const bestBid = sortedBids[0].price;
+                const spread = bestAsk - bestBid;
+                const spreadPercent = (spread / bestBid) * 100;
+
+                document.getElementById('spread-value').textContent = formatNumber(spread) + '원';
+                document.getElementById('spread-percent').textContent = spreadPercent.toFixed(2);
+            } else {
+                document.getElementById('spread-value').textContent = '-';
+                document.getElementById('spread-percent').textContent = '-';
+            }
+
+            document.getElementById('orderbook-content').style.display = 'block';
+            document.getElementById('orderbook-loading').style.display = 'none';
+            document.getElementById('orderbook-empty').style.display = 'none';
+        }
+
+        function renderAskRows(asks) {
+            const tbody = document.getElementById('ask-rows');
+            const maxSize = Math.max(...asks.map(a => a.size), 1);
+
+            tbody.innerHTML = asks.map(ask => {
+                const barWidth = (ask.size / maxSize) * 100;
+                return `
+                    <tr class="ask-row">
+                        <td class="text-end">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span>${formatNumber(ask.price)}원</span>
+                                <div class="volume-bar ask-volume-bar" style="width: ${barWidth}%"></div>
+                            </div>
+                        </td>
+                        <td class="text-end">${formatVolume(ask.size)}</td>
+                        <td class="text-center" colspan="2">
+                            <span class="badge bg-danger">매도</span>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function renderBidRows(bids) {
+            const tbody = document.getElementById('bid-rows');
+            const maxSize = Math.max(...bids.map(b => b.size), 1);
+
+            tbody.innerHTML = bids.map(bid => {
+                const barWidth = (bid.size / maxSize) * 100;
+                return `
+                    <tr class="bid-row">
+                        <td class="text-center" colspan="2">
+                            <span class="badge bg-success">매수</span>
+                        </td>
+                        <td class="text-end">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div class="volume-bar bid-volume-bar" style="width: ${barWidth}%"></div>
+                                <span>${formatNumber(bid.price)}원</span>
+                            </div>
+                        </td>
+                        <td class="text-end">${formatVolume(bid.size)}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function showEmptyOrderbook() {
+            document.getElementById('orderbook-content').style.display = 'none';
+            document.getElementById('orderbook-loading').style.display = 'none';
+            document.getElementById('orderbook-empty').style.display = 'block';
+        }
+
+        function updateConnectionStatus(connected) {
+            const statusEl = document.getElementById('connection-status');
+            if (connected) {
+                statusEl.className = 'connection-status status-connected';
+                statusEl.innerHTML = '<i class="bi bi-check-circle"></i> 연결됨';
+            } else {
+                statusEl.className = 'connection-status status-disconnected';
+                statusEl.innerHTML = '<i class="bi bi-x-circle"></i> 연결 안됨';
+            }
+        }
+
+        function updateLastUpdate() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('ko-KR');
+            document.getElementById('last-update').textContent = `마지막 업데이트: ${timeStr}`;
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadMarkets();
+            connectWebSocket();
+
+            const marketSelect = document.getElementById('market-select');
+            marketSelect.addEventListener('change', (e) => {
+                selectedMarket = e.target.value;
+
+                if (selectedMarket) {
+                    document.getElementById('market-title').textContent = selectedMarket;
+                    document.getElementById('market-subtitle').textContent = '실시간 호가 데이터';
+
+                    if (orderbookData && orderbookData[selectedMarket]) {
+                        renderOrderbook(orderbookData[selectedMarket]);
+                    } else {
+                        document.getElementById('orderbook-content').style.display = 'none';
+                        document.getElementById('orderbook-loading').style.display = 'block';
+                        document.getElementById('orderbook-empty').style.display = 'none';
+                    }
+                } else {
+                    document.getElementById('market-title').textContent = '마켓 선택';
+                    document.getElementById('market-subtitle').textContent = '마켓을 선택해 주세요';
+                    document.getElementById('orderbook-content').style.display = 'none';
+                    document.getElementById('orderbook-loading').style.display = 'none';
+                    document.getElementById('orderbook-empty').style.display = 'none';
+                }
+            });
+        });
+
+        window.addEventListener('beforeunload', () => {
+            if (ws) {
+                ws.close();
+            }
+        });
+    </script>
+</body>
+
+</html>

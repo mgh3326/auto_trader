@@ -637,7 +637,7 @@ async def place_market_buy_order(market: str, price: str) -> dict:
     market : str
         마켓 코드 (예: "KRW-BTC")
     price : str
-        매수할 금액 (문자열로 전달, 예: "100000")
+        매수할 금액 (문자열로 전달)
 
     Returns
     -------
@@ -647,10 +647,150 @@ async def place_market_buy_order(market: str, price: str) -> dict:
         - side: "bid" (매수)
         - ord_type: "price"
         - price: 매수 금액
+        - volume: 주문 수량 (지정가 매수 시에는 없음)
         - market: 마켓명
         - created_at: 주문 시간
     """
     return await place_buy_order(market, price, ord_type="price")
+
+
+async def fetch_closed_orders(market: str | None = None, limit: int = 20) -> list[dict]:
+    """
+    체결 완료 주문 목록 조회
+
+    Args:
+        market: 마켓코드 필터 (옵션셔), None이면 전체 조회
+        limit: 반환할 건수 (기본값 20)
+
+    Returns:
+        체결 주문 목록 (list of dict)
+        각 주문:
+        - uuid: 주문 고유 ID
+        - side: 매수/매도 (bid/ask)
+        - ord_type: 주문타입 (limit/market/price)
+        - price: 주문가격 (지정가만 해당)
+        - volume: 주문 수량
+        - remaining_volume: 미체결 수량
+        - executed_volume: 체결 수량
+        - market: 마켓명
+        - state: 주문 상태 (done, cancel)
+        - created_at: 주문 시간
+    """
+    url = f"{UPBIT_REST}/orders/closed"
+    params: dict[str, Any] = {"states[]": ["done", "cancel"], "limit": limit}
+    if market:
+        params["market"] = market
+
+    return await _request_with_auth("GET", url, query_params=params)
+
+
+async def fetch_order_detail(order_uuid: str) -> dict:
+    """
+    단건 주문 상세 조회
+
+    Args:
+        order_uuid: 주문 고유 ID
+
+    Returns:
+        주문 상세 정보
+    """
+    url = f"{UPBIT_REST}/order"
+    params = {"uuid": order_uuid}
+
+    return await _request_with_auth("GET", url, query_params=params)
+
+
+async def cancel_and_reorder(
+    order_uuid: str,
+    new_price: float,
+    new_quantity: float | None = None,
+) -> dict:
+    """
+    주문 취소 후 재주문 (지정가 대기주문만 지원)
+
+    Args:
+        order_uuid: 취소 후 재주문할 주문 UUID
+        new_price: 새 주문가격
+        new_quantity: 새 주문수량 (None이면 잔량 유지)
+
+    Returns:
+        {
+            "original_order": 원주문 정보,
+            "cancel_result": 취소 결과,
+            "new_order": 새 주문 정보,
+        }
+    """
+    # 1. 원주문 조회
+    original_order = await fetch_order_detail(order_uuid)
+
+    # 2. 지원 조건 확인
+    if original_order.get("state") != "wait":
+        return {
+            "original_order": original_order,
+            "cancel_result": {
+                "success": False,
+                "error": "Only wait-state orders can be modified",
+            },
+            "new_order": None,
+        }
+
+    if original_order.get("ord_type") != "limit":
+        return {
+            "original_order": original_order,
+            "cancel_result": {
+                "success": False,
+                "error": "Only limit orders can be modified",
+            },
+            "new_order": None,
+        }
+
+    # 3. 새 수량 결정 및 유효성 검사
+    if new_quantity is None:
+        new_quantity = float(original_order.get("remaining_volume", 0))
+
+    # 수량 유효성 검사: 0 이하면 즉시 실패
+    if new_quantity <= 0:
+        return {
+            "original_order": original_order,
+            "cancel_result": {
+                "success": False,
+                "error": "Invalid new quantity: must be positive",
+            },
+            "new_order": None,
+        }
+
+    # 4. 가격 보정 (업비트 단위에 맞춰)
+    side = original_order.get("side")
+    market = original_order.get("market")
+    adjusted_price = adjust_price_to_upbit_unit(new_price)
+
+    # 5. 취소 후 재주문
+    cancel_result = await cancel_orders([order_uuid])
+
+    if cancel_result and len(cancel_result) > 0 and "error" not in cancel_result[0]:
+        # 취소 성공하면 재주문
+        volume_str = f"{new_quantity:.8f}" if new_quantity else ""
+        price_str = f"{adjusted_price:.0f}" if new_price else ""
+
+        # side에 따라 적절한 메서드 호출
+        if side == "bid":
+            new_order = await place_buy_order(market, price_str, volume_str, "limit")
+        else:
+            new_order = await place_sell_order(market, volume_str, price_str)
+
+        return {
+            "original_order": original_order,
+            "cancel_result": cancel_result[0],
+            "new_order": new_order,
+        }
+    else:
+        return {
+            "original_order": original_order,
+            "cancel_result": cancel_result[0]
+            if cancel_result
+            else {"success": False, "error": "cancel failed"},
+            "new_order": None,
+        }
 
 
 def adjust_price_to_upbit_unit(price: float) -> float:
