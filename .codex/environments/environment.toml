@@ -3,4 +3,8 @@ version = 1
 name = "auto_trader"
 
 [setup]
-script = "make install-dev"
+script = '''
+make install-dev
+cp /Users/robin/PycharmProjects/auto_trader/.env.test .
+cp /Users/robin/PycharmProjects/auto_trader/.env .
+'''
