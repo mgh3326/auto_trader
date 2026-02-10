@@ -3934,7 +3934,7 @@ def register_tools(mcp: FastMCP) -> None:
             "equity_us": "us",
             "crypto": "crypto",
         }
-        return mapping.get(market_type)
+        return mapping.get(market_type, market_type)
 
     @mcp.tool(
         name="get_position",

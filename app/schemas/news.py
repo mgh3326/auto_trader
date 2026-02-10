@@ -35,11 +35,11 @@ class NewsArticleResponse(BaseModel):
     title: str
     source: str | None
     author: str | None
-    content: str
+    content: str = Field(validation_alias="article_content")
     summary: str | None
     stock_symbol: str | None
     stock_name: str | None
-    published_at: datetime | None
+    published_at: datetime | None = Field(validation_alias="article_published_at")
     scraped_at: datetime
     user_id: int | None
     created_at: datetime
@@ -87,7 +87,7 @@ class NewsAnalysisRequest(BaseModel):
 
 class NewsAnalysisResponse(BaseModel):
     article: NewsArticleResponse
-    analysis: NewsAnalysisResultResponse
+    analysis: NewsAnalysisResultResponse | None = None
 
 
 class NewsQueryParams(BaseModel):

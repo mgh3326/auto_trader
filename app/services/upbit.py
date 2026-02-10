@@ -770,7 +770,7 @@ async def cancel_and_reorder(
     if cancel_result and len(cancel_result) > 0 and "error" not in cancel_result[0]:
         # 취소 성공하면 재주문
         volume_str = f"{new_quantity:.8f}" if new_quantity else ""
-        price_str = f"{adjusted_price:.0f}" if new_price else ""
+        price_str = f"{adjusted_price:.5f}".rstrip("0").rstrip(".") if new_price else ""
 
         # side에 따라 적절한 메서드 호출
         if side == "bid":

@@ -580,7 +580,9 @@ def test_execute_overseas_buy_order_fetches_price_for_new_symbol(monkeypatch):
 
     captured: dict[str, Any] = {}
 
-    async def fake_process(_kis, symbol, current_price, avg_price):
+    async def fake_process(
+        _kis, symbol, current_price, avg_price, exchange_code="NASD"
+    ):
         captured.update(
             {
                 "symbol": symbol,

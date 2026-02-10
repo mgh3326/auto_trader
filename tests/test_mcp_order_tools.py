@@ -46,7 +46,9 @@ async def test_get_order_history_crypto_uses_closed_orders(monkeypatch):
             }
         ]
     )
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_closed_orders", mock_closed_orders)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service, "fetch_closed_orders", mock_closed_orders
+    )
 
     result = await tools["get_order_history"](
         symbol="KRW-BTC", market="crypto", days=7, limit=20
@@ -211,7 +213,9 @@ async def test_modify_order_us_falls_back_exchange(monkeypatch):
         def __init__(self) -> None:
             self.modify_exchange: str | None = None
 
-        async def inquire_overseas_orders(self, exchange_code: str = "NASD", is_mock=False):
+        async def inquire_overseas_orders(
+            self, exchange_code: str = "NASD", is_mock=False
+        ):
             if exchange_code == "NYSE":
                 return [
                     {

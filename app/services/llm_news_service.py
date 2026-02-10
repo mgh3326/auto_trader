@@ -1,11 +1,11 @@
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from google import genai
+from google.genai import types
 from google.genai.types import HttpOptions
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
 
 from app.analysis.news_prompt import build_news_analysis_prompt
 from app.core.config import settings
@@ -83,7 +83,7 @@ class NewsAnalyzer:
         for model in models_to_try:
             for attempt in range(max_retries):
                 try:
-                    resp = self.client.models.generate_content(
+                    resp = await self.client.aio.models.generate_content(
                         model=model,
                         contents=prompt,
                     )
@@ -92,7 +92,13 @@ class NewsAnalyzer:
                         candidate = resp.candidates[0]
                         finish_reason = getattr(candidate, "finish_reason", None)
 
-                        if finish_reason in ["SAFETY", "RECITATION"]:
+                        if finish_reason in {
+                            types.FinishReason.SAFETY,
+                            types.FinishReason.RECITATION,
+                        } or getattr(finish_reason, "value", None) in {
+                            "SAFETY",
+                            "RECITATION",
+                        }:
                             print(f"{model} blocked: {finish_reason}")
                             break
 
@@ -129,14 +135,14 @@ async def create_news_article(
     article = NewsArticle(
         url=url,
         title=title,
-        content=content,
+        article_content=content,
         source=source,
         author=author,
         stock_symbol=stock_symbol,
         stock_name=stock_name,
-        published_at=published_at,
-        scraped_at=datetime.now(timezone.utc),
-        created_at=datetime.now(timezone.utc),
+        article_published_at=published_at,
+        scraped_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
     )
 
     async with AsyncSessionLocal() as db:
@@ -167,9 +173,9 @@ async def get_news_articles(
         if source:
             query = query.where(NewsArticle.source == source)
 
-        query = query.order_by(NewsArticle.published_at.desc().nulls_last())
+        query = query.order_by(NewsArticle.article_published_at.desc().nulls_last())
 
-        total_query = select(NewsArticle.id)
+        total_query = select(func.count()).select_from(NewsArticle)
         if stock_symbol:
             total_query = total_query.where(NewsArticle.stock_symbol == stock_symbol)
         if source:
@@ -178,8 +184,8 @@ async def get_news_articles(
         result = await db.execute(query.offset(offset).limit(limit))
         articles = result.scalars().all()
 
-        count_result = await db.execute(select(NewsArticle.id))
-        total = len(count_result.scalars().all())
+        count_result = await db.execute(total_query)
+        total = count_result.scalar_one()
 
     return articles, total
 

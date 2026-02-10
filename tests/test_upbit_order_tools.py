@@ -56,7 +56,9 @@ async def test_cancel_and_reorder_bid_success(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(upbit, "cancel_orders", AsyncMock(return_value=[{"uuid": "order-1"}]))
+    monkeypatch.setattr(
+        upbit, "cancel_orders", AsyncMock(return_value=[{"uuid": "order-1"}])
+    )
 
     place_buy_mock = AsyncMock(return_value={"uuid": "order-2"})
     place_sell_mock = AsyncMock()
@@ -70,7 +72,9 @@ async def test_cancel_and_reorder_bid_success(monkeypatch):
     )
 
     assert result["new_order"]["uuid"] == "order-2"
-    place_buy_mock.assert_awaited_once_with("KRW-BTC", "56000000", "0.00150000", "limit")
+    place_buy_mock.assert_awaited_once_with(
+        "KRW-BTC", "56000000", "0.00150000", "limit"
+    )
     place_sell_mock.assert_not_awaited()
 
 
@@ -90,7 +94,9 @@ async def test_cancel_and_reorder_ask_success(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(upbit, "cancel_orders", AsyncMock(return_value=[{"uuid": "order-1"}]))
+    monkeypatch.setattr(
+        upbit, "cancel_orders", AsyncMock(return_value=[{"uuid": "order-1"}])
+    )
 
     place_buy_mock = AsyncMock()
     place_sell_mock = AsyncMock(return_value={"uuid": "order-3"})

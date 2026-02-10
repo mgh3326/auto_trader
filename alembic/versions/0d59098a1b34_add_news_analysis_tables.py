@@ -179,15 +179,15 @@ def upgrade() -> None:
                existing_nullable=True)
     op.alter_column('user_watch_items', 'created_at',
                existing_type=postgresql.TIMESTAMP(timezone=True),
-               server_default='now()',
+               server_default=sa.text('now()'),
                existing_nullable=False)
     op.alter_column('user_watch_items', 'updated_at',
                existing_type=postgresql.TIMESTAMP(timezone=True),
-               server_default='now()',
+               server_default=sa.text('now()'),
                existing_nullable=False)
     op.alter_column('users', 'created_at',
                existing_type=postgresql.TIMESTAMP(timezone=True),
-               server_default='now()',
+               server_default=sa.text('now()'),
                existing_nullable=False)
     # ### end Alembic commands ###
 

@@ -1,5 +1,6 @@
 """WebSocket router for real-time market data streaming."""
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -12,19 +13,32 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["WebSocket"])
 
 _upbit_client: UpbitPublicWebSocketClient | None = None
+_upbit_client_task: asyncio.Task | None = None
+_upbit_client_lock = asyncio.Lock()
+
+
+def _log_task_exception(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except Exception:
+        logger.exception("Upbit public WebSocket task crashed")
 
 
 async def get_upbit_client() -> UpbitPublicWebSocketClient:
     """Get or create global Upbit WebSocket client instance."""
     global _upbit_client
+    global _upbit_client_task
 
     if _upbit_client is None:
-        logger.info("Creating Upbit public WebSocket client...")
-        _upbit_client = UpbitPublicWebSocketClient(
-            subscription_type="ticker",
-            codes=None,
-        )
-        await _upbit_client.start()
+        async with _upbit_client_lock:
+            if _upbit_client is None:
+                logger.info("Creating Upbit public WebSocket client...")
+                _upbit_client = UpbitPublicWebSocketClient(
+                    subscription_type="ticker",
+                    codes=None,
+                )
+                _upbit_client_task = asyncio.create_task(_upbit_client.start())
+                _upbit_client_task.add_done_callback(_log_task_exception)
 
     return _upbit_client
 

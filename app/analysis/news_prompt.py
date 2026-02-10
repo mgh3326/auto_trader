@@ -1,7 +1,5 @@
 """Prompt templates for news analysis using LLM."""
 
-from datetime import datetime
-
 
 def build_news_analysis_prompt(
     title: str,

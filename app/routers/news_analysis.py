@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,13 +7,13 @@ from app.models.news import NewsArticle
 from app.schemas.news import (
     NewsAnalysisRequest,
     NewsAnalysisResponse,
-    NewsArticleResponse,
     NewsAnalysisResultResponse,
+    NewsArticleResponse,
     NewsListResponse,
 )
 from app.services.llm_news_service import (
-    create_news_article,
     NewsAnalyzer,
+    create_news_article,
     get_news_analysis,
     get_news_articles,
 )

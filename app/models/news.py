@@ -1,6 +1,6 @@
 """Database models for news articles and LLM analysis results."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import BigInteger, ForeignKey, Index, String, Text, UniqueConstraint
@@ -158,85 +158,6 @@ class NewsAnalysisResult(Base):
         "NewsArticle", back_populates="analysis_results", lazy="joined"
     )
 
-    __table_args__ = (
-        Index("ix_news_analysis_article_sentiment", "article_id", "sentiment"),
-        Index("ix_news_analysis_sentiment_created", "sentiment", "created_at"),
-    )
-
-    # LLM model info
-    model_name: Mapped[str] = mapped_column(
-        String(100),
-        nullable=False,
-        comment="사용된 LLM 모델명 (e.g., gemini-2.5-pro)",
-    )
-
-    # Sentiment analysis
-    sentiment: Mapped[Sentiment] = mapped_column(
-        nullable=False,
-        index=True,
-        comment="감정 분석 (positive/negative/neutral)",
-    )
-    sentiment_score: Mapped[float | None] = mapped_column(
-        nullable=True,
-        comment="감정 점수 (-1.0 ~ 1.0, negative ~ positive)",
-    )
-
-    # Key insights
-    summary: Mapped[str] = mapped_column(
-        Text, nullable=False, comment="기사 요약 (한국어)"
-    )
-    key_points: Mapped[list] = mapped_column(
-        JSONB, nullable=False, comment="핵심 포인트 리스트 (JSON 배열)"
-    )
-    topics: Mapped[list | None] = mapped_column(
-        JSONB, nullable=True, comment="주요 키워드/토픽 (JSON 배열)"
-    )
-
-    # Price impact analysis (if stock is related)
-    price_impact: Mapped[str | None] = mapped_column(
-        Text, nullable=True, comment="주가 영향 분석 (한국어)"
-    )
-    price_impact_score: Mapped[float | None] = mapped_column(
-        nullable=True,
-        comment="주가 영향 점수 (-1.0 ~ 1.0, negative ~ positive)",
-    )
-
-    # Confidence and quality
-    confidence: Mapped[int] = mapped_column(
-        nullable=False,
-        comment="분석 신뢰도 (0-100)",
-    )
-    analysis_quality: Mapped[str | None] = mapped_column(
-        String(50),
-        nullable=True,
-        comment="분석 품질 (high/medium/low)",
-    )
-
-    # Prompt and response for debugging
-    prompt: Mapped[str] = mapped_column(
-        Text, nullable=False, comment="LLM에 전달한 프롬프트"
-    )
-    raw_response: Mapped[str] = mapped_column(
-        Text, nullable=False, comment="LLM 원본 응답"
-    )
-
-    # Processing metadata
-    processing_time_ms: Mapped[int | None] = mapped_column(
-        nullable=True, comment="LLM 처리 시간 (밀리초)"
-    )
-
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        nullable=False, comment="분석 생성일시"
-    )
-    updated_at: Mapped[datetime] = mapped_column(nullable=True, comment="분석 수정일시")
-
-    # Relationships
-    article = relationship(
-        "NewsArticle", back_populates="analysis_results", lazy="joined"
-    )
-
-    # Indexes for common queries
     __table_args__ = (
         Index("ix_news_analysis_article_sentiment", "article_id", "sentiment"),
         Index("ix_news_analysis_sentiment_created", "sentiment", "created_at"),
