@@ -135,6 +135,58 @@ class TestKISService:
             assert isinstance(result, list)
             assert len(result) > 0
 
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    async def test_fetch_my_stocks_inqr_dvsn_domestic(self, mock_client_class):
+        """Verify INQR_DVSN is set to '00' for domestic stock queries."""
+        # Setup mock client and response
+        mock_client = AsyncMock()
+
+        # Mock response for empty holdings (end of pagination)
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output1": [],
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+        # Set up mock_client.get() to return the response
+        mock_client.get.return_value = mock_response
+
+        # Set up context manager for async with
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+
+        # Import and test the actual function
+        from app.services.kis import KISClient
+
+        client = KISClient()
+
+        # Mock the token loading
+        with patch.object(client, "_ensure_token"):
+            # Call fetch_my_stocks for domestic stocks (is_overseas=False)
+            await client.fetch_my_stocks(is_mock=False, is_overseas=False)
+
+            # Verify the params passed to HTTP request
+            call_args = mock_client.get.call_args
+            assert "params" in call_args.kwargs
+            params = call_args.kwargs["params"]
+
+            # Verify INQR_DVSN parameter is set to "00" (not "02")
+            assert params["INQR_DVSN"] == "00"
+
+            # Verify other key domestic stock parameters are also set correctly
+            assert params["AFHR_FLPR_YN"] == "N"
+            assert params["UNPR_DVSN"] == "01"
+            assert params["PRCS_DVSN"] == "01"
+
+            # Verify tr_id header is set to TTTC8434R for real trading
+            call_kwargs = mock_client.get.call_args.kwargs
+            assert "headers" in call_kwargs
+            headers = call_kwargs["headers"]
+            assert headers["tr_id"] == "TTTC8434R"
+
 
 class TestYahooService:
     """Test Yahoo Finance service functionality."""
