@@ -22,10 +22,16 @@ from app.core.db import AsyncSessionLocal
 from app.core.symbol import to_db_symbol
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tick_size import adjust_tick_size_kr
+from app.models.dca_plan import (
+    DcaPlan,
+    DcaPlanStep,
+    DcaStepStatus,
+)
 from app.models.manual_holdings import MarketType
 from app.services import naver_finance
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
+from app.services.dca_service import DcaService
 from app.services.disclosures.dart import list_filings
 from app.services.kis import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
@@ -177,6 +183,7 @@ def _normalize_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
 
 
 _MCP_USER_ID = _env_int("MCP_USER_ID", 1)
+_MCP_DCA_USER_ID = _env_int("MCP_DCA_USER_ID", _MCP_USER_ID)
 _DEFAULT_ACCOUNT_KEYS = {"default", "default_account", "기본계좌", "기본_계좌"}
 _INSTRUMENT_TO_MARKET = {
     "equity_kr": "kr",
@@ -6687,6 +6694,70 @@ def register_tools(mcp: FastMCP) -> None:
             executed_steps: list[int] = []
             should_execute = not dry_run or (execute_steps is not None)
 
+            # Persist DCA plan to DB regardless of dry_run
+            plan_id: int | None = None
+            created_plan_steps: dict[int, DcaPlanStep] = {}
+            try:
+                async with AsyncSessionLocal() as db:
+                    dca_service = DcaService(db)
+
+                    # Convert plans to the format DcaService expects
+                    plans_for_db = [
+                        {
+                            "step": p["step"],
+                            "price": p["price"],
+                            "amount": p["amount"],
+                            "quantity": p["quantity"],
+                            "source": p.get("source"),
+                        }
+                        for p in plans
+                    ]
+
+                    created_plan = await dca_service.create_plan(
+                        user_id=_MCP_DCA_USER_ID,
+                        symbol=normalized_symbol,
+                        market=market_type,
+                        total_amount=total_amount,
+                        splits=splits,
+                        strategy=strategy,
+                        plans_data=plans_for_db,
+                        rsi_14=rsi_value,
+                    )
+
+                    plan_id = created_plan.id
+                    # Re-fetch plan from DB to ensure steps are properly loaded
+                    try:
+                        async with AsyncSessionLocal() as db:
+                            dca_service = DcaService(db)
+                            reloaded_plan = await dca_service.get_plan(
+                                plan_id, _MCP_DCA_USER_ID
+                            )
+                            if not reloaded_plan:
+                                raise ValueError(
+                                    f"Plan {plan_id} not found after creation"
+                                )
+                            for step in reloaded_plan.steps or []:
+                                created_plan_steps[step.step_number] = step
+                    except Exception as reload_exc:
+                        logger.error(f"Failed to reload DCA plan: {reload_exc}")
+                        return {
+                            "success": False,
+                            "error": f"Failed to reload DCA plan: {reload_exc}",
+                            "dry_run": not should_execute,
+                            "executed": False,
+                            "plan_id": plan_id,
+                        }
+            except Exception as exc:
+                logger.error(f"Failed to persist DCA plan: {exc}")
+                # Per policy: persist failure -> fail early (do not execute orders)
+                return {
+                    "success": False,
+                    "error": f"Failed to persist DCA plan: {exc}",
+                    "dry_run": not should_execute,
+                    "executed": False,
+                    "plan_id": None,
+                }
+
             if should_execute:
                 for plan_step in plans:
                     if (
@@ -6697,6 +6768,17 @@ def register_tools(mcp: FastMCP) -> None:
 
                     order_amount = plan_step["amount"]
                     order_price = plan_step["price"]
+
+                    # Safety check: max 1M KRW per step
+                    if order_amount > 1_000_000:
+                        return {
+                            "success": False,
+                            "error": f"Step {plan_step['step']} amount {order_amount:.0f} KRW exceeds limit 1,000,000 KRW",
+                            "dry_run": not should_execute,
+                            "executed": bool(executed_steps),
+                            "plan_id": plan_id,
+                            "summary": summary,
+                        }
 
                     # Place order using _impl function
                     _po_fn = globals().get("_place_order_impl", _place_order_impl)
@@ -6719,24 +6801,78 @@ def register_tools(mcp: FastMCP) -> None:
                     )
                     executed_steps.append(plan_step["step"])
 
+                    # If order succeeded, mark step as ordered with order_id
+                    if order_result.get("success") and plan_id is not None:
+                        order_id = None
+                        # Extract order_id from result with priority order
+                        if "order_id" in order_result:
+                            order_id = order_result["order_id"]
+                        elif "execution" in order_result and isinstance(
+                            order_result["execution"], dict
+                        ):
+                            order_id = (
+                                order_result["execution"].get("uuid")
+                                or order_result["execution"].get("ord_no")
+                                or order_result["execution"].get("odno")
+                            )
+
+                        if order_id and plan_step["step"] in created_plan_steps:
+                            try:
+                                async with AsyncSessionLocal() as db:
+                                    dca_service = DcaService(db)
+                                    step = created_plan_steps[plan_step["step"]]
+                                    await dca_service.mark_step_ordered(
+                                        step.id, str(order_id)
+                                    )
+                            except Exception as exc:
+                                logger.error(f"Failed to mark step ordered: {exc}")
+                                return {
+                                    "success": False,
+                                    "error": f"Failed to mark step ordered: {exc}",
+                                    "dry_run": not should_execute,
+                                    "executed": bool(executed_steps),
+                                    "plan_id": plan_id,
+                                    "execution_results": execution_results,
+                                    "summary": summary,
+                                }
+                        elif order_id:
+                            logger.error(
+                                f"Step {plan_step['step']} not found in plan {plan_id} - "
+                                f"available steps: {list(created_plan_steps.keys())}"
+                            )
+                            return {
+                                "success": False,
+                                "error": f"Step {plan_step['step']} not found in plan {plan_id}",
+                                "dry_run": not should_execute,
+                                "executed": bool(executed_steps),
+                                "plan_id": plan_id,
+                                "execution_results": execution_results,
+                                "summary": summary,
+                            }
+
                     # Fail early if any order fails
                     if not order_result.get("success"):
                         return {
                             "success": False,
                             "error": f"Order failed at step {plan_step['step']}",
                             "failed_step": plan_step["step"],
+                            "dry_run": not should_execute,
+                            "executed": bool(executed_steps),
+                            "plan_id": plan_id,
                             "execution_results": execution_results,
                             "summary": summary,
                         }
 
             response: dict[str, Any] = {
                 "success": True,
-                "dry_run": dry_run,
+                "dry_run": not should_execute,
+                "executed": bool(executed_steps),
+                "plan_id": plan_id,
                 "plans": plans,
                 "summary": summary,
             }
 
-            if not dry_run:
+            if should_execute:
                 response["execution_results"] = execution_results
 
             if should_execute and executed_steps:
@@ -6751,6 +6887,306 @@ def register_tools(mcp: FastMCP) -> None:
                 "source": source,
                 "dry_run": dry_run,
             }
+
+    async def _get_dca_status_impl(
+        plan_id: int | None = None,
+        symbol: str | None = None,
+        status: str = "active",
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Internal implementation for get_dca_status.
+
+        Args:
+            plan_id: Specific plan ID (has priority)
+            symbol: Filter by symbol (combined with optional status)
+            status: Filter by status - "active", "completed", "cancelled", "expired", "all"
+            limit: Max number of plans to return (1-1000)
+
+        Returns:
+            Dictionary with success status, plans array, and total_plans count.
+        """
+        # Validate status
+        valid_statuses = {"active", "completed", "cancelled", "expired", "all"}
+        if status not in valid_statuses:
+            return {
+                "success": False,
+                "error": (
+                    f"Invalid status '{status}'. Must be one of: "
+                    f"{', '.join(sorted(valid_statuses))}"
+                ),
+                "plans": [],
+                "total_plans": 0,
+            }
+
+        # Validate limit
+        if limit < 1 or limit > 1000:
+            return {
+                "success": False,
+                "error": f"limit must be between 1 and 1000, got: {limit}",
+                "plans": [],
+                "total_plans": 0,
+            }
+
+        try:
+            async with AsyncSessionLocal() as db:
+                dca_service = DcaService(db)
+
+                plans: list[DcaPlan] = []
+
+                # Filter priority: plan_id > symbol > status
+                if plan_id is not None:
+                    # Get single plan by ID
+                    plan = await dca_service.get_plan(plan_id, _MCP_DCA_USER_ID)
+                    if plan:
+                        plans = [plan]
+                elif symbol is not None:
+                    # Get plans for symbol with optional status filter
+                    symbol = symbol.strip()
+                    if status == "all":
+                        # Get all plans for symbol regardless of status
+                        all_plans = await dca_service.get_plans_by_status(
+                            user_id=_MCP_DCA_USER_ID,
+                            symbol=symbol,
+                            status=None,
+                            limit=limit,
+                        )
+                        plans = all_plans
+                    else:
+                        # Get plans for symbol with specific status
+                        filtered_plans = await dca_service.get_plans_by_status(
+                            user_id=_MCP_DCA_USER_ID,
+                            symbol=symbol,
+                            status=status,
+                            limit=limit,
+                        )
+                        plans = filtered_plans
+                else:
+                    # Get plans by status (all symbols for this status)
+                    if status == "all":
+                        # Get all plans for user
+                        all_plans = await dca_service.get_plans_by_status(
+                            user_id=_MCP_DCA_USER_ID,
+                            status=None,
+                            limit=limit,
+                        )
+                        plans = all_plans
+                    else:
+                        # Get plans with specific status
+                        filtered_plans = await dca_service.get_plans_by_status(
+                            user_id=_MCP_DCA_USER_ID,
+                            status=status,
+                            limit=limit,
+                        )
+                        plans = filtered_plans
+
+                # Format plans for response
+                def _format_dca_plan(plan: DcaPlan) -> dict[str, Any]:
+                    """Format a DcaPlan (and its steps) into JSON-serializable dict with progress."""
+                    p: dict[str, Any] = {
+                        "plan_id": plan.id,
+                        "id": plan.id,
+                        "user_id": plan.user_id,
+                        "symbol": plan.symbol,
+                        "market": plan.market,
+                        "status": plan.status.value
+                        if hasattr(plan.status, "value")
+                        else str(plan.status),
+                        "total_amount": float(plan.total_amount)
+                        if getattr(plan, "total_amount", None) is not None
+                        else None,
+                        "splits": plan.splits,
+                        "strategy": plan.strategy,
+                        "rsi_14": float(plan.rsi_14)
+                        if plan.rsi_14 is not None
+                        else None,
+                        "created_at": plan.created_at.isoformat()
+                        if plan.created_at
+                        else None,
+                        "updated_at": plan.updated_at.isoformat()
+                        if plan.updated_at
+                        else None,
+                        "completed_at": plan.completed_at.isoformat()
+                        if plan.completed_at
+                        else None,
+                    }
+
+                    steps_list: list[dict[str, Any]] = []
+                    total_steps = 0
+                    counts = {
+                        "filled": 0,
+                        "ordered": 0,
+                        "pending": 0,
+                        "cancelled": 0,
+                        "partial": 0,
+                        "skipped": 0,
+                    }
+                    invested = 0.0
+                    filled_qty_total = 0.0
+                    filled_price_weighted = 0.0
+
+                    if hasattr(plan, "steps") and plan.steps:
+                        for step in plan.steps:
+                            total_steps += 1
+                            status_name = (
+                                step.status.value
+                                if hasattr(step.status, "value")
+                                else str(step.status)
+                            )
+                            if status_name == DcaStepStatus.FILLED.value:
+                                counts["filled"] += 1
+                            elif status_name == DcaStepStatus.ORDERED.value:
+                                counts["ordered"] += 1
+                            elif status_name == DcaStepStatus.PENDING.value:
+                                counts["pending"] += 1
+                            elif status_name == DcaStepStatus.CANCELLED.value:
+                                counts["cancelled"] += 1
+                            elif status_name == DcaStepStatus.PARTIAL.value:
+                                counts["partial"] += 1
+                            elif status_name == DcaStepStatus.SKIPPED.value:
+                                counts["skipped"] += 1
+
+                            filled_amount = (
+                                float(step.filled_amount)
+                                if getattr(step, "filled_amount", None) is not None
+                                else 0.0
+                            )
+                            filled_qty = (
+                                float(step.filled_quantity)
+                                if getattr(step, "filled_quantity", None) is not None
+                                else 0.0
+                            )
+                            filled_price = (
+                                float(step.filled_price)
+                                if getattr(step, "filled_price", None) is not None
+                                else None
+                            )
+
+                            invested += filled_amount
+                            if filled_qty and filled_price is not None:
+                                filled_qty_total += filled_qty
+                                filled_price_weighted += filled_price * filled_qty
+
+                            ordered_at_val = getattr(step, "ordered_at", None)
+                            filled_at_val = getattr(step, "filled_at", None)
+                            steps_list.append(
+                                {
+                                    "id": step.id,
+                                    "plan_id": step.plan_id,
+                                    "step": step.step_number,
+                                    "step_number": step.step_number,
+                                    "target_price": float(step.target_price)
+                                    if getattr(step, "target_price", None) is not None
+                                    else None,
+                                    "target_amount": float(step.target_amount)
+                                    if getattr(step, "target_amount", None) is not None
+                                    else None,
+                                    "target_quantity": float(step.target_quantity)
+                                    if getattr(step, "target_quantity", None)
+                                    is not None
+                                    else None,
+                                    "status": status_name,
+                                    "order_id": step.order_id,
+                                    "ordered_at": ordered_at_val.isoformat()
+                                    if ordered_at_val is not None
+                                    else None,
+                                    "filled_price": float(step.filled_price)
+                                    if getattr(step, "filled_price", None) is not None
+                                    else None,
+                                    "filled_quantity": float(step.filled_quantity)
+                                    if getattr(step, "filled_quantity", None)
+                                    is not None
+                                    else None,
+                                    "filled_amount": float(step.filled_amount)
+                                    if getattr(step, "filled_amount", None) is not None
+                                    else None,
+                                    "filled_at": filled_at_val.isoformat()
+                                    if filled_at_val is not None
+                                    else None,
+                                    "level_source": getattr(step, "level_source", None),
+                                }
+                            )
+
+                    # Progress calculations
+                    avg_filled_price = None
+                    if filled_qty_total > 0:
+                        avg_filled_price = filled_price_weighted / filled_qty_total
+
+                    remaining = None
+                    if p.get("total_amount") is not None:
+                        remaining = float(p["total_amount"]) - invested
+
+                    p["steps"] = steps_list
+                    p["progress"] = {
+                        "total_steps": total_steps,
+                        "filled": counts["filled"],
+                        "ordered": counts["ordered"],
+                        "pending": counts["pending"],
+                        "cancelled": counts["cancelled"],
+                        "partial": counts["partial"],
+                        "skipped": counts["skipped"],
+                        "invested": round(invested, 2),
+                        "remaining": round(remaining, 2)
+                        if remaining is not None
+                        else None,
+                        "avg_filled_price": round(avg_filled_price, 8)
+                        if avg_filled_price is not None
+                        else None,
+                    }
+
+                    return p
+
+                formatted_plans = [_format_dca_plan(plan) for plan in plans]
+
+                return {
+                    "success": True,
+                    "plans": formatted_plans,
+                    "total_plans": len(formatted_plans),
+                }
+
+        except ValueError as ve:
+            return {
+                "success": False,
+                "error": str(ve),
+                "plans": [],
+                "total_plans": 0,
+            }
+        except Exception as exc:
+            logger.error(f"Error fetching DCA status: {exc}")
+            return {
+                "success": False,
+                "error": str(exc),
+                "plans": [],
+                "total_plans": 0,
+            }
+
+    @mcp.tool(
+        name="get_dca_status",
+        description=(
+            "Get status of DCA (Dollar Cost Averaging) plans. "
+            "Supports filtering by: plan_id (exact match), "
+            "symbol + status (for symbol's plans), or just status. "
+            "Response always includes total_plans count."
+        ),
+    )
+    async def get_dca_status(
+        plan_id: int | None = None,
+        symbol: str | None = None,
+        status: str = "active",
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Get DCA plan status.
+
+        Args:
+            plan_id: Specific plan ID (has priority)
+            symbol: Filter by symbol (combined with optional status)
+            status: Filter by status - "active", "completed", "cancelled", "expired", "all"
+            limit: Max number of plans to return (1-1000)
+
+        Returns:
+            Dictionary with success status, plans array, and total_plans count.
+        """
+        _impl = globals().get("_get_dca_status_impl", _get_dca_status_impl)
+        return await _impl(plan_id, symbol, status, limit)
 
     async def _get_quote_impl(symbol: str, market_type: str) -> dict[str, Any] | None:
         """Fetch quote data for any market type."""
@@ -7913,6 +8349,7 @@ def register_tools(mcp: FastMCP) -> None:
     globals()["_get_indicators_impl"] = _get_indicators_impl
     globals()["_place_order_impl"] = _place_order_impl
     globals()["_analyze_stock_impl"] = _analyze_stock_impl
+    globals()["_get_dca_status_impl"] = _get_dca_status_impl
     globals()["_normalize_upbit_order"] = _normalize_upbit_order
     globals()["_map_upbit_state"] = _map_upbit_state
     globals()["_normalize_kis_domestic_order"] = _normalize_kis_domestic_order

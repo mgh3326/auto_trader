@@ -20,6 +20,10 @@ DAILY_ITEMCHARTPRICE_URL = (
 VOL_TR = "FHPST01710000"  # 실전 전용
 DAILY_ITEMCHARTPRICE_TR = "FHKST03010100"  # (일봉·주식·실전/모의 공통)
 
+# 호가 조회 관련 URL 및 TR ID
+ORDERBOOK_URL = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+ORDERBOOK_TR = "FHKST01010200"  # 주식현재가호가상체결
+
 # 분봉 데이터 관련 URL 및 TR ID 추가
 MINUTE_CHART_URL = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
 MINUTE_CHART_TR = "FHKST03010200"  # 분봉 조회 TR ID
@@ -253,6 +257,39 @@ class KISClient:
             "value": int(out["acml_tr_pbmn"]),
         }
         return pd.DataFrame([row]).set_index("code")  # index = 종목코드
+
+    async def inquire_orderbook(self, code: str, market: str = "J") -> dict:
+        """
+        주식 호가(orderbook) 조회 - 10단계 매수/매도 호가
+        :param code: 6자리 종목코드(005930)
+        :param market: K(코스피)/Q(코스닥)/J(통합)
+        :return: API output 딕셔너리
+        """
+        await self._ensure_token()
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": ORDERBOOK_TR,
+        }
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_INPUT_ISCD": code.zfill(6),
+        }
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(f"{BASE}{ORDERBOOK_URL}", headers=hdr, params=params)
+        js = r.json()
+        if js["rt_cd"] != "0":
+            if js.get("msg_cd") in [
+                "EGW00123",
+                "EGW00121",
+            ]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.inquire_orderbook(code, market)
+            raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
+        return js["output"]
 
     async def fetch_fundamental_info(self, code: str, market: str = "J") -> dict:
         """

@@ -5,6 +5,7 @@ Trading Router
 """
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,12 @@ from app.schemas.manual_holdings import (
     OrderSimulationResponse,
     ReferencePricesResponse,
     SellOrderRequest,
+)
+from app.schemas.trading import (
+    OHLCVData,
+    OHLCVResponse,
+    OrderbookLevel,
+    OrderbookResponse,
 )
 from app.services.kis import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
@@ -478,4 +485,107 @@ async def sell_order(
 
     except Exception as e:
         logger.error(f"Order execution failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/api/v1/trading/ohlcv", response_model=OHLCVResponse)
+async def get_ohlcv(
+    ticker: str,
+    days: int = 200,
+    market_type: MarketType = MarketType.KR,
+    current_user: User = Depends(get_authenticated_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """일봉 OHLCV 데이터 조회
+
+    Args:
+        ticker: 종목코드 (예: 005930)
+        days: 조회할 캔들 개수 (기본값: 200)
+        market_type: 시장 타입 (기본값: KR - 국내)
+    """
+    try:
+        if market_type != MarketType.KR:
+            raise HTTPException(
+                status_code=400,
+                detail="현재 국내 주식(KR)만 지원합니다",
+            )
+
+        kis_client = KISClient()
+        df = await kis_client.inquire_daily_itemchartprice(
+            code=ticker, market="J", n=days, period="D"
+        )
+
+        ohlcv_data = [
+            OHLCVData(
+                date=row["date"].strftime("%Y-%m-%d"),
+                open=row["open"],
+                high=row["high"],
+                low=row["low"],
+                close=row["close"],
+                volume=row["volume"],
+            )
+            for _, row in df.iterrows()
+        ]
+
+        return OHLCVResponse(ticker=ticker.upper(), data=ohlcv_data)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"OHLCV 조회 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.get("/api/v1/trading/orderbook", response_model=OrderbookResponse)
+async def get_orderbook(
+    ticker: str,
+    market_type: MarketType = MarketType.KR,
+    current_user: User = Depends(get_authenticated_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """호가(orderbook) 조회 - 10단계 매수/매도 호가
+
+    Args:
+        ticker: 종목코드 (예: 005930)
+        market_type: 시장 타입 (기본값: KR - 국내)
+    """
+    try:
+        if market_type != MarketType.KR:
+            raise HTTPException(
+                status_code=400,
+                detail="현재 국내 주식(KR)만 지원합니다",
+            )
+
+        kis_client = KISClient()
+        orderbook_data = await kis_client.inquire_orderbook(code=ticker, market="J")
+
+        ask_levels = []
+        bid_levels = []
+
+        for i in range(1, 11):
+            ask_price = orderbook_data.get(f"askp{i}")
+            ask_qty = orderbook_data.get(f"askp{i}_rsqn")
+            if ask_price:
+                ask_levels.append(
+                    OrderbookLevel(price=float(ask_price), quantity=int(ask_qty or 0))
+                )
+
+            bid_price = orderbook_data.get(f"bidp{i}")
+            bid_qty = orderbook_data.get(f"bidp{i}_rsqn")
+            if bid_price:
+                bid_levels.append(
+                    OrderbookLevel(price=float(bid_price), quantity=int(bid_qty or 0))
+                )
+
+        return OrderbookResponse(
+            ticker=ticker.upper(),
+            timestamp=datetime.now(),
+            ask=ask_levels,
+            bid=bid_levels,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"호가 조회 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e

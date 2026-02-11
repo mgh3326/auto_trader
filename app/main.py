@@ -28,6 +28,7 @@ from app.routers import (
     health,
     kis_domestic_trading,
     kis_overseas_trading,
+    kospi200,
     manual_holdings,
     news_analysis,
     openclaw_callback,
@@ -132,6 +133,7 @@ def create_app() -> FastAPI:
     app.include_router(orderbook.router)
     app.include_router(portfolio.router)
     app.include_router(trading.router)
+    app.include_router(kospi200.router)
     app.include_router(websocket.router)
     if settings.EXPOSE_MONITORING_TEST_ROUTES:
         app.include_router(test.router)

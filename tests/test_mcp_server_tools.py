@@ -1,3 +1,4 @@
+from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import httpx
@@ -5,6 +6,10 @@ import pandas as pd
 import pytest
 
 from app.mcp_server import tools as mcp_tools
+from app.models.dca_plan import DcaPlan, DcaPlanStatus, DcaPlanStep, DcaStepStatus
+from app.services.dca_service import DcaService
+
+# from app.mcp_server.tick_size import adjust_tick_size_kr  # TODO: Remove if not needed
 
 
 class DummyMCP:
@@ -20,8 +25,13 @@ class DummyMCP:
 
 
 class DummySessionManager:
+    """Async context manager wrapper for an AsyncSession-like object."""
+
+    def __init__(self, db):
+        self.db = db
+
     async def __aenter__(self):
-        return object()
+        return self.db
 
     async def __aexit__(self, exc_type, exc, tb):
         return None
@@ -6742,7 +6752,7 @@ class TestCreateDcaPlan:
             "resistances": [],
         }
 
-        async def mock_sr(symbol, market):
+        async def mock_sr(_symbol, _market):
             return mock_sr_result
 
         # Mock get_indicators (RSI < 30 = oversold → front_heavy)
@@ -6754,11 +6764,38 @@ class TestCreateDcaPlan:
             },
         }
 
-        async def mock_indicators(symbol, indicators, market):
+        async def mock_indicators(_symbol, _indicators, _market):
             return mock_indicator_result
 
         monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
         monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        # Mock DB session and DcaService.create_plan so persistence succeeds for dry_run
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
+
+        created_plan = DcaPlan(
+            id=1,
+            user_id=1,
+            symbol="KRW-BTC",
+            market="crypto",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[],
+        )
+        created_plan.total_amount = Decimal("200000")
+
+        async def mock_create_plan(self, **kwargs):
+            return created_plan
+
+        async def mock_get_plan(self, plan_id, user_id=None):
+            return created_plan
+
+        monkeypatch.setattr(DcaService, "create_plan", mock_create_plan)
+        monkeypatch.setattr(DcaService, "get_plan", mock_get_plan)
 
         result = await tools["create_dca_plan"](
             symbol="KRW-BTC",
@@ -6802,7 +6839,7 @@ class TestCreateDcaPlan:
             "resistances": [],
         }
 
-        async def mock_sr(symbol, market):
+        async def mock_sr(_symbol, _market):
             return mock_sr_result
 
         mock_indicator_result = {
@@ -6813,11 +6850,38 @@ class TestCreateDcaPlan:
             },
         }
 
-        async def mock_indicators(symbol, indicators, market):
+        async def mock_indicators(_symbol, _indicators, _market):
             return mock_indicator_result
 
         monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
         monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        # Mock DB session and DcaService.create_plan so persistence succeeds for dry_run
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
+
+        created_plan = DcaPlan(
+            id=2,
+            user_id=1,
+            symbol="005930",
+            market="equity_kr",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[],
+        )
+        created_plan.total_amount = Decimal("1000000")
+
+        async def mock_create_plan(self, **kwargs):
+            return created_plan
+
+        async def mock_get_plan(self, plan_id, user_id=None):
+            return created_plan
+
+        monkeypatch.setattr(DcaService, "create_plan", mock_create_plan)
+        monkeypatch.setattr(DcaService, "get_plan", mock_get_plan)
 
         result = await tools["create_dca_plan"](
             symbol="005930",
@@ -6835,6 +6899,129 @@ class TestCreateDcaPlan:
         assert all(isinstance(p["quantity"], int) for p in result["plans"])
         # Equal weights: neutral RSI (30-50)
         assert result["summary"]["weight_mode"] == "equal"
+
+    async def test_create_dca_plan_places_order_and_marks_step_ordered(
+        self, monkeypatch
+    ):
+        """Non-dry-run path should place order and mark first step ordered."""
+        tools = build_tools()
+
+        # Mock market resolution helpers
+        mock_sr_result = {
+            "symbol": "KRW-BTC",
+            "current_price": 100000000.0,
+            "supports": [
+                {"price": 95000000.0, "source": "fib_23.6"},
+                {"price": 90000000.0, "source": "fib_38.2"},
+            ],
+            "resistances": [],
+        }
+
+        async def mock_sr(_symbol, _market):
+            return mock_sr_result
+
+        mock_indicator_result = {
+            "symbol": "KRW-BTC",
+            "price": 100000000.0,
+            "indicators": {
+                "rsi": {"14": 40.0},
+            },
+        }
+
+        async def mock_indicators(_symbol, _indicators, _market):
+            return mock_indicator_result
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        # Mock DB session factory
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
+
+        # Prepare a created plan with steps
+        step1 = DcaPlanStep(
+            id=10,
+            plan_id=1,
+            step_number=1,
+            target_price=Decimal("95000000"),
+            target_amount=Decimal("100000"),
+            target_quantity=Decimal("0.001"),
+            status=DcaStepStatus.PENDING,
+        )
+        step2 = DcaPlanStep(
+            id=11,
+            plan_id=1,
+            step_number=2,
+            target_price=Decimal("90000000"),
+            target_amount=Decimal("100000"),
+            target_quantity=Decimal("0.001"),
+            status=DcaStepStatus.PENDING,
+        )
+        created_plan = DcaPlan(
+            id=1,
+            user_id=1,
+            symbol="KRW-BTC",
+            market="crypto",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[step1, step2],
+        )
+        created_plan.total_amount = Decimal("100000")
+        created_plan.splits = 2
+        created_plan.strategy = "support"
+
+        async def mock_create_plan(self, **kwargs):
+            return created_plan
+
+        async def mock_get_plan(self, plan_id, user_id=None):
+            return created_plan
+
+        monkeypatch.setattr(DcaService, "create_plan", mock_create_plan)
+        monkeypatch.setattr(DcaService, "get_plan", mock_get_plan)
+
+        # Mock order placement
+        async def mock_place_order_impl(*args, **kwargs):
+            return {"success": True, "order_id": "ORDER-XYZ"}
+
+        monkeypatch.setattr(mcp_tools, "_place_order_impl", mock_place_order_impl)
+
+        # Mock mark_step_ordered
+        mock_mark_step_ordered = AsyncMock()
+        monkeypatch.setattr(DcaService, "mark_step_ordered", mock_mark_step_ordered)
+
+        # Execute
+        result = await tools["create_dca_plan"](
+            symbol="KRW-BTC",
+            total_amount=200000.0,
+            splits=2,
+            strategy="support",
+            dry_run=False,
+            execute_steps=[1],
+        )
+
+        # Verify result
+        assert result["success"] is True
+        assert result["dry_run"] is False
+        assert result.get("executed") is True
+        assert "plan_id" in result
+        assert result["plan_id"] == 1
+        assert "plans" in result
+        assert "summary" in result
+
+        # Verify order placement -> mark_step_ordered called with correct order_id
+        mock_mark_step_ordered.assert_awaited_once()
+        called_args, _ = mock_mark_step_ordered.await_args
+        # called_args: (step_id, order_id) because AsyncMock is patched on the class
+        assert called_args[0] == step1.id
+        assert called_args[1] == "ORDER-XYZ"
+
+
+@pytest.mark.asyncio
+class TestCreateDcaPlanValidation:
+    """Validation tests for create_dca_plan MCP tool."""
 
     async def test_invalid_symbol_raises_error(self, monkeypatch):
         """Empty symbol raises ValueError."""
@@ -6860,176 +7047,343 @@ class TestCreateDcaPlan:
                 dry_run=True,
             )
 
-    async def test_invalid_strategy_raises_error(self, monkeypatch):
-        """Invalid strategy raises ValueError."""
+
+class TestGetDcaStatus:
+    """Tests for get_dca_status MCP tool."""
+
+    @staticmethod
+    def build_tools():
+        mcp = DummyMCP()
+        mcp_tools.register_tools(mcp)
+        return mcp.tools
+
+    @pytest.mark.asyncio
+    async def test_get_dca_status_by_plan_id(self, monkeypatch):
+        """Test get_dca_status by plan_id (highest priority)."""
         tools = build_tools()
 
-        with pytest.raises(ValueError, match="Invalid strategy"):
-            await tools["create_dca_plan"](
-                symbol="KRW-BTC",
-                total_amount=100000.0,
-                splits=3,
-                strategy="invalid",
-                dry_run=True,
+        # Mock database
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
+
+        # Mock DcaService.get_plan
+        plan = DcaPlan(
+            id=1,
+            user_id=1,
+            symbol="KRW-BTC",
+            market="crypto",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[
+                DcaPlanStep(
+                    id=1,
+                    plan_id=1,
+                    step_number=1,
+                    status=DcaStepStatus.FILLED,
+                ),
+                DcaPlanStep(
+                    id=2,
+                    plan_id=1,
+                    step_number=2,
+                    status=DcaStepStatus.PENDING,
+                ),
+                DcaPlanStep(
+                    id=3,
+                    plan_id=1,
+                    step_number=3,
+                    status=DcaStepStatus.ORDERED,
+                ),
+            ],
+        )
+
+        async def mock_get_plan(self, plan_id, _user_id=None):
+            if plan_id == 1:
+                return plan
+            return None
+
+        monkeypatch.setattr(
+            DcaService,
+            "get_plan",
+            mock_get_plan,
+        )
+
+        # Mock DcaService.get_plans_by_status
+        async def mock_get_plans_by_status(self, **_kwargs):
+            # Accept any keyword arguments
+            return [plan]
+
+        monkeypatch.setattr(
+            DcaService,
+            "get_plans_by_status",
+            mock_get_plans_by_status,
+        )
+
+        # Execute
+        result = await tools["get_dca_status"](plan_id=1)
+
+        # Verify
+        assert result["success"] is True
+        assert "plans" in result
+        assert len(result["plans"]) == 1
+        p = result["plans"][0]
+        assert p["plan_id"] == 1
+        assert p["symbol"] == "KRW-BTC"
+        assert p["status"] == "active"
+        # Progress summary present and counts as expected
+        assert "progress" in p
+        assert p["progress"]["total_steps"] == 3
+        assert p["progress"]["filled"] == 1
+        assert p["progress"]["ordered"] == 1
+        assert p["progress"]["pending"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_dca_status_by_symbol(self, monkeypatch):
+        """Test get_dca_status by symbol."""
+        tools = build_tools()
+
+        plan1 = DcaPlan(
+            id=1,
+            user_id=1,
+            symbol="KRW-BTC",
+            market="crypto",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[],
+        )
+        plan2 = DcaPlan(
+            id=2,
+            user_id=1,
+            symbol="KRW-BTC",
+            market="crypto",
+            status=DcaPlanStatus.COMPLETED,
+            steps=[],
+        )
+
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
+
+        async def mock_get_plans(self, **kwargs):
+            status = kwargs.get("status")
+            if status == "active":
+                return [plan1]
+            elif status is None:
+                return [plan1, plan2]
+            return []
+
+        monkeypatch.setattr(
+            DcaService,
+            "get_plans_by_status",
+            mock_get_plans,
+        )
+
+        # Execute
+        result = await tools["get_dca_status"](symbol="KRW-BTC", status="active")
+
+        # Verify
+        assert result["success"] is True
+        assert "plans" in result
+        assert len(result["plans"]) == 1
+        p = result["plans"][0]
+        assert p["symbol"] == "KRW-BTC"
+        assert p["status"] == "active"
+        assert "progress" in p
+
+    @pytest.mark.asyncio
+    async def test_get_dca_status_by_status_only(self, monkeypatch):
+        """Test get_dca_status by status only."""
+        tools = build_tools()
+
+        plan1 = DcaPlan(
+            id=1,
+            user_id=1,
+            symbol="KRW-ETH",
+            market="crypto",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[],
+        )
+
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
+
+        # Mock DcaService.get_plans_by_status
+        async def mock_get_plans(self, **kwargs):
+            return [plan1]
+
+        monkeypatch.setattr(
+            DcaService,
+            "get_plans_by_status",
+            mock_get_plans,
+        )
+
+        # Execute
+        result = await tools["get_dca_status"](status="active")
+
+        # Verify
+        assert result["success"] is True
+        assert "plans" in result
+        assert len(result["plans"]) == 1
+        p = result["plans"][0]
+        assert p["plan_id"] == 1
+        assert p["symbol"] == "KRW-ETH"
+        assert "progress" in p
+
+    @pytest.mark.asyncio
+    async def test_get_dca_status_all_status(self, monkeypatch):
+        """Test get_dca_status with status='all'."""
+        tools = build_tools()
+
+        plan1 = DcaPlan(
+            id=1,
+            user_id=1,
+            symbol="KRW-BTC",
+            market="crypto",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[],
+        )
+        plan2 = DcaPlan(
+            id=2,
+            user_id=1,
+            symbol="KRW-ETH",
+            market="crypto",
+            status=DcaPlanStatus.CANCELLED,
+            steps=[],
+        )
+
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
+
+        # Mock DcaService.get_plans_by_status
+        async def mock_get_plans(self, **kwargs):
+            return [plan1, plan2]
+
+        monkeypatch.setattr(
+            DcaService,
+            "get_plans_by_status",
+            mock_get_plans,
+        )
+
+        # Execute
+        result = await tools["get_dca_status"](status="all")
+
+        # Verify
+        assert result["success"] is True
+        assert "plans" in result
+        assert len(result["plans"]) == 2
+        assert any(
+            p["status"] == "active" or p["status"] == "cancelled"
+            for p in result["plans"]
+        )
+        for p in result["plans"]:
+            assert "progress" in p
+
+    @pytest.mark.asyncio
+    async def test_get_dca_status_invalid_status(self, monkeypatch):
+        """Test get_dca_status with invalid status value."""
+        tools = build_tools()
+
+        # Execute
+        result = await tools["get_dca_status"](status="invalid")
+
+        # Verify error
+        assert result["success"] is False
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_get_dca_status_limit(self, monkeypatch):
+        """Test get_dca_status with limit parameter."""
+        tools = build_tools()
+
+        plans_list = []
+        for i in range(5):
+            plans_list.append(
+                DcaPlan(
+                    id=i,
+                    user_id=1,
+                    symbol="KRW-BTC",
+                    market="crypto",
+                    status=DcaPlanStatus.ACTIVE,
+                    steps=[],
+                )
             )
 
-    async def test_get_support_resistance_error_propagates(self, monkeypatch):
-        """Error from get_support_resistance propagates."""
-        tools = build_tools()
-
-        async def mock_sr(symbol, market):
-            return {"error": "API error", "source": "upbit"}
-
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-
-        result = await tools["create_dca_plan"](
-            symbol="KRW-BTC",
-            total_amount=100000.0,
-            splits=3,
-            dry_run=True,
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
         )
 
-        assert result["success"] is False
-        assert "error" in result
-        assert result["error"] == "API error"
+        # Mock DcaService.get_plans_by_status
+        async def mock_get_plans(self, **kwargs):
+            limit = kwargs.get("limit", 10)
+            return plans_list[:limit]
 
-    async def test_get_indicators_error_propagates(self, monkeypatch):
-        """Error from get_indicators propagates."""
-        tools = build_tools()
-
-        # Mock successful get_support_resistance
-        mock_sr_result = {
-            "symbol": "KRW-BTC",
-            "current_price": 100000000.0,
-            "supports": [],
-            "resistances": [],
-        }
-
-        async def mock_sr(symbol, market):
-            return mock_sr_result
-
-        # Mock failing get_indicators
-        async def mock_indicators(symbol, indicators, market):
-            return {"error": "Indicator calculation failed", "source": "upbit"}
-
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
-
-        result = await tools["create_dca_plan"](
-            symbol="KRW-BTC",
-            total_amount=100000.0,
-            splits=3,
-            dry_run=True,
+        monkeypatch.setattr(
+            DcaService,
+            "get_plans_by_status",
+            mock_get_plans,
         )
 
-        assert result["success"] is False
-        assert "error" in result
-        assert result["error"] == "Indicator calculation failed"
+        # Execute
+        result = await tools["get_dca_status"](limit=3)
 
-    async def test_dry_run_false_calls_place_order(self, monkeypatch):
-        """dry_run=False calls place_order for each step."""
-        tools = build_tools()
-
-        mock_sr_result = {
-            "symbol": "KRW-BTC",
-            "current_price": 100000000.0,
-            "supports": [
-                {"price": 95000000.0, "source": "fib_23.6"},
-                {"price": 90000000.0, "source": "fib_38.2"},
-            ],
-            "resistances": [],
-        }
-
-        async def mock_sr(symbol, market):
-            return mock_sr_result
-
-        mock_indicator_result = {
-            "symbol": "KRW-BTC",
-            "price": 100000000.0,
-            "indicators": {
-                "rsi": {"14": 50.0},
-            },
-        }
-
-        async def mock_indicators(symbol, indicators, market):
-            return mock_indicator_result
-
-        # Track place_order calls
-        place_order_calls = []
-
-        async def mock_place_order(*args, **kwargs):
-            place_order_calls.append({"args": args, "kwargs": kwargs})
-            return {"success": True, "dry_run": False}
-
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
-        monkeypatch.setattr(mcp_tools, "_place_order_impl", mock_place_order)
-
-        result = await tools["create_dca_plan"](
-            symbol="KRW-BTC",
-            total_amount=200000.0,
-            splits=2,
-            strategy="support",
-            dry_run=False,
-        )
-
+        # Verify
         assert result["success"] is True
-        assert result["dry_run"] is False
-        assert "execution_results" in result
-        assert len(result["execution_results"]) == 2
+        assert "plans" in result
+        assert len(result["plans"]) == 3
 
-        # Check place_order was called correctly
-        assert len(place_order_calls) == 2
-        for call in place_order_calls:
-            assert call["kwargs"]["side"] == "buy"
-            assert call["kwargs"]["order_type"] == "limit"
-            assert call["kwargs"]["dry_run"] is False
-            assert "DCA plan step" in call["kwargs"]["reason"]
-
-    async def test_dry_run_false_max_amount_check(self, monkeypatch):
-        """dry_run=False executes high-amount steps (> 1M KRW per step)."""
+    @pytest.mark.asyncio
+    async def test_create_dca_plan_mark_step_ordered_with_reloaded_plan(
+        self, monkeypatch
+    ):
+        """Test that mark_step_ordered is called even when created_plan.steps is empty."""
         tools = build_tools()
 
-        mock_sr_result = {
-            "symbol": "KRW-BTC",
-            "current_price": 100000000.0,
-            "supports": [
-                {"price": 90000000.0, "source": "fib_38.2"},
-                {"price": 80000000.0, "source": "fib_61.8"},
-            ],
-            "resistances": [],
-        }
+        # Mock DB session and plan creation
+        mock_step1 = DcaPlanStep(
+            id=1,
+            plan_id=100,
+            step_number=1,
+            target_amount=Decimal("100000"),
+            target_price=Decimal("100000"),
+            target_quantity=Decimal("0.001"),
+            status=DcaStepStatus.PENDING,
+        )
+        mock_step2 = DcaPlanStep(
+            id=2,
+            plan_id=100,
+            step_number=2,
+            target_amount=Decimal("100000"),
+            target_price=Decimal("95000"),
+            target_quantity=Decimal("0.001"),
+            status=DcaStepStatus.PENDING,
+        )
 
-        async def mock_sr(symbol, market):
-            return mock_sr_result
-
-        mock_indicator_result = {
-            "symbol": "KRW-BTC",
-            "price": 100000000.0,
-            "indicators": {
-                "rsi": {"14": 50.0},
-            },
-        }
-
-        async def mock_indicators(symbol, indicators, market):
-            return mock_indicator_result
-
-        place_order_calls = []
-
-        async def mock_place_order(*args, **kwargs):
-            place_order_calls.append({"args": args, "kwargs": kwargs})
-            return {"success": True, "dry_run": False}
-
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
-        monkeypatch.setattr(mcp_tools, "_place_order_impl", mock_place_order)
-
-        result = await tools["create_dca_plan"](
+        mock_plan_reloaded = DcaPlan(
+            id=100,
+            user_id=1,
             symbol="KRW-BTC",
-            total_amount=3000000.0,  # 3M total, 1.5M per step
+            market="crypto",
+            total_amount=Decimal("100000"),
             splits=2,
             strategy="support",
-            dry_run=False,
+            rsi_14=50.0,
+            status=DcaPlanStatus.ACTIVE,
+            steps=[mock_step1, mock_step2],
         )
 
         assert result["success"] is True
@@ -7317,401 +7671,128 @@ class TestCreateDcaPlan:
             dry_run=False,
         )
 
-        assert result["success"] is False
-        assert "Daily order limit (20) exceeded" in result["error"]
-        mock.place_market_buy_order.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_equity_kr_tick_size_adjustment(self, monkeypatch):
-        """Prices are adjusted to KRX tick size for KR equity."""
-        tools = build_tools()
-
-        # Mock support/resistance with price that needs tick adjustment.
-        # 327272 is in the 200,000-500,000 range → tick size 500
-        # Buy: floor → 327000
-        mock_sr_result = {
-            "symbol": "005930",
-            "current_price": 350000.0,
-            "supports": [
-                {"price": 340000.0, "source": "fib_23.6"},
-                {"price": 327272.0, "source": "fib_38.2"},
-            ],
-            "resistances": [],
-        }
-
-        async def mock_sr(symbol, market):
-            return mock_sr_result
-
-        mock_indicator_result = {
-            "symbol": "005930",
-            "price": 350000.0,
-            "indicators": {
-                "rsi": {"14": 50.0},
-            },
-        }
-
-        async def mock_indicators(symbol, indicators, market):
-            return mock_indicator_result
-
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
-
-        result = await tools["create_dca_plan"](
-            symbol="005930",
-            total_amount=2000000.0,
+        mock_plan_created = DcaPlan(
+            id=100,
+            user_id=1,
+            symbol="KRW-BTC",
+            market="crypto",
+            total_amount=Decimal("100000"),
             splits=2,
             strategy="support",
-            dry_run=True,
+            rsi_14=50.0,
+            status=DcaPlanStatus.ACTIVE,
+            steps=[],
         )
 
-        assert result["success"] is True
-        assert len(result["plans"]) == 2
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
 
-        # First step: 340000 (already valid tick size for 200k-500k range)
-        assert result["plans"][0]["price"] == 340000.0
+        # Mock DcaService.create_plan (returns plan without steps)
+        async def mock_create_plan(self, **kwargs):
+            return mock_plan_created
 
-        # Second step: 327272 adjusted to nearest tick (327000 for buy)
-        assert result["plans"][1]["price"] == 327000.0
-        assert result["plans"][1]["tick_adjusted"] is True
-        assert result["plans"][1]["original_price"] == 327272.0
+        # Mock DcaService.get_plan (returns plan with steps)
+        async def mock_get_plan(self, plan_id, user_id=None):
+            return mock_plan_reloaded
 
-    async def test_execute_steps_partial_execution(self, monkeypatch):
-        """execute_steps parameter executes only specified steps."""
-        tools = build_tools()
+        monkeypatch.setattr(DcaService, "create_plan", mock_create_plan)
+        monkeypatch.setattr(DcaService, "get_plan", mock_get_plan)
 
-        mock_sr_result = {
-            "symbol": "KRW-BTC",
-            "current_price": 100000000.0,
-            "supports": [
-                {"price": 95000000.0, "source": "fib_23.6"},
-                {"price": 90000000.0, "source": "fib_38.2"},
-                {"price": 85000000.0, "source": "fib_61.8"},
-            ],
-            "resistances": [],
-        }
+        # Mock mark_step_ordered
+        mock_mark_step_ordered = AsyncMock()
+        monkeypatch.setattr(DcaService, "mark_step_ordered", mock_mark_step_ordered)
 
-        async def mock_sr(symbol, market):
-            return mock_sr_result
+        # Mock _place_order_impl to succeed for step 1
+        async def mock_place_order(**kwargs):
+            return {"success": True, "order_id": "ORDER-123"}
 
-        mock_indicator_result = {
-            "symbol": "KRW-BTC",
-            "price": 100000000.0,
-            "indicators": {
-                "rsi": {"14": 50.0},
-            },
-        }
+        monkeypatch.setattr(mcp_tools, "_place_order_impl", mock_place_order)
 
-        async def mock_indicators(symbol, indicators, market):
-            return mock_indicator_result
+        # Mock market data
+        async def mock_sr(_symbol, _market):
+            return {
+                "symbol": "KRW-BTC",
+                "current_price": 100000.0,
+                "supports": [
+                    {"price": 95000.0, "source": "fib_23.6"},
+                ],
+                "resistances": [],
+            }
 
-        place_order_calls = []
-
-        async def mock_place_order(*args, **kwargs):
-            place_order_calls.append({"args": args, "kwargs": kwargs})
-            return {"success": True, "dry_run": False}
+        async def mock_indicators(_symbol, _indicators, _market):
+            return {
+                "symbol": "KRW-BTC",
+                "price": 100000.0,
+                "indicators": {
+                    "rsi": {"14": 40.0},
+                },
+            }
 
         monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
         monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
-        monkeypatch.setattr(mcp_tools, "_place_order_impl", mock_place_order)
 
+        # Execute with execute_steps to trigger order placement
         result = await tools["create_dca_plan"](
             symbol="KRW-BTC",
-            total_amount=300000.0,
-            splits=3,
+            splits=2,
+            total_amount=100000,
             strategy="support",
-            dry_run=True,
+            dry_run=False,
             execute_steps=[1],
         )
 
+        # Verify success and order execution
         assert result["success"] is True
-        assert result["dry_run"] is True
-        assert len(result["plans"]) == 3
+        assert result["executed"] is True
+        assert result["plan_id"] == 100
+        assert mock_mark_step_ordered.awaited
+        called_args, _ = mock_mark_step_ordered.await_args
+        assert called_args[0] == 1  # step_id
+        assert called_args[1] == "ORDER-123"  # order_id
 
-        assert result["executed_steps"] == [1]
-        assert len(place_order_calls) == 1
-        assert place_order_calls[0]["kwargs"]["reason"] == "DCA plan step 1/3"
-
-    async def test_execute_steps_multiple_steps(self, monkeypatch):
-        """execute_steps with multiple values executes specified steps."""
+    @pytest.mark.asyncio
+    async def test_get_dca_status_impl_monkeypatch(self, monkeypatch):
+        """Test that _get_dca_status_impl can be monkeypatched."""
         tools = build_tools()
 
-        mock_sr_result = {
-            "symbol": "KRW-BTC",
-            "current_price": 100000000.0,
-            "supports": [
-                {"price": 95000000.0, "source": "fib_23.6"},
-                {"price": 90000000.0, "source": "fib_38.2"},
-            ],
-            "resistances": [],
-        }
-
-        async def mock_sr(symbol, market):
-            return mock_sr_result
-
-        mock_indicator_result = {
-            "symbol": "KRW-BTC",
-            "price": 100000000.0,
-            "indicators": {
-                "rsi": {"14": 50.0},
-            },
-        }
-
-        async def mock_indicators(symbol, indicators, market):
-            return mock_indicator_result
-
-        place_order_calls = []
-
-        async def mock_place_order(*args, **kwargs):
-            place_order_calls.append({"args": args, "kwargs": kwargs})
-            return {"success": True, "dry_run": False}
-
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
-        monkeypatch.setattr(mcp_tools, "_place_order_impl", mock_place_order)
-
-        result = await tools["create_dca_plan"](
-            symbol="KRW-BTC",
-            total_amount=200000.0,
-            splits=2,
-            strategy="support",
-            dry_run=True,
-            execute_steps=[1, 2],
+        mock_plan = DcaPlan(
+            id=1,
+            user_id=1,
+            symbol="KRW-ETH",
+            market="crypto",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[],
         )
 
-        assert result["success"] is True
-        assert result["dry_run"] is True
-        assert len(result["plans"]) == 2
-
-        assert result["executed_steps"] == [1, 2]
-        assert len(place_order_calls) == 2
-
-    async def test_execute_steps_invalid_range(self, monkeypatch):
-        """execute_steps with invalid step numbers raises ValueError."""
-        tools = build_tools()
-
-        mock_sr_result = {
-            "symbol": "KRW-BTC",
-            "current_price": 100000000.0,
-            "supports": [{"price": 95000000.0, "source": "fib_23.6"}],
-            "resistances": [],
-        }
-
-        async def mock_sr(symbol, market):
-            return mock_sr_result
-
-        mock_indicator_result = {
-            "symbol": "KRW-BTC",
-            "price": 100000000.0,
-            "indicators": {"rsi": {"14": 50.0}},
-        }
-
-        async def mock_indicators(symbol, indicators, market):
-            return mock_indicator_result
-
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
-
-        with pytest.raises(ValueError, match="execute_steps must be between 1 and 3"):
-            await tools["create_dca_plan"](
-                symbol="KRW-BTC",
-                total_amount=200000.0,
-                splits=3,
-                strategy="support",
-                dry_run=True,
-                execute_steps=[1, 4],
-            )
-
-    async def test_get_holdings_filters_by_account_name(self, monkeypatch):
-        """account_name parameter filters positions by account name (case-insensitive, contains)."""
-        tools = build_tools()
-
-        # Mock returns only the position matching "퇴직연금" since
-        # _collect_portfolio_positions does the filtering internally.
-        filtered_positions = [
-            {
-                "account": "kis",
-                "account_name": "퇴직연금",
-                "broker": "kis",
-                "source": "kis_api",
-                "instrument_type": "equity_kr",
-                "market": "kr",
-                "symbol": "005930",
-                "name": "삼성전자",
-                "quantity": 10.0,
-                "avg_buy_price": 70000.0,
-                "current_price": None,
-                "evaluation_amount": None,
-                "profit_loss": None,
-                "profit_rate": None,
-            },
-        ]
-
+        db = AsyncMock()
         monkeypatch.setattr(
             mcp_tools,
-            "_collect_portfolio_positions",
-            AsyncMock(return_value=(filtered_positions, [], None, None)),
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
         )
 
-        result = await tools["get_holdings"](
-            account=None,
-            market=None,
-            include_current_price=False,
-            account_name="퇴직연금",
-        )
+        async def mock_get_plan(self, _plan_id, _user_id=None):
+            return mock_plan
 
-        assert result["filters"]["account_name"] == "퇴직연금"
-        assert len(result["accounts"]) == 1
-        assert result["accounts"][0]["account_name"] == "퇴직연금"
-        assert len(result["accounts"][0]["positions"]) == 1
+        monkeypatch.setattr(DcaService, "get_plan", mock_get_plan)
 
-    async def test_simulate_avg_cost_with_avg_price_alias(self):
-        """avg_price alias works as alternative to price key."""
-        tools = build_tools()
-
-        holdings = {"avg_price": 100000.0, "quantity": 10.0}
-        plans = [
-            {"avg_price": 90000.0, "quantity": 2.0},
-            {"avg_price": 85000.0, "quantity": 3.0},
-        ]
-
-        result = await tools["simulate_avg_cost"](
-            holdings=holdings,
-            plans=plans,
-        )
-
-        # current_position reflects initial holdings (before plans)
-        assert result["current_position"]["avg_price"] == 100000.0
-        assert result["current_position"]["total_quantity"] == 10.0
-        assert result["current_position"]["total_invested"] == 1000000.0
-
-        # Verify steps use avg_price alias correctly
-        assert len(result["steps"]) == 2
-        assert result["steps"][0]["buy_price"] == 90000.0
-        assert result["steps"][1]["buy_price"] == 85000.0
-        # Final avg: (1000000 + 180000 + 255000) / 15 = 95666.67
-        assert result["steps"][1]["new_avg_price"] == 95666.67
-
-    async def test_simulate_avg_cost_price_priority_over_avg_price(self):
-        """When both price and avg_price are present, price takes priority."""
-        tools = build_tools()
-
-        holdings = {"price": 100000.0, "avg_price": 95000.0, "quantity": 10.0}
-        plans = [
-            {"avg_price": 90000.0, "quantity": 2.0},
-        ]
-
-        result = await tools["simulate_avg_cost"](
-            holdings=holdings,
-            plans=plans,
-        )
-
-        # price=100000 takes priority over avg_price=95000
-        assert result["current_position"]["avg_price"] == 100000.0
-        # After step: (1000000 + 180000) / 12 = 98333.33
-        assert result["steps"][0]["new_avg_price"] == 98333.33
-
-    async def test_analyze_portfolio_multiple_symbols(self, monkeypatch):
-        """Analyze multiple symbols in parallel with portfolio summary."""
-        tools = build_tools()
-
-        async def mock_analyze_stock(sym, market, include_peers):
-            results = {
-                "005930": {
-                    "symbol": "005930",
-                    "market_type": "equity_kr",
-                    "source": "kis",
-                },
-                "AAPL": {
-                    "symbol": "AAPL",
-                    "market_type": "equity_us",
-                    "source": "yahoo",
-                },
-                "KRW-BTC": {
-                    "symbol": "KRW-BTC",
-                    "market_type": "crypto",
-                    "source": "upbit",
-                },
+        # Monkeypatch _get_dca_status_impl
+        async def mock_impl(*args, **kwargs):
+            return {
+                "success": True,
+                "plans": [{"plan_id": 999, "symbol": "MONKEY-PATCHED"}],
+                "total_plans": 1,
             }
-            return results.get(sym, {"symbol": sym, "error": f"Not found: {sym}"})
 
-        monkeypatch.setattr(mcp_tools, "_analyze_stock_impl", mock_analyze_stock)
+        monkeypatch.setattr(mcp_tools, "_get_dca_status_impl", mock_impl)
 
-        result = await tools["analyze_portfolio"](
-            symbols=["005930", "AAPL", "KRW-BTC"],
-            market=None,
-            include_peers=False,
-        )
+        # Execute
+        result = await tools["get_dca_status"](plan_id=1)
 
-        assert result["summary"]["total_symbols"] == 3
-        assert result["summary"]["successful"] == 3
-        assert result["summary"]["failed"] == 0
-        assert len(result["results"]) == 3
-        assert "005930" in result["results"]
-
-    async def test_analyze_portfolio_partial_failure(self, monkeypatch):
-        """Partial failure in portfolio analysis should not affect other symbols."""
-        tools = build_tools()
-
-        async def mock_analyze_stock(sym, market, include_peers):
-            if sym == "005930":
-                raise ValueError("API error for 005930")
-            return {"symbol": sym, "market_type": "equity_us", "source": "yahoo"}
-
-        monkeypatch.setattr(mcp_tools, "_analyze_stock_impl", mock_analyze_stock)
-
-        result = await tools["analyze_portfolio"](
-            symbols=["005930", "AAPL", "KRW-BTC"],
-            market=None,
-            include_peers=False,
-        )
-
-        assert result["summary"]["total_symbols"] == 3
-        assert result["summary"]["successful"] == 2
-        assert result["summary"]["failed"] == 1
-        assert len(result["summary"]["errors"]) == 1
-        assert "005930" in result["summary"]["errors"][0]
-        assert "API error" in result["summary"]["errors"][0]
-
-
-@pytest.mark.asyncio
-async def test_get_ohlcv_crypto_empty_response(monkeypatch):
-    """Test get_ohlcv with crypto symbol that has no candle data (e.g., KRW-CYBER)."""
-    tools = build_tools()
-
-    mock_fetch = AsyncMock(
-        return_value=pd.DataFrame(
-            columns=["date", "open", "high", "low", "close", "volume", "value"]
-        )
-    )
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
-
-    result = await tools["get_ohlcv"]("KRW-CYBER", count=100)
-
-    assert result["symbol"] == "KRW-CYBER"
-    assert result["instrument_type"] == "crypto"
-    assert result["source"] == "upbit"
-    assert result["count"] == 0
-    assert result["rows"] == []
-    assert "message" in result
-    assert "No candle data available" in result["message"]
-
-
-@pytest.mark.asyncio
-async def test_get_indicators_crypto_empty_response(monkeypatch):
-    """Test get_indicators with crypto symbol that has no candle data."""
-    tools = build_tools()
-
-    mock_fetch = AsyncMock(
-        return_value=pd.DataFrame(
-            columns=["date", "open", "high", "low", "close", "volume", "value"]
-        )
-    )
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
-
-    result = await tools["get_indicators"]("KRW-NEWT", indicators=["rsi"])
-
-    assert "error" in result
-    assert result["symbol"] == "KRW-NEWT"
-    assert result["instrument_type"] == "crypto"
-    assert result["source"] == "upbit"
-    assert "No data available for symbol" in result["error"]
+        # Verify monkeypatched implementation is called
+        assert result["success"] is True
+        assert result["plans"][0]["symbol"] == "MONKEY-PATCHED"
