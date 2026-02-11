@@ -29,13 +29,16 @@ from app.routers import (
     kis_domestic_trading,
     kis_overseas_trading,
     manual_holdings,
+    news_analysis,
     openclaw_callback,
+    orderbook,
     portfolio,
     stock_latest,
     symbol_settings,
     test,
     trading,
     upbit_trading,
+    websocket,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(health.router)
     app.include_router(analysis_json.router)
+    app.include_router(news_analysis.router)
     app.include_router(openclaw_callback.router)
     app.include_router(stock_latest.router)
     app.include_router(upbit_trading.router)
@@ -125,8 +129,10 @@ def create_app() -> FastAPI:
     app.include_router(kis_overseas_trading.router)
     app.include_router(symbol_settings.router)
     app.include_router(manual_holdings.router)
+    app.include_router(orderbook.router)
     app.include_router(portfolio.router)
     app.include_router(trading.router)
+    app.include_router(websocket.router)
     if settings.EXPOSE_MONITORING_TEST_ROUTES:
         app.include_router(test.router)
     else:
