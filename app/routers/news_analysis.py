@@ -39,20 +39,22 @@ async def analyze_news_article(
         )
 
         analyzer = NewsAnalyzer()
-        analysis = await analyzer.analyze_news(
-            article_id=article.id,
-            title=request.title,
-            content=request.content,
-            stock_symbol=request.stock_symbol,
-            stock_name=request.stock_name,
-            source=request.source,
-        )
-        await analyzer.close()
+        try:
+            analysis = await analyzer.analyze_news(
+                article_id=article.id,
+                title=request.title,
+                content=request.content,
+                stock_symbol=request.stock_symbol,
+                stock_name=request.stock_name,
+                source=request.source,
+            )
 
-        return NewsAnalysisResponse(
-            article=NewsArticleResponse.model_validate(article),
-            analysis=NewsAnalysisResultResponse.model_validate(analysis),
-        )
+            return NewsAnalysisResponse(
+                article=NewsArticleResponse.model_validate(article),
+                analysis=NewsAnalysisResultResponse.model_validate(analysis),
+            )
+        finally:
+            await analyzer.close()
 
     except Exception as e:
         raise HTTPException(
@@ -64,14 +66,17 @@ async def analyze_news_article(
 @router.get("", response_model=NewsListResponse)
 async def list_news_articles(
     stock_symbol: str | None = Query(None, description="종목 코드로 필터링"),
+    sentiment: str | None = Query(
+        None, description="감정 분석으로 필터링 (positive/negative/neutral)"
+    ),
     source: str | None = Query(None, description="뉴스 출처로 필터링"),
     limit: int = Query(10, ge=1, le=100, description="반환할 뉴스 수"),
     offset: int = Query(0, ge=0, description="건너뛸 뉴스 수"),
-    db: AsyncSession = Depends(get_db),
 ):
     try:
         articles, total = await get_news_articles(
             stock_symbol=stock_symbol,
+            sentiment=sentiment,
             source=source,
             limit=limit,
             offset=offset,

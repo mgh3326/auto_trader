@@ -3824,11 +3824,11 @@ def register_tools(mcp: FastMCP) -> None:
         side = "buy" if side_code == "02" else "sell"
 
         ordered = int(float(order.get("ord_qty", 0) or 0))
-        filled = int(float(order.get("ord_qty", 0) or 0))
+        filled = int(float(order.get("ccld_qty", 0) or 0))
         remaining = ordered - filled
 
         ordered_price = int(float(order.get("ord_unpr", 0) or 0))
-        filled_price = 0
+        filled_price = int(float(order.get("ccld_unpr", 0) or 0))
 
         status = _map_kis_status(filled, remaining, order.get("prcs_stat_name", ""))
 
@@ -3879,7 +3879,7 @@ def register_tools(mcp: FastMCP) -> None:
     def _map_kis_status(filled: int, remaining: int, status_name: str) -> str:
         """Map KIS status to standard status."""
         if status_name == "접수":
-            return "cancelled"
+            return "pending"
         elif status_name == "체결":
             if remaining > 0:
                 return "partial"
@@ -7591,10 +7591,13 @@ def register_tools(mcp: FastMCP) -> None:
 
                 original_price = int(float(target_order.get("ord_unpr", 0) or 0))
                 original_quantity = int(float(target_order.get("ord_qty", 0) or 0))
+                side_code = target_order.get("sll_buy_dvsn_cd", "")
+                side = "buy" if side_code == "02" else "sell"
 
-                final_price = (
+                final_price_raw = (
                     int(new_price) if new_price is not None else original_price
                 )
+                final_price = int(adjust_tick_size_kr(float(final_price_raw), side))
                 final_quantity = (
                     int(new_quantity) if new_quantity is not None else original_quantity
                 )

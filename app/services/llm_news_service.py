@@ -46,6 +46,9 @@ class NewsAnalyzer:
         result, model_name = await self._generate_with_retry(prompt)
         processing_time_ms = int((time.time() - start_time) * 1000)
 
+        if "error" in result:
+            raise RuntimeError(f"LLM analysis failed: {result.get('error')}")
+
         analysis = NewsAnalysisResult(
             article_id=article_id,
             model_name=model_name,
@@ -60,6 +63,7 @@ class NewsAnalyzer:
             prompt=prompt,
             raw_response=json.dumps(result, ensure_ascii=False),
             processing_time_ms=processing_time_ms,
+            created_at=datetime.now(UTC),
         )
 
         async with AsyncSessionLocal() as db:
@@ -104,7 +108,15 @@ class NewsAnalyzer:
 
                         if resp.text:
                             print(f"{model} success")
-                            parsed = json.loads(resp.text)
+                            text = resp.text.strip()
+                            if text.startswith("```json"):
+                                text = text[7:]  # Remove ```json prefix
+                            if text.startswith("```"):
+                                text = text[3:]  # Remove ``` prefix
+                            if text.endswith("```"):
+                                text = text[:-3]  # Remove ``` suffix
+                            text = text.strip()
+                            parsed = json.loads(text)
                             return parsed, model
 
                 except Exception as e:
@@ -166,20 +178,36 @@ async def get_news_articles(
     Returns (list_of_articles, total_count).
     """
     async with AsyncSessionLocal() as db:
-        query = select(NewsArticle)
+        from sqlalchemy import distinct, exists
+
+        query = select(distinct(NewsArticle.id), NewsArticle).select_from(NewsArticle)
 
         if stock_symbol:
             query = query.where(NewsArticle.stock_symbol == stock_symbol)
         if source:
             query = query.where(NewsArticle.source == source)
+        if sentiment:
+            query = query.where(
+                exists().where(
+                    (NewsAnalysisResult.article_id == NewsArticle.id)
+                    & (NewsAnalysisResult.sentiment == sentiment)
+                )
+            )
 
         query = query.order_by(NewsArticle.article_published_at.desc().nulls_last())
 
-        total_query = select(func.count()).select_from(NewsArticle)
+        total_query = select(func.count(NewsArticle.id)).select_from(NewsArticle)
         if stock_symbol:
             total_query = total_query.where(NewsArticle.stock_symbol == stock_symbol)
         if source:
             total_query = total_query.where(NewsArticle.source == source)
+        if sentiment:
+            total_query = total_query.where(
+                exists().where(
+                    (NewsAnalysisResult.article_id == NewsArticle.id)
+                    & (NewsAnalysisResult.sentiment == sentiment)
+                )
+            )
 
         result = await db.execute(query.offset(offset).limit(limit))
         articles = result.scalars().all()

@@ -772,17 +772,26 @@ async def cancel_and_reorder(
         volume_str = f"{new_quantity:.8f}" if new_quantity else ""
         price_str = f"{adjusted_price:.5f}".rstrip("0").rstrip(".") if new_price else ""
 
-        # side에 따라 적절한 메서드 호출
-        if side == "bid":
-            new_order = await place_buy_order(market, price_str, volume_str, "limit")
-        else:
-            new_order = await place_sell_order(market, volume_str, price_str)
+        try:
+            # side에 따라 적절한 메서드 호출
+            if side == "bid":
+                new_order = await place_buy_order(
+                    market, price_str, volume_str, "limit"
+                )
+            else:
+                new_order = await place_sell_order(market, volume_str, price_str)
 
-        return {
-            "original_order": original_order,
-            "cancel_result": cancel_result[0],
-            "new_order": new_order,
-        }
+            return {
+                "original_order": original_order,
+                "cancel_result": cancel_result[0],
+                "new_order": new_order,
+            }
+        except Exception as e:
+            return {
+                "original_order": original_order,
+                "cancel_result": cancel_result[0],
+                "new_order": {"error": str(e)},
+            }
     else:
         return {
             "original_order": original_order,
