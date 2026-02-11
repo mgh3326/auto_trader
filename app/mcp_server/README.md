@@ -14,6 +14,70 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `modify_order(order_id, symbol, new_price=None, new_quantity=None)`
 - `cancel_order(order_id)`
 
+### `screen_stocks` spec
+Parameters:
+- `market`: Market to screen - "kr", "us", "crypto" (default: "kr")
+- `asset_type`: Asset type - "stock", "etf", "etn" (only applicable to KR, default: None)
+- `category`: Category filter - ETF categories for KR, sector for US (default: None)
+- `sort_by`: Sort criteria - "volume", "market_cap", "change_rate", "dividend_yield" (default: "volume")
+- `sort_order`: Sort order - "asc" or "desc" (default: "desc")
+- `min_market_cap`: Minimum market cap (억원 for KR, USD for US, KRW 24h volume for crypto)
+- `max_per`: Maximum P/E ratio filter (not applicable to crypto)
+- `min_dividend_yield`: Minimum dividend yield decimal, e.g., 0.03 for 3% (not applicable to crypto)
+- `max_rsi`: Maximum RSI filter 0-100 (not applicable to sorting by dividend_yield in crypto)
+- `limit`: Maximum results 1-50 (default: 20)
+
+Market-specific behavior:
+- **KR market**: Uses KRX API for stocks/ETFs + Naver Finance for PER/dividend yield + RSI calculation
+  - KRX data cached with 300s TTL (Redis) + in-memory fallback
+  - Trading date auto-fallback (up to 10 days back)
+  - Category filter auto-limits to ETFs if `asset_type=None`
+  - ETN (`asset_type="etn"`) not supported - returns error
+
+- **US market**: Uses yfinance screener with EquityQuery
+  - Maps: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio.lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
+  - Sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
+
+- **Crypto market**: Uses Upbit `fetch_top_traded_coins`
+  - `market_cap` uses `acc_trade_price_24h` (24h trading volume in KRW)
+  - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
+  - RSI calculated using OHLCV fetch for subset (max limit*3 or 150)
+
+Advanced filters (PER/dividend/RSI) apply to subset:
+- Limit: `min(len(candidates), limit*3, 150)`
+- Parallel fetch with `asyncio.Semaphore(10)`
+- Timeout: 30 seconds
+- Individual failures don't stop overall operation
+
+Response format:
+```json
+{
+  "results": [
+    {
+      "code": "005930",
+      "name": "삼성전자",
+      "close": 80000.0,
+      "change_rate": 0.05,
+      "volume": 10000000,
+      "market_cap": 480000000000000,
+      "per": 15.0,
+      "dividend_yield": 0.03,
+      "rsi": 45.5,
+      "market": "kr"
+    }
+  ],
+  "total_count": 2400,
+  "returned_count": 20,
+  "filters_applied": {
+    "market": "kr",
+    "asset_type": "stock",
+    "min_market_cap": 100000,
+    "max_per": 20
+  },
+  "timestamp": "2026-02-10T14:20:59.123456"
+}
+```
+
 ### `get_holdings` spec
 Parameters:
 - `account`: optional account filter (`kis`, `upbit`, `toss`, `samsung_pension`, `isa`)

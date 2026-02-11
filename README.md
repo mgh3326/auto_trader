@@ -65,20 +65,73 @@ uv run uvicorn app.main:app --reload
 
 ### MCP 서버 실행
 
+### Tools
+- `search_symbol(query, limit=20)`
+- `get_quote(symbol, market=None)`
+- `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
+- `get_position(symbol, market=None)`
+- `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None)`
+- `get_volume_profile(symbol, market=None, period=60, bins=20)`
+- `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
+
+### `screen_stocks` 스펙
+
+Parameters:
+- `market`: Market to screen ("kr", "us", "crypto") (default: "kr")
+- `asset_type`: Asset type ("stock", "etf", "etn") - only applicable to KR
+- `category`: Category filter (ETF categories for KR, sector for US)
+- `sort_by`: Sort criteria ("volume", "market_cap", "change_rate", "dividend_yield") (default: "volume")
+- `sort_order`: Sort order ("asc" or "desc") (default: "desc")
+- `min_market_cap`: Minimum market cap filter
+- `max_per`: Maximum P/E ratio filter
+- `min_dividend_yield`: Minimum dividend yield filter (decimal, e.g., 0.03 for 3%)
+- `max_rsi`: Maximum RSI filter (0-100, filters out overbought)
+- `limit`: Maximum number of results to return (1-50, capped at 50)
+
+Response format:
+```json
+{
+  "results": [...],
+  "total_count": N,
+  "returned_count": M,
+  "filters_applied": {...},
+  "market": "kr|us|crypto",
+  "timestamp": "ISO timestamp"
+}
+```
 MCP 서버는 시장/보유종목 조회 및 주문 처리 도구를 제공합니다.
 - **조회 도구**: 실시간 시세, 차트(OHLCV), 보조지표, 보유종목/잔고 조회
 - **주문 도구**: 주문 이력 조회(`get_order_history`), 신규 주문(`place_order`), 정정/취소(`modify_order`, `cancel_order`)
 
-필수 환경 변수:
-- `MCP_TYPE` (기본: streamable-http)
-- `MCP_HOST` (기본: 0.0.0.0)
-- `MCP_PORT` (기본: 8765)
-- `MCP_PATH` (기본: /mcp)
-- `MCP_USER_ID` (기본: 1, 수동 보유종목 조회용)
+Market-specific behavior:
+- **KR market**: Uses KRX API for stocks/ETFs + Naver Finance for valuation metrics.
+  - KRX data cached with 300s TTL (Redis) + in-memory fallback
+  - Trading date auto-fallback (up to 10 days back)
+  - Category filter auto-limits to ETFs if `asset_type=None`
+  - ETN (`asset_type="etn"`) not supported - returns error
 
-Docker (production compose):
+- **US market**: Uses yfinance screener.
+  - Filters: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio_lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
+  - Sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
+
+- **Crypto market**: Uses Upbit top traded coins.
+  - `market_cap` uses `acc_trade_price_24h` (24h trading volume in KRW)
+  - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
+  - RSI calculated using OHLCV data (subset due to API limits: min(len(candidates), limit*3, 150))
+
+Advanced filters (PER/dividend/RSI) apply to subset:
+- Limit: `min(len(candidates), limit*3, 150)`
+- Parallel fetch with `asyncio.Semaphore(10)`
+- Timeout: 30 seconds
+- Individual failures don't stop overall operation
+
+### 암호화폐 분석 (업비트)
+
+#### 설치 방법
+1. 저장소 클론
 ```bash
-docker compose -f docker-compose.prod.yml up -d mcp
+git clone <repository-url>
+cd auto_trader
 ```
 
 자세한 내용은 `app/mcp_server/README.md`를 참고하세요.
