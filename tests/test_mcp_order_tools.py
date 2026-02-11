@@ -255,3 +255,182 @@ async def test_modify_order_us_falls_back_exchange(monkeypatch):
     assert result["status"] == "modified"
     assert result["new_order_id"] == "US-OD-2"
     assert fake_kis.modify_exchange == "NYSE"
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_us_deduplicates_by_order_id(monkeypatch, caplog):
+    """Test that duplicate order IDs in US order history are deduplicated."""
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_daily_order_overseas(self, **kwargs):
+            return [
+                {
+                    "odno": "US-OD-1",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "QQQ",
+                    "ft_ord_qty": "2",
+                    "ft_ccld_qty": "2",
+                    "ft_ord_unpr3": "500.0",
+                    "ft_ccld_unpr3": "500.0",
+                    "ord_dt": "20250210",
+                    "ord_tmd": "093000",
+                    "prcs_stat_name": "체결",
+                },
+                {
+                    "odno": "US-OD-1",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "QQQ",
+                    "ft_ord_qty": "2",
+                    "ft_ccld_qty": "2",
+                    "ft_ord_unpr3": "500.0",
+                    "ft_ccld_unpr3": "500.0",
+                    "ord_dt": "20250210",
+                    "ord_tmd": "093000",
+                    "prcs_stat_name": "체결",
+                },
+                {
+                    "odno": "US-OD-2",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "QQQ",
+                    "ft_ord_qty": "1",
+                    "ft_ccld_qty": "1",
+                    "ft_ord_unpr3": "495.0",
+                    "ft_ccld_unpr3": "495.0",
+                    "ord_dt": "20250210",
+                    "ord_tmd": "092000",
+                    "prcs_stat_name": "체결",
+                },
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+
+    caplog.set_level("INFO")
+    result = await tools["get_order_history"](
+        symbol="QQQ", market="us", days=7, limit=20
+    )
+
+    assert result["market"] == "us"
+    assert len(result["orders"]) == 2
+    order_ids = [o["order_id"] for o in result["orders"]]
+    assert order_ids == ["US-OD-1", "US-OD-2"]
+    assert result["summary"]["filled"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_open_orders_kr_order_id_uppercase(monkeypatch, caplog):
+    """Test that get_open_orders handles uppercase field names for KR orders."""
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "ORD_NO": "KR-OD-UPPER",
+                    "SLL_BUY_DVSN_CD": "02",
+                    "PDNO": "005930",
+                    "ORD_QTY": "2",
+                    "ORD_UNPR": "80000",
+                    "ORD_TMD": "093000",
+                }
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+
+    result = await tools["get_open_orders"](market="kr")
+
+    assert result["total_count"] == 1
+    assert result["orders"][0]["order_id"] == "KR-OD-UPPER"
+    assert result["orders"][0]["symbol"] == "005930"
+
+
+@pytest.mark.asyncio
+async def test_get_open_orders_kr_order_id_lowercase(monkeypatch, caplog):
+    """Test that get_open_orders handles lowercase field names for KR orders."""
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "ord_no": "KR-OD-LOWER",
+                    "sll_buy_dvsn_cd": "02",
+                    "pdno": "005930",
+                    "ord_qty": "2",
+                    "ord_unpr": "80000",
+                    "ord_tmd": "093000",
+                }
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+
+    result = await tools["get_open_orders"](market="kr")
+
+    assert result["total_count"] == 1
+    assert result["orders"][0]["order_id"] == "KR-OD-LOWER"
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_kr_uppercase_fields(monkeypatch):
+    """Test that cancel_order handles uppercase field names for KR orders."""
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "ORD_NO": "KR-OD-UPPER",
+                    "PDNO": "005930",
+                    "SLL_BUY_DVSN_CD": "02",
+                    "ORD_UNPR": "80000",
+                    "ORD_QTY": "2",
+                }
+            ]
+
+        async def cancel_korea_order(
+            self, order_number, stock_code, quantity, price, order_type
+        ):
+            return {"odno": "KR-OD-UPPER", "ord_tmd": "093000"}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+
+    result = await tools["cancel_order"](order_id="KR-OD-UPPER", market="kr")
+
+    assert result["success"] is True
+    assert result["order_id"] == "KR-OD-UPPER"
+    assert result["symbol"] == "005930"
+
+
+@pytest.mark.asyncio
+async def test_modify_order_kr_uppercase_fields(monkeypatch):
+    """Test that modify_order handles uppercase field names for KR orders."""
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "ORD_NO": "KR-OD-UPPER",
+                    "PDNO": "005930",
+                    "SLL_BUY_DVSN_CD": "02",
+                    "ORD_UNPR": "80000",
+                    "ORD_QTY": "2",
+                }
+            ]
+
+        async def modify_korea_order(self, order_id, stock_code, quantity, price):
+            return {"odno": "KR-OD-UPPER"}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+
+    result = await tools["modify_order"](
+        order_id="KR-OD-UPPER",
+        symbol="005930",
+        market="kr",
+        new_price=79000,
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["order_id"] == "KR-OD-UPPER"
+    assert result["status"] == "modified"
