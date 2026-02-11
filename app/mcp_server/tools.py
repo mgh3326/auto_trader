@@ -3862,7 +3862,7 @@ def register_tools(mcp: FastMCP) -> None:
             "Place buy/sell orders for stocks or crypto. "
             "Supports Upbit (crypto) and KIS (KR/US equities). "
             "Always returns dry_run preview unless explicitly set to False. "
-            "Safety limits: max 1M KRW per order, max 20 orders/day. "
+            "Safety limit: max 20 orders/day. "
             "dry_run=True by default for safety."
         ),
     )
@@ -5364,14 +5364,13 @@ def register_tools(mcp: FastMCP) -> None:
             order_type: "limit" or "market" (default: limit)
             quantity: Order quantity (required for limit orders, None for sell-all)
             price: Order price (required for limit orders, None for market orders)
-            amount: Order amount in KRW (for buy orders only, mutually exclusive with quantity)
+            amount: Order amount in market currency (for buy orders only, mutually exclusive with quantity; e.g., KRW for KR/crypto, USD for US equities)
             dry_run: Preview order without execution (default: True)
             reason: Order reason for logging
 
         Returns:
             Order preview (dry_run=True) or execution result (dry_run=False)
         """
-        MAX_ORDER_AMOUNT_KRW = 1000000
         MAX_ORDERS_PER_DAY = 20
 
         symbol = (symbol or "").strip()
@@ -5391,7 +5390,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         if amount is not None and quantity is not None:
             raise ValueError(
-                "amount and quantity cannot both be specified. Use amount for KRW-based buying or quantity for unit-based buying."
+                "amount and quantity cannot both be specified. Use amount for notional-based buying or quantity for unit-based buying."
             )
 
         if amount is not None and side_lower != "buy":
@@ -5455,7 +5454,7 @@ def register_tools(mcp: FastMCP) -> None:
                         if order_quantity == 0:
                             raise ValueError(
                                 f"Calculated quantity {order_quantity} is 0. "
-                                f"Amount {amount} KRW is insufficient for 1 unit at price {current_price}"
+                                f"Amount {amount} is insufficient for 1 unit at price {current_price}"
                             )
 
             if order_type_lower == "limit" and order_quantity is None:
@@ -5553,11 +5552,6 @@ def register_tools(mcp: FastMCP) -> None:
                 if balance_warning:
                     result["warning"] = balance_warning
                 return result
-
-            if order_amount > MAX_ORDER_AMOUNT_KRW:
-                return _order_error(
-                    f"Order amount {order_amount:,.0f} KRW exceeds limit {MAX_ORDER_AMOUNT_KRW:,.0f} KRW"
-                )
 
             if not await _check_daily_order_limit(MAX_ORDERS_PER_DAY):
                 return _order_error(
@@ -6259,7 +6253,7 @@ def register_tools(mcp: FastMCP) -> None:
             "Create a Dollar Cost Averaging (DCA) buying plan based on "
             "technical analysis. Uses support/resistance levels and RSI to "
             "determine optimal buying points. dry_run=True by default for safety. "
-            "When dry_run=False, executes orders sequentially up to 1M KRW per step."
+            "When dry_run=False, executes orders sequentially."
         ),
     )
     async def create_dca_plan(
@@ -6275,7 +6269,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         Args:
             symbol: Trading symbol (e.g., "KRW-BTC", "005930", "AAPL")
-            total_amount: Total amount in KRW to invest
+            total_amount: Total amount to invest in market currency (e.g., KRW for KR/crypto, USD for US equities)
             splits: Number of buying steps (default: 3, range: 2-5)
             strategy: Strategy for price levels - "support", "equal", or "aggressive"
             dry_run: Preview only (default: True). Set False to execute orders.
@@ -6379,7 +6373,7 @@ def register_tools(mcp: FastMCP) -> None:
                     if quantity == 0:
                         return {
                             "success": False,
-                            "error": f"Amount {step_amount:.0f} KRW insufficient for 1 unit at price {step_price}",
+                            "error": f"Amount {step_amount:.0f} is insufficient for 1 unit at price {step_price}",
                             "dry_run": dry_run,
                         }
 
@@ -6450,15 +6444,6 @@ def register_tools(mcp: FastMCP) -> None:
 
                     order_amount = plan_step["amount"]
                     order_price = plan_step["price"]
-
-                    # Safety check: max 1M KRW per step
-                    if order_amount > 1_000_000:
-                        return {
-                            "success": False,
-                            "error": f"Step {plan_step['step']} amount {order_amount:.0f} KRW exceeds limit 1,000,000 KRW",
-                            "dry_run": False,
-                            "summary": summary,
-                        }
 
                     # Place order using _impl function
                     _po_fn = globals().get("_place_order_impl", _place_order_impl)

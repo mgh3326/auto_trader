@@ -7742,7 +7742,7 @@ class TestCreateDcaPlan:
             assert "DCA plan step" in call["kwargs"]["reason"]
 
     async def test_dry_run_false_max_amount_check(self, monkeypatch):
-        """dry_run=False validates max 1M KRW per step."""
+        """dry_run=False executes high-amount steps (> 1M KRW per step)."""
         tools = build_tools()
 
         # Create plan with each step > 1M KRW
