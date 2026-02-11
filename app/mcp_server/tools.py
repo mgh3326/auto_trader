@@ -4106,19 +4106,23 @@ def register_tools(mcp: FastMCP) -> None:
                 if coin.get("currency") == "KRW":
                     return float(coin.get("balance", 0))
         elif market_type == "equity_kr":
-            try:
-                kis = KISClient()
-                balance_data = await kis.inquire_integrated_margin()
-                return float(balance_data.get("stck_cash_ord_psbl_amt", 0) or 0)
-            except Exception:
-                pass
+            kis = KISClient()
+            balance_data = await kis.inquire_domestic_cash_balance()
+            return float(balance_data.get("stck_cash_ord_psbl_amt", 0) or 0)
         elif market_type == "equity_us":
-            try:
-                kis = KISClient()
-                balance_data = await kis.inquire_integrated_margin()
-                return float(balance_data.get("usd_ord_psbl_amt", 0) or 0)
-            except Exception:
-                pass
+            kis = KISClient()
+            margin_data = await kis.inquire_overseas_margin()
+            usd_balance = next(
+                (
+                    row
+                    for row in margin_data
+                    if str(row.get("crcy_cd", "")).upper() == "USD"
+                ),
+                None,
+            )
+            if usd_balance is None:
+                raise RuntimeError("USD margin data not found in KIS overseas margin")
+            return float(usd_balance.get("frcr_ord_psbl_amt", 0) or 0)
         return 0.0
 
     async def _check_daily_order_limit(max_orders: int) -> bool:
@@ -5708,7 +5712,7 @@ def register_tools(mcp: FastMCP) -> None:
                         )
                     else:
                         balance_warning = (
-                            f"Insufficient USD balance: {balance / 1300:,.2f} USD < {order_amount / 1300:,.2f} USD (estimated). "
+                            f"Insufficient USD balance: {balance:,.2f} USD < {order_amount:,.2f} USD. "
                             f"Please deposit USD to your KIS overseas account, then retry."
                         )
                     if not dry_run:
@@ -5802,6 +5806,7 @@ def register_tools(mcp: FastMCP) -> None:
         total_usd = 0.0
 
         account_filter = _normalize_account_filter(account)
+        strict_mode = account_filter is not None
 
         if account_filter is None or account_filter in ("upbit",):
             try:
@@ -5822,27 +5827,15 @@ def register_tools(mcp: FastMCP) -> None:
                     {"source": "upbit", "market": "crypto", "error": str(exc)}
                 )
 
-        kis_balance_data = None
-        if account_filter is None or account_filter in (
-            "kis",
-            "kis_domestic",
-            "kis_overseas",
-        ):
-            try:
-                kis = KISClient()
-                kis_balance_data = await kis.inquire_integrated_margin()
-            except Exception as exc:
-                errors.append({"source": "kis", "market": "kr", "error": str(exc)})
+        if account_filter is None or account_filter in ("kis", "kis_domestic", "kis_overseas"):
+            kis = KISClient()
 
-        if account_filter is None or account_filter in (
-            "kis",
-            "kis_domestic",
-        ):
-            try:
-                if kis_balance_data is not None:
-                    dncl_amt = float(kis_balance_data.get("dnca_tot_amt", 0) or 0)
+            if account_filter is None or account_filter in ("kis", "kis_domestic"):
+                try:
+                    domestic_data = await kis.inquire_domestic_cash_balance()
+                    dncl_amt = float(domestic_data.get("dnca_tot_amt", 0) or 0)
                     orderable = float(
-                        kis_balance_data.get("stck_cash_ord_psbl_amt", 0) or 0
+                        domestic_data.get("stck_cash_ord_psbl_amt", 0) or 0
                     )
                     accounts.append(
                         {
@@ -5856,18 +5849,31 @@ def register_tools(mcp: FastMCP) -> None:
                         }
                     )
                     total_krw += dncl_amt
-            except Exception as exc:
-                errors.append({"source": "kis", "market": "kr", "error": str(exc)})
+                except Exception as exc:
+                    if strict_mode:
+                        raise RuntimeError(
+                            f"KIS domestic cash balance query failed: {exc}"
+                        ) from exc
+                    errors.append({"source": "kis", "market": "kr", "error": str(exc)})
 
-        if account_filter is None or account_filter in (
-            "kis",
-            "kis_overseas",
-        ):
-            try:
-                if kis_balance_data is not None:
-                    balance = float(kis_balance_data.get("usd_objt_amt", 0) or 0)
-                    orderable = float(kis_balance_data.get("usd_ord_psbl_amt", 0) or 0)
-                    exchange_rate = float(kis_balance_data.get("usd_exrt", 0) or 0)
+            if account_filter is None or account_filter in ("kis", "kis_overseas"):
+                try:
+                    overseas_margin_data = await kis.inquire_overseas_margin()
+                    usd_margin = next(
+                        (
+                            row
+                            for row in overseas_margin_data
+                            if str(row.get("crcy_cd", "")).upper() == "USD"
+                        ),
+                        None,
+                    )
+                    if usd_margin is None:
+                        raise RuntimeError(
+                            "USD margin data not found in KIS overseas margin"
+                        )
+
+                    balance = float(usd_margin.get("frcr_dncl_amt_2", 0) or 0)
+                    orderable = float(usd_margin.get("frcr_ord_psbl_amt", 0) or 0)
                     accounts.append(
                         {
                             "account": "kis_overseas",
@@ -5876,13 +5882,17 @@ def register_tools(mcp: FastMCP) -> None:
                             "currency": "USD",
                             "balance": balance,
                             "orderable": orderable,
-                            "exchange_rate": exchange_rate,
+                            "exchange_rate": None,
                             "formatted": f"${balance:.2f} USD",
                         }
                     )
                     total_usd += balance
-            except Exception as exc:
-                errors.append({"source": "kis", "market": "us", "error": str(exc)})
+                except Exception as exc:
+                    if strict_mode:
+                        raise RuntimeError(
+                            f"KIS overseas cash balance query failed: {exc}"
+                        ) from exc
+                    errors.append({"source": "kis", "market": "us", "error": str(exc)})
 
         return {
             "accounts": accounts,

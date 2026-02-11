@@ -849,6 +849,182 @@ class KISClient:
 
         return all_stocks
 
+    async def inquire_domestic_cash_balance(self, is_mock: bool = False) -> dict:
+        """
+        국내주식 현금 잔고(예수금/주문가능현금) 조회
+
+        Args:
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            국내 현금 잔고 딕셔너리
+            - dnca_tot_amt: 국내 예수금
+            - stck_cash_ord_psbl_amt: 국내 주문가능현금
+            - raw: 원본 output2 첫 항목
+        """
+        await self._ensure_token()
+
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        tr_id = BALANCE_TR_MOCK if is_mock else BALANCE_TR
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "AFHR_FLPR_YN": "N",
+            "OFL_YN": "",
+            "INQR_DVSN": "00",
+            "UNPR_DVSN": "01",
+            "FUND_STTL_ICLD_YN": "N",
+            "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "01",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+        logging.info("국내 현금 잔고 조회 (inquire-balance)")
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(f"{BASE}{BALANCE_URL}", headers=hdr, params=params)
+
+        js = r.json()
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.inquire_domestic_cash_balance(is_mock)
+            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
+
+        output2 = js.get("output2", [])
+        raw = output2[0] if output2 else {}
+
+        def safe_float(val: object, default: float = 0.0) -> float:
+            if val in ("", None):
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        def optional_float(val: object) -> float | None:
+            if val in ("", None):
+                return None
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return None
+
+        dnca_tot_amt = safe_float(raw.get("dnca_tot_amt"))
+        orderable_candidates = (
+            raw.get("stck_cash_ord_psbl_amt"),
+            raw.get("ord_psbl_cash"),
+            raw.get("dnca_tot_amt"),
+        )
+        stck_cash_ord_psbl_amt: float | None = None
+        for candidate in orderable_candidates:
+            parsed = optional_float(candidate)
+            if parsed is not None:
+                stck_cash_ord_psbl_amt = parsed
+                break
+        if stck_cash_ord_psbl_amt is None:
+            stck_cash_ord_psbl_amt = 0.0
+
+        return {
+            "dnca_tot_amt": dnca_tot_amt,
+            "stck_cash_ord_psbl_amt": stck_cash_ord_psbl_amt,
+            "raw": raw,
+        }
+
+    async def inquire_overseas_margin(self, is_mock: bool = False) -> list[dict]:
+        """
+        해외증거금 통화별 조회
+
+        Args:
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            통화별 증거금 정보 리스트
+            - crcy_cd: 통화코드
+            - frcr_dncl_amt_2: 외화예수금액(보유현금)
+            - frcr_ord_psbl_amt: 외화주문가능금액
+            - frcr_buy_amt_smtl: 외화매수금액합계
+            - tot_evlu_pfls_amt: 총평가손익금액
+            - ovrs_tot_pfls: 해외총손익금액
+        """
+        await self._ensure_token()
+
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        tr_id = OVERSEAS_MARGIN_TR_MOCK if is_mock else OVERSEAS_MARGIN_TR
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+        }
+
+        logging.info("해외증거금 통화별 조회")
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(f"{BASE}{OVERSEAS_MARGIN_URL}", headers=hdr, params=params)
+
+        js = r.json()
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.inquire_overseas_margin(is_mock)
+            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
+
+        output = js.get("output", [])
+
+        def safe_float(val: object, default: float = 0.0) -> float:
+            if val in ("", None):
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        results: list[dict] = []
+        for item in output:
+            result = {
+                "crcy_cd": item.get("crcy_cd"),
+                "frcr_dncl_amt_2": safe_float(item.get("frcr_dncl_amt_2")),
+                "frcr_ord_psbl_amt": safe_float(item.get("frcr_ord_psbl_amt")),
+                "frcr_buy_amt_smtl": safe_float(item.get("frcr_buy_amt_smtl")),
+                "tot_evlu_pfls_amt": safe_float(item.get("tot_evlu_pfls_amt")),
+                "ovrs_tot_pfls": safe_float(item.get("ovrs_tot_pfls")),
+            }
+            results.append(result)
+
+        return results
+
     async def fetch_my_overseas_stocks(
         self,
         is_mock: bool = False,

@@ -59,14 +59,20 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
             return 500000.0
 
     class MockKISClient:
-        async def inquire_integrated_margin(self):
+        async def inquire_domestic_cash_balance(self):
             return {
                 "dnca_tot_amt": "1000000.0",
                 "stck_cash_ord_psbl_amt": "800000.0",
-                "usd_objt_amt": "500.0",
-                "usd_ord_psbl_amt": "450.0",
-                "usd_exrt": "1380.0",
             }
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "500.0",
+                    "frcr_ord_psbl_amt": "450.0",
+                }
+            ]
 
     monkeypatch.setattr(
         mcp_tools.upbit_service,
@@ -91,7 +97,7 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
     )
     assert kis_overseas_account["balance"] == 500.0
     assert kis_overseas_account["orderable"] == 450.0
-    assert kis_overseas_account["exchange_rate"] == 1380.0
+    assert kis_overseas_account["exchange_rate"] is None
 
 
 @pytest.mark.asyncio
@@ -99,14 +105,20 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
     tools = build_tools()
 
     class MockKISClient:
-        async def inquire_integrated_margin(self):
+        async def inquire_domestic_cash_balance(self):
             return {
                 "dnca_tot_amt": "1000000.0",
                 "stck_cash_ord_psbl_amt": "800000.0",
-                "usd_objt_amt": "500.0",
-                "usd_ord_psbl_amt": "450.0",
-                "usd_exrt": "1380.0",
             }
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "500.0",
+                    "frcr_ord_psbl_amt": "450.0",
+                }
+            ]
 
     monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
 
@@ -129,14 +141,20 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
             raise RuntimeError("Upbit API error")
 
     class MockKISClient:
-        async def inquire_integrated_margin(self):
+        async def inquire_domestic_cash_balance(self):
             return {
                 "dnca_tot_amt": "1000000.0",
                 "stck_cash_ord_psbl_amt": "800000.0",
-                "usd_objt_amt": "500.0",
-                "usd_ord_psbl_amt": "450.0",
-                "usd_exrt": "1380.0",
             }
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "500.0",
+                    "frcr_ord_psbl_amt": "450.0",
+                }
+            ]
 
     monkeypatch.setattr(
         mcp_tools.upbit_service,
@@ -156,7 +174,35 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
     )
     assert kis_overseas_account["balance"] == 500.0
     assert kis_overseas_account["orderable"] == 450.0
-    assert kis_overseas_account["exchange_rate"] == 1380.0
+    assert kis_overseas_account["exchange_rate"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_domestic_fail_close(monkeypatch):
+    tools = build_tools()
+
+    class FailingKISClient:
+        async def inquire_domestic_cash_balance(self):
+            raise RuntimeError("domestic balance failed")
+
+    monkeypatch.setattr(mcp_tools, "KISClient", FailingKISClient)
+
+    with pytest.raises(RuntimeError, match="KIS domestic cash balance query failed"):
+        await tools["get_cash_balance"](account="kis_domestic")
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_overseas_fail_close(monkeypatch):
+    tools = build_tools()
+
+    class FailingKISClient:
+        async def inquire_overseas_margin(self):
+            raise RuntimeError("overseas margin failed")
+
+    monkeypatch.setattr(mcp_tools, "KISClient", FailingKISClient)
+
+    with pytest.raises(RuntimeError, match="KIS overseas cash balance query failed"):
+        await tools["get_cash_balance"](account="kis_overseas")
 
 
 @pytest.mark.asyncio
@@ -6354,10 +6400,10 @@ async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
     tools = build_tools()
 
     class DummyKISClient:
-        async def inquire_balance(self):
-            return [{"crcy_cd": "KRW", "dncl_amt_2": "100000.0"}]
+        async def inquire_domestic_cash_balance(self):
+            return {"dnca_tot_amt": "100000.0", "stck_cash_ord_psbl_amt": "100000.0"}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient())
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
     monkeypatch.setattr(
         mcp_tools,
         "_preview_order",
@@ -6391,9 +6437,15 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
 
     class DummyKISClient:
         async def inquire_overseas_margin(self):
-            return [{"crcy_cd": "USD", "frcr_dncl_amt_2": "100.0"}]
+            return [
+                {
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "100.0",
+                    "frcr_ord_psbl_amt": "100.0",
+                }
+            ]
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient())
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
     monkeypatch.setattr(
         mcp_tools,
         "_preview_order",
@@ -6419,6 +6471,36 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
     assert "Insufficient" in result["warning"]
     assert "KIS overseas account" in result["warning"]
     assert "deposit" in result["warning"].lower()
+    assert "100.00 USD < 500.00 USD" in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_balance_lookup_failure_returns_query_error(monkeypatch):
+    """Balance lookup failure should return API error, not 0-balance warning."""
+    tools = build_tools()
+
+    class FailingKISClient:
+        async def inquire_domestic_cash_balance(self):
+            raise RuntimeError("KIS balance lookup failed")
+
+    async def fetch_quote(symbol):
+        return {"price": 5000.0}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", FailingKISClient)
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=5000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is False
+    assert "KIS balance lookup failed" in result["error"]
+    assert "Insufficient KRW balance: 0 KRW" not in result["error"]
 
 
 @pytest.mark.asyncio

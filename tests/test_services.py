@@ -187,6 +187,106 @@ class TestKISService:
             headers = call_kwargs["headers"]
             assert headers["tr_id"] == "TTTC8434R"
 
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    async def test_inquire_domestic_cash_balance_success(
+        self, mock_client_class, monkeypatch
+    ):
+        """inquire-balance(output2)에서 국내 현금 잔고를 파싱한다."""
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output2": [
+                {
+                    "dnca_tot_amt": "1140000",
+                    "stck_cash_ord_psbl_amt": "1110000",
+                }
+            ],
+        }
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+        monkeypatch.setattr(
+            "app.services.kis.settings.kis_account_no", "12345678-01", raising=False
+        )
+
+        from app.services.kis import KISClient
+
+        client = KISClient()
+        with patch.object(client, "_ensure_token"):
+            result = await client.inquire_domestic_cash_balance(is_mock=False)
+
+        assert result["dnca_tot_amt"] == 1140000.0
+        assert result["stck_cash_ord_psbl_amt"] == 1110000.0
+        assert result["raw"]["dnca_tot_amt"] == "1140000"
+
+        call_args = mock_client.get.call_args
+        params = call_args.kwargs["params"]
+        headers = call_args.kwargs["headers"]
+        assert params["INQR_DVSN"] == "00"
+        assert headers["tr_id"] == "TTTC8434R"
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    async def test_inquire_domestic_cash_balance_fallback_ord_psbl_cash(
+        self, mock_client_class, monkeypatch
+    ):
+        """stck_cash_ord_psbl_amt가 없으면 ord_psbl_cash를 fallback으로 사용한다."""
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output2": [
+                {
+                    "dnca_tot_amt": "1140000",
+                    "ord_psbl_cash": "950000",
+                }
+            ],
+        }
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+        monkeypatch.setattr(
+            "app.services.kis.settings.kis_account_no", "12345678-01", raising=False
+        )
+
+        from app.services.kis import KISClient
+
+        client = KISClient()
+        with patch.object(client, "_ensure_token"):
+            result = await client.inquire_domestic_cash_balance(is_mock=False)
+
+        assert result["dnca_tot_amt"] == 1140000.0
+        assert result["stck_cash_ord_psbl_amt"] == 950000.0
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    async def test_inquire_domestic_cash_balance_api_error_raises(
+        self, mock_client_class, monkeypatch
+    ):
+        """API 오류 응답은 RuntimeError로 전달한다."""
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "1",
+            "msg_cd": "EGW99999",
+            "msg1": "failure",
+        }
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+        monkeypatch.setattr(
+            "app.services.kis.settings.kis_account_no", "12345678-01", raising=False
+        )
+
+        from app.services.kis import KISClient
+
+        client = KISClient()
+        with patch.object(client, "_ensure_token"):
+            with pytest.raises(RuntimeError, match="EGW99999"):
+                await client.inquire_domestic_cash_balance(is_mock=False)
+
 
 class TestYahooService:
     """Test Yahoo Finance service functionality."""
