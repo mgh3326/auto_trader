@@ -2,7 +2,49 @@ import time
 
 import pandas as pd
 
-from app.monitoring.telemetry import get_meter, get_tracer
+try:
+    from app.monitoring.telemetry import get_meter, get_tracer
+except ImportError:
+
+    def get_meter(name):
+        class DummyMeter:
+            def create_counter(self, **kwargs):
+                class DummyCounter:
+                    def add(self, *args, **kwargs):
+                        pass
+
+                return DummyCounter()
+
+            def create_histogram(self, **kwargs):
+                class DummyHistogram:
+                    def record(self, *args, **kwargs):
+                        pass
+
+                return DummyHistogram()
+
+        return DummyMeter()
+
+    def get_tracer(name):
+        class DummyTracer:
+            def start_as_current_span(self, *args, **kwargs):
+                class DummySpan:
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args, **kwargs):
+                        pass
+
+                    def set_attribute(self, *args, **kwargs):
+                        pass
+
+                    def record_exception(self, *args, **kwargs):
+                        pass
+
+                return DummySpan()
+
+        return DummyTracer()
+
+
 from app.services import kis, upbit, yahoo
 from data.coins_info import upbit_pairs
 from data.stocks_info import KRX_NAME_TO_CODE, get_exchange_by_symbol

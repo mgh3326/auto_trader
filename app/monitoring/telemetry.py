@@ -11,24 +11,126 @@ This module provides:
 """
 
 import logging
+from typing import TYPE_CHECKING
 
-from opentelemetry import metrics, trace
-from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-from opentelemetry.instrumentation.redis import RedisInstrumentor
-from opentelemetry.instrumentation.requests import RequestsInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+try:
+    from opentelemetry import metrics, trace
+    from opentelemetry._logs import set_logger_provider
+    from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
+    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+        OTLPMetricExporter,
+    )
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from opentelemetry.instrumentation.redis import RedisInstrumentor
+    from opentelemetry.instrumentation.requests import RequestsInstrumentor
+    from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.sdk.resources import SERVICE_NAME, SERVICE_VERSION, Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+except ImportError:
+    metrics = None
+    trace = None
+    set_logger_provider = None
+    OTLPLogExporter = None
+    OTLPMetricExporter = None
+    OTLPSpanExporter = None
+    FastAPIInstrumentor = None
+    HTTPXClientInstrumentor = None
+    RedisInstrumentor = None
+    RequestsInstrumentor = None
+    SQLAlchemyInstrumentor = None
+    LoggerProvider = None
+    LoggingHandler = None
+    BatchLogRecordProcessor = None
+    MeterProvider = None
+    PeriodicExportingMetricReader = None
+    SERVICE_NAME = None
+    SERVICE_VERSION = None
+    Resource = None
+    TracerProvider = None
+    BatchSpanProcessor = None
+
+if TYPE_CHECKING:
+    # Type hints for type checkers only
+    if metrics is not None:
+        Meter = metrics.Meter
+    else:
+        Meter = object
+
+    if trace is not None:
+        Tracer = trace.Tracer
+    else:
+        Tracer = object
+else:
+    # Runtime fallbacks
+    Meter = object
+    Tracer = object
+
+
+class _DummyTracer:
+    """Dummy tracer for when OpenTelemetry is not available."""
+
+    def __init__(self) -> None:
+        self._tracer = None
+
+    def start_as_current_span(self, *args, **kwargs):
+        return self
+
+    def start_span(self, *args, **kwargs):
+        return _DummySpan()
+
+
+class _DummySpan:
+    """Dummy span for when OpenTelemetry is not available."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    def set_attribute(self, *args, **kwargs):
+        pass
+
+    def set_status(self, *args, **kwargs):
+        pass
+
+    def end(self, *args, **kwargs):
+        pass
+
+
+class _DummyMeter:
+    """Dummy meter for when OpenTelemetry is not available."""
+
+    def __init__(self):
+        self._meter = None
+
+    def create_counter(self, *args, **kwargs):
+        return _DummyCounter()
+
+    def create_histogram(self, *args, **kwargs):
+        return _DummyHistogram()
+
+
+class _DummyCounter:
+    """Dummy counter for when OpenTelemetry is not available."""
+
+    def add(self, *args, **kwargs):
+        pass
+
+
+class _DummyHistogram:
+    """Dummy histogram for when OpenTelemetry is not available."""
+
+    def record(self, *args, **kwargs):
+        pass
+
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +312,7 @@ def instrument_fastapi(app) -> None:
         logger.error(f"Failed to instrument FastAPI: {e}", exc_info=True)
 
 
-def get_tracer(name: str) -> trace.Tracer:
+def get_tracer(name: str) -> Tracer:
     """
     Get a tracer instance for creating custom spans.
 
@@ -227,10 +329,17 @@ def get_tracer(name: str) -> trace.Tracer:
             span.set_attribute("user_id", user_id)
             # Your code here
     """
+    if trace is None:
+        import logging
+
+        logging.warning(
+            "OpenTelemetry trace module not available, returning dummy tracer"
+        )
+        return _DummyTracer()
     return trace.get_tracer(name)
 
 
-def get_meter(name: str) -> metrics.Meter:
+def get_meter(name: str) -> Meter:
     """
     Get a meter instance for creating custom metrics.
 
@@ -259,6 +368,13 @@ def get_meter(name: str) -> metrics.Meter:
         )
         duration_histogram.record(123.45, {"endpoint": "/api/analyze"})
     """
+    if metrics is None:
+        import logging
+
+        logging.warning(
+            "OpenTelemetry metrics module not available, returning dummy meter"
+        )
+        return _DummyMeter()
     return metrics.get_meter(name)
 
 
