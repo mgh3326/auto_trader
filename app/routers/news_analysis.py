@@ -26,7 +26,6 @@ router = APIRouter(prefix="/api/v1/news", tags=["News Analysis"])
 )
 async def analyze_news_article(
     request: NewsAnalysisRequest,
-    db: AsyncSession = Depends(get_db),
 ):
     try:
         article = await create_news_article(

@@ -3878,25 +3878,14 @@ def register_tools(mcp: FastMCP) -> None:
 
     def _map_kis_status(filled: int, remaining: int, status_name: str) -> str:
         """Map KIS status to standard status."""
-        if status_name == "접수":
+        if status_name in ("접수", "주문접수"):
             return "pending"
-        elif status_name == "체결":
-            if remaining > 0:
-                return "partial"
-            else:
-                return "filled"
-        elif status_name in ("주문취소", "체결"):
+        elif status_name == "주문취소":
             return "cancelled"
-        elif status_name in ("주문접수", "미체결"):
+        elif status_name in ("체결", "미체결"):
             if remaining > 0:
                 return "partial"
-            else:
-                return "filled"
-        elif status_name in ("주문취소", "미체결"):
-            if remaining > 0:
-                return "partial"
-            else:
-                return "filled"
+            return "filled"
         else:
             return "pending"
 
