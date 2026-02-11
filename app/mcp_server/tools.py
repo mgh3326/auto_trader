@@ -3818,6 +3818,26 @@ def register_tools(mcp: FastMCP) -> None:
         else:
             return "partial"
 
+    def _get_kis_field(order: dict[str, Any], *keys: str, default: Any = "") -> Any:
+        """Get a field from KIS API response, trying multiple case variants.
+
+        KIS API field names can be in lowercase, uppercase, or mixed case.
+        This helper tries all provided key variants in order.
+
+        Args:
+            order: KIS API response dict
+            *keys: Field name variants to try (e.g., "ord_no", "ORD_NO")
+            default: Default value if none of keys exist
+
+        Returns:
+            First non-empty value found, or default
+        """
+        for key in keys:
+            value = order.get(key)
+            if value:
+                return value
+        return default
+
     def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
         """Normalize KIS domestic order data to standard format."""
         side_code = order.get("sll_buy_dvsn_cd", "")
@@ -5945,8 +5965,9 @@ def register_tools(mcp: FastMCP) -> None:
             try:
                 kis = KISClient()
                 open_orders = await kis.inquire_korea_orders()
+                seen_kr_ids: set[str] = set()
                 for order in open_orders:
-                    order_symbol = str(order.get("pdno", ""))
+                    order_symbol = str(_get_kis_field(order, "pdno", "PDNO"))
                     if symbol and not _is_position_symbol_match(
                         position_symbol=order_symbol,
                         query_symbol=symbol,
@@ -5954,21 +5975,35 @@ def register_tools(mcp: FastMCP) -> None:
                     ):
                         continue
 
-                    side_code = order.get("sll_buy_dvsn_cd", "")
+                    side_code = _get_kis_field(
+                        order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD"
+                    )
                     side = "buy" if side_code == "02" else "sell"
+
+                    order_id = _get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO")
+                    if order_id and order_id in seen_kr_ids:
+                        continue
+                    if order_id:
+                        seen_kr_ids.add(order_id)
 
                     orders.append(
                         {
                             "source": "kis",
                             "market": "kr",
-                            "order_id": order.get("ord_no", ""),
+                            "order_id": order_id,
                             "symbol": order_symbol,
                             "side": side,
                             "order_type": "limit",
-                            "price": float(order.get("ord_unpr", 0) or 0),
-                            "quantity": float(order.get("ord_qty", 0) or 0),
-                            "remaining_quantity": float(order.get("ord_qty", 0) or 0),
-                            "created_at": order.get("ord_tmd", ""),
+                            "price": float(
+                                _get_kis_field(order, "ord_unpr", "ORD_UNPR") or 0
+                            ),
+                            "quantity": float(
+                                _get_kis_field(order, "ord_qty", "ORD_QTY") or 0
+                            ),
+                            "remaining_quantity": float(
+                                _get_kis_field(order, "ord_qty", "ORD_QTY") or 0
+                            ),
+                            "created_at": _get_kis_field(order, "ord_tmd", "ORD_TMD"),
                         }
                     )
             except Exception as exc:
@@ -5978,8 +6013,9 @@ def register_tools(mcp: FastMCP) -> None:
             try:
                 kis = KISClient()
                 open_orders = await kis.inquire_overseas_orders("NASD")
+                seen_us_order_ids: set[str] = set()
                 for order in open_orders:
-                    order_symbol = str(order.get("pdno", ""))
+                    order_symbol = str(_get_kis_field(order, "pdno", "PDNO"))
                     if symbol and not _is_position_symbol_match(
                         position_symbol=order_symbol,
                         query_symbol=symbol,
@@ -5987,21 +6023,36 @@ def register_tools(mcp: FastMCP) -> None:
                     ):
                         continue
 
-                    side_code = order.get("sll_buy_dvsn_cd", "")
+                    side_code = _get_kis_field(
+                        order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD"
+                    )
                     side = "buy" if side_code == "02" else "sell"
+
+                    order_id = _get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO")
+                    if order_id and order_id in seen_us_order_ids:
+                        continue
+                    if order_id:
+                        seen_us_order_ids.add(order_id)
 
                     orders.append(
                         {
                             "source": "kis",
                             "market": "us",
-                            "order_id": order.get("odno", ""),
+                            "order_id": order_id,
                             "symbol": order_symbol,
                             "side": side,
                             "order_type": "limit",
-                            "price": float(order.get("ft_ord_unpr3", 0) or 0),
-                            "quantity": float(order.get("ft_ord_qty", 0) or 0),
-                            "remaining_quantity": float(order.get("nccs_qty", 0) or 0),
-                            "created_at": order.get("ord_tmd", ""),
+                            "price": float(
+                                _get_kis_field(order, "ft_ord_unpr3", "FT_ORD_UNPR3")
+                                or 0
+                            ),
+                            "quantity": float(
+                                _get_kis_field(order, "ft_ord_qty", "FT_ORD_QTY") or 0
+                            ),
+                            "remaining_quantity": float(
+                                _get_kis_field(order, "nccs_qty", "NCCS_QTY") or 0
+                            ),
+                            "created_at": _get_kis_field(order, "ord_tmd", "ORD_TMD"),
                         }
                     )
             except Exception as exc:
@@ -6085,8 +6136,15 @@ def register_tools(mcp: FastMCP) -> None:
                         kis = KISClient()
                         open_orders = await kis.inquire_korea_orders()
                         for order in open_orders:
-                            if str(order.get("ord_no", "")) == order_id:
-                                symbol = str(order.get("pdno", ""))
+                            if (
+                                str(
+                                    _get_kis_field(
+                                        order, "odno", "ODNO", "ord_no", "ORD_NO"
+                                    )
+                                )
+                                == order_id
+                            ):
+                                symbol = str(_get_kis_field(order, "pdno", "PDNO"))
                                 break
                     except Exception as exc:
                         return {
@@ -6110,10 +6168,36 @@ def register_tools(mcp: FastMCP) -> None:
 
                     open_orders = await kis.inquire_korea_orders()
                     for order in open_orders:
-                        if str(order.get("ord_no", "")) == order_id:
-                            side_code = order.get("sll_buy_dvsn_cd", "02")
-                            price = int(float(order.get("ord_unpr", 0) or 0))
-                            quantity = int(float(order.get("ord_qty", 0) or 0))
+                        if (
+                            str(
+                                _get_kis_field(
+                                    order, "odno", "ODNO", "ord_no", "ORD_NO"
+                                )
+                            )
+                            == order_id
+                        ):
+                            side_code = _get_kis_field(
+                                order,
+                                "sll_buy_dvsn_cd",
+                                "SLL_BUY_DVSN_CD",
+                                default="02",
+                            )
+                            price = int(
+                                float(
+                                    _get_kis_field(
+                                        order, "ord_unpr", "ORD_UNPR", default=0
+                                    )
+                                    or 0
+                                )
+                            )
+                            quantity = int(
+                                float(
+                                    _get_kis_field(
+                                        order, "ord_qty", "ORD_QTY", default=0
+                                    )
+                                    or 0
+                                )
+                            )
                             break
 
                     order_type_str = "buy" if side_code == "02" else "sell"
@@ -6144,8 +6228,8 @@ def register_tools(mcp: FastMCP) -> None:
                         kis = KISClient()
                         open_orders = await kis.inquire_overseas_orders("NASD")
                         for order in open_orders:
-                            if str(order.get("odno", "")) == order_id:
-                                symbol = str(order.get("pdno", ""))
+                            if str(_get_kis_field(order, "odno", "ODNO")) == order_id:
+                                symbol = str(_get_kis_field(order, "pdno", "PDNO"))
                                 break
                     except Exception as exc:
                         return {
@@ -6167,8 +6251,15 @@ def register_tools(mcp: FastMCP) -> None:
 
                     open_orders = await kis.inquire_overseas_orders("NASD")
                     for order in open_orders:
-                        if str(order.get("odno", "")) == order_id:
-                            quantity = int(float(order.get("nccs_qty", 0) or 0))
+                        if str(_get_kis_field(order, "odno", "ODNO")) == order_id:
+                            quantity = int(
+                                float(
+                                    _get_kis_field(
+                                        order, "nccs_qty", "NCCS_QTY", default=0
+                                    )
+                                    or 0
+                                )
+                            )
                             break
 
                     result = await kis.cancel_overseas_order(
@@ -7355,7 +7446,26 @@ def register_tools(mcp: FastMCP) -> None:
                     request_kwargs["side"] = side_code
 
                 raw_orders = await kis.inquire_daily_order_domestic(**request_kwargs)
-                orders.extend([_normalize_kis_domestic_order(o) for o in raw_orders])
+                normalized = [_normalize_kis_domestic_order(o) for o in raw_orders]
+
+                seen_kr_history_ids: set[str] = set()
+                kr_deduped: list[dict[str, Any]] = []
+                duplicate_count = 0
+                for o in normalized:
+                    oid = o.get("order_id", "")
+                    if oid and oid not in seen_kr_history_ids:
+                        seen_kr_history_ids.add(oid)
+                        kr_deduped.append(o)
+                    elif not oid:
+                        kr_deduped.append(o)
+                    else:
+                        duplicate_count += 1
+                if duplicate_count > 0:
+                    logger.info(
+                        f"get_order_history KR: deduplicated {duplicate_count} duplicate orders"
+                    )
+
+                orders.extend(kr_deduped)
             except Exception as exc:
                 errors.append(f"kis_kr: {str(exc)}")
 
@@ -7378,7 +7488,26 @@ def register_tools(mcp: FastMCP) -> None:
                     request_kwargs["side"] = kis_side
 
                 raw_orders = await kis.inquire_daily_order_overseas(**request_kwargs)
-                orders.extend([_normalize_kis_overseas_order(o) for o in raw_orders])
+                normalized = [_normalize_kis_overseas_order(o) for o in raw_orders]
+
+                seen_us_history_ids: set[str] = set()
+                us_deduped: list[dict[str, Any]] = []
+                duplicate_count = 0
+                for o in normalized:
+                    oid = o.get("order_id", "")
+                    if oid and oid not in seen_us_history_ids:
+                        seen_us_history_ids.add(oid)
+                        us_deduped.append(o)
+                    elif not oid:
+                        us_deduped.append(o)
+                    else:
+                        duplicate_count += 1
+                if duplicate_count > 0:
+                    logger.info(
+                        f"get_order_history US: deduplicated {duplicate_count} duplicate orders"
+                    )
+
+                orders.extend(us_deduped)
             except Exception as exc:
                 errors.append(f"kis_us: {str(exc)}")
 
@@ -7563,7 +7692,10 @@ def register_tools(mcp: FastMCP) -> None:
 
                 target_order = None
                 for order in open_orders:
-                    if str(order.get("ord_no", "")) == order_id:
+                    if (
+                        str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
+                        == order_id
+                    ):
                         target_order = order
                         break
 
@@ -7578,9 +7710,21 @@ def register_tools(mcp: FastMCP) -> None:
                         "dry_run": dry_run,
                     }
 
-                original_price = int(float(target_order.get("ord_unpr", 0) or 0))
-                original_quantity = int(float(target_order.get("ord_qty", 0) or 0))
-                side_code = target_order.get("sll_buy_dvsn_cd", "")
+                original_price = int(
+                    float(
+                        _get_kis_field(target_order, "ord_unpr", "ORD_UNPR", default=0)
+                        or 0
+                    )
+                )
+                original_quantity = int(
+                    float(
+                        _get_kis_field(target_order, "ord_qty", "ORD_QTY", default=0)
+                        or 0
+                    )
+                )
+                side_code = _get_kis_field(
+                    target_order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD"
+                )
                 side = "buy" if side_code == "02" else "sell"
 
                 final_price_raw = (
@@ -7659,7 +7803,7 @@ def register_tools(mcp: FastMCP) -> None:
                     except Exception:
                         continue
                     for order in open_orders:
-                        if str(order.get("odno", "")) == order_id:
+                        if str(_get_kis_field(order, "odno", "ODNO")) == order_id:
                             target_order = order
                             target_exchange = exchange
                             break
@@ -7677,8 +7821,20 @@ def register_tools(mcp: FastMCP) -> None:
                         "dry_run": dry_run,
                     }
 
-                original_price = float(target_order.get("ft_ord_unpr3", 0) or 0)
-                original_quantity = int(float(target_order.get("ft_ord_qty", 0) or 0))
+                original_price = float(
+                    _get_kis_field(
+                        target_order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0
+                    )
+                    or 0
+                )
+                original_quantity = int(
+                    float(
+                        _get_kis_field(
+                            target_order, "ft_ord_qty", "FT_ORD_QTY", default=0
+                        )
+                        or 0
+                    )
+                )
 
                 exchange_code = target_exchange or preferred_exchange
                 final_price = (
