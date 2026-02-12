@@ -4050,21 +4050,33 @@ def register_tools(mcp: FastMCP) -> None:
 
     def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
         """Normalize KIS domestic order data to standard format."""
-        side_code = order.get("sll_buy_dvsn_cd", "")
+        side_code = _get_kis_field(order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
         side = "buy" if side_code == "02" else "sell"
 
-        ordered = int(float(order.get("ord_qty", 0) or 0))
-        filled = int(float(order.get("ccld_qty", 0) or 0))
+        ordered = int(
+            float(_get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0)
+        )
+        filled = int(
+            float(_get_kis_field(order, "ccld_qty", "CCLD_QTY", default=0) or 0)
+        )
         remaining = ordered - filled
 
-        ordered_price = int(float(order.get("ord_unpr", 0) or 0))
-        filled_price = int(float(order.get("ccld_unpr", 0) or 0))
+        ordered_price = int(
+            float(_get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0) or 0)
+        )
+        filled_price = int(
+            float(_get_kis_field(order, "ccld_unpr", "CCLD_UNPR", default=0) or 0)
+        )
 
-        status = _map_kis_status(filled, remaining, order.get("prcs_stat_name", ""))
+        status = _map_kis_status(
+            filled,
+            remaining,
+            _get_kis_field(order, "prcs_stat_name", "PRCS_STAT_NAME"),
+        )
 
         return {
-            "order_id": order.get("ord_no", ""),
-            "symbol": order.get("pdno", ""),
+            "order_id": _get_kis_field(order, "ord_no", "ORD_NO"),
+            "symbol": _get_kis_field(order, "pdno", "PDNO"),
             "side": side,
             "status": status,
             "ordered_qty": ordered,
@@ -4072,28 +4084,45 @@ def register_tools(mcp: FastMCP) -> None:
             "remaining_qty": remaining,
             "ordered_price": ordered_price,
             "filled_avg_price": filled_price,
-            "ordered_at": f"{order.get('ord_dt', '')} {order.get('ord_tmd', '')}",
+            "ordered_at": (
+                f"{_get_kis_field(order, 'ord_dt', 'ORD_DT')} "
+                f"{_get_kis_field(order, 'ord_tmd', 'ORD_TMD')}"
+            ),
             "filled_at": "",
             "currency": "KRW",
         }
 
     def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
         """Normalize KIS overseas order data to standard format."""
-        side_code = order.get("sll_buy_dvsn_cd", "")
+        side_code = _get_kis_field(order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
         side = "buy" if side_code == "02" else "sell"
 
-        ordered = int(float(order.get("ft_ord_qty", 0) or 0))
-        filled = int(float(order.get("ft_ccld_qty", 0) or 0))
+        ordered = int(
+            float(_get_kis_field(order, "ft_ord_qty", "FT_ORD_QTY", default=0) or 0)
+        )
+        filled = int(
+            float(
+                _get_kis_field(order, "ft_ccld_qty", "FT_CCLD_QTY", default=0) or 0
+            )
+        )
         remaining = ordered - filled
 
-        ordered_price = float(order.get("ft_ord_unpr3", 0) or 0)
-        filled_price = float(order.get("ft_ccld_unpr3", 0) or 0)
+        ordered_price = float(
+            _get_kis_field(order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0) or 0
+        )
+        filled_price = float(
+            _get_kis_field(order, "ft_ccld_unpr3", "FT_CCLD_UNPR3", default=0) or 0
+        )
 
-        status = _map_kis_status(filled, remaining, order.get("prcs_stat_name", ""))
+        status = _map_kis_status(
+            filled,
+            remaining,
+            _get_kis_field(order, "prcs_stat_name", "PRCS_STAT_NAME"),
+        )
 
         return {
-            "order_id": order.get("odno", ""),
-            "symbol": order.get("pdno", ""),
+            "order_id": _get_kis_field(order, "odno", "ODNO"),
+            "symbol": _get_kis_field(order, "pdno", "PDNO"),
             "side": side,
             "status": status,
             "ordered_qty": ordered,
@@ -4101,7 +4130,10 @@ def register_tools(mcp: FastMCP) -> None:
             "remaining_qty": remaining,
             "ordered_price": ordered_price,
             "filled_avg_price": filled_price,
-            "ordered_at": f"{order.get('ord_dt', '')} {order.get('ord_tmd', '')}",
+            "ordered_at": (
+                f"{_get_kis_field(order, 'ord_dt', 'ORD_DT')} "
+                f"{_get_kis_field(order, 'ord_tmd', 'ORD_TMD')}"
+            ),
             "filled_at": "",
             "currency": "USD",
         }
@@ -6131,170 +6163,7 @@ def register_tools(mcp: FastMCP) -> None:
             "errors": errors,
         }
 
-    # ------------------------------------------------------------------
-    # get_open_orders
-    # ------------------------------------------------------------------
 
-    @mcp.tool(
-        name="get_open_orders",
-        description=(
-            "Query pending (uncanceled/unfilled) orders from all accounts. "
-            "Supports filtering by symbol or market. "
-            "Returns normalized order information across crypto, KR, and US equities."
-        ),
-    )
-    async def get_open_orders(
-        symbol: str | None = None, market: str | None = None
-    ) -> dict[str, Any]:
-        """Query pending orders from all accounts.
-
-        Args:
-            symbol: Optional symbol filter (e.g., "KRW-BTC", "005930", "AAPL")
-            market: Optional market filter ("crypto", "kr", "us")
-
-        Returns:
-            Dictionary with orders list, total count, and errors.
-        """
-        orders: list[dict[str, Any]] = []
-        errors: list[dict[str, Any]] = []
-
-        market_filter = _parse_holdings_market_filter(market)
-
-        if market_filter in (None, "crypto"):
-            try:
-                open_orders = await upbit_service.fetch_open_orders(market=None)
-                for order in open_orders:
-                    order_symbol = order.get("market", "")
-                    if symbol and not _is_position_symbol_match(
-                        position_symbol=order_symbol,
-                        query_symbol=symbol,
-                        instrument_type="crypto",
-                    ):
-                        continue
-
-                    orders.append(
-                        {
-                            "source": "upbit",
-                            "market": "crypto",
-                            "order_id": order.get("uuid", ""),
-                            "symbol": order_symbol,
-                            "side": "buy" if order.get("side") == "bid" else "sell",
-                            "order_type": order.get("ord_type", ""),
-                            "price": float(order.get("price", 0) or 0),
-                            "quantity": float(order.get("volume", 0) or 0),
-                            "remaining_quantity": float(
-                                order.get("remaining_volume", 0) or 0
-                            ),
-                            "created_at": order.get("created_at", ""),
-                        }
-                    )
-            except Exception as exc:
-                errors.append(
-                    {"source": "upbit", "market": "crypto", "error": str(exc)}
-                )
-
-        if market_filter in (None, "equity_kr"):
-            try:
-                kis = KISClient()
-                open_orders = await kis.inquire_korea_orders()
-                seen_kr_ids: set[str] = set()
-                for order in open_orders:
-                    order_symbol = str(_get_kis_field(order, "pdno", "PDNO"))
-                    if symbol and not _is_position_symbol_match(
-                        position_symbol=order_symbol,
-                        query_symbol=symbol,
-                        instrument_type="equity_kr",
-                    ):
-                        continue
-
-                    side_code = _get_kis_field(
-                        order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD"
-                    )
-                    side = "buy" if side_code == "02" else "sell"
-
-                    order_id = _get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO")
-                    if order_id and order_id in seen_kr_ids:
-                        continue
-                    if order_id:
-                        seen_kr_ids.add(order_id)
-
-                    orders.append(
-                        {
-                            "source": "kis",
-                            "market": "kr",
-                            "order_id": order_id,
-                            "symbol": order_symbol,
-                            "side": side,
-                            "order_type": "limit",
-                            "price": float(
-                                _get_kis_field(order, "ord_unpr", "ORD_UNPR") or 0
-                            ),
-                            "quantity": float(
-                                _get_kis_field(order, "ord_qty", "ORD_QTY") or 0
-                            ),
-                            "remaining_quantity": float(
-                                _get_kis_field(order, "ord_qty", "ORD_QTY") or 0
-                            ),
-                            "created_at": _get_kis_field(order, "ord_tmd", "ORD_TMD"),
-                        }
-                    )
-            except Exception as exc:
-                errors.append({"source": "kis", "market": "kr", "error": str(exc)})
-
-        if market_filter in (None, "equity_us"):
-            try:
-                kis = KISClient()
-                open_orders = await kis.inquire_overseas_orders("NASD")
-                seen_us_order_ids: set[str] = set()
-                for order in open_orders:
-                    order_symbol = str(_get_kis_field(order, "pdno", "PDNO"))
-                    if symbol and not _is_position_symbol_match(
-                        position_symbol=order_symbol,
-                        query_symbol=symbol,
-                        instrument_type="equity_us",
-                    ):
-                        continue
-
-                    side_code = _get_kis_field(
-                        order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD"
-                    )
-                    side = "buy" if side_code == "02" else "sell"
-
-                    order_id = _get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO")
-                    if order_id and order_id in seen_us_order_ids:
-                        continue
-                    if order_id:
-                        seen_us_order_ids.add(order_id)
-
-                    orders.append(
-                        {
-                            "source": "kis",
-                            "market": "us",
-                            "order_id": order_id,
-                            "symbol": order_symbol,
-                            "side": side,
-                            "order_type": "limit",
-                            "price": float(
-                                _get_kis_field(order, "ft_ord_unpr3", "FT_ORD_UNPR3")
-                                or 0
-                            ),
-                            "quantity": float(
-                                _get_kis_field(order, "ft_ord_qty", "FT_ORD_QTY") or 0
-                            ),
-                            "remaining_quantity": float(
-                                _get_kis_field(order, "nccs_qty", "NCCS_QTY") or 0
-                            ),
-                            "created_at": _get_kis_field(order, "ord_tmd", "ORD_TMD"),
-                        }
-                    )
-            except Exception as exc:
-                errors.append({"source": "kis", "market": "us", "error": str(exc)})
-
-        return {
-            "orders": orders,
-            "total_count": len(orders),
-            "errors": errors,
-        }
 
     # ------------------------------------------------------------------
     # cancel_order
@@ -8169,150 +8038,269 @@ def register_tools(mcp: FastMCP) -> None:
         ),
     )
     async def get_order_history(
-        symbol: str,
+        symbol: str | None = None,
+        status: Literal["all", "pending", "filled", "cancelled"] = "all",
         order_id: str | None = None,
         market: str | None = None,
         side: str | None = None,
-        days: int = 7,
-        limit: int = 20,
+        days: int | None = None,
+        limit: int | None = 50,
     ) -> dict[str, Any]:
-        """Get order history for a symbol.
+        """Get order history or open orders.
 
         Args:
-            symbol: Trading symbol (e.g., "KRW-BTC", "005930", "AAPL")
-            order_id: Optional order ID for single order lookup
-            market: Market filter ("crypto", "kr", "us"). Auto-detected if not specified.
-            side: Side filter ("buy", "sell", or None for all)
-            days: Number of days to look back (1-365, default: 7)
-            limit: Maximum orders to return (1-100, default: 20)
+            symbol: Trading symbol (e.g., "KRW-BTC", "005930", "AAPL"). Required unless status="pending".
+            status: Filter by order status ("all", "pending", "filled", "cancelled").
+            order_id: Filter by specific order ID.
+            market: Market hint (kr, us, crypto).
+            side: Filter by side (buy, sell).
+            days: Number of days to look back (default: 7).
+            limit: Max orders (default: 50). 0 or -1 for unlimited.
 
         Returns:
-            Dictionary with orders list, summary statistics, and metadata.
+            Dictionary with 'orders' list and metadata.
         """
-        if not symbol or not symbol.strip():
-            raise ValueError("symbol is required")
+        if status != "pending" and not symbol:
+            raise ValueError(
+                f"symbol is required when status='{status}'. "
+                f"Use status='pending' for symbol-free queries, or provide a symbol (e.g. symbol='KRW-BTC')."
+            )
 
-        symbol = symbol.strip()
+        symbol = (symbol or "").strip() or None
+        order_id = (order_id or "").strip() or None
+        market_hint = (market or "").strip().lower() or None
+        side = (side or "").strip().lower() or None
 
-        if side is not None and side not in ("buy", "sell"):
-            raise ValueError("side must be 'buy', 'sell', or None")
+        if side and side not in ("buy", "sell"):
+            raise ValueError("side must be 'buy' or 'sell'")
 
-        days = min(max(days, 1), 365)
-        limit = min(max(limit, 1), 100)
+        if limit is None:
+            limit = 50
+        elif limit < -1:
+            raise ValueError("limit must be >= -1")
 
-        market_type, normalized_symbol = _resolve_market_type(symbol, market)
+        # 0 or -1 means unlimited
+        limit_val = limit if limit not in (0, -1) else float("inf")
+
+        # Date range handling (optional)
+        # If days is None, we generally don't restrict.
+        # But specific APIs (like KIS) might require a range.
+        effective_days = days
+
+        # --- Market Resolution ---
+        market_types = []
+        normalized_symbol = None
+
+        if symbol:
+            market_type, normalized_symbol = _resolve_market_type(symbol, market_hint)
+            market_types = [market_type]
+        elif market_hint:
+            norm = _normalize_market(market_hint)
+            if norm:
+                market_types = [norm]
+
+        # If still unknown, and status is pending (so symbol might be None), try all
+        if not market_types and status == "pending":
+            market_types = ["crypto", "equity_kr", "equity_us"]
+
+        # If order_id provided but no symbol/market, we might need a general search or guess
+        if not market_types and order_id:
+            # Heuristic: UUID implies crypto
+            if "-" in order_id and len(order_id) == 36:
+                market_types = ["crypto"]
+            else:
+                # Default to checking all if we can't tell
+                market_types = ["crypto", "equity_kr", "equity_us"]
 
         orders: list[dict[str, Any]] = []
-        errors: list[str] = []
+        errors: list[dict[str, Any]] = []
 
-        if market_type == "crypto":
+        # --- Fetching ---
+        for m_type in market_types:
             try:
-                if order_id:
-                    raw_orders = [await upbit_service.fetch_order_detail(order_id)]
-                else:
-                    raw_orders = await upbit_service.fetch_closed_orders(
-                        market=normalized_symbol,
-                        limit=100,
-                    )
-                orders.extend([_normalize_upbit_order(o) for o in raw_orders])
-            except Exception as exc:
-                errors.append(f"upbit: {str(exc)}")
+                fetched = []
 
-        elif market_type == "equity_kr":
-            try:
-                kis = KISClient()
-                start_date, end_date = _calculate_date_range(days)
-                side_code = {"buy": "02", "sell": "01"}.get(side, "00")
+                if m_type == "crypto":
+                    # Upbit
+                    # 1. Open/Pending
+                    if status in ("all", "pending"):
+                        open_ops = await upbit_service.fetch_open_orders(
+                            market=normalized_symbol
+                        )
+                        fetched.extend([_normalize_upbit_order(o) for o in open_ops])
 
-                request_kwargs: dict[str, Any] = {
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "stock_code": normalized_symbol,
-                    "order_number": order_id or "",
-                    "is_mock": False,
-                }
-                if not order_id:
-                    request_kwargs["side"] = side_code
+                    # 2. Closed (Filled/Cancelled)
+                    if status in ("all", "filled", "cancelled") and normalized_symbol:
+                        # fetch_closed_orders limit
+                        # If unlimited, fetch max allowed by upstream or a reasonable high number
+                        fetch_limit = 100 if limit_val == float("inf") else max(limit, 20)
+                        closed_ops = await upbit_service.fetch_closed_orders(
+                            market=normalized_symbol,
+                            limit=fetch_limit,
+                        )
+                        fetched.extend([_normalize_upbit_order(o) for o in closed_ops])
 
-                raw_orders = await kis.inquire_daily_order_domestic(**request_kwargs)
-                normalized = [_normalize_kis_domestic_order(o) for o in raw_orders]
+                elif m_type == "equity_kr":
+                    kis = KISClient()
+                    # KIS Domestic
+                    # 1. Open/Pending
+                    if status in ("all", "pending"):
+                        open_ops = await kis.inquire_korea_orders()
+                        for o in open_ops:
+                            o_sym = str(_get_kis_field(o, "pdno", "PDNO"))
+                            if normalized_symbol and o_sym != normalized_symbol:
+                                continue
+                            fetched.append(_normalize_kis_domestic_order(o))
 
-                seen_kr_history_ids: set[str] = set()
-                kr_deduped: list[dict[str, Any]] = []
-                duplicate_count = 0
-                for o in normalized:
-                    oid = o.get("order_id", "")
-                    if oid and oid not in seen_kr_history_ids:
-                        seen_kr_history_ids.add(oid)
-                        kr_deduped.append(o)
-                    elif not oid:
-                        kr_deduped.append(o)
-                    else:
-                        duplicate_count += 1
-                if duplicate_count > 0:
-                    logger.info(
-                        f"get_order_history KR: deduplicated {duplicate_count} duplicate orders"
-                    )
+                    # 2. History
+                    if status in ("all", "filled", "cancelled") and normalized_symbol:
+                        # KIS requires a date range. If days is None, default to 30 days (or user provided).
+                        lookup_days = effective_days if effective_days is not None else 30
+                        start_dt, end_dt = _calculate_date_range(lookup_days)
+                        hist_ops = await kis.inquire_daily_order_domestic(
+                            start_date=start_dt,
+                            end_date=end_dt,
+                            stock_code=normalized_symbol,
+                            side="00",  # All
+                        )
+                        fetched.extend(
+                            [_normalize_kis_domestic_order(o) for o in hist_ops]
+                        )
 
-                orders.extend(kr_deduped)
-            except Exception as exc:
-                errors.append(f"kis_kr: {str(exc)}")
+                elif m_type == "equity_us":
+                    kis = KISClient()
+                    # KIS Overseas
+                    # 1. Open/Pending
+                    if status in ("all", "pending"):
+                        target_exchanges = ["NASD", "NYSE", "AMEX"]
+                        if normalized_symbol:
+                            ex = get_exchange_by_symbol(normalized_symbol)
+                            if ex:
+                                target_exchanges = [ex]
 
-        elif market_type == "equity_us":
-            try:
-                kis = KISClient()
-                start_date, end_date = _calculate_date_range(days)
-                exchange_code = get_exchange_by_symbol(normalized_symbol) or "NASD"
-                kis_side = {"buy": "02", "sell": "01"}.get(side, "00") if side else "00"
+                        seen_oids = set()
+                        for ex in target_exchanges:
+                            try:
+                                ops = await kis.inquire_overseas_orders(ex)
+                                for o in ops:
+                                    oid = str(_get_kis_field(o, "odno", "ODNO"))
+                                    if oid in seen_oids:
+                                        continue
+                                    seen_oids.add(oid)
 
-                request_kwargs = {
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "symbol": normalized_symbol,
-                    "exchange_code": exchange_code,
-                    "order_number": order_id or "",
-                    "is_mock": False,
-                }
-                if not order_id:
-                    request_kwargs["side"] = kis_side
+                                    o_sym = str(_get_kis_field(o, "pdno", "PDNO"))
+                                    if normalized_symbol and o_sym != normalized_symbol:
+                                        continue
+                                    fetched.append(_normalize_kis_overseas_order(o))
+                            except Exception:
+                                pass
 
-                raw_orders = await kis.inquire_daily_order_overseas(**request_kwargs)
-                normalized = [_normalize_kis_overseas_order(o) for o in raw_orders]
+                    # 2. History
+                    if status in ("all", "filled", "cancelled") and normalized_symbol:
+                        lookup_days = effective_days if effective_days is not None else 30
+                        start_dt, end_dt = _calculate_date_range(lookup_days)
+                        ex = get_exchange_by_symbol(normalized_symbol) or "NASD"
+                        hist_ops = await kis.inquire_daily_order_overseas(
+                            start_date=start_dt,
+                            end_date=end_dt,
+                            symbol=normalized_symbol,
+                            exchange_code=ex,
+                            side="00",
+                        )
+                        fetched.extend(
+                            [_normalize_kis_overseas_order(o) for o in hist_ops]
+                        )
 
-                seen_us_history_ids: set[str] = set()
-                us_deduped: list[dict[str, Any]] = []
-                duplicate_count = 0
-                for o in normalized:
-                    oid = o.get("order_id", "")
-                    if oid and oid not in seen_us_history_ids:
-                        seen_us_history_ids.add(oid)
-                        us_deduped.append(o)
-                    elif not oid:
-                        us_deduped.append(o)
-                    else:
-                        duplicate_count += 1
-                if duplicate_count > 0:
-                    logger.info(
-                        f"get_order_history US: deduplicated {duplicate_count} duplicate orders"
-                    )
+                orders.extend(fetched)
 
-                orders.extend(us_deduped)
-            except Exception as exc:
-                errors.append(f"kis_us: {str(exc)}")
+            except Exception as e:
+                errors.append({"market": m_type, "error": str(e)})
 
-        if side:
-            orders = [o for o in orders if o.get("side") == side]
+        # --- Filtering & Sorting ---
+        # Dedup based on (market, order_id)
+        # We need to distinguish between markets because order_ids might collide (rarely, but possible with mock/sim)
+        # Using the unified order 'market' field (e.g. 'crypto', 'kr', 'us') + order_id
+        unique_orders = {}
+        for o in orders:
+            oid = o.get("order_id")
+            omk = o.get("market")
+            if oid:
+                key = (omk, oid)
+                unique_orders[key] = o
+            else:
+                # If no order_id, keep it (unlikely but safe)
+                unique_orders[f"unknown_{len(unique_orders)}"] = o
 
-        filtered_orders = orders[:limit]
+        orders = list(unique_orders.values())
 
+        filtered_orders = []
+        for o in orders:
+            # Status
+            o_status = o.get("status")
+            if status == "pending":
+                if o_status not in ("pending", "partial"):
+                    continue
+            elif status == "filled":
+                if o_status != "filled":
+                    continue
+            elif status == "cancelled":
+                if o_status != "cancelled":
+                    continue
+
+            # Order ID
+            if order_id and o.get("order_id") != order_id:
+                continue
+
+            # Side
+            if side and o.get("side") != side:
+                continue
+
+            filtered_orders.append(o)
+
+        # Sort by date desc
+        def _get_sort_key(o: dict[str, Any]) -> str:
+            val = o.get("ordered_at") or o.get("created_at") or ""
+            return str(val)
+
+        filtered_orders.sort(key=_get_sort_key, reverse=True)
+
+        # Limit & Truncation
+        total_available = len(filtered_orders)
+        truncated = False
+        if limit_val != float("inf") and total_available > limit_val:
+            filtered_orders = filtered_orders[: int(limit_val)]
+            truncated = True
+
+        # Summary
         summary = _calculate_order_summary(filtered_orders)
 
+        # Determine returned market string
+        ret_market = "mixed"
+        if len(market_types) == 1:
+            ret_market = _normalize_market_type_to_external(market_types[0])
+        elif normalized_symbol:
+             # If symbol was resolved, we know the market
+             m, _ = _resolve_market_type(normalized_symbol, None)
+             ret_market = _normalize_market_type_to_external(m)
+
         return {
-            "success": len(errors) == 0 or len(filtered_orders) > 0,
+            "success": bool(filtered_orders) or not errors,
             "symbol": normalized_symbol,
-            "market": _normalize_market_type_to_external(market_type),
+            "market": ret_market,
+            "status": status,
+            "filters": {
+                "symbol": symbol,
+                "status": status,
+                "order_id": order_id,
+                "market": market_hint,
+                "side": side,
+                "days": days,
+                "limit": limit,
+            },
             "orders": filtered_orders,
             "summary": summary,
+            "truncated": truncated,
+            "total_available": total_available,
             "errors": errors,
         }
 

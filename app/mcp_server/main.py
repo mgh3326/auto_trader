@@ -14,8 +14,8 @@ auth_provider = build_auth_provider(_auth_token)
 mcp = FastMCP(
     name="auto_trader-mcp",
     instructions=(
-        "Read-only market and holdings lookup tools for auto_trader "
-        "(symbol search, quote, holdings, OHLCV, indicators)."
+        "Market data, holdings lookup, and order execution tools for auto_trader "
+        "(symbol search, quote, holdings, OHLCV, indicators, trade, order management)."
     ),
     version="0.1.0",
     auth=auth_provider,

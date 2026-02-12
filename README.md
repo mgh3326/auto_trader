@@ -65,7 +65,9 @@ uv run uvicorn app.main:app --reload
 
 ### MCP 서버 실행
 
-MCP 서버는 시장/보유종목 조회용 read-only 도구를 제공합니다.
+MCP 서버는 시장/보유종목 조회 및 주문 처리 도구를 제공합니다.
+- **조회 도구**: 실시간 시세, 차트(OHLCV), 보조지표, 보유종목/잔고 조회
+- **주문 도구**: 주문 이력 조회(`get_order_history`), 신규 주문(`place_order`), 정정/취소(`modify_order`, `cancel_order`)
 
 필수 환경 변수:
 - `MCP_TYPE` (기본: streamable-http)

@@ -245,3 +245,4 @@ cython_debug/
 
 /tmp/
 .DS_Store
+/.claude/worktrees/elated-diffie/
