@@ -50,6 +50,7 @@ check_service "redis" "redis-cli ping" "Redis Connection"
 echo -e "${BLUE}🐳 Docker Containers${NC}"
 check_service "api" "docker ps --filter 'name=auto_trader_api_prod' --filter 'status=running' | grep -q auto_trader_api_prod" "API Container"
 check_service "websocket" "docker ps --filter 'name=auto_trader_ws_prod' --filter 'status=running' | grep -q auto_trader_ws_prod" "WebSocket Container"
+check_service "kis_websocket" "docker ps --filter 'name=auto_trader_kis_ws_prod' --filter 'status=running' | grep -q auto_trader_kis_ws_prod" "KIS WebSocket Container"
 
 # API 엔드포인트 체크
 echo -e "${BLUE}🌐 API Endpoints${NC}"
@@ -73,6 +74,14 @@ if [ $ws_errors -gt 0 ]; then
     echo -e "${YELLOW}⚠️  Found $ws_errors error(s) in WebSocket logs (last 10 minutes)${NC}"
 else
     echo -e "${GREEN}✅ No recent errors in WebSocket logs${NC}"
+fi
+
+# KIS WebSocket 컨테이너 로그에서 에러 검색
+kis_ws_errors=$(docker logs auto_trader_kis_ws_prod --since=10m 2>&1 | grep -i "error\|exception\|fail" | wc -l)
+if [ $kis_ws_errors -gt 0 ]; then
+    echo -e "${YELLOW}⚠️  Found $kis_ws_errors error(s) in KIS WebSocket logs (last 10 minutes)${NC}"
+else
+    echo -e "${GREEN}✅ No recent errors in KIS WebSocket logs${NC}"
 fi
 
 # 디스크 용량 체크

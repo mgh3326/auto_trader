@@ -12,6 +12,14 @@ class Settings(BaseSettings):
     kis_app_secret: str
     kis_access_token: str | None = None  # 최초엔 비워두고 자동 발급
     kis_account_no: str | None = None  # 계좌번호 (예: "12345678-01")
+
+    # KIS WebSocket
+    kis_ws_is_mock: bool = False  # Mock 모드 (테스트용)
+    kis_ws_hts_id: str = ""  # HTS ID (WebSocket 인증용)
+    kis_ws_reconnect_delay_seconds: int = 5  # 재연결 대기 시간 (초)
+    kis_ws_max_reconnect_attempts: int = 10  # 최대 재연결 시도 횟수
+    kis_ws_ping_interval: int = 30  # Ping 전송 간격 (초)
+    kis_ws_ping_timeout: int = 10  # Ping 응답 대기 시간 (초)
     # Telegram
     telegram_token: str
     telegram_chat_id: str = ""
