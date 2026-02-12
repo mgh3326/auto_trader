@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+from datetime import UTC
 import hashlib
 import json
 import logging
 import re
 import time
+from datetime import UTC
 from typing import TYPE_CHECKING, Any, Literal
 
-import finnhub
+try:
+    import finnhub
+except ImportError:
+    finnhub = None
+
 import httpx
 import numpy as np
 import pandas as pd
@@ -39,7 +45,18 @@ from app.services.analyst_normalizer import (
 )
 from app.services.dca_service import DcaService
 from app.services.disclosures.dart import list_filings
+
+try:
+    from app.services.disclosures.dart import list_filings
+except ImportError:
+    list_filings = None
 from app.services.kis import KISClient
+from app.services.krx import (
+    classify_etf_category,
+    fetch_etf_all_cached,
+    fetch_stock_all_cached,
+    fetch_valuation_all_cached,
+)
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from data.coins_info import get_or_refresh_maps
@@ -49,6 +66,11 @@ from data.stocks_info import (
     get_us_stocks_data,
 )
 from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
+
+try:
+    from app.services.disclosures.dart import list_filings
+except ImportError:
+    list_filings = None
 
 logger = logging.getLogger(__name__)
 
@@ -7977,6 +7999,11 @@ def register_tools(mcp: FastMCP) -> None:
         Returns:
             Dictionary with filings data or error message.
         """
+        if list_filings is None:
+            return {
+                "success": False,
+                "error": "DART functionality not available (dart_fss package not installed)",
+            }
         try:
             result = await list_filings(symbol, days, limit, report_type)
             # list_filings returns list[dict] or dict[str, Any], normalize to dict
@@ -9123,6 +9150,809 @@ def register_tools(mcp: FastMCP) -> None:
                 "dry_run": dry_run,
             }
 
+    # ---------------------------------------------------------------------------
+    # Stock Screening Functions
+    # ---------------------------------------------------------------------------
+
+    def _normalize_screen_market(market: str | None) -> str:
+        """Normalize market parameter to internal format."""
+        if not market:
+            return "kr"
+        return market.lower()
+
+    def _normalize_asset_type(asset_type: str | None) -> str | None:
+        """Normalize asset_type parameter."""
+        if asset_type is None:
+            return None
+        return asset_type.lower()
+
+    def _normalize_sort_by(sort_by: str | None) -> str:
+        """Normalize sort_by parameter."""
+        if not sort_by:
+            return "volume"
+        return sort_by.lower()
+
+    def _normalize_sort_order(sort_order: str | None) -> str:
+        """Normalize sort_order parameter."""
+        if not sort_order:
+            return "desc"
+        return sort_order.lower()
+
+    def _normalize_dividend_yield_threshold(
+        value: float | None,
+    ) -> tuple[float | None, float | None]:
+        """Normalize dividend yield threshold to decimal format.
+
+        Args:
+            value: Dividend yield value - accepts both decimal (0.03) and percent (3.0) formats
+
+        Returns:
+            Tuple of (input_value, normalized_value):
+            - input_value: The original input value as provided
+            - normalized_value: The normalized decimal value (0.0-1.0 range)
+                              If value > 1, it's treated as percent and divided by 100
+        """
+        if value is None:
+            return None, None
+        # Treat values > 1 as percentage (e.g., 3.0 -> 0.03)
+        normalized_value = value / 100 if value > 1 else value
+        return value, normalized_value
+
+    def _validate_screen_filters(
+        market: str,
+        asset_type: str | None,
+        min_market_cap: float | None,
+        max_per: float | None,
+        min_dividend_yield: float | None,
+        max_rsi: float | None,
+        sort_by: str | None,
+    ) -> None:
+        """Validate screening filters and raise ValueError for unsupported combinations."""
+        # Crypto-specific unsupported filters
+        if market == "crypto":
+            if max_per is not None:
+                raise ValueError(
+                    "Crypto market does not support 'max_per' filter (no P/E ratio)"
+                )
+            if min_dividend_yield is not None:
+                raise ValueError(
+                    "Crypto market does not support 'min_dividend_yield' filter (no dividends)"
+                )
+            if sort_by == "dividend_yield":
+                raise ValueError(
+                    "Crypto market does not support sorting by 'dividend_yield'"
+                )
+
+        # KR-specific unsupported asset types
+        if market in ("kr", "kospi", "kosdaq") and asset_type == "etn":
+            raise ValueError(
+                "Korean market (KR/KOSPI/KOSDAQ) does not support ETN (Exchange Traded Notes) asset_type"
+            )
+
+    def _apply_basic_filters(
+        candidates: list[dict[str, Any]],
+        min_market_cap: float | None,
+        max_per: float | None,
+        max_pbr: float | None,
+        min_dividend_yield: float | None,
+        max_rsi: float | None,
+    ) -> list[dict[str, Any]]:
+        """Apply basic numeric filters to candidate stocks.
+
+        Strict mode: When a filter is requested, items with missing
+        indicator values are excluded (they don't pass filter).
+        """
+        filtered = []
+
+        for item in candidates:
+            skip = False
+
+            # Market cap filter (exclude if below threshold OR missing when filter requested)
+            if min_market_cap is not None:
+                if item.get("market_cap") is None:
+                    skip = True
+                elif item["market_cap"] < min_market_cap:
+                    skip = True
+
+            # P/E ratio filter (max - exclude higher PER OR missing when filter requested)
+            if not skip and max_per is not None:
+                if item.get("per") is None:
+                    skip = True
+                elif item["per"] > max_per:
+                    skip = True
+
+            # P/B ratio filter (max - exclude higher PBR OR missing when filter requested)
+            if not skip and max_pbr is not None:
+                if item.get("pbr") is None:
+                    skip = True
+                elif item["pbr"] > max_pbr:
+                    skip = True
+
+            # Dividend yield filter (min - exclude lower yield OR missing when filter requested)
+            if not skip and min_dividend_yield is not None:
+                if item.get("dividend_yield") is None:
+                    skip = True
+                elif item["dividend_yield"] < min_dividend_yield:
+                    skip = True
+
+            # RSI filter (max - exclude overbought OR missing when filter requested)
+            if not skip and max_rsi is not None:
+                if item.get("rsi") is None:
+                    skip = True
+                elif item["rsi"] > max_rsi:
+                    skip = True
+
+            if not skip:
+                filtered.append(item)
+
+        return filtered
+
+    def _sort_and_limit(
+        results: list[dict[str, Any]],
+        sort_by: str,
+        sort_order: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Sort and limit results."""
+        if not results:
+            return []
+
+        # Map sort_by to result field
+        sort_field_map = {
+            "volume": "volume",
+            "market_cap": "market_cap",
+            "change_rate": "change_rate",
+            "dividend_yield": "dividend_yield",
+        }
+        field = sort_field_map.get(sort_by, "volume")
+
+        # Sort
+        reverse = sort_order == "desc"
+        results.sort(key=lambda x: x.get(field, 0) or 0, reverse=reverse)
+
+        # Limit
+        return results[:limit]
+
+    def _build_screen_response(
+        results: list[dict[str, Any]],
+        total_count: int,
+        filters_applied: dict[str, Any],
+        market: str,
+    ) -> dict[str, Any]:
+        """Build the final screening response."""
+        return {
+            "results": results,
+            "total_count": total_count,
+            "returned_count": len(results),
+            "filters_applied": filters_applied,
+            "market": market,
+            "timestamp": datetime.datetime.now(UTC).isoformat(),
+        }
+
+    async def _screen_kr(
+        market: str,
+        asset_type: str | None,
+        category: str | None,
+        min_market_cap: float | None,
+        max_per: float | None,
+        max_pbr: float | None,
+        min_dividend_yield: float | None,
+        max_rsi: float | None,
+        sort_by: str,
+        sort_order: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Screen Korean market stocks/ETFs."""
+        min_dividend_yield_input, min_dividend_yield_normalized = (
+            _normalize_dividend_yield_threshold(min_dividend_yield)
+        )
+
+        filters_applied = {
+            "market": market,
+            "asset_type": asset_type,
+            "category": category,
+        }
+
+        # If category specified with asset_type=None, auto-limit to ETFs
+        if category is not None and asset_type is None:
+            asset_type = "etf"
+            filters_applied["asset_type"] = "etf"
+
+        # Fetch candidates from KRX
+        candidates = []
+
+        if asset_type is None or asset_type == "stock":
+            # Fetch stocks from both KOSPI and KOSDAQ, or just one market
+            if market == "kospi":
+                candidates.extend(await fetch_stock_all_cached(market="STK"))
+            elif market == "kosdaq":
+                candidates.extend(await fetch_stock_all_cached(market="KSQ"))
+            else:  # "kr" - both markets
+                candidates.extend(await fetch_stock_all_cached(market="STK"))
+                candidates.extend(await fetch_stock_all_cached(market="KSQ"))
+
+        if asset_type is None or asset_type == "etf":
+            # ETFs are KOSPI-listed, skip for kosdaq market
+            if market != "kosdaq":
+                # Fetch ETFs
+                etfs = await fetch_etf_all_cached()
+
+                # Add asset_type and category to ETFs
+                for etf in etfs:
+                    etf["asset_type"] = "etf"
+                    categories = classify_etf_category(
+                        etf["name"], etf.get("index_name", "")
+                    )
+                    # Store first category as primary category (for filtering/display)
+                    etf["category"] = categories[0] if categories else "기타"
+                    # Store all categories for filtering
+                    etf["categories"] = categories
+
+                # Filter by category if specified
+                if category:
+                    etfs = [
+                        etf
+                        for etf in etfs
+                        if any(
+                            cat.lower() == category.lower()
+                            for cat in etf.get("categories", [])
+                        )
+                    ]
+
+            candidates.extend(etfs)
+
+        # Normalize candidate data structure
+        for item in candidates:
+            if "change_rate" not in item:
+                item["change_rate"] = 0.0
+
+            # Add market for reference
+            if "market" not in item:
+                item["market"] = "kr"
+
+            # Add asset_type field if not already set (stocks don't have it by default)
+            if "asset_type" not in item:
+                # ETFs already have asset_type set from source
+                # Remaining items are stocks
+                item["asset_type"] = "stock"
+
+        # Merge batch valuation data from KRX (single cached call)
+        valuation_market = {"kospi": "STK", "kosdaq": "KSQ"}.get(market, "ALL")
+        try:
+            valuations = await fetch_valuation_all_cached(market=valuation_market)
+            for item in candidates:
+                code = item.get("short_code") or item.get("code", "")
+                val = valuations.get(code, {})
+                if item.get("per") is None:
+                    item["per"] = val.get("per")
+                if item.get("pbr") is None:
+                    item["pbr"] = val.get("pbr")
+                if item.get("dividend_yield") is None:
+                    item["dividend_yield"] = val.get("dividend_yield")
+        except Exception:
+            pass
+
+        # Apply advanced filters (subset due to API limits)
+        advanced_filters_applied = {
+            "min_market_cap": min_market_cap,
+            "max_per": max_per,
+            "max_pbr": max_pbr,
+            "min_dividend_yield": min_dividend_yield_normalized,
+            "max_rsi": max_rsi,
+        }
+
+        # Only trigger advanced data fetch for RSI (PER/dividend now batch-loaded)
+        if max_rsi is not None:
+            subset_limit = min(len(candidates), limit * 3, 150)
+            subset = candidates[:subset_limit]
+
+            # Fetch RSI in parallel (PER/dividend already batch-loaded from KRX)
+            semaphore = asyncio.Semaphore(10)
+
+            async def fetch_advanced_data(item: dict[str, Any]):
+                async with semaphore:
+                    item_copy = item.copy()
+                    code = item["code"]
+
+                    # Calculate RSI if needed
+                    if max_rsi is not None and item_copy.get("rsi") is None:
+                        try:
+                            df = await _fetch_ohlcv_for_indicators(
+                                code, "equity_kr", count=50
+                            )
+                            if not df.empty and "close" in df.columns:
+                                rsi_result = _calculate_rsi(df["close"])
+                                if rsi_result and "14" in rsi_result:
+                                    item_copy["rsi"] = rsi_result["14"]
+                        except Exception:
+                            pass
+
+                    return item_copy
+
+            # Parallel fetch with timeout, ignore individual failures
+            try:
+                subset_results = await asyncio.wait_for(
+                    asyncio.gather(
+                        *[fetch_advanced_data(item) for item in subset],
+                        return_exceptions=True,
+                    ),
+                    timeout=30.0,
+                )
+                # Merge RSI data back into candidates (preserving batch valuation data)
+                for i, result in enumerate(subset_results):
+                    if (
+                        not isinstance(result, Exception)
+                        and result.get("rsi") is not None
+                    ):
+                        candidates[i]["rsi"] = result["rsi"]
+            except TimeoutError:
+                pass
+            except Exception:
+                pass
+
+        filters_applied.update(advanced_filters_applied)
+        filters_applied["sort_by"] = sort_by
+        filters_applied["sort_order"] = sort_order
+        if min_dividend_yield_input is not None:
+            filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
+        if min_dividend_yield_normalized is not None:
+            filters_applied["min_dividend_yield_normalized"] = (
+                min_dividend_yield_normalized
+            )
+
+        # Apply basic filters
+        filtered = _apply_basic_filters(
+            candidates,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=max_pbr,
+            min_dividend_yield=min_dividend_yield_normalized,
+            max_rsi=max_rsi,
+        )
+
+        # Sort and limit
+        results = _sort_and_limit(filtered, sort_by, sort_order, limit)
+
+        # total_count is filter-passed count (before sort/limit)
+        return _build_screen_response(results, len(filtered), filters_applied, market)
+
+    async def _screen_us(
+        market: str,
+        asset_type: str | None,
+        category: str | None,
+        min_market_cap: float | None,
+        max_per: float | None,
+        min_dividend_yield: float | None,
+        max_rsi: float | None,
+        sort_by: str,
+        sort_order: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Screen US market stocks using yfinance screener."""
+        min_dividend_yield_input, min_dividend_yield_normalized = (
+            _normalize_dividend_yield_threshold(min_dividend_yield)
+        )
+
+        filters_applied = {
+            "market": market,
+            "asset_type": asset_type,
+            "category": category,
+        }
+
+        def _complete_filters_applied():
+            """Add all filter values to filters_applied dict."""
+            filters_applied.update(
+                {
+                    "min_market_cap": min_market_cap,
+                    "max_per": max_per,
+                    "min_dividend_yield": min_dividend_yield_normalized,
+                    "max_rsi": max_rsi,
+                    "sort_by": sort_by,
+                    "sort_order": sort_order,
+                }
+            )
+            if min_dividend_yield_input is not None:
+                filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
+            if min_dividend_yield_normalized is not None:
+                filters_applied["min_dividend_yield_normalized"] = (
+                    min_dividend_yield_normalized
+                )
+
+        try:
+            from yfinance.screener import EquityQuery
+
+            conditions = []
+            if min_market_cap is not None:
+                conditions.append(
+                    EquityQuery("gte", ["intradaymarketcap", min_market_cap])
+                )
+            if max_per is not None:
+                conditions.append(
+                    EquityQuery("lte", ["peratio.lasttwelvemonths", max_per])
+                )
+            if min_dividend_yield is not None:
+                conditions.append(
+                    EquityQuery(
+                        "gte", ["forward_dividend_yield", min_dividend_yield_normalized]
+                    )
+                )
+            if category:
+                conditions.append(EquityQuery("eq", ["sector", category]))
+
+            # Build query object with tree structure
+            # Always add region='us' filter for US market
+            # EquityQuery does not accept empty lists, so we always include region filter
+            conditions.append(EquityQuery("eq", ["region", "us"]))
+            # If only one condition, use it directly; otherwise wrap in AND
+            if len(conditions) == 1:
+                query = conditions[0]
+            else:
+                query = EquityQuery("and", conditions)
+
+            # Map sort_by to screener field
+            sort_field_map = {
+                "volume": "dayvolume",
+                "market_cap": "intradaymarketcap",
+                "change_rate": "percentchange",
+                "dividend_yield": "forward_dividend_yield",
+            }
+            sort_field = sort_field_map.get(sort_by, "dayvolume")
+
+            # If max_rsi is requested, fetch more candidates for post-filtering
+            fetch_size = min(limit * 3, 150) if max_rsi is not None else limit
+
+            # Execute screen query
+            screen_result = await asyncio.to_thread(
+                lambda: yf.screen(
+                    query,
+                    size=fetch_size,
+                    sortField=sort_field,
+                    sortAsc=(sort_order == "asc"),
+                )
+            )
+
+            if screen_result is None:
+                _complete_filters_applied()
+                return _build_screen_response([], 0, filters_applied, market)
+
+            # Parse quotes from screen result dict
+            quotes = (
+                screen_result.get("quotes", [])
+                if isinstance(screen_result, dict)
+                else []
+            )
+            if not quotes:
+                _complete_filters_applied()
+                return _build_screen_response([], 0, filters_applied, market)
+
+            # Map response columns to internal format
+            results = []
+            for quote in quotes:
+                result = {
+                    "code": quote.get("symbol"),
+                    "name": quote.get("shortname") or quote.get("longname"),
+                    "close": quote.get("lastprice"),
+                    "change_rate": quote.get("percentchange", 0),
+                    "volume": quote.get("dayvolume", 0),
+                    "market_cap": quote.get("intradaymarketcap", 0),
+                    "per": quote.get("peratio"),
+                    "dividend_yield": quote.get("forward_dividend_yield"),
+                    "market": "us",
+                }
+                results.append(result)
+
+            # Apply RSI filter if needed
+            if max_rsi is not None:
+                semaphore = asyncio.Semaphore(10)
+
+                async def calculate_rsi_for_stock(item: dict[str, Any]):
+                    async with semaphore:
+                        item_copy = item.copy()
+                        symbol = item["code"]
+
+                        try:
+                            df = await _fetch_ohlcv_for_indicators(
+                                symbol, "us", count=50
+                            )
+                            if not df.empty and "close" in df.columns:
+                                rsi_result = _calculate_rsi(df["close"])
+                                if rsi_result and "14" in rsi_result:
+                                    item_copy["rsi"] = rsi_result["14"]
+                        except Exception:
+                            pass
+
+                        return item_copy
+
+                # Parallel RSI calculation with return_exceptions
+                try:
+                    results_with_rsi = await asyncio.gather(
+                        *[calculate_rsi_for_stock(item) for item in results],
+                        return_exceptions=True,
+                    )
+                    # Filter out exceptions and update results
+                    results = [
+                        r for r in results_with_rsi if not isinstance(r, Exception)
+                    ]
+                except Exception:
+                    pass
+
+                # Apply RSI filter
+                results = _apply_basic_filters(
+                    results,
+                    min_market_cap=None,  # Already filtered by screener
+                    max_per=None,  # Already filtered by screener
+                    min_dividend_yield=None,  # Already filtered by screener
+                    max_rsi=max_rsi,
+                )
+
+                # Save pre-limit count (total that passed filters)
+                pre_limit_count = len(results)
+
+                # Re-sort and limit after RSI filtering
+                results = _sort_and_limit(results, sort_by, sort_order, limit)
+
+                _complete_filters_applied()
+
+                return _build_screen_response(
+                    results, pre_limit_count, filters_applied, market
+                )
+
+            _complete_filters_applied()
+
+            # Try to get total from screen_result if available
+            pre_limit_count = (
+                screen_result.get("total", len(results))
+                if isinstance(screen_result, dict)
+                else len(results)
+            )
+            return _build_screen_response(
+                results, pre_limit_count, filters_applied, market
+            )
+        except ImportError:
+            return _error_payload(
+                source="yfinance",
+                message="yfinance screener module not available. Install latest version of yfinance.",
+            )
+        except Exception as exc:
+            return _error_payload(
+                source="yfinance",
+                message=str(exc),
+            )
+
+    async def _screen_crypto(
+        market: str,
+        asset_type: str | None,
+        category: str | None,
+        min_market_cap: float | None,
+        max_per: float | None,
+        min_dividend_yield: float | None,
+        max_rsi: float | None,
+        sort_by: str,
+        sort_order: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Screen crypto market coins using Upbit."""
+        min_dividend_yield_input, min_dividend_yield_normalized = (
+            _normalize_dividend_yield_threshold(min_dividend_yield)
+        )
+
+        filters_applied = {
+            "market": market,
+            "asset_type": asset_type,
+            "category": category,
+        }
+
+        # Fetch top traded coins from Upbit
+        candidates = await upbit_service.fetch_top_traded_coins(fiat="KRW")
+
+        # Normalize candidate data structure
+        for item in candidates:
+            # Save original market code (coin symbol like KRW-BTC) for RSI calculation
+            item["original_market"] = item.get("market")
+
+            # Add market for reference
+            item["market"] = "crypto"
+
+            # Calculate change_rate from signed_change_rate
+            if "change_rate" not in item:
+                item["change_rate"] = item.get("signed_change_rate", 0)
+
+            # Use acc_trade_price_24h as market_cap (liquidity indicator)
+            if "market_cap" not in item:
+                item["market_cap"] = item.get("acc_trade_price_24h", 0)
+
+        # Apply RSI filter if needed (subset due to API limits)
+        if max_rsi is not None:
+            subset_limit = min(len(candidates), limit * 3, 150)
+            subset = candidates[:subset_limit]
+
+            semaphore = asyncio.Semaphore(10)
+
+            async def calculate_rsi_for_coin(item: dict[str, Any]):
+                async with semaphore:
+                    item_copy = item.copy()
+                    # Use saved original market code (coin symbol like KRW-BTC)
+                    market_code = item["original_market"]
+
+                    try:
+                        df = await _fetch_ohlcv_for_indicators(
+                            market_code, "crypto", count=50
+                        )
+                        if not df.empty and "close" in df.columns:
+                            rsi_result = _calculate_rsi(df["close"])
+                            if rsi_result and "14" in rsi_result:
+                                item_copy["rsi"] = rsi_result["14"]
+                    except Exception:
+                        pass
+
+                    return item_copy
+
+            # Parallel RSI calculation with timeout
+            try:
+                subset = await asyncio.wait_for(
+                    asyncio.gather(*[calculate_rsi_for_coin(item) for item in subset]),
+                    timeout=30.0,
+                )
+                # Update candidates with RSI data
+                for i, coin in enumerate(subset[: len(candidates)]):
+                    candidates[i].update(coin)
+            except TimeoutError:
+                pass
+            except Exception:
+                pass
+
+        filters_applied.update(
+            {
+                "min_market_cap": min_market_cap,
+                "max_per": max_per,
+                "min_dividend_yield": min_dividend_yield_normalized,
+                "max_rsi": max_rsi,
+                "sort_by": sort_by,
+                "sort_order": sort_order,
+            }
+        )
+        if min_dividend_yield_input is not None:
+            filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
+        if min_dividend_yield_normalized is not None:
+            filters_applied["min_dividend_yield_normalized"] = (
+                min_dividend_yield_normalized
+            )
+
+        # Apply basic filters
+        filtered = _apply_basic_filters(
+            candidates,
+            min_market_cap=min_market_cap,
+            max_per=None,  # Not applicable for crypto
+            min_dividend_yield=None,  # Not applicable for crypto
+            max_rsi=max_rsi,
+        )
+
+        # Sort and limit
+        results = _sort_and_limit(filtered, sort_by, sort_order, limit)
+
+        # total_count is filter-passed count (before sort/limit)
+        return _build_screen_response(results, len(filtered), filters_applied, market)
+
+    @mcp.tool(
+        name="screen_stocks",
+        description=(
+            "Screen stocks across different markets (KR/US/Crypto) with various filters. "
+            "KR market uses KRX for stocks/ETFs + Naver Finance for valuation metrics. "
+            "Supports KOSPI/KOSDAQ sub-market filtering (use market='kospi' or 'kosdaq'). "
+            "US market uses yfinance screener. "
+            "Crypto market uses Upbit top traded coins. "
+            "Supports filtering by market cap, P/E ratio, P/B ratio, dividend yield, RSI. "
+            "Supports sorting by volume, market cap, change rate, dividend yield."
+        ),
+    )
+    async def screen_stocks(
+        market: Literal["kr", "kospi", "kosdaq", "us", "crypto"] = "kr",
+        asset_type: Literal["stock", "etf", "etn"] | None = None,
+        category: str | None = None,
+        sort_by: Literal[
+            "volume", "market_cap", "change_rate", "dividend_yield"
+        ] = "volume",
+        sort_order: Literal["asc", "desc"] = "desc",
+        min_market_cap: float | None = None,
+        max_per: float | None = None,
+        max_pbr: float | None = None,
+        min_dividend_yield: float | None = None,
+        max_rsi: float | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Screen stocks across different markets with filters.
+
+        Args:
+            market: Market to screen ("kr", "kospi", "kosdaq", "us", "crypto")
+            asset_type: Asset type ("stock", "etf", "etn") - only applicable to KR
+            category: Category filter (ETF categories for KR, sector for US)
+            sort_by: Sort criteria ("volume", "market_cap", "change_rate", "dividend_yield")
+            sort_order: Sort order ("asc" or "desc")
+            min_market_cap: Minimum market cap filter (억원 for KR, USD for US, KRW for crypto)
+            max_per: Maximum P/E ratio filter
+            max_pbr: Maximum P/B ratio filter
+            min_dividend_yield: Minimum dividend yield filter (decimal, e.g., 0.03 for 3%)
+            max_rsi: Maximum RSI filter (0-100, filters out overbought)
+            limit: Maximum number of results to return (1-50)
+
+        Returns:
+            Dictionary with:
+            - results: List of screened stocks with all available data
+            - total_count: Total candidates before filtering
+            - returned_count: Number of results after filtering
+            - filters_applied: Dictionary of all filters that were applied
+            - timestamp: ISO timestamp of when screening was performed
+        """
+        # Normalize and validate inputs
+        market = _normalize_screen_market(market)
+        asset_type = _normalize_asset_type(asset_type)
+        sort_by = _normalize_sort_by(sort_by)
+        sort_order = _normalize_sort_order(sort_order)
+
+        # Validate limit
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        if limit > 50:
+            limit = 50
+
+        # Validate filters (raise ValueError for unsupported combinations)
+        _validate_screen_filters(
+            market=market,
+            asset_type=asset_type,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            min_dividend_yield=min_dividend_yield,
+            max_rsi=max_rsi,
+            sort_by=sort_by,
+        )
+
+        # Route to market-specific screening
+        if market in ("kr", "kospi", "kosdaq"):
+            return await _screen_kr(
+                market=market,
+                asset_type=asset_type,
+                category=category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                max_pbr=max_pbr,
+                min_dividend_yield=min_dividend_yield,
+                max_rsi=max_rsi,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=limit,
+            )
+        elif market == "us":
+            return await _screen_us(
+                market=market,
+                asset_type=asset_type,
+                category=category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                min_dividend_yield=min_dividend_yield,
+                max_rsi=max_rsi,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=limit,
+            )
+        elif market == "crypto":
+            return await _screen_crypto(
+                market=market,
+                asset_type=asset_type,
+                category=category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                min_dividend_yield=min_dividend_yield,
+                max_rsi=max_rsi,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=limit,
+            )
+        else:
+            return _error_payload(
+                source="screen_stocks",
+                message=f"Unsupported market: {market}",
+            )
+
     # Export nested functions to module globals for testability
     globals()["_preview_order"] = _preview_order
     globals()["_get_support_resistance_impl"] = _get_support_resistance_impl
@@ -9137,3 +9967,11 @@ def register_tools(mcp: FastMCP) -> None:
     globals()["_map_kis_status"] = _map_kis_status
     globals()["_calculate_order_summary"] = _calculate_order_summary
     globals()["_normalize_market_type_to_external"] = _normalize_market_type_to_external
+    globals()["_screen_kr"] = _screen_kr
+    globals()["_screen_us"] = _screen_us
+    globals()["_screen_crypto"] = _screen_crypto
+    globals()["_build_screen_response"] = _build_screen_response
+    globals()["_validate_screen_filters"] = _validate_screen_filters
+    globals()["_normalize_dividend_yield_threshold"] = (
+        _normalize_dividend_yield_threshold
+    )

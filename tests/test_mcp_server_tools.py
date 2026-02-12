@@ -6776,3 +6776,56 @@ class TestSymbolNormalizationIntegration:
         # Test with string input
         result = await tools["get_news"]("12450", market="kr", limit=10)
         assert "012450" in str(result)
+
+
+@pytest.mark.asyncio
+async def test_screen_stocks_smoke(monkeypatch):
+    """Smoke test for screen_stocks tool registration and basic invocation."""
+    tools = build_tools()
+
+    assert "screen_stocks" in tools
+
+    mock_krx_stocks = [
+        {
+            "code": "005930",
+            "name": "삼성전자",
+            "close": 80000.0,
+            "market": "KOSPI",
+            "market_cap": 480000000000000,
+        },
+        {
+            "code": "000660",
+            "name": "SK하이닉스",
+            "close": 150000.0,
+            "market": "KOSPI",
+            "market_cap": 15000000000000,
+        },
+    ]
+
+    async def mock_fetch_stock_all_cached(market):
+        return mock_krx_stocks
+
+    async def mock_fetch_etf_all_cached():
+        return []
+
+    monkeypatch.setattr(
+        mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+    )
+    monkeypatch.setattr(mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
+
+    result = await tools["screen_stocks"](market="kr", limit=5)
+
+    assert isinstance(result, dict)
+    assert "results" in result
+    assert "total_count" in result
+    assert "returned_count" in result
+    assert "filters_applied" in result
+    assert "timestamp" in result
+    assert "market" in result
+
+    # Verify filters_applied includes required keys
+    assert "market" in result["filters_applied"]
+    assert "sort_by" in result["filters_applied"]
+    assert "sort_order" in result["filters_applied"]
+
+    assert isinstance(result["results"], list)
