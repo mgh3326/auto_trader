@@ -7386,291 +7386,6 @@ class TestGetDcaStatus:
             steps=[mock_step1, mock_step2],
         )
 
-        assert result["success"] is True
-        assert result["dry_run"] is False
-        assert "execution_results" in result
-
-        assert len(result["execution_results"]) == 2
-        assert all(r["success"] for r in result["execution_results"])
-
-        assert len(place_order_calls) == 2
-        for call in place_order_calls:
-            assert call["kwargs"]["dry_run"] is False
-            assert call["kwargs"]["side"] == "buy"
-            assert call["kwargs"]["amount"] > 1_000_000
-
-    @pytest.mark.asyncio
-    async def test_place_order_high_amount_kr_equity(self, monkeypatch):
-        """place_order accepts high-amount orders (> 1M KRW) for KR equity."""
-        tools = build_tools()
-
-        async def fetch_quote(symbol):
-            return {"price": 100000.0}
-
-        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
-
-        result = await tools["place_order"](
-            symbol="005930",
-            side="buy",
-            order_type="market",
-            amount=5_000_000.0,
-            dry_run=True,
-        )
-
-        assert result["success"] is True
-        assert result["dry_run"] is True
-        assert result["quantity"] == 50
-
-    @pytest.mark.asyncio
-    async def test_place_order_high_amount_us_equity(self, monkeypatch):
-        """place_order accepts high-amount orders for US equity."""
-        tools = build_tools()
-
-        async def fetch_quote(symbol):
-            return {"price": 205.0}
-
-        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
-
-        result = await tools["place_order"](
-            symbol="AAPL",
-            side="buy",
-            order_type="market",
-            amount=2_600_000.0,
-            dry_run=True,
-        )
-
-        assert result["success"] is True
-        assert result["dry_run"] is True
-
-    @pytest.mark.asyncio
-    async def test_place_order_high_amount_crypto(self, monkeypatch):
-        """place_order accepts high-amount orders for crypto."""
-        tools = build_tools()
-
-        mock = AsyncMock()
-        mock.fetch_multiple_current_prices = AsyncMock(
-            return_value={"KRW-BTC": 50000000.0}
-        )
-        mock.fetch_my_coins = AsyncMock(
-            return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
-        )
-
-        monkeypatch.setattr(
-            mcp_tools.upbit_service,
-            "fetch_multiple_current_prices",
-            mock.fetch_multiple_current_prices,
-        )
-        monkeypatch.setattr(
-            mcp_tools.upbit_service,
-            "fetch_my_coins",
-            mock.fetch_my_coins,
-        )
-
-        result = await tools["place_order"](
-            symbol="KRW-BTC",
-            side="buy",
-            order_type="market",
-            amount=5_000_000.0,
-            dry_run=True,
-        )
-
-        assert result["success"] is True
-        assert result["dry_run"] is True
-        assert result["quantity"] > 0
-
-    async def test_place_order_high_amount_kr_equity_dry_run_false(self, monkeypatch):
-        """High-amount KR equity order executes when dry_run=False."""
-        tools = build_tools()
-
-        order_calls: list[dict[str, object]] = []
-
-        class MockKISClient:
-            async def inquire_integrated_margin(self):
-                return {
-                    "stck_cash_ord_psbl_amt": "100000000.0",
-                    "usd_ord_psbl_amt": "0",
-                    "dnca_tot_amt": "0",
-                }
-
-            async def order_korea_stock(self, stock_code, order_type, quantity, price):
-                order_calls.append(
-                    {
-                        "stock_code": stock_code,
-                        "order_type": order_type,
-                        "quantity": quantity,
-                        "price": price,
-                    }
-                )
-                return {"odno": "kr-12345", "ord_qty": quantity}
-
-        async def fetch_quote(symbol):
-            return {"price": 120000.0}
-
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
-
-        result = await tools["place_order"](
-            symbol="005930",
-            side="buy",
-            order_type="limit",
-            amount=5_500_000.0,
-            price=110000.0,
-            dry_run=False,
-        )
-
-        assert result["success"] is True
-        assert result["dry_run"] is False
-        assert result["preview"]["quantity"] == 50
-        assert len(order_calls) == 1
-        assert order_calls[0]["stock_code"] == "005930"
-        assert order_calls[0]["order_type"] == "buy"
-        assert order_calls[0]["quantity"] == 50
-        assert order_calls[0]["price"] == 110000
-
-    async def test_place_order_high_amount_us_equity_dry_run_false(self, monkeypatch):
-        """High-amount US equity order executes when dry_run=False."""
-        tools = build_tools()
-
-        buy_calls: list[dict[str, object]] = []
-
-        class MockKISClient:
-            async def inquire_integrated_margin(self):
-                return {
-                    "stck_cash_ord_psbl_amt": "0",
-                    "usd_ord_psbl_amt": "3000000.0",
-                    "dnca_tot_amt": "0",
-                }
-
-            async def buy_overseas_stock(self, symbol, exchange_code, quantity, price):
-                buy_calls.append(
-                    {
-                        "symbol": symbol,
-                        "exchange_code": exchange_code,
-                        "quantity": quantity,
-                        "price": price,
-                    }
-                )
-                return {"odno": "us-12345", "success": True}
-
-        async def fetch_quote(symbol):
-            return {"price": 250.0}
-
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
-        monkeypatch.setattr(mcp_tools, "get_exchange_by_symbol", lambda _: "NASD")
-
-        result = await tools["place_order"](
-            symbol="AAPL",
-            side="buy",
-            order_type="limit",
-            amount=2_500_000.0,
-            price=250.0,
-            dry_run=False,
-        )
-
-        assert result["success"] is True
-        assert result["dry_run"] is False
-        assert result["preview"]["quantity"] == 10000
-        assert len(buy_calls) == 1
-        assert buy_calls[0]["symbol"] == "AAPL"
-        assert buy_calls[0]["exchange_code"] == "NASD"
-        assert buy_calls[0]["quantity"] == 10000
-        assert buy_calls[0]["price"] == 250.0
-
-    async def test_place_order_high_amount_crypto_dry_run_false(self, monkeypatch):
-        """High-amount crypto order executes when dry_run=False."""
-        tools = build_tools()
-
-        mock = AsyncMock()
-        mock.fetch_multiple_current_prices = AsyncMock(
-            return_value={"KRW-BTC": 50000000.0}
-        )
-        mock.fetch_my_coins = AsyncMock(
-            return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
-        )
-        mock.place_market_buy_order = AsyncMock(
-            return_value={"uuid": "crypto-12345", "side": "bid"}
-        )
-
-        monkeypatch.setattr(
-            mcp_tools.upbit_service,
-            "fetch_multiple_current_prices",
-            mock.fetch_multiple_current_prices,
-        )
-        monkeypatch.setattr(
-            mcp_tools.upbit_service,
-            "fetch_my_coins",
-            mock.fetch_my_coins,
-        )
-        monkeypatch.setattr(
-            mcp_tools.upbit_service,
-            "place_market_buy_order",
-            mock.place_market_buy_order,
-        )
-
-        result = await tools["place_order"](
-            symbol="KRW-BTC",
-            side="buy",
-            order_type="market",
-            amount=5_000_000.0,
-            dry_run=False,
-        )
-
-        assert result["success"] is True
-        assert result["dry_run"] is False
-        assert result["preview"]["quantity"] == pytest.approx(0.1, rel=1e-6)
-        mock.place_market_buy_order.assert_awaited_once_with("KRW-BTC", "5000000")
-
-    async def test_place_order_daily_limit_blocks_high_amount_order(self, monkeypatch):
-        """Daily order limit is enforced even for high-amount orders."""
-        tools = build_tools()
-
-        mock = AsyncMock()
-        mock.fetch_multiple_current_prices = AsyncMock(
-            return_value={"KRW-BTC": 50000000.0}
-        )
-        mock.fetch_my_coins = AsyncMock(
-            return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
-        )
-        mock.place_market_buy_order = AsyncMock(
-            return_value={"uuid": "crypto-12345", "side": "bid"}
-        )
-
-        monkeypatch.setattr(
-            mcp_tools.upbit_service,
-            "fetch_multiple_current_prices",
-            mock.fetch_multiple_current_prices,
-        )
-        monkeypatch.setattr(
-            mcp_tools.upbit_service,
-            "fetch_my_coins",
-            mock.fetch_my_coins,
-        )
-        monkeypatch.setattr(
-            mcp_tools.upbit_service,
-            "place_market_buy_order",
-            mock.place_market_buy_order,
-        )
-        monkeypatch.setattr(
-            mcp_tools.settings, "redis_url", "redis://localhost:6379/0", raising=False
-        )
-
-        class FakeRedisClient:
-            async def get(self, key):
-                return "20"
-
-        monkeypatch.setattr(
-            "redis.asyncio.from_url", AsyncMock(return_value=FakeRedisClient())
-        )
-
-        result = await tools["place_order"](
-            symbol="KRW-BTC",
-            side="buy",
-            order_type="market",
-            amount=5_000_000.0,
-            dry_run=False,
-        )
-
         mock_plan_created = DcaPlan(
             id=100,
             user_id=1,
@@ -7796,3 +7511,294 @@ class TestGetDcaStatus:
         # Verify monkeypatched implementation is called
         assert result["success"] is True
         assert result["plans"][0]["symbol"] == "MONKEY-PATCHED"
+
+
+class TestPlaceOrderHighAmount:
+    """Tests for place_order with high-amount orders."""
+
+    @staticmethod
+    def build_tools():
+        mcp = DummyMCP()
+        mcp_tools.register_tools(mcp)
+        return mcp.tools
+
+    @pytest.mark.asyncio
+    async def test_place_order_high_amount_kr_equity(self, monkeypatch):
+        """place_order accepts high-amount orders (> 1M KRW) for KR equity."""
+        tools = build_tools()
+
+        async def fetch_quote(symbol):
+            return {"price": 100000.0}
+
+        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+
+        result = await tools["place_order"](
+            symbol="005930",
+            side="buy",
+            order_type="market",
+            amount=5_000_000.0,
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+        assert result["quantity"] == 50
+
+    @pytest.mark.asyncio
+    async def test_place_order_high_amount_us_equity(self, monkeypatch):
+        """place_order accepts high-amount orders for US equity."""
+        tools = build_tools()
+
+        async def fetch_quote(symbol):
+            return {"price": 205.0}
+
+        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
+
+        result = await tools["place_order"](
+            symbol="AAPL",
+            side="buy",
+            order_type="market",
+            amount=2_600_000.0,
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+
+    @pytest.mark.asyncio
+    async def test_place_order_high_amount_crypto(self, monkeypatch):
+        """place_order accepts high-amount orders for crypto."""
+        tools = build_tools()
+
+        mock = AsyncMock()
+        mock.fetch_multiple_current_prices = AsyncMock(
+            return_value={"KRW-BTC": 50000000.0}
+        )
+        mock.fetch_my_coins = AsyncMock(
+            return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
+        )
+
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "fetch_multiple_current_prices",
+            mock.fetch_multiple_current_prices,
+        )
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "fetch_my_coins",
+            mock.fetch_my_coins,
+        )
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="market",
+            amount=5_000_000.0,
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+        assert result["quantity"] > 0
+
+    @pytest.mark.asyncio
+    async def test_place_order_high_amount_kr_equity_dry_run_false(self, monkeypatch):
+        """High-amount KR equity order executes when dry_run=False."""
+        tools = build_tools()
+
+        order_calls: list[dict[str, object]] = []
+
+        class MockKISClient:
+            async def inquire_integrated_margin(self):
+                return {
+                    "stck_cash_ord_psbl_amt": "100000000.0",
+                    "usd_ord_psbl_amt": "0",
+                    "dnca_tot_amt": "0",
+                }
+
+            async def order_korea_stock(self, stock_code, order_type, quantity, price):
+                order_calls.append(
+                    {
+                        "stock_code": stock_code,
+                        "order_type": order_type,
+                        "quantity": quantity,
+                        "price": price,
+                    }
+                )
+                return {"odno": "kr-12345", "ord_qty": quantity}
+
+        async def fetch_quote(symbol):
+            return {"price": 120000.0}
+
+        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+
+        result = await tools["place_order"](
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            amount=5_500_000.0,
+            price=110000.0,
+            dry_run=False,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is False
+        assert result["preview"]["quantity"] == 50
+        assert len(order_calls) == 1
+        assert order_calls[0]["stock_code"] == "005930"
+        assert order_calls[0]["order_type"] == "buy"
+        assert order_calls[0]["quantity"] == 50
+        assert order_calls[0]["price"] == 110000
+
+    @pytest.mark.asyncio
+    async def test_place_order_high_amount_us_equity_dry_run_false(self, monkeypatch):
+        """High-amount US equity order executes when dry_run=False."""
+        tools = build_tools()
+
+        buy_calls: list[dict[str, object]] = []
+
+        class MockKISClient:
+            async def inquire_integrated_margin(self):
+                return {
+                    "stck_cash_ord_psbl_amt": "0",
+                    "usd_ord_psbl_amt": "3000000.0",
+                    "dnca_tot_amt": "0",
+                }
+
+            async def buy_overseas_stock(self, symbol, exchange_code, quantity, price):
+                buy_calls.append(
+                    {
+                        "symbol": symbol,
+                        "exchange_code": exchange_code,
+                        "quantity": quantity,
+                        "price": price,
+                    }
+                )
+                return {"odno": "us-12345", "success": True}
+
+        async def fetch_quote(symbol):
+            return {"price": 250.0}
+
+        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
+        monkeypatch.setattr(mcp_tools, "get_exchange_by_symbol", lambda _: "NASD")
+
+        result = await tools["place_order"](
+            symbol="AAPL",
+            side="buy",
+            order_type="limit",
+            amount=2_500_000.0,
+            price=250.0,
+            dry_run=False,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is False
+        assert result["preview"]["quantity"] == 10000
+        assert len(buy_calls) == 1
+        assert buy_calls[0]["symbol"] == "AAPL"
+        assert buy_calls[0]["exchange_code"] == "NASD"
+        assert buy_calls[0]["quantity"] == 10000
+        assert buy_calls[0]["price"] == 250.0
+
+    @pytest.mark.asyncio
+    async def test_place_order_high_amount_crypto_dry_run_false(self, monkeypatch):
+        """High-amount crypto order executes when dry_run=False."""
+        tools = build_tools()
+
+        mock = AsyncMock()
+        mock.fetch_multiple_current_prices = AsyncMock(
+            return_value={"KRW-BTC": 50000000.0}
+        )
+        mock.fetch_my_coins = AsyncMock(
+            return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
+        )
+        mock.place_market_buy_order = AsyncMock(
+            return_value={"uuid": "crypto-12345", "side": "bid"}
+        )
+
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "fetch_multiple_current_prices",
+            mock.fetch_multiple_current_prices,
+        )
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "fetch_my_coins",
+            mock.fetch_my_coins,
+        )
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "place_market_buy_order",
+            mock.place_market_buy_order,
+        )
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="market",
+            amount=5_000_000.0,
+            dry_run=False,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is False
+        assert result["preview"]["quantity"] == pytest.approx(0.1, rel=1e-6)
+        mock.place_market_buy_order.assert_awaited_once_with("KRW-BTC", "5000000")
+
+    @pytest.mark.asyncio
+    async def test_place_order_daily_limit_blocks_high_amount_order(self, monkeypatch):
+        """Daily order limit is enforced even for high-amount orders."""
+        tools = build_tools()
+
+        mock = AsyncMock()
+        mock.fetch_multiple_current_prices = AsyncMock(
+            return_value={"KRW-BTC": 50000000.0}
+        )
+        mock.fetch_my_coins = AsyncMock(
+            return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
+        )
+        mock.place_market_buy_order = AsyncMock(
+            return_value={"uuid": "crypto-12345", "side": "bid"}
+        )
+
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "fetch_multiple_current_prices",
+            mock.fetch_multiple_current_prices,
+        )
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "fetch_my_coins",
+            mock.fetch_my_coins,
+        )
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "place_market_buy_order",
+            mock.place_market_buy_order,
+        )
+        monkeypatch.setattr(
+            mcp_tools.settings, "redis_url", "redis://localhost:6379/0", raising=False
+        )
+
+        class FakeRedisClient:
+            async def get(self, key):
+                return "20"
+
+        monkeypatch.setattr(
+            "redis.asyncio.from_url", AsyncMock(return_value=FakeRedisClient())
+        )
+
+        result = await tools["place_order"](
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="market",
+            amount=5_000_000.0,
+            dry_run=False,
+        )
+
+        assert result["success"] is False
+        assert "Daily order limit" in result.get(
+            "error", ""
+        ) or "Daily order limit" in result.get("message", "")
