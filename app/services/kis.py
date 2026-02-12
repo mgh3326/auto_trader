@@ -165,47 +165,26 @@ class KISClient:
         )
         logging.info(f"토큰 설정 완료: {settings.kis_access_token[:10]}...")
 
-    async def volume_rank(
-        self, market: str = "J", limit: int = 30, include_etf: bool = False
-    ) -> list[dict]:
+    async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
         await self._ensure_token()
         hdr = self._hdr_base | {
             "authorization": f"Bearer {settings.kis_access_token}",
             "tr_id": VOL_TR,
         }
 
-        if include_etf:
-            params = {
-                "FID_COND_MRKT_DIV_CODE": market,
-                "FID_COND_SCR_DIV_CODE": "20171",
-                "FID_INPUT_ISCD": "0000",
-                "FID_DIV_CLS_CODE": "0",
-                "FID_BLNG_CLS_CODE": "1",
-                "FID_TRGT_CLS_CODE": "0",
-                "FID_TRGT_EXLS_CLS_CODE": "0",
-                "FID_INPUT_PRICE_1": "0",
-                "FID_INPUT_PRICE_2": "1000000",
-                "FID_VOL_CNT": "100000",
-                "FID_INPUT_DATE_1": "",
-            }
-            logging.debug(f"volume_rank: ETF enabled, market={market}, limit={limit}")
-        else:
-            params = {
-                "FID_COND_MRKT_DIV_CODE": market,
-                "FID_COND_SCR_DIV_CODE": "20171",
-                "FID_INPUT_ISCD": "0000",
-                "FID_DIV_CLS_CODE": "0",
-                "FID_BLNG_CLS_CODE": "1",
-                "FID_TRGT_CLS_CODE": "11111111",
-                "FID_TRGT_EXLS_CLS_CODE": "0000001100",
-                "FID_INPUT_PRICE_1": "0",
-                "FID_INPUT_PRICE_2": "1000000",
-                "FID_VOL_CNT": "100000",
-                "FID_INPUT_DATE_1": "",
-            }
-            logging.debug(
-                f"volume_rank: ETF excluded (default), market={market}, limit={limit}"
-            )
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": "1",
+            "FID_TRGT_CLS_CODE": "11111111",
+            "FID_TRGT_EXLS_CLS_CODE": "0000001100",
+            "FID_INPUT_PRICE_1": "0",
+            "FID_INPUT_PRICE_2": "1000000",
+            "FID_VOL_CNT": "100000",
+            "FID_INPUT_DATE_1": "",
+        }
 
         async with httpx.AsyncClient() as cli:
             r = await cli.get(
@@ -232,11 +211,11 @@ class KISClient:
         if js["msg_cd"] == "EGW00123":
             await self._token_manager.clear_token()
             await self._ensure_token()
-            return await self.volume_rank(market, limit, include_etf)
+            return await self.volume_rank(market, limit)
         elif js["msg_cd"] == "EGW00121":
             await self._token_manager.clear_token()
             await self._ensure_token()
-            return await self.volume_rank(market, limit, include_etf)
+            return await self.volume_rank(market, limit)
         raise RuntimeError(
             js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
         )
@@ -291,141 +270,61 @@ class KISClient:
             "tr_id": FLUCTUATION_RANK_TR,
         }
 
-        down_sort_codes = ["3", "1", "4", "2"]
-        up_sort_code = "0"
+        # FID_PRC_CLS_CODE: "0"=전체, "5"=하락
+        prc_cls_code = "5" if direction == "down" else "0"
+        # FID_RANK_SORT_CLS_CODE: "0"=양방향 (모든 방향 포함)
+        rank_sort_cls_code = "0"
 
-        if direction == "down":
-            # Try all candidate sort codes and select the best one
-            sort_code = down_sort_codes[0]
-            logging.debug(
-                f"fluctuation_rank: Using down sort code '{sort_code}' (primary, will evaluate all candidates)"
+        logging.debug(
+            f"fluctuation_rank: direction={direction}, "
+            f"FID_PRC_CLS_CODE={prc_cls_code}, "
+            f"FID_RANK_SORT_CLS_CODE={rank_sort_cls_code}"
+        )
+
+        async with httpx.AsyncClient() as cli:
+            r = await cli.get(
+                f"{BASE}{FLUCTUATION_RANK_URL}",
+                headers=hdr,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": market,
+                    "FID_COND_SCR_DIV_CODE": "20170",
+                    "FID_INPUT_ISCD": "0000",
+                    "FID_DIV_CLS_CODE": "0",
+                    "FID_RANK_SORT_CLS_CODE": rank_sort_cls_code,
+                    "FID_INPUT_CNT_1": "0",
+                    "FID_PRC_CLS_CODE": prc_cls_code,
+                    "FID_INPUT_PRICE_1": "",
+                    "FID_INPUT_PRICE_2": "",
+                    "FID_VOL_CNT": "",
+                    "FID_TRGT_CLS_CODE": "0",
+                    "FID_TRGT_EXLS_CLS_CODE": "0",
+                    "FID_RSFL_RATE1": "",
+                    "FID_RSFL_RATE2": "",
+                },
+                timeout=5,
             )
-        else:
-            sort_code = up_sort_code
-            logging.debug(f"fluctuation_rank: Using up sort code '{sort_code}'")
+        try:
+            js = r.json()
+        except Exception:
+            raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
 
-        async def _fetch_with_sort_code(sort_cls_code: str) -> dict:
-            async with httpx.AsyncClient() as cli:
-                r = await cli.get(
-                    f"{BASE}{FLUCTUATION_RANK_URL}",
-                    headers=hdr,
-                    params={
-                        "FID_COND_MRKT_DIV_CODE": market,
-                        "FID_COND_SCR_DIV_CODE": "20170",
-                        "FID_INPUT_ISCD": "0000",
-                        "FID_DIV_CLS_CODE": "0",
-                        "FID_RANK_SORT_CLS_CODE": sort_cls_code,
-                        "FID_INPUT_CNT_1": "0",
-                        "FID_PRC_CLS_CODE": "0",
-                        "FID_INPUT_PRICE_1": "",
-                        "FID_INPUT_PRICE_2": "",
-                        "FID_VOL_CNT": "",
-                        "FID_TRGT_CLS_CODE": "0",
-                        "FID_TRGT_EXLS_CLS_CODE": "0",
-                        "FID_RSFL_RATE1": "",
-                        "FID_RSFL_RATE2": "",
-                    },
-                    timeout=5,
-                )
-            try:
-                return r.json()
-            except Exception:
-                raise RuntimeError(
-                    f"KIS API non-JSON response (status={r.status_code})"
-                )
-
-        js = await _fetch_with_sort_code(sort_code)
-
-        if js["rt_cd"] != "0":
-            if js["msg_cd"] in ("EGW00123", "EGW00121"):
-                await self._token_manager.clear_token()
-                await self._ensure_token()
-                js = await _fetch_with_sort_code(sort_code)
-            if js["rt_cd"] != "0":
-                raise RuntimeError(
-                    js.get("msg1")
-                    or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
-                )
-
-        results = js["output"]
-
-        if direction == "up":
-            results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
+        if js["rt_cd"] == "0":
+            results = js["output"]
+            # Sort: up → descending (highest first), down → ascending (lowest first)
+            if direction == "up":
+                results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
+            else:
+                results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
             return results[:limit]
-        elif direction == "down":
-            # Try all candidate sort codes and select the best one
-            candidates_data = []
-            
-            for candidate_code in down_sort_codes:
-                if candidate_code == sort_code:
-                    js_candidate = js
-                else:
-                    js_candidate = await _fetch_with_sort_code(candidate_code)
-                
-                if js_candidate["rt_cd"] != "0":
-                    # Skip failed responses
-                    logging.debug(
-                        f"fluctuation_rank: Candidate code '{candidate_code}' failed "
-                        f"(msg_cd={js_candidate.get('msg_cd', 'unknown')})"
-                    )
-                    continue
-                
-                candidate_results = js_candidate["output"]
-                negatives = [r for r in candidate_results if float(r.get("prdy_ctrt", 0)) < 0]
-                
-                # Calculate metrics for this candidate
-                negative_count = len(negatives)
-                min_rate = min(
-                    [float(r.get("prdy_ctrt", 0)) for r in negatives],
-                    default=0.0
-                )
-                max_rate = max(
-                    [float(r.get("prdy_ctrt", 0)) for r in candidate_results],
-                    default=0.0
-                )
-                
-                candidates_data.append({
-                    "code": candidate_code,
-                    "negatives": negatives,
-                    "count": negative_count,
-                    "min_rate": min_rate,
-                    "max_rate": max_rate,
-                })
-                
-                sample_3 = [(r.get('hts_kor_isnm', ''), float(r.get('prdy_ctrt', 0))) for r in candidate_results[:3]]
-                logging.debug(
-                    f"fluctuation_rank: Candidate '{candidate_code}' - "
-                    f"{negative_count} negatives, "
-                    f"min_rate={min_rate:.2f}, "
-                    f"max_rate={max_rate:.2f}, "
-                    f"sample_3={sample_3}"
-                )
-            
-            # Select best candidate: most negatives, then lowest (most negative) min_rate
-            if candidates_data:
-                best = max(candidates_data, key=lambda c: (c["count"], -c["min_rate"]))
-                negatives = best["negatives"]
-                
-                logging.info(
-                    f"fluctuation_rank: Selected best sort code '{best['code']}' with "
-                    f"{best['count']} negatives, min_rate={best['min_rate']:.2f}"
-                )
-            else:
-                # All candidates failed
-                logging.warning("fluctuation_rank: All candidate sort codes failed, returning empty array")
-                return []
-            
-            if negatives:
-                negatives.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
-                return negatives[:limit]
-            else:
-                logging.warning(
-                    f"fluctuation_rank: No negative values found across all candidates, "
-                    f"returning empty array. Tried codes: {down_sort_codes}"
-                )
-                return []
 
-        return results[:limit]
+        if js["msg_cd"] in ("EGW00123", "EGW00121"):
+            await self._token_manager.clear_token()
+            await self._ensure_token()
+            return await self.fluctuation_rank(market, direction, limit)
+
+        raise RuntimeError(
+            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+        )
 
     async def foreign_buying_rank(
         self, market: str = "J", limit: int = 30
