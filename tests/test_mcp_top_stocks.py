@@ -29,7 +29,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self, market, limit, include_etf=False):
+            async def volume_rank(self, market, limit):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
@@ -70,7 +70,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self, market, limit, include_etf=False):
+            async def volume_rank(self, market, limit):
                 return [
                     {
                         "mksc_shrn_iscd": "900210",
@@ -98,7 +98,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self, market, limit, include_etf=False):
+            async def volume_rank(self, market, limit):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
@@ -330,7 +330,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self, market, limit, include_etf=False):
+            async def volume_rank(self, market, limit):
                 return [{"stck_shrn_iscd": "005930"}] * 100
 
         monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
@@ -346,7 +346,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self, market, limit, include_etf=False):
+            async def volume_rank(self, market, limit):
                 return []
 
         monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
@@ -362,7 +362,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self, market, limit, include_etf=False):
+            async def volume_rank(self, market, limit):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
@@ -645,7 +645,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self, market, limit, include_etf=False):
+            async def volume_rank(self, market, limit):
                 raise RuntimeError("KIS API error")
 
         monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
@@ -722,7 +722,7 @@ class TestMCPTopStocks:
 
 
 @pytest.mark.asyncio
-class TestMCPEtfAndLosers:
+class TestMCPLosers:
     async def test_get_top_stocks_kr_losers_returns_only_negatives(self, monkeypatch):
         tools = build_tools()
 
@@ -790,8 +790,8 @@ class TestMCPEtfAndLosers:
 
 
 @pytest.mark.asyncio
-class TestMCPEmptyLosersAndETFErrors:
-    """Tests for empty losers and ETF error payloads"""
+class TestMCPEmptyLosersErrors:
+    """Tests for empty losers error payloads"""
 
     async def test_get_top_stocks_kr_losers_empty_returns_error_payload(
         self, monkeypatch

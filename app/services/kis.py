@@ -310,12 +310,16 @@ class KISClient:
 
         if js["rt_cd"] == "0":
             results = js["output"]
-            # Sort: up → descending (highest first), down → ascending (lowest first)
+            # Sort: up → descending (highest first), down → ascending (lowest first).
             if direction == "up":
                 results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
-            else:
-                results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
-            return results[:limit]
+                return results[:limit]
+
+            negatives = [
+                item for item in results if float(item.get("prdy_ctrt", 0)) < 0
+            ]
+            negatives.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
+            return negatives[:limit]
 
         if js["msg_cd"] in ("EGW00123", "EGW00121"):
             await self._token_manager.clear_token()
