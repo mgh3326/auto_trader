@@ -20,6 +20,13 @@ DAILY_ITEMCHARTPRICE_URL = (
 VOL_TR = "FHPST01710000"  # 실전 전용
 DAILY_ITEMCHARTPRICE_TR = "FHKST03010100"  # (일봉·주식·실전/모의 공통)
 
+MARKET_CAP_RANK_URL = "/uapi/domestic-stock/v1/ranking/market-cap"
+MARKET_CAP_RANK_TR = "FHPST01740000"
+FLUCTUATION_RANK_URL = "/uapi/domestic-stock/v1/ranking/fluctuation"
+FLUCTUATION_RANK_TR = "FHPST01700000"
+FOREIGN_BUYING_RANK_URL = "/uapi/domestic-stock/v1/ranking/foreign-buying"
+FOREIGN_BUYING_RANK_TR = "FHPST01720000"
+
 # 호가 조회 관련 URL 및 TR ID
 ORDERBOOK_URL = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
 ORDERBOOK_TR = "FHKST01010200"  # 주식현재가호가상체결
@@ -196,6 +203,129 @@ class KISClient:
             await self._token_manager.clear_token()
             await self._ensure_token()
             return await self.volume_rank()
+        raise RuntimeError(js["msg1"])
+
+    async def market_cap_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
+        await self._ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": MARKET_CAP_RANK_TR,
+        }
+        async with httpx.AsyncClient() as cli:
+            r = await cli.get(
+                f"{BASE}{MARKET_CAP_RANK_URL}",
+                headers=hdr,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": market,
+                    "FID_COND_SCR_DIV_CODE": "20171",
+                    "FID_INPUT_ISCD": "0000",
+                    "FID_DIV_CLS_CODE": "0",
+                    "FID_BLNG_CLS_CODE": "1",
+                    "FID_TRGT_CLS_CODE": "11111111",
+                    "FID_TRGT_EXLS_CLS_CODE": "0000001100",
+                    "FID_INPUT_PRICE_1": "0",
+                    "FID_INPUT_PRICE_2": "1000000",
+                    "FID_VOL_CNT": "100000",
+                    "FID_INPUT_DATE_1": "",
+                },
+                timeout=5,
+            )
+        js = r.json()
+        if js["rt_cd"] == "0":
+            return js["output"][:limit]
+        if js["msg_cd"] == "EGW00123":
+            await self._token_manager.clear_token()
+            await self._ensure_token()
+            return await self.market_cap_rank(market, limit)
+        elif js["msg_cd"] == "EGW00121":
+            await self._token_manager.clear_token()
+            await self._ensure_token()
+            return await self.market_cap_rank(market, limit)
+        raise RuntimeError(js["msg1"])
+
+    async def fluctuation_rank(
+        self, market: str = "J", direction: str = "up", limit: int = 30
+    ) -> list[dict]:
+        await self._ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": FLUCTUATION_RANK_TR,
+        }
+        async with httpx.AsyncClient() as cli:
+            r = await cli.get(
+                f"{BASE}{FLUCTUATION_RANK_URL}",
+                headers=hdr,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": market,
+                    "FID_COND_SCR_DIV_CODE": "20171",
+                    "FID_INPUT_ISCD": "0000",
+                    "FID_DIV_CLS_CODE": "0",
+                    "FID_BLNG_CLS_CODE": "1",
+                    "FID_TRGT_CLS_CODE": "11111111",
+                    "FID_TRGT_EXLS_CLS_CODE": "0000001100",
+                    "FID_INPUT_PRICE_1": "0",
+                    "FID_INPUT_PRICE_2": "1000000",
+                    "FID_VOL_CNT": "100000",
+                    "FID_INPUT_DATE_1": "",
+                },
+                timeout=5,
+            )
+        js = r.json()
+        if js["rt_cd"] == "0":
+            results = js["output"][:limit]
+            if direction == "up":
+                results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
+            elif direction == "down":
+                results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
+            return results
+        if js["msg_cd"] == "EGW00123":
+            await self._token_manager.clear_token()
+            await self._ensure_token()
+            return await self.fluctuation_rank(market, direction, limit)
+        elif js["msg_cd"] == "EGW00121":
+            await self._token_manager.clear_token()
+            await self._ensure_token()
+            return await self.fluctuation_rank(market, direction, limit)
+        raise RuntimeError(js["msg1"])
+
+    async def foreign_buying_rank(
+        self, market: str = "J", limit: int = 30
+    ) -> list[dict]:
+        await self._ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": FOREIGN_BUYING_RANK_TR,
+        }
+        async with httpx.AsyncClient() as cli:
+            r = await cli.get(
+                f"{BASE}{FOREIGN_BUYING_RANK_URL}",
+                headers=hdr,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": market,
+                    "FID_COND_SCR_DIV_CODE": "20171",
+                    "FID_INPUT_ISCD": "0000",
+                    "FID_DIV_CLS_CODE": "0",
+                    "FID_BLNG_CLS_CODE": "1",
+                    "FID_TRGT_CLS_CODE": "11111111",
+                    "FID_TRGT_EXLS_CLS_CODE": "0000001100",
+                    "FID_INPUT_PRICE_1": "0",
+                    "FID_INPUT_PRICE_2": "1000000",
+                    "FID_VOL_CNT": "100000",
+                    "FID_INPUT_DATE_1": "",
+                },
+                timeout=5,
+            )
+        js = r.json()
+        if js["rt_cd"] == "0":
+            return js["output"][:limit]
+        if js["msg_cd"] == "EGW00123":
+            await self._token_manager.clear_token()
+            await self._ensure_token()
+            return await self.foreign_buying_rank(market, limit)
+        elif js["msg_cd"] == "EGW00121":
+            await self._token_manager.clear_token()
+            await self._ensure_token()
+            return await self.foreign_buying_rank(market, limit)
         raise RuntimeError(js["msg1"])
 
     async def inquire_price(self, code: str, market: str = "J") -> DataFrame:

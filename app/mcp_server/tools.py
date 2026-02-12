@@ -232,6 +232,15 @@ def _to_optional_int(value: Any) -> int | None:
         return None
 
 
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        if value in (None, ""):
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
 def _normalize_account_key(value: str | None) -> str:
     if not value:
         return ""
@@ -3619,6 +3628,200 @@ async def _fetch_funding_rate(symbol: str, limit: int) -> dict[str, Any]:
                 "negative": "숏이 롱에게 지불 (숏 과열 — 시장이 과도하게 약세)",
             },
         }
+
+
+def _parse_change_rate(value: Any) -> float | None:
+    val = _to_optional_float(value)
+    if val is None:
+        return None
+    return val
+
+
+def _normalize_change_rate_equity(value: Any) -> float:
+    val = _parse_change_rate(value)
+    if val is None:
+        return 0.0
+    return val
+
+
+def _normalize_change_rate_crypto(value: Any) -> float:
+    val = _parse_change_rate(value)
+    if val is None:
+        return 0.0
+    if abs(val) <= 1:
+        return val * 100
+    return val
+
+
+def _classify_kr_asset_type(symbol: str, name: str | None = None) -> str:
+    symbol = symbol.strip().upper()
+    name = (name or "").strip().upper()
+
+    etf_keywords = [
+        "ETF",
+        "ETN",
+        "ETP",
+        "KODEX",
+        "TIGER",
+        "KOSEF",
+        "KINDEX",
+        "ARIRANG",
+        "KBSTAR",
+        "HANARO",
+        "ACE",
+        "RISE",
+        "SOL",
+        "PLUS",
+    ]
+
+    is_etf = (
+        any(keyword in name for keyword in etf_keywords)
+        or any(c.isalpha() for c in symbol)
+        or symbol.startswith(("1", "3", "4"))
+    )
+    return "etf" if is_etf else "stock"
+
+
+def _map_kr_row(row: dict, rank: int) -> dict[str, Any]:
+    symbol = row.get("stck_shrn_iscd") or row.get("mksc_shrn_iscd", "")
+    name = row.get("hts_kor_isnm", "")
+    price = _to_float(row.get("stck_prpr"))
+    change_rate = _normalize_change_rate_equity(row.get("prdy_ctrt"))
+    volume = _to_int(row.get("acml_vol"))
+    market_cap = _to_float(row.get("hts_avls"))
+    trade_amount = _to_float(row.get("acml_tr_pbmn"))
+
+    return {
+        "rank": rank,
+        "symbol": symbol,
+        "name": name,
+        "price": price,
+        "change_rate": round(change_rate, 2) if change_rate is not None else None,
+        "volume": volume,
+        "market_cap": market_cap,
+        "trade_amount": trade_amount,
+    }
+
+
+def _map_us_row(row: dict, rank: int) -> dict[str, Any]:
+    symbol = row.get("symbol", "")
+    name = row.get("longName", "") or row.get("shortName", symbol)
+    price = _to_float(row.get("regularMarketPrice"))
+    prev_close = _to_float(row.get("previousClose"))
+
+    if price is not None and prev_close is not None and prev_close > 0:
+        change_rate = ((price - prev_close) / prev_close) * 100
+    else:
+        change_rate = _to_float(row.get("regularMarketChangePercent", 0))
+
+    volume = _to_int(row.get("regularMarketVolume"))
+    market_cap = _to_float(row.get("marketCap"))
+    trade_amount = None
+
+    return {
+        "rank": rank,
+        "symbol": symbol,
+        "name": name,
+        "price": price,
+        "change_rate": round(change_rate, 2) if change_rate is not None else None,
+        "volume": volume,
+        "market_cap": market_cap,
+        "trade_amount": trade_amount,
+    }
+
+
+def _map_crypto_row(row: dict, rank: int) -> dict[str, Any]:
+    symbol = row.get("market", "")
+    name = symbol.replace("KRW-", "") if symbol.startswith("KRW-") else symbol
+    price = _to_float(row.get("trade_price"))
+    change_rate = _normalize_change_rate_crypto(row.get("signed_change_rate"))
+    volume = _to_float(row.get("acc_trade_volume_24h"))
+    market_cap = None
+    trade_amount = _to_float(row.get("acc_trade_price_24h"))
+
+    return {
+        "rank": rank,
+        "symbol": symbol,
+        "name": name,
+        "price": price,
+        "change_rate": round(change_rate, 2) if change_rate is not None else None,
+        "volume": volume,
+        "market_cap": market_cap,
+        "trade_amount": trade_amount,
+    }
+
+
+async def _get_us_rankings(
+    ranking_type: str, limit: int
+) -> tuple[list[dict[str, Any]], str]:
+    screener_ids = {
+        "volume": "most_actives",
+        "gainers": "day_gainers",
+        "losers": "day_losers",
+    }
+
+    screener_id = screener_ids.get(ranking_type)
+
+    if ranking_type == "market_cap":
+        query = yf.EquityQuery(
+            "and",
+            [
+                yf.EquityQuery("eq", ["region", "us"]),
+                yf.EquityQuery("gte", ["intradaymarketcap", 2000000000]),
+                yf.EquityQuery("gte", ["intradayprice", 5]),
+                yf.EquityQuery("gt", ["dayvolume", 15000]),
+            ],
+        )
+        # Filters: 시총≥2B (유동성 확보), 가격≥$5 (페니스탁 제외), 거래량>15000 (비정상 저거래량 제외)
+        results = yf.screen(
+            query, size=limit, sortField="intradaymarketcap", sortAsc=False
+        )
+    else:
+        results = yf.screen(screener_id)
+
+    rankings = []
+    if isinstance(results, dict):
+        quotes = results.get("quotes", [])
+        if not quotes:
+            raise RuntimeError(
+                f"Empty quotes response for ranking_type='{ranking_type}' from yfinance"
+            )
+        for i, row in enumerate(quotes[:limit], 1):
+            rankings.append(_map_us_row(row, i))
+    else:
+        if results.empty:
+            raise RuntimeError(
+                f"Empty DataFrame response for ranking_type='{ranking_type}' from yfinance"
+            )
+        for i, row in enumerate(results.head(limit).to_dict(orient="records"), 1):
+            rankings.append(_map_us_row(row, i))
+
+    return rankings, "yfinance"
+
+
+async def _get_crypto_rankings(
+    ranking_type: str, limit: int
+) -> tuple[list[dict[str, Any]], str]:
+    coins = await upbit_service.fetch_top_traded_coins()
+
+    if ranking_type == "volume":
+        sorted_coins = coins
+    elif ranking_type == "gainers":
+        sorted_coins = sorted(
+            coins, key=lambda x: float(x.get("signed_change_rate", 0)), reverse=True
+        )
+    elif ranking_type == "losers":
+        sorted_coins = sorted(
+            coins, key=lambda x: float(x.get("signed_change_rate", 0))
+        )
+    else:
+        sorted_coins = coins
+
+    rankings = []
+    for i, coin in enumerate(sorted_coins[:limit], 1):
+        rankings.append(_map_crypto_row(coin, i))
+
+    return rankings, "upbit"
 
 
 def register_tools(mcp: FastMCP) -> None:
@@ -7639,6 +7842,139 @@ def register_tools(mcp: FastMCP) -> None:
             return 0.0
 
         return numerator / denominator
+
+    @mcp.tool(
+        name="get_top_stocks",
+        description=(
+            "Get top stocks by ranking type across different markets (KR/US/Crypto). "
+            "KR: volume, market_cap, gainers, losers, foreigners "
+            "US: volume, market_cap, gainers, losers "
+            "Crypto: volume, gainers, losers. "
+            "Supports asset_type filter for KR (stock/etf)."
+        ),
+    )
+    async def get_top_stocks(
+        market: str = "kr",
+        ranking_type: str = "volume",
+        asset_type: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        market = (market or "").strip().lower()
+        ranking_type = (ranking_type or "").strip().lower()
+
+        limit_clamped = max(1, min(limit, 50))
+
+        supported_combinations = {
+            ("kr", "volume"),
+            ("kr", "market_cap"),
+            ("kr", "gainers"),
+            ("kr", "losers"),
+            ("kr", "foreigners"),
+            ("us", "volume"),
+            ("us", "market_cap"),
+            ("us", "gainers"),
+            ("us", "losers"),
+            ("crypto", "volume"),
+            ("crypto", "gainers"),
+            ("crypto", "losers"),
+        }
+
+        key = (market, ranking_type)
+        if key not in supported_combinations:
+            return _error_payload(
+                source="validation",
+                message=f"Unsupported combination: market={market}, ranking_type={ranking_type}",
+                query=f"market={market}, ranking_type={ranking_type}",
+            )
+
+        if asset_type is not None:
+            asset_type_normalized = asset_type.strip().lower()
+            if asset_type_normalized not in ("stock", "etf"):
+                return _error_payload(
+                    source="validation",
+                    message=f"asset_type must be 'stock' or 'etf', got '{asset_type}'",
+                    query=f"asset_type={asset_type}",
+                )
+
+        rankings: list[dict[str, Any]] = []
+        source = {
+            "kr": "kis",
+            "us": "yfinance",
+            "crypto": "upbit",
+        }.get(market, "")
+
+        try:
+            if market == "kr":
+                kis = KISClient()
+
+                if ranking_type == "volume":
+                    data = await kis.volume_rank()
+                    source = "kis"
+                elif ranking_type == "market_cap":
+                    data = await kis.market_cap_rank(market="J", limit=limit_clamped)
+                    source = "kis"
+                elif ranking_type in ("gainers", "losers"):
+                    direction = "up" if ranking_type == "gainers" else "down"
+                    data = await kis.fluctuation_rank(
+                        market="J", direction=direction, limit=limit_clamped
+                    )
+                    source = "kis"
+                elif ranking_type == "foreigners":
+                    data = await kis.foreign_buying_rank(
+                        market="J", limit=limit_clamped
+                    )
+                    source = "kis"
+                else:
+                    data = []
+
+                filtered_rank = 1
+                for row in data[:limit_clamped]:
+                    mapped = _map_kr_row(row, filtered_rank)
+
+                    if asset_type is not None:
+                        symbol = row.get("stck_shrn_iscd") or row.get(
+                            "mksc_shrn_iscd", ""
+                        )
+                        row_asset_type = _classify_kr_asset_type(
+                            symbol, row.get("hts_kor_isnm", "")
+                        )
+                        if row_asset_type != asset_type_normalized:
+                            continue
+
+                    rankings.append(mapped)
+                    filtered_rank += 1
+
+            elif market == "us":
+                rankings, source = await _get_us_rankings(ranking_type, limit_clamped)
+
+            elif market == "crypto":
+                rankings, source = await _get_crypto_rankings(
+                    ranking_type, limit_clamped
+                )
+
+            else:
+                return _error_payload(
+                    source="validation",
+                    message=f"Unsupported market: {market}",
+                    query=f"market={market}",
+                )
+
+        except Exception as exc:
+            return _error_payload(
+                source=source,
+                message=str(exc),
+            )
+
+        kst_tz = datetime.timezone(datetime.timedelta(hours=9))
+        return {
+            "rankings": rankings,
+            "total_count": len(rankings),
+            "market": market,
+            "ranking_type": ranking_type,
+            "asset_type": asset_type,
+            "timestamp": datetime.datetime.now(kst_tz).isoformat(),
+            "source": source,
+        }
 
     @mcp.tool(
         name="get_dividends",
