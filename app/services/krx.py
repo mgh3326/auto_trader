@@ -94,8 +94,18 @@ async def _fetch_krx_data(
     if idxIndClssCd is not None:
         data["idxIndClssCd"] = idxIndClssCd
 
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Referer": "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(KRX_API_URL, data=data)
+        response = await client.post(KRX_API_URL, data=data, headers=headers)
         response.raise_for_status()
 
         # KRX returns JSON with "OutBlock_1" or "output" key containing the data
