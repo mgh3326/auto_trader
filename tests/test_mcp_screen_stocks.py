@@ -1,6 +1,5 @@
 """Tests for screen_stocks MCP tool."""
 
-import asyncio
 import pytest
 
 from app.mcp_server import tools as mcp_tools
@@ -26,42 +25,44 @@ def build_tools() -> dict[str, object]:
 
 @pytest.fixture
 def mock_krx_stocks():
-    """Mock KRX stock data."""
+    """Mock KRX stock data (market_cap in 억원)."""
     return [
         {
             "code": "005930",
             "name": "삼성전자",
             "close": 80000.0,
             "market": "KOSPI",
-            "market_cap": 480000000000000,
+            "market_cap": 4800000,  # 480조원 = 4,800,000억원
         },
         {
             "code": "000660",
             "name": "SK하이닉스",
             "close": 150000.0,
             "market": "KOSPI",
-            "market_cap": 15000000000000,
+            "market_cap": 150000,  # 15조원 = 150,000억원
         },
     ]
 
 
 @pytest.fixture
 def mock_krx_etfs():
-    """Mock KRX ETF data."""
+    """Mock KRX ETF data (market_cap in 억원)."""
     return [
         {
             "code": "069500",
             "name": "KODEX 200",
             "close": 45000.0,
             "market": "KOSPI",
-            "market_cap": 4500000000000,
+            "market_cap": 45000,  # 4.5조원 = 45,000억원
+            "index_name": "KOSPI 200",
         },
         {
             "code": "114800",
             "name": "KODEX 반도체",
             "close": 12000.0,
             "market": "KOSPI",
-            "market_cap": 120000000000,
+            "market_cap": 1200,  # 1.2조원 = 1,200억원
+            "index_name": "Wise 반도체지수",
         },
     ]
 
@@ -469,6 +470,63 @@ class TestScreenStocksFilters:
         assert result is not None
         assert result["filters_applied"]["min_market_cap"] == 300000000000
 
+    @pytest.mark.asyncio
+    async def test_kr_min_market_cap_only_no_advanced_queries(
+        self, mock_krx_stocks, monkeypatch
+    ):
+        """Test KR market with min_market_cap only - no advanced queries called."""
+
+        async def mock_fetch_stock_all_cached(market):
+            return mock_krx_stocks
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        # Track whether advanced queries are called
+        naver_finance_called = False
+        ohlcv_fetch_called = False
+
+        async def mock_fetch_valuation(code):
+            nonlocal naver_finance_called
+            naver_finance_called = True
+            return {}
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            nonlocal ohlcv_fetch_called
+            ohlcv_fetch_called = True
+            import pandas as pd
+
+            return pd.DataFrame()
+
+        monkeypatch.setattr(
+            mcp_tools.naver_finance, "fetch_valuation", mock_fetch_valuation
+        )
+        monkeypatch.setattr(
+            mcp_tools, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=100000,  # Only basic filter
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="market_cap",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert result is not None
+        assert result["filters_applied"]["min_market_cap"] == 100000
+        # Verify advanced queries were NOT called
+        assert not naver_finance_called, "Naver Finance should not be called for min_market_cap only"
+        assert not ohlcv_fetch_called, "OHLCV fetch should not be called for min_market_cap only"
+
 
 class TestScreenStocksSorting:
     """Test sorting functionality."""
@@ -590,3 +648,421 @@ class TestScreenStocksLimit:
         assert result is not None
         assert len(result["results"]) <= 5
         assert result["returned_count"] <= 5
+
+
+class TestScreenStocksDividendYieldNormalization:
+    """Test dividend yield input normalization (decimal vs percentage)."""
+
+    @pytest.mark.asyncio
+    async def test_kr_dividend_yield_normalization_decimal_input(
+        self, mock_krx_stocks, monkeypatch
+    ):
+        """Test KR market with decimal dividend yield input (0.03)."""
+
+        async def mock_fetch_stock_all_cached(market):
+            stocks = mock_krx_stocks.copy()
+            for stock in stocks:
+                stock["dividend_yield"] = 0.03
+            return stocks
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=0.03,
+            max_rsi=None,
+            sort_by="dividend_yield",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert result is not None
+        assert result["filters_applied"]["min_dividend_yield_input"] == 0.03
+        assert result["filters_applied"]["min_dividend_yield_normalized"] == 0.03
+
+    @pytest.mark.asyncio
+    async def test_kr_dividend_yield_normalization_percent_input(
+        self, mock_krx_stocks, monkeypatch
+    ):
+        """Test KR market with percentage dividend yield input (3.0)."""
+
+        async def mock_fetch_stock_all_cached(market):
+            stocks = mock_krx_stocks.copy()
+            for stock in stocks:
+                stock["dividend_yield"] = 0.03
+            return stocks
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=3.0,
+            max_rsi=None,
+            sort_by="dividend_yield",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert result is not None
+        assert result["filters_applied"]["min_dividend_yield_input"] == 3.0
+        assert result["filters_applied"]["min_dividend_yield_normalized"] == 0.03
+
+    @pytest.mark.asyncio
+    async def test_kr_dividend_yield_equivalence(self, mock_krx_stocks, monkeypatch):
+        """Test that decimal (0.03) and percent (3.0) inputs produce identical results."""
+
+        async def mock_fetch_stock_all_cached(market):
+            stocks = mock_krx_stocks.copy()
+            for stock in stocks:
+                stock["dividend_yield"] = 0.03
+            return stocks
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        tools = build_tools()
+
+        result_decimal = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=0.03,
+            max_rsi=None,
+            sort_by="dividend_yield",
+            sort_order="desc",
+            limit=20,
+        )
+
+        result_percent = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=3.0,
+            max_rsi=None,
+            sort_by="dividend_yield",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert (
+            result_decimal["filters_applied"]["min_dividend_yield_normalized"]
+            == result_percent["filters_applied"]["min_dividend_yield_normalized"]
+        )
+        assert result_decimal["filters_applied"]["min_dividend_yield_input"] == 0.03
+        assert result_percent["filters_applied"]["min_dividend_yield_input"] == 3.0
+
+    @pytest.mark.asyncio
+    async def test_kr_dividend_yield_none_input(self, mock_krx_stocks, monkeypatch):
+        """Test KR market with None dividend yield input - no input/normalized keys."""
+
+        async def mock_fetch_stock_all_cached(market):
+            return mock_krx_stocks
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert result is not None
+        assert "min_dividend_yield_input" not in result["filters_applied"]
+        assert "min_dividend_yield_normalized" not in result["filters_applied"]
+
+
+class TestScreenStocksPhase2Spec:
+    """Test Phase 2 specification compliance."""
+
+    @pytest.mark.asyncio
+    async def test_kr_etf_category_semiconductor(self, mock_krx_etfs, monkeypatch):
+        """Test KR ETF category filtering with '반도체' category."""
+
+        async def mock_fetch_etf_all_cached():
+            return mock_krx_etfs
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type=None,
+            category="반도체",
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert result is not None
+        assert result["filters_applied"]["asset_type"] == "etf"
+        assert result["filters_applied"]["category"] == "반도체"
+
+        # Verify at least one result matches semiconductor category
+        if len(result["results"]) > 0:
+            semiconductor_found = False
+            for item in result["results"]:
+                assert item.get("asset_type") == "etf", "All results should be ETFs"
+                if "category" in item and "반도체" in item["category"]:
+                    semiconductor_found = True
+                    break
+            assert semiconductor_found, "Should find at least one semiconductor ETF"
+
+    @pytest.mark.asyncio
+    async def test_kr_etf_has_asset_type_and_category(self, mock_krx_etfs, monkeypatch):
+        """Test KR ETF results have asset_type='etf' and category field."""
+
+        async def mock_fetch_etf_all_cached():
+            return mock_krx_etfs
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="etf",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert len(result["results"]) > 0, "Should have ETF results"
+
+        for item in result["results"]:
+            assert item.get("asset_type") == "etf", "All ETFs should have asset_type='etf'"
+            assert "category" in item, "All ETFs should have category field"
+            assert isinstance(item["category"], str), "Category should be a string"
+
+    @pytest.mark.asyncio
+    async def test_kr_market_cap_unit_100m_won(self, mock_krx_stocks, monkeypatch):
+        """Test KR min_market_cap filter uses 억원 (100 million KRW) unit."""
+
+        async def mock_fetch_stock_all_cached(market):
+            # Return different stocks for different markets to avoid duplicates
+            if market == "STK":  # KOSPI
+                return [mock_krx_stocks[0]]  # 삼성전자 only
+            elif market == "KSQ":  # KOSDAQ
+                return [mock_krx_stocks[1]]  # SK하이닉스 only
+            return []
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        tools = build_tools()
+
+        # Filter by min_market_cap=200000 (200,000억원 = 20조원)
+        # Should only return 삼성전자 (4,800,000억원)
+        # SK하이닉스 (150,000억원) should be filtered out
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=200000,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="market_cap",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert result["filters_applied"]["min_market_cap"] == 200000
+        assert result["total_count"] == 1, "Only 삼성전자 should pass filter"
+        assert len(result["results"]) == 1
+        assert result["results"][0]["code"] == "005930"
+        assert result["results"][0]["name"] == "삼성전자"
+        assert result["results"][0]["market_cap"] == 4800000
+
+    @pytest.mark.asyncio
+    async def test_us_early_return_filters_applied_complete(self, monkeypatch):
+        """Test US market early-return includes all filters_applied fields."""
+
+        def mock_screen_none(query, size, sortField, sortAsc):
+            return None
+
+        import yfinance as yf
+
+        monkeypatch.setattr(yf, "screen", mock_screen_none)
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type=None,
+            category=None,
+            min_market_cap=1000000000,
+            max_per=25.0,
+            min_dividend_yield=0.02,
+            max_rsi=70,
+            sort_by="market_cap",
+            sort_order="desc",
+            limit=20,
+        )
+
+        # Verify all filter keys are present even on early return
+        assert "min_market_cap" in result["filters_applied"]
+        assert "max_per" in result["filters_applied"]
+        assert "min_dividend_yield_normalized" in result["filters_applied"]
+        assert "max_rsi" in result["filters_applied"]
+        assert "sort_by" in result["filters_applied"]
+        assert "sort_order" in result["filters_applied"]
+
+    @pytest.mark.asyncio
+    async def test_us_max_rsi_filter_applied(self, mock_yfinance_screen, monkeypatch):
+        """Test US market max_rsi filter is actually applied and total_count is correct."""
+
+        import yfinance as yf
+
+        monkeypatch.setattr(yf, "screen", mock_yfinance_screen)
+
+        # Mock RSI calculation to return different values for different symbols
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            import pandas as pd
+
+            # AAPL: RSI will be ~65 (below 70, passes)
+            # MSFT: RSI will be ~75 (above 70, filtered out)
+            # GOOGL: RSI will be ~60 (below 70, passes)
+            if symbol == "MSFT":
+                # Rising prices -> high RSI
+                return pd.DataFrame(
+                    {
+                        "close": [100 + i * 2 for i in range(50)],
+                        "open": [100 + i * 2 for i in range(50)],
+                        "high": [102 + i * 2 for i in range(50)],
+                        "low": [99 + i * 2 for i in range(50)],
+                        "volume": [1000000 for _ in range(50)],
+                    }
+                )
+            else:
+                # More stable prices -> moderate RSI
+                return pd.DataFrame(
+                    {
+                        "close": [100 + (i % 5) for i in range(50)],
+                        "open": [100 + (i % 5) for i in range(50)],
+                        "high": [102 + (i % 5) for i in range(50)],
+                        "low": [99 + (i % 5) for i in range(50)],
+                        "volume": [1000000 for _ in range(50)],
+                    }
+                )
+
+        monkeypatch.setattr(mcp_tools, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
+
+        tools = build_tools()
+
+        # Request with max_rsi filter
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=70,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["filters_applied"]["max_rsi"] == 70
+        # total_count should be >= returned_count
+        assert result["total_count"] >= result["returned_count"]
+        # At least one stock should be filtered out by RSI
+        # (yfinance mock returns 3, but MSFT should be filtered)
+        assert result["total_count"] <= 3
+        assert result["returned_count"] <= 2  # AAPL and GOOGL should pass
+
+    @pytest.mark.asyncio
+    async def test_limit_zero_error(self):
+        """Test limit=0 raises ValueError."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="limit|between 1 and 50"):
+            await tools["screen_stocks"](
+                market="kr",
+                asset_type="stock",
+                category=None,
+                min_market_cap=None,
+                max_per=None,
+                min_dividend_yield=None,
+                max_rsi=None,
+                sort_by="volume",
+                sort_order="desc",
+                limit=0,
+            )
+
+    @pytest.mark.asyncio
+    async def test_limit_over_50_capped(self, mock_krx_stocks, monkeypatch):
+        """Test limit>50 is capped to 50 (not an error, for backward compatibility)."""
+
+        async def mock_fetch_stock_all_cached(market):
+            return mock_krx_stocks
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=100,
+        )
+
+        # Should not raise error, but cap to 50
+        assert result is not None
+        assert result["returned_count"] <= 50

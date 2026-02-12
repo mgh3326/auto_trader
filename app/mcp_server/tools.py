@@ -8,12 +8,14 @@ import json
 import logging
 import re
 import time
+from datetime import UTC
 from typing import TYPE_CHECKING, Any, Literal
 
 try:
     import finnhub
 except ImportError:
     finnhub = None
+
 import httpx
 import numpy as np
 import pandas as pd
@@ -63,6 +65,11 @@ from data.stocks_info import (
     get_us_stocks_data,
 )
 from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
+
+try:
+    from app.services.disclosures.dart import list_filings
+except ImportError:
+    list_filings = None
 
 logger = logging.getLogger(__name__)
 
@@ -9170,6 +9177,26 @@ def register_tools(mcp: FastMCP) -> None:
             return "desc"
         return sort_order.lower()
 
+    def _normalize_dividend_yield_threshold(
+        value: float | None,
+    ) -> tuple[float | None, float | None]:
+        """Normalize dividend yield threshold to decimal format.
+
+        Args:
+            value: Dividend yield value - accepts both decimal (0.03) and percent (3.0) formats
+
+        Returns:
+            Tuple of (input_value, normalized_value):
+            - input_value: The original input value as provided
+            - normalized_value: The normalized decimal value (0.0-1.0 range)
+                              If value > 1, it's treated as percent and divided by 100
+        """
+        if value is None:
+            return None, None
+        # Treat values > 1 as percentage (e.g., 3.0 -> 0.03)
+        normalized_value = value / 100 if value > 1 else value
+        return value, normalized_value
+
     def _validate_screen_filters(
         market: str,
         asset_type: str | None,
@@ -9306,6 +9333,10 @@ def register_tools(mcp: FastMCP) -> None:
         limit: int,
     ) -> dict[str, Any]:
         """Screen Korean market stocks/ETFs."""
+        min_dividend_yield_input, min_dividend_yield_normalized = (
+            _normalize_dividend_yield_threshold(min_dividend_yield)
+        )
+
         filters_applied = {
             "market": market,
             "asset_type": asset_type,
@@ -9331,6 +9362,17 @@ def register_tools(mcp: FastMCP) -> None:
             # Fetch ETFs
             etfs = await fetch_etf_all_cached()
 
+            # Add asset_type and category to ETFs
+            for etf in etfs:
+                etf["asset_type"] = "etf"
+                categories = classify_etf_category(
+                    etf["name"], etf.get("index_name", "")
+                )
+                # Store first category as primary category (for filtering/display)
+                etf["category"] = categories[0] if categories else "기타"
+                # Store all categories for filtering
+                etf["categories"] = categories
+
             # Filter by category if specified
             if category:
                 etfs = [
@@ -9338,9 +9380,7 @@ def register_tools(mcp: FastMCP) -> None:
                     for etf in etfs
                     if any(
                         cat.lower() == category.lower()
-                        for cat in classify_etf_category(
-                            etf["name"], etf.get("index_name", "")
-                        )
+                        for cat in etf.get("categories", [])
                     )
                 ]
 
@@ -9357,23 +9397,23 @@ def register_tools(mcp: FastMCP) -> None:
             if "market" not in item:
                 item["market"] = "kr"
 
-            # Add asset_type field
+            # Add asset_type field if not already set (stocks don't have it by default)
             if "asset_type" not in item:
-                # Infer asset_type from candidate
-                if item.get("code", "").startswith(("011", "251", "012")):
-                    item["asset_type"] = "etf"
-                else:
-                    item["asset_type"] = "stock"
+                # ETFs already have asset_type set from source
+                # Remaining items are stocks
+                item["asset_type"] = "stock"
 
         # Apply advanced filters (subset due to API limits)
         advanced_filters_applied = {
             "min_market_cap": min_market_cap,
             "max_per": max_per,
-            "min_dividend_yield": min_dividend_yield,
+            "min_dividend_yield": min_dividend_yield_normalized,
             "max_rsi": max_rsi,
         }
 
-        if any([min_market_cap, max_per, min_dividend_yield, max_rsi]):
+        # Only trigger advanced data fetch for filters that require external APIs
+        # min_market_cap is already in basic data, so exclude it from trigger
+        if any([max_per, min_dividend_yield, max_rsi]):
             subset_limit = min(len(candidates), limit * 3, 150)
             subset = candidates[:subset_limit]
 
@@ -9419,7 +9459,7 @@ def register_tools(mcp: FastMCP) -> None:
                 )
                 # Filter out failed results (exceptions)
                 candidates = [r for r in subset_results if not isinstance(r, Exception)]
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             except Exception:
                 pass
@@ -9427,13 +9467,19 @@ def register_tools(mcp: FastMCP) -> None:
         filters_applied.update(advanced_filters_applied)
         filters_applied["sort_by"] = sort_by
         filters_applied["sort_order"] = sort_order
+        if min_dividend_yield_input is not None:
+            filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
+        if min_dividend_yield_normalized is not None:
+            filters_applied["min_dividend_yield_normalized"] = (
+                min_dividend_yield_normalized
+            )
 
         # Apply basic filters
         filtered = _apply_basic_filters(
             candidates,
             min_market_cap=min_market_cap,
             max_per=max_per,
-            min_dividend_yield=min_dividend_yield,
+            min_dividend_yield=min_dividend_yield_normalized,
             max_rsi=max_rsi,
         )
 
@@ -9456,11 +9502,34 @@ def register_tools(mcp: FastMCP) -> None:
         limit: int,
     ) -> dict[str, Any]:
         """Screen US market stocks using yfinance screener."""
+        min_dividend_yield_input, min_dividend_yield_normalized = (
+            _normalize_dividend_yield_threshold(min_dividend_yield)
+        )
+
         filters_applied = {
             "market": market,
             "asset_type": asset_type,
             "category": category,
         }
+
+        def _complete_filters_applied():
+            """Add all filter values to filters_applied dict."""
+            filters_applied.update(
+                {
+                    "min_market_cap": min_market_cap,
+                    "max_per": max_per,
+                    "min_dividend_yield": min_dividend_yield_normalized,
+                    "max_rsi": max_rsi,
+                    "sort_by": sort_by,
+                    "sort_order": sort_order,
+                }
+            )
+            if min_dividend_yield_input is not None:
+                filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
+            if min_dividend_yield_normalized is not None:
+                filters_applied["min_dividend_yield_normalized"] = (
+                    min_dividend_yield_normalized
+                )
 
         try:
             from yfinance.screener import EquityQuery
@@ -9476,7 +9545,9 @@ def register_tools(mcp: FastMCP) -> None:
                 )
             if min_dividend_yield is not None:
                 conditions.append(
-                    EquityQuery("gte", ["forward_dividend_yield", min_dividend_yield])
+                    EquityQuery(
+                        "gte", ["forward_dividend_yield", min_dividend_yield_normalized]
+                    )
                 )
             if category:
                 conditions.append(EquityQuery("eq", ["sector", category]))
@@ -9500,17 +9571,21 @@ def register_tools(mcp: FastMCP) -> None:
             }
             sort_field = sort_field_map.get(sort_by, "dayvolume")
 
+            # If max_rsi is requested, fetch more candidates for post-filtering
+            fetch_size = min(limit * 3, 150) if max_rsi is not None else limit
+
             # Execute screen query
             screen_result = await asyncio.to_thread(
                 lambda: yf.screen(
                     query,
-                    size=limit,
+                    size=fetch_size,
                     sortField=sort_field,
                     sortAsc=(sort_order == "asc"),
                 )
             )
 
             if screen_result is None:
+                _complete_filters_applied()
                 return _build_screen_response([], 0, filters_applied, market)
 
             # Parse quotes from screen result dict
@@ -9520,6 +9595,7 @@ def register_tools(mcp: FastMCP) -> None:
                 else []
             )
             if not quotes:
+                _complete_filters_applied()
                 return _build_screen_response([], 0, filters_applied, market)
 
             # Map response columns to internal format
@@ -9538,18 +9614,71 @@ def register_tools(mcp: FastMCP) -> None:
                 }
                 results.append(result)
 
-            filters_applied.update(
-                {
-                    "min_market_cap": min_market_cap,
-                    "max_per": max_per,
-                    "min_dividend_yield": min_dividend_yield,
-                    "max_rsi": max_rsi,
-                    "sort_by": sort_by,
-                    "sort_order": sort_order,
-                }
-            )
+            # Apply RSI filter if needed
+            if max_rsi is not None:
+                semaphore = asyncio.Semaphore(10)
 
-            return _build_screen_response(results, len(quotes), filters_applied, market)
+                async def calculate_rsi_for_stock(item: dict[str, Any]):
+                    async with semaphore:
+                        item_copy = item.copy()
+                        symbol = item["code"]
+
+                        try:
+                            df = await _fetch_ohlcv_for_indicators(
+                                symbol, "us", count=50
+                            )
+                            if not df.empty and "close" in df.columns:
+                                rsi_result = _calculate_rsi(df["close"])
+                                if rsi_result and "14" in rsi_result:
+                                    item_copy["rsi"] = rsi_result["14"]
+                        except Exception:
+                            pass
+
+                        return item_copy
+
+                # Parallel RSI calculation with return_exceptions
+                try:
+                    results_with_rsi = await asyncio.gather(
+                        *[calculate_rsi_for_stock(item) for item in results],
+                        return_exceptions=True,
+                    )
+                    # Filter out exceptions and update results
+                    results = [
+                        r for r in results_with_rsi if not isinstance(r, Exception)
+                    ]
+                except Exception:
+                    pass
+
+                # Apply RSI filter
+                results = _apply_basic_filters(
+                    results,
+                    min_market_cap=None,  # Already filtered by screener
+                    max_per=None,  # Already filtered by screener
+                    min_dividend_yield=None,  # Already filtered by screener
+                    max_rsi=max_rsi,
+                )
+
+                # Save pre-limit count (total that passed filters)
+                pre_limit_count = len(results)
+
+                # Re-sort and limit after RSI filtering
+                results = _sort_and_limit(results, sort_by, sort_order, limit)
+
+                _complete_filters_applied()
+
+                return _build_screen_response(
+                    results, pre_limit_count, filters_applied, market
+                )
+
+            _complete_filters_applied()
+
+            # Try to get total from screen_result if available
+            pre_limit_count = (
+                screen_result.get("total", len(results))
+                if isinstance(screen_result, dict)
+                else len(results)
+            )
+            return _build_screen_response(results, pre_limit_count, filters_applied, market)
         except ImportError:
             return _error_payload(
                 source="yfinance",
@@ -9574,6 +9703,10 @@ def register_tools(mcp: FastMCP) -> None:
         limit: int,
     ) -> dict[str, Any]:
         """Screen crypto market coins using Upbit."""
+        min_dividend_yield_input, min_dividend_yield_normalized = (
+            _normalize_dividend_yield_threshold(min_dividend_yield)
+        )
+
         filters_applied = {
             "market": market,
             "asset_type": asset_type,
@@ -9634,7 +9767,7 @@ def register_tools(mcp: FastMCP) -> None:
                 # Update candidates with RSI data
                 for i, coin in enumerate(subset[: len(candidates)]):
                     candidates[i].update(coin)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             except Exception:
                 pass
@@ -9643,12 +9776,18 @@ def register_tools(mcp: FastMCP) -> None:
             {
                 "min_market_cap": min_market_cap,
                 "max_per": max_per,
-                "min_dividend_yield": min_dividend_yield,
+                "min_dividend_yield": min_dividend_yield_normalized,
                 "max_rsi": max_rsi,
                 "sort_by": sort_by,
                 "sort_order": sort_order,
             }
         )
+        if min_dividend_yield_input is not None:
+            filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
+        if min_dividend_yield_normalized is not None:
+            filters_applied["min_dividend_yield_normalized"] = (
+                min_dividend_yield_normalized
+            )
 
         # Apply basic filters
         filtered = _apply_basic_filters(
@@ -9800,3 +9939,6 @@ def register_tools(mcp: FastMCP) -> None:
     globals()["_screen_crypto"] = _screen_crypto
     globals()["_build_screen_response"] = _build_screen_response
     globals()["_validate_screen_filters"] = _validate_screen_filters
+    globals()["_normalize_dividend_yield_threshold"] = (
+        _normalize_dividend_yield_threshold
+    )

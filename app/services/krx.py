@@ -230,7 +230,7 @@ async def fetch_stock_all(
         - market: Market name
         - date: Trading date
         - close: Closing price
-        - market_cap: Market cap
+        - market_cap: Market cap in 억원 (100 million KRW)
         - volume: Trading volume
         - value: Trading value
     """
@@ -260,6 +260,12 @@ async def fetch_stock_all(
             # Normalize data
             stocks = []
             for item in raw_data:
+                # Parse market cap (KRX provides in 100만원 unit, convert to 억원)
+                raw_market_cap = _parse_korean_number(item.get("MKTCAP"))
+                market_cap_in_100m_won = (
+                    raw_market_cap / 100 if raw_market_cap is not None else None
+                )
+
                 stock = {
                     "code": item.get("ISU_CD", "").strip(),
                     "short_code": item.get("ISU_SRT_CD", "").strip(),
@@ -268,7 +274,7 @@ async def fetch_stock_all(
                     "market": item.get("MKT_NM", "").strip(),
                     "date": actual_date,
                     "close": _parse_korean_number(item.get("CLSPRC")),
-                    "market_cap": _parse_korean_number(item.get("MKTCAP")),
+                    "market_cap": market_cap_in_100m_won,  # 억원 단위
                     "volume": _parse_korean_number(item.get("TRDVOL")),
                     "value": _parse_korean_number(item.get("TRDVAL")),
                 }
@@ -305,18 +311,18 @@ async def fetch_etf_all(
 
     Returns:
         List of ETF dictionaries with keys:
-        - ISU_CD: ETF code
-        - ISU_SRT_CD: Short code
-        - ISU_ABBRV: Abbreviation
-        - ISU_NM: ETF name
-        - IDX_NM: Index name (tracking index)
-        - IDX_IND_CLSS_CD: Index classification code
-        - IDX_IND_CLSS_NM: Index classification name
-        - TRD_DD: Trading date
-        - CLSPRC: Closing price
-        - MKTCAP: Market cap
-        - TRDVOL: Trading volume
-        - TRDVAL: Trading value
+        - code: ETF code
+        - short_code: Short code
+        - abbreviation: Abbreviation
+        - name: ETF name
+        - index_name: Index name (tracking index)
+        - index_class_code: Index classification code
+        - index_class_name: Index classification name
+        - date: Trading date
+        - close: Closing price
+        - market_cap: Market cap in 억원 (100 million KRW)
+        - volume: Trading volume
+        - value: Trading value
     """
     # Generate date candidates and try sequentially until first non-empty result
     date_candidates = _generate_date_candidates(trd_date, KRX_MAX_RETRY_DATES)
@@ -348,6 +354,12 @@ async def fetch_etf_all(
             # Normalize and data
             etfs = []
             for item in raw_data:
+                # Parse market cap (KRX provides in 100만원 unit, convert to 억원)
+                raw_market_cap = _parse_korean_number(item.get("MKTCAP"))
+                market_cap_in_100m_won = (
+                    raw_market_cap / 100 if raw_market_cap is not None else None
+                )
+
                 etf = {
                     "code": item.get("ISU_CD", "").strip(),
                     "short_code": item.get("ISU_SRT_CD", "").strip(),
@@ -358,7 +370,7 @@ async def fetch_etf_all(
                     "index_class_name": item.get("IDX_IND_CLSS_NM", "").strip(),
                     "date": actual_date,
                     "close": _parse_korean_number(item.get("CLSPRC")),
-                    "market_cap": _parse_korean_number(item.get("MKTCAP")),
+                    "market_cap": market_cap_in_100m_won,  # 억원 단위
                     "volume": _parse_korean_number(item.get("TRDVOL")),
                     "value": _parse_korean_number(item.get("TRDVAL")),
                 }
@@ -408,89 +420,52 @@ def classify_etf_category(
         tracking_index: Tracking index name (e.g., "S&P 500")
 
     Returns:
-        List of category tags (e.g., ["미국주식", "S&P500", "인덱스"])
+        List of category tags (can be multiple if ETF covers multiple themes)
 
-    Categories include:
-        - 시장별: "국내주식", "미국주식", "글로벌", "선진국", "신흥국"
-        - 테마별: "IT", "바이오", "자동차", "반도체", "금융", "배당성장"
-        - 인덱스별: "S&P500", "나스닥100", "다우존스", "KOSPI200", "MSCI"
-        - 전략별: "배당성장", "모멘텀", "밸류", "저변동성"
+    Supported categories (Phase 2 spec):
+        - 시장별: "미국주식", "인도", "일본", "중국"
+        - 테마별: "반도체", "AI", "배당", "채권", "2차전지", "방산", "금", "원유"
+        - 인덱스별: "코스피200", "코스닥150"
     """
     categories = []
 
-    # Market/Region classification
     etf_name_lower = etf_name.lower()
     index_lower = tracking_index.lower()
+    combined = f"{etf_name_lower} {index_lower}"
 
-    if any(
-        keyword in etf_name_lower or keyword in index_lower
-        for keyword in ["미국", "usa", "us", "s&p", "나스닥", "다우"]
-    ):
+    # Market/Region classification
+    if any(keyword in combined for keyword in ["미국", "usa", "us ", "s&p", "나스닥", "다우"]):
         categories.append("미국주식")
-    elif any(
-        keyword in etf_name_lower or keyword in index_lower
-        for keyword in ["글로벌", "world", "global", "all country"]
-    ):
-        categories.append("글로벌")
-    elif any(
-        keyword in etf_name_lower or keyword in index_lower
-        for keyword in ["선진국", "msci world", "developed"]
-    ):
-        categories.append("선진국")
-    elif any(
-        keyword in etf_name_lower or keyword in index_lower
-        for keyword in ["신흥국", "emerging", "brics"]
-    ):
-        categories.append("신흥국")
-    else:
-        categories.append("국내주식")
+    if any(keyword in combined for keyword in ["인도", "india", "nifty", "sensex"]):
+        categories.append("인도")
+    if any(keyword in combined for keyword in ["일본", "japan", "nikkei", "topix"]):
+        categories.append("일본")
+    if any(keyword in combined for keyword in ["중국", "china", "csi", "상해", "심천"]):
+        categories.append("중국")
 
     # Theme/Industry classification
-    if any(
-        keyword in etf_name_lower or keyword in index_lower
-        for keyword in ["it", "기술", "tech", "소프트웨어", "반도체", "반도"]
-    ):
-        categories.append("IT")
-    elif any(
-        keyword in etf_name_lower or keyword in index_lower
-        for keyword in ["바이오", "bio", "헬스케어", "healthcare"]
-    ):
-        categories.append("바이오")
-    elif any(
-        keyword in etf_name_lower or keyword in index_lower
-        for keyword in ["자동차", "car", "auto", "ev", "전기차"]
-    ):
-        categories.append("자동차")
-    elif any(
-        keyword in etf_name_lower or keyword in index_lower
-        for keyword in ["금융", "finance", "bank", "은행", "증권"]
-    ):
-        categories.append("금융")
-    elif any(
-        keyword in etf_name_lower or keyword in index_lower
-        for keyword in ["배당", "dividend", "income"]
-    ):
-        categories.append("배당성장")
+    if any(keyword in combined for keyword in ["반도체", "semiconductor", "반도", "칩"]):
+        categories.append("반도체")
+    if any(keyword in combined for keyword in ["ai", "인공지능", "머신러닝", "딥러닝"]):
+        categories.append("AI")
+    if any(keyword in combined for keyword in ["배당", "dividend", "income", "고배당"]):
+        categories.append("배당")
+    if any(keyword in combined for keyword in ["채권", "bond", "국채", "회사채", "treasury"]):
+        categories.append("채권")
+    if any(keyword in combined for keyword in ["2차전지", "배터리", "battery", "전지", "이차전지"]):
+        categories.append("2차전지")
+    if any(keyword in combined for keyword in ["방산", "defense", "무기", "군수"]):
+        categories.append("방산")
+    if any(keyword in combined for keyword in ["금", "gold", "골드"]):
+        categories.append("금")
+    if any(keyword in combined for keyword in ["원유", "oil", "crude", "wti", "오일"]):
+        categories.append("원유")
 
-    # Index type classification
-    if "s&p" in index_lower:
-        categories.append("S&P500")
-    elif "nasdaq" in index_lower or "나스닥" in index_lower:
-        categories.append("나스닥100")
-    elif "dow" in index_lower or "다우" in index_lower:
-        categories.append("다우존스")
-    elif "kospi" in index_lower or "코스피" in index_lower:
-        categories.append("KOSPI200")
-    elif "msci" in index_lower:
-        categories.append("MSCI")
-
-    # Strategy classification
-    if "밸류" in etf_name_lower or "value" in etf_name_lower:
-        categories.append("밸류")
-    elif "모멘텀" in etf_name_lower or "momentum" in etf_name_lower:
-        categories.append("모멘텀")
-    elif "저변동" in etf_name_lower or "low volatility" in index_lower:
-        categories.append("저변동성")
+    # Index classification
+    if any(keyword in combined for keyword in ["코스피200", "kospi 200", "kospi200"]):
+        categories.append("코스피200")
+    if any(keyword in combined for keyword in ["코스닥150", "kosdaq 150", "kosdaq150"]):
+        categories.append("코스닥150")
 
     # If no categories found, add general tag
     if not categories:

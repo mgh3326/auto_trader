@@ -82,9 +82,9 @@ Parameters:
 - `category`: Category filter (ETF categories for KR, sector for US)
 - `sort_by`: Sort criteria ("volume", "market_cap", "change_rate", "dividend_yield") (default: "volume")
 - `sort_order`: Sort order ("asc" or "desc") (default: "desc")
-- `min_market_cap`: Minimum market cap filter
-- `max_per`: Maximum P/E ratio filter
-- `min_dividend_yield`: Minimum dividend yield filter (decimal, e.g., 0.03 for 3%)
+- `min_market_cap`: Minimum market cap filter (억원 for KR, USD for US, KRW 24h volume for crypto)
+- `max_per`: Maximum P/E ratio filter (not applicable to crypto)
+- `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
 - `max_rsi`: Maximum RSI filter (0-100, filters out overbought)
 - `limit`: Maximum number of results to return (1-50, capped at 50)
 
@@ -92,8 +92,8 @@ Response format:
 ```json
 {
   "results": [...],
-  "total_count": N,
-  "returned_count": M,
+  "total_count": N,  // Total stocks that passed all filters (before sort/limit). If data source provides total, uses that; otherwise uses fetched candidates count.
+  "returned_count": M,  // Actual number of results returned (after limit)
   "filters_applied": {...},
   "market": "kr|us|crypto",
   "timestamp": "ISO timestamp"
@@ -120,6 +120,8 @@ Market-specific behavior:
   - RSI calculated using OHLCV data (subset due to API limits: min(len(candidates), limit*3, 150))
 
 Advanced filters (PER/dividend/RSI) apply to subset:
+- **Note**: `min_market_cap` is NOT an advanced filter - it uses data already available from KRX/yfinance, so it doesn't trigger external API calls
+- Advanced filters (PER, dividend yield, RSI) require external data fetch for KR market
 - Limit: `min(len(candidates), limit*3, 150)`
 - Parallel fetch with `asyncio.Semaphore(10)`
 - Timeout: 30 seconds

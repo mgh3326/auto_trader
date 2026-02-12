@@ -13,6 +13,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None)`
 - `modify_order(order_id, symbol, new_price=None, new_quantity=None)`
 - `cancel_order(order_id)`
+- `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 
 ### `screen_stocks` spec
 Parameters:
@@ -23,7 +24,7 @@ Parameters:
 - `sort_order`: Sort order - "asc" or "desc" (default: "desc")
 - `min_market_cap`: Minimum market cap (억원 for KR, USD for US, KRW 24h volume for crypto)
 - `max_per`: Maximum P/E ratio filter (not applicable to crypto)
-- `min_dividend_yield`: Minimum dividend yield decimal, e.g., 0.03 for 3% (not applicable to crypto)
+- `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
 - `max_rsi`: Maximum RSI filter 0-100 (not applicable to sorting by dividend_yield in crypto)
 - `limit`: Maximum results 1-50 (default: 20)
 
@@ -44,6 +45,8 @@ Market-specific behavior:
   - RSI calculated using OHLCV fetch for subset (max limit*3 or 150)
 
 Advanced filters (PER/dividend/RSI) apply to subset:
+- **Note**: `min_market_cap` is NOT an advanced filter - it uses data already available from KRX/yfinance, so it doesn't trigger external API calls
+- Advanced filters (PER, dividend yield, RSI) require external data fetch for KR market
 - Limit: `min(len(candidates), limit*3, 150)`
 - Parallel fetch with `asyncio.Semaphore(10)`
 - Timeout: 30 seconds
@@ -66,13 +69,17 @@ Response format:
       "market": "kr"
     }
   ],
-  "total_count": 2400,
-  "returned_count": 20,
+  "total_count": 2400,  // Total stocks that passed all filters (before sort/limit). If data source provides total, uses that; otherwise uses fetched candidates count.
+  "returned_count": 20,  // Actual number of results returned (after limit)
   "filters_applied": {
     "market": "kr",
     "asset_type": "stock",
     "min_market_cap": 100000,
-    "max_per": 20
+    "max_per": 20,
+    "min_dividend_yield": 0.03,
+    "min_dividend_yield_input": 3.0,
+    "min_dividend_yield_normalized": 0.03,
+    "max_rsi": 70
   },
   "timestamp": "2026-02-10T14:20:59.123456"
 }
