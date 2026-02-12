@@ -3648,9 +3648,7 @@ def _normalize_change_rate_crypto(value: Any) -> float:
     val = _parse_change_rate(value)
     if val is None:
         return 0.0
-    if abs(val) <= 1:
-        return val * 100
-    return val
+    return val * 100
 
 
 def _classify_kr_asset_type(symbol: str, name: str | None = None) -> str:
@@ -3762,22 +3760,24 @@ async def _get_us_rankings(
 
     screener_id = screener_ids.get(ranking_type)
 
-    if ranking_type == "market_cap":
-        query = yf.EquityQuery(
-            "and",
-            [
-                yf.EquityQuery("eq", ["region", "us"]),
-                yf.EquityQuery("gte", ["intradaymarketcap", 2000000000]),
-                yf.EquityQuery("gte", ["intradayprice", 5]),
-                yf.EquityQuery("gt", ["dayvolume", 15000]),
-            ],
-        )
-        # Filters: 시총≥2B (유동성 확보), 가격≥$5 (페니스탁 제외), 거래량>15000 (비정상 저거래량 제외)
-        results = yf.screen(
-            query, size=limit, sortField="intradaymarketcap", sortAsc=False
-        )
-    else:
-        results = yf.screen(screener_id)
+    def fetch_sync():
+        if ranking_type == "market_cap":
+            query = yf.EquityQuery(
+                "and",
+                [
+                    yf.EquityQuery("eq", ["region", "us"]),
+                    yf.EquityQuery("gte", ["intradaymarketcap", 2000000000]),
+                    yf.EquityQuery("gte", ["intradayprice", 5]),
+                    yf.EquityQuery("gt", ["dayvolume", 15000]),
+                ],
+            )
+            # Filters: 시총≥2B (유동성 확보), 가격≥$5 (페니스탁 제외), 거래량>15000 (비정상 저거래량 제외)
+            return yf.screen(
+                query, size=limit, sortField="intradaymarketcap", sortAsc=False
+            )
+        return yf.screen(screener_id)
+
+    results = await asyncio.to_thread(fetch_sync)
 
     rankings = []
     if isinstance(results, dict):
@@ -7887,6 +7887,7 @@ def register_tools(mcp: FastMCP) -> None:
                 query=f"market={market}, ranking_type={ranking_type}",
             )
 
+        asset_type_normalized = None
         if asset_type is not None:
             asset_type_normalized = asset_type.strip().lower()
             if asset_type_normalized not in ("stock", "etf"):
@@ -7895,6 +7896,10 @@ def register_tools(mcp: FastMCP) -> None:
                     message=f"asset_type must be 'stock' or 'etf', got '{asset_type}'",
                     query=f"asset_type={asset_type}",
                 )
+
+        fetch_limit = limit_clamped
+        if asset_type_normalized is not None:
+            fetch_limit = min(limit_clamped * 3, 50)
 
         rankings: list[dict[str, Any]] = []
         source = {
@@ -7911,27 +7916,23 @@ def register_tools(mcp: FastMCP) -> None:
                     data = await kis.volume_rank()
                     source = "kis"
                 elif ranking_type == "market_cap":
-                    data = await kis.market_cap_rank(market="J", limit=limit_clamped)
+                    data = await kis.market_cap_rank(market="J", limit=fetch_limit)
                     source = "kis"
                 elif ranking_type in ("gainers", "losers"):
                     direction = "up" if ranking_type == "gainers" else "down"
                     data = await kis.fluctuation_rank(
-                        market="J", direction=direction, limit=limit_clamped
+                        market="J", direction=direction, limit=fetch_limit
                     )
                     source = "kis"
                 elif ranking_type == "foreigners":
-                    data = await kis.foreign_buying_rank(
-                        market="J", limit=limit_clamped
-                    )
+                    data = await kis.foreign_buying_rank(market="J", limit=fetch_limit)
                     source = "kis"
                 else:
                     data = []
 
                 filtered_rank = 1
-                for row in data[:limit_clamped]:
-                    mapped = _map_kr_row(row, filtered_rank)
-
-                    if asset_type is not None:
+                for row in data[:fetch_limit]:
+                    if asset_type_normalized is not None:
                         symbol = row.get("stck_shrn_iscd") or row.get(
                             "mksc_shrn_iscd", ""
                         )
@@ -7941,8 +7942,11 @@ def register_tools(mcp: FastMCP) -> None:
                         if row_asset_type != asset_type_normalized:
                             continue
 
+                    mapped = _map_kr_row(row, filtered_rank)
                     rankings.append(mapped)
                     filtered_rank += 1
+                    if len(rankings) >= limit_clamped:
+                        break
 
             elif market == "us":
                 rankings, source = await _get_us_rankings(ranking_type, limit_clamped)
