@@ -557,6 +557,7 @@ async def test_get_open_orders_partial_failure(monkeypatch):
     assert len(result["orders"]) == 1
 
 
+
 @pytest.mark.asyncio
 async def test_cancel_order_upbit_uuid(monkeypatch):
     tools = build_tools()
