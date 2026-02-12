@@ -55,6 +55,7 @@ from app.services.krx import (
     classify_etf_category,
     fetch_etf_all_cached,
     fetch_stock_all_cached,
+    fetch_valuation_all_cached,
 )
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
@@ -9223,22 +9224,23 @@ def register_tools(mcp: FastMCP) -> None:
                 )
 
         # KR-specific unsupported asset types
-        if market == "kr" and asset_type == "etn":
+        if market in ("kr", "kospi", "kosdaq") and asset_type == "etn":
             raise ValueError(
-                "Korean market (KR) does not support ETN (Exchange Traded Notes) asset_type"
+                "Korean market (KR/KOSPI/KOSDAQ) does not support ETN (Exchange Traded Notes) asset_type"
             )
 
     def _apply_basic_filters(
         candidates: list[dict[str, Any]],
         min_market_cap: float | None,
         max_per: float | None,
+        max_pbr: float | None,
         min_dividend_yield: float | None,
         max_rsi: float | None,
     ) -> list[dict[str, Any]]:
         """Apply basic numeric filters to candidate stocks.
 
         Strict mode: When a filter is requested, items with missing
-        indicator values are excluded (they don't pass the filter).
+        indicator values are excluded (they don't pass filter).
         """
         filtered = []
 
@@ -9257,6 +9259,13 @@ def register_tools(mcp: FastMCP) -> None:
                 if item.get("per") is None:
                     skip = True
                 elif item["per"] > max_per:
+                    skip = True
+
+            # P/B ratio filter (max - exclude higher PBR OR missing when filter requested)
+            if not skip and max_pbr is not None:
+                if item.get("pbr") is None:
+                    skip = True
+                elif item["pbr"] > max_pbr:
                     skip = True
 
             # Dividend yield filter (min - exclude lower yield OR missing when filter requested)
@@ -9326,6 +9335,7 @@ def register_tools(mcp: FastMCP) -> None:
         category: str | None,
         min_market_cap: float | None,
         max_per: float | None,
+        max_pbr: float | None,
         min_dividend_yield: float | None,
         max_rsi: float | None,
         sort_by: str,
@@ -9352,45 +9362,48 @@ def register_tools(mcp: FastMCP) -> None:
         candidates = []
 
         if asset_type is None or asset_type == "stock":
-            # Fetch stocks from both KOSPI and KOSDAQ
-            kospi_stocks = await fetch_stock_all_cached(market="STK")
-            kosdaq_stocks = await fetch_stock_all_cached(market="KSQ")
-            candidates.extend(kospi_stocks)
-            candidates.extend(kosdaq_stocks)
+            # Fetch stocks from both KOSPI and KOSDAQ, or just one market
+            if market == "kospi":
+                candidates.extend(await fetch_stock_all_cached(market="STK"))
+            elif market == "kosdaq":
+                candidates.extend(await fetch_stock_all_cached(market="KSQ"))
+            else:  # "kr" - both markets
+                candidates.extend(await fetch_stock_all_cached(market="STK"))
+                candidates.extend(await fetch_stock_all_cached(market="KSQ"))
 
         if asset_type is None or asset_type == "etf":
-            # Fetch ETFs
-            etfs = await fetch_etf_all_cached()
+            # ETFs are KOSPI-listed, skip for kosdaq market
+            if market != "kosdaq":
+                # Fetch ETFs
+                etfs = await fetch_etf_all_cached()
 
-            # Add asset_type and category to ETFs
-            for etf in etfs:
-                etf["asset_type"] = "etf"
-                categories = classify_etf_category(
-                    etf["name"], etf.get("index_name", "")
-                )
-                # Store first category as primary category (for filtering/display)
-                etf["category"] = categories[0] if categories else "기타"
-                # Store all categories for filtering
-                etf["categories"] = categories
-
-            # Filter by category if specified
-            if category:
-                etfs = [
-                    etf
-                    for etf in etfs
-                    if any(
-                        cat.lower() == category.lower()
-                        for cat in etf.get("categories", [])
+                # Add asset_type and category to ETFs
+                for etf in etfs:
+                    etf["asset_type"] = "etf"
+                    categories = classify_etf_category(
+                        etf["name"], etf.get("index_name", "")
                     )
-                ]
+                    # Store first category as primary category (for filtering/display)
+                    etf["category"] = categories[0] if categories else "기타"
+                    # Store all categories for filtering
+                    etf["categories"] = categories
+
+                # Filter by category if specified
+                if category:
+                    etfs = [
+                        etf
+                        for etf in etfs
+                        if any(
+                            cat.lower() == category.lower()
+                            for cat in etf.get("categories", [])
+                        )
+                    ]
 
             candidates.extend(etfs)
 
         # Normalize candidate data structure
         for item in candidates:
-            # Calculate change_rate if not present
-            if "change_rate" not in item and item.get("close") is not None:
-                # Placeholder: change_rate requires previous day close
+            if "change_rate" not in item:
                 item["change_rate"] = 0.0
 
             # Add market for reference
@@ -9403,35 +9416,43 @@ def register_tools(mcp: FastMCP) -> None:
                 # Remaining items are stocks
                 item["asset_type"] = "stock"
 
+        # Merge batch valuation data from KRX (single cached call)
+        valuation_market = {"kospi": "STK", "kosdaq": "KSQ"}.get(market, "ALL")
+        try:
+            valuations = await fetch_valuation_all_cached(market=valuation_market)
+            for item in candidates:
+                code = item.get("short_code") or item.get("code", "")
+                val = valuations.get(code, {})
+                if item.get("per") is None:
+                    item["per"] = val.get("per")
+                if item.get("pbr") is None:
+                    item["pbr"] = val.get("pbr")
+                if item.get("dividend_yield") is None:
+                    item["dividend_yield"] = val.get("dividend_yield")
+        except Exception:
+            pass
+
         # Apply advanced filters (subset due to API limits)
         advanced_filters_applied = {
             "min_market_cap": min_market_cap,
             "max_per": max_per,
+            "max_pbr": max_pbr,
             "min_dividend_yield": min_dividend_yield_normalized,
             "max_rsi": max_rsi,
         }
 
-        # Only trigger advanced data fetch for filters that require external APIs
-        # min_market_cap is already in basic data, so exclude it from trigger
-        if any([max_per, min_dividend_yield, max_rsi]):
+        # Only trigger advanced data fetch for RSI (PER/dividend now batch-loaded)
+        if max_rsi is not None:
             subset_limit = min(len(candidates), limit * 3, 150)
             subset = candidates[:subset_limit]
 
-            # Fetch advanced data in parallel
+            # Fetch RSI in parallel (PER/dividend already batch-loaded from KRX)
             semaphore = asyncio.Semaphore(10)
 
             async def fetch_advanced_data(item: dict[str, Any]):
                 async with semaphore:
                     item_copy = item.copy()
                     code = item["code"]
-
-                    # Fetch PER and dividend yield from Naver Finance
-                    try:
-                        valuation = await naver_finance.fetch_valuation(code)
-                        item_copy["per"] = valuation.get("per")
-                        item_copy["dividend_yield"] = valuation.get("dividend_yield")
-                    except Exception:
-                        pass
 
                     # Calculate RSI if needed
                     if max_rsi is not None and item_copy.get("rsi") is None:
@@ -9457,8 +9478,13 @@ def register_tools(mcp: FastMCP) -> None:
                     ),
                     timeout=30.0,
                 )
-                # Filter out failed results (exceptions)
-                candidates = [r for r in subset_results if not isinstance(r, Exception)]
+                # Merge RSI data back into candidates (preserving batch valuation data)
+                for i, result in enumerate(subset_results):
+                    if (
+                        not isinstance(result, Exception)
+                        and result.get("rsi") is not None
+                    ):
+                        candidates[i]["rsi"] = result["rsi"]
             except TimeoutError:
                 pass
             except Exception:
@@ -9479,6 +9505,7 @@ def register_tools(mcp: FastMCP) -> None:
             candidates,
             min_market_cap=min_market_cap,
             max_per=max_per,
+            max_pbr=max_pbr,
             min_dividend_yield=min_dividend_yield_normalized,
             max_rsi=max_rsi,
         )
@@ -9678,7 +9705,9 @@ def register_tools(mcp: FastMCP) -> None:
                 if isinstance(screen_result, dict)
                 else len(results)
             )
-            return _build_screen_response(results, pre_limit_count, filters_applied, market)
+            return _build_screen_response(
+                results, pre_limit_count, filters_applied, market
+            )
         except ImportError:
             return _error_payload(
                 source="yfinance",
@@ -9809,14 +9838,15 @@ def register_tools(mcp: FastMCP) -> None:
         description=(
             "Screen stocks across different markets (KR/US/Crypto) with various filters. "
             "KR market uses KRX for stocks/ETFs + Naver Finance for valuation metrics. "
+            "Supports KOSPI/KOSDAQ sub-market filtering (use market='kospi' or 'kosdaq'). "
             "US market uses yfinance screener. "
             "Crypto market uses Upbit top traded coins. "
-            "Supports filtering by market cap, P/E ratio, dividend yield, RSI. "
+            "Supports filtering by market cap, P/E ratio, P/B ratio, dividend yield, RSI. "
             "Supports sorting by volume, market cap, change rate, dividend yield."
         ),
     )
     async def screen_stocks(
-        market: Literal["kr", "us", "crypto"] = "kr",
+        market: Literal["kr", "kospi", "kosdaq", "us", "crypto"] = "kr",
         asset_type: Literal["stock", "etf", "etn"] | None = None,
         category: str | None = None,
         sort_by: Literal[
@@ -9825,6 +9855,7 @@ def register_tools(mcp: FastMCP) -> None:
         sort_order: Literal["asc", "desc"] = "desc",
         min_market_cap: float | None = None,
         max_per: float | None = None,
+        max_pbr: float | None = None,
         min_dividend_yield: float | None = None,
         max_rsi: float | None = None,
         limit: int = 20,
@@ -9832,13 +9863,14 @@ def register_tools(mcp: FastMCP) -> None:
         """Screen stocks across different markets with filters.
 
         Args:
-            market: Market to screen ("kr", "us", "crypto")
+            market: Market to screen ("kr", "kospi", "kosdaq", "us", "crypto")
             asset_type: Asset type ("stock", "etf", "etn") - only applicable to KR
             category: Category filter (ETF categories for KR, sector for US)
             sort_by: Sort criteria ("volume", "market_cap", "change_rate", "dividend_yield")
             sort_order: Sort order ("asc" or "desc")
             min_market_cap: Minimum market cap filter (억원 for KR, USD for US, KRW for crypto)
             max_per: Maximum P/E ratio filter
+            max_pbr: Maximum P/B ratio filter
             min_dividend_yield: Minimum dividend yield filter (decimal, e.g., 0.03 for 3%)
             max_rsi: Maximum RSI filter (0-100, filters out overbought)
             limit: Maximum number of results to return (1-50)
@@ -9849,7 +9881,7 @@ def register_tools(mcp: FastMCP) -> None:
             - total_count: Total candidates before filtering
             - returned_count: Number of results after filtering
             - filters_applied: Dictionary of all filters that were applied
-            - timestamp: ISO timestamp of when the screening was performed
+            - timestamp: ISO timestamp of when screening was performed
         """
         # Normalize and validate inputs
         market = _normalize_screen_market(market)
@@ -9875,13 +9907,14 @@ def register_tools(mcp: FastMCP) -> None:
         )
 
         # Route to market-specific screening
-        if market == "kr":
+        if market in ("kr", "kospi", "kosdaq"):
             return await _screen_kr(
                 market=market,
                 asset_type=asset_type,
                 category=category,
                 min_market_cap=min_market_cap,
                 max_per=max_per,
+                max_pbr=max_pbr,
                 min_dividend_yield=min_dividend_yield,
                 max_rsi=max_rsi,
                 sort_by=sort_by,

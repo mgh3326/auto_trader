@@ -31,6 +31,8 @@ def mock_krx_stocks():
             "code": "005930",
             "name": "삼성전자",
             "close": 80000.0,
+            "change_rate": 2.5,
+            "change_price": 2000,
             "market": "KOSPI",
             "market_cap": 4800000,  # 480조원 = 4,800,000억원
         },
@@ -38,6 +40,8 @@ def mock_krx_stocks():
             "code": "000660",
             "name": "SK하이닉스",
             "close": 150000.0,
+            "change_rate": -1.2,
+            "change_price": -1800,
             "market": "KOSPI",
             "market_cap": 150000,  # 15조원 = 150,000억원
         },
@@ -68,24 +72,266 @@ def mock_krx_etfs():
 
 
 @pytest.fixture
-def mock_upbit_coins():
-    """Mock Upbit top traded coins."""
+def mock_krx_stocks():
+    """Mock KRX stock data (market_cap in 억원)."""
     return [
         {
-            "market": "KRW-BTC",
-            "korean_name": "비트코인",
-            "english_name": "Bitcoin",
+            "code": "005930",
+            "name": "삼성전자",
+            "close": 80000.0,
             "change_rate": 2.5,
-            "acc_trade_price_24h": 500000000000,
+            "change_price": 2000,
+            "market": "KOSPI",
+            "market_cap": 4800000,  # 480조원 = 4,800,000억원
         },
         {
-            "market": "KRW-ETH",
-            "korean_name": "이더리움",
-            "english_name": "Ethereum",
+            "code": "000660",
+            "name": "SK하이닉스",
+            "close": 150000.0,
             "change_rate": -1.2,
-            "acc_trade_price_24h": 200000000000,
+            "change_price": -1800,
+            "market": "KOSPI",
+            "market_cap": 150000,  # 15조원 = 150,000억원
         },
     ]
+
+
+@pytest.fixture
+def mock_valuation_data():
+    """Mock valuation data from KRX."""
+    return {
+        "005930": {"per": 12.5, "pbr": 1.2, "dividend_yield": 0.0256},
+        "000660": {"per": None, "pbr": None, "dividend_yield": None},
+        "035420": {"per": 0, "pbr": 0.8, "dividend_yield": 0.035},
+    }
+
+
+class TestScreenStocksKRChangeRate:
+    """Test screen_stocks with change_rate parsing from KRX."""
+
+    @pytest.mark.asyncio
+    async def test_screen_stocks_change_rate_positive(self, mock_krx_stocks):
+        """Test screen_stocks uses change_rate from KRX (positive)."""
+        async with _screen_kr(
+            market="kr",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="change_rate",
+            sort_order="desc",
+            limit=10,
+        ) as screen_kr:
+            screen_kr.return_value = {"results": mock_krx_stocks}
+
+        results = await mcp_tools.screen_stocks(market="kr")
+        assert results["results"][0]["change_rate"] == 2.5
+
+    @pytest.mark.asyncio
+    async def test_screen_stocks_change_rate_negative(self, mock_krx_stocks):
+        """Test screen_stocks uses change_rate from KRX (negative)."""
+        async with _screen_kr(
+            market="kr",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="change_rate",
+            sort_order="asc",
+            limit=10,
+        ) as screen_kr:
+            screen_kr.return_value = {"results": mock_krx_stocks}
+
+        results = await mcp_tools.screen_stocks(market="kr")
+        assert results["results"][-1]["change_rate"] == -1.2
+
+    @pytest.mark.asyncio
+    async def test_screen_stocks_change_rate_unchanged(self, mock_krx_stocks):
+        """Test screen_stocks handles unchanged (change_rate=0)."""
+        mock_krx_stocks[0]["change_rate"] = 0.0
+
+        async with _screen_kr(
+            market="kr",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="change_rate",
+            sort_order="desc",
+            limit=10,
+        ) as screen_kr:
+            screen_kr.return_value = {"results": mock_krx_stocks}
+
+        results = await mcp_tools.screen_stocks(market="kr")
+        # Unchanged stocks should be at the end when sorted descending
+        assert results["results"][-1]["change_rate"] == 0.0
+
+
+class TestScreenStocksKRSubMarket:
+    """Test KOSPI/KOSDAQ sub-market filtering."""
+
+    @pytest.mark.asyncio
+    async def test_market_kospi_filters_stk_only(self, mock_krx_stocks):
+        """Test market='kospi' only fetches STK stocks."""
+        fetch_stk_called = False
+        original_func = mcp_tools.fetch_stock_all_cached
+
+        async def mock_fetch_stk(market):
+            nonlocal fetch_stk_called
+            if market == "STK":
+                fetch_stk_called = True
+            return []
+            return []
+
+        with mcp_tools._screen_kr.__wrapped_func__(mcp_tools._screen_kr, original_func):
+            mcp_tools.fetch_stock_all_cached = mock_fetch_stk
+
+        results = await mcp_tools.screen_stocks(market="kospi")
+        assert fetch_stk_called
+        assert len(results["results"]) == 0  # STK mocked to empty
+
+    @pytest.mark.asyncio
+    async def test_market_kosdaq_filters_ksq_only(self, mock_krx_stocks):
+        """Test market='kosdaq' only fetches KSQ stocks."""
+        fetch_ksq_called = False
+        original_func = mcp_tools.fetch_stock_all_cached
+
+        async def mock_fetch_ksq(market):
+            nonlocal fetch_ksq_called
+            if market == "KSQ":
+                fetch_ksq_called = True
+            return []
+            return []
+
+        with mcp_tools._screen_kr.__wrapped_func__(mcp_tools._screen_kr, original_func):
+            mcp_tools.fetch_stock_all_cached = mock_fetch_ksq
+
+        results = await mcp_tools.screen_stocks(market="kosdaq")
+        assert fetch_ksq_called
+        assert len(results["results"]) == 0  # KSQ mocked to empty
+
+    @pytest.mark.asyncio
+    async def test_market_kosdaq_skips_etfs(self, mock_krx_stocks, mock_krx_etfs):
+        """Test market='kosdaq' skips ETF fetching (ETFs are KOSPI-listed)."""
+        fetch_etf_called = False
+        original_func = mcp_tools.fetch_etf_all_cached
+
+        async def mock_fetch_etf():
+            nonlocal fetch_etf_called
+            fetch_etf_called = True
+            return []
+            return []
+
+        with mcp_tools._screen_kr.__wrapped_func__(mcp_tools._screen_kr, original_func):
+            mcp_tools.fetch_etf_all_cached = mock_fetch_etf
+
+        results = await mcp_tools.screen_stocks(market="kosdaq", asset_type=None)
+        assert not fetch_etf_called, "ETF fetching should be skipped for kosdaq"
+
+    @pytest.mark.asyncio
+    async def test_market_kr_backward_compatible(self, mock_krx_stocks):
+        """Test market='kr' backward compatible (fetches both STK and KSQ)."""
+        fetch_stk_called = False
+        fetch_ksq_called = False
+        original_func = mcp_tools.fetch_stock_all_cached
+
+        async def mock_fetch_both(market):
+            nonlocal fetch_stk_called
+            nonlocal fetch_ksq_called
+            if market == "STK":
+                fetch_stk_called = True
+            if market == "KSQ":
+                fetch_ksq_called = True
+            return []
+
+        with mcp_tools._screen_kr.__wrapped_func__(mcp_tools._screen_kr, original_func):
+            mcp_tools.fetch_stock_all_cached = mock_fetch_both
+
+        results = await mcp_tools.screen_stocks(market="kr", asset_type=None)
+        assert fetch_stk_called
+        assert fetch_ksq_called
+
+
+class TestScreenStocksValuation:
+    """Test screen_stocks with batch KRX valuation data."""
+
+    @pytest.mark.asyncio
+    async def test_screen_stocks_batch_valuation(
+        self, mock_krx_stocks, mock_valuation_data, monkeypatch
+    ):
+        """Test screen_stocks merges batch valuation data."""
+
+        async def mock_fetch_valuation(market):
+            return mock_valuation_data
+
+        mcp_tools.fetch_valuation_all_cached = mock_fetch_valuation
+
+        async with await mcp_tools._screen_kr(
+            market="kr",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=10,
+        ) as screen_kr:
+            screen_kr.return_value = {"results": mock_krx_stocks}
+
+        results = await mcp_tools.screen_stocks(market="kr")
+        assert results["results"][0]["per"] == 12.5
+        assert results["results"][0]["pbr"] == 1.2
+        assert results["results"][0]["dividend_yield"] == 0.0256
+        assert results["results"][1]["per"] is None
+        assert results["results"][1]["pbr"] is None
+        assert results["results"][1]["dividend_yield"] is None
+
+    @pytest.mark.asyncio
+    async def test_screen_stocks_max_pbr_filter(
+        self, mock_krx_stocks, mock_valuation_data
+    ):
+        """Test screen_stocks with max_pbr filter."""
+        mock_krx_stocks[0]["pbr"] = 0.5
+        mock_krx_stocks[1]["pbr"] = 2.5
+
+        async def mock_fetch_valuation(market):
+            return mock_valuation_data
+
+        mcp_tools.fetch_valuation_all_cached = mock_fetch_valuation
+
+        results = await mcp_tools.screen_stocks(market="kr", max_pbr=1.0)
+        assert results["total_count"] == 1
+        assert results["returned_count"] == 1
+        assert results["results"][0]["pbr"] == 0.5
+        assert results["results"][1]["pbr"] is None
+
+    @pytest.mark.asyncio
+    async def test_screen_stocks_valuation_graceful_failure(
+        self, mock_krx_stocks, monkeypatch
+    ):
+        """Test screen_stocks handles valuation fetch failure gracefully."""
+
+        async def mock_fetch_valuation(market):
+            raise Exception("KRX valuation fetch failed")
+
+        mcp_tools.fetch_valuation_all_cached = mock_fetch_valuation
+
+        # Should not crash, just use available data
+        results = await mcp_tools.screen_stocks(market="kr")
+        assert results["total_count"] == 2
+        assert "pbr" not in results["results"][0]  # No valuation data available
 
 
 @pytest.fixture
@@ -502,9 +748,7 @@ class TestScreenStocksFilters:
         monkeypatch.setattr(
             mcp_tools.naver_finance, "fetch_valuation", mock_fetch_valuation
         )
-        monkeypatch.setattr(
-            mcp_tools, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
-        )
+        monkeypatch.setattr(mcp_tools, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
 
         tools = build_tools()
 
@@ -524,8 +768,12 @@ class TestScreenStocksFilters:
         assert result is not None
         assert result["filters_applied"]["min_market_cap"] == 100000
         # Verify advanced queries were NOT called
-        assert not naver_finance_called, "Naver Finance should not be called for min_market_cap only"
-        assert not ohlcv_fetch_called, "OHLCV fetch should not be called for min_market_cap only"
+        assert not naver_finance_called, (
+            "Naver Finance should not be called for min_market_cap only"
+        )
+        assert not ohlcv_fetch_called, (
+            "OHLCV fetch should not be called for min_market_cap only"
+        )
 
 
 class TestScreenStocksSorting:
@@ -875,7 +1123,9 @@ class TestScreenStocksPhase2Spec:
         assert len(result["results"]) > 0, "Should have ETF results"
 
         for item in result["results"]:
-            assert item.get("asset_type") == "etf", "All ETFs should have asset_type='etf'"
+            assert item.get("asset_type") == "etf", (
+                "All ETFs should have asset_type='etf'"
+            )
             assert "category" in item, "All ETFs should have category field"
             assert isinstance(item["category"], str), "Category should be a string"
 

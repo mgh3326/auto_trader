@@ -25,9 +25,20 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
 
 # Constants
-KRX_API_URL = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+KRX_API_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+KRX_RESOURCE_URL = (
+    "http://data.krx.co.kr/comm/bldAttendant/executeForResourceBundle.cmd"
+)
 KRX_CACHE_TTL = 300  # 5 minutes
 KRX_MAX_RETRY_DATES = 10  # Max days to search back for trading date
+KRX_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd",
+}
 _MEMORY_CACHE: dict[str, tuple[dict[str, Any], float]] = {}
 _MEMORY_CACHE_TTL = 300  # Same as Redis TTL
 
@@ -68,6 +79,20 @@ def _parse_korean_number(value_str: str | None) -> int | float | None:
         return None
 
 
+async def _fetch_max_working_date() -> str:
+    """Fetch the most recent trading date from KRX resource bundle.
+
+    Returns:
+        Trading date string in YYYYMMDD format.
+    """
+    url = f"{KRX_RESOURCE_URL}?baseName=krx.mdc.i18n.component&key=B128.bld"
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get(url, headers=KRX_HEADERS)
+        response.raise_for_status()
+        data = response.json()
+        return data["result"]["output"][0]["max_work_dt"]
+
+
 async def _fetch_krx_data(
     bld: str,
     mktId: str | None = None,
@@ -86,7 +111,12 @@ async def _fetch_krx_data(
         List of dictionaries with KRX data
     """
     # KRX API requires POST with form data
-    data: dict[str, str] = {"bld": bld}
+    data: dict[str, str] = {
+        "bld": bld,
+        "share": "1",
+        "money": "1",
+        "csvxls_isNo": "false",
+    }
     if mktId is not None:
         data["mktId"] = mktId
     if trdDd is not None:
@@ -94,18 +124,8 @@ async def _fetch_krx_data(
     if idxIndClssCd is not None:
         data["idxIndClssCd"] = idxIndClssCd
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Referer": "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(KRX_API_URL, data=data, headers=headers)
+        response = await client.post(KRX_API_URL, data=data, headers=KRX_HEADERS)
         response.raise_for_status()
 
         # KRX returns JSON with "OutBlock_1" or "output" key containing the data
@@ -244,8 +264,19 @@ async def fetch_stock_all(
         - volume: Trading volume
         - value: Trading value
     """
-    # Generate date candidates and try sequentially until first non-empty result
-    date_candidates = _generate_date_candidates(trd_date, KRX_MAX_RETRY_DATES)
+    # Resolve trading date: use KRX resource bundle, then fall back to date candidates
+    if trd_date:
+        date_candidates = [trd_date]
+    else:
+        fallback = _generate_date_candidates(None, KRX_MAX_RETRY_DATES)
+        try:
+            max_date = await _fetch_max_working_date()
+            logger.info(f"KRX max working date: {max_date}")
+            # Put max_date first, then add fallback dates (deduped)
+            date_candidates = [max_date] + [d for d in fallback if d != max_date]
+        except Exception as e:
+            logger.warning(f"Failed to fetch max working date: {e}, using fallback")
+            date_candidates = fallback
 
     for actual_date in date_candidates:
         # Build cache key
@@ -258,7 +289,6 @@ async def fetch_stock_all(
             return cached
 
         # Fetch from KRX API
-        # Use STK/KSQ market codes for stock data
         logger.info(f"Fetching KRX stock data for market={market}, date={actual_date}")
         raw_data = await _fetch_krx_data(
             bld="dbms/MDC/STAT/standard/MDCSTAT01501",
@@ -268,25 +298,50 @@ async def fetch_stock_all(
 
         if raw_data:
             # Normalize data
+            # Column names with share=1&money=1: TDD_CLSPRC, ACC_TRDVOL, ACC_TRDVAL
             stocks = []
             for item in raw_data:
-                # Parse market cap (KRX provides in 100만원 unit, convert to 억원)
+                # Parse market cap (with money=1, KRX returns in 원; convert to 억원)
                 raw_market_cap = _parse_korean_number(item.get("MKTCAP"))
                 market_cap_in_100m_won = (
-                    raw_market_cap / 100 if raw_market_cap is not None else None
+                    raw_market_cap / 1_0000_0000 if raw_market_cap is not None else None
                 )
 
+                close = _parse_korean_number(
+                    item.get("TDD_CLSPRC") or item.get("CLSPRC")
+                )
+                volume = _parse_korean_number(
+                    item.get("ACC_TRDVOL") or item.get("TRDVOL")
+                )
+                value = _parse_korean_number(
+                    item.get("ACC_TRDVAL") or item.get("TRDVAL")
+                )
+
+                change_rate = _parse_korean_number(item.get("FLUC_RT"))
+                change_price = _parse_korean_number(item.get("CMPPREVDD_PRC"))
+                # FLUC_TP_CD: "1"=rise, "2"=fall, "3"=unchanged — negate for falls
+                if item.get("FLUC_TP_CD") == "2":
+                    if change_rate is not None:
+                        change_rate = -change_rate
+                    if change_price is not None:
+                        change_price = -change_price
+
+                name = (
+                    item.get("ISU_ABBRV", "").strip() or item.get("ISU_NM", "").strip()
+                )
                 stock = {
                     "code": item.get("ISU_CD", "").strip(),
                     "short_code": item.get("ISU_SRT_CD", "").strip(),
                     "abbreviation": item.get("ISU_ABBRV", "").strip(),
-                    "name": item.get("ISU_NM", "").strip(),
+                    "name": name,
                     "market": item.get("MKT_NM", "").strip(),
                     "date": actual_date,
-                    "close": _parse_korean_number(item.get("CLSPRC")),
+                    "close": close,
                     "market_cap": market_cap_in_100m_won,  # 억원 단위
-                    "volume": _parse_korean_number(item.get("TRDVOL")),
-                    "value": _parse_korean_number(item.get("TRDVAL")),
+                    "volume": volume,
+                    "value": value,
+                    "change_rate": change_rate,
+                    "change_price": change_price,
                 }
                 if stock["code"] and stock["name"]:
                     stocks.append(stock)
@@ -334,8 +389,18 @@ async def fetch_etf_all(
         - volume: Trading volume
         - value: Trading value
     """
-    # Generate date candidates and try sequentially until first non-empty result
-    date_candidates = _generate_date_candidates(trd_date, KRX_MAX_RETRY_DATES)
+    # Resolve trading date
+    if trd_date:
+        date_candidates = [trd_date]
+    else:
+        fallback = _generate_date_candidates(None, KRX_MAX_RETRY_DATES)
+        try:
+            max_date = await _fetch_max_working_date()
+            logger.info(f"KRX max working date for ETF: {max_date}")
+            date_candidates = [max_date] + [d for d in fallback if d != max_date]
+        except Exception as e:
+            logger.warning(f"Failed to fetch max working date: {e}, using fallback")
+            date_candidates = fallback
 
     for actual_date in date_candidates:
         # Build cache key
@@ -355,34 +420,60 @@ async def fetch_etf_all(
             f"Fetching KRX ETF data for date={actual_date}, idx_ind_clss_cd={idx_ind_clss_cd}"
         )
         raw_data = await _fetch_krx_data(
-            bld="dbms/MDC/STAT/standard/MDCSTAT01701",
+            bld="dbms/MDC/STAT/standard/MDCSTAT04301",
             trdDd=actual_date,
-            idxIndClssCd=idx_ind_clss_cd,
         )
 
         if raw_data:
-            # Normalize and data
+            # Normalize data
             etfs = []
             for item in raw_data:
-                # Parse market cap (KRX provides in 100만원 unit, convert to 억원)
+                # Parse market cap (with money=1, KRX returns in 원; convert to 억원)
                 raw_market_cap = _parse_korean_number(item.get("MKTCAP"))
                 market_cap_in_100m_won = (
-                    raw_market_cap / 100 if raw_market_cap is not None else None
+                    raw_market_cap / 1_0000_0000 if raw_market_cap is not None else None
                 )
 
+                close = _parse_korean_number(
+                    item.get("TDD_CLSPRC") or item.get("CLSPRC")
+                )
+                volume = _parse_korean_number(
+                    item.get("ACC_TRDVOL") or item.get("TRDVOL")
+                )
+                value = _parse_korean_number(
+                    item.get("ACC_TRDVAL") or item.get("TRDVAL")
+                )
+
+                change_rate = _parse_korean_number(item.get("FLUC_RT"))
+                change_price = _parse_korean_number(item.get("CMPPREVDD_PRC"))
+                # FLUC_TP_CD: "1"=rise, "2"=fall, "3"=unchanged — negate for falls
+                if item.get("FLUC_TP_CD") == "2":
+                    if change_rate is not None:
+                        change_rate = -change_rate
+                    if change_price is not None:
+                        change_price = -change_price
+
+                name = (
+                    item.get("ISU_ABBRV", "").strip() or item.get("ISU_NM", "").strip()
+                )
+                index_name = (
+                    item.get("IDX_IND_NM", "").strip() or item.get("IDX_NM", "").strip()
+                )
                 etf = {
                     "code": item.get("ISU_CD", "").strip(),
                     "short_code": item.get("ISU_SRT_CD", "").strip(),
                     "abbreviation": item.get("ISU_ABBRV", "").strip(),
-                    "name": item.get("ISU_NM", "").strip(),
-                    "index_name": item.get("IDX_NM", "").strip(),
+                    "name": name,
+                    "index_name": index_name,
                     "index_class_code": item.get("IDX_IND_CLSS_CD", "").strip(),
                     "index_class_name": item.get("IDX_IND_CLSS_NM", "").strip(),
                     "date": actual_date,
-                    "close": _parse_korean_number(item.get("CLSPRC")),
+                    "close": close,
                     "market_cap": market_cap_in_100m_won,  # 억원 단위
-                    "volume": _parse_korean_number(item.get("TRDVOL")),
-                    "value": _parse_korean_number(item.get("TRDVAL")),
+                    "volume": volume,
+                    "value": value,
+                    "change_rate": change_rate,
+                    "change_price": change_price,
                 }
                 if etf["code"] and etf["name"]:
                     etfs.append(etf)
@@ -419,6 +510,114 @@ async def fetch_etf_all_cached(
     return await fetch_etf_all(trd_date, idx_ind_clss_cd)
 
 
+async def fetch_valuation_all(
+    market: str = "ALL",
+    trd_date: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Fetch PER/PBR/dividend yield data from KRX for all stocks.
+
+    Args:
+        market: Market code - "STK" for KOSPI, "KSQ" for KOSDAQ, "ALL" for both
+        trd_date: Trading date in YYYYMMDD format (None for auto-detect)
+
+    Returns:
+        Dictionary keyed by ISU_SRT_CD (6-digit short code) with values:
+        - per: P/E ratio
+        - pbr: P/B ratio
+        - eps: Earnings per share
+        - bps: Book value per share
+        - dividend_yield: Dividend yield (decimal, 0.0256 = 2.56%)
+    """
+    # Resolve trading date
+    if trd_date:
+        date_candidates = [trd_date]
+    else:
+        fallback = _generate_date_candidates(None, KRX_MAX_RETRY_DATES)
+        try:
+            max_date = await _fetch_max_working_date()
+            logger.info(f"KRX max working date for valuation: {max_date}")
+            date_candidates = [max_date] + [d for d in fallback if d != max_date]
+        except Exception as e:
+            logger.warning(f"Failed to fetch max working date: {e}, using fallback")
+            date_candidates = fallback
+
+    for actual_date in date_candidates:
+        # Build cache key
+        cache_key = await _get_cache_key(f"valuation:{market}", actual_date)
+
+        # Try cache
+        cached = await _get_cached_data(cache_key)
+        if cached:
+            logger.info(f"Cache hit for valuation {market} on {actual_date}")
+            return {item["ISU_SRT_CD"]: item for item in cached}
+
+        # Fetch from KRX API
+        logger.info(
+            f"Fetching KRX valuation data for market={market}, date={actual_date}"
+        )
+        raw_data = await _fetch_krx_data(
+            bld="dbms/MDC/STAT/standard/MDCSTAT03501",
+            mktId=market,
+            trdDd=actual_date,
+        )
+
+        if raw_data:
+            # Normalize data into dict keyed by ISU_SRT_CD
+            valuations = {}
+            for item in raw_data:
+                code = item.get("ISU_SRT_CD", "").strip()
+                per = _parse_korean_number(item.get("PER"))
+                pbr = _parse_korean_number(item.get("PBR"))
+                eps = _parse_korean_number(item.get("EPS"))
+                bps = _parse_korean_number(item.get("BPS"))
+                dividend_yield_raw = _parse_korean_number(item.get("DVD_YLD"))
+
+                # Convert dividend yield from percentage to decimal (e.g., 2.56 -> 0.0256)
+                dividend_yield = (
+                    dividend_yield_raw / 100.0
+                    if dividend_yield_raw is not None
+                    else None
+                )
+
+                # Set PER/PBR to None for 0 or "-" values
+                per = None if per == 0 else per
+                pbr = None if pbr == 0 else pbr
+
+                if code:
+                    valuations[code] = {
+                        "per": per,
+                        "pbr": pbr,
+                        "eps": eps,
+                        "bps": bps,
+                        "dividend_yield": dividend_yield,
+                    }
+
+            # Cache result
+            await _set_cached_data(cache_key, list(valuations.values()))
+
+            return valuations
+        else:
+            # Empty response, try next date
+            logger.warning(
+                f"Empty KRX valuation response for {market} on {actual_date}, trying previous day"
+            )
+            continue
+
+    # All dates exhausted
+    logger.error(
+        f"Failed to fetch {market} valuation data after trying {len(date_candidates)} dates"
+    )
+    return {}
+
+
+async def fetch_valuation_all_cached(
+    market: str = "ALL",
+    trd_date: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Wrapper for fetch_valuation_all with automatic caching."""
+    return await fetch_valuation_all(market, trd_date)
+
+
 def classify_etf_category(
     etf_name: str,
     tracking_index: str,
@@ -444,7 +643,10 @@ def classify_etf_category(
     combined = f"{etf_name_lower} {index_lower}"
 
     # Market/Region classification
-    if any(keyword in combined for keyword in ["미국", "usa", "us ", "s&p", "나스닥", "다우"]):
+    if any(
+        keyword in combined
+        for keyword in ["미국", "usa", "us ", "s&p", "나스닥", "다우"]
+    ):
         categories.append("미국주식")
     if any(keyword in combined for keyword in ["인도", "india", "nifty", "sensex"]):
         categories.append("인도")
@@ -454,15 +656,23 @@ def classify_etf_category(
         categories.append("중국")
 
     # Theme/Industry classification
-    if any(keyword in combined for keyword in ["반도체", "semiconductor", "반도", "칩"]):
+    if any(
+        keyword in combined for keyword in ["반도체", "semiconductor", "반도", "칩"]
+    ):
         categories.append("반도체")
     if any(keyword in combined for keyword in ["ai", "인공지능", "머신러닝", "딥러닝"]):
         categories.append("AI")
     if any(keyword in combined for keyword in ["배당", "dividend", "income", "고배당"]):
         categories.append("배당")
-    if any(keyword in combined for keyword in ["채권", "bond", "국채", "회사채", "treasury"]):
+    if any(
+        keyword in combined
+        for keyword in ["채권", "bond", "국채", "회사채", "treasury"]
+    ):
         categories.append("채권")
-    if any(keyword in combined for keyword in ["2차전지", "배터리", "battery", "전지", "이차전지"]):
+    if any(
+        keyword in combined
+        for keyword in ["2차전지", "배터리", "battery", "전지", "이차전지"]
+    ):
         categories.append("2차전지")
     if any(keyword in combined for keyword in ["방산", "defense", "무기", "군수"]):
         categories.append("방산")
