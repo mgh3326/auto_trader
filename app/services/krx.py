@@ -19,8 +19,8 @@ import httpx
 import redis.asyncio as redis
 
 from app.core.config import settings
-
 from app.models.kospi200 import Kospi200Constituent
+
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
