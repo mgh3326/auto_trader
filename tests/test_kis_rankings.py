@@ -761,7 +761,7 @@ class TestKISRankingDirection:
         assert len(captured_requests) == 1
         req = captured_requests[0]
         assert req["params"]["FID_RANK_SORT_CLS_CODE"] == "0"
-        assert req["params"]["FID_PRC_CLS_CODE"] == "5"
+        assert req["params"]["FID_PRC_CLS_CODE"] == "0"
         assert len(result) == 1
         assert float(result[0]["prdy_ctrt"]) == -3.0
 

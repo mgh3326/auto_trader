@@ -270,8 +270,8 @@ class KISClient:
             "tr_id": FLUCTUATION_RANK_TR,
         }
 
-        # FID_PRC_CLS_CODE: "0"=전체, "5"=하락
-        prc_cls_code = "5" if direction == "down" else "0"
+        # FID_PRC_CLS_CODE: "0"=전체 (공식 API 문서 기준)
+        prc_cls_code = "0"
         # FID_RANK_SORT_CLS_CODE: "0"=양방향 (모든 방향 포함)
         rank_sort_cls_code = "0"
 
