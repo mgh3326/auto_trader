@@ -69,6 +69,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_news_analysis_results_article_id'), 'news_analysis_results', ['article_id'], unique=False)
     op.create_index(op.f('ix_news_analysis_results_sentiment'), 'news_analysis_results', ['sentiment'], unique=False)
     op.create_index('ix_news_analysis_sentiment_created', 'news_analysis_results', ['sentiment', 'created_at'], unique=False)
+
     op.alter_column('stock_analysis_results', 'stock_info_id',
                existing_type=sa.INTEGER(),
                comment='주식 정보 ID',
@@ -339,17 +340,6 @@ def downgrade() -> None:
                comment=None,
                existing_comment='주식 정보 ID',
                existing_nullable=False)
-    sa.Column('id', sa.BIGINT(), autoincrement=False, nullable=True),
-    sa.Column('email', sa.TEXT(), autoincrement=False, nullable=True),
-    sa.Column('nickname', sa.TEXT(), autoincrement=False, nullable=True),
-    sa.Column('tz', sa.TEXT(), autoincrement=False, nullable=True),
-    sa.Column('base_currency', sa.TEXT(), autoincrement=False, nullable=True),
-    sa.Column('created_at', postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True),
-    sa.Column('username', sa.TEXT(), autoincrement=False, nullable=True),
-    sa.Column('hashed_password', sa.TEXT(), autoincrement=False, nullable=True),
-    sa.Column('is_active', sa.BOOLEAN(), autoincrement=False, nullable=True),
-    sa.Column('role', postgresql.ENUM('admin', 'trader', 'viewer', name='user_role'), autoincrement=False, nullable=True)
-    )
     op.drop_index('ix_news_analysis_sentiment_created', table_name='news_analysis_results')
     op.drop_index(op.f('ix_news_analysis_results_sentiment'), table_name='news_analysis_results')
     op.drop_index(op.f('ix_news_analysis_results_article_id'), table_name='news_analysis_results')
