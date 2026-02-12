@@ -4,14 +4,10 @@
 """
 
 import asyncio
-import decimal
-from typing import List, Dict, Optional
+
 from app.analysis.service_analyzers import UpbitAnalyzer
 from app.services import upbit
-from app.services.stock_info_service import get_coin_sell_price, get_coin_sell_price_range
 from data.coins_info import upbit_pairs
-
-
 
 # =========================
 
@@ -54,7 +50,7 @@ async def process_cancel_orders():
 
         # 4. 거래 불가능한 마켓에 대한 매수 주문 확인 및 취소
         if non_tradable_market_codes:
-            print(f"\n=== 거래 불가능한 마켓 매수 주문 확인 및 취소 ===")
+            print("\n=== 거래 불가능한 마켓 매수 주문 확인 및 취소 ===")
             await check_and_cancel_buy_orders_for_non_tradable_markets(non_tradable_market_codes)
 
 
@@ -67,7 +63,7 @@ async def process_cancel_orders():
         await analyzer.close()
 
 
-async def check_and_cancel_buy_orders_for_non_tradable_markets(market_codes: List[str]):
+async def check_and_cancel_buy_orders_for_non_tradable_markets(market_codes: list[str]):
     """거래 불가능한 마켓들에 대한 매수 주문을 확인하고 취소합니다."""
     try:
         total_buy_orders = 0
@@ -125,7 +121,7 @@ async def check_and_cancel_buy_orders_for_non_tradable_markets(market_codes: Lis
                         print(
                             f"     ❌ 실패: {order_uuids[i][:8]}... - {result.get('error', {}).get('message', '알 수 없는 오류')}")
 
-        print(f"\n📊 매수 주문 취소 결과:")
+        print("\n📊 매수 주문 취소 결과:")
         print(f"   발견된 매수 주문: {total_buy_orders}개")
         print(f"   취소 성공: {total_cancelled}개")
         if total_buy_orders > total_cancelled:
@@ -143,16 +139,16 @@ def _print_error_hint(e: Exception):
     """에러 메시지에 따른 힌트 출력"""
     error_str = str(e).lower()
     if "401" in error_str:
-        print(f"          💡 API 키 인증 문제일 수 있습니다. 키를 확인해주세요.")
+        print("          💡 API 키 인증 문제일 수 있습니다. 키를 확인해주세요.")
     elif "400" in error_str:
-        print(f"          💡 주문 파라미터 문제일 수 있습니다.")
+        print("          💡 주문 파라미터 문제일 수 있습니다.")
         if "volume" in error_str or "수량" in error_str:
-            print(f"             - 최소 주문 수량: 0.00000001 이상")
-            print(f"             - 최대 소수점 자리: 8자리")
+            print("             - 최소 주문 수량: 0.00000001 이상")
+            print("             - 최대 소수점 자리: 8자리")
         if "price" in error_str or "가격" in error_str:
-            print(f"             - 가격은 정수 단위로 입력")
+            print("             - 가격은 정수 단위로 입력")
     elif "429" in error_str:
-        print(f"          💡 API 호출 제한에 걸렸습니다. 잠시 후 다시 시도해주세요.")
+        print("          💡 API 호출 제한에 걸렸습니다. 잠시 후 다시 시도해주세요.")
 
 
 async def place_market_sell_all(market: str, balance: float, currency: str):
@@ -161,7 +157,7 @@ async def place_market_sell_all(market: str, balance: float, currency: str):
         volume_str = f"{balance:.8f}"
 
         print(f"  💥 전량 시장가 매도 실행: {volume_str} {currency}")
-        print(f"       🔄 시장가로 즉시 체결 시도...")
+        print("       🔄 시장가로 즉시 체결 시도...")
 
         # 시장가 매도 주문 실행
         order_result = await upbit.place_market_sell_order(market, volume_str)
@@ -170,14 +166,14 @@ async def place_market_sell_all(market: str, balance: float, currency: str):
         trades = order_result.get('trades', [])
         total_funds = sum(float(trade.get('funds', 0)) for trade in trades) if trades else 0
 
-        print(f"  ✅ 전량 매도 성공!")
+        print("  ✅ 전량 매도 성공!")
         print(f"     주문 ID: {order_result.get('uuid')}")
         print(f"     매도 수량: {volume_executed} {currency}")
         if total_funds > 0:
             print(f"     실제 수령액: {total_funds:,.0f}원")
             avg_price = total_funds / volume_executed if volume_executed > 0 else 0
             print(f"     평균 체결가: {avg_price:,.0f}원")
-        print(f"     ✨ 잔액 없이 깔끔하게 전량 매도 완료!")
+        print("     ✨ 잔액 없이 깔끔하게 전량 매도 완료!")
 
     except Exception as e:
         print(f"  ❌ 전량 매도 실패: {e}")

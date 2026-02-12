@@ -7,6 +7,7 @@ Usage:
 """
 
 import asyncio
+
 from sqlalchemy import select, update
 
 from app.core.db import AsyncSessionLocal

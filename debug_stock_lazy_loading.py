@@ -12,10 +12,9 @@ print("1. 모듈 임포트 (아직 데이터는 로드되지 않음)")
 print("=" * 70)
 from data.stocks_info import (
     KOSPI_NAME_TO_CODE,
-    KOSDAQ_NAME_TO_CODE,
     KRX_NAME_TO_CODE,
-    prime_krx_stock_data,
     get_kospi_name_to_code,
+    prime_krx_stock_data,
 )
 
 print("✓ 임포트 완료 (데이터는 아직 로드되지 않음)\n")

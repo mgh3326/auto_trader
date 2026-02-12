@@ -4,11 +4,9 @@
 """
 
 import asyncio
-import decimal
-from typing import List, Dict, Optional
+
 from app.analysis.service_analyzers import UpbitAnalyzer
 from app.services import upbit
-from app.services.stock_info_service import get_coin_sell_price, get_coin_sell_price_range
 from data.coins_info import upbit_pairs
 
 # ===== 매도 전략 설정 =====
@@ -66,11 +64,11 @@ async def process_sell_orders_for_my_coins():
             # 3-1. 기존 매도 주문 확인 및 취소
             await cancel_existing_sell_orders(market)
             # --- 추가: API 서버 데이터 동기화를 위해 잠시 대기 ---
-            print(f"  ⏳ API 서버 동기화를 위해 1초 대기...")
+            print("  ⏳ API 서버 동기화를 위해 1초 대기...")
             await asyncio.sleep(1)
 
             # 3-2. 주문 취소 후 보유 수량 재조회
-            print(f"  🔄 주문 취소 후 보유 수량 재조회...")
+            print("  🔄 주문 취소 후 보유 수량 재조회...")
             updated_coins = await upbit.fetch_my_coins()
 
             # 현재 코인의 업데이트된 수량 찾기
@@ -90,7 +88,7 @@ async def process_sell_orders_for_my_coins():
 
             # 최소 주문 수량 체크 (주문 취소 후 최종 수량으로 체크)
             if balance < 0.00000001:
-                print(f"  ⚠️  최종 보유 수량이 너무 적어 매도 불가능 (최소: 0.00000001)")
+                print("  ⚠️  최종 보유 수량이 너무 적어 매도 불가능 (최소: 0.00000001)")
                 continue
 
             # 3-3. 현재가 조회
@@ -140,15 +138,15 @@ async def cancel_existing_sell_orders(market: str):
         print(f"  ❌ 기존 주문 취소 실패: {e}")
 
 
-async def get_sell_prices_for_coin(currency: str, avg_buy_price: float, current_price: float) -> List[float]:
+async def get_sell_prices_for_coin(currency: str, avg_buy_price: float, current_price: float) -> list[float]:
     """코인의 매도 가격들을 분석 결과에서 조회합니다."""
     try:
         # KRW-{currency} 형태의 심볼로 분석 결과 조회
         symbol = f"KRW-{currency}"
 
         # 분석 결과에서 전체 정보 조회
-        from app.services.stock_info_service import StockAnalysisService
         from app.core.db import AsyncSessionLocal
+        from app.services.stock_info_service import StockAnalysisService
 
         async with AsyncSessionLocal() as db:
             service = StockAnalysisService(db)
@@ -167,7 +165,7 @@ async def get_sell_prices_for_coin(currency: str, avg_buy_price: float, current_
         if analysis.appropriate_sell_max is not None:
             sell_prices.append(("appropriate_sell_max", analysis.appropriate_sell_max))
 
-        # sell_target 범위  
+        # sell_target 범위
         if analysis.sell_target_min is not None:
             sell_prices.append(("sell_target_min", analysis.sell_target_min))
         if analysis.sell_target_max is not None:
@@ -201,15 +199,15 @@ async def get_sell_prices_for_coin(currency: str, avg_buy_price: float, current_
         return []
 
 
-async def place_multiple_sell_orders(market: str, balance: float, sell_prices: List[float], currency: str):
+async def place_multiple_sell_orders(market: str, balance: float, sell_prices: list[float], currency: str):
     """여러 가격으로 분할 매도 주문을 넣습니다. 마지막은 최고가에서 전량 매도."""
     if not sell_prices:
-        print(f"  ⚠️  매도 주문할 가격이 없습니다.")
+        print("  ⚠️  매도 주문할 가격이 없습니다.")
         return
 
     if len(sell_prices) == 1:
         # 가격이 1개만 있으면 전량 매도
-        print(f"  📤 단일 가격 전량 매도")
+        print("  📤 단일 가격 전량 매도")
         await place_new_sell_order(market, balance, sell_prices[0], currency)
         return
 
@@ -219,7 +217,7 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
     # 분할 수량이 최소 주문 수량을 만족하는지 체크
     split_ratio = 1.0 / len(sell_prices)
     min_split_volume = balance * split_ratio
-    
+
     # 분할한 개별 금액 계산 (첫 번째 매도 가격 기준)
     first_sell_price = sell_prices_sorted[0]
     split_amount = (balance * split_ratio) * first_sell_price
@@ -232,7 +230,7 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
             if reason:
                 reason += " 및 "
             reason += f"분할 금액이 1만원 미만 ({split_amount:,.0f}원)"
-        
+
         print(f"  ⚠️  {reason}. 최저가에서 전량 매도로 전환")
         lowest_price = min(sell_prices_sorted)
         await place_new_sell_order(market, balance, lowest_price, currency)
@@ -266,7 +264,7 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
 
             # 최소 주문 수량 체크
             if split_volume < 0.00000001:
-                print(f"       ⚠️  분할 수량이 너무 적어 건너뜀 (최소: 0.00000001)")
+                print("       ⚠️  분할 수량이 너무 적어 건너뜀 (최소: 0.00000001)")
                 continue
 
             # 매도 주문 실행
@@ -290,7 +288,7 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
 
     # 2단계: 현재 실제 보유 수량을 다시 조회해서 정확한 잔량 확인
     try:
-        print(f"       🔄 마지막 매도 전 현재 보유 수량 확인...")
+        print("       🔄 마지막 매도 전 현재 보유 수량 확인...")
         current_coins = await upbit.fetch_my_coins()
 
         # 현재 실제 보유 수량 찾기
@@ -311,11 +309,11 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
 
         print(f"  📤 [{len(sell_prices)}/{len(sell_prices)}] 전량: {volume_str} {currency}")
         print(f"       원본 가격: {highest_price:,.2f}원 → 조정 가격: {adjusted_highest_price}원")
-        print(f"       🎯 최고가에서 실제 보유 수량 전부 매도!")
+        print("       🎯 최고가에서 실제 보유 수량 전부 매도!")
 
         # 최소 주문 수량 체크
         if current_balance < 0.00000001:
-            print(f"       ⚠️  현재 보유 수량이 너무 적어 매도 불가능 (최소: 0.00000001)")
+            print("       ⚠️  현재 보유 수량이 너무 적어 매도 불가능 (최소: 0.00000001)")
             print(f"       📊 분할 매도 결과: {success_count}/{len(sell_prices) - 1}개 성공 (잔량 매도 생략)")
             return
 
@@ -329,7 +327,7 @@ async def place_multiple_sell_orders(market: str, balance: float, sell_prices: L
         total_expected_amount += expected_amount
 
         print(f"       ✅ 성공! ID: {order_result.get('uuid')[:8]}... (예상: {expected_amount:,.0f}원)")
-        print(f"       ✨ 잔액 없이 깔끔하게 완료!")
+        print("       ✨ 잔액 없이 깔끔하게 완료!")
         success_count += 1
 
     except Exception as e:
@@ -345,16 +343,16 @@ def _print_error_hint(e: Exception):
     """에러 메시지에 따른 힌트 출력"""
     error_str = str(e).lower()
     if "401" in error_str:
-        print(f"          💡 API 키 인증 문제일 수 있습니다. 키를 확인해주세요.")
+        print("          💡 API 키 인증 문제일 수 있습니다. 키를 확인해주세요.")
     elif "400" in error_str:
-        print(f"          💡 주문 파라미터 문제일 수 있습니다.")
+        print("          💡 주문 파라미터 문제일 수 있습니다.")
         if "volume" in error_str or "수량" in error_str:
-            print(f"             - 최소 주문 수량: 0.00000001 이상")
-            print(f"             - 최대 소수점 자리: 8자리")
+            print("             - 최소 주문 수량: 0.00000001 이상")
+            print("             - 최대 소수점 자리: 8자리")
         if "price" in error_str or "가격" in error_str:
-            print(f"             - 가격은 정수 단위로 입력")
+            print("             - 가격은 정수 단위로 입력")
     elif "429" in error_str:
-        print(f"          💡 API 호출 제한에 걸렸습니다. 잠시 후 다시 시도해주세요.")
+        print("          💡 API 호출 제한에 걸렸습니다. 잠시 후 다시 시도해주세요.")
 
 
 async def place_market_sell_all(market: str, balance: float, currency: str):
@@ -365,7 +363,7 @@ async def place_market_sell_all(market: str, balance: float, currency: str):
         volume_str = f"{balance:.8f}"
 
         print(f"  💥 전량 시장가 매도 실행: {volume_str} {currency}")
-        print(f"       🔄 시장가로 즉시 체결 시도...")
+        print("       🔄 시장가로 즉시 체결 시도...")
 
         # 시장가 매도 주문 실행
         order_result = await upbit.place_market_sell_order(market, volume_str)
@@ -374,14 +372,14 @@ async def place_market_sell_all(market: str, balance: float, currency: str):
         trades = order_result.get('trades', [])
         total_funds = sum(float(trade.get('funds', 0)) for trade in trades) if trades else 0
 
-        print(f"  ✅ 전량 매도 성공!")
+        print("  ✅ 전량 매도 성공!")
         print(f"     주문 ID: {order_result.get('uuid')}")
         print(f"     매도 수량: {volume_executed} {currency}")
         if total_funds > 0:
             print(f"     실제 수령액: {total_funds:,.0f}원")
             avg_price = total_funds / volume_executed if volume_executed > 0 else 0
             print(f"     평균 체결가: {avg_price:,.0f}원")
-        print(f"     ✨ 잔액 없이 깔끔하게 전량 매도 완료!")
+        print("     ✨ 잔액 없이 깔끔하게 전량 매도 완료!")
 
     except Exception as e:
         print(f"  ❌ 전량 매도 실패: {e}")
@@ -404,7 +402,7 @@ async def place_new_sell_order(market: str, balance: float, sell_price: float, c
         # 매도 주문 실행
         order_result = await upbit.place_sell_order(market, volume_str, price_str)
 
-        print(f"  ✅ 매도 주문 성공!")
+        print("  ✅ 매도 주문 성공!")
         print(f"     주문 ID: {order_result.get('uuid')}")
         print(f"     수량: {order_result.get('volume')} {currency}")
         print(f"     가격: {order_result.get('price')}원")

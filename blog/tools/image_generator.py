@@ -26,14 +26,14 @@
 
 import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
-from typing import List, Tuple, Callable, Optional
 
 
 class BlogImageGenerator(ABC):
     """블로그 이미지 생성기 베이스 클래스"""
 
-    def __init__(self, prefix: str, images_dir: Optional[Path] = None):
+    def __init__(self, prefix: str, images_dir: Path | None = None):
         """
         Args:
             prefix: 이미지 파일 접두사 (예: "kis_trading")
@@ -47,7 +47,7 @@ class BlogImageGenerator(ABC):
         self.images_dir.mkdir(exist_ok=True)
 
     @abstractmethod
-    def get_images(self) -> List[Tuple[str, int, int, Callable[[], str]]]:
+    def get_images(self) -> list[tuple[str, int, int, Callable[[], str]]]:
         """
         생성할 이미지 목록 반환
 
@@ -64,7 +64,7 @@ class BlogImageGenerator(ABC):
         output_path.write_text(content, encoding="utf-8")
         return output_path
 
-    def generate_svgs(self) -> List[Path]:
+    def generate_svgs(self) -> list[Path]:
         """모든 SVG 파일 생성"""
         print(f"🎨 {self.prefix} 블로그 이미지 생성 시작...\n")
 
@@ -78,7 +78,7 @@ class BlogImageGenerator(ABC):
         print(f"\n✨ {len(svg_paths)}개 SVG 파일 생성 완료!")
         return svg_paths
 
-    async def convert_to_png(self) -> List[Path]:
+    async def convert_to_png(self) -> list[Path]:
         """SVG를 PNG로 변환"""
         from blog.tools.svg_converter import SVGConverter
 
@@ -90,7 +90,7 @@ class BlogImageGenerator(ABC):
             png_name = f"{self.prefix}_{name}.png"
             files.append((svg_name, png_name, width))
 
-        print(f"\n🔄 PNG 변환 시작...\n")
+        print("\n🔄 PNG 변환 시작...\n")
         png_paths = await converter.convert_all(files)
 
         print(f"\n✨ {len(png_paths)}개 PNG 파일 생성 완료!")
@@ -144,7 +144,7 @@ class BlogImageGenerator(ABC):
         return "</svg>"
 
     @staticmethod
-    def gradient_defs(gradient_id: str, colors: List[Tuple[int, str]]) -> str:
+    def gradient_defs(gradient_id: str, colors: list[tuple[int, str]]) -> str:
         """그라데이션 정의 생성"""
         stops = "\n".join(
             f'<stop offset="{offset}%" style="stop-color:{color};stop-opacity:1" />'
@@ -220,9 +220,9 @@ class ThumbnailTemplate:
         title_line1: str,
         title_line2: str = "",
         subtitle: str = "",
-        icons: List[Tuple[str, str, str]] = None,  # [(emoji, label, color), ...]
+        icons: list[tuple[str, str, str]] = None,  # [(emoji, label, color), ...]
         tech_stack: str = "",
-        bg_gradient: Tuple[str, str, str] = ("#0d1b2a", "#1b263b", "#415a77"),
+        bg_gradient: tuple[str, str, str] = ("#0d1b2a", "#1b263b", "#415a77"),
         accent_color: str = "#4CAF50",
     ) -> str:
         """

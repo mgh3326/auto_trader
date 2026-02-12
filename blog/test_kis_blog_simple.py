@@ -2,11 +2,13 @@
 KIS API로 삼성전자 데이터를 수집하고 프롬프트를 생성한 후 Gemini에 분석 요청 (DB 저장 없이)
 """
 import asyncio
-from app.services import kis
+
+from google import genai
+
 from app.analysis.analyzer import DataProcessor
 from app.analysis.prompt import build_prompt
-from google import genai
 from app.core.config import settings
+from app.services import kis
 
 
 async def main():

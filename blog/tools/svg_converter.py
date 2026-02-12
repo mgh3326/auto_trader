@@ -23,15 +23,13 @@ Playwright를 사용하여 SVG를 고품질 PNG로 변환합니다.
 """
 
 import asyncio
-import sys
 from pathlib import Path
-from typing import List, Tuple, Optional
 
 
 class SVGConverter:
     """SVG to PNG 변환기"""
 
-    def __init__(self, images_dir: Optional[Path] = None):
+    def __init__(self, images_dir: Path | None = None):
         """
         Args:
             images_dir: 이미지 디렉토리 (기본값: blog/images)
@@ -44,7 +42,7 @@ class SVGConverter:
     async def convert(
         self,
         svg_path: str | Path,
-        png_path: Optional[str | Path] = None,
+        png_path: str | Path | None = None,
         width: int = 1200,
     ) -> Path:
         """
@@ -150,9 +148,9 @@ class SVGConverter:
 
     async def convert_all(
         self,
-        files: List[Tuple[str, str, int]],
+        files: list[tuple[str, str, int]],
         stop_on_error: bool = False,
-    ) -> List[Path]:
+    ) -> list[Path]:
         """
         여러 SVG 파일을 PNG로 변환
 
@@ -180,7 +178,7 @@ class SVGConverter:
         self,
         pattern: str = "*.svg",
         width: int = 1200,
-    ) -> List[Path]:
+    ) -> list[Path]:
         """
         디렉토리 내 모든 SVG 파일을 PNG로 변환
 

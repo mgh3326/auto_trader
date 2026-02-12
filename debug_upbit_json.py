@@ -4,6 +4,7 @@ Upbit JSON 분석 실행 예시
 """
 
 import asyncio
+
 from app.analysis.service_analyzers import UpbitAnalyzer
 from app.services import upbit
 from data.coins_info import upbit_pairs

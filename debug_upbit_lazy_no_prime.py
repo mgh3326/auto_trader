@@ -7,7 +7,9 @@ Upbit Lazy Loading 테스트 - prime 없이
 비동기 환경에서 lazy loading은 명시적 초기화가 필요합니다.
 """
 import asyncio
+
 from data.coins_info import upbit_pairs
+
 
 async def test_without_prime():
     """prime 없이 접근 시 에러 발생 테스트"""

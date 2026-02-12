@@ -5,6 +5,7 @@ KRX vs Upbit 패턴 비교
 """
 import asyncio
 import time
+
 from data.coins_info import upbit_pairs
 from data.stocks_info import KRX_NAME_TO_CODE, prime_krx_stock_data
 

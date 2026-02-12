@@ -1,18 +1,15 @@
 # debug_kis.py
 import asyncio
+from typing import Literal
 
 import pandas as pd
+from google import genai
+from pydantic import BaseModel, Field
 
 from app.analysis.prompt import build_prompt
 from app.core.config import settings
-from app.services.disclosures import dart
 from app.services.kis import kis  # 경로는 실제 패키지 구조에 맞게
-from data.disclosures import dart_corp_index
-from data.stocks_info import KOSPI_NAME_TO_CODE, KOSDAQ_NAME_TO_CODE, KRX_NAME_TO_CODE
-from google import genai
-
-from pydantic import BaseModel, Field
-from typing import Literal
+from data.stocks_info import KRX_NAME_TO_CODE
 
 
 class TradePlan(BaseModel):

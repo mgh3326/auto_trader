@@ -3,13 +3,14 @@ NASDAQ, NYSE, AMEX 심볼 중복 검사
 
 동일한 심볼이 여러 거래소에 존재하는지 확인
 """
-import urllib.request
 import ssl
-import zipfile
 import tempfile
-from pathlib import Path
-import pandas as pd
+import urllib.request
+import zipfile
 from collections import defaultdict
+from pathlib import Path
+
+import pandas as pd
 
 ssl._create_default_https_context = ssl._create_unverified_context
 

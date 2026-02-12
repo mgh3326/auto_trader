@@ -7,7 +7,9 @@ import asyncio
 import pprint
 
 from app.services.kis import kis
-from data.stocks_info import KOSPI_NAME_TO_CODE, KRX_NAME_TO_CODE, NASDAQ_NAME_TO_SYMBOL, US_STOCKS_SYMBOL_TO_EXCHANGE
+from data.stocks_info import (
+    US_STOCKS_SYMBOL_TO_EXCHANGE,
+)
 
 
 async def main():
