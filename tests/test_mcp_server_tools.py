@@ -370,7 +370,7 @@ async def test_place_order_sell_with_amount_error():
 
 
 @pytest.mark.asyncio
-async def test_get_open_orders_crypto(monkeypatch):
+async def test_get_order_history_pending_crypto(monkeypatch):
     tools = build_tools()
 
     class MockUpbitService:
@@ -383,27 +383,41 @@ async def test_get_open_orders_crypto(monkeypatch):
                     "price": "50000000.0",
                     "volume": "0.001",
                     "remaining_volume": "0.001",
+                    "executed_volume": "0.0",
                     "market": "KRW-BTC",
                     "created_at": "2024-01-01T00:00:00Z",
+                    "state": "wait",
                 }
             ]
+
+    class MockKISClient:
+        async def inquire_korea_orders(self):
+            return []
+
+        async def inquire_overseas_orders(self, exchange_code):
+            return []
 
     monkeypatch.setattr(
         mcp_tools.upbit_service,
         "fetch_open_orders",
         MockUpbitService().fetch_open_orders,
     )
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
 
-    result = await tools["get_open_orders"]()
+    result = await tools["get_order_history"](status="pending")
 
+    assert result["total_available"] == 1
     assert len(result["orders"]) == 1
-    assert result["orders"][0]["source"] == "upbit"
-    assert result["orders"][0]["side"] == "buy"
-    assert result["orders"][0]["order_id"] == "uuid-1"
+    order = result["orders"][0]
+    assert order["order_id"] == "uuid-1"
+    assert order["symbol"] == "KRW-BTC"
+    assert order["side"] == "buy"
+    assert order["status"] == "pending"
+    assert order["remaining_qty"] == 0.001
 
 
 @pytest.mark.asyncio
-async def test_get_open_orders_kr_equity(monkeypatch):
+async def test_get_order_history_pending_kr_equity(monkeypatch):
     tools = build_tools()
 
     class MockKISClient:
@@ -414,106 +428,117 @@ async def test_get_open_orders_kr_equity(monkeypatch):
                     "sll_buy_dvsn_cd": "02",
                     "pdno": "005930",
                     "ord_qty": "10",
+                    "ccld_qty": "0",
                     "ord_unpr": "80000",
-                    "ord_tmd": "2024-01-01",
+                    "ccld_unpr": "0",
+                    "ord_dt": "20240101",
+                    "ord_tmd": "093000",
+                    "prcs_stat_name": "접수",
                 }
             ]
 
+        async def inquire_overseas_orders(self, exchange_code):
+            return []
+
     monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-    monkeypatch.setattr(
-        mcp_tools.upbit_service,
-        "fetch_open_orders",
-        AsyncMock(return_value=[]),
-    )
 
-    result = await tools["get_open_orders"]()
+    result = await tools["get_order_history"](status="pending", market="kr")
 
+    assert result["market"] == "kr"
     assert len(result["orders"]) == 1
-    assert result["orders"][0]["source"] == "kis"
-    assert result["orders"][0]["market"] == "kr"
-    assert result["orders"][0]["side"] == "buy"
+    order = result["orders"][0]
+    assert order["order_id"] == "12345"
+    assert order["symbol"] == "005930"
+    assert order["side"] == "buy"
+    assert order["status"] == "pending"
+    assert order["ordered_qty"] == 10
 
 
 @pytest.mark.asyncio
-async def test_get_open_orders_us_equity(monkeypatch):
+async def test_get_order_history_pending_us_equity(monkeypatch):
     tools = build_tools()
 
     class MockKISClient:
+        async def inquire_korea_orders(self):
+            return []
+
         async def inquire_overseas_orders(self, exchange_code):
-            return [
-                {
-                    "odno": "67890",
-                    "sll_buy_dvsn_cd": "02",
-                    "pdno": "AAPL",
-                    "ft_ord_qty": "100",
-                    "ft_ord_unpr3": "200.0",
-                    "nccs_qty": "50",
-                    "ord_tmd": "2024-01-01",
-                }
-            ]
+            if exchange_code == "NASD":
+                return [
+                    {
+                        "odno": "67890",
+                        "sll_buy_dvsn_cd": "02",
+                        "pdno": "AAPL",
+                        "ft_ord_qty": "100",
+                        "ft_ccld_qty": "50",
+                        "ft_ord_unpr3": "200.0",
+                        "ft_ccld_unpr3": "199.5",
+                        "ord_dt": "20240101",
+                        "ord_tmd": "093000",
+                        "prcs_stat_name": "접수",
+                    }
+                ]
+            return []
 
     monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-    monkeypatch.setattr(
-        mcp_tools.upbit_service,
-        "fetch_open_orders",
-        AsyncMock(return_value=[]),
-    )
 
-    result = await tools["get_open_orders"]()
+    result = await tools["get_order_history"](status="pending", market="us")
 
+    assert result["market"] == "us"
     assert len(result["orders"]) == 1
-    assert result["orders"][0]["source"] == "kis"
-    assert result["orders"][0]["market"] == "us"
-    assert result["orders"][0]["remaining_quantity"] == 50
+    order = result["orders"][0]
+    assert order["order_id"] == "67890"
+    assert order["symbol"] == "AAPL"
+    assert order["remaining_qty"] == 50
 
 
 @pytest.mark.asyncio
-async def test_get_open_orders_with_symbol_filter(monkeypatch):
+async def test_get_order_history_pending_with_symbol_filter(monkeypatch):
     tools = build_tools()
 
-    class MockUpbitService:
-        async def fetch_open_orders(self, market):
-            return [
-                {
-                    "uuid": "uuid-1",
-                    "side": "bid",
-                    "ord_type": "limit",
-                    "price": "50000000.0",
-                    "volume": "0.001",
-                    "remaining_volume": "0.001",
-                    "market": "KRW-BTC",
-                    "created_at": "2024-01-01",
-                },
-                {
-                    "uuid": "uuid-2",
-                    "side": "bid",
-                    "ord_type": "limit",
-                    "price": "50000.0",
-                    "volume": "10.0",
-                    "remaining_volume": "10.0",
-                    "market": "KRW-ETH",
-                    "created_at": "2024-01-01",
-                },
-            ]
+    mock_fetch_open_orders = AsyncMock(
+        return_value=[
+            {
+                "uuid": "uuid-1",
+                "side": "bid",
+                "ord_type": "limit",
+                "price": "50000000.0",
+                "volume": "0.001",
+                "remaining_volume": "0.001",
+                "executed_volume": "0.0",
+                "market": "KRW-BTC",
+                "created_at": "2024-01-01",
+                "state": "wait",
+            }
+        ]
+    )
 
     monkeypatch.setattr(
         mcp_tools.upbit_service,
         "fetch_open_orders",
-        MockUpbitService().fetch_open_orders,
+        mock_fetch_open_orders,
     )
 
-    result = await tools["get_open_orders"](symbol="KRW-BTC")
+    result = await tools["get_order_history"](symbol="KRW-BTC", status="pending")
 
+    mock_fetch_open_orders.assert_awaited_once_with(market="KRW-BTC")
     assert len(result["orders"]) == 1
     assert result["orders"][0]["symbol"] == "KRW-BTC"
 
 
 @pytest.mark.asyncio
-async def test_get_open_orders_empty_result(monkeypatch):
+async def test_get_order_history_pending_empty_result(monkeypatch):
     tools = build_tools()
 
     class MockUpbitService:
         async def fetch_open_orders(self, market):
+            return []
+
+    class MockKISClient:
+        async def inquire_korea_orders(self):
+            return []
+
+        async def inquire_overseas_orders(self, exchange_code):
             return []
 
     monkeypatch.setattr(
@@ -521,15 +546,16 @@ async def test_get_open_orders_empty_result(monkeypatch):
         "fetch_open_orders",
         MockUpbitService().fetch_open_orders,
     )
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
 
-    result = await tools["get_open_orders"]()
+    result = await tools["get_order_history"](status="pending")
 
-    assert result["total_count"] == 0
+    assert result["total_available"] == 0
     assert len(result["orders"]) == 0
 
 
 @pytest.mark.asyncio
-async def test_get_open_orders_partial_failure(monkeypatch):
+async def test_get_order_history_pending_partial_failure(monkeypatch):
     tools = build_tools()
 
     class MockUpbitService:
@@ -550,10 +576,10 @@ async def test_get_open_orders_partial_failure(monkeypatch):
     )
     monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
 
-    result = await tools["get_open_orders"]()
+    result = await tools["get_order_history"](status="pending")
 
     assert len(result["errors"]) == 1
-    assert result["errors"][0]["source"] == "upbit"
+    assert result["errors"][0]["market"] == "crypto"
     assert len(result["orders"]) == 1
 
 

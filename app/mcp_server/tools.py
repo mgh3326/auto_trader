@@ -4050,21 +4050,33 @@ def register_tools(mcp: FastMCP) -> None:
 
     def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
         """Normalize KIS domestic order data to standard format."""
-        side_code = order.get("sll_buy_dvsn_cd", "")
+        side_code = _get_kis_field(order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
         side = "buy" if side_code == "02" else "sell"
 
-        ordered = int(float(order.get("ord_qty", 0) or 0))
-        filled = int(float(order.get("ccld_qty", 0) or 0))
+        ordered = int(
+            float(_get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0)
+        )
+        filled = int(
+            float(_get_kis_field(order, "ccld_qty", "CCLD_QTY", default=0) or 0)
+        )
         remaining = ordered - filled
 
-        ordered_price = int(float(order.get("ord_unpr", 0) or 0))
-        filled_price = int(float(order.get("ccld_unpr", 0) or 0))
+        ordered_price = int(
+            float(_get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0) or 0)
+        )
+        filled_price = int(
+            float(_get_kis_field(order, "ccld_unpr", "CCLD_UNPR", default=0) or 0)
+        )
 
-        status = _map_kis_status(filled, remaining, order.get("prcs_stat_name", ""))
+        status = _map_kis_status(
+            filled,
+            remaining,
+            _get_kis_field(order, "prcs_stat_name", "PRCS_STAT_NAME"),
+        )
 
         return {
-            "order_id": order.get("ord_no", ""),
-            "symbol": order.get("pdno", ""),
+            "order_id": _get_kis_field(order, "ord_no", "ORD_NO"),
+            "symbol": _get_kis_field(order, "pdno", "PDNO"),
             "side": side,
             "status": status,
             "ordered_qty": ordered,
@@ -4072,28 +4084,45 @@ def register_tools(mcp: FastMCP) -> None:
             "remaining_qty": remaining,
             "ordered_price": ordered_price,
             "filled_avg_price": filled_price,
-            "ordered_at": f"{order.get('ord_dt', '')} {order.get('ord_tmd', '')}",
+            "ordered_at": (
+                f"{_get_kis_field(order, 'ord_dt', 'ORD_DT')} "
+                f"{_get_kis_field(order, 'ord_tmd', 'ORD_TMD')}"
+            ),
             "filled_at": "",
             "currency": "KRW",
         }
 
     def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
         """Normalize KIS overseas order data to standard format."""
-        side_code = order.get("sll_buy_dvsn_cd", "")
+        side_code = _get_kis_field(order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
         side = "buy" if side_code == "02" else "sell"
 
-        ordered = int(float(order.get("ft_ord_qty", 0) or 0))
-        filled = int(float(order.get("ft_ccld_qty", 0) or 0))
+        ordered = int(
+            float(_get_kis_field(order, "ft_ord_qty", "FT_ORD_QTY", default=0) or 0)
+        )
+        filled = int(
+            float(
+                _get_kis_field(order, "ft_ccld_qty", "FT_CCLD_QTY", default=0) or 0
+            )
+        )
         remaining = ordered - filled
 
-        ordered_price = float(order.get("ft_ord_unpr3", 0) or 0)
-        filled_price = float(order.get("ft_ccld_unpr3", 0) or 0)
+        ordered_price = float(
+            _get_kis_field(order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0) or 0
+        )
+        filled_price = float(
+            _get_kis_field(order, "ft_ccld_unpr3", "FT_CCLD_UNPR3", default=0) or 0
+        )
 
-        status = _map_kis_status(filled, remaining, order.get("prcs_stat_name", ""))
+        status = _map_kis_status(
+            filled,
+            remaining,
+            _get_kis_field(order, "prcs_stat_name", "PRCS_STAT_NAME"),
+        )
 
         return {
-            "order_id": order.get("odno", ""),
-            "symbol": order.get("pdno", ""),
+            "order_id": _get_kis_field(order, "odno", "ODNO"),
+            "symbol": _get_kis_field(order, "pdno", "PDNO"),
             "side": side,
             "status": status,
             "ordered_qty": ordered,
@@ -4101,7 +4130,10 @@ def register_tools(mcp: FastMCP) -> None:
             "remaining_qty": remaining,
             "ordered_price": ordered_price,
             "filled_avg_price": filled_price,
-            "ordered_at": f"{order.get('ord_dt', '')} {order.get('ord_tmd', '')}",
+            "ordered_at": (
+                f"{_get_kis_field(order, 'ord_dt', 'ORD_DT')} "
+                f"{_get_kis_field(order, 'ord_tmd', 'ORD_TMD')}"
+            ),
             "filled_at": "",
             "currency": "USD",
         }
@@ -8198,7 +8230,7 @@ def register_tools(mcp: FastMCP) -> None:
             else:
                 # If no order_id, keep it (unlikely but safe)
                 unique_orders[f"unknown_{len(unique_orders)}"] = o
-        
+
         orders = list(unique_orders.values())
 
         filtered_orders = []
@@ -8241,7 +8273,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         # Summary
         summary = _calculate_order_summary(filtered_orders)
-        
+
         # Determine returned market string
         ret_market = "mixed"
         if len(market_types) == 1:

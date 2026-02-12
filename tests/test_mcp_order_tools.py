@@ -69,7 +69,7 @@ async def test_get_order_history_filters(monkeypatch):
     res_id = await tools["get_order_history"](symbol="KRW-BTC", status="filled", order_id="bid-1")
     assert len(res_id["orders"]) == 1
     assert res_id["orders"][0]["order_id"] == "bid-1"
-    
+
     # Test 4: Filter by order_id without symbol (should attempt heuristic or all)
     # This requires fetch logic to run without symbol.
     # For crypto, our impl calls fetch_closed_orders ONLY if normalized_symbol is present for history.
@@ -79,7 +79,7 @@ async def test_get_order_history_filters(monkeypatch):
     # "if status in ("all", "filled", "cancelled") and normalized_symbol:"
     # So retrieving specific order history by ID without symbol is NOT supported for Upbit closed orders in this impl.
     # It IS supported for Pending (fetch_open_orders(market=None)).
-    
+
     # Let's test pending by ID without symbol
     monkeypatch.setattr(mcp_tools.upbit_service, "fetch_open_orders", AsyncMock(return_value=[
         {
@@ -87,7 +87,7 @@ async def test_get_order_history_filters(monkeypatch):
             "created_at": "2025-01-03", "ord_type": "limit", "price": "200", "volume": "1", "remaining_volume": "1", "executed_volume": "0"
         }
     ]))
-    
+
     res_pending_id = await tools["get_order_history"](status="pending", order_id="pending-1")
     assert len(res_pending_id["orders"]) == 1
     assert res_pending_id["orders"][0]["order_id"] == "pending-1"
@@ -107,15 +107,15 @@ async def test_get_order_history_pending_without_symbol(monkeypatch):
             }]
 
     monkeypatch.setattr(mcp_tools.upbit_service, "fetch_open_orders", MockUpbitService().fetch_open_orders)
-    
+
     class MockKIS:
         async def inquire_korea_orders(self): return []
         async def inquire_overseas_orders(self, exchange_code): return []
-    
+
     monkeypatch.setattr(mcp_tools, "KISClient", lambda: MockKIS())
 
     result = await tools["get_order_history"](status="pending")
-    
+
     assert len(result["orders"]) == 1
     assert result["orders"][0]["order_id"] == "uuid-1"
     # source check removed as per plan normalisation requirements
@@ -165,7 +165,7 @@ async def test_get_order_history_crypto_uses_closed_orders(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_order_history_limit_logic(monkeypatch):
     tools = build_tools()
-    
+
     # Mock valid response
     monkeypatch.setattr(mcp_tools.upbit_service, "fetch_closed_orders", AsyncMock(return_value=[]))
     monkeypatch.setattr(mcp_tools.upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
@@ -175,7 +175,7 @@ async def test_get_order_history_limit_logic(monkeypatch):
     # Check if no error
     await tools["get_order_history"](symbol="KRW-BTC", limit=0)
     await tools["get_order_history"](symbol="KRW-BTC", limit=-1)
-    
+
     with pytest.raises(ValueError, match="limit must be >= -1"):
          await tools["get_order_history"](symbol="KRW-BTC", limit=-2)
 
@@ -183,7 +183,7 @@ async def test_get_order_history_limit_logic(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_order_history_truncated_response(monkeypatch):
     tools = build_tools()
-    
+
     orders = []
     for i in range(10):
         orders.append({
@@ -192,14 +192,14 @@ async def test_get_order_history_truncated_response(monkeypatch):
             "volume": "1", "remaining_volume": "0", "executed_volume": "1",
             "price": "100"
         })
-        
+
     monkeypatch.setattr(mcp_tools.upbit_service, "fetch_closed_orders", AsyncMock(return_value=orders))
     monkeypatch.setattr(mcp_tools.upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
-    
+
     # limit=5, should get 5 orders and truncated=True
     result = await tools["get_order_history"](symbol="KRW-BTC", status="filled", limit=5)
-    
-    
+
+
     assert len(result["orders"]) == 5
     assert result["truncated"] is True
     assert result["total_available"] == 10
@@ -415,6 +415,96 @@ async def test_get_order_history_us_deduplicates_by_order_id(monkeypatch, caplog
     assert "US-OD-1" in order_ids
     assert "US-OD-2" in order_ids
     assert result["summary"]["filled"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_kr_pending_uppercase_fields(monkeypatch):
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "ORD_NO": "KR-OD-UPPER",
+                    "SLL_BUY_DVSN_CD": "02",
+                    "PDNO": "005930",
+                    "ORD_QTY": "10",
+                    "CCLD_QTY": "4",
+                    "ORD_UNPR": "80000",
+                    "CCLD_UNPR": "79900",
+                    "PRCS_STAT_NAME": "접수",
+                    "ORD_DT": "20250210",
+                    "ORD_TMD": "093000",
+                }
+            ]
+
+        async def inquire_overseas_orders(self, exchange_code):
+            return []
+
+    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+
+    result = await tools["get_order_history"](status="pending", market="kr")
+
+    assert result["market"] == "kr"
+    assert len(result["orders"]) == 1
+    order = result["orders"][0]
+    assert order["order_id"] == "KR-OD-UPPER"
+    assert order["symbol"] == "005930"
+    assert order["side"] == "buy"
+    assert order["status"] == "pending"
+    assert order["ordered_qty"] == 10
+    assert order["filled_qty"] == 4
+    assert order["remaining_qty"] == 6
+    assert order["ordered_price"] == 80000
+    assert order["filled_avg_price"] == 79900
+    assert order["ordered_at"] == "20250210 093000"
+    assert order["currency"] == "KRW"
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_us_pending_uppercase_fields(monkeypatch):
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_korea_orders(self):
+            return []
+
+        async def inquire_overseas_orders(self, exchange_code):
+            if exchange_code == "NASD":
+                return [
+                    {
+                        "ODNO": "US-OD-UPPER",
+                        "SLL_BUY_DVSN_CD": "02",
+                        "PDNO": "AAPL",
+                        "FT_ORD_QTY": "100",
+                        "FT_CCLD_QTY": "60",
+                        "FT_ORD_UNPR3": "195.5",
+                        "FT_CCLD_UNPR3": "196.0",
+                        "PRCS_STAT_NAME": "접수",
+                        "ORD_DT": "20250210",
+                        "ORD_TMD": "093000",
+                    }
+                ]
+            return []
+
+    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+
+    result = await tools["get_order_history"](status="pending", market="us")
+
+    assert result["market"] == "us"
+    assert len(result["orders"]) == 1
+    order = result["orders"][0]
+    assert order["order_id"] == "US-OD-UPPER"
+    assert order["symbol"] == "AAPL"
+    assert order["side"] == "buy"
+    assert order["status"] == "pending"
+    assert order["ordered_qty"] == 100
+    assert order["filled_qty"] == 60
+    assert order["remaining_qty"] == 40
+    assert order["ordered_price"] == 195.5
+    assert order["filled_avg_price"] == 196.0
+    assert order["ordered_at"] == "20250210 093000"
+    assert order["currency"] == "USD"
 
 
 @pytest.mark.asyncio
