@@ -272,8 +272,8 @@ class KISClient:
 
         # FID_PRC_CLS_CODE: "0"=전체 (공식 API 문서 기준)
         prc_cls_code = "0"
-        # FID_RANK_SORT_CLS_CODE: "0"=양방향 (모든 방향 포함)
-        rank_sort_cls_code = "0"
+        # FID_RANK_SORT_CLS_CODE: "0"=상승률, "3"=하락율 (공식 API 문서 기준)
+        rank_sort_cls_code = "3" if direction == "down" else "0"
 
         logging.debug(
             f"fluctuation_rank: direction={direction}, "
