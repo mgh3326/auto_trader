@@ -454,7 +454,7 @@ class TestKISRankingAPIParams:
         assert call_count["get"] == 2
         # 토큰 초기화 확인
         assert call_count["clear_token"] == 1
-        # 새 토큰 확보 확인 (초기 호출 + 에러 후 재시도 + 재귀 호출 = 3회)
+        # 새 토큰 확보 확인 (market_cap_rank는 3회 호출, 다른 메서드와 동작 차이)
         assert call_count["ensure_token"] == 3
         # 정상 결과 반환 확인
         assert len(result) == 1
@@ -519,8 +519,8 @@ class TestKISRankingAPIParams:
         assert call_count["get"] == 2
         # 토큰 초기화 확인
         assert call_count["clear_token"] == 1
-        # 새 토큰 확보 확인 (초기 호출 + 에러 후 재시도 + 재귀 호출 = 3회)
-        assert call_count["ensure_token"] == 3
+        # 새 토큰 확보 확인 (초기 호출 + 에러 후 재시도 = 2회, 재귀 제거됨)
+        assert call_count["ensure_token"] == 2
         # 정상 결과 반환 확인
         assert len(result) == 1
         assert result[0]["stck_shrn_iscd"] == "005380"
@@ -677,3 +677,538 @@ class TestKISRankingAPIParams:
 
         assert captured_requests[0]["params"]["FID_COND_MRKT_DIV_CODE"] == "K"
         assert len(result) == 5
+
+
+@pytest.mark.asyncio
+class TestKISRankingDirectionAndETF:
+    async def test_fluctuation_rank_up_direction(self, monkeypatch):
+        captured_requests = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            captured_requests.append({"url": url, "headers": headers, "params": params})
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "0",
+                "msg_cd": "",
+                "msg1": "",
+                "output": [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "5.0",
+                        "acml_vol": "10000000",
+                        "hts_avls": "100000000000000",
+                        "acml_tr_pbmn": "800000000000000",
+                    }
+                ],
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().fluctuation_rank(market="J", direction="up", limit=5)
+
+        assert len(captured_requests) == 1
+        req = captured_requests[0]
+        assert req["params"]["FID_RANK_SORT_CLS_CODE"] == "0"
+        assert len(result) == 1
+
+    async def test_fluctuation_rank_down_direction_sort_code(self, monkeypatch):
+        captured_requests = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            captured_requests.append({"url": url, "headers": headers, "params": params})
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "0",
+                "msg_cd": "",
+                "msg1": "",
+                "output": [
+                    {
+                        "stck_shrn_iscd": "035420",
+                        "hts_kor_isnm": "삼성SDS",
+                        "stck_prpr": "70000",
+                        "prdy_ctrt": "-3.0",
+                        "acml_vol": "5000000",
+                    }
+                ],
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().fluctuation_rank(
+            market="J", direction="down", limit=5
+        )
+
+        # New logic tries all 4 candidate sort codes: ["3", "1", "4", "2"]
+        assert len(captured_requests) == 4
+        # First request uses primary code "3"
+        assert captured_requests[0]["params"]["FID_RANK_SORT_CLS_CODE"] == "3"
+        assert len(result) == 1
+        assert float(result[0]["prdy_ctrt"]) == -3.0
+
+    async def test_fluctuation_rank_down_strict_negative_filtering(self, monkeypatch):
+        """direction='down' 시 1차 응답이 양수만이면 fallback 후보 중 음수 많은 것 선택"""
+        captured_requests = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            captured_requests.append({"url": url, "headers": headers, "params": params})
+            mock_response = MagicMock()
+
+            # 1차 응답: 양수만 (음수 0건) → fallback 수행
+            if params.get("FID_RANK_SORT_CLS_CODE") == "1":
+                mock_response.json.return_value = {
+                    "rt_cd": "0",
+                    "msg_cd": "",
+                    "msg1": "",
+                    "output": [
+                        {
+                            "stck_shrn_iscd": "005930",
+                            "hts_kor_isnm": "삼성전자",
+                            "stck_prpr": "80000",
+                            "prdy_ctrt": "1.0",
+                            "acml_vol": "10000000",
+                        },
+                        {
+                            "stck_shrn_iscd": "000660",
+                            "hts_kor_isnm": "SK하이닉스",
+                            "stck_prpr": "90000",
+                            "prdy_ctrt": "2.0",
+                            "acml_vol": "8000000",
+                        },
+                    ],
+                }
+            # fallback 응답: 음수 2개 포함
+            else:
+                mock_response.json.return_value = {
+                    "rt_cd": "0",
+                    "msg_cd": "",
+                    "msg1": "",
+                    "output": [
+                        {
+                            "stck_shrn_iscd": "035420",
+                            "hts_kor_isnm": "삼성SDS",
+                            "stck_prpr": "70000",
+                            "prdy_ctrt": "-3.0",
+                            "acml_vol": "5000000",
+                        },
+                        {
+                            "stck_shrn_iscd": "005380",
+                            "hts_kor_isnm": "LG전자",
+                            "stck_prpr": "60000",
+                            "prdy_ctrt": "-1.5",
+                            "acml_vol": "2000000",
+                        },
+                    ],
+                }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().fluctuation_rank(
+            market="J", direction="down", limit=5
+        )
+
+        # fallback이 실행되어 음수 2개 반환
+        assert len(result) == 2
+        assert all(float(r["prdy_ctrt"]) < 0 for r in result)
+
+    async def test_fluctuation_rank_down_returns_empty_when_no_negatives(
+        self, monkeypatch, caplog
+    ):
+        captured_requests = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            captured_requests.append({"url": url, "headers": headers, "params": params})
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "0",
+                "msg_cd": "",
+                "msg1": "",
+                "output": [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "acml_vol": "10000000",
+                    },
+                ],
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().fluctuation_rank(
+            market="J", direction="down", limit=5
+        )
+
+        assert len(result) == 0
+
+    async def test_volume_rank_with_etf_excluded(self, monkeypatch):
+        captured_requests = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            captured_requests.append({"url": url, "headers": headers, "params": params})
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "0",
+                "msg_cd": "",
+                "msg1": "",
+                "output": [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "acml_vol": "10000000",
+                    }
+                ],
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().volume_rank(market="J", limit=5, include_etf=False)
+
+        assert len(captured_requests) == 1
+        req = captured_requests[0]
+        assert req["params"]["FID_TRGT_CLS_CODE"] == "11111111"
+        assert req["params"]["FID_TRGT_EXLS_CLS_CODE"] == "0000001100"
+
+    async def test_volume_rank_with_etf_included(self, monkeypatch):
+        captured_requests = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            captured_requests.append({"url": url, "headers": headers, "params": params})
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "0",
+                "msg_cd": "",
+                "msg1": "",
+                "output": [
+                    {
+                        "stck_shrn_iscd": "069500",
+                        "hts_kor_isnm": "TIGER 200 IT",
+                        "stck_prpr": "50000",
+                        "acml_vol": "5000000",
+                    }
+                ],
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().volume_rank(market="J", limit=5, include_etf=True)
+
+        assert len(captured_requests) == 1
+        req = captured_requests[0]
+        assert req["params"]["FID_TRGT_CLS_CODE"] == "0"
+        assert req["params"]["FID_TRGT_EXLS_CLS_CODE"] == "0"
+
+    async def test_volume_rank_include_etf_parameter_token_retry(self, monkeypatch):
+        call_count = {"get": 0, "clear_token": 0, "ensure_token": 0}
+        token_value = "test_token"
+
+        async def mock_get(_url, *args, **kwargs):
+            call_count["get"] += 1
+            mock_response = MagicMock()
+
+            if call_count["get"] == 1:
+                mock_response.json.return_value = {
+                    "rt_cd": "1",
+                    "msg_cd": "EGW00123",
+                    "msg1": "토큰 만료",
+                }
+            else:
+                mock_response.json.return_value = {
+                    "rt_cd": "0",
+                    "msg_cd": "",
+                    "msg1": "",
+                    "output": [
+                        {
+                            "stck_shrn_iscd": "069500",
+                            "hts_kor_isnm": "TIGER 200 IT",
+                            "stck_prpr": "50000",
+                            "acml_vol": "5000000",
+                        }
+                    ],
+                }
+            return mock_response
+
+        async def mock_get_token():
+            return token_value
+
+        async def mock_clear_token():
+            call_count["clear_token"] += 1
+
+        async def mock_ensure_token():
+            call_count["ensure_token"] += 1
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", token_value)
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        client = KISClient()
+        monkeypatch.setattr(client._token_manager, "clear_token", mock_clear_token)
+        monkeypatch.setattr(client, "_ensure_token", mock_ensure_token)
+
+        result = await client.volume_rank(market="J", limit=5, include_etf=True)
+
+        assert call_count["get"] == 2
+        assert len(result) == 1
+
+
+@pytest.mark.asyncio
+class TestKISRankingDownCandidateSelection:
+    """Tests for new down candidate selection logic with multiple sort codes"""
+
+    async def test_fluctuation_rank_down_all_candidates_tried(self, monkeypatch):
+        """Verify all candidate sort codes are tried when direction='down'"""
+        captured_sort_codes = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            captured_sort_codes.append(params.get("FID_RANK_SORT_CLS_CODE"))
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "0",
+                "output": [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "prdy_ctrt": "1.0",
+                    }
+                ],
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().fluctuation_rank(
+            market="J", direction="down", limit=5
+        )
+
+        # Should try all 4 candidate codes: ["3", "1", "4", "2"]
+        assert len(captured_sort_codes) == 4
+        assert "3" in captured_sort_codes
+        assert "1" in captured_sort_codes
+        assert "4" in captured_sort_codes
+        assert "2" in captured_sort_codes
+
+    async def test_fluctuation_rank_down_selects_best_candidate_by_negative_count(
+        self, monkeypatch
+    ):
+        """Verify best candidate is selected: most negatives"""
+        captured_sort_codes = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            code = params.get("FID_RANK_SORT_CLS_CODE")
+            captured_sort_codes.append(code)
+            mock_response = MagicMock()
+
+            if code == "3":
+                # Primary code: 2 negatives
+                mock_response.json.return_value = {
+                    "rt_cd": "0",
+                    "output": [
+                        {"stck_shrn_iscd": "035420", "prdy_ctrt": "-3.0"},
+                        {"stck_shrn_iscd": "005380", "prdy_ctrt": "-1.5"},
+                    ],
+                }
+            elif code == "1":
+                # Secondary: 1 negative
+                mock_response.json.return_value = {
+                    "rt_cd": "0",
+                    "output": [
+                        {"stck_shrn_iscd": "000660", "prdy_ctrt": "-0.5"},
+                    ],
+                }
+            elif code == "4":
+                # Tertiary: 0 negatives
+                mock_response.json.return_value = {
+                    "rt_cd": "0",
+                    "output": [
+                        {"stck_shrn_iscd": "005930", "prdy_ctrt": "2.0"},
+                    ],
+                }
+            elif code == "2":
+                # Quaternary: 3 negatives
+                mock_response.json.return_value = {
+                    "rt_cd": "0",
+                    "output": [
+                        {"stck_shrn_iscd": "068270", "prdy_ctrt": "-2.0"},
+                        {"stck_shrn_iscd": "000540", "prdy_ctrt": "-1.0"},
+                        {"stck_shrn_iscd": "028150", "prdy_ctrt": "-4.0"},
+                    ],
+                }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().fluctuation_rank(
+            market="J", direction="down", limit=5
+        )
+
+        # Should select code "2" (quaternary) with 3 negatives
+        # Results are sorted by prdy_ctrt ascending: -4.0, -2.0, -1.0
+        assert len(result) == 3
+        assert result[0]["stck_shrn_iscd"] == "028150"  # -4.0 (most negative)
+        assert result[1]["stck_shrn_iscd"] == "068270"  # -2.0
+        assert result[2]["stck_shrn_iscd"] == "000540"  # -1.0
+        assert all(float(r["prdy_ctrt"]) < 0 for r in result)
+
+    async def test_fluctuation_rank_down_selects_lowest_min_rate_on_tie(
+        self, monkeypatch
+    ):
+        """Verify lowest (most negative) min_rate is used when negative counts are equal"""
+        captured_sort_codes = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            code = params.get("FID_RANK_SORT_CLS_CODE")
+            captured_sort_codes.append(code)
+            mock_response = MagicMock()
+
+            if code == "3":
+                # Primary: 2 negatives with min_rate -3.0
+                mock_response.json.return_value = {
+                    "rt_cd": "0",
+                    "output": [
+                        {"stck_shrn_iscd": "035420", "prdy_ctrt": "-3.0"},
+                        {"stck_shrn_iscd": "005380", "prdy_ctrt": "-2.0"},
+                    ],
+                }
+            elif code == "1":
+                # Secondary: 2 negatives with min_rate -2.0
+                mock_response.json.return_value = {
+                    "rt_cd": "0",
+                    "output": [
+                        {"stck_shrn_iscd": "005930", "prdy_ctrt": "-3.0"},
+                        {"stck_shrn_iscd": "000660", "prdy_ctrt": "-2.0"},
+                    ],
+                }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().fluctuation_rank(
+            market="J", direction="down", limit=5
+        )
+
+        # Should select code "3" (tie-breaker: lower min_rate -3.0 vs -2.0)
+        assert len(result) == 2
+        assert result[0]["stck_shrn_iscd"] == "035420"
+        assert result[1]["stck_shrn_iscd"] == "005380"
+
+    async def test_fluctuation_rank_down_returns_empty_when_all_candidates_have_no_negatives(
+        self, monkeypatch
+    ):
+        """Verify empty array when all candidates have no negatives"""
+        captured_sort_codes = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            code = params.get("FID_RANK_SORT_CLS_CODE")
+            captured_sort_codes.append(code)
+            mock_response = MagicMock()
+
+            # All candidates return only positives
+            mock_response.json.return_value = {
+                "rt_cd": "0",
+                "output": [
+                    {"stck_shrn_iscd": "005930", "prdy_ctrt": "1.0"},
+                    {"stck_shrn_iscd": "000660", "prdy_ctrt": "2.0"},
+                ],
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().fluctuation_rank(
+            market="J", direction="down", limit=5
+        )
+
+        assert len(captured_sort_codes) == 4
+        assert result == []

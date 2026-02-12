@@ -435,6 +435,8 @@ def _error_payload(
     symbol: str | None = None,
     instrument_type: str | None = None,
     query: str | None = None,
+    suggestion: str | None = None,
+    details: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"error": message, "source": source}
     if symbol is not None:
@@ -443,6 +445,10 @@ def _error_payload(
         payload["instrument_type"] = instrument_type
     if query is not None:
         payload["query"] = query
+    if suggestion is not None:
+        payload["suggestion"] = suggestion
+    if details is not None:
+        payload["details"] = details
     return payload
 
 
@@ -3968,6 +3974,18 @@ def _normalize_change_rate_crypto(value: Any) -> float:
 
 
 def _classify_kr_asset_type(symbol: str, name: str | None = None) -> str:
+    """
+    Classify Korean stock/ETF by name-based keyword matching only.
+
+    Uses known ETF/ETN/ETP provider names (TIGER, KODEX, etc.)
+    and keywords (ETF, ETN, ETP) for classification.
+
+    Removed alphabet-based code pattern matching to eliminate false positives
+    from regular stocks with alphanumeric codes (e.g., 0010V0).
+
+    Future improvement: If KIS API provides classification fields
+    (e.g., security_type, etf_flag), prioritize them over heuristics.
+    """
     symbol = symbol.strip().upper()
     name = (name or "").strip().upper()
 
@@ -3988,8 +4006,9 @@ def _classify_kr_asset_type(symbol: str, name: str | None = None) -> str:
         "PLUS",
     ]
 
-    is_etf = any(keyword in name for keyword in etf_keywords)
-    return "etf" if is_etf else "stock"
+    is_etf_by_name = any(keyword in name for keyword in etf_keywords)
+
+    return "etf" if is_etf_by_name else "stock"
 
 
 def _map_kr_row(row: dict, rank: int) -> dict[str, Any]:
@@ -4091,22 +4110,45 @@ async def _get_us_rankings(
 
     results = await asyncio.to_thread(fetch_sync)
 
-    rankings = []
+    temp_rankings = []
     if isinstance(results, dict):
         quotes = results.get("quotes", [])
         if not quotes:
             raise RuntimeError(
                 f"Empty quotes response for ranking_type='{ranking_type}' from yfinance"
             )
-        for i, row in enumerate(quotes[:limit], 1):
-            rankings.append(_map_us_row(row, i))
+        for row in quotes[:limit]:
+            # For losers, filter out non-negative values (defensive programming)
+            if ranking_type == "losers":
+                price = row.get("regularMarketPrice", 0)
+                prev_close = row.get("previousClose", 0)
+                if prev_close and price >= prev_close:
+                    continue
+            temp_rankings.append(row)
     else:
         if results.empty:
             raise RuntimeError(
                 f"Empty DataFrame response for ranking_type='{ranking_type}' from yfinance"
             )
-        for i, row in enumerate(results.head(limit).to_dict(orient="records"), 1):
-            rankings.append(_map_us_row(row, i))
+        for row in results.head(limit).to_dict(orient="records"):
+            # For losers, filter out non-negative values (defensive programming)
+            if ranking_type == "losers":
+                price = row.get("regularMarketPrice", 0)
+                prev_close = row.get("previousClose", 0)
+                if prev_close and price >= prev_close:
+                    continue
+            temp_rankings.append(row)
+
+    # Sort losers by change_rate ascending (most negative first)
+    if ranking_type == "losers" and temp_rankings:
+        temp_rankings.sort(
+            key=lambda x: (x.get("regularMarketPrice", 0) - x.get("previousClose", 0))
+                        / x.get("previousClose", 1)  # Avoid division by zero
+        )
+
+    rankings = []
+    for i, row in enumerate(temp_rankings, 1):
+        rankings.append(_map_us_row(row, i))
 
     return rankings, "yfinance"
 
@@ -4123,8 +4165,10 @@ async def _get_crypto_rankings(
             coins, key=lambda x: float(x.get("signed_change_rate", 0)), reverse=True
         )
     elif ranking_type == "losers":
+        # Filter out non-negative values (defensive programming)
+        negative_coins = [c for c in coins if float(c.get("signed_change_rate", 0)) < 0]
         sorted_coins = sorted(
-            coins, key=lambda x: float(x.get("signed_change_rate", 0))
+            negative_coins, key=lambda x: float(x.get("signed_change_rate", 0))
         )
     else:
         sorted_coins = coins
@@ -8183,7 +8227,9 @@ def register_tools(mcp: FastMCP) -> None:
                 )
 
         fetch_limit = limit_clamped
-        if asset_type_normalized is not None:
+        if market == "kr" and asset_type_normalized is not None:
+            fetch_limit = min(max(limit_clamped * 10, 100), 200)
+        elif asset_type_normalized is not None:
             fetch_limit = min(limit_clamped * 3, 50)
 
         rankings: list[dict[str, Any]] = []
@@ -8198,7 +8244,10 @@ def register_tools(mcp: FastMCP) -> None:
                 kis = KISClient()
 
                 if ranking_type == "volume":
-                    data = await kis.volume_rank(market="J", limit=fetch_limit)
+                    include_etf = asset_type_normalized == "etf"
+                    data = await kis.volume_rank(
+                        market="J", limit=fetch_limit, include_etf=include_etf
+                    )
                     source = "kis"
                 elif ranking_type == "market_cap":
                     data = await kis.market_cap_rank(market="J", limit=fetch_limit)
@@ -8215,8 +8264,15 @@ def register_tools(mcp: FastMCP) -> None:
                 else:
                     data = []
 
+                etf_count = 0
                 filtered_rank = 1
                 for row in data[:fetch_limit]:
+                    # For losers, filter out non-negative values (defensive programming)
+                    if ranking_type == "losers":
+                        change_rate = _to_float(row.get("prdy_ctrt"))
+                        if change_rate is None or change_rate >= 0:
+                            continue
+
                     if asset_type_normalized is not None:
                         symbol = row.get("stck_shrn_iscd") or row.get(
                             "mksc_shrn_iscd", ""
@@ -8224,6 +8280,8 @@ def register_tools(mcp: FastMCP) -> None:
                         row_asset_type = _classify_kr_asset_type(
                             symbol, row.get("hts_kor_isnm", "")
                         )
+                        if row_asset_type == "etf":
+                            etf_count += 1
                         if row_asset_type != asset_type_normalized:
                             continue
 
@@ -8254,6 +8312,38 @@ def register_tools(mcp: FastMCP) -> None:
                 message=str(exc),
             )
 
+        # Handle empty results for losers and ETF with explicit error payloads
+        if len(rankings) == 0:
+            if market == "kr":
+                if ranking_type == "losers":
+                    # Empty losers after all sort code attempts
+                    return _error_payload(
+                        source="kis",
+                        message=(
+                            "No losing stocks found. "
+                            "Market may be entirely bullish or KIS API limitation."
+                        ),
+                        query="market=kr, ranking_type=losers",
+                        suggestion=(
+                            "This could indicate no stocks are declining, "
+                            "or the KIS API may have limited data for this ranking type."
+                        ),
+                    )
+                elif asset_type_normalized == "etf":
+                    # Empty ETF results after filtering
+                    return _error_payload(
+                        source="kis",
+                        message=(
+                            f"No ETFs found in top {fetch_limit} fetched items. "
+                            "ETF exposure in ranking data may be limited."
+                        ),
+                        query=f"market=kr, ranking_type={ranking_type}, asset_type=etf",
+                        suggestion=(
+                            "ETFs may not be included in this ranking type, "
+                            "or may be filtered out during post-fetch classification."
+                        ),
+                    )
+        
         kst_tz = datetime.timezone(datetime.timedelta(hours=9))
         return {
             "rankings": rankings,
