@@ -131,6 +131,11 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
             ]
 
     monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_krw_balance",
+        AsyncMock(side_effect=RuntimeError("Upbit API error")),
+    )
 
     result = await tools["get_cash_balance"](account="upbit")
     assert len(result["accounts"]) == 0
@@ -308,8 +313,11 @@ async def test_place_order_with_amount_stock_market_buy(monkeypatch):
         async def order_korea_stock(self, stock_code, order_type, quantity, price):
             return {"odno": "12345", "ord_qty": quantity}
 
-        async def inquire_balance(self):
-            return [{"crcy_cd": "KRW", "dncl_amt_2": "5000000"}]
+        async def inquire_domestic_cash_balance(self):
+            return {
+                "dnca_tot_amt": "5000000",
+                "stck_cash_ord_psbl_amt": "5000000",
+            }
 
     async def fetch_quote(symbol):
         return {"price": 100000.0}
@@ -412,6 +420,11 @@ async def test_get_open_orders_kr_equity(monkeypatch):
             ]
 
     monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_open_orders",
+        AsyncMock(return_value=[]),
+    )
 
     result = await tools["get_open_orders"]()
 
@@ -440,6 +453,11 @@ async def test_get_open_orders_us_equity(monkeypatch):
             ]
 
     monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(
+        mcp_tools.upbit_service,
+        "fetch_open_orders",
+        AsyncMock(return_value=[]),
+    )
 
     result = await tools["get_open_orders"]()
 
@@ -7527,9 +7545,18 @@ class TestPlaceOrderHighAmount:
         """place_order accepts high-amount orders (> 1M KRW) for KR equity."""
         tools = build_tools()
 
+        class MockKISClient:
+            async def inquire_integrated_margin(self):
+                return {
+                    "stck_cash_ord_psbl_amt": "100000000.0",
+                    "dnca_tot_amt": "0",
+                    "usd_ord_psbl_amt": "0",
+                }
+
         async def fetch_quote(symbol):
             return {"price": 100000.0}
 
+        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
         monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
 
         result = await tools["place_order"](
@@ -7549,9 +7576,18 @@ class TestPlaceOrderHighAmount:
         """place_order accepts high-amount orders for US equity."""
         tools = build_tools()
 
+        class MockKISClient:
+            async def inquire_integrated_margin(self):
+                return {
+                    "usd_ord_psbl_amt": "3000000.0",
+                    "usd_balance": "3000000.0",
+                    "dnca_tot_amt": "0",
+                }
+
         async def fetch_quote(symbol):
             return {"price": 205.0}
 
+        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
         monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
 
         result = await tools["place_order"](

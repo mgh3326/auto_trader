@@ -1192,6 +1192,97 @@ class KISClient:
 
         return results
 
+    async def inquire_integrated_margin(self, is_mock: bool = False) -> dict:
+        """
+        통합증거금 조회 (원화 + 외화 예수금)
+
+        Args:
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            통합 증거금 정보
+            - dnca_tot_amt: 원화 예수금
+            - stck_cash_ord_psbl_amt: 원화 주문가능금액
+            - usd_ord_psbl_amt: 달러 주문가능금액
+            - usd_balance: 달러 예수금
+        """
+        await self._ensure_token()
+
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        tr_id = INTEGRATED_MARGIN_TR_MOCK if is_mock else INTEGRATED_MARGIN_TR
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+        }
+
+        logging.info("통합증거금 조회")
+
+        async with httpx.AsyncClient(timeout=5) as cli:
+            r = await cli.get(
+                f"{BASE}{INTEGRATED_MARGIN_URL}", headers=hdr, params=params
+            )
+
+        js = r.json()
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.inquire_integrated_margin(is_mock)
+            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
+
+        output = js.get("output1") or js.get("output") or {}
+        if isinstance(output, list):
+            output = output[0] if output else {}
+
+        def safe_float(val: object, default: float = 0.0) -> float:
+            if val in ("", None):
+                return default
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return default
+
+        dnca_tot_amt = safe_float(output.get("dnca_tot_amt"))
+        stck_cash_ord_psbl_amt = safe_float(
+            output.get("stck_cash_ord_psbl_amt")
+            or output.get("ord_psbl_cash")
+            or output.get("dnca_tot_amt")
+        )
+        usd_ord_psbl_amt = safe_float(
+            output.get("usd_ord_psbl_amt")
+            or output.get("frcr_ord_psbl_amt")
+            or output.get("USD_ORD_PSBL_AMT")
+            or output.get("FRCR_ORD_PSBL_AMT")
+        )
+        usd_balance = safe_float(
+            output.get("usd_balance")
+            or output.get("frcr_dncl_amt_2")
+            or output.get("FRCR_DNCL_AMT_2")
+        )
+
+        return {
+            "dnca_tot_amt": dnca_tot_amt,
+            "stck_cash_ord_psbl_amt": stck_cash_ord_psbl_amt,
+            "usd_ord_psbl_amt": usd_ord_psbl_amt,
+            "usd_balance": usd_balance,
+            "raw": output,
+        }
+
     async def fetch_my_overseas_stocks(
         self,
         is_mock: bool = False,
@@ -1395,6 +1486,111 @@ class KISClient:
 
             if js.get("rt_cd") != "0":
                 error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+            logging.error(f"해외주식 주문 실패: {error_msg}")
+            raise RuntimeError(error_msg)
+
+        output = js.get("output", {})
+
+        result = {
+            "odno": output.get("ODNO"),  # 주문번호
+            "ord_tmd": output.get("ORD_TMD"),  # 주문시각
+            "msg": js.get("msg1"),  # 응답메시지
+        }
+
+        logging.info(
+            f"{order_type_korean} 주문 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}"
+        )
+
+        return result
+
+    async def order_overseas_stock(
+        self,
+        symbol: str,
+        exchange_code: str,
+        order_type: str,  # "buy" or "sell"
+        quantity: int,
+        price: float = 0.0,  # 0이면 시장가
+        is_mock: bool = False,
+    ) -> dict:
+        """
+        해외주식 주문 (매수/매도)
+
+        Args:
+            symbol: 종목 심볼
+            exchange_code: 거래소 코드 (NASD/NYSE/AMEX 등)
+            order_type: "buy"(매수) 또는 "sell"(매도)
+            quantity: 주문수량
+            price: 주문가격 (0이면 시장가)
+            is_mock: True면 모의투자, False면 실전투자
+
+        Returns:
+            주문 결과 딕셔너리
+            - odno: 주문번호
+            - ord_tmd: 주문시각
+        """
+        await self._ensure_token()
+
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        if order_type.lower() == "buy":
+            tr_id = OVERSEAS_ORDER_BUY_TR_MOCK if is_mock else OVERSEAS_ORDER_BUY_TR
+            order_type_korean = "매수"
+        elif order_type.lower() == "sell":
+            tr_id = OVERSEAS_ORDER_SELL_TR_MOCK if is_mock else OVERSEAS_ORDER_SELL_TR
+            order_type_korean = "매도"
+        else:
+            raise ValueError(
+                f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}"
+            )
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+
+        ord_dvsn = "01" if price == 0 else "00"  # 00: 지정가, 01: 시장가
+
+        body = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "OVRS_EXCG_CD": exchange_code,
+            "PDNO": to_kis_symbol(symbol),
+            "ORD_DVSN": ord_dvsn,
+            "ORD_QTY": str(quantity),
+            "OVRS_ORD_UNPR": str(price),
+            "MGCO_APTM_ODNO": "",
+            "ORD_SVR_DVSN_CD": "0",
+        }
+
+        logging.info(
+            f"해외주식 {order_type_korean} 주문 - symbol: {symbol}, "
+            f"거래소: {exchange_code}, 수량: {quantity}, 가격: {price if price > 0 else '시장가'}"
+        )
+
+        async with httpx.AsyncClient(timeout=10) as cli:
+            r = await cli.post(f"{BASE}{OVERSEAS_ORDER_URL}", headers=hdr, json=body)
+
+        js = r.json()
+
+        if js.get("rt_cd") != "0":
+            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._token_manager.clear_token()
+                await self._ensure_token()
+                return await self.order_overseas_stock(
+                    symbol, exchange_code, order_type, quantity, price, is_mock
+                )
+
+            error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
             logging.error(f"해외주식 주문 실패: {error_msg}")
             raise RuntimeError(error_msg)
 

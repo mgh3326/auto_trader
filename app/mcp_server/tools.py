@@ -4317,10 +4317,28 @@ def register_tools(mcp: FastMCP) -> None:
                     return float(coin.get("balance", 0))
         elif market_type == "equity_kr":
             kis = KISClient()
+            if hasattr(kis, "inquire_integrated_margin"):
+                margin = await kis.inquire_integrated_margin()
+                if isinstance(margin, dict):
+                    orderable = margin.get("stck_cash_ord_psbl_amt")
+                    if orderable is None:
+                        orderable = margin.get("dnca_tot_amt")
+                    if orderable is not None:
+                        return float(orderable or 0)
             balance_data = await kis.inquire_domestic_cash_balance()
             return float(balance_data.get("stck_cash_ord_psbl_amt", 0) or 0)
         elif market_type == "equity_us":
             kis = KISClient()
+            if hasattr(kis, "inquire_integrated_margin"):
+                margin = await kis.inquire_integrated_margin()
+                if isinstance(margin, dict):
+                    usd_orderable = (
+                        margin.get("usd_ord_psbl_amt")
+                        or margin.get("frcr_ord_psbl_amt")
+                        or margin.get("usd_balance")
+                    )
+                    if usd_orderable is not None:
+                        return float(usd_orderable or 0)
             margin_data = await kis.inquire_overseas_margin()
             usd_balance = next(
                 (

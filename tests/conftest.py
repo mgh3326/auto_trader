@@ -111,7 +111,9 @@ def app_settings():
 @pytest.fixture
 def mock_db():
     """Mock database session."""
-    return AsyncMock()
+    db = AsyncMock()
+    db.add = MagicMock()
+    return db
 
 
 @pytest.fixture

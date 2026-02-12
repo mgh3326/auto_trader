@@ -53,9 +53,10 @@ class TestConfigLoading:
         """Test Redis URL generation method."""
         # Test with default values
         redis_url = settings.get_redis_url()
-        assert redis_url.startswith("redis://")
+        expected_scheme = "rediss://" if settings.redis_ssl else "redis://"
+        assert redis_url.startswith(expected_scheme)
         # Check that it contains localhost and port, but don't assume specific db number
-        assert "localhost:6379" in redis_url
+        assert f"{settings.redis_host}:{settings.redis_port}" in redis_url
 
     def test_api_key_methods(self):
         """Test API key rotation methods."""
