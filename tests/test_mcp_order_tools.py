@@ -462,6 +462,140 @@ async def test_get_order_history_kr_pending_uppercase_fields(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_order_history_kr_pending_uses_odno_for_order_id(monkeypatch):
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "ODNO": "0009467700",
+                    "SLL_BUY_DVSN_CD": "02",
+                    "PDNO": "012450",
+                    "ORD_QTY": "1",
+                    "CCLD_QTY": "0",
+                    "ORD_UNPR": "1050000",
+                    "CCLD_UNPR": "0",
+                    "PRCS_STAT_NAME": "접수",
+                    "ORD_DT": "20250210",
+                    "ORD_TMD": "123743",
+                }
+            ]
+
+        async def inquire_overseas_orders(self, exchange_code):
+            return []
+
+    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+
+    result = await tools["get_order_history"](status="pending", market="kr")
+
+    assert result["market"] == "kr"
+    assert len(result["orders"]) == 1
+    assert result["orders"][0]["order_id"] == "0009467700"
+    assert result["summary"]["total_orders"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_kr_pending_deduplicates_by_order_id(
+    monkeypatch, caplog
+):
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "ODNO": "0009467700",
+                    "SLL_BUY_DVSN_CD": "02",
+                    "PDNO": "012450",
+                    "ORD_QTY": "1",
+                    "CCLD_QTY": "0",
+                    "ORD_UNPR": "1050000",
+                    "CCLD_UNPR": "0",
+                    "PRCS_STAT_NAME": "접수",
+                    "ORD_DT": "20250210",
+                    "ORD_TMD": "123743",
+                },
+                {
+                    "ODNO": "0009467700",
+                    "SLL_BUY_DVSN_CD": "02",
+                    "PDNO": "012450",
+                    "ORD_QTY": "1",
+                    "CCLD_QTY": "0",
+                    "ORD_UNPR": "1051000",
+                    "CCLD_UNPR": "0",
+                    "PRCS_STAT_NAME": "접수",
+                    "ORD_DT": "20250210",
+                    "ORD_TMD": "123743",
+                },
+            ]
+
+        async def inquire_overseas_orders(self, exchange_code):
+            return []
+
+    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    caplog.set_level("INFO")
+
+    result = await tools["get_order_history"](status="pending", market="kr")
+
+    assert len(result["orders"]) == 1
+    assert result["orders"][0]["order_id"] == "0009467700"
+    assert result["orders"][0]["ordered_price"] == 1051000
+    assert result["summary"]["total_orders"] == 1
+    assert "Removed 1 duplicate orders" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_get_order_history_kr_pending_generates_temp_order_id_when_missing(
+    monkeypatch, caplog
+):
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_korea_orders(self):
+            return [
+                {
+                    "SLL_BUY_DVSN_CD": "02",
+                    "PDNO": "012450",
+                    "ORD_QTY": "1",
+                    "CCLD_QTY": "0",
+                    "ORD_UNPR": "1050000",
+                    "CCLD_UNPR": "0",
+                    "PRCS_STAT_NAME": "접수",
+                    "ORD_DT": "20250210",
+                    "ORD_TMD": "123743",
+                },
+                {
+                    "SLL_BUY_DVSN_CD": "02",
+                    "PDNO": "012450",
+                    "ORD_QTY": "1",
+                    "CCLD_QTY": "0",
+                    "ORD_UNPR": "1050000",
+                    "CCLD_UNPR": "0",
+                    "PRCS_STAT_NAME": "접수",
+                    "ORD_DT": "20250210",
+                    "ORD_TMD": "123743",
+                },
+            ]
+
+        async def inquire_overseas_orders(self, exchange_code):
+            return []
+
+    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    caplog.set_level("WARNING")
+
+    result = await tools["get_order_history"](status="pending", market="kr")
+
+    assert len(result["orders"]) == 1
+    assert result["summary"]["total_orders"] == 1
+    temp_id = result["orders"][0]["order_id"]
+    assert temp_id.startswith("TEMP_KR_")
+    assert len(temp_id) == len("TEMP_KR_") + 12
+    assert "Missing order_id for KR order" in caplog.text
+    assert "generated TEMP_KR_" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_get_order_history_us_pending_uppercase_fields(monkeypatch):
     tools = build_tools()
 

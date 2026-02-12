@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import hashlib
 import json
 import logging
 import re
@@ -4044,6 +4045,53 @@ def register_tools(mcp: FastMCP) -> None:
                 return value
         return default
 
+    def _extract_kis_order_number(order: dict[str, Any]) -> str:
+        """Extract order number from KIS API response with priority.
+
+        Priority order: odno/ODNO > ord_no/ORD_NO > orgn_odno/ORGN_ODNO.
+        For KR domestic orders, ODNO is the actual order number from pending responses.
+
+        Args:
+            order: KIS API response dict
+
+        Returns:
+            First non-empty order number found, or empty string
+        """
+        value = _get_kis_field(
+            order,
+            "odno",
+            "ODNO",
+            "ord_no",
+            "ORD_NO",
+            "orgn_odno",
+            "ORGN_ODNO",
+            default="",
+        )
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    def _build_temp_kr_order_id(
+        *,
+        symbol: str,
+        side: str,
+        ordered_price: int,
+        ordered_qty: int,
+        ordered_at: str,
+    ) -> str:
+        """Build deterministic fallback order id for KR orders."""
+        raw = "|".join(
+            [
+                symbol,
+                side,
+                str(ordered_price),
+                str(ordered_qty),
+                ordered_at.strip(),
+            ]
+        )
+        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12].upper()
+        return f"TEMP_KR_{digest}"
+
     def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
         """Normalize KIS domestic order data to standard format."""
         side_code = _get_kis_field(order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
@@ -4069,10 +4117,34 @@ def register_tools(mcp: FastMCP) -> None:
             remaining,
             _get_kis_field(order, "prcs_stat_name", "PRCS_STAT_NAME"),
         )
+        symbol = str(_get_kis_field(order, "pdno", "PDNO"))
+        ordered_at = (
+            f"{_get_kis_field(order, 'ord_dt', 'ORD_DT')} "
+            f"{_get_kis_field(order, 'ord_tmd', 'ORD_TMD')}"
+        )
+        order_id = _extract_kis_order_number(order)
+        if not order_id:
+            order_id = _build_temp_kr_order_id(
+                symbol=symbol,
+                side=side,
+                ordered_price=ordered_price,
+                ordered_qty=ordered,
+                ordered_at=ordered_at,
+            )
+            logger.warning(
+                "Missing order_id for KR order (symbol=%s, side=%s, qty=%s, "
+                "price=%s, ordered_at=%s), generated %s",
+                symbol,
+                side,
+                ordered,
+                ordered_price,
+                ordered_at,
+                order_id,
+            )
 
         return {
-            "order_id": _get_kis_field(order, "ord_no", "ORD_NO"),
-            "symbol": _get_kis_field(order, "pdno", "PDNO"),
+            "order_id": order_id,
+            "symbol": symbol,
             "side": side,
             "status": status,
             "ordered_qty": ordered,
@@ -4080,10 +4152,7 @@ def register_tools(mcp: FastMCP) -> None:
             "remaining_qty": remaining,
             "ordered_price": ordered_price,
             "filled_avg_price": filled_price,
-            "ordered_at": (
-                f"{_get_kis_field(order, 'ord_dt', 'ORD_DT')} "
-                f"{_get_kis_field(order, 'ord_tmd', 'ORD_TMD')}"
-            ),
+            "ordered_at": ordered_at,
             "filled_at": "",
             "currency": "KRW",
         }
@@ -4115,7 +4184,7 @@ def register_tools(mcp: FastMCP) -> None:
         )
 
         return {
-            "order_id": _get_kis_field(order, "odno", "ODNO"),
+            "order_id": _extract_kis_order_number(order),
             "symbol": _get_kis_field(order, "pdno", "PDNO"),
             "side": side,
             "status": status,
@@ -8143,7 +8212,14 @@ def register_tools(mcp: FastMCP) -> None:
                     # KIS Domestic
                     # 1. Open/Pending
                     if status in ("all", "pending"):
+                        logger.debug(
+                            "Fetching KR pending orders, symbol=%s", normalized_symbol
+                        )
                         open_ops = await kis.inquire_korea_orders()
+                        if open_ops:
+                            logger.debug(
+                                "Raw API response keys: %s", list(open_ops[0].keys())
+                            )
                         for o in open_ops:
                             o_sym = str(_get_kis_field(o, "pdno", "PDNO"))
                             if normalized_symbol and o_sym != normalized_symbol:
@@ -8183,7 +8259,7 @@ def register_tools(mcp: FastMCP) -> None:
                             try:
                                 ops = await kis.inquire_overseas_orders(ex)
                                 for o in ops:
-                                    oid = str(_get_kis_field(o, "odno", "ODNO"))
+                                    oid = _extract_kis_order_number(o)
                                     if oid in seen_oids:
                                         continue
                                     seen_oids.add(oid)
@@ -8213,27 +8289,40 @@ def register_tools(mcp: FastMCP) -> None:
                             [_normalize_kis_overseas_order(o) for o in hist_ops]
                         )
 
+                source_market = _normalize_market_type_to_external(m_type)
+                for f in fetched:
+                    f["_source_market"] = source_market
                 orders.extend(fetched)
 
             except Exception as e:
                 errors.append({"market": m_type, "error": str(e)})
 
         # --- Filtering & Sorting ---
-        # Dedup based on (market, order_id)
-        # We need to distinguish between markets because order_ids might collide (rarely, but possible with mock/sim)
-        # Using the unified order 'market' field (e.g. 'crypto', 'kr', 'us') + order_id
+        original_order_count = len(orders)
         unique_orders = {}
         for o in orders:
-            oid = o.get("order_id")
-            omk = o.get("market")
+            oid = str(o.get("order_id") or "").strip()
+            source_market = o.get("_source_market") or o.get("market") or "unknown"
             if oid:
-                key = (omk, oid)
+                key = (source_market, oid)
                 unique_orders[key] = o
             else:
-                # If no order_id, keep it (unlikely but safe)
-                unique_orders[f"unknown_{len(unique_orders)}"] = o
+                key = (
+                    source_market,
+                    o.get("symbol"),
+                    o.get("side"),
+                    o.get("ordered_price"),
+                    o.get("ordered_qty"),
+                    o.get("ordered_at"),
+                    o.get("status"),
+                    o.get("currency"),
+                )
+                unique_orders[key] = o
 
         orders = list(unique_orders.values())
+        removed_duplicates = original_order_count - len(orders)
+        if removed_duplicates > 0:
+            logger.info("Removed %s duplicate orders", removed_duplicates)
 
         filtered_orders = []
         for o in orders:
@@ -8273,8 +8362,14 @@ def register_tools(mcp: FastMCP) -> None:
             filtered_orders = filtered_orders[: int(limit_val)]
             truncated = True
 
+        response_orders = []
+        for o in filtered_orders:
+            cleaned = dict(o)
+            cleaned.pop("_source_market", None)
+            response_orders.append(cleaned)
+
         # Summary
-        summary = _calculate_order_summary(filtered_orders)
+        summary = _calculate_order_summary(response_orders)
 
         # Determine returned market string
         ret_market = "mixed"
@@ -8286,7 +8381,7 @@ def register_tools(mcp: FastMCP) -> None:
             ret_market = _normalize_market_type_to_external(m)
 
         return {
-            "success": bool(filtered_orders) or not errors,
+            "success": bool(response_orders) or not errors,
             "symbol": normalized_symbol,
             "market": ret_market,
             "status": status,
@@ -8299,7 +8394,7 @@ def register_tools(mcp: FastMCP) -> None:
                 "days": days,
                 "limit": limit,
             },
-            "orders": filtered_orders,
+            "orders": response_orders,
             "summary": summary,
             "truncated": truncated,
             "total_available": total_available,
