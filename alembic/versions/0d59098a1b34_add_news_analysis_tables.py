@@ -69,7 +69,6 @@ def upgrade() -> None:
     op.create_index(op.f('ix_news_analysis_results_article_id'), 'news_analysis_results', ['article_id'], unique=False)
     op.create_index(op.f('ix_news_analysis_results_sentiment'), 'news_analysis_results', ['sentiment'], unique=False)
     op.create_index('ix_news_analysis_sentiment_created', 'news_analysis_results', ['sentiment', 'created_at'], unique=False)
-    op.drop_table('users_2')
     op.alter_column('stock_analysis_results', 'stock_info_id',
                existing_type=sa.INTEGER(),
                comment='주식 정보 ID',
@@ -340,7 +339,6 @@ def downgrade() -> None:
                comment=None,
                existing_comment='주식 정보 ID',
                existing_nullable=False)
-    op.create_table('users_2',
     sa.Column('id', sa.BIGINT(), autoincrement=False, nullable=True),
     sa.Column('email', sa.TEXT(), autoincrement=False, nullable=True),
     sa.Column('nickname', sa.TEXT(), autoincrement=False, nullable=True),
