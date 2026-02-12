@@ -7,7 +7,9 @@ Upbit Lazy Loading 테스트 스크립트
 3. 강제 갱신 (get_or_refresh_maps(force=True) 호출)
 """
 import asyncio
+
 from data.coins_info import upbit_pairs
+
 
 async def main():
     print("=" * 70)

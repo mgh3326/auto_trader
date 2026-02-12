@@ -4,6 +4,7 @@ KIS 한국 주식 JSON 분석 실행 예시
 """
 
 import asyncio
+
 from app.analysis.service_analyzers import KISAnalyzer
 from app.services.kis import kis
 

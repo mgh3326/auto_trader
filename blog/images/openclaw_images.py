@@ -64,7 +64,7 @@ class OpenClawImages(BlogImageGenerator):
 
         # ========== 왼쪽: Auto Trader 영역 ==========
         # 박스
-        svg += f'<rect x="50" y="140" width="350" height="700" rx="16" fill="#ffffff" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>'
+        svg += '<rect x="50" y="140" width="350" height="700" rx="16" fill="#ffffff" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>'
         svg += self.text(225, 175, "Auto Trader (FastAPI)", font_size=20, weight="bold", anchor="middle", fill="#1e40af")
 
         # OpenClawClient
@@ -95,22 +95,22 @@ class OpenClawImages(BlogImageGenerator):
 
         # ========== 중앙: 화살표 및 설명 ==========
         # 요청 화살표 (Client → OpenClaw)
-        svg += f'<path d="M370 260 L490 260 L490 350 L580 350" fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrow)"/>'
+        svg += '<path d="M370 260 L490 260 L490 350 L580 350" fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrow)"/>'
         svg += self.text(430, 245, "① POST /hooks/agent", font_size=12, anchor="middle", fill="#3b82f6")
         svg += self.text(430, 320, "sessionKey:", font_size=11, anchor="middle", fill="#64748b")
         svg += self.text(430, 335, "auto-trader:openclaw:{id}", font_size=10, anchor="middle", fill="#64748b")
 
         # 콜백 화살표 (OpenClaw → Callback)
-        svg += f'<path d="M820 550 L490 550 L490 560 L370 560" fill="none" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow)"/>'
+        svg += '<path d="M820 550 L490 550 L490 560 L370 560" fill="none" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow)"/>'
         svg += self.text(595, 535, "④ POST callback_url", font_size=12, anchor="middle", fill="#22c55e")
         svg += self.text(595, 575, "Authorization: Bearer {token}", font_size=10, anchor="middle", fill="#64748b")
 
         # DB 저장 화살표
-        svg += f'<line x1="225" y1="610" x2="225" y2="630" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrow)"/>'
+        svg += '<line x1="225" y1="610" x2="225" y2="630" stroke="#f59e0b" stroke-width="2" marker-end="url(#arrow)"/>'
         svg += self.text(245, 625, "⑤ INSERT", font_size=11, anchor="start", fill="#f59e0b")
 
         # ========== 오른쪽: OpenClaw / Raspberry Pi ==========
-        svg += f'<rect x="580" y="140" width="380" height="480" rx="16" fill="#faf5ff" stroke="#9333ea" stroke-width="2" filter="url(#shadow)"/>'
+        svg += '<rect x="580" y="140" width="380" height="480" rx="16" fill="#faf5ff" stroke="#9333ea" stroke-width="2" filter="url(#shadow)"/>'
         svg += self.text(770, 175, "OpenClaw (Raspberry Pi 5)", font_size=20, weight="bold", anchor="middle", fill="#7c3aed")
 
         # Gateway
@@ -119,7 +119,7 @@ class OpenClawImages(BlogImageGenerator):
         svg += self.text(770, 270, "Bearer token 인증", font_size=12, anchor="middle", fill="#64748b")
 
         # 화살표: Gateway → Agent
-        svg += f'<line x1="770" y1="290" x2="770" y2="320" stroke="#a855f7" stroke-width="2" marker-end="url(#arrow)"/>'
+        svg += '<line x1="770" y1="290" x2="770" y2="320" stroke="#a855f7" stroke-width="2" marker-end="url(#arrow)"/>'
         svg += self.text(790, 310, "② 큐잉", font_size=11, anchor="start", fill="#a855f7")
 
         # Agent 처리
@@ -173,7 +173,7 @@ class OpenClawImages(BlogImageGenerator):
         svg += self.text(width // 2, 75, "로컬 ↔ Raspberry Pi 양방향 포트 포워딩", font_size=16, anchor="middle", fill="#64748b")
 
         # ========== 왼쪽: 로컬 머신 ==========
-        svg += f'<rect x="50" y="120" width="380" height="450" rx="16" fill="#ffffff" stroke="#0284c7" stroke-width="2"/>'
+        svg += '<rect x="50" y="120" width="380" height="450" rx="16" fill="#ffffff" stroke="#0284c7" stroke-width="2"/>'
         svg += self.text(240, 155, "🖥️ 로컬 머신 (macOS)", font_size="18", weight="bold", anchor="middle", fill="#0369a1")
 
         # FastAPI
@@ -210,7 +210,7 @@ class OpenClawImages(BlogImageGenerator):
         svg += self.text(600, 445, "-R :18000 (Pi→로컬)", font_size=12, weight="bold", anchor="middle", fill="#166534")
 
         # ========== 오른쪽: Raspberry Pi ==========
-        svg += f'<rect x="770" y="120" width="380" height="450" rx="16" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>'
+        svg += '<rect x="770" y="120" width="380" height="450" rx="16" fill="#ffffff" stroke="#dc2626" stroke-width="2"/>'
         svg += self.text(960, 155, "🍓 Raspberry Pi 5", font_size=18, weight="bold", anchor="middle", fill="#b91c1c")
 
         # OpenClaw
@@ -233,16 +233,16 @@ class OpenClawImages(BlogImageGenerator):
 
         # ========== 화살표 ==========
         # 로컬 → SSH (요청)
-        svg += f'<path d="M400 345 L470 345" fill="none" stroke="#0ea5e9" stroke-width="3" marker-end="url(#arrow2)"/>'
+        svg += '<path d="M400 345 L470 345" fill="none" stroke="#0ea5e9" stroke-width="3" marker-end="url(#arrow2)"/>'
 
         # SSH → Pi (요청)
-        svg += f'<path d="M730 390 L770 390" fill="none" stroke="#0ea5e9" stroke-width="3" marker-end="url(#arrow2)"/>'
+        svg += '<path d="M730 390 L770 390" fill="none" stroke="#0ea5e9" stroke-width="3" marker-end="url(#arrow2)"/>'
 
         # Pi → SSH (응답)
-        svg += f'<path d="M770 440 L730 440" fill="none" stroke="#22c55e" stroke-width="3" marker-end="url(#arrow3)"/>'
+        svg += '<path d="M770 440 L730 440" fill="none" stroke="#22c55e" stroke-width="3" marker-end="url(#arrow3)"/>'
 
         # SSH → 로컬 (응답)
-        svg += f'<path d="M470 440 L400 440" fill="none" stroke="#22c55e" stroke-width="3" marker-end="url(#arrow3)"/>'
+        svg += '<path d="M470 440 L400 440" fill="none" stroke="#22c55e" stroke-width="3" marker-end="url(#arrow3)"/>'
 
         # ========== 하단: 명령어 ==========
         svg += self.rect(50, 600, 1100, 80, fill="#1e293b", stroke="none", rx=12)

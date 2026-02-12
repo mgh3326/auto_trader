@@ -5,7 +5,7 @@
     from blog.tools import SVGConverter, BlogImageGenerator
 """
 
-from blog.tools.svg_converter import SVGConverter
 from blog.tools.image_generator import BlogImageGenerator
+from blog.tools.svg_converter import SVGConverter
 
 __all__ = ["SVGConverter", "BlogImageGenerator"]

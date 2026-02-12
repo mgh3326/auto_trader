@@ -2,6 +2,7 @@
 KIS API로 삼성전자 데이터를 수집하고 프롬프트를 생성한 후 Gemini에 분석 요청
 """
 import asyncio
+
 from app.analysis.service_analyzers import KISAnalyzer
 
 

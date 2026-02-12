@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import os, json, time, io
-import zipfile
+import json
+import os
+import time
 from pathlib import Path
-from typing import Dict
 
 import dart_fss
-import httpx  # dart-fss 안 쓰고 REST로 인덱스만 받을 때
-import xml.etree.ElementTree as ET
 
-import pandas as pd
 from app.core.config import settings
 
 # dart-fss를 써도 동일: 인덱스는 openDART의 corpCode.zip이 표준
@@ -61,7 +58,7 @@ async def prime_index() -> None:
 
 
 
-def _fetch_corp_index_sync() -> Dict[str, str]:
+def _fetch_corp_index_sync() -> dict[str, str]:
     """
     dart_fss.get_corp_code()로 전체 회사 목록을 받아
     '한글회사명 -> corp_code' 매핑을 만든다.
@@ -76,8 +73,8 @@ def _fetch_corp_index_sync() -> Dict[str, str]:
     # CorpList 객체 반환 (공식 문서)
     corp_list = dart_fss.get_corp_list()
 
-    name_to_corp: Dict[str, str] = {}
-    listed_flag: Dict[str, bool] = {}
+    name_to_corp: dict[str, str] = {}
+    listed_flag: dict[str, bool] = {}
 
     # corp_list.corps 는 Corp 객체 리스트
     for corp in corp_list.corps:

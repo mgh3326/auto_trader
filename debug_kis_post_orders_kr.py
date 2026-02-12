@@ -4,7 +4,7 @@ KIS 국내주식 자동 매도 주문 시스템
 """
 
 import asyncio
-from typing import List
+
 from app.analysis.service_analyzers import KISAnalyzer
 from app.services.kis import kis
 
@@ -126,7 +126,7 @@ async def process_sell_orders_for_my_stocks():
 
             # 최소 주문 수량 체크
             if quantity < 1:
-                print(f"  ⚠️  보유 수량이 1주 미만이어서 매도 불가능")
+                print("  ⚠️  보유 수량이 1주 미만이어서 매도 불가능")
                 continue
 
             # 현재가 조회
@@ -139,11 +139,11 @@ async def process_sell_orders_for_my_stocks():
                 continue
 
             # 기존 매도 주문 확인 및 취소 (미리 조회한 데이터 사용)
-            print(f"\n  🔍 기존 매도 주문 확인 및 취소...")
+            print("\n  🔍 기존 매도 주문 확인 및 취소...")
             await cancel_existing_sell_orders(stock_code, all_open_orders, is_mock=False)
 
             # API 서버 데이터 동기화를 위해 잠시 대기
-            print(f"  ⏳ API 서버 동기화를 위해 1초 대기...")
+            print("  ⏳ API 서버 동기화를 위해 1초 대기...")
             await asyncio.sleep(1)
 
             # 매도 전략에 따른 주문 실행
@@ -158,7 +158,7 @@ async def process_sell_orders_for_my_stocks():
                         stock_code, quantity, sell_prices, current_price
                     )
                 else:
-                    print(f"  ⚠️  조건에 맞는 매도 가격이 없어 주문 생략")
+                    print("  ⚠️  조건에 맞는 매도 가격이 없어 주문 생략")
 
     except Exception as e:
         print(f"❌ 에러 발생: {e}")
@@ -170,12 +170,12 @@ async def process_sell_orders_for_my_stocks():
 
 async def get_sell_prices_for_stock(
     stock_code: str, stock_name: str, avg_buy_price: int, current_price: int
-) -> List[int]:
+) -> list[int]:
     """주식의 매도 가격들을 분석 결과에서 조회합니다."""
     try:
         # 분석 결과에서 전체 정보 조회
-        from app.services.stock_info_service import StockAnalysisService
         from app.core.db import AsyncSessionLocal
+        from app.services.stock_info_service import StockAnalysisService
 
         async with AsyncSessionLocal() as db:
             service = StockAnalysisService(db)
@@ -238,17 +238,17 @@ async def get_sell_prices_for_stock(
 async def place_multiple_sell_orders(
     stock_code: str,
     quantity: int,
-    sell_prices: List[int],
+    sell_prices: list[int],
     current_price: int,
 ):
     """여러 가격으로 분할 매도 주문을 넣습니다. 마지막은 최고가에서 전량 매도."""
     if not sell_prices:
-        print(f"  ⚠️  매도 주문할 가격이 없습니다.")
+        print("  ⚠️  매도 주문할 가격이 없습니다.")
         return
 
     if len(sell_prices) == 1:
         # 가격이 1개만 있으면 전량 매도
-        print(f"  📤 단일 가격 전량 매도")
+        print("  📤 단일 가격 전량 매도")
         await place_new_sell_order(
             stock_code, quantity, sell_prices[0]
         )
@@ -296,7 +296,7 @@ async def place_multiple_sell_orders(
             print(f"       가격: {sell_price:,}원")
 
             # 매도 주문 실행
-            print(f"       🔄 API 호출 중...")
+            print("       🔄 API 호출 중...")
             order_result = await kis.sell_korea_stock(
                 stock_code=stock_code,
                 quantity=shares_per_price,
@@ -330,11 +330,11 @@ async def place_multiple_sell_orders(
             f"전량: {remaining_quantity}주"
         )
         print(f"       가격: {highest_price:,}원")
-        print(f"       🎯 최고가에서 잔량 전부 매도!")
+        print("       🎯 최고가에서 잔량 전부 매도!")
 
         # 최소 주문 수량 체크 (1주 이상만 허용)
         if remaining_quantity < 1:
-            print(f"       ⚠️  잔량이 1주 미만이어서 매도 불가능")
+            print("       ⚠️  잔량이 1주 미만이어서 매도 불가능")
             print(
                 f"       📊 분할 매도 결과: {success_count}/{len(split_prices)}개 성공 "
                 f"(잔량 매도 생략)"
@@ -342,7 +342,7 @@ async def place_multiple_sell_orders(
             return
 
         # 매도 주문 실행
-        print(f"       🔄 API 호출 중...")
+        print("       🔄 API 호출 중...")
         order_result = await kis.sell_korea_stock(
             stock_code=stock_code,
             quantity=remaining_quantity,
@@ -357,7 +357,7 @@ async def place_multiple_sell_orders(
             f"       ✅ 성공! 주문번호: {order_result.get('odno')} "
             f"(예상: {expected_amount:,}원)"
         )
-        print(f"       ✨ 잔액 없이 깔끔하게 완료!")
+        print("       ✨ 잔액 없이 깔끔하게 완료!")
         success_count += 1
 
     except Exception as e:
@@ -373,13 +373,13 @@ def _print_error_hint(e: Exception):
     """에러 메시지에 따른 힌트 출력"""
     error_str = str(e).lower()
     if "opsq0002" in error_str or "mca00124" in error_str:
-        print(f"          💡 서비스 코드 문제일 수 있습니다. API 문서를 확인해주세요.")
+        print("          💡 서비스 코드 문제일 수 있습니다. API 문서를 확인해주세요.")
     elif "egw00123" in error_str or "egw00121" in error_str:
-        print(f"          💡 토큰 인증 문제일 수 있습니다. 토큰을 갱신합니다.")
+        print("          💡 토큰 인증 문제일 수 있습니다. 토큰을 갱신합니다.")
     elif "40310000" in error_str:
-        print(f"          💡 주문 수량/가격 오류입니다.")
-        print(f"             - 최소 주문 수량 확인")
-        print(f"             - 가격 단위 확인")
+        print("          💡 주문 수량/가격 오류입니다.")
+        print("             - 최소 주문 수량 확인")
+        print("             - 가격 단위 확인")
 
 
 async def place_new_sell_order(
@@ -392,7 +392,7 @@ async def place_new_sell_order(
 
         # 최소 주문 수량 체크
         if quantity < 1:
-            print(f"  ⚠️  수량이 1주 미만이어서 주문 불가능")
+            print("  ⚠️  수량이 1주 미만이어서 주문 불가능")
             return
 
         # 매도 주문 실행
@@ -404,7 +404,7 @@ async def place_new_sell_order(
         )
 
         expected_amount = quantity * sell_price
-        print(f"  ✅ 매도 주문 성공!")
+        print("  ✅ 매도 주문 성공!")
         print(f"     주문번호: {order_result.get('odno')}")
         print(f"     예상 수령액: {expected_amount:,}원")
 

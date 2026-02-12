@@ -1,4 +1,5 @@
 import asyncio
+
 from app.analysis.service_analyzers import YahooAnalyzer
 
 

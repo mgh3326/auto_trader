@@ -5,6 +5,7 @@ debug_yahoo_json.py와 유사한 방식으로 KIS API를 사용하여 해외주�
 """
 
 import asyncio
+
 from app.analysis.service_analyzers import KISAnalyzer
 from app.services.kis import kis
 

@@ -537,22 +537,29 @@ class TestFetchInvestmentOpinions:
         assert op1["stock_name"] == "삼성전자"
         assert op1["title"] == "반도체 업황 개선 전망"
         assert op1["firm"] == "삼성증권"
-        assert op1["rating"] == "매수"
+        assert op1["rating"] == "Buy"
+        assert op1["rating_bucket"] == "buy"
         assert op1["target_price"] == 85000
         assert op1["date"] == "2026-01-15"
 
         # Second opinion
         op2 = result["opinions"][1]
         assert op2["rating"] == "Strong Buy"
+        assert op2["rating_bucket"] == "buy"
         assert op2["target_price"] == 90000
 
-        # Check statistics
-        assert result["current_price"] == 75000
-        assert result["avg_target_price"] == 87500  # (85000 + 90000) / 2
-        assert result["max_target_price"] == 90000
-        assert result["min_target_price"] == 85000
-        # upside_potential: (87500 - 75000) / 75000 * 100 = 16.67%
-        assert abs(result["upside_potential"] - 16.67) < 0.01
+        assert "consensus" in result
+        consensus = result["consensus"]
+        assert consensus["buy_count"] == 2
+        assert consensus["hold_count"] == 0
+        assert consensus["sell_count"] == 0
+        assert consensus["total_count"] == 2
+        assert consensus["avg_target_price"] == 87500
+        assert consensus["median_target_price"] == 87500
+        assert consensus["min_target_price"] == 85000
+        assert consensus["max_target_price"] == 90000
+        assert abs(consensus["upside_pct"] - 16.67) < 0.01
+        assert consensus["current_price"] == 75000
 
     async def test_limit_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
@@ -586,10 +593,9 @@ class TestFetchInvestmentOpinions:
 
         assert result["count"] == 0
         assert result["opinions"] == []
-        assert result["avg_target_price"] is None
-        assert result["max_target_price"] is None
-        assert result["min_target_price"] is None
-        assert result["upside_potential"] is None
+        assert result["consensus"] is not None
+        assert result["consensus"]["avg_target_price"] is None
+        assert result["consensus"]["min_target_price"] is None
 
     async def test_missing_target_price(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test when some reports don't have target price."""
@@ -625,9 +631,77 @@ class TestFetchInvestmentOpinions:
         assert result["opinions"][1]["target_price"] == 90000
 
         # Stats should only use the one with target price
-        assert result["avg_target_price"] == 90000
-        assert result["max_target_price"] == 90000
-        assert result["min_target_price"] == 90000
+        assert "consensus" in result
+        consensus = result["consensus"]
+        assert consensus["avg_target_price"] == 90000
+        assert consensus["max_target_price"] == 90000
+        assert consensus["min_target_price"] == 90000
+
+
+@pytest.mark.unit
+class TestRatingNormalization:
+    """Tests for _normalize_rating function."""
+
+    def test_case_insensitive_normalization(self) -> None:
+        """Test that rating normalization is case-insensitive."""
+        from app.services.naver_finance import _normalize_rating
+
+        # Test uppercase
+        assert _normalize_rating("BUY") == "buy"
+        assert _normalize_rating("STRONG BUY") == "buy"
+        assert _normalize_rating("HOLD") == "hold"
+        assert _normalize_rating("MARKET PERFORM") == "hold"
+        assert _normalize_rating("SELL") == "sell"
+
+        # Test mixed case
+        assert _normalize_rating("Strong Buy") == "buy"
+        assert _normalize_rating("Market Perform") == "hold"
+        assert _normalize_rating("Overweight") == "buy"
+
+        # Test lowercase
+        assert _normalize_rating("buy") == "buy"
+        assert _normalize_rating("hold") == "hold"
+        assert _normalize_rating("sell") == "sell"
+
+    def test_space_handling(self) -> None:
+        """Test that spaces in ratings are handled correctly."""
+        from app.services.naver_finance import _normalize_rating
+
+        # With spaces
+        assert _normalize_rating("market perform") == "hold"
+        assert _normalize_rating("strong buy") == "buy"
+        assert _normalize_rating("strong sell") == "sell"
+        assert _normalize_rating("equal weight") == "hold"
+
+        # Without spaces (compact form)
+        assert _normalize_rating("marketperform") == "hold"
+        assert _normalize_rating("equalweight") == "hold"
+
+        # Leading/trailing whitespace
+        assert _normalize_rating("  buy  ") == "buy"
+        assert _normalize_rating(" strong buy ") == "buy"
+
+    def test_korean_ratings(self) -> None:
+        """Test Korean rating normalization."""
+        from app.services.naver_finance import _normalize_rating
+
+        assert _normalize_rating("매수") == "buy"
+        assert _normalize_rating("강력매수") == "buy"
+        assert _normalize_rating("강매") == "buy"
+        assert _normalize_rating("비중확대") == "buy"
+        assert _normalize_rating("중립") == "hold"
+        assert _normalize_rating("보유") == "hold"
+        assert _normalize_rating("매도") == "sell"
+        assert _normalize_rating("비중축소") == "sell"
+
+    def test_unknown_ratings_default_to_hold(self) -> None:
+        """Test that unknown ratings default to 'hold'."""
+        from app.services.naver_finance import _normalize_rating
+
+        assert _normalize_rating("unknown rating") == "hold"
+        assert _normalize_rating("xyz") == "hold"
+        assert _normalize_rating(None) == "hold"
+        assert _normalize_rating("") == "hold"
 
 
 @pytest.mark.asyncio

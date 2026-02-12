@@ -5,11 +5,12 @@ DB 연결 없이 프롬프트 생성과 AI 분석 실행
 """
 
 import asyncio
+
 from google import genai
 
+from app.analysis.analyzer import DataProcessor
 from app.services import upbit
 from data.coins_info import upbit_pairs
-from app.analysis.analyzer import DataProcessor
 
 
 def add_indicators(df):
@@ -138,7 +139,7 @@ async def main():
     print(f"  - 병합 완료: {len(df_merged)}개 데이터")
 
     # 3. 프롬프트 생성
-    print(f"\n2단계: AI 분석용 프롬프트 생성 중...")
+    print("\n2단계: AI 분석용 프롬프트 생성 중...")
     prompt = build_prompt(df_merged, ticker, coin_name, fundamental_info)
 
     print("\n생성된 프롬프트:")

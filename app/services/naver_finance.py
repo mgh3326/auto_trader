@@ -19,6 +19,12 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
+from app.services.analyst_normalizer import (
+    build_consensus,
+    normalize_rating_label,
+    rating_to_bucket,
+)
+
 # Base URLs for Naver Finance
 NAVER_FINANCE_BASE = "https://finance.naver.com"
 NAVER_FINANCE_ITEM = f"{NAVER_FINANCE_BASE}/item"
@@ -41,6 +47,19 @@ DEFAULT_HEADERS = {
 # ---------------------------------------------------------------------------
 # Helper Functions
 # ---------------------------------------------------------------------------
+
+
+def _normalize_rating(rating: str | None) -> str:
+    """
+    DEPRECATED: Backward-compatible shim for old tests.
+
+    Use `normalize_rating_label()` for standard English labels (e.g., "Buy")
+    or `rating_to_bucket()` for aggregation buckets (e.g., "buy").
+
+    This function returns lowercase bucket strings for backward compatibility.
+    """
+    label = normalize_rating_label(rating)
+    return rating_to_bucket(label)
 
 
 def _parse_naver_date(date_str: str | None) -> str | None:
@@ -640,7 +659,6 @@ async def _fetch_current_price(code: str) -> int | None:
                 return int(price)
 
         return None
-
     except Exception:
         return None
 
@@ -656,15 +674,12 @@ async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any
         limit: Maximum number of opinions to return
 
     Returns:
-        Investment opinions with target price, rating, firm, date, and statistics:
-        - opinions: List of individual opinions with target_price and rating
-        - avg_target_price: Average target price from all opinions with target_price
-        - max_target_price: Maximum target price
-        - min_target_price: Minimum target price
-        - current_price: Current stock price
-        - upside_potential: (avg_target_price - current_price) / current_price * 100
+        Investment opinions with normalized ratings and consensus statistics:
+        - symbol: Stock code
+        - count: Number of opinions
+        - opinions: List of individual opinions with normalized ratings
+        - consensus: Aggregated statistics (buy/hold/sell counts, target prices, upside_pct)
     """
-    # Search for company-specific research reports
     url = f"{NAVER_FINANCE_BASE}/research/company_list.naver"
     soup = await _fetch_html(url, params={"searchType": "itemCode", "itemCode": code})
 
@@ -672,11 +687,7 @@ async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any
         "symbol": code,
         "count": 0,
         "opinions": [],
-        "current_price": None,
-        "avg_target_price": None,
-        "max_target_price": None,
-        "min_target_price": None,
-        "upside_potential": None,
+        "consensus": None,
     }
 
     # Parse research report table - <table class="type_1">
@@ -743,43 +754,30 @@ async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any
         details = await asyncio.gather(*detail_tasks, return_exceptions=True)
 
         for info, detail in zip(report_infos, details, strict=True):
+            raw_rating = None
+            if isinstance(detail, dict):
+                raw_rating = detail.get("rating")
+
+            rating_label = normalize_rating_label(raw_rating)
             opinion = {
                 "stock_name": info["stock_name"],
                 "title": info["title"],
                 "firm": info["firm"],
                 "date": info["date"],
                 "url": info["url"],
-                "target_price": None,
-                "rating": None,
+                "target_price": detail.get("target_price")
+                if isinstance(detail, dict)
+                else None,
+                "rating": rating_label,
+                "rating_bucket": rating_to_bucket(rating_label),
             }
-
-            if isinstance(detail, dict):
-                opinion["target_price"] = detail.get("target_price")
-                opinion["rating"] = detail.get("rating")
 
             opinions["opinions"].append(opinion)
 
     opinions["count"] = len(opinions["opinions"])
 
-    # Calculate target price statistics
-    target_prices = [
-        op["target_price"]
-        for op in opinions["opinions"]
-        if op.get("target_price") is not None
-    ]
-
-    if target_prices:
-        opinions["avg_target_price"] = int(sum(target_prices) / len(target_prices))
-        opinions["max_target_price"] = max(target_prices)
-        opinions["min_target_price"] = min(target_prices)
-
-        # Fetch current price for upside_potential calculation
-        current_price = await _fetch_current_price(code)
-        if current_price:
-            opinions["current_price"] = current_price
-            opinions["upside_potential"] = round(
-                (opinions["avg_target_price"] - current_price) / current_price * 100, 2
-            )
+    current_price = await _fetch_current_price(code)
+    opinions["consensus"] = build_consensus(opinions["opinions"], current_price)
 
     return opinions
 

@@ -31,6 +31,11 @@ from app.models.manual_holdings import MarketType
 from app.services import naver_finance
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
+from app.services.analyst_normalizer import (
+    build_consensus,
+    normalize_rating_label,
+    rating_to_bucket,
+)
 from app.services.dca_service import DcaService
 from app.services.disclosures.dart import list_filings
 from app.services.kis import KISClient
@@ -64,9 +69,300 @@ def _is_crypto_market(symbol: str) -> bool:
 
 
 def _is_us_equity_symbol(symbol: str) -> bool:
-    # Simple heuristic: has letters and no dash-prefix like KRW-
     s = symbol.strip().upper()
     return (not _is_crypto_market(s)) and any(c.isalpha() for c in s)
+
+
+def _normalize_symbol_input(symbol: str | int, market: str | None = None) -> str:
+    """Normalize symbol input with market-specific rules.
+
+    Args:
+        symbol: Input symbol (str or int)
+        market: Market type hint (auto-detected if None)
+
+    Returns:
+        Normalized symbol string
+    """
+    # Convert to string and strip whitespace
+    s = str(symbol).strip()
+
+    # For Korean market integers, apply zfill(6) to preserve leading zeros
+    if market is None:
+        # Auto-detect market
+        if s.isdigit() and len(s) <= 6:
+            # Likely Korean stock code
+            s = s.zfill(6)
+    elif market.lower() in (
+        "kr",
+        "krx",
+        "korea",
+        "kospi",
+        "kosdaq",
+        "kis",
+        "equity_kr",
+        "naver",
+    ):
+        if s.isdigit():
+            s = s.zfill(6)
+
+    return s
+
+
+def _build_recommendation_for_equity(
+    analysis: dict[str, Any],
+    market_type: str,
+) -> dict[str, Any] | None:
+    quote = analysis.get("quote")
+    indicators = analysis.get("indicators")
+    sr = analysis.get("support_resistance")
+    opinions = analysis.get("opinions", {})
+    consensus = opinions.get("consensus")
+    valuation = analysis.get("valuation", {})
+
+    if not quote:
+        return None
+
+    current_price = quote.get("price") or quote.get("current_price")
+    if not current_price:
+        return None
+
+    recommendation: dict[str, Any] = {
+        "action": "hold",
+        "confidence": "low",
+        "buy_prices": [],
+        "sell_prices": [],
+        "buy_zones": [],
+        "sell_targets": [],
+        "stop_loss": None,
+        "reasoning": "",
+    }
+
+    reasoning_parts: list[str] = []
+
+    score = 0
+    max_score = 0
+
+    if indicators:
+        indicators_dict = indicators.get("indicators", indicators)
+
+        rsi_data = indicators_dict.get("rsi")
+        rsi = None
+        if isinstance(rsi_data, dict):
+            rsi = rsi_data.get("14") or rsi_data.get(14)
+        elif isinstance(rsi_data, (int, float)):
+            rsi = rsi_data
+
+        if rsi:
+            max_score += 2
+            if rsi < 30:
+                score += 2
+                reasoning_parts.append(f"RSI {rsi:.1f} (oversold)")
+            elif rsi < 40:
+                score += 1
+                reasoning_parts.append(f"RSI {rsi:.1f} (bearish)")
+            elif rsi > 70:
+                score -= 2
+                reasoning_parts.append(f"RSI {rsi:.1f} (overbought)")
+            elif rsi > 60:
+                score -= 1
+                reasoning_parts.append(f"RSI {rsi:.1f} (bullish)")
+
+    if consensus:
+        buy_count = consensus.get("buy_count", 0)
+        sell_count = consensus.get("sell_count", 0)
+        strong_buy_count = consensus.get("strong_buy_count", 0)
+        total = consensus.get("total_count", 0)
+
+        if total > 0:
+            max_score += 2
+            buy_ratio = buy_count / total
+            sell_ratio = sell_count / total
+
+            if buy_ratio > 0.6:
+                score += 2
+                if strong_buy_count > 0 and strong_buy_count >= buy_count / 2:
+                    reasoning_parts.append(
+                        f"Analyst consensus strong bullish ({buy_count} buy, {strong_buy_count} strong buy vs {sell_count} sell)"
+                    )
+                else:
+                    reasoning_parts.append(
+                        f"Analyst consensus bullish ({buy_count} buy vs {sell_count} sell)"
+                    )
+            elif buy_ratio > 0.4:
+                score += 1
+                reasoning_parts.append(
+                    f"Analyst consensus moderate ({buy_count} buy vs {sell_count} sell)"
+                )
+            elif sell_ratio > 0.6:
+                score -= 2
+                reasoning_parts.append(
+                    f"Analyst consensus bearish ({sell_count} sell vs {buy_count} buy)"
+                )
+            elif sell_ratio > 0.4:
+                score -= 1
+                reasoning_parts.append(
+                    f"Analyst consensus cautious ({sell_count} sell vs {buy_count} buy)"
+                )
+
+    if score >= 2:
+        recommendation["action"] = "buy"
+        recommendation["confidence"] = "high" if score >= 3 else "medium"
+    elif score <= -2:
+        recommendation["action"] = "sell"
+        recommendation["confidence"] = "high" if score <= -3 else "medium"
+    else:
+        recommendation["action"] = "hold"
+        recommendation["confidence"] = "low"
+
+    buy_zones_indicators: list[dict[str, Any]] = []
+
+    if indicators:
+        indicators_dict = indicators.get("indicators", indicators)
+        bb = indicators_dict.get("bollinger") or indicators_dict.get("bollinger_bands")
+        if bb and isinstance(bb, dict):
+            lower = bb.get("lower") or bb.get("lb")
+            if lower:
+                buy_zones_indicators.append(
+                    {
+                        "price": float(lower),
+                        "type": "bollinger_lower",
+                        "reasoning": "BB lower band",
+                    }
+                )
+
+    buy_zones_supports: list[dict[str, Any]] = []
+
+    if sr:
+        supports = sr.get("supports") or []
+        for s in supports[:3]:
+            price = s.get("price")
+            if price and isinstance(price, (int, float)) and price < current_price:
+                buy_zones_supports.append(
+                    {
+                        "price": float(price),
+                        "type": "support",
+                        "reasoning": f"Support at {price}",
+                    }
+                )
+
+    if indicators and sr and len(buy_zones_indicators) < 3:
+        indicators_dict = indicators.get("indicators", indicators)
+        bb = indicators_dict.get("bollinger") or indicators_dict.get("bollinger_bands")
+        if bb and isinstance(bb, dict):
+            lower = bb.get("lower") or bb.get("lb")
+            if lower:
+                lower_price = float(lower)
+                lower_price_diff = abs(lower_price - current_price)
+                if (
+                    lower_price < current_price
+                    and lower_price_diff < current_price * 0.05
+                ):
+                    buy_zones_indicators.append(
+                        {
+                            "price": lower_price,
+                            "type": "bollinger_lower_near",
+                            "reasoning": f"BB lower near ({lower_price_diff / current_price * 100:.1f}% below)",
+                        }
+                    )
+
+    if sr:
+        supports = sr.get("supports") or []
+        for s in supports:
+            price = s.get("price")
+            if price and isinstance(price, (int, float)) and price < current_price:
+                price_diff = current_price - float(price)
+                if price_diff < current_price * 0.05 and len(buy_zones_indicators) < 3:
+                    buy_zones_indicators.append(
+                        {
+                            "price": float(price),
+                            "type": "support_near",
+                            "reasoning": f"Near support ({price_diff / current_price * 100:.1f}% below)",
+                        }
+                    )
+                    break
+
+    # Combine and sort buy zones by price
+    all_buy_zones = buy_zones_indicators + buy_zones_supports
+    all_buy_zones.sort(key=lambda z: z["price"])
+    recommendation["buy_zones"] = all_buy_zones[:3]
+    # Backward compatibility: extract price list
+    recommendation["buy_prices"] = [z["price"] for z in recommendation["buy_zones"]]
+
+    sell_targets: list[dict[str, Any]] = []
+
+    if sr:
+        resistances = sr.get("resistances") or []
+        for r in resistances[:2]:
+            price = r.get("price")
+            if price and isinstance(price, (int, float)) and price > current_price:
+                sell_targets.append(
+                    {
+                        "price": float(price),
+                        "type": "resistance",
+                        "reasoning": f"Resistance at {price}",
+                    }
+                )
+
+    if consensus:
+        avg_target = consensus.get("avg_target_price")
+        max_target = consensus.get("max_target_price")
+        if avg_target:
+            sell_targets.append(
+                {
+                    "price": float(avg_target),
+                    "type": "consensus_avg",
+                    "reasoning": "Analyst consensus average target",
+                }
+            )
+        if max_target:
+            sell_targets.append(
+                {
+                    "price": float(max_target),
+                    "type": "consensus_max",
+                    "reasoning": "Analyst consensus max target",
+                }
+            )
+
+    # Sort sell targets by price
+    sell_targets.sort(key=lambda t: t["price"])
+    recommendation["sell_targets"] = sell_targets[:3]
+    # Backward compatibility: extract price list
+    recommendation["sell_prices"] = [t["price"] for t in recommendation["sell_targets"]]
+
+    stop_loss: float | None = None
+
+    if sr:
+        supports = sr.get("supports") or []
+        for s in supports:
+            price = s.get("price")
+            if price and isinstance(price, (int, float)) and price < current_price:
+                candidate = float(price) * 0.98
+                stop_loss = candidate
+                break
+
+    if stop_loss is None:
+        if valuation:
+            low_52w = valuation.get("low_52w")
+            if low_52w:
+                stop_loss = float(low_52w)
+            else:
+                stop_loss = float(current_price) * 0.92
+        else:
+            stop_loss = float(current_price) * 0.92
+
+    if market_type == "equity_kr":
+        from app.mcp_server.tick_size import adjust_tick_size_kr
+
+        stop_loss = adjust_tick_size_kr(stop_loss)
+
+    recommendation["stop_loss"] = stop_loss
+
+    if reasoning_parts:
+        recommendation["reasoning"] = "; ".join(reasoning_parts)
+    else:
+        recommendation["reasoning"] = "Insufficient data for detailed reasoning"
+
+    return recommendation
 
 
 def _normalize_market(market: str | None) -> str | None:
@@ -2430,7 +2726,10 @@ async def _fetch_investment_opinions_yfinance(
         limit: Maximum number of recommendations to return
 
     Returns:
-        Dictionary with analyst opinion data
+        Dictionary with analyst opinion data:
+        - opinions: List of individual opinions (standard key)
+        - recommendations: Alias for opinions (for compatibility)
+        - consensus: Aggregated statistics
     """
     loop = asyncio.get_running_loop()
     ticker = yf.Ticker(symbol)
@@ -2460,28 +2759,20 @@ async def _fetch_investment_opinions_yfinance(
     current_price = (info or {}).get("currentPrice")
 
     # --- price targets ---
-    avg_target: float | None = None
-    max_target: float | None = None
-    min_target: float | None = None
     if isinstance(targets, dict):
-        avg_target = targets.get("mean") or targets.get("median")
-        max_target = targets.get("high")
-        min_target = targets.get("low")
         if current_price is None:
             current_price = targets.get("current")
 
-    upside: float | None = None
-    if current_price and avg_target:
-        upside = round((avg_target - current_price) / current_price * 100, 2)
-
-    # --- recent recommendations ---
     recommendations: list[dict[str, Any]] = []
     if ud is not None and not ud.empty:
         df = ud.head(limit).reset_index()
         for _, row in df.iterrows():
+            raw_rating = row.get("ToGrade")
+            rating_label = normalize_rating_label(raw_rating)
             rec: dict[str, Any] = {
                 "firm": row.get("Firm"),
-                "rating": row.get("ToGrade"),
+                "rating": rating_label,
+                "rating_bucket": rating_to_bucket(rating_label),
                 "date": (
                     row["GradeDate"].strftime("%Y-%m-%d")
                     if hasattr(row.get("GradeDate", None), "strftime")
@@ -2493,17 +2784,48 @@ async def _fetch_investment_opinions_yfinance(
                 rec["target_price"] = float(pt)
             recommendations.append(rec)
 
+    consensus = build_consensus(recommendations, current_price)
+
+    # Enhance consensus with analyst_price_targets data if recommendations are sparse
+    if isinstance(targets, dict):
+        # If we have target data but sparse recommendations, fill consensus directly
+        if targets.get("mean") and (
+            not consensus or not consensus.get("avg_target_price")
+        ):
+            if consensus is None:
+                consensus = {}
+            if not consensus.get("avg_target_price"):
+                consensus["avg_target_price"] = targets.get("mean")
+            if not consensus.get("median_target_price"):
+                consensus["median_target_price"] = targets.get("median")
+            if not consensus.get("min_target_price"):
+                consensus["min_target_price"] = targets.get("low")
+            if not consensus.get("max_target_price"):
+                consensus["max_target_price"] = targets.get("high")
+            if not consensus.get("current_price"):
+                consensus["current_price"] = current_price or targets.get("current")
+
+            # Recalculate upside if we have avg target
+            if (
+                consensus.get("avg_target_price")
+                and current_price
+                and isinstance(current_price, (int, float))
+            ):
+                consensus["upside_pct"] = round(
+                    (consensus["avg_target_price"] - current_price)
+                    / current_price
+                    * 100,
+                    2,
+                )
+
     return {
         "instrument_type": "equity_us",
         "source": "yfinance",
         "symbol": symbol.upper(),
-        "current_price": current_price,
-        "avg_target_price": avg_target,
-        "max_target_price": max_target,
-        "min_target_price": min_target,
-        "upside_potential": upside,
         "count": len(recommendations),
-        "recommendations": recommendations,
+        "opinions": recommendations,
+        "recommendations": recommendations,  # For compatibility
+        "consensus": consensus,
     }
 
 
@@ -3849,8 +4171,8 @@ def register_tools(mcp: FastMCP) -> None:
         name="get_quote",
         description="Get latest quote/last price for a symbol (KR equity / US equity / crypto).",
     )
-    async def get_quote(symbol: str, market: str | None = None) -> dict[str, Any]:
-        symbol = (symbol or "").strip()
+    async def get_quote(symbol: str | int, market: str | None = None) -> dict[str, Any]:
+        symbol = _normalize_symbol_input(symbol, market)
         if not symbol:
             raise ValueError("symbol is required")
 
@@ -4101,9 +4423,7 @@ def register_tools(mcp: FastMCP) -> None:
             float(_get_kis_field(order, "ft_ord_qty", "FT_ORD_QTY", default=0) or 0)
         )
         filled = int(
-            float(
-                _get_kis_field(order, "ft_ccld_qty", "FT_CCLD_QTY", default=0) or 0
-            )
+            float(_get_kis_field(order, "ft_ccld_qty", "FT_CCLD_QTY", default=0) or 0)
         )
         remaining = ordered - filled
 
@@ -4820,21 +5140,21 @@ def register_tools(mcp: FastMCP) -> None:
         description="Get recent news for a stock or cryptocurrency. Supports US stocks (Finnhub), Korean stocks (Naver Finance), and crypto (Finnhub).",
     )
     async def get_news(
-        symbol: str,
+        symbol: str | int,
         market: str | None = None,
         limit: int = 10,
     ) -> dict[str, Any]:
         """Get recent news for a symbol.
 
         Args:
-            symbol: Stock symbol (e.g., "AAPL" for US, "005930" for Korean) or "crypto"
+            symbol: Stock symbol (e.g., "AAPL" for US, "005930" for Korean, 12450 for KR) or "crypto"
             market: Market type - "us", "kr", or "crypto" (auto-detected if not specified)
             limit: Maximum number of news items (default: 10, max: 50)
 
         Returns:
             Dictionary with news items including title, source, datetime, url
         """
-        symbol = (symbol or "").strip()
+        symbol = _normalize_symbol_input(symbol, market)
         if not symbol:
             raise ValueError("symbol is required")
 
@@ -5208,7 +5528,7 @@ def register_tools(mcp: FastMCP) -> None:
         description="Get securities firm investment opinions and target prices for a US or Korean stock. Returns analyst ratings, price targets, and upside potential.",
     )
     async def get_investment_opinions(
-        symbol: str,
+        symbol: str | int,
         limit: int = 10,
         market: str | None = None,
     ) -> dict[str, Any]:
@@ -5222,7 +5542,8 @@ def register_tools(mcp: FastMCP) -> None:
         Returns:
             Investment opinions including firm name, target price, rating, date
         """
-        symbol = (symbol or "").strip()
+        # Normalize symbol (preserves leading zeros for KR market)
+        symbol = _normalize_symbol_input(symbol, market)
         if not symbol:
             raise ValueError("symbol is required")
 
@@ -5238,7 +5559,10 @@ def register_tools(mcp: FastMCP) -> None:
             else:
                 market = "us"
 
-        normalized_market = market.strip().lower()
+        if not market:
+            raise ValueError("market is required")
+
+        normalized_market = str(market).strip().lower()
         if normalized_market in (
             "kr",
             "krx",
@@ -5276,11 +5600,13 @@ def register_tools(mcp: FastMCP) -> None:
         name="get_valuation",
         description="Get valuation metrics for a US or Korean stock. Returns PER, PBR, ROE, dividend yield, 52-week high/low, current price, and position within 52-week range.",
     )
-    async def get_valuation(symbol: str, market: str | None = None) -> dict[str, Any]:
+    async def get_valuation(
+        symbol: str | int, market: str | None = None
+    ) -> dict[str, Any]:
         """Get valuation metrics for a stock.
 
         Args:
-            symbol: Stock symbol (e.g., "AAPL" for US, "005930" for Korean)
+            symbol: Stock symbol (e.g., "AAPL" for US, "005930" or 12450 for Korean)
             market: Market type - "us" or "kr" (auto-detected if not specified)
 
         Returns:
@@ -5296,7 +5622,7 @@ def register_tools(mcp: FastMCP) -> None:
             - low_52w: 52-week low price
             - current_position_52w: Position within 52-week range (0=low, 1=high)
         """
-        symbol = (symbol or "").strip()
+        symbol = _normalize_symbol_input(symbol, market)
         if not symbol:
             raise ValueError("symbol is required")
 
@@ -6087,7 +6413,11 @@ def register_tools(mcp: FastMCP) -> None:
                     {"source": "upbit", "market": "crypto", "error": str(exc)}
                 )
 
-        if account_filter is None or account_filter in ("kis", "kis_domestic", "kis_overseas"):
+        if account_filter is None or account_filter in (
+            "kis",
+            "kis_domestic",
+            "kis_overseas",
+        ):
             kis = KISClient()
 
             if account_filter is None or account_filter in ("kis", "kis_domestic"):
@@ -6162,8 +6492,6 @@ def register_tools(mcp: FastMCP) -> None:
             },
             "errors": errors,
         }
-
-
 
     # ------------------------------------------------------------------
     # cancel_order
@@ -7293,7 +7621,7 @@ def register_tools(mcp: FastMCP) -> None:
         market: str | None = None,
         include_peers: bool = False,
     ) -> dict[str, Any]:
-        symbol = (symbol or "").strip()
+        symbol = _normalize_symbol_input(symbol, market)
         if not symbol:
             raise ValueError("symbol is required")
 
@@ -7448,6 +7776,11 @@ def register_tools(mcp: FastMCP) -> None:
         else:
             analysis["errors"] = []
 
+        if market_type in ("equity_kr", "equity_us"):
+            recommendation = _build_recommendation_for_equity(analysis, market_type)
+            if recommendation:
+                analysis["recommendation"] = recommendation
+
         return analysis
 
     @mcp.tool(
@@ -7462,14 +7795,14 @@ def register_tools(mcp: FastMCP) -> None:
         ),
     )
     async def analyze_stock(
-        symbol: str,
+        symbol: str | int,
         market: str | None = None,
         include_peers: bool = False,
     ) -> dict[str, Any]:
         """Comprehensive stock analysis with parallel data fetching.
 
         Args:
-            symbol: Stock symbol (e.g., "005930", "AAPL", "KRW-BTC")
+            symbol: Stock symbol (e.g., "005930", 5930, "AAPL", "KRW-BTC")
             market: Market type - "kr", "us", or "crypto" (auto-detected if not specified)
             include_peers: If True, include sector/industry peers comparison
 
@@ -7478,7 +7811,9 @@ def register_tools(mcp: FastMCP) -> None:
             news, opinions, and optional sector peers. Failed sections are
             tracked in errors array.
         """
-        return await globals()["_analyze_stock_impl"](symbol, market, include_peers)
+        # Normalize symbol input (handles numeric Korean stock codes)
+        symbol = _normalize_symbol_input(symbol, market)
+        return await _analyze_stock_impl(symbol, market, include_peers)
 
     @mcp.tool(
         name="analyze_portfolio",
@@ -7489,14 +7824,14 @@ def register_tools(mcp: FastMCP) -> None:
         ),
     )
     async def analyze_portfolio(
-        symbols: list[str],
+        symbols: list[str | int],
         market: str | None = None,
         include_peers: bool = False,
     ) -> dict[str, Any]:
         """Analyze multiple stocks in parallel with portfolio-level summary.
 
         Args:
-            symbols: List of stock symbols to analyze (e.g., ["005930", "AAPL", "KRW-BTC"])
+            symbols: List of stock symbols to analyze (e.g., ["005930", 5930, "AAPL", "KRW-BTC"])
             market: Market hint (optional, auto-detected from symbols)
             include_peers: Include sector/industry peer comparison (optional, default False)
 
@@ -7508,6 +7843,9 @@ def register_tools(mcp: FastMCP) -> None:
 
         if len(symbols) > 10:
             raise ValueError("symbols must contain at most 10 entries")
+
+        # Normalize all symbols upfront
+        normalized_symbols = [_normalize_symbol_input(s, market) for s in symbols]
 
         results: dict[str, Any] = {}
         errors: list[str] = []
@@ -7523,11 +7861,13 @@ def register_tools(mcp: FastMCP) -> None:
                     errors.append(f"{sym}: {str(exc)}")
                     return {"symbol": sym, "error": str(exc)}
 
-        analyze_results = await asyncio.gather(*[_analyze_one(s) for s in symbols])
+        analyze_results = await asyncio.gather(
+            *[_analyze_one(s) for s in normalized_symbols]
+        )
 
         success_count = 0
         fail_count = 0
-        for sym, result in zip(symbols, analyze_results, strict=True):
+        for sym, result in zip(normalized_symbols, analyze_results, strict=True):
             results[sym] = result
             if "error" not in result:
                 success_count += 1
@@ -7535,7 +7875,7 @@ def register_tools(mcp: FastMCP) -> None:
                 fail_count += 1
 
         portfolio_summary = {
-            "total_symbols": len(symbols),
+            "total_symbols": len(normalized_symbols),
             "successful": success_count,
             "failed": fail_count,
             "errors": errors,
@@ -8133,7 +8473,9 @@ def register_tools(mcp: FastMCP) -> None:
                     if status in ("all", "filled", "cancelled") and normalized_symbol:
                         # fetch_closed_orders limit
                         # If unlimited, fetch max allowed by upstream or a reasonable high number
-                        fetch_limit = 100 if limit_val == float("inf") else max(limit, 20)
+                        fetch_limit = (
+                            100 if limit_val == float("inf") else max(limit, 20)
+                        )
                         closed_ops = await upbit_service.fetch_closed_orders(
                             market=normalized_symbol,
                             limit=fetch_limit,
@@ -8155,7 +8497,9 @@ def register_tools(mcp: FastMCP) -> None:
                     # 2. History
                     if status in ("all", "filled", "cancelled") and normalized_symbol:
                         # KIS requires a date range. If days is None, default to 30 days (or user provided).
-                        lookup_days = effective_days if effective_days is not None else 30
+                        lookup_days = (
+                            effective_days if effective_days is not None else 30
+                        )
                         start_dt, end_dt = _calculate_date_range(lookup_days)
                         hist_ops = await kis.inquire_daily_order_domestic(
                             start_date=start_dt,
@@ -8197,7 +8541,9 @@ def register_tools(mcp: FastMCP) -> None:
 
                     # 2. History
                     if status in ("all", "filled", "cancelled") and normalized_symbol:
-                        lookup_days = effective_days if effective_days is not None else 30
+                        lookup_days = (
+                            effective_days if effective_days is not None else 30
+                        )
                         start_dt, end_dt = _calculate_date_range(lookup_days)
                         ex = get_exchange_by_symbol(normalized_symbol) or "NASD"
                         hist_ops = await kis.inquire_daily_order_overseas(
@@ -8279,9 +8625,9 @@ def register_tools(mcp: FastMCP) -> None:
         if len(market_types) == 1:
             ret_market = _normalize_market_type_to_external(market_types[0])
         elif normalized_symbol:
-             # If symbol was resolved, we know the market
-             m, _ = _resolve_market_type(normalized_symbol, None)
-             ret_market = _normalize_market_type_to_external(m)
+            # If symbol was resolved, we know the market
+            m, _ = _resolve_market_type(normalized_symbol, None)
+            ret_market = _normalize_market_type_to_external(m)
 
         return {
             "success": bool(filtered_orders) or not errors,

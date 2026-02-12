@@ -44,7 +44,7 @@ async def test_websocket_connection():
                             f"Price={data.get('trade_price')}"
                         )
 
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         logger.error(
                             f"Timeout: No message received for {timeout_seconds} seconds"
                         )
@@ -96,7 +96,7 @@ async def test_filtered_connection():
 
                 logger.info("Filtered WebSocket test PASSED")
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error("Timeout waiting for messages")
                 raise
 
@@ -147,7 +147,7 @@ async def run_all_tests():
         logger.info("All tests PASSED!")
         logger.info("=" * 60)
 
-    except Exception as e:
+    except Exception:
         logger.error("\n" + "=" * 60)
         logger.error("Tests FAILED")
         logger.error("=" * 60)

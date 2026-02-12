@@ -12,8 +12,8 @@ print("1. 모듈 임포트 (아직 데이터는 로드되지 않음)")
 print("=" * 70)
 from data.stocks_info import (
     NASDAQ_NAME_TO_SYMBOL,
-    prime_nasdaq_stock_data,
     get_nasdaq_name_to_symbol,
+    prime_nasdaq_stock_data,
 )
 
 print("✓ 임포트 완료 (데이터는 아직 로드되지 않음)\n")
@@ -45,7 +45,7 @@ nasdaq_data = get_nasdaq_name_to_symbol()
 print(f"나스닥 종목 수: {len(nasdaq_data)}")
 
 # 일부 종목 샘플 출력
-print(f"\n나스닥 일부 종목 (처음 5개):")
+print("\n나스닥 일부 종목 (처음 5개):")
 for i, (name, symbol) in enumerate(nasdaq_data.items()):
     if i >= 5:
         break
