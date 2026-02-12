@@ -49,19 +49,6 @@ DEFAULT_HEADERS = {
 # ---------------------------------------------------------------------------
 
 
-def _normalize_rating(rating: str | None) -> str:
-    """
-    DEPRECATED: Backward-compatible shim for old tests.
-
-    Use `normalize_rating_label()` for standard English labels (e.g., "Buy")
-    or `rating_to_bucket()` for aggregation buckets (e.g., "buy").
-
-    This function returns lowercase bucket strings for backward compatibility.
-    """
-    label = normalize_rating_label(rating)
-    return rating_to_bucket(label)
-
-
 def _parse_naver_date(date_str: str | None) -> str | None:
     """Parse Naver Finance date formats to ISO format.
 

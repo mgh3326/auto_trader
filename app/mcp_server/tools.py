@@ -130,8 +130,6 @@ def _build_recommendation_for_equity(
     recommendation: dict[str, Any] = {
         "action": "hold",
         "confidence": "low",
-        "buy_prices": [],
-        "sell_prices": [],
         "buy_zones": [],
         "sell_targets": [],
         "stop_loss": None,
@@ -286,8 +284,6 @@ def _build_recommendation_for_equity(
     all_buy_zones = buy_zones_indicators + buy_zones_supports
     all_buy_zones.sort(key=lambda z: z["price"])
     recommendation["buy_zones"] = all_buy_zones[:3]
-    # Backward compatibility: extract price list
-    recommendation["buy_prices"] = [z["price"] for z in recommendation["buy_zones"]]
 
     sell_targets: list[dict[str, Any]] = []
 
@@ -327,8 +323,6 @@ def _build_recommendation_for_equity(
     # Sort sell targets by price
     sell_targets.sort(key=lambda t: t["price"])
     recommendation["sell_targets"] = sell_targets[:3]
-    # Backward compatibility: extract price list
-    recommendation["sell_prices"] = [t["price"] for t in recommendation["sell_targets"]]
 
     stop_loss: float | None = None
 
@@ -2825,7 +2819,6 @@ async def _fetch_investment_opinions_yfinance(
         "symbol": symbol.upper(),
         "count": len(recommendations),
         "opinions": recommendations,
-        "recommendations": recommendations,  # For compatibility
         "consensus": consensus,
     }
 

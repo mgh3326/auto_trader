@@ -119,10 +119,8 @@ def build_consensus(
         Dictionary with consensus statistics including:
         - buy_count, hold_count, sell_count: Counts by bucket
         - strong_buy_count: Count of strong buy recommendations
-        - count: Alias for total_count
         - avg_target_price, median_target_price, min_target_price, max_target_price
         - upside_pct: Upside percentage from current price
-        - upside_potential: Alias for upside_pct
         - current_price: Current stock price
     """
     rating_counts: dict[str, int] = {"buy": 0, "hold": 0, "sell": 0}
@@ -151,13 +149,11 @@ def build_consensus(
         "sell_count": rating_counts["sell"],
         "strong_buy_count": strong_buy_count,
         "total_count": len(opinions),
-        "count": len(opinions),
         "avg_target_price": None,
         "median_target_price": None,
         "min_target_price": None,
         "max_target_price": None,
         "upside_pct": None,
-        "upside_potential": None,
         "current_price": current_price,
     }
 
@@ -178,6 +174,5 @@ def build_consensus(
             consensus["upside_pct"] = round(
                 (consensus["avg_target_price"] - current_price) / current_price * 100, 2
             )
-            consensus["upside_potential"] = consensus["upside_pct"]
 
     return consensus
