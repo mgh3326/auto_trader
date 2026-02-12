@@ -145,7 +145,6 @@ class TestBuildConsensus:
         assert consensus["sell_count"] == 0
         assert consensus["strong_buy_count"] == 1
         assert consensus["total_count"] == 3
-        assert consensus["count"] == 3
         assert consensus["avg_target_price"] == 101
         assert consensus["current_price"] == 90
         assert consensus["upside_pct"] == 12.22
@@ -230,14 +229,12 @@ class TestBuildConsensus:
         consensus = build_consensus(opinions, 100)
 
         assert consensus["upside_pct"] == 10.0
-        assert consensus["upside_potential"] == 10.0
 
     def test_upside_percentage_none_without_current_price(self) -> None:
         opinions = [{"rating": "Buy", "target_price": 100}]
         consensus = build_consensus(opinions, None)
 
         assert consensus["upside_pct"] is None
-        assert consensus["upside_potential"] is None
 
     def test_ignores_invalid_target_prices(self) -> None:
         opinions = [

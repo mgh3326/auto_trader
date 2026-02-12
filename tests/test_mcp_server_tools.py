@@ -1874,14 +1874,16 @@ class TestAnalyzeStock:
         }
 
         # Test _build_recommendation_for_equity directly
-        recommendation = mcp_tools._build_recommendation_for_equity(mock_analysis, "equity_kr")
+        recommendation = mcp_tools._build_recommendation_for_equity(
+            mock_analysis, "equity_kr"
+        )
 
         assert recommendation is not None
         rec = recommendation
         assert "action" in rec
         assert "confidence" in rec
-        assert "buy_prices" in rec
-        assert "sell_prices" in rec
+        assert "buy_zones" in rec
+        assert "sell_targets" in rec
         assert "stop_loss" in rec
         assert "reasoning" in rec
 
@@ -1916,7 +1918,7 @@ class TestAnalyzeStock:
         assert "recommendation" not in result
 
     async def test_us_opinions_schema_consistency(self, monkeypatch):
-        """Test that US opinions have both 'opinions' and 'recommendations' keys."""
+        """Test that US opinions have the 'opinions' key."""
         # Mock yfinance data
         mock_opinions = {
             "instrument_type": "equity_us",
@@ -1924,11 +1926,12 @@ class TestAnalyzeStock:
             "symbol": "AAPL",
             "count": 2,
             "opinions": [
-                {"firm": "Firm A", "rating": "buy", "date": "2024-01-01", "target_price": 200},
-                {"firm": "Firm B", "rating": "hold", "date": "2024-01-02"},
-            ],
-            "recommendations": [
-                {"firm": "Firm A", "rating": "buy", "date": "2024-01-01", "target_price": 200},
+                {
+                    "firm": "Firm A",
+                    "rating": "buy",
+                    "date": "2024-01-01",
+                    "target_price": 200,
+                },
                 {"firm": "Firm B", "rating": "hold", "date": "2024-01-02"},
             ],
             "consensus": {
@@ -1952,11 +1955,8 @@ class TestAnalyzeStock:
 
         result = await mcp_tools._fetch_investment_opinions_yfinance("AAPL", 10)
 
-        # Both keys should exist
+        # Only opinions key should exist
         assert "opinions" in result
-        assert "recommendations" in result
-        # They should contain the same data
-        assert result["opinions"] == result["recommendations"]
         assert len(result["opinions"]) == 2
 
     async def test_numeric_symbol_normalization_analyze_stock(self, monkeypatch):
@@ -1997,7 +1997,9 @@ class TestAnalyzeStock:
         monkeypatch.setattr(mcp_tools, "_analyze_stock_impl", mock_impl)
 
         # Test with mixed numeric and string symbols
-        result = await tools["analyze_portfolio"](symbols=[12450, "005930"], market="kr")
+        result = await tools["analyze_portfolio"](
+            symbols=[12450, "005930"], market="kr"
+        )
 
         assert "results" in result
         # Both symbols should be normalized to 6-digit strings
@@ -6536,9 +6538,7 @@ class TestGetInvestmentOpinions:
                 **mock_opinions,
             }
 
-        monkeypatch.setattr(
-            mcp_tools, "_fetch_investment_opinions_naver", mock_fetch
-        )
+        monkeypatch.setattr(mcp_tools, "_fetch_investment_opinions_naver", mock_fetch)
 
         # Pass integer 12450, should be normalized to "012450"
         result = await tools["get_investment_opinions"](12450, market="kr")
@@ -6555,8 +6555,18 @@ class TestGetInvestmentOpinions:
             "symbol": "005930",
             "count": 2,
             "recommendations": [
-                {"firm": "Firm A", "rating": "buy", "target_price": 85000, "date": "2024-01-15"},
-                {"firm": "Firm B", "rating": "hold", "target_price": 82000, "date": "2024-01-14"},
+                {
+                    "firm": "Firm A",
+                    "rating": "buy",
+                    "target_price": 85000,
+                    "date": "2024-01-15",
+                },
+                {
+                    "firm": "Firm B",
+                    "rating": "hold",
+                    "target_price": 82000,
+                    "date": "2024-01-14",
+                },
             ],
             "consensus": {
                 "buy_count": 1,
@@ -6576,9 +6586,7 @@ class TestGetInvestmentOpinions:
                 **mock_opinions,
             }
 
-        monkeypatch.setattr(
-            mcp_tools, "_fetch_investment_opinions_naver", mock_fetch
-        )
+        monkeypatch.setattr(mcp_tools, "_fetch_investment_opinions_naver", mock_fetch)
 
         # Pass integer 5930, should be normalized to "005930"
         result = await tools["get_investment_opinions"](5930)
@@ -6654,14 +6662,16 @@ class TestGetInvestmentOpinions:
         }
 
         # Test _build_recommendation_for_equity directly
-        recommendation = mcp_tools._build_recommendation_for_equity(mock_analysis, "equity_kr")
+        recommendation = mcp_tools._build_recommendation_for_equity(
+            mock_analysis, "equity_kr"
+        )
 
         assert recommendation is not None
         assert "action" in recommendation
         assert recommendation["action"] in ("buy", "hold", "sell")
         assert "confidence" in recommendation
-        assert "buy_prices" in recommendation
-        assert "sell_prices" in recommendation
+        assert "buy_zones" in recommendation
+        assert "sell_targets" in recommendation
         assert "stop_loss" in recommendation
         assert "reasoning" in recommendation
 
@@ -6704,9 +6714,7 @@ class TestSymbolNormalizationIntegration:
         async def mock_fetch_quote_kr(symbol):
             return mock_quote
 
-        monkeypatch.setattr(
-            mcp_tools, "_fetch_quote_equity_kr", mock_fetch_quote_kr
-        )
+        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", mock_fetch_quote_kr)
 
         # Test with integer input
         result = await tools["get_quote"](12450, market="kr")
@@ -6758,9 +6766,7 @@ class TestSymbolNormalizationIntegration:
         async def mock_fetch_news(code, limit):
             return mock_news["news"]
 
-        monkeypatch.setattr(
-            mcp_tools.naver_finance, "fetch_news", mock_fetch_news
-        )
+        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_news", mock_fetch_news)
 
         # Test with integer input
         result = await tools["get_news"](12450, market="kr", limit=10)
