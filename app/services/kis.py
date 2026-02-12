@@ -171,23 +171,26 @@ class KISClient:
             "authorization": f"Bearer {settings.kis_access_token}",
             "tr_id": VOL_TR,
         }
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": "1",
+            "FID_TRGT_CLS_CODE": "11111111",
+            "FID_TRGT_EXLS_CLS_CODE": "0000001100",
+            "FID_INPUT_PRICE_1": "0",
+            "FID_INPUT_PRICE_2": "1000000",
+            "FID_VOL_CNT": "100000",
+            "FID_INPUT_DATE_1": "",
+        }
+
         async with httpx.AsyncClient() as cli:
             r = await cli.get(
                 f"{BASE}{VOL_URL}",
                 headers=hdr,
-                params={
-                    "FID_COND_MRKT_DIV_CODE": market,
-                    "FID_COND_SCR_DIV_CODE": "20171",
-                    "FID_INPUT_ISCD": "0000",
-                    "FID_DIV_CLS_CODE": "0",
-                    "FID_BLNG_CLS_CODE": "1",
-                    "FID_TRGT_CLS_CODE": "11111111",
-                    "FID_TRGT_EXLS_CLS_CODE": "0000001100",
-                    "FID_INPUT_PRICE_1": "0",
-                    "FID_INPUT_PRICE_2": "1000000",
-                    "FID_VOL_CNT": "100000",
-                    "FID_INPUT_DATE_1": "",
-                },
+                params=params,
                 timeout=5,
             )
         try:
@@ -195,14 +198,21 @@ class KISClient:
         except Exception:
             raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
         if js["rt_cd"] == "0":
-            return js["output"][:limit]
-        if js["msg_cd"] == "EGW00123":  # 토큰 만료
-            # Redis에서 토큰 삭제 후 새로 발급
+            results = js["output"][:limit]
+            # Safe debug sample without float conversion that could fail
+            sample_data = [
+                (r.get("hts_kor_isnm", ""), r.get("acml_vol", "0")) for r in results[:3]
+            ]
+            logging.debug(
+                f"volume_rank: Received {len(js['output'])} results, "
+                f"returning {len(results)}. Sample: {sample_data}"
+            )
+            return results
+        if js["msg_cd"] == "EGW00123":
             await self._token_manager.clear_token()
             await self._ensure_token()
             return await self.volume_rank(market, limit)
-        elif js["msg_cd"] == "EGW00121":  # 유효하지 않은 토큰
-            # Redis에서 토큰 삭제 후 새로 발급
+        elif js["msg_cd"] == "EGW00121":
             await self._token_manager.clear_token()
             await self._ensure_token()
             return await self.volume_rank(market, limit)
@@ -259,6 +269,18 @@ class KISClient:
             "authorization": f"Bearer {settings.kis_access_token}",
             "tr_id": FLUCTUATION_RANK_TR,
         }
+
+        # FID_PRC_CLS_CODE: "0"=전체 (공식 API 문서 기준)
+        prc_cls_code = "0"
+        # FID_RANK_SORT_CLS_CODE: "0"=상승률, "3"=하락율 (공식 API 문서 기준)
+        rank_sort_cls_code = "3" if direction == "down" else "0"
+
+        logging.debug(
+            f"fluctuation_rank: direction={direction}, "
+            f"FID_PRC_CLS_CODE={prc_cls_code}, "
+            f"FID_RANK_SORT_CLS_CODE={rank_sort_cls_code}"
+        )
+
         async with httpx.AsyncClient() as cli:
             r = await cli.get(
                 f"{BASE}{FLUCTUATION_RANK_URL}",
@@ -268,9 +290,9 @@ class KISClient:
                     "FID_COND_SCR_DIV_CODE": "20170",
                     "FID_INPUT_ISCD": "0000",
                     "FID_DIV_CLS_CODE": "0",
-                    "FID_RANK_SORT_CLS_CODE": "0",
+                    "FID_RANK_SORT_CLS_CODE": rank_sort_cls_code,
                     "FID_INPUT_CNT_1": "0",
-                    "FID_PRC_CLS_CODE": "0",
+                    "FID_PRC_CLS_CODE": prc_cls_code,
                     "FID_INPUT_PRICE_1": "",
                     "FID_INPUT_PRICE_2": "",
                     "FID_VOL_CNT": "",
@@ -285,21 +307,25 @@ class KISClient:
             js = r.json()
         except Exception:
             raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
+
         if js["rt_cd"] == "0":
-            results = js["output"][:limit]
+            results = js["output"]
+            # Sort: up → descending (highest first), down → ascending (lowest first).
             if direction == "up":
                 results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
-            elif direction == "down":
-                results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
-            return results
-        if js["msg_cd"] == "EGW00123":
+                return results[:limit]
+
+            negatives = [
+                item for item in results if float(item.get("prdy_ctrt", 0)) < 0
+            ]
+            negatives.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
+            return negatives[:limit]
+
+        if js["msg_cd"] in ("EGW00123", "EGW00121"):
             await self._token_manager.clear_token()
             await self._ensure_token()
             return await self.fluctuation_rank(market, direction, limit)
-        elif js["msg_cd"] == "EGW00121":
-            await self._token_manager.clear_token()
-            await self._ensure_token()
-            return await self.fluctuation_rank(market, direction, limit)
+
         raise RuntimeError(
             js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
         )

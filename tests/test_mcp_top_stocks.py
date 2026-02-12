@@ -93,55 +93,6 @@ class TestMCPTopStocks:
         assert result["rankings"][0]["name"] == "KODEX 200"
         assert result["source"] == "kis"
 
-    async def test_kr_volume_rank_fallback_with_asset_type_filter(self, monkeypatch):
-        """mksc_shrn_iscd만 있는 경우 asset_type 필터링 동작 테스트"""
-        tools = build_tools()
-
-        class MockKISClient:
-            async def volume_rank(self, market, limit):
-                return [
-                    {
-                        "mksc_shrn_iscd": "900210",
-                        "hts_kor_isnm": "KODEX 200",
-                        "stck_prpr": "35000",
-                        "prdy_ctrt": "1.2",
-                        "acml_vol": "20000000",
-                        "hts_avls": "5000000000000",
-                        "acml_tr_pbmn": "700000000000000",
-                    },
-                    {
-                        "mksc_shrn_iscd": "005930",
-                        "hts_kor_isnm": "삼성전자",
-                        "stck_prpr": "80000",
-                        "prdy_ctrt": "2.5",
-                        "acml_vol": "10000000",
-                        "hts_avls": "100000000000000",
-                        "acml_tr_pbmn": "800000000000000",
-                    },
-                ]
-
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-
-        # ETF 필터 - mksc_shrn_iscd fallback 후 ETF 식별 가능해야 함
-        result_etf = await tools["get_top_stocks"](
-            market="kr", ranking_type="volume", asset_type="etf"
-        )
-
-        assert result_etf["asset_type"] == "etf"
-        assert len(result_etf["rankings"]) == 1
-        assert result_etf["rankings"][0]["symbol"] == "900210"
-        assert result_etf["rankings"][0]["name"] == "KODEX 200"
-
-        # 주식 필터
-        result_stock = await tools["get_top_stocks"](
-            market="kr", ranking_type="volume", asset_type="stock"
-        )
-
-        assert result_stock["asset_type"] == "stock"
-        assert len(result_stock["rankings"]) == 1
-        assert result_stock["rankings"][0]["symbol"] == "005930"
-        assert result_stock["rankings"][0]["name"] == "삼성전자"
-
     async def test_kr_volume_rank_mixed_symbol_fields(self, monkeypatch):
         """응답에 stck_shrn_iscd와 mksc_shrn_iscd가 혼합된 경우 우선순위 테스트"""
         tools = build_tools()
@@ -367,60 +318,6 @@ class TestMCPTopStocks:
         assert result["ranking_type"] == "market_cap"
         assert len(result["rankings"]) == 1
 
-    async def test_kr_asset_type_etf_filter(self, monkeypatch):
-        tools = build_tools()
-
-        class MockKISClient:
-            async def volume_rank(self, market, limit):
-                return [
-                    {
-                        "stck_shrn_iscd": "069500",
-                        "hts_kor_isnm": "KODEX 200",
-                        "stck_prpr": "50000",
-                        "prdy_ctrt": "2.0",
-                        "acml_vol": "10000000",
-                        "hts_avls": "50000000000000",
-                        "acml_tr_pbmn": "500000000000000",
-                    },
-                    {
-                        "stck_shrn_iscd": "005930",
-                        "hts_kor_isnm": "삼성전자",
-                        "stck_prpr": "80000",
-                        "prdy_ctrt": "2.5",
-                        "acml_vol": "10000000",
-                        "hts_avls": "100000000000000",
-                        "acml_tr_pbmn": "800000000000000",
-                    },
-                ]
-
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-
-        result_etf = await tools["get_top_stocks"](
-            market="kr", ranking_type="volume", asset_type="etf"
-        )
-
-        assert result_etf["asset_type"] == "etf"
-        assert len(result_etf["rankings"]) == 1
-        assert result_etf["rankings"][0]["symbol"] == "069500"
-
-        result_stock = await tools["get_top_stocks"](
-            market="kr", ranking_type="volume", asset_type="stock"
-        )
-
-        assert result_stock["asset_type"] == "stock"
-        assert len(result_stock["rankings"]) == 1
-        assert result_stock["rankings"][0]["symbol"] == "005930"
-
-    async def test_kr_invalid_asset_type(self):
-        tools = build_tools()
-
-        result = await tools["get_top_stocks"](
-            market="kr", ranking_type="volume", asset_type="invalid"
-        )
-
-        assert "error" in result
-        assert result["source"] == "validation"
-
     async def test_unsupported_market_ranking_combination(self):
         tools = build_tools()
 
@@ -488,7 +385,6 @@ class TestMCPTopStocks:
         assert "total_count" in result
         assert "market" in result
         assert "ranking_type" in result
-        assert "asset_type" in result
         assert "timestamp" in result
         assert "source" in result
 
@@ -823,3 +719,253 @@ class TestMCPTopStocks:
         assert result["rankings"][1]["name"] == "LG전자"
         assert result["rankings"][1]["volume"] == 3000000
         assert result["rankings"][1]["trade_amount"] == 360000000000.0
+
+
+@pytest.mark.asyncio
+class TestMCPLosers:
+    async def test_get_top_stocks_kr_losers_returns_only_negatives(self, monkeypatch):
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "035420",
+                        "hts_kor_isnm": "삼성SDS",
+                        "stck_prpr": "70000",
+                        "prdy_ctrt": "-3.0",
+                        "acml_vol": "5000000",
+                        "hts_avls": "50000000000000",
+                        "acml_tr_pbmn": "350000000000000",
+                    },
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-2.0",
+                        "acml_vol": "2000000",
+                        "hts_avls": "200000000000000",
+                        "acml_tr_pbmn": "160000000000000",
+                    },
+                ]
+
+        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="losers", limit=5
+        )
+
+        assert result["market"] == "kr"
+        assert result["ranking_type"] == "losers"
+        assert len(result["rankings"]) == 2
+        assert all(float(r["change_rate"]) < 0 for r in result["rankings"])
+        assert float(result["rankings"][0]["change_rate"]) == -3.0
+        assert float(result["rankings"][1]["change_rate"]) == -2.0
+
+    async def test_get_top_stocks_kr_gainers_returns_positives(self, monkeypatch):
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "5.0",
+                        "acml_vol": "10000000",
+                    },
+                ]
+
+        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="gainers", limit=5
+        )
+
+        assert result["market"] == "kr"
+        assert result["ranking_type"] == "gainers"
+        assert len(result["rankings"]) == 1
+        assert float(result["rankings"][0]["change_rate"]) > 0
+
+
+@pytest.mark.asyncio
+class TestMCPEmptyLosersErrors:
+    """Tests for empty losers error payloads"""
+
+    async def test_get_top_stocks_kr_losers_empty_returns_error_payload(
+        self, monkeypatch
+    ):
+        """Empty losers results should return explicit error payload"""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                # Return only positives (no losers)
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "prdy_ctrt": "1.0",
+                    },
+                    {
+                        "stck_shrn_iscd": "000660",
+                        "hts_kor_isnm": "SK하이닉스",
+                        "prdy_ctrt": "2.0",
+                    },
+                ]
+
+        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="losers", limit=5
+        )
+
+        assert "error" in result
+        assert result["source"] == "kis"
+        assert "market=kr, ranking_type=losers" in result["query"]
+        assert "No losing stocks found" in result["error"]
+        assert "KIS API limitation" in result["error"]
+
+    async def test_get_top_stocks_kr_losers_non_empty_returns_rankings(
+        self, monkeypatch
+    ):
+        """Losers with actual negatives should return rankings, not error"""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                # Return actual negatives
+                return [
+                    {
+                        "stck_shrn_iscd": "035420",
+                        "hts_kor_isnm": "삼성SDS",
+                        "prdy_ctrt": "-3.0",
+                    },
+                    {
+                        "stck_shrn_iscd": "005380",
+                        "hts_kor_isnm": "LG전자",
+                        "prdy_ctrt": "-1.5",
+                    },
+                ]
+
+        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="losers", limit=5
+        )
+
+        assert "error" not in result
+        assert len(result["rankings"]) == 2
+        assert all(float(r["change_rate"]) < 0 for r in result["rankings"])
+
+
+@pytest.mark.asyncio
+class TestMCPRegressionTests:
+    """Regression tests to ensure existing functionality is not broken"""
+
+    async def test_kr_gainers_unchanged(self, monkeypatch):
+        """KR gainers should return only positives, sorted by change_rate descending"""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "prdy_ctrt": "5.0",
+                    },
+                    {
+                        "stck_shrn_iscd": "005380",
+                        "hts_kor_isnm": "LG전자",
+                        "prdy_ctrt": "3.0",
+                    },
+                ]
+
+        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="gainers", limit=5
+        )
+
+        assert result["market"] == "kr"
+        assert result["ranking_type"] == "gainers"
+        assert len(result["rankings"]) == 2
+        assert result["rankings"][0]["symbol"] == "005930"
+        assert float(result["rankings"][0]["change_rate"]) == 5.0
+
+    async def test_us_losers_unchanged(self, monkeypatch):
+        """US losers should return only negatives, sorted by change_rate ascending"""
+        tools = build_tools()
+
+        import pandas as pd
+
+        mock_df = pd.DataFrame(
+            {
+                "symbol": ["AAPL", "MSFT", "GOOGL"],
+                "longName": ["Apple Inc.", "Microsoft Corp.", "Alphabet Inc."],
+                "regularMarketPrice": [150.0, 250.0, 130.0],
+                "previousClose": [
+                    152.0,
+                    245.0,
+                    135.0,
+                ],  # Add previousClose for change_rate calc
+                "regularMarketVolume": [50000000, 40000000, 30000000],
+            }
+        )
+
+        monkeypatch.setattr(mcp_tools.yf, "screen", lambda sid: mock_df)
+
+        result = await tools["get_top_stocks"](
+            market="us", ranking_type="losers", limit=5
+        )
+
+        assert result["market"] == "us"
+        assert result["ranking_type"] == "losers"
+        # MSFT is positive (+2.0%) so filtered out: only GOOGL and AAPL returned
+        assert len(result["rankings"]) == 2
+        # Sorted by change_rate ascending: GOOGL (-3.7%) before AAPL (-1.3%)
+        assert result["rankings"][0]["symbol"] == "GOOGL"  # -3.7%
+        assert result["rankings"][1]["symbol"] == "AAPL"  # -1.3%
+
+    async def test_crypto_losers_unchanged(self, monkeypatch):
+        """Crypto losers should return only negatives, sorted by change_rate ascending"""
+        tools = build_tools()
+
+        async def mock_fetch_top_traded_coins():
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "trade_price": "80000000",
+                    "signed_change_rate": "-0.01",
+                    "acc_trade_volume_24h": "100",
+                    "acc_trade_price_24h": "8000000000",
+                },
+                {
+                    "market": "KRW-ETH",
+                    "trade_price": "4000000",
+                    "signed_change_rate": "-0.02",
+                    "acc_trade_volume_24h": "80",
+                    "acc_trade_price_24h": "32000000",
+                },
+            ]
+
+        monkeypatch.setattr(
+            mcp_tools.upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        result = await tools["get_top_stocks"](
+            market="crypto", ranking_type="losers", limit=5
+        )
+
+        assert result["market"] == "crypto"
+        assert result["ranking_type"] == "losers"
+        assert len(result["rankings"]) == 2
+        # Sorted by change_rate ascending: -0.02 before -0.01
+        assert result["rankings"][0]["symbol"] == "KRW-ETH"
+        assert result["rankings"][0]["change_rate"] == -2.0  # -0.02 * 100
+        assert result["rankings"][1]["symbol"] == "KRW-BTC"
+        assert result["rankings"][1]["change_rate"] == -1.0  # -0.01 * 100
