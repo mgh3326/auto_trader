@@ -24,8 +24,8 @@ MARKET_CAP_RANK_URL = "/uapi/domestic-stock/v1/ranking/market-cap"
 MARKET_CAP_RANK_TR = "FHPST01740000"
 FLUCTUATION_RANK_URL = "/uapi/domestic-stock/v1/ranking/fluctuation"
 FLUCTUATION_RANK_TR = "FHPST01700000"
-FOREIGN_BUYING_RANK_URL = "/uapi/domestic-stock/v1/ranking/foreign-buying"
-FOREIGN_BUYING_RANK_TR = "FHPST01720000"
+FOREIGN_BUYING_RANK_URL = "/uapi/domestic-stock/v1/quotations/foreign-institution-total"
+FOREIGN_BUYING_RANK_TR = "FHPTJ04400000"
 
 # 호가 조회 관련 URL 및 TR ID
 ORDERBOOK_URL = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
@@ -165,7 +165,7 @@ class KISClient:
         )
         logging.info(f"토큰 설정 완료: {settings.kis_access_token[:10]}...")
 
-    async def volume_rank(self):
+    async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
         await self._ensure_token()
         hdr = self._hdr_base | {
             "authorization": f"Bearer {settings.kis_access_token}",
@@ -174,46 +174,6 @@ class KISClient:
         async with httpx.AsyncClient() as cli:
             r = await cli.get(
                 f"{BASE}{VOL_URL}",
-                headers=hdr,
-                params={
-                    "FID_COND_MRKT_DIV_CODE": "J",
-                    "FID_COND_SCR_DIV_CODE": "20171",
-                    "FID_INPUT_ISCD": "0000",
-                    "FID_DIV_CLS_CODE": "0",
-                    "FID_BLNG_CLS_CODE": "1",
-                    "FID_TRGT_CLS_CODE": "11111111",
-                    "FID_TRGT_EXLS_CLS_CODE": "0000001100",
-                    "FID_INPUT_PRICE_1": "0",
-                    "FID_INPUT_PRICE_2": "1000000",
-                    "FID_VOL_CNT": "100000",
-                    "FID_INPUT_DATE_1": "",
-                },
-                timeout=5,
-            )
-        js = r.json()
-        if js["rt_cd"] == "0":
-            return js["output"]
-        if js["msg_cd"] == "EGW00123":  # 토큰 만료
-            # Redis에서 토큰 삭제 후 새로 발급
-            await self._token_manager.clear_token()
-            await self._ensure_token()
-            return await self.volume_rank()
-        elif js["msg_cd"] == "EGW00121":  # 유효하지 않은 토큰
-            # Redis에서 토큰 삭제 후 새로 발급
-            await self._token_manager.clear_token()
-            await self._ensure_token()
-            return await self.volume_rank()
-        raise RuntimeError(js["msg1"])
-
-    async def market_cap_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
-        await self._ensure_token()
-        hdr = self._hdr_base | {
-            "authorization": f"Bearer {settings.kis_access_token}",
-            "tr_id": MARKET_CAP_RANK_TR,
-        }
-        async with httpx.AsyncClient() as cli:
-            r = await cli.get(
-                f"{BASE}{MARKET_CAP_RANK_URL}",
                 headers=hdr,
                 params={
                     "FID_COND_MRKT_DIV_CODE": market,
@@ -230,7 +190,53 @@ class KISClient:
                 },
                 timeout=5,
             )
-        js = r.json()
+        try:
+            js = r.json()
+        except Exception:
+            raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
+        if js["rt_cd"] == "0":
+            return js["output"][:limit]
+        if js["msg_cd"] == "EGW00123":  # 토큰 만료
+            # Redis에서 토큰 삭제 후 새로 발급
+            await self._token_manager.clear_token()
+            await self._ensure_token()
+            return await self.volume_rank(market, limit)
+        elif js["msg_cd"] == "EGW00121":  # 유효하지 않은 토큰
+            # Redis에서 토큰 삭제 후 새로 발급
+            await self._token_manager.clear_token()
+            await self._ensure_token()
+            return await self.volume_rank(market, limit)
+        raise RuntimeError(
+            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+        )
+
+    async def market_cap_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
+        await self._ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": MARKET_CAP_RANK_TR,
+        }
+        async with httpx.AsyncClient() as cli:
+            r = await cli.get(
+                f"{BASE}{MARKET_CAP_RANK_URL}",
+                headers=hdr,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": market,
+                    "FID_COND_SCR_DIV_CODE": "20174",
+                    "FID_INPUT_ISCD": "0000",
+                    "FID_DIV_CLS_CODE": "0",
+                    "FID_TRGT_CLS_CODE": "0",
+                    "FID_TRGT_EXLS_CLS_CODE": "0",
+                    "FID_INPUT_PRICE_1": "",
+                    "FID_INPUT_PRICE_2": "",
+                    "FID_VOL_CNT": "",
+                },
+                timeout=5,
+            )
+        try:
+            js = r.json()
+        except Exception:
+            raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
         if js["rt_cd"] == "0":
             return js["output"][:limit]
         if js["msg_cd"] == "EGW00123":
@@ -241,7 +247,9 @@ class KISClient:
             await self._token_manager.clear_token()
             await self._ensure_token()
             return await self.market_cap_rank(market, limit)
-        raise RuntimeError(js["msg1"])
+        raise RuntimeError(
+            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+        )
 
     async def fluctuation_rank(
         self, market: str = "J", direction: str = "up", limit: int = 30
@@ -257,20 +265,26 @@ class KISClient:
                 headers=hdr,
                 params={
                     "FID_COND_MRKT_DIV_CODE": market,
-                    "FID_COND_SCR_DIV_CODE": "20171",
+                    "FID_COND_SCR_DIV_CODE": "20170",
                     "FID_INPUT_ISCD": "0000",
                     "FID_DIV_CLS_CODE": "0",
-                    "FID_BLNG_CLS_CODE": "1",
-                    "FID_TRGT_CLS_CODE": "11111111",
-                    "FID_TRGT_EXLS_CLS_CODE": "0000001100",
-                    "FID_INPUT_PRICE_1": "0",
-                    "FID_INPUT_PRICE_2": "1000000",
-                    "FID_VOL_CNT": "100000",
-                    "FID_INPUT_DATE_1": "",
+                    "FID_RANK_SORT_CLS_CODE": "0",
+                    "FID_INPUT_CNT_1": "0",
+                    "FID_PRC_CLS_CODE": "0",
+                    "FID_INPUT_PRICE_1": "",
+                    "FID_INPUT_PRICE_2": "",
+                    "FID_VOL_CNT": "",
+                    "FID_TRGT_CLS_CODE": "0",
+                    "FID_TRGT_EXLS_CLS_CODE": "0",
+                    "FID_RSFL_RATE1": "",
+                    "FID_RSFL_RATE2": "",
                 },
                 timeout=5,
             )
-        js = r.json()
+        try:
+            js = r.json()
+        except Exception:
+            raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
         if js["rt_cd"] == "0":
             results = js["output"][:limit]
             if direction == "up":
@@ -286,7 +300,9 @@ class KISClient:
             await self._token_manager.clear_token()
             await self._ensure_token()
             return await self.fluctuation_rank(market, direction, limit)
-        raise RuntimeError(js["msg1"])
+        raise RuntimeError(
+            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+        )
 
     async def foreign_buying_rank(
         self, market: str = "J", limit: int = 30
@@ -301,21 +317,19 @@ class KISClient:
                 f"{BASE}{FOREIGN_BUYING_RANK_URL}",
                 headers=hdr,
                 params={
-                    "FID_COND_MRKT_DIV_CODE": market,
-                    "FID_COND_SCR_DIV_CODE": "20171",
+                    "FID_COND_MRKT_DIV_CODE": "V",
+                    "FID_COND_SCR_DIV_CODE": "16449",
                     "FID_INPUT_ISCD": "0000",
                     "FID_DIV_CLS_CODE": "0",
-                    "FID_BLNG_CLS_CODE": "1",
-                    "FID_TRGT_CLS_CODE": "11111111",
-                    "FID_TRGT_EXLS_CLS_CODE": "0000001100",
-                    "FID_INPUT_PRICE_1": "0",
-                    "FID_INPUT_PRICE_2": "1000000",
-                    "FID_VOL_CNT": "100000",
-                    "FID_INPUT_DATE_1": "",
+                    "FID_RANK_SORT_CLS_CODE": "0",
+                    "FID_ETC_CLS_CODE": "1",
                 },
                 timeout=5,
             )
-        js = r.json()
+        try:
+            js = r.json()
+        except Exception:
+            raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
         if js["rt_cd"] == "0":
             return js["output"][:limit]
         if js["msg_cd"] == "EGW00123":
@@ -326,7 +340,9 @@ class KISClient:
             await self._token_manager.clear_token()
             await self._ensure_token()
             return await self.foreign_buying_rank(market, limit)
-        raise RuntimeError(js["msg1"])
+        raise RuntimeError(
+            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+        )
 
     async def inquire_price(self, code: str, market: str = "J") -> DataFrame:
         """
@@ -1158,7 +1174,9 @@ class KISClient:
         logging.info("해외증거금 통화별 조회")
 
         async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(f"{BASE}{OVERSEAS_MARGIN_URL}", headers=hdr, params=params)
+            r = await cli.get(
+                f"{BASE}{OVERSEAS_MARGIN_URL}", headers=hdr, params=params
+            )
 
         js = r.json()
         if js.get("rt_cd") != "0":

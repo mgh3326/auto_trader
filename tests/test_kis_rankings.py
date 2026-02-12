@@ -68,10 +68,14 @@ class TestKISRankingAPIParams:
         assert req["headers"]["tr_id"] == MARKET_CAP_RANK_TR
         assert req["headers"]["authorization"] == "Bearer test_token"
         assert req["params"]["FID_COND_MRKT_DIV_CODE"] == "J"
-        assert req["params"]["FID_COND_SCR_DIV_CODE"] == "20171"
+        assert req["params"]["FID_COND_SCR_DIV_CODE"] == "20174"
         assert req["params"]["FID_INPUT_ISCD"] == "0000"
         assert req["params"]["FID_DIV_CLS_CODE"] == "0"
-        assert req["params"]["FID_BLNG_CLS_CODE"] == "1"
+        assert req["params"]["FID_TRGT_CLS_CODE"] == "0"
+        assert req["params"]["FID_TRGT_EXLS_CLS_CODE"] == "0"
+        assert req["params"]["FID_INPUT_PRICE_1"] == ""
+        assert req["params"]["FID_INPUT_PRICE_2"] == ""
+        assert req["params"]["FID_VOL_CNT"] == ""
 
         assert len(result) == 1
         assert result[0]["stck_shrn_iscd"] == "005930"
@@ -123,7 +127,19 @@ class TestKISRankingAPIParams:
         assert req["headers"]["tr_id"] == FLUCTUATION_RANK_TR
         assert req["headers"]["authorization"] == "Bearer test_token"
         assert req["params"]["FID_COND_MRKT_DIV_CODE"] == "J"
-        assert req["params"]["FID_COND_SCR_DIV_CODE"] == "20171"
+        assert req["params"]["FID_COND_SCR_DIV_CODE"] == "20170"
+        assert req["params"]["FID_INPUT_ISCD"] == "0000"
+        assert req["params"]["FID_DIV_CLS_CODE"] == "0"
+        assert req["params"]["FID_RANK_SORT_CLS_CODE"] == "0"
+        assert req["params"]["FID_INPUT_CNT_1"] == "0"
+        assert req["params"]["FID_PRC_CLS_CODE"] == "0"
+        assert req["params"]["FID_INPUT_PRICE_1"] == ""
+        assert req["params"]["FID_INPUT_PRICE_2"] == ""
+        assert req["params"]["FID_VOL_CNT"] == ""
+        assert req["params"]["FID_TRGT_CLS_CODE"] == "0"
+        assert req["params"]["FID_TRGT_EXLS_CLS_CODE"] == "0"
+        assert req["params"]["FID_RSFL_RATE1"] == ""
+        assert req["params"]["FID_RSFL_RATE2"] == ""
 
         assert len(result) == 1
         assert result[0]["stck_shrn_iscd"] == "005930"
@@ -213,8 +229,12 @@ class TestKISRankingAPIParams:
         )
         assert req["headers"]["tr_id"] == FOREIGN_BUYING_RANK_TR
         assert req["headers"]["authorization"] == "Bearer test_token"
-        assert req["params"]["FID_COND_MRKT_DIV_CODE"] == "J"
-        assert req["params"]["FID_COND_SCR_DIV_CODE"] == "20171"
+        assert req["params"]["FID_COND_MRKT_DIV_CODE"] == "V"
+        assert req["params"]["FID_COND_SCR_DIV_CODE"] == "16449"
+        assert req["params"]["FID_INPUT_ISCD"] == "0000"
+        assert req["params"]["FID_DIV_CLS_CODE"] == "0"
+        assert req["params"]["FID_RANK_SORT_CLS_CODE"] == "0"
+        assert req["params"]["FID_ETC_CLS_CODE"] == "1"
 
         assert len(result) == 1
         assert result[0]["stck_shrn_iscd"] == "005930"
@@ -327,6 +347,52 @@ class TestKISRankingAPIParams:
         )
 
         with pytest.raises(RuntimeError, match="API Error occurred"):
+            await KISClient().market_cap_rank(market="J", limit=5)
+
+    async def test_non_json_response_handling(self, monkeypatch):
+        """Non-JSON 응답 시 RuntimeError가 발생하는지 검증"""
+
+        async def mock_get(self, url, headers, params, timeout):
+            mock_response = MagicMock()
+            mock_response.json.side_effect = ValueError("Invalid JSON")
+            mock_response.status_code = 500
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        with pytest.raises(RuntimeError, match="KIS API non-JSON response"):
+            await KISClient().market_cap_rank(market="J", limit=5)
+
+    async def test_api_error_without_msg1_fallback_to_msg_cd(self, monkeypatch):
+        """API 에러 시 msg1이 없으면 msg_cd로 에러 메시지 생성하는지 검증"""
+
+        async def mock_get(self, url, headers, params, timeout):
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "1",
+                "msg_cd": "E200",
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        with pytest.raises(RuntimeError, match="msg_cd=E200"):
             await KISClient().market_cap_rank(market="J", limit=5)
 
     async def test_token_expired_retry_egw00123(self, monkeypatch):
@@ -464,11 +530,11 @@ class TestKISRankingAPIParams:
         call_count = {"volume": 0, "foreign": 0}
         token_value = "test_token"
 
-        async def mock_get(_url, *args, **kwargs):
+        async def mock_get(self, _url, *args, **kwargs):
             mock_response = MagicMock()
 
             # volume_rank 첫 호출 실패 후 재시도
-            if "volume-rank" in str(args):
+            if "volume-rank" in str(_url):
                 call_count["volume"] += 1
                 if call_count["volume"] == 1:
                     mock_response.json.return_value = {
@@ -485,7 +551,7 @@ class TestKISRankingAPIParams:
                     }
 
             # foreign_buying_rank 첫 호출 실패 후 재시도
-            elif "foreign-buying" in str(args):
+            elif "foreign-institution-total" in str(_url):
                 call_count["foreign"] += 1
                 if call_count["foreign"] == 1:
                     mock_response.json.return_value = {
@@ -522,3 +588,92 @@ class TestKISRankingAPIParams:
         # foreign_buying_rank 테스트
         await client.foreign_buying_rank(market="J", limit=5)
         assert call_count["foreign"] == 2  # 실패 1회 + 성공 1회
+
+    async def test_volume_rank_non_json_response_handling(self, monkeypatch):
+        """volume_rank의 non-JSON 응답 처리를 검증"""
+
+        async def mock_get(self, url, headers, params, timeout):
+            mock_response = MagicMock()
+            mock_response.json.side_effect = ValueError("Invalid JSON")
+            mock_response.status_code = 500
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        with pytest.raises(RuntimeError, match="KIS API non-JSON response"):
+            await KISClient().volume_rank(market="J", limit=5)
+
+    async def test_volume_rank_api_error_without_msg1_fallback_to_msg_cd(
+        self, monkeypatch
+    ):
+        """volume_rank의 API 에러 시 msg1이 없으면 msg_cd로 에러 메시지 생성하는지 검증"""
+
+        async def mock_get(self, url, headers, params, timeout):
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "1",
+                "msg_cd": "E200",
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        with pytest.raises(RuntimeError, match="msg_cd=E200"):
+            await KISClient().volume_rank(market="J", limit=5)
+
+    async def test_volume_rank_with_market_and_limit(self, monkeypatch):
+        """volume_rank의 market와 limit 파라미터가 적용되는지 검증"""
+        captured_requests = []
+
+        async def mock_get(self, url, headers, params, timeout):
+            captured_requests.append({"url": url, "headers": headers, "params": params})
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "rt_cd": "0",
+                "msg_cd": "",
+                "msg1": "",
+                "output": [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "acml_vol": "10000000",
+                        "hts_avls": "100000000000000",
+                        "acml_tr_pbmn": "800000000000000",
+                    }
+                    for i in range(10)
+                ],
+            }
+            return mock_response
+
+        async def mock_get_token():
+            return "test_token"
+
+        monkeypatch.setattr("httpx.AsyncClient.get", mock_get)
+        monkeypatch.setattr("app.core.config.settings.kis_access_token", "test_token")
+        monkeypatch.setattr(
+            "app.services.redis_token_manager.redis_token_manager.get_token",
+            mock_get_token,
+        )
+
+        result = await KISClient().volume_rank(market="K", limit=5)
+
+        assert captured_requests[0]["params"]["FID_COND_MRKT_DIV_CODE"] == "K"
+        assert len(result) == 5

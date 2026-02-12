@@ -29,7 +29,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self):
+            async def volume_rank(self, market, limit):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
@@ -70,7 +70,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self):
+            async def volume_rank(self, market, limit):
                 return [
                     {
                         "mksc_shrn_iscd": "900210",
@@ -98,7 +98,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self):
+            async def volume_rank(self, market, limit):
                 return [
                     {
                         "mksc_shrn_iscd": "900210",
@@ -147,7 +147,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self):
+            async def volume_rank(self, market, limit):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
@@ -371,7 +371,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self):
+            async def volume_rank(self, market, limit):
                 return [
                     {
                         "stck_shrn_iscd": "069500",
@@ -433,7 +433,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self):
+            async def volume_rank(self, market, limit):
                 return [{"stck_shrn_iscd": "005930"}] * 100
 
         monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
@@ -449,7 +449,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self):
+            async def volume_rank(self, market, limit):
                 return []
 
         monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
@@ -465,7 +465,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self):
+            async def volume_rank(self, market, limit):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
@@ -749,7 +749,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def volume_rank(self):
+            async def volume_rank(self, market, limit):
                 raise RuntimeError("KIS API error")
 
         monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
@@ -779,3 +779,47 @@ class TestMCPTopStocks:
         assert "source" in result
         assert result["source"] == "upbit"
         assert "Upbit API error" in result["error"]
+
+    async def test_kr_foreigners_ranking_foreign_specific_fields(self, monkeypatch):
+        """foreigners 랭킹에서 외국인 전용 필드(frgn_ntby_qty, frgn_ntby_tr_pbmn) 사용 테스트"""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "5000000",
+                        "hts_avls": "100000000000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    },
+                    {
+                        "stck_shrn_iscd": "005380",
+                        "hts_kor_isnm": "LG전자",
+                        "stck_prpr": "120000",
+                        "prdy_ctrt": "1.5",
+                        "frgn_ntby_qty": "3000000",
+                        "hts_avls": "50000000000000",
+                        "frgn_ntby_tr_pbmn": "360000000000",
+                    },
+                ]
+
+        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+
+        assert result["ranking_type"] == "foreigners"
+        assert len(result["rankings"]) == 2
+
+        assert result["rankings"][0]["symbol"] == "005930"
+        assert result["rankings"][0]["name"] == "삼성전자"
+        assert result["rankings"][0]["volume"] == 5000000
+        assert result["rankings"][0]["trade_amount"] == 400000000000.0
+
+        assert result["rankings"][1]["symbol"] == "005380"
+        assert result["rankings"][1]["name"] == "LG전자"
+        assert result["rankings"][1]["volume"] == 3000000
+        assert result["rankings"][1]["trade_amount"] == 360000000000.0

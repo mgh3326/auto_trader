@@ -3672,11 +3672,7 @@ def _classify_kr_asset_type(symbol: str, name: str | None = None) -> str:
         "PLUS",
     ]
 
-    is_etf = (
-        any(keyword in name for keyword in etf_keywords)
-        or any(c.isalpha() for c in symbol)
-        or symbol.startswith(("1", "3", "4"))
-    )
+    is_etf = any(keyword in name for keyword in etf_keywords)
     return "etf" if is_etf else "stock"
 
 
@@ -3685,9 +3681,9 @@ def _map_kr_row(row: dict, rank: int) -> dict[str, Any]:
     name = row.get("hts_kor_isnm", "")
     price = _to_float(row.get("stck_prpr"))
     change_rate = _normalize_change_rate_equity(row.get("prdy_ctrt"))
-    volume = _to_int(row.get("acml_vol"))
+    volume = _to_int(row.get("acml_vol") or row.get("frgn_ntby_qty"))
     market_cap = _to_float(row.get("hts_avls"))
-    trade_amount = _to_float(row.get("acml_tr_pbmn"))
+    trade_amount = _to_float(row.get("acml_tr_pbmn") or row.get("frgn_ntby_tr_pbmn"))
 
     return {
         "rank": rank,
@@ -4101,9 +4097,7 @@ def register_tools(mcp: FastMCP) -> None:
             float(_get_kis_field(order, "ft_ord_qty", "FT_ORD_QTY", default=0) or 0)
         )
         filled = int(
-            float(
-                _get_kis_field(order, "ft_ccld_qty", "FT_CCLD_QTY", default=0) or 0
-            )
+            float(_get_kis_field(order, "ft_ccld_qty", "FT_CCLD_QTY", default=0) or 0)
         )
         remaining = ordered - filled
 
@@ -6087,7 +6081,11 @@ def register_tools(mcp: FastMCP) -> None:
                     {"source": "upbit", "market": "crypto", "error": str(exc)}
                 )
 
-        if account_filter is None or account_filter in ("kis", "kis_domestic", "kis_overseas"):
+        if account_filter is None or account_filter in (
+            "kis",
+            "kis_domestic",
+            "kis_overseas",
+        ):
             kis = KISClient()
 
             if account_filter is None or account_filter in ("kis", "kis_domestic"):
@@ -6162,8 +6160,6 @@ def register_tools(mcp: FastMCP) -> None:
             },
             "errors": errors,
         }
-
-
 
     # ------------------------------------------------------------------
     # cancel_order
@@ -7800,7 +7796,7 @@ def register_tools(mcp: FastMCP) -> None:
                 kis = KISClient()
 
                 if ranking_type == "volume":
-                    data = await kis.volume_rank()
+                    data = await kis.volume_rank(market="J", limit=fetch_limit)
                     source = "kis"
                 elif ranking_type == "market_cap":
                     data = await kis.market_cap_rank(market="J", limit=fetch_limit)
@@ -8133,7 +8129,9 @@ def register_tools(mcp: FastMCP) -> None:
                     if status in ("all", "filled", "cancelled") and normalized_symbol:
                         # fetch_closed_orders limit
                         # If unlimited, fetch max allowed by upstream or a reasonable high number
-                        fetch_limit = 100 if limit_val == float("inf") else max(limit, 20)
+                        fetch_limit = (
+                            100 if limit_val == float("inf") else max(limit, 20)
+                        )
                         closed_ops = await upbit_service.fetch_closed_orders(
                             market=normalized_symbol,
                             limit=fetch_limit,
@@ -8155,7 +8153,9 @@ def register_tools(mcp: FastMCP) -> None:
                     # 2. History
                     if status in ("all", "filled", "cancelled") and normalized_symbol:
                         # KIS requires a date range. If days is None, default to 30 days (or user provided).
-                        lookup_days = effective_days if effective_days is not None else 30
+                        lookup_days = (
+                            effective_days if effective_days is not None else 30
+                        )
                         start_dt, end_dt = _calculate_date_range(lookup_days)
                         hist_ops = await kis.inquire_daily_order_domestic(
                             start_date=start_dt,
@@ -8197,7 +8197,9 @@ def register_tools(mcp: FastMCP) -> None:
 
                     # 2. History
                     if status in ("all", "filled", "cancelled") and normalized_symbol:
-                        lookup_days = effective_days if effective_days is not None else 30
+                        lookup_days = (
+                            effective_days if effective_days is not None else 30
+                        )
                         start_dt, end_dt = _calculate_date_range(lookup_days)
                         ex = get_exchange_by_symbol(normalized_symbol) or "NASD"
                         hist_ops = await kis.inquire_daily_order_overseas(
@@ -8279,9 +8281,9 @@ def register_tools(mcp: FastMCP) -> None:
         if len(market_types) == 1:
             ret_market = _normalize_market_type_to_external(market_types[0])
         elif normalized_symbol:
-             # If symbol was resolved, we know the market
-             m, _ = _resolve_market_type(normalized_symbol, None)
-             ret_market = _normalize_market_type_to_external(m)
+            # If symbol was resolved, we know the market
+            m, _ = _resolve_market_type(normalized_symbol, None)
+            ret_market = _normalize_market_type_to_external(m)
 
         return {
             "success": bool(filtered_orders) or not errors,
