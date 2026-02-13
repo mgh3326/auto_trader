@@ -78,9 +78,10 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
         async def inquire_overseas_margin(self):
             return [
                 {
+                    "natn_name": "미국",
                     "crcy_cd": "USD",
                     "frcr_dncl_amt_2": "500.0",
-                    "frcr_ord_psbl_amt": "450.0",
+                    "frcr_gnrl_ord_psbl_amt": "450.0",
                 }
             ]
 
@@ -124,9 +125,10 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
         async def inquire_overseas_margin(self):
             return [
                 {
+                    "natn_name": "미국",
                     "crcy_cd": "USD",
                     "frcr_dncl_amt_2": "500.0",
-                    "frcr_ord_psbl_amt": "450.0",
+                    "frcr_gnrl_ord_psbl_amt": "450.0",
                 }
             ]
 
@@ -165,9 +167,10 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
         async def inquire_overseas_margin(self):
             return [
                 {
+                    "natn_name": "미국",
                     "crcy_cd": "USD",
                     "frcr_dncl_amt_2": "500.0",
-                    "frcr_ord_psbl_amt": "450.0",
+                    "frcr_gnrl_ord_psbl_amt": "450.0",
                 }
             ]
 
@@ -5125,9 +5128,10 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
         async def inquire_overseas_margin(self):
             return [
                 {
+                    "natn_name": "미국",
                     "crcy_cd": "USD",
                     "frcr_dncl_amt_2": "100.0",
-                    "frcr_ord_psbl_amt": "100.0",
+                    "frcr_gnrl_ord_psbl_amt": "100.0",
                 }
             ]
 
@@ -5157,6 +5161,95 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
     assert "Insufficient" in result["warning"]
     assert "KIS overseas account" in result["warning"]
     assert "deposit" in result["warning"].lower()
+    assert "100.00 USD < 500.00 USD" in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_us_dry_run_uses_overseas_margin_only(monkeypatch):
+    """US dry_run 잔고 조회는 해외증거금만 사용한다."""
+    tools = build_tools()
+    integrated_called = False
+
+    class DummyKISClient:
+        async def inquire_integrated_margin(self):
+            nonlocal integrated_called
+            integrated_called = True
+            return {"usd_ord_psbl_amt": "999999.0"}
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "2000.0",
+                    "frcr_gnrl_ord_psbl_amt": "1500.0",
+                }
+            ]
+
+    async def fetch_quote(symbol):
+        return {"price": 400.0}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="MSFT",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=400.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert integrated_called is False
+
+
+@pytest.mark.asyncio
+async def test_place_order_us_uses_frcr_gnrl_orderable_when_ord1_is_zero(monkeypatch):
+    """ord1이 0이어도 frcr_gnrl_ord_psbl_amt를 사용해 잔고를 판단한다."""
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "120.0",
+                    "frcr_ord_psbl_amt1": "0.0",
+                    "frcr_gnrl_ord_psbl_amt": "100.0",
+                }
+            ]
+
+    async def fetch_quote(symbol):
+        return {"price": 500.0}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
+    monkeypatch.setattr(
+        mcp_tools,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "estimated_value": 500.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="AAPL",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=500.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert "warning" in result
     assert "100.00 USD < 500.00 USD" in result["warning"]
 
 
@@ -5203,6 +5296,16 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
                 "dnca_tot_amt": "0",
                 "stck_cash_ord_psbl_amt": "0",
             }
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "100000",
+                    "frcr_gnrl_ord_psbl_amt": "100000",
+                }
+            ]
 
         async def buy_overseas_stock(self, symbol, exchange_code, quantity, price):
             buy_calls.append(
@@ -6242,6 +6345,16 @@ class TestPlaceOrderHighAmount:
                     "dnca_tot_amt": "0",
                 }
 
+            async def inquire_overseas_margin(self):
+                return [
+                    {
+                        "natn_name": "미국",
+                        "crcy_cd": "USD",
+                        "frcr_dncl_amt1": "3000000.0",
+                        "frcr_gnrl_ord_psbl_amt": "3000000.0",
+                    }
+                ]
+
         async def fetch_quote(symbol):
             return {"price": 205.0}
 
@@ -6359,6 +6472,16 @@ class TestPlaceOrderHighAmount:
                     "usd_ord_psbl_amt": "3000000.0",
                     "dnca_tot_amt": "0",
                 }
+
+            async def inquire_overseas_margin(self):
+                return [
+                    {
+                        "natn_name": "미국",
+                        "crcy_cd": "USD",
+                        "frcr_dncl_amt1": "3000000.0",
+                        "frcr_gnrl_ord_psbl_amt": "3000000.0",
+                    }
+                ]
 
             async def buy_overseas_stock(self, symbol, exchange_code, quantity, price):
                 buy_calls.append(
@@ -6829,3 +6952,174 @@ async def test_screen_stocks_smoke(monkeypatch):
     assert "sort_order" in result["filters_applied"]
 
     assert isinstance(result["results"], list)
+
+
+# ----------------------------------------------------------------------
+# KIS 해외주식 주문/잔고 관련 테스트 (OPSQ2001 오류 방지)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kis_overseas_order_payload_fields_buy(monkeypatch):
+    """해외주식 매수 주문 시 필수 필드가 올바르게 포함되는지 검증."""
+    import inspect
+
+    from app.services.kis import KISClient
+
+    sig = inspect.signature(KISClient.order_overseas_stock)
+    params = list(sig.parameters.keys())
+
+    assert "symbol" in params
+    assert "exchange_code" in params
+    assert "order_type" in params
+    assert "quantity" in params
+    assert "price" in params
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_overseas_prefers_usd_us_row_for_orderable(
+    monkeypatch,
+):
+    """USD 다중 행일 때 미국(natn_name) 행을 우선 사용한다."""
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_domestic_cash_balance(self):
+            return {
+                "dnca_tot_amt": "1000000.0",
+                "stck_cash_ord_psbl_amt": "800000.0",
+            }
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "영국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "5856.2",
+                    "frcr_gnrl_ord_psbl_amt": "5798.22",
+                },
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "5856.2",
+                    "frcr_gnrl_ord_psbl_amt": "5824.17",
+                },
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_overseas")
+
+    kis_overseas = next(
+        (acc for acc in result["accounts"] if acc["account"] == "kis_overseas"),
+        None,
+    )
+    assert kis_overseas is not None
+    assert kis_overseas["balance"] == 5856.2
+    assert kis_overseas["orderable"] == 5824.17
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_overseas_us_row_missing_falls_back_to_usd_max(
+    monkeypatch,
+):
+    """미국 행이 없으면 USD 행 중 최대 일반주문가능금액을 사용한다."""
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_domestic_cash_balance(self):
+            return {
+                "dnca_tot_amt": "1000000.0",
+                "stck_cash_ord_psbl_amt": "800000.0",
+            }
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "영국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "5856.2",
+                    "frcr_gnrl_ord_psbl_amt": "5798.22",
+                },
+                {
+                    "natn_name": "독일",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "5856.2",
+                    "frcr_gnrl_ord_psbl_amt": "5824.27",
+                },
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_overseas")
+
+    kis_overseas = next(
+        (acc for acc in result["accounts"] if acc["account"] == "kis_overseas"),
+        None,
+    )
+    assert kis_overseas is not None
+    assert kis_overseas["balance"] == 5856.2
+    assert kis_overseas["orderable"] == 5824.27
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_overseas_real_balance(monkeypatch):
+    """해외 잔고 조회 시 balance/orderable이 0보다 큰 값으로 파싱되는지 테스트."""
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_domestic_cash_balance(self):
+            return {
+                "dnca_tot_amt": "5000000.0",
+                "stck_cash_ord_psbl_amt": "4000000.0",
+            }
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "5500.0",
+                    "frcr_gnrl_ord_psbl_amt": "5000.0",
+                }
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_overseas")
+
+    assert len(result["accounts"]) == 1
+    assert result["accounts"][0]["balance"] > 0
+    assert result["accounts"][0]["orderable"] > 0
+    assert result["summary"]["total_usd"] > 0
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
+    """get_cash_balance가 새 KIS 필드명(frcr_dncl_amt1, frcr_gnrl_ord_psbl_amt)을 사용하는지 테스트."""
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_domestic_cash_balance(self):
+            return {
+                "dnca_tot_amt": "1000000.0",
+                "stck_cash_ord_psbl_amt": "800000.0",
+            }
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "3500.0",
+                    "frcr_gnrl_ord_psbl_amt": "3200.0",
+                }
+            ]
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_overseas")
+
+    assert len(result["accounts"]) == 1
+    assert result["accounts"][0]["balance"] == 3500.0
+    assert result["accounts"][0]["orderable"] == 3200.0

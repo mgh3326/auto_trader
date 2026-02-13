@@ -4747,6 +4747,41 @@ def register_tools(mcp: FastMCP) -> None:
                     }
         return None
 
+    def _is_us_nation_name(value: Any) -> bool:
+        normalized = str(value or "").strip().casefold()
+        return normalized in {
+            "미국",
+            "us",
+            "usa",
+            "united states",
+            "united states of america",
+        }
+
+    def _extract_usd_orderable_from_row(row: dict[str, Any] | None) -> float:
+        if not isinstance(row, dict):
+            return 0.0
+        return _to_float(row.get("frcr_gnrl_ord_psbl_amt"), default=0.0)
+
+    def _select_usd_row_for_us_order(
+        rows: list[dict[str, Any]] | None,
+    ) -> dict[str, Any] | None:
+        if not rows:
+            return None
+
+        usd_rows = [
+            row for row in rows if str(row.get("crcy_cd", "")).strip().upper() == "USD"
+        ]
+        if not usd_rows:
+            return None
+
+        us_row = next(
+            (row for row in usd_rows if _is_us_nation_name(row.get("natn_name"))), None
+        )
+        if us_row is not None:
+            return us_row
+
+        return max(usd_rows, key=_extract_usd_orderable_from_row)
+
     async def _get_balance_for_order(market_type: str) -> float:
         if market_type == "crypto":
             coins = await upbit_service.fetch_my_coins()
@@ -4767,28 +4802,12 @@ def register_tools(mcp: FastMCP) -> None:
             return float(balance_data.get("stck_cash_ord_psbl_amt", 0) or 0)
         elif market_type == "equity_us":
             kis = KISClient()
-            if hasattr(kis, "inquire_integrated_margin"):
-                margin = await kis.inquire_integrated_margin()
-                if isinstance(margin, dict):
-                    usd_orderable = (
-                        margin.get("usd_ord_psbl_amt")
-                        or margin.get("frcr_ord_psbl_amt")
-                        or margin.get("usd_balance")
-                    )
-                    if usd_orderable is not None:
-                        return float(usd_orderable or 0)
+            # US 주문 잔고는 해외증거금(외화주문가능금액) 기준으로 조회한다.
             margin_data = await kis.inquire_overseas_margin()
-            usd_balance = next(
-                (
-                    row
-                    for row in margin_data
-                    if str(row.get("crcy_cd", "")).upper() == "USD"
-                ),
-                None,
-            )
-            if usd_balance is None:
+            usd_row = _select_usd_row_for_us_order(margin_data)
+            if usd_row is None:
                 raise RuntimeError("USD margin data not found in KIS overseas margin")
-            return float(usd_balance.get("frcr_ord_psbl_amt", 0) or 0)
+            return _extract_usd_orderable_from_row(usd_row)
         return 0.0
 
     async def _check_daily_order_limit(max_orders: int) -> bool:
@@ -6535,21 +6554,19 @@ def register_tools(mcp: FastMCP) -> None:
             if account_filter is None or account_filter in ("kis", "kis_overseas"):
                 try:
                     overseas_margin_data = await kis.inquire_overseas_margin()
-                    usd_margin = next(
-                        (
-                            row
-                            for row in overseas_margin_data
-                            if str(row.get("crcy_cd", "")).upper() == "USD"
-                        ),
-                        None,
-                    )
+                    usd_margin = _select_usd_row_for_us_order(overseas_margin_data)
                     if usd_margin is None:
                         raise RuntimeError(
                             "USD margin data not found in KIS overseas margin"
                         )
 
-                    balance = float(usd_margin.get("frcr_dncl_amt_2", 0) or 0)
-                    orderable = float(usd_margin.get("frcr_ord_psbl_amt", 0) or 0)
+                    balance = _to_float(
+                        usd_margin.get("frcr_dncl_amt1")
+                        or usd_margin.get("frcr_dncl_amt_2"),
+                        default=0.0,
+                    )
+                    orderable = _extract_usd_orderable_from_row(usd_margin)
+
                     accounts.append(
                         {
                             "account": "kis_overseas",

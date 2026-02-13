@@ -3,7 +3,7 @@ import logging
 from fastmcp import FastMCP
 
 # settings import 시 pydantic-settings가 .env 자동 로드
-from app.core.config import settings  # noqa: F401
+from app.core.config import settings
 from app.mcp_server.auth import build_auth_provider
 from app.mcp_server.env_utils import _env, _env_int
 from app.mcp_server.tools import register_tools
@@ -25,8 +25,13 @@ register_tools(mcp)
 
 
 def main() -> None:
+    log_level_name = str(getattr(settings, "LOG_LEVEL", "INFO") or "INFO").upper()
+    log_level = getattr(logging, log_level_name, logging.INFO)
+    if not isinstance(log_level, int):
+        log_level = logging.INFO
+
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )

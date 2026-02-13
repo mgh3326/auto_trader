@@ -287,6 +287,94 @@ class TestKISService:
             with pytest.raises(RuntimeError, match="EGW99999"):
                 await client.inquire_domestic_cash_balance(is_mock=False)
 
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    async def test_inquire_overseas_margin_parses_extended_orderable_fields(
+        self, mock_client_class, monkeypatch
+    ):
+        """해외증거금 조회에서 일반/통합 주문가능 필드를 파싱한다."""
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output": [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "5856.200000",
+                    "frcr_ord_psbl_amt1": "0.000000",
+                    "frcr_gnrl_ord_psbl_amt": "5824.17",
+                    "itgr_ord_psbl_amt": "5824.27",
+                    "frcr_buy_amt_smtl": "0.00",
+                    "tot_evlu_pfls_amt": "0.00",
+                    "ovrs_tot_pfls": "0.00",
+                }
+            ],
+        }
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+        monkeypatch.setattr(
+            "app.services.kis.settings.kis_account_no", "12345678-01", raising=False
+        )
+
+        from app.services.kis import KISClient
+
+        client = KISClient()
+        with patch.object(client, "_ensure_token"):
+            result = await client.inquire_overseas_margin(is_mock=False)
+
+        assert len(result) == 1
+        assert result[0]["natn_name"] == "미국"
+        assert result[0]["crcy_cd"] == "USD"
+        assert result[0]["frcr_dncl_amt1"] == 5856.2
+        assert result[0]["frcr_ord_psbl_amt1"] == 0.0
+        assert result[0]["frcr_gnrl_ord_psbl_amt"] == 5824.17
+        assert result[0]["itgr_ord_psbl_amt"] == 5824.27
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    async def test_inquire_overseas_margin_safe_float_handles_blank_values(
+        self, mock_client_class, monkeypatch
+    ):
+        """해외증거금 조회에서 빈 문자열/None을 0.0으로 안전하게 파싱한다."""
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output": [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "",
+                    "frcr_ord_psbl_amt1": None,
+                    "frcr_gnrl_ord_psbl_amt": "",
+                    "itgr_ord_psbl_amt": None,
+                    "frcr_buy_amt_smtl": "",
+                    "tot_evlu_pfls_amt": None,
+                    "ovrs_tot_pfls": "",
+                }
+            ],
+        }
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+        monkeypatch.setattr(
+            "app.services.kis.settings.kis_account_no", "12345678-01", raising=False
+        )
+
+        from app.services.kis import KISClient
+
+        client = KISClient()
+        with patch.object(client, "_ensure_token"):
+            result = await client.inquire_overseas_margin(is_mock=False)
+
+        assert len(result) == 1
+        assert result[0]["frcr_dncl_amt1"] == 0.0
+        assert result[0]["frcr_ord_psbl_amt1"] == 0.0
+        assert result[0]["frcr_gnrl_ord_psbl_amt"] == 0.0
+        assert result[0]["itgr_ord_psbl_amt"] == 0.0
+
 
 class TestYahooService:
     """Test Yahoo Finance service functionality."""

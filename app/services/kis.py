@@ -1225,14 +1225,43 @@ class KISClient:
         results: list[dict] = []
         for item in output:
             result = {
+                "natn_name": item.get("natn_name"),
                 "crcy_cd": item.get("crcy_cd"),
-                "frcr_dncl_amt_2": safe_float(item.get("frcr_dncl_amt_2")),
-                "frcr_ord_psbl_amt": safe_float(item.get("frcr_ord_psbl_amt")),
+                "frcr_dncl_amt1": safe_float(
+                    item.get("frcr_dncl_amt1") or item.get("frcr_dncl_amt_2")
+                ),
+                "frcr_ord_psbl_amt1": safe_float(
+                    item.get("frcr_ord_psbl_amt1") or item.get("frcr_ord_psbl_amt")
+                ),
+                "frcr_gnrl_ord_psbl_amt": safe_float(
+                    item.get("frcr_gnrl_ord_psbl_amt")
+                ),
+                "itgr_ord_psbl_amt": safe_float(item.get("itgr_ord_psbl_amt")),
                 "frcr_buy_amt_smtl": safe_float(item.get("frcr_buy_amt_smtl")),
                 "tot_evlu_pfls_amt": safe_float(item.get("tot_evlu_pfls_amt")),
                 "ovrs_tot_pfls": safe_float(item.get("ovrs_tot_pfls")),
             }
             results.append(result)
+
+        usd_rows = [row for row in results if str(row.get("crcy_cd", "")).upper() == "USD"]
+        logging.debug("해외증거금 USD 행 개수: %s", len(usd_rows))
+        us_row = next(
+            (
+                row
+                for row in usd_rows
+                if str(row.get("natn_name", "")).strip() in {"미국", "US", "USA"}
+            ),
+            None,
+        )
+        if us_row:
+            logging.debug(
+                "해외증거금 미국행 - frcr_dncl_amt1=%s, frcr_gnrl_ord_psbl_amt=%s, "
+                "frcr_ord_psbl_amt1=%s, itgr_ord_psbl_amt=%s",
+                us_row.get("frcr_dncl_amt1"),
+                us_row.get("frcr_gnrl_ord_psbl_amt"),
+                us_row.get("frcr_ord_psbl_amt1"),
+                us_row.get("itgr_ord_psbl_amt"),
+            )
 
         return results
 
@@ -1604,21 +1633,37 @@ class KISClient:
 
         ord_dvsn = "01" if price == 0 else "00"  # 00: 지정가, 01: 시장가
 
+        # SLL_TYPE: 매도 주문 시 "00", 매수 주문 시 "" (공란)
+        sll_type = "00" if order_type.lower() == "sell" else ""
+
         body = {
             "CANO": cano,
             "ACNT_PRDT_CD": acnt_prdt_cd,
             "OVRS_EXCG_CD": exchange_code,
             "PDNO": to_kis_symbol(symbol),
-            "ORD_DVSN": ord_dvsn,
             "ORD_QTY": str(quantity),
-            "OVRS_ORD_UNPR": str(price),
+            "OVRS_ORD_UNPR": str(price) if price > 0 else "0",
+            "CTAC_TLNO": "",
             "MGCO_APTM_ODNO": "",
+            "SLL_TYPE": sll_type,
             "ORD_SVR_DVSN_CD": "0",
+            "ORD_DVSN": ord_dvsn,
         }
 
         logging.info(
             f"해외주식 {order_type_korean} 주문 - symbol: {symbol}, "
             f"거래소: {exchange_code}, 수량: {quantity}, 가격: {price if price > 0 else '시장가'}"
+        )
+        logging.debug("해외주식 주문 payload 필드: %s", sorted(body.keys()))
+        logging.debug(
+            "해외주식 주문 payload 핵심값 - symbol=%s, exchange=%s, order_type=%s, "
+            "ord_dvsn=%s, ord_qty=%s, ovrs_ord_unpr=%s",
+            symbol,
+            exchange_code,
+            order_type.lower(),
+            body.get("ORD_DVSN"),
+            body.get("ORD_QTY"),
+            body.get("OVRS_ORD_UNPR"),
         )
 
         async with httpx.AsyncClient(timeout=10) as cli:
