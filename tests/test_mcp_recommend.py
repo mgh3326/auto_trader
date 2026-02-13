@@ -784,3 +784,267 @@ class TestRecommendStocksIntegration:
             "투자" in result["disclaimer"]
             or "investment" in result["disclaimer"].lower()
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "strategy",
+        ["balanced", "growth", "value", "dividend", "momentum"],
+    )
+    async def test_all_strategies_return_valid_payload(
+        self,
+        recommend_stocks,
+        monkeypatch: pytest.MonkeyPatch,
+        strategy: str,
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "101010",
+                    "name": "전략테스트1",
+                    "close": 10_000,
+                    "volume": 1_500_000,
+                    "change_rate": 2.2,
+                    "market_cap": 2_000,
+                },
+                {
+                    "code": "202020",
+                    "name": "전략테스트2",
+                    "close": 12_000,
+                    "volume": 1_200_000,
+                    "change_rate": 1.5,
+                    "market_cap": 2_500,
+                },
+                {
+                    "code": "303030",
+                    "name": "전략테스트3",
+                    "close": 15_000,
+                    "volume": 900_000,
+                    "change_rate": 0.7,
+                    "market_cap": 1_800,
+                },
+            ],
+            valuations={
+                "101010": {"per": 10.0, "pbr": 1.1, "dividend_yield": 0.03},
+                "202020": {"per": 15.0, "pbr": 1.5, "dividend_yield": 0.025},
+                "303030": {"per": 8.0, "pbr": 0.9, "dividend_yield": 0.04},
+            },
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        result = await recommend_stocks(
+            budget=1_000_000,
+            market="kr",
+            strategy=strategy,
+            max_positions=3,
+        )
+
+        assert result["strategy"] == strategy
+        assert "strategy_description" in result
+        assert isinstance(result["warnings"], list)
+        assert result["total_amount"] <= 1_000_000
+        assert len(result["recommendations"]) <= 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("budget", "max_positions"),
+        [
+            (300_000, 1),
+            (750_000, 2),
+            (2_000_000, 4),
+        ],
+    )
+    async def test_budget_and_position_matrix(
+        self,
+        recommend_stocks,
+        monkeypatch: pytest.MonkeyPatch,
+        budget: int,
+        max_positions: int,
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "121212",
+                    "name": "예산테스트1",
+                    "close": 50_000,
+                    "volume": 1_300_000,
+                    "change_rate": 1.0,
+                    "market_cap": 1_500,
+                },
+                {
+                    "code": "131313",
+                    "name": "예산테스트2",
+                    "close": 70_000,
+                    "volume": 1_200_000,
+                    "change_rate": 1.3,
+                    "market_cap": 1_700,
+                },
+                {
+                    "code": "141414",
+                    "name": "예산테스트3",
+                    "close": 90_000,
+                    "volume": 1_100_000,
+                    "change_rate": 1.7,
+                    "market_cap": 1_900,
+                },
+                {
+                    "code": "151515",
+                    "name": "예산테스트4",
+                    "close": 110_000,
+                    "volume": 1_000_000,
+                    "change_rate": 2.0,
+                    "market_cap": 2_100,
+                },
+            ],
+            valuations={
+                "121212": {"per": 11.0, "pbr": 1.2, "dividend_yield": 0.02},
+                "131313": {"per": 13.0, "pbr": 1.3, "dividend_yield": 0.018},
+                "141414": {"per": 9.0, "pbr": 1.1, "dividend_yield": 0.03},
+                "151515": {"per": 16.0, "pbr": 1.6, "dividend_yield": 0.015},
+            },
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        result = await recommend_stocks(
+            budget=budget,
+            market="kr",
+            strategy="balanced",
+            max_positions=max_positions,
+        )
+
+        assert result["total_amount"] <= budget
+        assert result["remaining_budget"] >= 0
+        assert len(result["recommendations"]) <= max_positions
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_valuation_fields(self, recommend_stocks, monkeypatch):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "161616",
+                    "name": "밸류결측치테스트",
+                    "close": 8_000,
+                    "volume": 1_000_000,
+                    "change_rate": 0.8,
+                    "market_cap": 1_200,
+                }
+            ],
+            valuations={},
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        result = await recommend_stocks(
+            budget=200_000,
+            market="kr",
+            strategy="balanced",
+            max_positions=1,
+        )
+
+        assert result["recommendations"]
+        rec = result["recommendations"][0]
+        assert rec["per"] is None
+        assert rec["symbol"] == "161616"
+
+    @pytest.mark.asyncio
+    async def test_budget_below_minimum_purchase_adds_warning(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "171717",
+                    "name": "최소매수테스트",
+                    "close": 250_000,
+                    "volume": 1_000_000,
+                    "change_rate": 1.1,
+                    "market_cap": 1_500,
+                }
+            ],
+            valuations={
+                "171717": {"per": 12.0, "pbr": 1.2, "dividend_yield": 0.02},
+            },
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        result = await recommend_stocks(
+            budget=100_000,
+            market="kr",
+            strategy="balanced",
+            max_positions=1,
+        )
+
+        assert result["recommendations"] == []
+        assert result["remaining_budget"] == 100_000
+        assert any("최소 구매 금액" in warning for warning in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_exclude_symbols_handles_case_and_whitespace(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_empty_holdings(monkeypatch)
+
+        async def mock_get_top_stocks(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {
+                "rankings": [
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple",
+                        "price": 200.0,
+                        "change_rate": 1.1,
+                        "volume": 10_000_000,
+                        "market_cap": 3_000_000_000_000,
+                    },
+                    {
+                        "symbol": "MSFT",
+                        "name": "Microsoft",
+                        "price": 400.0,
+                        "change_rate": 0.8,
+                        "volume": 8_000_000,
+                        "market_cap": 2_500_000_000_000,
+                    },
+                ]
+            }
+
+        monkeypatch.setattr(mcp_tools, "get_top_stocks", mock_get_top_stocks)
+
+        result = await recommend_stocks(
+            budget=2_000,
+            market="us",
+            strategy="growth",
+            exclude_symbols=[" aapl "],
+            max_positions=2,
+        )
+
+        symbols = {item["symbol"] for item in result["recommendations"]}
+        assert "AAPL" not in symbols
+        assert "MSFT" in symbols
+
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_returns_traceback_payload(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        async def mock_fetch_stock_all_cached(market: str) -> list[dict[str, Any]]:
+            raise RuntimeError()
+
+        monkeypatch.setattr(
+            mcp_tools,
+            "fetch_stock_all_cached",
+            mock_fetch_stock_all_cached,
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        result = await recommend_stocks(
+            budget=500_000,
+            market="kr",
+            strategy="balanced",
+            max_positions=5,
+        )
+
+        assert result["source"] == "recommend_stocks"
+        assert result["error"].startswith("recommend_stocks failed:")
+        assert "RuntimeError" in result["error"]
+        assert "details" in result
+        assert "Traceback" in result["details"]

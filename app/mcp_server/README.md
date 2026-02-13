@@ -104,6 +104,13 @@ Strategy descriptions:
 - **dividend**: 배당주 중심. 높은 배당수익률 가중
 - **momentum**: 모멘텀 중심. 강한 상승 모멘텀과 거래량 가중
 
+Scoring weight factors:
+- `rsi_weight`: RSI 기반 기술적 과매수/과매도 점수 비중
+- `valuation_weight`: PER/PBR 기반 밸류에이션 점수 비중
+- `momentum_weight`: 등락률 기반 모멘텀 점수 비중
+- `volume_weight`: 거래량 기반 유동성 점수 비중
+- `dividend_weight`: 배당수익률 기반 인컴 점수 비중
+
 Behavior:
 - Invalid `market` values raise `ValueError` (no silent fallback)
 - Strategy-specific `screen_params` are applied per market and unsupported filters are ignored with warnings
@@ -138,7 +145,18 @@ Response format:
   "strategy_description": "균형 잡힌 포트폴리오 구성을 위한 전략...",
   "candidates_screened": 100,
   "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
-  "warnings": []
+  "warnings": [],
+  "timestamp": "2026-02-13T02:11:52.950534+00:00"
+}
+```
+
+Error response format (unexpected internal failure):
+```json
+{
+  "error": "recommend_stocks failed: RuntimeError",
+  "source": "recommend_stocks",
+  "query": "market=kr,strategy=balanced,budget=5000000,max_positions=5",
+  "details": "Traceback (most recent call last): ..."
 }
 ```
 

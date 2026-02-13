@@ -31,6 +31,7 @@ STRATEGY_CONFIGS: dict[StrategyType, StrategyConfig] = {
             "sort_order": "desc",
             "min_market_cap": 500,
         },
+        # 균형 전략: 기술/밸류/모멘텀/유동성을 균등 반영, 배당은 중립.
         "scoring_weights": {
             "rsi_weight": 0.25,
             "valuation_weight": 0.25,
@@ -46,6 +47,7 @@ STRATEGY_CONFIGS: dict[StrategyType, StrategyConfig] = {
             "sort_order": "desc",
             "min_market_cap": 300,
         },
+        # 성장 전략: 모멘텀 + 거래량 중심, 밸류/배당은 낮은 비중.
         "scoring_weights": {
             "rsi_weight": 0.15,
             "valuation_weight": 0.10,
@@ -62,6 +64,7 @@ STRATEGY_CONFIGS: dict[StrategyType, StrategyConfig] = {
             "max_per": 20.0,
             "min_market_cap": 500,
         },
+        # 가치 전략: PER/PBR 등 밸류 지표 비중을 가장 크게 둠.
         "scoring_weights": {
             "rsi_weight": 0.30,
             "valuation_weight": 0.40,
@@ -78,6 +81,7 @@ STRATEGY_CONFIGS: dict[StrategyType, StrategyConfig] = {
             "min_dividend_yield": 1.0,
             "min_market_cap": 300,
         },
+        # 배당 전략: 배당수익률을 핵심으로, 나머지 지표는 보조적으로 사용.
         "scoring_weights": {
             "rsi_weight": 0.15,
             "valuation_weight": 0.20,
@@ -93,6 +97,7 @@ STRATEGY_CONFIGS: dict[StrategyType, StrategyConfig] = {
             "sort_order": "desc",
             "min_market_cap": 200,
         },
+        # 모멘텀 전략: 단기 가격 추세와 거래량 신호를 최우선으로 반영.
         "scoring_weights": {
             "rsi_weight": 0.20,
             "valuation_weight": 0.05,
