@@ -716,6 +716,9 @@ class TestKRXFallbackLogic:
         """Test expired memory cache items are ignored and cleaned up."""
         from datetime import UTC, datetime
 
+        # Use a fixed trading date (weekday) to avoid weekend/timezone boundary issues
+        fixed_trd_date = "20250102"
+
         # Mock Redis client to always return None (cache miss)
         class MockRedisClient:
             async def get(self, key):
@@ -729,11 +732,12 @@ class TestKRXFallbackLogic:
 
         monkeypatch.setattr(krx, "_get_redis_client", mock_get_redis_client)
 
-        # Generate today's cache key
-        from datetime import date
+        # Generate cache key using the same method as production code
+        cache_key = await krx._get_cache_key("stock:all:STK", fixed_trd_date)
 
-        today_str = date.today().strftime("%Y%m%d")
-        cache_key = f"krx:stock:all:STK:{today_str}"
+        # Cleanup any pre-existing entry (defensive: test isolation)
+        if cache_key in krx._MEMORY_CACHE:
+            del krx._MEMORY_CACHE[cache_key]
 
         # Inject expired data into memory cache
         expired_timestamp = datetime.now(UTC).timestamp() - (
@@ -763,7 +767,8 @@ class TestKRXFallbackLogic:
 
         monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
 
-        result = await krx.fetch_stock_all(market="STK")
+        # Pass the fixed trading date so the service uses the same cache key
+        result = await krx.fetch_stock_all(market="STK", trd_date=fixed_trd_date)
 
         # Should fetch fresh data, not use expired cache
         assert len(result) == 1
@@ -771,9 +776,9 @@ class TestKRXFallbackLogic:
         assert result[0]["code"] != "expired"
 
         # Verify fresh data is now in memory cache (expired one should be replaced or cleaned)
-        if cache_key in krx._MEMORY_CACHE:
-            cached_data, _ = krx._MEMORY_CACHE[cache_key]
-            assert cached_data[0]["code"] == "005930", "Should have fresh data in cache"
+        assert cache_key in krx._MEMORY_CACHE, "Cache key should exist after fetch"
+        cached_data, _ = krx._MEMORY_CACHE[cache_key]
+        assert cached_data[0]["code"] == "005930", "Should have fresh data in cache"
 
         # Cleanup
         if cache_key in krx._MEMORY_CACHE:
