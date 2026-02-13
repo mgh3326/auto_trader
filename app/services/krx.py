@@ -39,7 +39,7 @@ KRX_HEADERS = {
     ),
     "Referer": "https://data.krx.co.kr/contents/MDC/MDI/outerLoader/index.cmd",
 }
-_MEMORY_CACHE: dict[str, tuple[dict[str, Any], float]] = {}
+_MEMORY_CACHE: dict[str, tuple[list[dict[str, Any]], float]] = {}
 _MEMORY_CACHE_TTL = 300  # Same as Redis TTL
 
 logger = logging.getLogger(__name__)
@@ -549,7 +549,26 @@ async def fetch_valuation_all(
         cached = await _get_cached_data(cache_key)
         if cached:
             logger.info(f"Cache hit for valuation {market} on {actual_date}")
-            return {item["ISU_SRT_CD"]: item for item in cached}
+            # Handle both new cache format (with ISU_SRT_CD) and old format (without)
+            valuations: dict[str, dict[str, Any]] = {}
+            invalid_rows = 0
+            for item in cached:
+                code = item.get("ISU_SRT_CD")
+                if code and isinstance(code, str) and code.strip():
+                    valuations[code.strip()] = item
+                else:
+                    invalid_rows += 1
+            if invalid_rows > 0:
+                logger.warning(
+                    f"Valuation cache invalid rows (missing ISU_SRT_CD): {invalid_rows}"
+                )
+            # If all rows are invalid, fall through to API re-fetch
+            if not valuations:
+                logger.warning(
+                    "Valuation cache entirely invalid, falling back to API re-fetch"
+                )
+            else:
+                return valuations
 
         # Fetch from KRX API
         logger.info(
@@ -585,6 +604,7 @@ async def fetch_valuation_all(
 
                 if code:
                     valuations[code] = {
+                        "ISU_SRT_CD": code,
                         "per": per,
                         "pbr": pbr,
                         "eps": eps,
@@ -592,7 +612,7 @@ async def fetch_valuation_all(
                         "dividend_yield": dividend_yield,
                     }
 
-            # Cache result
+            # Cache result (include ISU_SRT_CD for proper deserialization)
             await _set_cached_data(cache_key, list(valuations.values()))
 
             return valuations

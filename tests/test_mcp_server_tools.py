@@ -7499,3 +7499,10 @@ async def test_place_order_kr_equity_dry_run_false_opsq2001_unaffected(monkeypat
     assert result["success"] is True
     assert result["dry_run"] is False
     assert len(order_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_recommend_stocks_registration():
+    """Test recommend_stocks tool is registered."""
+    tools = build_tools()
+    assert "recommend_stocks" in tools

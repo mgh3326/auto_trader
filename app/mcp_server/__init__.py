@@ -12,6 +12,7 @@ AVAILABLE_TOOL_NAMES = [
     "get_holdings",
     "get_positions_by_account",
     "screen_stocks",
+    "recommend_stocks",
     "get_stock_price",
     "analyze_stock",
     "trade_stock",

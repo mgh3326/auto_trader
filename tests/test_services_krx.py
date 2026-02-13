@@ -778,3 +778,122 @@ class TestKRXFallbackLogic:
         # Cleanup
         if cache_key in krx._MEMORY_CACHE:
             del krx._MEMORY_CACHE[cache_key]
+
+
+class TestKRXValuationCacheRecovery:
+    """Test KRX valuation cache schema backward compatibility."""
+
+    @pytest.mark.asyncio
+    async def test_valuation_cache_old_format_recovery(self, monkeypatch):
+        """Old cache entries without ISU_SRT_CD are handled gracefully."""
+        old_cache_format = [
+            {"per": 12.5, "pbr": 1.2, "dividend_yield": 0.0256},
+            {"per": 15.0, "pbr": 1.5, "dividend_yield": 0.03},
+        ]
+
+        async def mock_get_cached_data(cache_key):
+            return old_cache_format
+
+        async def mock_fetch_krx_data(**kwargs):
+            return {
+                "output": [
+                    {
+                        "ISU_SRT_CD": "005930",
+                        "PER": "12.5",
+                        "PBR": "1.2",
+                        "DVD_YLD": "2.56",
+                    }
+                ]
+            }
+
+        async def mock_set_cached_data(cache_key, data):
+            pass
+
+        monkeypatch.setattr(krx, "_get_cached_data", mock_get_cached_data)
+        monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
+        monkeypatch.setattr(krx, "_set_cached_data", mock_set_cached_data)
+
+        result = await krx.fetch_valuation_all(market="ALL")
+
+        assert "005930" in result
+        assert result["005930"]["per"] == 12.5
+
+    @pytest.mark.asyncio
+    async def test_valuation_cache_new_format_with_isu_srt_cd(self, monkeypatch):
+        """New cache entries with ISU_SRT_CD are processed correctly."""
+        new_cache_format = [
+            {
+                "ISU_SRT_CD": "005930",
+                "per": 12.5,
+                "pbr": 1.2,
+                "dividend_yield": 0.0256,
+            },
+            {
+                "ISU_SRT_CD": "000660",
+                "per": 15.0,
+                "pbr": 1.5,
+                "dividend_yield": 0.03,
+            },
+        ]
+
+        async def mock_get_cached_data(cache_key):
+            return new_cache_format
+
+        fetch_called = False
+
+        async def mock_fetch_krx_data(**kwargs):
+            nonlocal fetch_called
+            fetch_called = True
+            return {"output": []}
+
+        async def mock_set_cached_data(cache_key, data):
+            pass
+
+        monkeypatch.setattr(krx, "_get_cached_data", mock_get_cached_data)
+        monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
+        monkeypatch.setattr(krx, "_set_cached_data", mock_set_cached_data)
+
+        result = await krx.fetch_valuation_all(market="ALL")
+
+        assert len(result) == 2
+        assert "005930" in result
+        assert "000660" in result
+        assert result["005930"]["per"] == 12.5
+        assert not fetch_called, "Should use cache, not call API"
+
+    @pytest.mark.asyncio
+    async def test_valuation_cache_storage_includes_isu_srt_cd(self, monkeypatch):
+        """Stored cache entries include ISU_SRT_CD field."""
+        captured_cache_data = None
+
+        async def mock_get_cached_data(cache_key):
+            return None
+
+        async def mock_fetch_krx_data(**kwargs):
+            return {
+                "output": [
+                    {
+                        "ISU_SRT_CD": "005930",
+                        "PER": "12.5",
+                        "PBR": "1.2",
+                        "EPS": "6400",
+                        "BPS": "66000",
+                        "DVD_YLD": "2.56",
+                    }
+                ]
+            }
+
+        async def mock_set_cached_data(cache_key, data):
+            nonlocal captured_cache_data
+            captured_cache_data = data
+
+        monkeypatch.setattr(krx, "_get_cached_data", mock_get_cached_data)
+        monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
+        monkeypatch.setattr(krx, "_set_cached_data", mock_set_cached_data)
+
+        await krx.fetch_valuation_all(market="ALL")
+
+        assert captured_cache_data is not None
+        assert len(captured_cache_data) == 1
+        assert captured_cache_data[0]["ISU_SRT_CD"] == "005930"
+        assert captured_cache_data[0]["per"] == 12.5
