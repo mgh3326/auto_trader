@@ -40,13 +40,15 @@ async def get_my_domestic_stocks(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """보유 국내 주식 조회 API (KIS + 수동 잔고 통합)"""
     try:
         kis = KISClient()
 
-        # 통합 증거금 조회 (예수금 확인용)
-        margin = await kis.inquire_integrated_margin()
-        krw_balance = margin.get("dnca_tot_amt", 0)
+        balance_data = await kis.inquire_domestic_cash_balance()
+        krw_balance = float(
+            balance_data.get("dnca_tot_amt")
+            or balance_data.get("stck_cash_ord_psbl_amt")
+            or 0
+        )
 
         # MergedPortfolioService를 사용하여 KIS + 수동 잔고 통합
         service = MergedPortfolioService(db)

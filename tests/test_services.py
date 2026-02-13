@@ -634,10 +634,9 @@ class TestKISIntegratedMarginParams:
     @pytest.mark.asyncio
     @patch("app.services.kis.httpx.AsyncClient")
     @patch("app.services.kis.settings")
-    async def test_inquire_integrated_margin_params_no_cma_field(
+    async def test_inquire_integrated_margin_params_includes_cma_field(
         self, mock_settings, mock_client_class
     ):
-        """inquire_integrated_margin 실제 요청 파라미터 검증: CMA_EVLU_AMT_ICLD_YN 미포함."""
         from app.services.kis import (
             INTEGRATED_MARGIN_TR,
             INTEGRATED_MARGIN_URL,
@@ -669,10 +668,59 @@ class TestKISIntegratedMarginParams:
         params = call_args.kwargs["params"]
         headers = call_args.kwargs["headers"]
 
-        assert "CMA_EVLU_AMT_ICLD_YN" not in params
-        assert set(params.keys()) == {"CANO", "ACNT_PRDT_CD"}
+        assert "CMA_EVLU_AMT_ICLD_YN" in params
+        assert params["CMA_EVLU_AMT_ICLD_YN"] == "N"
+        assert "CANO" in params
+        assert "ACNT_PRDT_CD" in params
         assert headers["tr_id"] == INTEGRATED_MARGIN_TR
         assert INTEGRATED_MARGIN_URL in call_args.args[0]
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_inquire_integrated_margin_opsq2001_retry_with_y(
+        self, mock_settings, mock_client_class
+    ):
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        first_response = MagicMock()
+        first_response.json.return_value = {
+            "rt_cd": "1",
+            "msg_cd": "OPSQ2001",
+            "msg1": "필수항목 누락: CMA_EVLU_AMT_ICLD_YN",
+        }
+
+        second_response = MagicMock()
+        second_response.json.return_value = {
+            "rt_cd": "0",
+            "output1": {"dnca_tot_amt": "1000000"},
+        }
+
+        mock_client.get.side_effect = [first_response, second_response]
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        result = await client.inquire_integrated_margin()
+
+        assert mock_client.get.call_count == 2
+
+        first_call_params = mock_client.get.call_args_list[0].kwargs["params"]
+        assert first_call_params["CMA_EVLU_AMT_ICLD_YN"] == "N"
+
+        second_call_params = mock_client.get.call_args_list[1].kwargs["params"]
+        assert second_call_params["CMA_EVLU_AMT_ICLD_YN"] == "Y"
+
+        assert result["dnca_tot_amt"] == 1000000.0
 
 
 class TestKISFailureLogging:
@@ -729,7 +777,6 @@ class TestKISFailureLogging:
     async def test_inquire_integrated_margin_logs_failure_details(
         self, mock_settings, mock_client_class, caplog
     ):
-        """inquire_integrated_margin 실패 시 endpoint, tr_id, 실제 key 이름 로깅."""
         import logging
 
         from app.services.kis import (
@@ -749,8 +796,8 @@ class TestKISFailureLogging:
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "rt_cd": "1",
-            "msg_cd": "OPSQ2001",
-            "msg1": "CMA_EVLU_AMT_ICLD_YN error",
+            "msg_cd": "OTHER_ERROR",
+            "msg1": "Some other error",
         }
         mock_client.get.return_value = mock_response
 
@@ -758,11 +805,11 @@ class TestKISFailureLogging:
         client._token_manager = AsyncMock()
         client._token_manager.get_token = AsyncMock(return_value="test_token")
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.ERROR):
             with pytest.raises(RuntimeError):
                 await client.inquire_integrated_margin()
 
-        error_logs = [r for r in caplog.records if r.levelno == logging.ERROR]
+        error_logs = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert len(error_logs) >= 1
 
         error_log = error_logs[0].message
@@ -771,16 +818,88 @@ class TestKISFailureLogging:
         assert INTEGRATED_MARGIN_TR in error_log
         assert "CANO" in error_log
         assert "ACNT_PRDT_CD" in error_log
-        assert "OPSQ2001" in error_log
+        assert "CMA_EVLU_AMT_ICLD_YN" in error_log
+        assert "OTHER_ERROR" in error_log
 
-        warning_logs = [r for r in caplog.records if r.levelno == logging.WARNING]
-        opsq_warning = any(
-            "OPSQ2001" in r.message
-            and INTEGRATED_MARGIN_URL in r.message
-            and INTEGRATED_MARGIN_TR in r.message
-            for r in warning_logs
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_inquire_integrated_margin_msg1_none_no_typeerror(
+        self, mock_settings, mock_client_class
+    ):
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "1",
+            "msg_cd": "OPSQ2001",
+            "msg1": None,
+        }
+        mock_client.get.return_value = mock_response
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await client.inquire_integrated_margin()
+
+        assert "OPSQ2001" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_inquire_integrated_margin_opsq2001_cma_warning_logged(
+        self, mock_settings, mock_client_class, caplog
+    ):
+        import logging
+
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        first_response = MagicMock()
+        first_response.json.return_value = {
+            "rt_cd": "1",
+            "msg_cd": "OPSQ2001",
+            "msg1": "CMA_EVLU_AMT_ICLD_YN 파라미터 오류입니다.",
+        }
+
+        second_response = MagicMock()
+        second_response.json.return_value = {
+            "rt_cd": "0",
+            "output1": {"dnca_tot_amt": "500000"},
+        }
+
+        mock_client.get.side_effect = [first_response, second_response]
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        with caplog.at_level(logging.WARNING):
+            result = await client.inquire_integrated_margin()
+
+        assert any(
+            "OPSQ2001" in record.message and "CMA_EVLU_AMT_ICLD_YN" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
         )
-        assert opsq_warning
+        assert result["dnca_tot_amt"] == 500000.0
 
     @pytest.mark.asyncio
     @patch("app.services.kis.httpx.AsyncClient")
@@ -833,3 +952,109 @@ class TestKISFailureLogging:
         assert "PDNO" in error_log
         assert "ORD_QTY" in error_log
         assert "ORD_UNPR" in error_log
+
+
+class TestKISOverseasDailyPrice:
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_inquire_overseas_daily_price_parses_output2(
+        self, mock_settings, mock_client_class
+    ):
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output2": [
+                {
+                    "xymd": "20260102",
+                    "open": "190.5",
+                    "high": "193.0",
+                    "low": "189.8",
+                    "clos": "192.2",
+                    "tvol": "1000",
+                },
+                {
+                    "xymd": "20260103",
+                    "open": "192.3",
+                    "high": "194.1",
+                    "low": "191.0",
+                    "clos": "193.8",
+                    "tvol": "1200",
+                },
+            ],
+        }
+        mock_client.get.return_value = mock_response
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        client._token_manager = AsyncMock()
+
+        result = await client.inquire_overseas_daily_price(symbol="AAPL", n=2)
+
+        assert len(result) == 2
+        assert list(result.columns) == ["date", "open", "high", "low", "close", "volume"]
+        assert float(result.iloc[-1]["close"]) == 193.8
+
+        params = mock_client.get.call_args.kwargs["params"]
+        assert params["GUBN"] == "0"
+        assert params["SYMB"] == "AAPL"
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_inquire_overseas_daily_price_retries_on_expired_token(
+        self, mock_settings, mock_client_class
+    ):
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        expired_response = MagicMock()
+        expired_response.status_code = 200
+        expired_response.json.return_value = {
+            "rt_cd": "1",
+            "msg_cd": "EGW00123",
+            "msg1": "token expired",
+        }
+
+        success_response = MagicMock()
+        success_response.status_code = 200
+        success_response.json.return_value = {
+            "rt_cd": "0",
+            "output2": [
+                {
+                    "xymd": "20260103",
+                    "open": "192.3",
+                    "high": "194.1",
+                    "low": "191.0",
+                    "clos": "193.8",
+                    "tvol": "1200",
+                }
+            ],
+        }
+
+        mock_client.get.side_effect = [expired_response, success_response]
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        client._token_manager = AsyncMock()
+        client._token_manager.clear_token = AsyncMock(return_value=None)
+
+        result = await client.inquire_overseas_daily_price(symbol="AAPL", n=1)
+
+        assert len(result) == 1
+        assert mock_client.get.call_count == 2
+        client._token_manager.clear_token.assert_awaited_once()

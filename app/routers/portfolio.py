@@ -55,8 +55,8 @@ async def get_merged_portfolio(
 
             # KRW 잔고 조회
             try:
-                margin = await kis_client.inquire_integrated_margin()
-                krw_balance = float(margin.get("dnca_tot_amt", 0))
+                balance_data = await kis_client.inquire_domestic_cash_balance()
+                krw_balance = float(balance_data.get("dnca_tot_amt") or 0)
             except Exception as e:
                 logger.warning(f"Failed to get KRW balance: {e}")
 
