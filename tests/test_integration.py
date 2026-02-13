@@ -44,7 +44,7 @@ class TestApplicationIntegration:
         """Test application structure and configuration."""
         app = client.app
         assert app.title == "KIS Auto Screener"
-        assert app.version == "0.1.0"
+        assert app.version == "0.2.0"
 
     @patch("app.services.upbit.httpx.AsyncClient")
     @patch("app.services.yahoo.yf.Ticker")

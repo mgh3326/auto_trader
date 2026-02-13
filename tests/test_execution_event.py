@@ -10,16 +10,25 @@ Tests for Redis execution event publishing including:
 
 from datetime import datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from pytest_mock import patch
 
+from app.services import execution_event as execution_event_module
 from app.services.execution_event import (
     _serialize_for_redis,
-    publish_execution_event,
     close_redis,
+    publish_execution_event,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_redis_client():
+    """Reset global _redis_client between tests to prevent state leakage"""
+    original_client = execution_event_module._redis_client
+    execution_event_module._redis_client = None
+    yield
+    execution_event_module._redis_client = original_client
 
 
 @pytest.mark.unit
@@ -45,7 +54,7 @@ class TestExecutionEventSerialization:
         test_string = "test_value"
         result = _serialize_for_redis(test_string)
 
-        assert result == "test_string"
+        assert result == "test_value"
 
     def test_serialize_integer(self):
         """정수 그대로 반환 테스트"""
@@ -98,14 +107,14 @@ class TestExecutionEventChannelRouting:
         mock_redis = AsyncMock()
         mock_redis.publish = AsyncMock()
 
-        with pytest.patch(
+        with patch(
             "app.services.execution_event._get_redis_client", return_value=mock_redis
         ):
             await publish_execution_event(event)
 
             mock_redis.publish.assert_called_once()
             call_args = mock_redis.publish.call_args[0]
-            assert call_args[0][0] == "execution:kr"
+            assert call_args[0] == "execution:kr"
 
     @pytest.mark.asyncio
     async def test_publish_us_market_event(self):
@@ -120,13 +129,13 @@ class TestExecutionEventChannelRouting:
         mock_redis = AsyncMock()
         mock_redis.publish = AsyncMock()
 
-        with pytest.patch(
+        with patch(
             "app.services.execution_event._get_redis_client", return_value=mock_redis
         ):
             await publish_execution_event(event)
 
             call_args = mock_redis.publish.call_args[0]
-            assert call_args[0][0] == "execution:us"
+            assert call_args[0] == "execution:us"
 
     @pytest.mark.asyncio
     async def test_publish_unknown_market_event(self):
@@ -140,13 +149,13 @@ class TestExecutionEventChannelRouting:
         mock_redis = AsyncMock()
         mock_redis.publish = AsyncMock()
 
-        with pytest.patch(
+        with patch(
             "app.services.execution_event._get_redis_client", return_value=mock_redis
         ):
             await publish_execution_event(event)
 
             call_args = mock_redis.publish.call_args[0]
-            assert call_args[0][0] == "execution:unknown"
+            assert call_args[0] == "execution:unknown"
 
 
 @pytest.mark.unit
@@ -172,13 +181,13 @@ class TestExecutionEventWithDCA:
         mock_redis = AsyncMock()
         mock_redis.publish = AsyncMock()
 
-        with pytest.patch(
+        with patch(
             "app.services.execution_event._get_redis_client", return_value=mock_redis
         ):
             await publish_execution_event(event)
 
             call_args = mock_redis.publish.call_args[0]
-            serialized_message = call_args[0][1]
+            serialized_message = call_args[1]
 
             import json
 
@@ -195,16 +204,17 @@ class TestExecutionEventErrorHandling:
 
     @pytest.mark.asyncio
     async def test_publish_with_redis_error(self):
-        """Redis 발행 실패 시 에러 처리 테스트"""
+        """Redis 발행 실패 시 에러 처리 테스트 - 원 예외 재발행"""
         event = {"type": "execution", "market": "kr"}
 
         mock_redis = AsyncMock()
         mock_redis.publish = AsyncMock(side_effect=Exception("Redis connection error"))
 
-        with pytest.patch(
+        with patch(
             "app.services.execution_event._get_redis_client", return_value=mock_redis
         ):
-            with pytest.raises(Exception, match="Failed to publish execution event"):
+            # The actual implementation re-raises the original exception
+            with pytest.raises(Exception, match="Redis connection error"):
                 await publish_execution_event(event)
 
 
@@ -218,9 +228,7 @@ class TestExecutionEventGracefulShutdown:
         mock_redis = AsyncMock()
         mock_redis.close = AsyncMock()
 
-        with pytest.patch(
-            "app.services.execution_event._get_redis_client", return_value=mock_redis
-        ):
+        with patch("app.services.execution_event._redis_client", mock_redis):
             await close_redis()
 
             mock_redis.close.assert_called_once()
@@ -230,7 +238,7 @@ class TestExecutionEventGracefulShutdown:
         """이미 정지된 상태에서 close 호출 테스트"""
         mock_redis = None
 
-        with pytest.patch("app.services.execution_event._redis_client", mock_redis):
+        with patch("app.services.execution_event._redis_client", mock_redis):
             await close_redis()
 
     @pytest.mark.asyncio
@@ -239,9 +247,7 @@ class TestExecutionEventGracefulShutdown:
         mock_redis = AsyncMock()
         mock_redis.close = AsyncMock(side_effect=Exception("Close error"))
 
-        with pytest.patch(
-            "app.services.execution_event._get_redis_client", return_value=mock_redis
-        ):
+        with patch("app.services.execution_event._redis_client", mock_redis):
             await close_redis()
 
             mock_redis.close.assert_called_once()

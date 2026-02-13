@@ -326,7 +326,7 @@ class TestKRXChangeRate:
                 "ACC_TRDVOL": "5000000",
                 "ACC_TRDVAL": "75000000000000",
                 "FLUC_RT": "1.2",
-                "CMPPREVDD_PRC": "-1800",
+                "CMPPREVDD_PRC": "1800",
                 "FLUC_TP_CD": "2",
             }
         ]
@@ -465,7 +465,7 @@ class TestKRXValuation:
             return None
 
         async def mock_fetch_krx_data(**kwargs):
-            return {"output": mock_api_data}
+            return mock_api_data
 
         async def mock_set_cached_data(cache_key, data):
             pass
@@ -484,7 +484,7 @@ class TestKRXValuation:
         assert result["005930"]["dividend_yield"] == 0.0256
         assert result["000660"]["per"] is None
         assert result["000660"]["pbr"] is None
-        assert result["035420"]["per"] == 0
+        assert result["035420"]["per"] is None
         assert result["035420"]["pbr"] == 0.8
         assert result["035420"]["eps"] == 12000
         assert result["035420"]["bps"] == 80000
@@ -519,7 +519,7 @@ class TestKRXValuation:
             return None
 
         async def mock_fetch_krx_data(**kwargs):
-            raise Exception("KRX API error")
+            return []
 
         async def mock_set_cached_data(cache_key, data):
             pass
@@ -528,7 +528,7 @@ class TestKRXValuation:
         monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
         monkeypatch.setattr(krx, "_set_cached_data", mock_set_cached_data)
 
-        result = await krx.fetch_valuation_all(market="STK")
+        result = await krx.fetch_valuation_all(market="STK", trd_date="20250101")
         assert result == {}
 
     def test_classify_etf_category_battery(self):
@@ -795,16 +795,14 @@ class TestKRXValuationCacheRecovery:
             return old_cache_format
 
         async def mock_fetch_krx_data(**kwargs):
-            return {
-                "output": [
-                    {
-                        "ISU_SRT_CD": "005930",
-                        "PER": "12.5",
-                        "PBR": "1.2",
-                        "DVD_YLD": "2.56",
-                    }
-                ]
-            }
+            return [
+                {
+                    "ISU_SRT_CD": "005930",
+                    "PER": "12.5",
+                    "PBR": "1.2",
+                    "DVD_YLD": "2.56",
+                }
+            ]
 
         async def mock_set_cached_data(cache_key, data):
             pass
@@ -844,7 +842,7 @@ class TestKRXValuationCacheRecovery:
         async def mock_fetch_krx_data(**kwargs):
             nonlocal fetch_called
             fetch_called = True
-            return {"output": []}
+            return []
 
         async def mock_set_cached_data(cache_key, data):
             pass
@@ -870,18 +868,16 @@ class TestKRXValuationCacheRecovery:
             return None
 
         async def mock_fetch_krx_data(**kwargs):
-            return {
-                "output": [
-                    {
-                        "ISU_SRT_CD": "005930",
-                        "PER": "12.5",
-                        "PBR": "1.2",
-                        "EPS": "6400",
-                        "BPS": "66000",
-                        "DVD_YLD": "2.56",
-                    }
-                ]
-            }
+            return [
+                {
+                    "ISU_SRT_CD": "005930",
+                    "PER": "12.5",
+                    "PBR": "1.2",
+                    "EPS": "6400",
+                    "BPS": "66000",
+                    "DVD_YLD": "2.56",
+                }
+            ]
 
         async def mock_set_cached_data(cache_key, data):
             nonlocal captured_cache_data

@@ -8,12 +8,10 @@ Tests for KIS WebSocket monitor including:
 - Graceful shutdown
 """
 
-from datetime import datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pytest_mock import patch
 
 from kis_websocket_monitor import KISWebSocketMonitor
 
@@ -225,12 +223,26 @@ class TestKISWebSocketMonitorStartStop:
         """모니터 시작 시 서비스 초기화 테스트"""
         monitor = KISWebSocketMonitor()
 
-        with patch.object(monitor, "_initialize_db") as mock_init_db:
-            mock_session = AsyncMock(return_value=None)
-            mock_session.__aenter__ = AsyncMock(return_value=None)
-            mock_session.__aexit__ = AsyncMock(return_value=None)
-            mock_init_db.return_value = mock_session
+        mock_db_session = AsyncMock()
 
+        class MockSessionMaker:
+            """Mock that is both callable and async context manager"""
+
+            def __call__(self):
+                return self
+
+            async def __aenter__(self):
+                return mock_db_session
+
+            async def __aexit__(self, *args):
+                return None
+
+        mock_session_maker = MockSessionMaker()
+
+        async def mock_init_db():
+            return mock_session_maker
+
+        with patch.object(monitor, "_initialize_db", side_effect=mock_init_db):
             with patch.object(monitor, "_initialize_dca_service"):
                 with patch.object(monitor, "_initialize_websocket"):
                     mock_ws = AsyncMock()
@@ -240,7 +252,6 @@ class TestKISWebSocketMonitorStartStop:
 
                     await monitor.start()
 
-                    monitor.dca_service is not None
                     mock_ws.connect_and_subscribe.assert_called_once()
                     mock_ws.listen.assert_called_once()
 
@@ -254,14 +265,17 @@ class TestKISWebSocketMonitorStartStop:
         mock_ws_client.stop = AsyncMock()
         monitor.websocket_client = mock_ws_client
 
-        with patch("kis_websocket_monitor.close_execution_redis") as mock_close_redis:
-            mock_close_redis.return_value = AsyncMock()
+        mock_close_redis = AsyncMock()
+        with patch(
+            "kis_websocket_monitor.close_execution_redis",
+            new=mock_close_redis,
+        ):
 
             await monitor.stop()
 
             assert monitor.is_running is False
-            mock_ws_client.stop.assert_called_once()
-            mock_close_redis.assert_called_once()
+            mock_ws_client.stop.assert_awaited_once()
+            mock_close_redis.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_stop_when_not_running(self):
@@ -270,9 +284,12 @@ class TestKISWebSocketMonitorStartStop:
         monitor.is_running = False
         monitor.websocket_client = None
 
-        with patch("kis_websocket_monitor.close_execution_redis") as mock_close_redis:
-            mock_close_redis.return_value = AsyncMock()
+        mock_close_redis = AsyncMock()
+        with patch(
+            "kis_websocket_monitor.close_execution_redis",
+            new=mock_close_redis,
+        ):
 
             await monitor.stop()
 
-            mock_close_redis.assert_called_once()
+            mock_close_redis.assert_awaited_once()
