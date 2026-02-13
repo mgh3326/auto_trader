@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-from datetime import UTC
 import hashlib
 import json
 import logging
@@ -28,7 +27,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.symbol import to_db_symbol
 from app.mcp_server.env_utils import _env_int
-from app.mcp_server.tick_size import adjust_tick_size_kr
+from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.models.dca_plan import (
     DcaPlan,
     DcaPlanStep,
@@ -368,8 +367,6 @@ def _build_recommendation_for_equity(
             stop_loss = float(current_price) * 0.92
 
     if market_type == "equity_kr":
-        from app.mcp_server.tick_size import adjust_tick_size_kr
-
         stop_loss = adjust_tick_size_kr(stop_loss)
 
     recommendation["stop_loss"] = stop_loss
@@ -5033,7 +5030,26 @@ def register_tools(mcp: FastMCP) -> None:
             # Apply KRX tick size adjustment for limit orders
             original_price = order_price if order_price else None
             if order_type == "limit" and order_price > 0:
+                tick_size = get_tick_size_kr(float(order_price))
                 order_price = adjust_tick_size_kr(float(order_price), side)
+
+                if original_price is not None and order_price != original_price:
+                    logger.info(
+                        "KR limit order tick adjusted: symbol=%s side=%s original_price=%s tick_size=%s adjusted_price=%s",
+                        symbol,
+                        side,
+                        original_price,
+                        tick_size,
+                        order_price,
+                    )
+                else:
+                    logger.debug(
+                        "KR limit order tick valid: symbol=%s side=%s price=%s tick_size=%s tick_adjusted=false",
+                        symbol,
+                        side,
+                        original_price,
+                        tick_size,
+                    )
 
             if side == "buy":
                 result = await kis.order_korea_stock(
@@ -7167,7 +7183,7 @@ def register_tools(mcp: FastMCP) -> None:
                 if market_type == "equity_kr":
                     original_price = step_price
                     step_price = adjust_tick_size_kr(step_price, "buy")
-                    tick_adjusted = True
+                    tick_adjusted = step_price != original_price
                 else:
                     original_price = None
                     tick_adjusted = False

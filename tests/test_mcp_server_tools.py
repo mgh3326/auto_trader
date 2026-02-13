@@ -5684,6 +5684,154 @@ class TestCreateDcaPlan:
         # Equal weights: neutral RSI (30-50)
         assert result["summary"]["weight_mode"] == "equal"
 
+    async def test_create_dca_plan_kr_valid_ticks_omit_tick_adjusted_metadata(
+        self, monkeypatch
+    ):
+        """KR DCA plan should omit tick metadata when all prices are already valid ticks."""
+        tools = build_tools()
+
+        mock_sr_result = {
+            "symbol": "012450",
+            "current_price": 1_120_000.0,
+            "supports": [
+                {"price": 1_098_000.0, "source": "fib_23.6"},
+                {"price": 1_096_000.0, "source": "fib_38.2"},
+            ],
+            "resistances": [],
+        }
+
+        async def mock_sr(_symbol, _market):
+            return mock_sr_result
+
+        mock_indicator_result = {
+            "symbol": "012450",
+            "price": 1_120_000.0,
+            "indicators": {"rsi": {"14": 40.0}},
+        }
+
+        async def mock_indicators(_symbol, _indicators, _market):
+            return mock_indicator_result
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
+
+        created_plan = DcaPlan(
+            id=3,
+            user_id=1,
+            symbol="012450",
+            market="equity_kr",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[],
+        )
+        created_plan.total_amount = Decimal("3000000")
+
+        async def mock_create_plan(self, **kwargs):
+            return created_plan
+
+        async def mock_get_plan(self, plan_id, user_id=None):
+            return created_plan
+
+        monkeypatch.setattr(DcaService, "create_plan", mock_create_plan)
+        monkeypatch.setattr(DcaService, "get_plan", mock_get_plan)
+
+        result = await tools["create_dca_plan"](
+            symbol="012450",
+            total_amount=3_000_000.0,
+            splits=2,
+            strategy="support",
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+        assert len(result["plans"]) == 2
+        assert result["plans"][0]["price"] == 1_098_000.0
+        assert result["plans"][1]["price"] == 1_096_000.0
+        assert all("tick_adjusted" not in plan for plan in result["plans"])
+        assert all("original_price" not in plan for plan in result["plans"])
+
+    async def test_create_dca_plan_kr_invalid_ticks_include_tick_adjusted_metadata(
+        self, monkeypatch
+    ):
+        """KR DCA plan should include tick metadata only when adjustment is applied."""
+        tools = build_tools()
+
+        mock_sr_result = {
+            "symbol": "012450",
+            "current_price": 1_120_000.0,
+            "supports": [
+                {"price": 1_098_500.0, "source": "fib_23.6"},
+                {"price": 1_096_300.0, "source": "fib_38.2"},
+            ],
+            "resistances": [],
+        }
+
+        async def mock_sr(_symbol, _market):
+            return mock_sr_result
+
+        mock_indicator_result = {
+            "symbol": "012450",
+            "price": 1_120_000.0,
+            "indicators": {"rsi": {"14": 40.0}},
+        }
+
+        async def mock_indicators(_symbol, _indicators, _market):
+            return mock_indicator_result
+
+        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+
+        db = AsyncMock()
+        monkeypatch.setattr(
+            mcp_tools,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
+
+        created_plan = DcaPlan(
+            id=4,
+            user_id=1,
+            symbol="012450",
+            market="equity_kr",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[],
+        )
+        created_plan.total_amount = Decimal("3000000")
+
+        async def mock_create_plan(self, **kwargs):
+            return created_plan
+
+        async def mock_get_plan(self, plan_id, user_id=None):
+            return created_plan
+
+        monkeypatch.setattr(DcaService, "create_plan", mock_create_plan)
+        monkeypatch.setattr(DcaService, "get_plan", mock_get_plan)
+
+        result = await tools["create_dca_plan"](
+            symbol="012450",
+            total_amount=3_000_000.0,
+            splits=2,
+            strategy="support",
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert result["dry_run"] is True
+        assert len(result["plans"]) == 2
+        assert result["plans"][0]["price"] == 1_098_000.0
+        assert result["plans"][0]["tick_adjusted"] is True
+        assert result["plans"][0]["original_price"] == 1_098_500.0
+        assert result["plans"][1]["price"] == 1_096_000.0
+        assert result["plans"][1]["tick_adjusted"] is True
+        assert result["plans"][1]["original_price"] == 1_096_300.0
+
     async def test_create_dca_plan_places_order_and_marks_step_ordered(
         self, monkeypatch
     ):
@@ -7126,6 +7274,107 @@ async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
     assert len(result["accounts"]) == 1
     assert result["accounts"][0]["balance"] == 3500.0
     assert result["accounts"][0]["orderable"] == 3200.0
+
+
+@pytest.mark.asyncio
+async def test_place_order_kr_limit_keeps_valid_tick_without_adjustment_metadata(
+    monkeypatch
+):
+    """KR limit order with valid tick price should not include tick_adjusted metadata."""
+    tools = build_tools()
+
+    class MockKISClient:
+        async def order_korea_stock(self, stock_code, order_type, quantity, price):
+            return {"odno": "12345", "ord_qty": quantity, "ord_unpr": price}
+
+        async def inquire_domestic_cash_balance(self):
+            return {
+                "dnca_tot_amt": "50000000",
+                "stck_cash_ord_psbl_amt": "50000000",
+            }
+
+    async def fetch_quote(symbol):
+        return {"price": 1_100_000.0}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=10,
+        price=1_098_000,
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is False
+    assert result["preview"]["symbol"] == "005930"
+    assert result["preview"]["side"] == "buy"
+    assert result["preview"]["quantity"] == 10
+    assert result["preview"]["price"] == 1_098_000
+
+    assert "tick_adjusted" not in result["execution"]
+    assert "original_price" not in result["execution"]
+    assert "adjusted_price" not in result["execution"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_kr_limit_applies_tick_adjustment_and_metadata(
+    monkeypatch, caplog
+):
+    """KR limit order with invalid tick price should adjust and include metadata."""
+    import logging
+
+    caplog.set_level(logging.DEBUG)
+
+    tools = build_tools()
+
+    class MockKISClient:
+        async def order_korea_stock(self, stock_code, order_type, quantity, price):
+            return {"odno": "67890", "ord_qty": quantity, "ord_unpr": price}
+
+        async def inquire_domestic_cash_balance(self):
+            return {
+                "dnca_tot_amt": "50000000",
+                "stck_cash_ord_psbl_amt": "50000000",
+            }
+
+    async def fetch_quote(symbol):
+        return {"price": 1_100_000.0}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=10,
+        price=1_098_500,
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is False
+    assert result["preview"]["symbol"] == "005930"
+    assert result["preview"]["side"] == "buy"
+    assert result["preview"]["quantity"] == 10
+
+    assert result["execution"]["tick_adjusted"] is True
+    assert result["execution"]["original_price"] == 1_098_500
+    assert result["execution"]["adjusted_price"] == 1_098_000
+
+    info_records = [
+        record for record in caplog.records if record.levelno >= logging.INFO
+    ]
+    info_messages = [record.message for record in info_records]
+
+    adjustment_logged = any(
+        "tick adjusted" in msg.lower() and "1098500" in msg for msg in info_messages
+    )
+    assert adjustment_logged, f"Expected tick adjustment log, got: {info_messages}"
 
 
 # ----------------------------------------------------------------------

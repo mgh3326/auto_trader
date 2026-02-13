@@ -3,28 +3,31 @@
 This module provides tick size adjustment logic following KRX's standard
 tick size table, which is required for placing limit orders on Korean stocks.
 
-Based on KRX market rules:
+Based on KRX market rules (2023+):
 - Buy orders: Round DOWN (floor) to nearest tick
 - Sell orders: Round UP (ceil) to nearest tick
 
-KRX Tick Size Table (KRW):
-| Price Range      | Tick Size |
-|------------------|------------|
-| ~2,000           | 1          |
-| 2,000-5,000      | 5          |
-| 5,000-20,000     | 10         |
-| 20,000-50,000     | 50         |
-| 50,000-200,000    | 100        |
-| 200,000-500,000   | 500        |
-| 500,000-1,000,000 | 1,000      |
-| 1,000,000~        | 5,000      |
+References:
+- KRX 유가증권시장 매매거래제도 일반: https://regulation.krx.co.kr/contents/RGL/03/03010100/RGL03010100.jsp
+- KRX 코스닥시장 매매거래제도 일반: https://regulation.krx.co.kr/contents/RGL/03/03020100/RGL03020100.jsp
+
+KRX Tick Size Table (KRW, 2023+):
+| Price Range       | Tick Size |
+|-------------------|-----------|
+| ~2,000            | 1         |
+| 2,000-5,000       | 5         |
+| 5,000-20,000      | 10        |
+| 20,000-50,000     | 50        |
+| 50,000-200,000    | 100       |
+| 200,000-500,000   | 500       |
+| 500,000~          | 1,000     |
 """
 
 import math
 
 
-def _get_tick_size(price: float) -> int:
-    """Return the tick size for a given price based on KRX rules.
+def get_tick_size_kr(price: float) -> int:
+    """Return the tick size for a given price based on KRX rules (2023+).
 
     Args:
         price: Stock price in KRW
@@ -44,10 +47,22 @@ def _get_tick_size(price: float) -> int:
         return 100
     elif price < 500000:
         return 500
-    elif price < 1000000:
-        return 1000
     else:
-        return 5000
+        return 1000
+
+
+def _get_tick_size(price: float) -> int:
+    """Return the tick size for a given price based on KRX rules.
+
+    DEPRECATED: Use get_tick_size_kr() instead.
+
+    Args:
+        price: Stock price in KRW
+
+    Returns:
+        Tick size in KRW
+    """
+    return get_tick_size_kr(price)
 
 
 def adjust_tick_size_kr(price: float, side: str = "buy") -> int:
@@ -69,8 +84,8 @@ def adjust_tick_size_kr(price: float, side: str = "buy") -> int:
         327000
         >>> adjust_tick_size_kr(327272, "sell")
         327500
-        >>> adjust_tick_size_kr(2392500, "buy")
-        2390000
+        >>> adjust_tick_size_kr(1098000, "buy")
+        1098000
         >>> adjust_tick_size_kr(15723, "buy")
         15720
     """
