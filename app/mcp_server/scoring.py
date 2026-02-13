@@ -316,3 +316,109 @@ def calc_composite_score(
     )
 
     return _clamp_score(composite)
+
+
+def _safe_float(value: Any, _default: float = 0.0) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def generate_reason(
+    stock: dict[str, Any],
+    strategy: str,
+    score: float | None = None,
+) -> str:
+    """Generate a rich recommendation reason string.
+
+    Args:
+        stock: Stock data dictionary with keys:
+            - rsi, rsi_14: RSI value (0-100)
+            - per: P/E ratio
+            - change_rate: Price change percentage
+            - volume: Trading volume
+            - dividend_yield: Dividend yield (decimal or percentage)
+            - sector: Sector name (optional)
+        strategy: Strategy name (e.g., "balanced", "growth", "value", "dividend", "momentum")
+        score: Composite score (optional, used as fallback)
+
+    Returns:
+        Formatted reason string with strategy tag and key metrics
+    """
+    parts: list[str] = []
+
+    def get_float(key: str, alt_key: str | None = None) -> float | None:
+        val = stock.get(key)
+        if val is None and alt_key:
+            val = stock.get(alt_key)
+        return _safe_float(val)
+
+    rsi = get_float("rsi", "rsi_14")
+    if rsi is not None:
+        if rsi <= 30:
+            parts.append(f"RSI {rsi:.1f} (과매도)")
+        elif rsi <= 40:
+            parts.append(f"RSI {rsi:.1f} (저평가 구간)")
+        elif rsi <= 50:
+            parts.append(f"RSI {rsi:.1f} (중립 하단)")
+        elif rsi <= 60:
+            parts.append(f"RSI {rsi:.1f} (중립)")
+        elif rsi <= 70:
+            parts.append(f"RSI {rsi:.1f} (중립 상단)")
+        else:
+            parts.append(f"RSI {rsi:.1f} (과매수 주의)")
+
+    per = get_float("per")
+    if per is not None and per > 0:
+        if per < 8:
+            parts.append(f"PER {per:.1f} (매우 저평가)")
+        elif per < 12:
+            parts.append(f"PER {per:.1f} (저평가)")
+        elif per < 18:
+            parts.append(f"PER {per:.1f} (적정)")
+        elif per < 25:
+            parts.append(f"PER {per:.1f} (약간 고평가)")
+        else:
+            parts.append(f"PER {per:.1f} (고평가)")
+
+    change_rate = get_float("change_rate")
+    if change_rate is not None:
+        if change_rate > 5:
+            parts.append(f"강한 상승 모멘텀 +{change_rate:.1f}%")
+        elif change_rate > 2:
+            parts.append(f"상승 모멘텀 +{change_rate:.1f}%")
+        elif change_rate < -5:
+            parts.append(f"급락 후 반등 기대 {change_rate:.1f}%")
+        elif change_rate < -2:
+            parts.append(f"하락 후 저점 매수 기회 {change_rate:.1f}%")
+
+    volume = get_float("volume")
+    if volume is not None and volume >= 1_000_000:
+        if volume >= 10_000_000:
+            parts.append(f"높은 거래량 {volume / 1_000_000:.0f}M")
+        else:
+            parts.append(f"양호한 거래량 {volume / 1_000_000:.1f}M")
+
+    dividend_yield = get_float("dividend_yield")
+    if dividend_yield is not None and dividend_yield > 0:
+        if dividend_yield < 1:
+            dividend_yield = dividend_yield * 100
+        if dividend_yield >= 5:
+            parts.append(f"고배당 {dividend_yield:.1f}%")
+        elif dividend_yield >= 3:
+            parts.append(f"배당 {dividend_yield:.1f}%")
+
+    sector = stock.get("sector")
+    if sector and isinstance(sector, str) and sector.strip():
+        parts.append(f"섹터: {sector.strip()}")
+
+    if not parts:
+        if score is not None:
+            parts.append(f"종합 점수 {score:.0f}점 기반")
+        else:
+            parts.append("종합 분석 기반")
+
+    return f"[{strategy}] {' | '.join(parts)}"

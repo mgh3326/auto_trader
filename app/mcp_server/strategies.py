@@ -59,8 +59,8 @@ STRATEGY_CONFIGS: dict[StrategyType, StrategyConfig] = {
         "screen_params": {
             "sort_by": "market_cap",
             "sort_order": "desc",
-            "max_per": 15.0,
-            "min_market_cap": 1000,
+            "max_per": 20.0,
+            "min_market_cap": 500,
         },
         "scoring_weights": {
             "rsi_weight": 0.30,
@@ -75,8 +75,8 @@ STRATEGY_CONFIGS: dict[StrategyType, StrategyConfig] = {
         "screen_params": {
             "sort_by": "dividend_yield",
             "sort_order": "desc",
-            "min_dividend_yield": 2.0,
-            "min_market_cap": 500,
+            "min_dividend_yield": 1.0,
+            "min_market_cap": 300,
         },
         "scoring_weights": {
             "rsi_weight": 0.15,

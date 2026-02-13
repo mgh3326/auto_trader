@@ -107,7 +107,9 @@ Strategy descriptions:
 Behavior:
 - Invalid `market` values raise `ValueError` (no silent fallback)
 - Strategy-specific `screen_params` are applied per market and unsupported filters are ignored with warnings
-- Screens candidates using internal screeners (max 100 candidates)
+- KR/Crypto screens candidates using internal screeners (max 100 candidates)
+- US uses `get_top_stocks(market="us", ranking_type="volume")` for candidate collection (max 50 candidates)
+- Dividend threshold input is normalized as percent when `>= 1` (e.g., `1.0 -> 0.01`, `3.0 -> 0.03`)
 - Excludes user holdings from all accounts (internal `account=None` query)
 - Applies strategy-weighted composite scoring (0-100)
 - Sorts by score and allocates budget with integer quantities

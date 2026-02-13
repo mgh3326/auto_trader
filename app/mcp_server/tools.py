@@ -48,7 +48,7 @@ try:
     from app.services.disclosures.dart import list_filings
 except ImportError:
     list_filings = None
-from app.mcp_server.scoring import calc_composite_score
+from app.mcp_server.scoring import calc_composite_score, generate_reason
 from app.mcp_server.strategies import (
     get_strategy_description,
     get_strategy_scoring_weights,
@@ -9237,8 +9237,7 @@ def register_tools(mcp: FastMCP) -> None:
         """
         if value is None:
             return None, None
-        # Treat values > 1 as percentage (e.g., 3.0 -> 0.03)
-        normalized_value = value / 100 if value > 1 else value
+        normalized_value = value / 100 if value >= 1 else value
         return value, normalized_value
 
     def _validate_screen_filters(
@@ -10040,41 +10039,7 @@ def register_tools(mcp: FastMCP) -> None:
         strategy: str,
         score: float,
     ) -> str:
-        parts = []
-        rsi = item.get("rsi") or item.get("rsi_14")
-        per = item.get("per")
-        change_rate = item.get("change_rate")
-        dividend_yield = item.get("dividend_yield")
-
-        if rsi is not None:
-            if rsi < 30:
-                parts.append(f"RSI {rsi:.1f} (과매도)")
-            elif rsi < 50:
-                parts.append(f"RSI {rsi:.1f} (저평가 구간)")
-            elif rsi > 70:
-                parts.append(f"RSI {rsi:.1f} (과매수 주의)")
-
-        if per is not None and per > 0:
-            if per < 10:
-                parts.append(f"PER {per:.1f} (저평가)")
-            elif per < 20:
-                parts.append(f"PER {per:.1f} (적정)")
-
-        if change_rate is not None:
-            if change_rate > 3:
-                parts.append(f"상승 모멘텀 +{change_rate:.1f}%")
-            elif change_rate < -3:
-                parts.append(f"하락 후 반등 기대 {change_rate:.1f}%")
-
-        if dividend_yield is not None and dividend_yield > 0:
-            dy = dividend_yield if dividend_yield < 1 else dividend_yield / 100
-            if dy >= 0.03:
-                parts.append(f"배당수익률 {dy * 100:.1f}%")
-
-        if not parts:
-            parts.append(f"종합 점수 {score:.0f}점")
-
-        return f"[{strategy}] {' | '.join(parts)}"
+        return generate_reason(item, strategy, score)
 
     def _normalize_candidate(item: dict[str, Any], market: str) -> dict[str, Any]:
         symbol = (
@@ -10125,7 +10090,10 @@ def register_tools(mcp: FastMCP) -> None:
         if not top_candidates:
             return [], round(budget, 2)
 
-        total_score = sum(max(_to_float(item.get("score"), default=0.0), 0.0) for item in top_candidates)
+        total_score = sum(
+            max(_to_float(item.get("score"), default=0.0), 0.0)
+            for item in top_candidates
+        )
         equal_ratio = 1.0 / len(top_candidates)
 
         allocated: list[dict[str, Any]] = []
@@ -10249,10 +10217,12 @@ def register_tools(mcp: FastMCP) -> None:
                 sort_by = "volume"
 
         if normalized_market == "us" and max_pbr is not None:
-            warnings.append("us market screener does not support max_pbr filter; ignored.")
+            warnings.append(
+                "us market screener does not support max_pbr filter; ignored."
+            )
             max_pbr = None
 
-        screen_result: dict[str, Any]
+        raw_candidates: list[dict[str, Any]] = []
         if normalized_market == "kr":
             screen_result = await _screen_kr(
                 market="kr",
@@ -10267,19 +10237,39 @@ def register_tools(mcp: FastMCP) -> None:
                 sort_order=sort_order,
                 limit=candidate_limit,
             )
+            if screen_result.get("error"):
+                return {
+                    "recommendations": [],
+                    "total_amount": 0,
+                    "remaining_budget": budget,
+                    "strategy": validated_strategy,
+                    "strategy_description": get_strategy_description(
+                        validated_strategy
+                    ),
+                    "candidates_screened": 0,
+                    "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
+                    "warnings": [*warnings, screen_result.get("error")],
+                }
+            raw_candidates = screen_result.get("results", [])
         elif normalized_market == "us":
-            screen_result = await _screen_us(
-                market="us",
-                asset_type=screen_asset_type,
-                category=screen_category,
-                min_market_cap=min_market_cap,
-                max_per=max_per,
-                min_dividend_yield=min_dividend_yield,
-                max_rsi=max_rsi,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                limit=candidate_limit,
-            )
+            us_limit = min(candidate_limit, 50)
+            top_stocks_fn = globals().get("get_top_stocks", get_top_stocks)
+            try:
+                top_result = await top_stocks_fn(
+                    market="us",
+                    ranking_type="volume",
+                    limit=us_limit,
+                )
+                if top_result.get("error"):
+                    logger.warning(f"US get_top_stocks failed: {top_result.get('error')}")
+                    warnings.append(f"US 후보 수집 실패: {top_result.get('error')}")
+                    raw_candidates = []
+                else:
+                    raw_candidates = top_result.get("rankings", [])
+            except Exception as exc:
+                logger.warning(f"US get_top_stocks exception: {exc}")
+                warnings.append(f"US 후보 수집 실패: {exc}")
+                raw_candidates = []
         else:
             screen_result = await _screen_crypto(
                 market="crypto",
@@ -10293,20 +10283,20 @@ def register_tools(mcp: FastMCP) -> None:
                 sort_order=sort_order,
                 limit=candidate_limit,
             )
-
-        if screen_result.get("error"):
-            return {
-                "recommendations": [],
-                "total_amount": 0,
-                "remaining_budget": budget,
-                "strategy": validated_strategy,
-                "strategy_description": get_strategy_description(validated_strategy),
-                "candidates_screened": 0,
-                "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
-                "warnings": [*warnings, screen_result.get("error")],
-            }
-
-        raw_candidates = screen_result.get("results", [])
+            if screen_result.get("error"):
+                return {
+                    "recommendations": [],
+                    "total_amount": 0,
+                    "remaining_budget": budget,
+                    "strategy": validated_strategy,
+                    "strategy_description": get_strategy_description(
+                        validated_strategy
+                    ),
+                    "candidates_screened": 0,
+                    "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
+                    "warnings": [*warnings, screen_result.get("error")],
+                }
+            raw_candidates = screen_result.get("results", [])
         candidates = [
             _normalize_candidate(c, normalized_market) for c in raw_candidates
         ]
@@ -10357,6 +10347,46 @@ def register_tools(mcp: FastMCP) -> None:
             deduped_candidates.append(candidate)
         if duplicate_count > 0:
             warnings.append(f"중복 심볼 {duplicate_count}건을 제거했습니다.")
+
+        rsi_missing_candidates = [
+            c for c in deduped_candidates[:20] if c.get("rsi_14") is None
+        ]
+        if rsi_missing_candidates:
+            rsi_semaphore = asyncio.Semaphore(5)
+            ind_fn = globals().get("_get_indicators_impl", _get_indicators_impl)
+
+            async def _fetch_rsi_for_candidate(
+                candidate: dict[str, Any],
+            ) -> dict[str, Any]:
+                async with rsi_semaphore:
+                    symbol = candidate.get("symbol", "")
+                    if not symbol:
+                        return candidate
+                    try:
+                        indicators = await ind_fn(symbol, ["rsi"], normalized_market)
+                        if indicators.get("error"):
+                            logger.debug(
+                                f"RSI fetch failed for {symbol}: {indicators.get('error')}"
+                            )
+                            return candidate
+                        rsi_data = indicators.get("indicators", {}).get("rsi", {})
+                        rsi_value = rsi_data.get("14") or rsi_data.get("rsi_14")
+                        if rsi_value is not None:
+                            candidate["rsi_14"] = _to_optional_float(rsi_value)
+                    except Exception as exc:
+                        logger.debug(f"RSI fetch exception for {symbol}: {exc}")
+                    return candidate
+
+            try:
+                updated_candidates = await asyncio.gather(
+                    *[_fetch_rsi_for_candidate(c) for c in rsi_missing_candidates],
+                    return_exceptions=True,
+                )
+                for i, updated in enumerate(updated_candidates):
+                    if not isinstance(updated, Exception):
+                        rsi_missing_candidates[i].update(updated)
+            except Exception as exc:
+                logger.debug(f"RSI batch fetch failed: {exc}")
 
         strategy_weights = get_strategy_scoring_weights(validated_strategy)
         scored_candidates = []
@@ -10436,3 +10466,4 @@ def register_tools(mcp: FastMCP) -> None:
     globals()["_build_recommend_reason"] = _build_recommend_reason
     globals()["_normalize_candidate"] = _normalize_candidate
     globals()["_allocate_budget"] = _allocate_budget
+    globals()["get_top_stocks"] = get_top_stocks

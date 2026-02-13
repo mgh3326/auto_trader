@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-import types
 from typing import Any
 
 import pytest
@@ -348,7 +346,7 @@ class TestRecommendStocksIntegration:
                 },
             ],
             valuations={
-                "333333": {"per": 12.0, "pbr": 1.0, "dividend_yield": 0.01},
+                "333333": {"per": 12.0, "pbr": 1.0, "dividend_yield": 0.005},
                 "444444": {"per": 12.0, "pbr": 1.0, "dividend_yield": 0.04},
             },
         )
@@ -428,42 +426,35 @@ class TestRecommendStocksIntegration:
     ):
         _mock_empty_holdings(monkeypatch)
 
-        def mock_yf_screen(*args: Any, **kwargs: Any) -> dict[str, Any]:
-            return {
-                "quotes": [
-                    {
-                        "symbol": "AAPL",
-                        "shortname": "Apple",
-                        "lastprice": 200.0,
-                        "percentchange": 1.1,
-                        "dayvolume": 10_000_000,
-                        "intradaymarketcap": 3_000_000_000_000,
-                        "peratio": 25.0,
-                        "forward_dividend_yield": 0.006,
-                    },
-                    {
-                        "symbol": "MSFT",
-                        "shortname": "Microsoft",
-                        "lastprice": 400.0,
-                        "percentchange": 0.8,
-                        "dayvolume": 8_000_000,
-                        "intradaymarketcap": 2_500_000_000_000,
-                        "peratio": 30.0,
-                        "forward_dividend_yield": 0.007,
-                    },
-                ],
-                "total": 2,
-            }
+        async def mock_get_us_rankings(
+            ranking_type: str, limit: int
+        ) -> tuple[list[dict[str, Any]], str]:
+            return [
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple",
+                    "price": 200.0,
+                    "change_rate": 1.1,
+                    "volume": 10_000_000,
+                    "market_cap": 3_000_000_000_000,
+                    "rank": 1,
+                },
+                {
+                    "symbol": "MSFT",
+                    "name": "Microsoft",
+                    "price": 400.0,
+                    "change_rate": 0.8,
+                    "volume": 8_000_000,
+                    "market_cap": 2_500_000_000_000,
+                    "rank": 2,
+                },
+            ], "yfinance"
 
-        monkeypatch.setattr(mcp_tools.yf, "screen", mock_yf_screen)
-
-        # Keep import path stable even if yfinance.screener is unavailable in env.
-        class DummyEquityQuery:
-            def __init__(self, *_args: Any, **_kwargs: Any):
-                pass
-
-        screener_module = types.SimpleNamespace(EquityQuery=DummyEquityQuery)
-        monkeypatch.setitem(sys.modules, "yfinance.screener", screener_module)
+        monkeypatch.setattr(
+            mcp_tools,
+            "_get_us_rankings",
+            mock_get_us_rankings,
+        )
 
         result = await recommend_stocks(
             budget=1_000,
@@ -477,6 +468,131 @@ class TestRecommendStocksIntegration:
             item["symbol"] in {"AAPL", "MSFT"} for item in result["recommendations"]
         )
         assert isinstance(result["warnings"], list)
+
+    @pytest.mark.asyncio
+    async def test_us_top_stocks_exception_returns_empty_with_warning(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_empty_holdings(monkeypatch)
+
+        async def mock_get_top_stocks_raises(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("US source timeout")
+
+        monkeypatch.setattr(mcp_tools, "get_top_stocks", mock_get_top_stocks_raises)
+
+        result = await recommend_stocks(
+            budget=2_000,
+            market="us",
+            strategy="growth",
+            max_positions=2,
+        )
+
+        assert result["recommendations"] == []
+        assert result["total_amount"] == 0
+        assert result["remaining_budget"] == 2_000
+        assert any("US 후보 수집 실패" in warning for warning in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_rsi_enrichment_populates_missing_rsi(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "777777",
+                    "name": "RSI테스트1",
+                    "close": 10_000,
+                    "volume": 1_500_000,
+                    "change_rate": 1.0,
+                    "market_cap": 1500,
+                },
+                {
+                    "code": "888888",
+                    "name": "RSI테스트2",
+                    "close": 12_000,
+                    "volume": 1_700_000,
+                    "change_rate": 0.8,
+                    "market_cap": 1700,
+                },
+            ],
+            valuations={
+                "777777": {"per": 11.0, "pbr": 1.0, "dividend_yield": 0.02},
+                "888888": {"per": 12.0, "pbr": 1.1, "dividend_yield": 0.02},
+            },
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        async def mock_get_indicators_impl(
+            symbol: str, indicators: list[str], market: str | None = None
+        ) -> dict[str, Any]:
+            assert indicators == ["rsi"]
+            return {
+                "symbol": symbol,
+                "instrument_type": "equity_kr",
+                "source": "mock",
+                "indicators": {"rsi": {"14": 37.5}},
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_get_indicators_impl)
+
+        result = await recommend_stocks(
+            budget=1_000_000,
+            market="kr",
+            strategy="balanced",
+            max_positions=2,
+        )
+
+        assert result["recommendations"]
+        assert all(rec["rsi_14"] is not None for rec in result["recommendations"])
+
+    @pytest.mark.asyncio
+    async def test_reason_includes_rich_context(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "999999",
+                    "name": "리즌테스트",
+                    "close": 15_000,
+                    "volume": 12_000_000,
+                    "change_rate": 6.0,
+                    "market_cap": 2000,
+                }
+            ],
+            valuations={
+                "999999": {"per": 7.5, "pbr": 0.9, "dividend_yield": 0.05},
+            },
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        async def mock_get_indicators_impl(
+            symbol: str, indicators: list[str], market: str | None = None
+        ) -> dict[str, Any]:
+            return {
+                "symbol": symbol,
+                "instrument_type": "equity_kr",
+                "source": "mock",
+                "indicators": {"rsi": {"14": 28.0}},
+            }
+
+        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_get_indicators_impl)
+
+        result = await recommend_stocks(
+            budget=300_000,
+            market="kr",
+            strategy="balanced",
+            max_positions=1,
+        )
+
+        assert result["recommendations"]
+        reason = result["recommendations"][0]["reason"]
+        assert reason.startswith("[balanced]")
+        assert "RSI" in reason
+        assert "PER" in reason
+        assert "거래량" in reason or "모멘텀" in reason or "배당" in reason
 
     @pytest.mark.asyncio
     async def test_crypto_success_symbol_preserved(

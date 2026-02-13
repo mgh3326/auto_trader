@@ -936,6 +936,41 @@ class TestScreenStocksDividendYieldNormalization:
         assert result["filters_applied"]["min_dividend_yield_normalized"] == 0.03
 
     @pytest.mark.asyncio
+    async def test_kr_dividend_yield_normalization_one_percent_input(
+        self, mock_krx_stocks, monkeypatch
+    ):
+        """Test KR market with 1.0 input interpreted as 1% (0.01)."""
+
+        async def mock_fetch_stock_all_cached(market):
+            stocks = mock_krx_stocks.copy()
+            for stock in stocks:
+                stock["dividend_yield"] = 0.03
+            return stocks
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=1.0,
+            max_rsi=None,
+            sort_by="dividend_yield",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert result is not None
+        assert result["filters_applied"]["min_dividend_yield_input"] == 1.0
+        assert result["filters_applied"]["min_dividend_yield_normalized"] == 0.01
+
+    @pytest.mark.asyncio
     async def test_kr_dividend_yield_equivalence(self, mock_krx_stocks, monkeypatch):
         """Test that decimal (0.03) and percent (3.0) inputs produce identical results."""
 
