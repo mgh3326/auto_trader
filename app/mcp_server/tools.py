@@ -10200,6 +10200,18 @@ def register_tools(mcp: FastMCP) -> None:
         try:
             candidate_limit = min(100, max(50, max_positions * 20))
             warnings: list[str] = []
+            diagnostics: dict[str, Any] = {
+                "raw_candidates": 0,
+                "post_filter_candidates": 0,
+                "per_none_count": 0,
+                "pbr_none_count": 0,
+                "dividend_none_count": 0,
+                "dividend_zero_count": 0,
+                "strict_candidates": 0,
+                "fallback_candidates_added": 0,
+                "fallback_applied": False,
+                "active_thresholds": {},
+            }
 
             strategy_screen_params = get_strategy_screen_params(validated_strategy)
             sort_by = strategy_screen_params.get("sort_by", "volume")
@@ -10290,8 +10302,13 @@ def register_tools(mcp: FastMCP) -> None:
                             validated_strategy
                         ),
                         "candidates_screened": 0,
+                        "diagnostics": diagnostics,
+                        "fallback_applied": False,
                         "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
-                        "warnings": [*warnings, f"KR 후보 스크리닝 실패: {screen_error}"],
+                        "warnings": [
+                            *warnings,
+                            f"KR 후보 스크리닝 실패: {screen_error}",
+                        ],
                         "timestamp": datetime.datetime.now(UTC).isoformat(),
                     }
                 raw_candidates = screen_result.get("results", [])
@@ -10305,7 +10322,9 @@ def register_tools(mcp: FastMCP) -> None:
                         limit=us_limit,
                     )
                     if top_result.get("error"):
-                        top_error = str(top_result.get("error")).strip() or "unknown error"
+                        top_error = (
+                            str(top_result.get("error")).strip() or "unknown error"
+                        )
                         logger.warning(
                             "recommend_stocks US get_top_stocks failed: %s", top_error
                         )
@@ -10350,6 +10369,8 @@ def register_tools(mcp: FastMCP) -> None:
                             validated_strategy
                         ),
                         "candidates_screened": 0,
+                        "diagnostics": diagnostics,
+                        "fallback_applied": False,
                         "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
                         "warnings": [
                             *warnings,
@@ -10446,6 +10467,126 @@ def register_tools(mcp: FastMCP) -> None:
                 len(deduped_candidates),
             )
 
+            # Record strict stage diagnostics
+            diagnostics["raw_candidates"] = len(raw_candidates)
+            diagnostics["post_filter_candidates"] = len(candidates)
+            diagnostics["strict_candidates"] = len(deduped_candidates)
+            diagnostics["active_thresholds"] = {
+                "min_market_cap": min_market_cap,
+                "max_per": max_per,
+                "max_pbr": max_pbr,
+                "min_dividend_yield": min_dividend_yield,
+            }
+            for c in deduped_candidates:
+                if c.get("per") is None:
+                    diagnostics["per_none_count"] += 1
+                if c.get("pbr") is None:
+                    diagnostics["pbr_none_count"] += 1
+                dy = c.get("dividend_yield")
+                if dy is None:
+                    diagnostics["dividend_none_count"] += 1
+                elif dy <= 0:
+                    diagnostics["dividend_zero_count"] += 1
+
+            # 2-stage relaxation for value/dividend strategies
+            needs_fallback = (
+                validated_strategy in ("value", "dividend")
+                and normalized_market == "kr"
+                and len(deduped_candidates) < max_positions
+            )
+            if needs_fallback:
+                logger.info(
+                    "recommend_stocks 2-stage relaxation triggered strategy=%s strict=%d max_positions=%d",
+                    validated_strategy,
+                    len(deduped_candidates),
+                    max_positions,
+                )
+                fallback_params: dict[str, Any] = {}
+                if validated_strategy == "value":
+                    fallback_params = {
+                        "max_per": 25.0,
+                        "max_pbr": 2.0,
+                        "min_market_cap": 200,
+                    }
+                elif validated_strategy == "dividend":
+                    fallback_params = {
+                        "min_dividend_yield": 1.0,
+                        "min_market_cap": 200,
+                    }
+
+                try:
+                    fallback_result = await _screen_kr(
+                        market="kr",
+                        asset_type=screen_asset_type,
+                        category=screen_category,
+                        min_market_cap=fallback_params.get("min_market_cap"),
+                        max_per=fallback_params.get("max_per"),
+                        max_pbr=fallback_params.get("max_pbr"),
+                        min_dividend_yield=fallback_params.get("min_dividend_yield"),
+                        max_rsi=max_rsi,
+                        sort_by=sort_by,
+                        sort_order=sort_order,
+                        limit=candidate_limit,
+                    )
+                    if not fallback_result.get("error"):
+                        fallback_raw = fallback_result.get("results", [])
+                        fallback_normalized = [
+                            _normalize_candidate(c, normalized_market)
+                            for c in fallback_raw
+                        ]
+                        added_count = 0
+                        for fc in fallback_normalized:
+                            fsymbol = str(fc.get("symbol", "")).strip().upper()
+                            if not fsymbol or fsymbol in seen_symbols:
+                                continue
+                            if fsymbol in exclude_set:
+                                continue
+                            # For dividend: exclude None or <=0 dividend_yield
+                            if validated_strategy == "dividend":
+                                fdy = fc.get("dividend_yield")
+                                if fdy is None or fdy <= 0:
+                                    continue
+                            # Apply score penalty for value fallback with missing PER/PBR
+                            if validated_strategy == "value":
+                                penalty = 0
+                                if fc.get("per") is None:
+                                    penalty -= 12
+                                if fc.get("pbr") is None:
+                                    penalty -= 8
+                                fc["_fallback_penalty"] = penalty
+                            fc["symbol"] = fsymbol
+                            seen_symbols.add(fsymbol)
+                            deduped_candidates.append(fc)
+                            added_count += 1
+                        if added_count > 0:
+                            diagnostics["fallback_applied"] = True
+                            diagnostics["fallback_candidates_added"] = added_count
+                            fallback_thresholds = {
+                                "min_market_cap": fallback_params.get("min_market_cap"),
+                                "max_per": fallback_params.get("max_per"),
+                                "max_pbr": fallback_params.get("max_pbr"),
+                                "min_dividend_yield": fallback_params.get(
+                                    "min_dividend_yield"
+                                ),
+                            }
+                            diagnostics["fallback_thresholds"] = fallback_thresholds
+                            warnings.append(
+                                f"{validated_strategy} strict 단계에서 후보가 부족해 fallback을 적용했습니다 (추가 {added_count}건)"
+                            )
+                            logger.info(
+                                "recommend_stocks fallback applied strategy=%s added=%d total=%d",
+                                validated_strategy,
+                                added_count,
+                                len(deduped_candidates),
+                            )
+                except Exception as exc:
+                    fallback_error = str(exc).strip() or exc.__class__.__name__
+                    logger.warning(
+                        "recommend_stocks fallback screening failed: %s",
+                        fallback_error,
+                    )
+                    warnings.append(f"Fallback 스크리닝 실패: {fallback_error}")
+
             rsi_missing_candidates = [
                 c for c in deduped_candidates[:20] if c.get("rsi_14") is None
             ]
@@ -10465,7 +10606,9 @@ def register_tools(mcp: FastMCP) -> None:
                         if not symbol:
                             return candidate
                         try:
-                            indicators = await ind_fn(symbol, ["rsi"], normalized_market)
+                            indicators = await ind_fn(
+                                symbol, ["rsi"], normalized_market
+                            )
                             if indicators.get("error"):
                                 logger.debug(
                                     "recommend_stocks RSI fetch failed symbol=%s error=%s",
@@ -10515,7 +10658,9 @@ def register_tools(mcp: FastMCP) -> None:
                     volume_weight=strategy_weights.get("volume_weight", 0.15),
                     dividend_weight=strategy_weights.get("dividend_weight", 0.15),
                 )
-                scored_candidates.append({**item, "score": round(score, 2)})
+                fallback_penalty = item.pop("_fallback_penalty", 0)
+                final_score = max(0.0, score + fallback_penalty)
+                scored_candidates.append({**item, "score": round(final_score, 2)})
 
             scored_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
 
@@ -10578,6 +10723,8 @@ def register_tools(mcp: FastMCP) -> None:
                 "strategy": validated_strategy,
                 "strategy_description": get_strategy_description(validated_strategy),
                 "candidates_screened": len(candidates),
+                "diagnostics": diagnostics,
+                "fallback_applied": diagnostics.get("fallback_applied", False),
                 "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
                 "warnings": warnings,
                 "timestamp": datetime.datetime.now(UTC).isoformat(),

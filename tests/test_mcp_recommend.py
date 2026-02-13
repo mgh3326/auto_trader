@@ -475,7 +475,9 @@ class TestRecommendStocksIntegration:
     ):
         _mock_empty_holdings(monkeypatch)
 
-        async def mock_get_top_stocks_raises(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        async def mock_get_top_stocks_raises(
+            *args: Any, **kwargs: Any
+        ) -> dict[str, Any]:
             raise RuntimeError("US source timeout")
 
         monkeypatch.setattr(mcp_tools, "get_top_stocks", mock_get_top_stocks_raises)
@@ -918,7 +920,9 @@ class TestRecommendStocksIntegration:
         assert len(result["recommendations"]) <= max_positions
 
     @pytest.mark.asyncio
-    async def test_handles_missing_valuation_fields(self, recommend_stocks, monkeypatch):
+    async def test_handles_missing_valuation_fields(
+        self, recommend_stocks, monkeypatch
+    ):
         _mock_kr_sources(
             monkeypatch,
             stk=[
@@ -1048,3 +1052,258 @@ class TestRecommendStocksIntegration:
         assert "RuntimeError" in result["error"]
         assert "details" in result
         assert "Traceback" in result["details"]
+
+
+class TestTwoStageRelaxation:
+    """Test 2-stage relaxation for value/dividend strategies."""
+
+    @pytest.fixture
+    def recommend_stocks(self):
+        return build_tools()["recommend_stocks"]
+
+    @pytest.mark.asyncio
+    async def test_value_fallback_triggered(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "111111",
+                    "name": "엄격필터통과",
+                    "close": 10_000,
+                    "volume": 1_000_000,
+                    "change_rate": 1.0,
+                    "market_cap": 500,
+                },
+            ],
+            valuations={
+                "111111": {"per": 15.0, "pbr": 1.0, "dividend_yield": 0.02},
+            },
+        )
+
+        fallback_mock_called = False
+
+        async def mock_screen_kr(**kwargs):
+            nonlocal fallback_mock_called
+            if kwargs.get("max_per") == 25.0:
+                fallback_mock_called = True
+                return {
+                    "results": [
+                        {
+                            "code": "222222",
+                            "name": "완화필터통과",
+                            "close": 15_000,
+                            "volume": 800_000,
+                            "change_rate": 0.8,
+                            "market_cap": 250,
+                        }
+                    ]
+                }
+            return {
+                "results": [
+                    {
+                        "code": "111111",
+                        "name": "엄격필터통과",
+                        "close": 10_000,
+                        "volume": 1_000_000,
+                        "change_rate": 1.0,
+                        "market_cap": 500,
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(mcp_tools, "_screen_kr", mock_screen_kr)
+        _mock_empty_holdings(monkeypatch)
+
+        async def mock_valuation(code, market):
+            if code == "222222":
+                return {"per": 22.0, "pbr": 1.8, "dividend_yield": 0.01}
+            return {"per": 15.0, "pbr": 1.0, "dividend_yield": 0.02}
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_valuation_all_cached", lambda market="ALL": mock_valuation
+        )
+
+        result = await recommend_stocks(
+            budget=500_000,
+            market="kr",
+            strategy="value",
+            max_positions=3,
+        )
+
+        assert fallback_mock_called
+        assert result["fallback_applied"] is True
+        assert result["diagnostics"]["fallback_candidates_added"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_dividend_fallback_triggered(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "333333",
+                    "name": "고배당",
+                    "close": 10_000,
+                    "volume": 500_000,
+                    "change_rate": 0.5,
+                    "market_cap": 500,
+                },
+            ],
+            valuations={
+                "333333": {"per": 12.0, "pbr": 1.0, "dividend_yield": 0.04},
+            },
+        )
+
+        fallback_mock_called = False
+
+        async def mock_screen_kr(**kwargs):
+            nonlocal fallback_mock_called
+            if kwargs.get("min_dividend_yield") == 1.0:
+                fallback_mock_called = True
+                return {
+                    "results": [
+                        {
+                            "code": "444444",
+                            "name": "중간배당",
+                            "close": 12_000,
+                            "volume": 400_000,
+                            "change_rate": 0.3,
+                            "market_cap": 300,
+                        }
+                    ]
+                }
+            return {
+                "results": [
+                    {
+                        "code": "333333",
+                        "name": "고배당",
+                        "close": 10_000,
+                        "volume": 500_000,
+                        "change_rate": 0.5,
+                        "market_cap": 500,
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(mcp_tools, "_screen_kr", mock_screen_kr)
+        _mock_empty_holdings(monkeypatch)
+
+        async def mock_valuation(code, market):
+            if code == "444444":
+                return {"per": 10.0, "pbr": 0.8, "dividend_yield": 0.012}
+            return {"per": 12.0, "pbr": 1.0, "dividend_yield": 0.04}
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_valuation_all_cached", lambda market="ALL": mock_valuation
+        )
+
+        result = await recommend_stocks(
+            budget=500_000,
+            market="kr",
+            strategy="dividend",
+            max_positions=3,
+        )
+
+        assert fallback_mock_called
+        assert result["fallback_applied"] is True
+
+    @pytest.mark.asyncio
+    async def test_diagnostics_fields_present(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "005930",
+                    "name": "삼성전자",
+                    "close": 80_000,
+                    "volume": 1_000_000,
+                    "change_rate": 1.2,
+                    "market_cap": 1000,
+                },
+            ],
+            valuations={
+                "005930": {"per": 12.0, "pbr": 1.2, "dividend_yield": 0.02},
+            },
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        result = await recommend_stocks(
+            budget=500_000,
+            market="kr",
+            strategy="balanced",
+            max_positions=1,
+        )
+
+        assert "diagnostics" in result
+        diagnostics = result["diagnostics"]
+        assert "raw_candidates" in diagnostics
+        assert "post_filter_candidates" in diagnostics
+        assert "strict_candidates" in diagnostics
+        assert "fallback_applied" in diagnostics
+        assert "per_none_count" in diagnostics
+        assert "pbr_none_count" in diagnostics
+        assert "dividend_none_count" in diagnostics
+        assert "active_thresholds" in diagnostics
+        assert isinstance(result["fallback_applied"], bool)
+
+    @pytest.mark.asyncio
+    async def test_dividend_excludes_missing_dividend_yield_from_fallback(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[],
+            valuations={},
+        )
+
+        async def mock_screen_kr(**kwargs):
+            if kwargs.get("min_dividend_yield") == 1.0:
+                return {
+                    "results": [
+                        {
+                            "code": "555555",
+                            "name": "배당없음",
+                            "close": 10_000,
+                            "volume": 500_000,
+                            "change_rate": 0.5,
+                            "market_cap": 300,
+                        },
+                        {
+                            "code": "666666",
+                            "name": "배당있음",
+                            "close": 12_000,
+                            "volume": 400_000,
+                            "change_rate": 0.3,
+                            "market_cap": 350,
+                        },
+                    ]
+                }
+            return {"results": []}
+
+        monkeypatch.setattr(mcp_tools, "_screen_kr", mock_screen_kr)
+        _mock_empty_holdings(monkeypatch)
+
+        async def mock_valuation(code, market):
+            if code == "555555":
+                return {"per": 10.0, "pbr": 0.8, "dividend_yield": None}
+            return {"per": 11.0, "pbr": 0.9, "dividend_yield": 0.02}
+
+        monkeypatch.setattr(
+            mcp_tools, "fetch_valuation_all_cached", lambda market="ALL": mock_valuation
+        )
+
+        result = await recommend_stocks(
+            budget=500_000,
+            market="kr",
+            strategy="dividend",
+            max_positions=2,
+        )
+
+        symbols = {item["symbol"] for item in result["recommendations"]}
+        assert "555555" not in symbols
+        assert "666666" in symbols

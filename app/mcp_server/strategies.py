@@ -62,7 +62,8 @@ STRATEGY_CONFIGS: dict[StrategyType, StrategyConfig] = {
             "sort_by": "market_cap",
             "sort_order": "desc",
             "max_per": 20.0,
-            "min_market_cap": 500,
+            "max_pbr": 1.5,
+            "min_market_cap": 300,
         },
         # 가치 전략: PER/PBR 등 밸류 지표 비중을 가장 크게 둠.
         "scoring_weights": {
@@ -78,7 +79,7 @@ STRATEGY_CONFIGS: dict[StrategyType, StrategyConfig] = {
         "screen_params": {
             "sort_by": "dividend_yield",
             "sort_order": "desc",
-            "min_dividend_yield": 1.0,
+            "min_dividend_yield": 1.5,
             "min_market_cap": 300,
         },
         # 배당 전략: 배당수익률을 핵심으로, 나머지 지표는 보조적으로 사용.
