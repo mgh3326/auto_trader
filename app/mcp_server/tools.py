@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import time
-from datetime import UTC
 from typing import TYPE_CHECKING, Any, Literal
 
 try:
@@ -66,6 +65,16 @@ from data.stocks_info import (
     get_us_stocks_data,
 )
 from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
+
+from app.mcp_server.scoring import calc_composite_score
+from app.mcp_server.strategies import (
+    ACCOUNT_CONSTRAINTS,
+    get_strategy_description,
+    get_strategy_scoring_weights,
+    get_strategy_screen_params,
+    validate_account,
+    validate_strategy,
+)
 
 try:
     from app.services.disclosures.dart import list_filings
@@ -9724,6 +9733,7 @@ def register_tools(mcp: FastMCP) -> None:
                     results,
                     min_market_cap=None,  # Already filtered by screener
                     max_per=None,  # Already filtered by screener
+                    max_pbr=None,  # Not supported by yfinance screener
                     min_dividend_yield=None,  # Already filtered by screener
                     max_rsi=max_rsi,
                 )
@@ -9791,10 +9801,13 @@ def register_tools(mcp: FastMCP) -> None:
         # Normalize candidate data structure
         for item in candidates:
             # Save original market code (coin symbol like KRW-BTC) for RSI calculation
-            item["original_market"] = item.get("market")
+            market_code = item.get("market")
+            item["original_market"] = market_code
 
             # Add market for reference
             item["market"] = "crypto"
+            if market_code:
+                item["symbol"] = market_code
 
             # Calculate change_rate from signed_change_rate
             if "change_rate" not in item:
@@ -9866,6 +9879,7 @@ def register_tools(mcp: FastMCP) -> None:
             candidates,
             min_market_cap=min_market_cap,
             max_per=None,  # Not applicable for crypto
+            max_pbr=None,  # Not applicable for crypto
             min_dividend_yield=None,  # Not applicable for crypto
             max_rsi=max_rsi,
         )
@@ -9996,6 +10010,430 @@ def register_tools(mcp: FastMCP) -> None:
                 message=f"Unsupported market: {market}",
             )
 
+    # ------------------------------------------------------------------
+    # recommend_stocks
+    # ------------------------------------------------------------------
+
+    def _normalize_recommend_market(market: str | None) -> str:
+        if market is None:
+            return "kr"
+        m = market.lower().strip()
+        if not m:
+            return "kr"
+
+        aliases = {
+            "kr": "kr",
+            "kis": "kr",
+            "krx": "kr",
+            "korea": "kr",
+            "kospi": "kr",
+            "kosdaq": "kr",
+            "us": "us",
+            "usa": "us",
+            "nyse": "us",
+            "nasdaq": "us",
+            "yahoo": "us",
+            "crypto": "crypto",
+            "upbit": "crypto",
+            "krw": "crypto",
+        }
+
+        normalized = aliases.get(m)
+        if normalized is None:
+            raise ValueError("market must be one of: kr, us, crypto")
+        return normalized
+
+    def _build_recommend_reason(
+        item: dict[str, Any],
+        strategy: str,
+        score: float,
+    ) -> str:
+        parts = []
+        rsi = item.get("rsi") or item.get("rsi_14")
+        per = item.get("per")
+        change_rate = item.get("change_rate")
+        dividend_yield = item.get("dividend_yield")
+
+        if rsi is not None:
+            if rsi < 30:
+                parts.append(f"RSI {rsi:.1f} (과매도)")
+            elif rsi < 50:
+                parts.append(f"RSI {rsi:.1f} (저평가 구간)")
+            elif rsi > 70:
+                parts.append(f"RSI {rsi:.1f} (과매수 주의)")
+
+        if per is not None and per > 0:
+            if per < 10:
+                parts.append(f"PER {per:.1f} (저평가)")
+            elif per < 20:
+                parts.append(f"PER {per:.1f} (적정)")
+
+        if change_rate is not None:
+            if change_rate > 3:
+                parts.append(f"상승 모멘텀 +{change_rate:.1f}%")
+            elif change_rate < -3:
+                parts.append(f"하락 후 반등 기대 {change_rate:.1f}%")
+
+        if dividend_yield is not None and dividend_yield > 0:
+            dy = dividend_yield if dividend_yield < 1 else dividend_yield / 100
+            if dy >= 0.03:
+                parts.append(f"배당수익률 {dy * 100:.1f}%")
+
+        if not parts:
+            parts.append(f"종합 점수 {score:.0f}점")
+
+        return f"[{strategy}] {' | '.join(parts)}"
+
+    def _normalize_candidate(item: dict[str, Any], market: str) -> dict[str, Any]:
+        symbol = (
+            item.get("symbol")
+            or item.get("code")
+            or item.get("original_market")
+            or item.get("market", "")
+        )
+        normalized = {
+            "symbol": symbol,
+            "name": item.get("name") or item.get("shortname") or "",
+            "price": _to_float(
+                item.get("close") or item.get("price") or item.get("trade_price")
+            ),
+            "change_rate": _to_float(item.get("change_rate") or 0),
+            "volume": _to_int(item.get("volume") or 0),
+            "market_cap": _to_float(item.get("market_cap") or 0),
+            "per": _to_optional_float(item.get("per")),
+            "pbr": _to_optional_float(item.get("pbr")),
+            "dividend_yield": _to_optional_float(item.get("dividend_yield")),
+            "rsi_14": _to_optional_float(item.get("rsi") or item.get("rsi_14")),
+            "market": market,
+        }
+        return normalized
+
+    def _allocate_budget(
+        candidates: list[dict[str, Any]],
+        budget: float,
+        max_positions: int,
+    ) -> tuple[list[dict[str, Any]], float]:
+        if not candidates or budget <= 0:
+            return [], round(budget, 2)
+
+        # Prevent duplicate symbol allocation and invalid prices.
+        deduped_candidates: list[dict[str, Any]] = []
+        seen_symbols: set[str] = set()
+        for item in candidates:
+            symbol = str(item.get("symbol", "")).strip().upper()
+            price = _to_float(item.get("price"), default=0.0)
+            if not symbol or symbol in seen_symbols:
+                continue
+            if price <= 0:
+                continue
+            seen_symbols.add(symbol)
+            deduped_candidates.append(item)
+
+        top_candidates = deduped_candidates[:max_positions]
+        if not top_candidates:
+            return [], round(budget, 2)
+
+        total_score = sum(max(_to_float(item.get("score"), default=0.0), 0.0) for item in top_candidates)
+        equal_ratio = 1.0 / len(top_candidates)
+
+        allocated: list[dict[str, Any]] = []
+        remaining = float(budget)
+
+        for item in top_candidates:
+            price = item.get("price", 0)
+            score = max(_to_float(item.get("score"), default=0.0), 0.0)
+            alloc_ratio = (score / total_score) if total_score > 0 else equal_ratio
+            target_amount = budget * alloc_ratio
+            quantity = int(target_amount / price) if price > 0 else 0
+            if quantity <= 0:
+                continue
+
+            amount = price * quantity
+            if amount > remaining:
+                quantity = int(remaining / price)
+                if quantity <= 0:
+                    continue
+                amount = price * quantity
+
+            remaining -= amount
+
+            allocated.append(
+                {
+                    **item,
+                    "quantity": quantity,
+                    "amount": round(amount, 2),
+                }
+            )
+
+        # Use remaining budget on the highest-score affordable recommendation.
+        if allocated and remaining > 0:
+            sorted_allocated = sorted(
+                allocated,
+                key=lambda item: _to_float(item.get("score"), default=0.0),
+                reverse=True,
+            )
+            for rec in sorted_allocated:
+                price = _to_float(rec.get("price"), default=0.0)
+                if price <= 0 or remaining < price:
+                    continue
+                extra_qty = int(remaining / price)
+                if extra_qty <= 0:
+                    continue
+                extra_amount = price * extra_qty
+                rec["quantity"] += extra_qty
+                rec["amount"] = round(rec.get("amount", 0) + extra_amount, 2)
+                remaining -= extra_amount
+                break
+
+        return allocated, round(remaining, 2)
+
+    @mcp.tool(
+        name="recommend_stocks",
+        description=(
+            "예산과 전략에 따라 주식을 추천합니다. "
+            "screen_stocks를 활용하여 후보를 추출하고, 전략별 가중치로 점수를 매긴 뒤 "
+            "보유 종목을 제외하고 예산을 배분합니다. "
+            "지원 전략: balanced(균형), growth(성장), value(가치), dividend(배당), momentum(모멘텀)"
+        ),
+    )
+    async def recommend_stocks(
+        budget: float,
+        market: str = "kr",
+        account: str | None = None,
+        strategy: str = "balanced",
+        asset_type: Literal["stock", "etf"] | None = None,
+        exclude_symbols: list[str] | None = None,
+        sectors: list[str] | None = None,
+        max_positions: int = 5,
+    ) -> dict[str, Any]:
+        if budget <= 0:
+            raise ValueError("budget must be positive")
+        if max_positions < 1 or max_positions > 20:
+            raise ValueError("max_positions must be between 1 and 20")
+
+        validated_strategy = validate_strategy(strategy)
+        normalized_market = _normalize_recommend_market(market)
+        validated_account = validate_account(account, normalized_market, asset_type)
+
+        if validated_account is not None:
+            constraints = ACCOUNT_CONSTRAINTS[validated_account]
+            allowed_markets = constraints["allowed_markets"]
+            if normalized_market not in allowed_markets:
+                raise ValueError(
+                    f"Account '{account}' does not support market '{normalized_market}'. "
+                    f"Allowed: {', '.join(allowed_markets)}"
+                )
+
+        candidate_limit = min(100, max(50, max_positions * 20))
+        warnings: list[str] = []
+
+        strategy_screen_params = get_strategy_screen_params(validated_strategy)
+        sort_by = strategy_screen_params.get("sort_by", "volume")
+        sort_order = strategy_screen_params.get("sort_order", "desc")
+        min_market_cap = strategy_screen_params.get("min_market_cap")
+        max_per = strategy_screen_params.get("max_per")
+        max_pbr = strategy_screen_params.get("max_pbr")
+        min_dividend_yield = strategy_screen_params.get("min_dividend_yield")
+        max_rsi = strategy_screen_params.get("max_rsi")
+
+        screen_asset_type = asset_type
+        screen_category = sectors[0] if sectors else None
+
+        # Remove unsupported filters by market while keeping call safe.
+        if normalized_market == "crypto":
+            if screen_asset_type is not None:
+                warnings.append(
+                    "crypto market ignores asset_type filter; request value was ignored."
+                )
+            if screen_category is not None:
+                warnings.append(
+                    "crypto market does not support sectors/category filter; ignored."
+                )
+            screen_asset_type = None
+            screen_category = None
+            if max_per is not None:
+                warnings.append(
+                    "crypto market does not support max_per filter; ignored."
+                )
+                max_per = None
+            if max_pbr is not None:
+                warnings.append(
+                    "crypto market does not support max_pbr filter; ignored."
+                )
+                max_pbr = None
+            if min_dividend_yield is not None:
+                warnings.append(
+                    "crypto market does not support min_dividend_yield filter; ignored."
+                )
+                min_dividend_yield = None
+            if sort_by == "dividend_yield":
+                warnings.append(
+                    "crypto market does not support dividend_yield sorting; fallback to volume."
+                )
+                sort_by = "volume"
+
+        if normalized_market == "us" and max_pbr is not None:
+            warnings.append("us market screener does not support max_pbr filter; ignored.")
+            max_pbr = None
+
+        screen_result: dict[str, Any]
+        if normalized_market == "kr":
+            screen_result = await _screen_kr(
+                market="kr",
+                asset_type=screen_asset_type,
+                category=screen_category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                max_pbr=max_pbr,
+                min_dividend_yield=min_dividend_yield,
+                max_rsi=max_rsi,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=candidate_limit,
+            )
+        elif normalized_market == "us":
+            screen_result = await _screen_us(
+                market="us",
+                asset_type=screen_asset_type,
+                category=screen_category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                min_dividend_yield=min_dividend_yield,
+                max_rsi=max_rsi,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=candidate_limit,
+            )
+        else:
+            screen_result = await _screen_crypto(
+                market="crypto",
+                asset_type=screen_asset_type,
+                category=screen_category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                min_dividend_yield=min_dividend_yield,
+                max_rsi=max_rsi,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=candidate_limit,
+            )
+
+        if screen_result.get("error"):
+            return {
+                "recommendations": [],
+                "total_amount": 0,
+                "remaining_budget": budget,
+                "strategy": validated_strategy,
+                "strategy_description": get_strategy_description(validated_strategy),
+                "candidates_screened": 0,
+                "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
+                "warnings": [*warnings, screen_result.get("error")],
+            }
+
+        raw_candidates = screen_result.get("results", [])
+        candidates = [
+            _normalize_candidate(c, normalized_market) for c in raw_candidates
+        ]
+
+        exclude_set: set[str] = set()
+        if exclude_symbols:
+            exclude_set.update(s.upper().strip() for s in exclude_symbols if s)
+
+        try:
+            (
+                holdings_positions,
+                holdings_errors,
+                _,
+                _,
+            ) = await _collect_portfolio_positions(
+                account=account,
+                market=normalized_market,
+                include_current_price=False,
+                user_id=_MCP_USER_ID,
+            )
+            for pos in holdings_positions:
+                symbol = pos.get("symbol", "")
+                if symbol:
+                    exclude_set.add(symbol.upper())
+            if holdings_errors:
+                warnings.append(
+                    f"보유 종목 조회 중 일부 오류: {len(holdings_errors)}건"
+                )
+        except Exception as e:
+            warnings.append(f"보유 종목 조회 실패: {e}")
+
+        filtered_candidates = [
+            c for c in candidates if c.get("symbol", "").upper() not in exclude_set
+        ]
+
+        deduped_candidates: list[dict[str, Any]] = []
+        seen_symbols: set[str] = set()
+        duplicate_count = 0
+        for candidate in filtered_candidates:
+            symbol = str(candidate.get("symbol", "")).strip().upper()
+            if not symbol:
+                continue
+            if symbol in seen_symbols:
+                duplicate_count += 1
+                continue
+            seen_symbols.add(symbol)
+            candidate["symbol"] = symbol
+            deduped_candidates.append(candidate)
+        if duplicate_count > 0:
+            warnings.append(f"중복 심볼 {duplicate_count}건을 제거했습니다.")
+
+        strategy_weights = get_strategy_scoring_weights(validated_strategy)
+        scored_candidates = []
+        for item in deduped_candidates:
+            score = calc_composite_score(
+                item,
+                rsi_weight=strategy_weights.get("rsi_weight", 0.20),
+                valuation_weight=strategy_weights.get("valuation_weight", 0.25),
+                momentum_weight=strategy_weights.get("momentum_weight", 0.25),
+                volume_weight=strategy_weights.get("volume_weight", 0.15),
+                dividend_weight=strategy_weights.get("dividend_weight", 0.15),
+            )
+            scored_candidates.append({**item, "score": round(score, 2)})
+
+        scored_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+        allocated, remaining_budget = _allocate_budget(
+            scored_candidates, budget, max_positions
+        )
+
+        recommendations = []
+        for item in allocated:
+            reason = _build_recommend_reason(
+                item, validated_strategy, item.get("score", 0)
+            )
+            recommendations.append(
+                {
+                    "symbol": item.get("symbol"),
+                    "name": item.get("name"),
+                    "price": item.get("price"),
+                    "quantity": item.get("quantity"),
+                    "amount": item.get("amount"),
+                    "score": item.get("score"),
+                    "reason": reason,
+                    "rsi_14": item.get("rsi_14"),
+                    "per": item.get("per"),
+                    "change_rate": item.get("change_rate"),
+                }
+            )
+
+        total_amount = sum(r.get("amount", 0) for r in recommendations)
+
+        return {
+            "recommendations": recommendations,
+            "total_amount": round(total_amount, 2),
+            "remaining_budget": remaining_budget,
+            "strategy": validated_strategy,
+            "strategy_description": get_strategy_description(validated_strategy),
+            "candidates_screened": len(candidates),
+            "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
+            "warnings": warnings,
+        }
+
     # Export nested functions to module globals for testability
     globals()["_preview_order"] = _preview_order
     globals()["_get_support_resistance_impl"] = _get_support_resistance_impl
@@ -10018,3 +10456,7 @@ def register_tools(mcp: FastMCP) -> None:
     globals()["_normalize_dividend_yield_threshold"] = (
         _normalize_dividend_yield_threshold
     )
+    globals()["_normalize_recommend_market"] = _normalize_recommend_market
+    globals()["_build_recommend_reason"] = _build_recommend_reason
+    globals()["_normalize_candidate"] = _normalize_candidate
+    globals()["_allocate_budget"] = _allocate_budget
