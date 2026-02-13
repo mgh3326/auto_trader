@@ -4,8 +4,6 @@ import asyncio
 import datetime
 import hashlib
 import json
-import logging
-import re
 import time
 import traceback
 from datetime import UTC
@@ -17,7 +15,6 @@ except ImportError:
     finnhub = None
 
 import httpx
-import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -26,7 +23,6 @@ if TYPE_CHECKING:
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.core.symbol import to_db_symbol
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.models.dca_plan import (
@@ -34,7 +30,6 @@ from app.models.dca_plan import (
     DcaPlanStep,
     DcaStepStatus,
 )
-from app.models.manual_holdings import MarketType
 from app.services import naver_finance
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
@@ -56,6 +51,70 @@ from app.mcp_server.strategies import (
     get_strategy_screen_params,
     validate_strategy,
 )
+from app.mcp_server.tooling.analysis_screening import (
+    _coingecko_cache_valid,
+    _funding_interpretation_text,
+    _map_coingecko_profile_to_output,
+    _map_crypto_row,
+    _map_kr_row,
+    _map_us_row,
+    _normalize_crypto_base_symbol,
+    _parse_naver_int,
+    _parse_naver_num,
+)
+from app.mcp_server.tooling.market_data import (
+    IndicatorType,
+    _calculate_atr,
+    _calculate_bollinger,
+    _calculate_ema,
+    _calculate_fibonacci,
+    _calculate_macd,
+    _calculate_pivot,
+    _calculate_rsi,
+    _calculate_sma,
+    _calculate_volume_profile,
+    _cluster_price_levels,
+    _compute_dca_price_levels,
+    _compute_indicators,
+    _compute_rsi_weights,
+    _format_fibonacci_source,
+    _split_support_resistance_levels,
+)
+from app.mcp_server.tooling.shared import (
+    _DEFAULT_MINIMUM_VALUES,
+    _INSTRUMENT_TO_MARKET,
+    _MCP_DCA_USER_ID,
+    _MCP_USER_ID,
+    _UPBIT_TICKER_BATCH_SIZE,
+    _build_holdings_summary,
+    _build_recommendation_for_equity,
+    _canonical_account_id,
+    _error_payload,
+    _format_filter_threshold,
+    _instrument_to_manual_market_type,
+    _is_crypto_market,
+    _is_korean_equity_code,
+    _is_position_symbol_match,
+    _is_us_equity_symbol,
+    _manual_market_to_instrument_type,
+    _match_account_filter,
+    _normalize_account_filter,
+    _normalize_market,
+    _normalize_position_symbol,
+    _normalize_rows,
+    _normalize_symbol_input,
+    _normalize_value,
+    _parse_holdings_market_filter,
+    _position_to_output,
+    _recalculate_profit_fields,
+    _resolve_market_type,
+    _to_float,
+    _to_int,
+    _to_optional_float,
+    _to_optional_int,
+    _value_for_minimum_filter,
+    logger,
+)
 from app.services.kis import KISClient
 from app.services.krx import (
     classify_etf_category,
@@ -73,730 +132,15 @@ from data.stocks_info import (
 )
 from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
 
-logger = logging.getLogger(__name__)
-
-
-def _is_korean_equity_code(symbol: str) -> bool:
-    """Check if symbol is a valid Korean equity code (6 alphanumeric characters).
-
-    Korean stock codes are 6 characters:
-    - Regular stocks: 6 digits (e.g., 005930)
-    - ETF/ETN: 6 alphanumeric (e.g., 0123G0, 0117V0)
-    """
-    s = symbol.strip().upper()
-    return len(s) == 6 and s.isalnum()
-
-
-def _is_crypto_market(symbol: str) -> bool:
-    s = symbol.strip().upper()
-    return s.startswith("KRW-") or s.startswith("USDT-")
-
-
-def _is_us_equity_symbol(symbol: str) -> bool:
-    s = symbol.strip().upper()
-    return (not _is_crypto_market(s)) and any(c.isalpha() for c in s)
-
-
-def _normalize_symbol_input(symbol: str | int, market: str | None = None) -> str:
-    """Normalize symbol input with market-specific rules.
-
-    Args:
-        symbol: Input symbol (str or int)
-        market: Market type hint (auto-detected if None)
-
-    Returns:
-        Normalized symbol string
-    """
-    # Convert to string and strip whitespace
-    s = str(symbol).strip()
-
-    # For Korean market integers, apply zfill(6) to preserve leading zeros
-    if market is None:
-        # Auto-detect market
-        if s.isdigit() and len(s) <= 6:
-            # Likely Korean stock code
-            s = s.zfill(6)
-    elif market.lower() in (
-        "kr",
-        "krx",
-        "korea",
-        "kospi",
-        "kosdaq",
-        "kis",
-        "equity_kr",
-        "naver",
-    ):
-        if s.isdigit():
-            s = s.zfill(6)
-
-    return s
-
-
-def _build_recommendation_for_equity(
-    analysis: dict[str, Any],
-    market_type: str,
-) -> dict[str, Any] | None:
-    quote = analysis.get("quote")
-    indicators = analysis.get("indicators")
-    sr = analysis.get("support_resistance")
-    opinions = analysis.get("opinions", {})
-    consensus = opinions.get("consensus")
-    valuation = analysis.get("valuation", {})
-
-    if not quote:
-        return None
-
-    current_price = quote.get("price") or quote.get("current_price")
-    if not current_price:
-        return None
-
-    recommendation: dict[str, Any] = {
-        "action": "hold",
-        "confidence": "low",
-        "buy_zones": [],
-        "sell_targets": [],
-        "stop_loss": None,
-        "reasoning": "",
-    }
-
-    reasoning_parts: list[str] = []
-
-    score = 0
-    max_score = 0
-
-    if indicators:
-        indicators_dict = indicators.get("indicators", indicators)
-
-        rsi_data = indicators_dict.get("rsi")
-        rsi = None
-        if isinstance(rsi_data, dict):
-            rsi = rsi_data.get("14") or rsi_data.get(14)
-        elif isinstance(rsi_data, (int, float)):
-            rsi = rsi_data
-
-        if rsi:
-            max_score += 2
-            if rsi < 30:
-                score += 2
-                reasoning_parts.append(f"RSI {rsi:.1f} (oversold)")
-            elif rsi < 40:
-                score += 1
-                reasoning_parts.append(f"RSI {rsi:.1f} (bearish)")
-            elif rsi > 70:
-                score -= 2
-                reasoning_parts.append(f"RSI {rsi:.1f} (overbought)")
-            elif rsi > 60:
-                score -= 1
-                reasoning_parts.append(f"RSI {rsi:.1f} (bullish)")
-
-    if consensus:
-        buy_count = consensus.get("buy_count", 0)
-        sell_count = consensus.get("sell_count", 0)
-        strong_buy_count = consensus.get("strong_buy_count", 0)
-        total = consensus.get("total_count", 0)
-
-        if total > 0:
-            max_score += 2
-            buy_ratio = buy_count / total
-            sell_ratio = sell_count / total
-
-            if buy_ratio > 0.6:
-                score += 2
-                if strong_buy_count > 0 and strong_buy_count >= buy_count / 2:
-                    reasoning_parts.append(
-                        f"Analyst consensus strong bullish ({buy_count} buy, {strong_buy_count} strong buy vs {sell_count} sell)"
-                    )
-                else:
-                    reasoning_parts.append(
-                        f"Analyst consensus bullish ({buy_count} buy vs {sell_count} sell)"
-                    )
-            elif buy_ratio > 0.4:
-                score += 1
-                reasoning_parts.append(
-                    f"Analyst consensus moderate ({buy_count} buy vs {sell_count} sell)"
-                )
-            elif sell_ratio > 0.6:
-                score -= 2
-                reasoning_parts.append(
-                    f"Analyst consensus bearish ({sell_count} sell vs {buy_count} buy)"
-                )
-            elif sell_ratio > 0.4:
-                score -= 1
-                reasoning_parts.append(
-                    f"Analyst consensus cautious ({sell_count} sell vs {buy_count} buy)"
-                )
-
-    if score >= 2:
-        recommendation["action"] = "buy"
-        recommendation["confidence"] = "high" if score >= 3 else "medium"
-    elif score <= -2:
-        recommendation["action"] = "sell"
-        recommendation["confidence"] = "high" if score <= -3 else "medium"
-    else:
-        recommendation["action"] = "hold"
-        recommendation["confidence"] = "low"
-
-    buy_zones_indicators: list[dict[str, Any]] = []
-
-    if indicators:
-        indicators_dict = indicators.get("indicators", indicators)
-        bb = indicators_dict.get("bollinger") or indicators_dict.get("bollinger_bands")
-        if bb and isinstance(bb, dict):
-            lower = bb.get("lower") or bb.get("lb")
-            if lower:
-                buy_zones_indicators.append(
-                    {
-                        "price": float(lower),
-                        "type": "bollinger_lower",
-                        "reasoning": "BB lower band",
-                    }
-                )
-
-    buy_zones_supports: list[dict[str, Any]] = []
-
-    if sr:
-        supports = sr.get("supports") or []
-        for s in supports[:3]:
-            price = s.get("price")
-            if price and isinstance(price, (int, float)) and price < current_price:
-                buy_zones_supports.append(
-                    {
-                        "price": float(price),
-                        "type": "support",
-                        "reasoning": f"Support at {price}",
-                    }
-                )
-
-    if indicators and sr and len(buy_zones_indicators) < 3:
-        indicators_dict = indicators.get("indicators", indicators)
-        bb = indicators_dict.get("bollinger") or indicators_dict.get("bollinger_bands")
-        if bb and isinstance(bb, dict):
-            lower = bb.get("lower") or bb.get("lb")
-            if lower:
-                lower_price = float(lower)
-                lower_price_diff = abs(lower_price - current_price)
-                if (
-                    lower_price < current_price
-                    and lower_price_diff < current_price * 0.05
-                ):
-                    buy_zones_indicators.append(
-                        {
-                            "price": lower_price,
-                            "type": "bollinger_lower_near",
-                            "reasoning": f"BB lower near ({lower_price_diff / current_price * 100:.1f}% below)",
-                        }
-                    )
-
-    if sr:
-        supports = sr.get("supports") or []
-        for s in supports:
-            price = s.get("price")
-            if price and isinstance(price, (int, float)) and price < current_price:
-                price_diff = current_price - float(price)
-                if price_diff < current_price * 0.05 and len(buy_zones_indicators) < 3:
-                    buy_zones_indicators.append(
-                        {
-                            "price": float(price),
-                            "type": "support_near",
-                            "reasoning": f"Near support ({price_diff / current_price * 100:.1f}% below)",
-                        }
-                    )
-                    break
-
-    # Combine and sort buy zones by price
-    all_buy_zones = buy_zones_indicators + buy_zones_supports
-    all_buy_zones.sort(key=lambda z: z["price"])
-    recommendation["buy_zones"] = all_buy_zones[:3]
-
-    sell_targets: list[dict[str, Any]] = []
-
-    if sr:
-        resistances = sr.get("resistances") or []
-        for r in resistances[:2]:
-            price = r.get("price")
-            if price and isinstance(price, (int, float)) and price > current_price:
-                sell_targets.append(
-                    {
-                        "price": float(price),
-                        "type": "resistance",
-                        "reasoning": f"Resistance at {price}",
-                    }
-                )
-
-    if consensus:
-        avg_target = consensus.get("avg_target_price")
-        max_target = consensus.get("max_target_price")
-        if avg_target:
-            sell_targets.append(
-                {
-                    "price": float(avg_target),
-                    "type": "consensus_avg",
-                    "reasoning": "Analyst consensus average target",
-                }
-            )
-        if max_target:
-            sell_targets.append(
-                {
-                    "price": float(max_target),
-                    "type": "consensus_max",
-                    "reasoning": "Analyst consensus max target",
-                }
-            )
-
-    # Sort sell targets by price
-    sell_targets.sort(key=lambda t: t["price"])
-    recommendation["sell_targets"] = sell_targets[:3]
-
-    stop_loss: float | None = None
-
-    if sr:
-        supports = sr.get("supports") or []
-        for s in supports:
-            price = s.get("price")
-            if price and isinstance(price, (int, float)) and price < current_price:
-                candidate = float(price) * 0.98
-                stop_loss = candidate
-                break
-
-    if stop_loss is None:
-        if valuation:
-            low_52w = valuation.get("low_52w")
-            if low_52w:
-                stop_loss = float(low_52w)
-            else:
-                stop_loss = float(current_price) * 0.92
-        else:
-            stop_loss = float(current_price) * 0.92
-
-    if market_type == "equity_kr":
-        stop_loss = adjust_tick_size_kr(stop_loss)
-
-    recommendation["stop_loss"] = stop_loss
-
-    if reasoning_parts:
-        recommendation["reasoning"] = "; ".join(reasoning_parts)
-    else:
-        recommendation["reasoning"] = "Insufficient data for detailed reasoning"
-
-    return recommendation
-
-
-def _normalize_market(market: str | None) -> str | None:
-    if not market:
-        return None
-    normalized = market.strip().lower()
-    if not normalized:
-        return None
-    mapping = {
-        "crypto": "crypto",
-        "upbit": "crypto",
-        "krw": "crypto",
-        "usdt": "crypto",
-        "kr": "equity_kr",
-        "krx": "equity_kr",
-        "korea": "equity_kr",
-        "kospi": "equity_kr",
-        "kosdaq": "equity_kr",
-        "kis": "equity_kr",
-        "equity_kr": "equity_kr",
-        "us": "equity_us",
-        "usa": "equity_us",
-        "nyse": "equity_us",
-        "nasdaq": "equity_us",
-        "yahoo": "equity_us",
-        "equity_us": "equity_us",
-    }
-    return mapping.get(normalized)
-
-
-def _resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
-    """Resolve market type and validate symbol.
-
-    Returns (market_type, normalized_symbol) or raises ValueError.
-    """
-    market_type = _normalize_market(market)
-
-    # Explicit market specified - validate symbol format
-    if market_type == "crypto":
-        symbol = symbol.upper()
-        if not _is_crypto_market(symbol):
-            raise ValueError("crypto symbols must include KRW-/USDT- prefix")
-        return "crypto", symbol
-
-    if market_type == "equity_kr":
-        if not _is_korean_equity_code(symbol):
-            raise ValueError("korean equity symbols must be 6 alphanumeric characters")
-        return "equity_kr", symbol
-
-    if market_type == "equity_us":
-        symbol = symbol.upper()
-        if _is_crypto_market(symbol):
-            raise ValueError("us equity symbols must not include KRW-/USDT- prefix")
-        if not _is_us_equity_symbol(symbol):
-            raise ValueError("invalid US equity symbol")
-        return "equity_us", symbol
-
-    # Auto-detect from symbol format
-    if _is_crypto_market(symbol):
-        return "crypto", symbol.upper()
-
-    if _is_korean_equity_code(symbol):
-        return "equity_kr", symbol
-
-    if _is_us_equity_symbol(symbol):
-        return "equity_us", symbol
-
-    raise ValueError("Unsupported symbol format")
-
-
-def _error_payload(
-    *,
-    source: str,
-    message: str,
-    symbol: str | None = None,
-    instrument_type: str | None = None,
-    query: str | None = None,
-    suggestion: str | None = None,
-    details: str | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {"error": message, "source": source}
-    if symbol is not None:
-        payload["symbol"] = symbol
-    if instrument_type is not None:
-        payload["instrument_type"] = instrument_type
-    if query is not None:
-        payload["query"] = query
-    if suggestion is not None:
-        payload["suggestion"] = suggestion
-    if details is not None:
-        payload["details"] = details
-    return payload
-
-
-def _normalize_value(value: Any) -> Any:
-    if value is None:
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        pass
-    if isinstance(value, (datetime.date, datetime.datetime, datetime.time)):
-        return value.isoformat()
-    if isinstance(value, pd.Timedelta):
-        return value.total_seconds()
-    if hasattr(value, "item"):
-        try:
-            return value.item()
-        except Exception:
-            return value
-    return value
-
-
-def _normalize_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
-    return [
-        {str(key): _normalize_value(value) for key, value in row.items()}
-        for row in df.to_dict(orient="records")
-    ]
-
-
-_MCP_USER_ID = _env_int("MCP_USER_ID", 1)
-_MCP_DCA_USER_ID = _env_int("MCP_DCA_USER_ID", _MCP_USER_ID)
-_DEFAULT_ACCOUNT_KEYS = {"default", "default_account", "기본계좌", "기본_계좌"}
-_INSTRUMENT_TO_MARKET = {
-    "equity_kr": "kr",
-    "equity_us": "us",
-    "crypto": "crypto",
-}
-_ACCOUNT_FILTER_ALIASES = {
-    "kis": {"kis", "korea_investment", "한국투자", "한국투자증권"},
-    "upbit": {"upbit", "업비트"},
-    "toss": {"toss", "토스"},
-    "samsung_pension": {"samsung_pension", "samsung_pension_account"},
-    "isa": {"isa"},
-}
-_UPBIT_TICKER_BATCH_SIZE = 50
-_DEFAULT_MINIMUM_VALUES: dict[str, float] = {
-    "equity_kr": 5000.0,
-    "equity_us": 10.0,
-    "crypto": 5000.0,
-}
-
-
-def _to_float(value: Any, default: float = 0.0) -> float:
-    try:
-        if value in (None, ""):
-            return default
-        return float(value)
-    except Exception:
-        return default
-
-
-def _to_optional_float(value: Any) -> float | None:
-    try:
-        if value in (None, ""):
-            return None
-        return float(value)
-    except Exception:
-        return None
-
-
-def _to_optional_int(value: Any) -> int | None:
-    try:
-        if value in (None, ""):
-            return None
-        return int(value)
-    except Exception:
-        return None
-
-
-def _to_int(value: Any, default: int = 0) -> int:
-    try:
-        if value in (None, ""):
-            return default
-        return int(value)
-    except Exception:
-        return default
-
-
-def _normalize_account_key(value: str | None) -> str:
-    if not value:
-        return ""
-    normalized = value.strip().lower()
-    return "".join(ch if ch.isalnum() else "_" for ch in normalized).strip("_")
-
-
-def _canonical_account_id(broker: str, account_name: str | None) -> str:
-    broker_key = _normalize_account_key(broker)
-    account_key = _normalize_account_key(account_name)
-
-    if not account_key or account_key in _DEFAULT_ACCOUNT_KEYS:
-        return broker_key
-
-    raw_name = (account_name or "").strip().lower()
-    if "isa" in account_key:
-        return "isa"
-    if ("samsung" in account_key and "pension" in account_key) or (
-        "삼성" in raw_name and "연금" in raw_name
-    ):
-        return "samsung_pension"
-
-    return account_key
-
-
-def _normalize_account_filter(account: str | None) -> str | None:
-    key = _normalize_account_key(account)
-    if not key:
-        return None
-    for canonical, aliases in _ACCOUNT_FILTER_ALIASES.items():
-        if key == canonical or key in aliases:
-            return canonical
-    return key
-
-
-def _match_account_filter(position: dict[str, Any], account_filter: str | None) -> bool:
-    if not account_filter:
-        return True
-
-    account_keys = {
-        _normalize_account_filter(position.get("account")),
-        _normalize_account_filter(position.get("broker")),
-        _normalize_account_filter(position.get("account_name")),
-    }
-    account_keys.discard(None)
-
-    account_keys.add(
-        _canonical_account_id(
-            str(position.get("broker", "")),
-            str(position.get("account_name", "")),
-        )
-    )
-
-    return account_filter in account_keys
-
-
-def _parse_holdings_market_filter(market: str | None) -> str | None:
-    if market is None or not market.strip():
-        return None
-    market_type = _normalize_market(market)
-    if market_type is None:
-        raise ValueError("market must be one of: kr, us, crypto")
-    return market_type
-
-
-def _manual_market_to_instrument_type(market_type: MarketType) -> str:
-    if market_type == MarketType.KR:
-        return "equity_kr"
-    if market_type == MarketType.US:
-        return "equity_us"
-    if market_type == MarketType.CRYPTO:
-        return "crypto"
-    raise ValueError(f"Unsupported market type: {market_type}")
-
-
-def _instrument_to_manual_market_type(market_type: str | None) -> MarketType | None:
-    if market_type == "equity_kr":
-        return MarketType.KR
-    if market_type == "equity_us":
-        return MarketType.US
-    if market_type == "crypto":
-        return MarketType.CRYPTO
-    return None
-
-
-def _normalize_position_symbol(symbol: str, instrument_type: str) -> str:
-    normalized = symbol.strip().upper()
-    if instrument_type == "crypto" and normalized and "-" not in normalized:
-        return f"KRW-{normalized}"
-    if instrument_type == "equity_us":
-        return to_db_symbol(normalized).upper()
-    return normalized
-
-
-def _position_to_output(position: dict[str, Any]) -> dict[str, Any]:
-    output = {
-        "symbol": position["symbol"],
-        "name": position["name"],
-        "market": position["market"],
-        "quantity": position["quantity"],
-        "avg_buy_price": position["avg_buy_price"],
-        "current_price": position["current_price"],
-        "evaluation_amount": position["evaluation_amount"],
-        "profit_loss": position["profit_loss"],
-        "profit_rate": position["profit_rate"],
-    }
-    if "price_error" in position:
-        output["price_error"] = position["price_error"]
-    return output
-
-
-def _value_for_minimum_filter(position: dict[str, Any]) -> float:
-    evaluation_amount = position.get("evaluation_amount")
-    if evaluation_amount is not None:
-        return _to_float(evaluation_amount, default=0.0)
-
-    # Price lookup failed (current_price is None) -> return infinity to prevent filtering
-    if position.get("current_price") is None:
-        return float("inf")
-
-    quantity = _to_float(position.get("quantity"))
-    current_price = _to_float(position.get("current_price"))
-    return quantity * current_price
-
-
-def _format_filter_threshold(value: float) -> str:
-    return f"{value:g}"
-
-
-def _build_holdings_summary(
-    positions: list[dict[str, Any]], include_current_price: bool
-) -> dict[str, Any]:
-    total_buy_amount = round(
-        sum(
-            _to_float(position.get("avg_buy_price"))
-            * _to_float(position.get("quantity"))
-            for position in positions
-        ),
-        2,
-    )
-
-    if not include_current_price:
-        return {
-            "total_buy_amount": total_buy_amount,
-            "total_evaluation": None,
-            "total_profit_loss": None,
-            "total_profit_rate": None,
-            "position_count": len(positions),
-            "weights": None,
-        }
-
-    total_evaluation = round(
-        sum(_to_float(position.get("evaluation_amount")) for position in positions),
-        2,
-    )
-    total_profit_loss = round(
-        sum(_to_float(position.get("profit_loss")) for position in positions),
-        2,
-    )
-    total_profit_rate = (
-        round((total_profit_loss / total_buy_amount) * 100, 2)
-        if total_buy_amount > 0
-        else None
-    )
-
-    weights: list[dict[str, Any]] = []
-    if total_evaluation > 0:
-        for position in positions:
-            evaluation = _to_float(position.get("evaluation_amount"))
-            if evaluation <= 0:
-                continue
-            weights.append(
-                {
-                    "symbol": position.get("symbol"),
-                    "name": position.get("name"),
-                    "weight_pct": round((evaluation / total_evaluation) * 100, 2),
-                }
-            )
-        weights.sort(key=lambda item: _to_float(item.get("weight_pct")), reverse=True)
-
-    return {
-        "total_buy_amount": total_buy_amount,
-        "total_evaluation": total_evaluation,
-        "total_profit_loss": total_profit_loss,
-        "total_profit_rate": total_profit_rate,
-        "position_count": len(positions),
-        "weights": weights,
-    }
-
-
-def _is_position_symbol_match(
-    *,
-    position_symbol: str,
-    query_symbol: str,
-    instrument_type: str,
-) -> bool:
-    if instrument_type == "crypto":
-        pos_norm = _normalize_position_symbol(position_symbol, "crypto")
-        query_norm = _normalize_position_symbol(query_symbol, "crypto")
-        if pos_norm == query_norm:
-            return True
-        pos_base = pos_norm.split("-", 1)[-1]
-        query_base = query_norm.split("-", 1)[-1]
-        return pos_base == query_base
-
-    if instrument_type == "equity_us":
-        return (
-            to_db_symbol(position_symbol).upper() == to_db_symbol(query_symbol).upper()
-        )
-
-    return position_symbol.upper() == query_symbol.upper()
-
-
-def _recalculate_profit_fields(position: dict[str, Any]) -> None:
-    current_price = position.get("current_price")
-    quantity = _to_float(position.get("quantity"))
-    avg_buy_price = _to_float(position.get("avg_buy_price"))
-
-    if current_price is None or quantity <= 0:
-        position["current_price"] = None
-        position["evaluation_amount"] = None
-        position["profit_loss"] = None
-        position["profit_rate"] = None
-        return
-
-    current_price = _to_float(current_price)
-    position["current_price"] = current_price
-    position["evaluation_amount"] = round(current_price * quantity, 2)
-
-    if avg_buy_price > 0:
-        profit_loss = (current_price - avg_buy_price) * quantity
-        position["profit_loss"] = round(profit_loss, 2)
-        position["profit_rate"] = round(
-            ((current_price - avg_buy_price) / avg_buy_price) * 100, 2
-        )
-    else:
-        position["profit_loss"] = None
-        position["profit_rate"] = None
+# Keep selected helper symbols as module attributes for legacy tests and imports.
+_LEGACY_HELPER_EXPORTS = (
+    _calculate_sma,
+    _calculate_ema,
+    _calculate_macd,
+    _calculate_bollinger,
+    _calculate_atr,
+    _calculate_pivot,
+)
 
 
 async def _collect_kis_positions(
@@ -1214,6 +558,11 @@ async def _collect_portfolio_positions(
     return positions, errors, market_filter, account_filter
 
 
+# ---------------------------------------------------------------------------
+# Quote and OHLCV Fetching (service-dependent - kept here for test patching)
+# ---------------------------------------------------------------------------
+
+
 async def _fetch_quote_crypto(symbol: str) -> dict[str, Any]:
     """Fetch crypto quote from Upbit."""
     prices = await upbit_service.fetch_multiple_current_prices([symbol])
@@ -1354,585 +703,10 @@ async def _fetch_ohlcv_equity_us(
     }
 
 
-# ---------------------------------------------------------------------------
-# Technical Indicator Calculations
-# ---------------------------------------------------------------------------
-
-IndicatorType = Literal["sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot"]
-
-DEFAULT_SMA_PERIODS = [5, 20, 60, 120, 200]
-DEFAULT_EMA_PERIODS = [5, 20, 60, 120, 200]
-DEFAULT_RSI_PERIOD = 14
-DEFAULT_MACD_FAST = 12
-DEFAULT_MACD_SLOW = 26
-DEFAULT_MACD_SIGNAL = 9
-DEFAULT_BOLLINGER_PERIOD = 20
-DEFAULT_BOLLINGER_STD = 2.0
-DEFAULT_ATR_PERIOD = 14
-
-
-def _calculate_sma(
-    close: pd.Series, periods: list[int] | None = None
-) -> dict[str, float | None]:
-    """Calculate Simple Moving Average for multiple periods."""
-    periods = periods or DEFAULT_SMA_PERIODS
-    result: dict[str, float | None] = {}
-    for period in periods:
-        if len(close) >= period:
-            sma_value = close.iloc[-period:].mean()
-            result[str(period)] = float(sma_value) if pd.notna(sma_value) else None
-        else:
-            result[str(period)] = None
-    return result
-
-
-def _calculate_ema(
-    close: pd.Series, periods: list[int] | None = None
-) -> dict[str, float | None]:
-    """Calculate Exponential Moving Average for multiple periods."""
-    periods = periods or DEFAULT_EMA_PERIODS
-    result: dict[str, float | None] = {}
-    for period in periods:
-        if len(close) >= period:
-            ema = close.ewm(span=period, adjust=False).mean()
-            ema_value = ema.iloc[-1]
-            result[str(period)] = float(ema_value) if pd.notna(ema_value) else None
-        else:
-            result[str(period)] = None
-    return result
-
-
-def _calculate_rsi(
-    close: pd.Series, period: int = DEFAULT_RSI_PERIOD
-) -> dict[str, float | None]:
-    """Calculate Relative Strength Index."""
-    if len(close) < period + 1:
-        return {str(period): None}
-
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = (-delta).where(delta < 0, 0.0)
-
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100 - (100 / (1 + rs))
-
-    rsi_value = rsi.iloc[-1]
-    return {str(period): round(float(rsi_value), 2) if pd.notna(rsi_value) else None}
-
-
-def _calculate_macd(
-    close: pd.Series,
-    fast: int = DEFAULT_MACD_FAST,
-    slow: int = DEFAULT_MACD_SLOW,
-    signal: int = DEFAULT_MACD_SIGNAL,
-) -> dict[str, float | None]:
-    """Calculate MACD, Signal, and Histogram."""
-    if len(close) < slow + signal:
-        return {"macd": None, "signal": None, "histogram": None}
-
-    ema_fast = close.ewm(span=fast, adjust=False).mean()
-    ema_slow = close.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram = macd_line - signal_line
-
-    macd_val = macd_line.iloc[-1]
-    signal_val = signal_line.iloc[-1]
-    hist_val = histogram.iloc[-1]
-
-    return {
-        "macd": float(macd_val) if pd.notna(macd_val) else None,
-        "signal": float(signal_val) if pd.notna(signal_val) else None,
-        "histogram": float(hist_val) if pd.notna(hist_val) else None,
-    }
-
-
-def _calculate_bollinger(
-    close: pd.Series,
-    period: int = DEFAULT_BOLLINGER_PERIOD,
-    std: float = DEFAULT_BOLLINGER_STD,
-) -> dict[str, float | None]:
-    """Calculate Bollinger Bands (upper, middle, lower)."""
-    if len(close) < period:
-        return {"upper": None, "middle": None, "lower": None}
-
-    sma = close.rolling(window=period).mean()
-    rolling_std = close.rolling(window=period).std()
-
-    upper = sma + (rolling_std * std)
-    lower = sma - (rolling_std * std)
-
-    sma_val = sma.iloc[-1]
-    upper_val = upper.iloc[-1]
-    lower_val = lower.iloc[-1]
-
-    return {
-        "upper": float(upper_val) if pd.notna(upper_val) else None,
-        "middle": float(sma_val) if pd.notna(sma_val) else None,
-        "lower": float(lower_val) if pd.notna(lower_val) else None,
-    }
-
-
-def _calculate_atr(
-    high: pd.Series, low: pd.Series, close: pd.Series, period: int = DEFAULT_ATR_PERIOD
-) -> dict[str, float | None]:
-    """Calculate Average True Range."""
-    if len(close) < period + 1:
-        return {str(period): None}
-
-    prev_close = close.shift(1)
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    atr = true_range.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    atr_value = atr.iloc[-1]
-
-    return {str(period): float(atr_value) if pd.notna(atr_value) else None}
-
-
-def _calculate_pivot(
-    high: pd.Series, low: pd.Series, close: pd.Series
-) -> dict[str, float | None]:
-    """Calculate Pivot Points (classic) based on previous day's HLC."""
-    if len(close) < 2:
-        return {
-            "p": None,
-            "r1": None,
-            "r2": None,
-            "r3": None,
-            "s1": None,
-            "s2": None,
-            "s3": None,
-        }
-
-    # Use previous day's data
-    prev_high = float(high.iloc[-2])
-    prev_low = float(low.iloc[-2])
-    prev_close = float(close.iloc[-2])
-
-    # Classic pivot point formula
-    p = (prev_high + prev_low + prev_close) / 3
-    r1 = 2 * p - prev_low
-    r2 = p + (prev_high - prev_low)
-    r3 = prev_high + 2 * (p - prev_low)
-    s1 = 2 * p - prev_high
-    s2 = p - (prev_high - prev_low)
-    s3 = prev_low - 2 * (prev_high - p)
-
-    return {
-        "p": round(p, 2),
-        "r1": round(r1, 2),
-        "r2": round(r2, 2),
-        "r3": round(r3, 2),
-        "s1": round(s1, 2),
-        "s2": round(s2, 2),
-        "s3": round(s3, 2),
-    }
-
-
-FIBONACCI_LEVELS = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
-
-
-def _calculate_fibonacci(df: pd.DataFrame, current_price: float) -> dict[str, Any]:
-    """Calculate Fibonacci retracement levels from OHLCV DataFrame.
-
-    Detects swing high/low, determines trend direction, and computes
-    retracement levels with nearest support/resistance.
-    """
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-
-    swing_high_price = round(float(high.max()), 2)
-    swing_low_price = round(float(low.min()), 2)
-
-    # Use positional index for ordering comparison
-    swing_high_pos = int(high.values.argmax())
-    swing_low_pos = int(low.values.argmin())
-
-    # Determine dates
-    def _to_date_str(row: pd.Series) -> str:
-        d = row.get("date")
-        if d is None:
-            return ""
-        if isinstance(d, str):
-            return d[:10]
-        if isinstance(d, (datetime.date, datetime.datetime, pd.Timestamp)):
-            return d.strftime("%Y-%m-%d")
-        return str(d)[:10]
-
-    swing_high_date = _to_date_str(df.iloc[swing_high_pos])
-    swing_low_date = _to_date_str(df.iloc[swing_low_pos])
-
-    # Trend: if high came after low → retracement from high, else bounce from low
-    if swing_high_pos > swing_low_pos:
-        trend = "retracement_from_high"
-        # Levels go from high (0%) down to low (100%)
-        levels = {
-            str(lvl): round(
-                swing_high_price - lvl * (swing_high_price - swing_low_price), 2
-            )
-            for lvl in FIBONACCI_LEVELS
-        }
-    else:
-        trend = "bounce_from_low"
-        # Levels go from low (0%) up to high (100%)
-        levels = {
-            str(lvl): round(
-                swing_low_price + lvl * (swing_high_price - swing_low_price), 2
-            )
-            for lvl in FIBONACCI_LEVELS
-        }
-
-    # Find nearest support (level price just below current) and resistance (just above)
-    nearest_support: dict[str, Any] | None = None
-    nearest_resistance: dict[str, Any] | None = None
-
-    sorted_levels = sorted(levels.items(), key=lambda x: x[1])
-    for level_str, price in sorted_levels:
-        if price < current_price:
-            nearest_support = {"level": level_str, "price": price}
-        elif price > current_price and nearest_resistance is None:
-            nearest_resistance = {"level": level_str, "price": price}
-
-    return {
-        "swing_high": {"price": swing_high_price, "date": swing_high_date},
-        "swing_low": {"price": swing_low_price, "date": swing_low_date},
-        "trend": trend,
-        "current_price": current_price,
-        "levels": levels,
-        "nearest_support": nearest_support,
-        "nearest_resistance": nearest_resistance,
-    }
-
-
-def _format_fibonacci_source(level_key: str) -> str:
-    level = _to_optional_float(level_key)
-    if level is None:
-        return f"fib_{level_key}"
-
-    pct = level * 100
-    if abs(pct - round(pct)) < 1e-9:
-        pct_str = str(int(round(pct)))
-    else:
-        pct_str = f"{pct:.1f}".rstrip("0").rstrip(".")
-
-    return f"fib_{pct_str}"
-
-
-def _cluster_price_levels(
-    levels: list[tuple[float, str]],
-    tolerance_pct: float = 0.02,
-) -> list[dict[str, Any]]:
-    if not levels:
-        return []
-
-    clusters: list[dict[str, Any]] = []
-    for price, source in sorted(levels, key=lambda item: item[0]):
-        if price <= 0:
-            continue
-
-        matched_cluster: dict[str, Any] | None = None
-        for cluster in clusters:
-            center = _to_float(cluster.get("center"), default=0.0)
-            if center <= 0:
-                continue
-            if abs(price - center) / center <= tolerance_pct:
-                matched_cluster = cluster
-                break
-
-        if matched_cluster is None:
-            clusters.append(
-                {
-                    "prices": [price],
-                    "sources": [source],
-                    "center": price,
-                }
-            )
-            continue
-
-        prices = matched_cluster["prices"]
-        sources = matched_cluster["sources"]
-        prices.append(price)
-        if source not in sources:
-            sources.append(source)
-        matched_cluster["center"] = sum(prices) / len(prices)
-
-    clustered: list[dict[str, Any]] = []
-    for cluster in clusters:
-        prices = cluster.get("prices", [])
-        if not prices:
-            continue
-
-        level_sources = cluster.get("sources", [])
-        source_count = len(level_sources)
-        if source_count >= 3:
-            strength = "strong"
-        elif source_count == 2:
-            strength = "moderate"
-        else:
-            strength = "weak"
-
-        clustered.append(
-            {
-                "price": round(sum(prices) / len(prices), 2),
-                "strength": strength,
-                "sources": level_sources,
-            }
-        )
-
-    return clustered
-
-
-def _split_support_resistance_levels(
-    clustered_levels: list[dict[str, Any]],
-    current_price: float,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    supports: list[dict[str, Any]] = []
-    resistances: list[dict[str, Any]] = []
-
-    for level in clustered_levels:
-        price = _to_float(level.get("price"), default=0.0)
-        if price <= 0:
-            continue
-        level["distance_pct"] = round((price - current_price) / current_price * 100, 2)
-        if price < current_price:
-            supports.append(level)
-        elif price > current_price:
-            resistances.append(level)
-
-    supports.sort(
-        key=lambda item: _to_float(item.get("price"), default=0.0), reverse=True
-    )
-    resistances.sort(key=lambda item: _to_float(item.get("price"), default=0.0))
-    return supports, resistances
-
-
-def _compute_rsi_weights(rsi_value: float | None, splits: int) -> list[float]:
-    """Compute DCA weight distribution based on RSI value.
-
-    Args:
-        rsi_value: RSI 14 value (0-100). None means no RSI data.
-        splits: Number of DCA splits (e.g., 3 for 3-step buying)
-
-    Returns:
-        List of weights that sum to 1.0. RSI < 30 gives higher weight
-        to early steps (linear decreasing), RSI > 50 gives higher weight
-        to later steps (linear increasing), 30-50 or None gives equal weights.
-    """
-    if rsi_value is None:
-        # No RSI data: equal distribution
-        return [1.0 / splits] * splits
-
-    if rsi_value < 30:
-        # Oversold: front-weighted (buy more at early/closer steps)
-        # splits=3: raw=[3,2,1] → [0.5, 0.333, 0.167]
-        raw = [splits - i for i in range(splits)]
-        total = sum(raw)
-        return [r / total for r in raw]
-    elif rsi_value > 50:
-        # Overbought: back-weighted (buy more at later/lower steps)
-        # splits=3: raw=[1,2,3] → [0.167, 0.333, 0.5]
-        raw = [i + 1 for i in range(splits)]
-        total = sum(raw)
-        return [r / total for r in raw]
-    else:
-        # Neutral (30-50): equal distribution
-        return [1.0 / splits] * splits
-
-
-def _compute_dca_price_levels(
-    strategy: str,
-    splits: int,
-    current_price: float,
-    supports: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Compute DCA price levels based on strategy and support levels.
-
-    Args:
-        strategy: "support", "equal", or "aggressive"
-        splits: Number of price levels to generate
-        current_price: Current market price
-        supports: List of support levels from get_support_resistance
-
-    Returns:
-        List of dicts with "price" and "source" keys, sorted by price
-        descending (closest to current price first).
-    """
-    support_prices = sorted(
-        [_to_float(level.get("price")) for level in supports if level.get("price")],
-        reverse=True,  # Closest to current price first
-    )
-
-    if strategy == "support":
-        # Use closest support levels, fill gaps with interpolation
-        if len(support_prices) >= splits:
-            # Enough supports: use closest splits
-            return [
-                {"price": price, "source": "support"}
-                for price in support_prices[:splits]
-            ]
-        elif len(support_prices) > 0:
-            # Fewer supports: interpolate between them
-            support_levels: list[dict[str, Any]] = []
-            start_price = current_price * 0.995
-            end_price = min(support_prices)
-            step = (end_price - start_price) / (splits - 1)
-            used_supports: set[float] = set()
-            for i in range(splits):
-                price = start_price + step * i
-                # Check if any support is near this price (within 2%)
-                near_support = None
-                for supp in support_prices:
-                    if supp in used_supports:
-                        continue
-                    if abs(price - supp) / price < 0.02:
-                        near_support = supp
-                        break
-                if near_support is not None:
-                    price = near_support
-                    used_supports.add(near_support)
-                support_levels.append({"price": price, "source": "support"})
-            return support_levels
-        else:
-            # No supports: synthetic levels (-2%, -4%, -6%...)
-            return [
-                {
-                    "price": current_price * (1.0 - 0.02 * (i + 1)),
-                    "source": "synthetic",
-                }
-                for i in range(splits)
-            ]
-
-    elif strategy == "equal":
-        # Equal spacing between current_price and lowest support
-        if support_prices:
-            min_price = min(support_prices)
-        else:
-            # No supports: go down to -10%
-            min_price = current_price * 0.90
-
-        start_price = current_price * 0.995
-        step = (min_price - start_price) / (splits - 1)
-        return [
-            {"price": start_price + step * i, "source": "equal_spaced"}
-            for i in range(splits)
-        ]
-
-    elif strategy == "aggressive":
-        first_price = current_price * 0.995
-        levels: list[dict[str, Any]] = [
-            {"price": first_price, "source": "aggressive_first"}
-        ]
-
-        if splits <= 1:
-            return levels
-
-        support_prices = [s["price"] for s in supports]
-        if support_prices:
-            end_price = min(support_prices)
-        else:
-            end_price = current_price * 0.98
-
-        remaining = splits - 1
-        used_supports: set[float] = set()
-
-        if len(support_prices) >= remaining:
-            for i in range(1, splits):
-                price = first_price + ((end_price - first_price) / (splits - 1)) * i
-                near_support = None
-                for supp in support_prices:
-                    if supp in used_supports:
-                        continue
-                    if abs(price - supp) / price < 0.02 and supp < price:
-                        near_support = supp
-                        break
-                if near_support is not None:
-                    price = near_support
-                    used_supports.add(near_support)
-                source = "support" if near_support else "interpolated"
-                levels.append({"price": price, "source": source})
-        else:
-            step = (end_price - first_price) / remaining
-            for i in range(1, splits):
-                price = first_price + step * i
-                levels.append({"price": price, "source": "interpolated"})
-
-        return levels
-
-    else:
-        raise ValueError(
-            f"Invalid strategy: {strategy}. Must be 'support', 'equal', or 'aggressive'"
-        )
-
-
-def _compute_indicators(
-    df: pd.DataFrame, indicators: list[IndicatorType]
-) -> dict[str, dict[str, float | None]]:
-    """Compute requested indicators from OHLCV DataFrame.
-
-    Args:
-        df: DataFrame with columns: open, high, low, close, volume
-        indicators: List of indicator types to compute
-
-    Returns:
-        Dictionary with indicator results
-    """
-    results: dict[str, dict[str, float | None]] = {}
-
-    # Ensure we have required columns
-    required = {"close"}
-    if "atr" in indicators or "pivot" in indicators:
-        required |= {"high", "low"}
-
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    close = df["close"].astype(float)
-    high = df["high"].astype(float) if "high" in df.columns else None
-    low = df["low"].astype(float) if "low" in df.columns else None
-
-    for indicator in indicators:
-        if indicator == "sma":
-            results["sma"] = _calculate_sma(close)
-        elif indicator == "ema":
-            results["ema"] = _calculate_ema(close)
-        elif indicator == "rsi":
-            results["rsi"] = _calculate_rsi(close)
-        elif indicator == "macd":
-            results["macd"] = _calculate_macd(close)
-        elif indicator == "bollinger":
-            results["bollinger"] = _calculate_bollinger(close)
-        elif indicator == "atr":
-            if high is not None and low is not None:
-                results["atr"] = _calculate_atr(high, low, close)
-            else:
-                results["atr"] = {str(DEFAULT_ATR_PERIOD): None}
-        elif indicator == "pivot":
-            if high is not None and low is not None:
-                results["pivot"] = _calculate_pivot(high, low, close)
-
-    return results
-
-
 async def _fetch_ohlcv_crypto_paginated(
     symbol: str, count: int, period: str = "day"
 ) -> pd.DataFrame:
-    """Fetch crypto OHLCV with pagination to overcome Upbit's 200 limit.
-
-    Args:
-        symbol: Market symbol (e.g., "KRW-BTC")
-        count: Total number of candles to fetch
-        period: Candle period ("day", "week", "month")
-
-    Returns:
-        DataFrame with requested number of candles
-    """
+    """Fetch crypto OHLCV with pagination to overcome Upbit's 200 limit."""
     max_per_request = 200
     all_dfs: list[pd.DataFrame] = []
     remaining = count
@@ -1951,9 +725,7 @@ async def _fetch_ohlcv_crypto_paginated(
         remaining -= len(df_batch)
 
         if remaining > 0 and len(df_batch) > 0:
-            # Get the earliest date from this batch for next pagination
             earliest_date = df_batch["date"].min()
-            # Set end_date to the day before the earliest date
             end_date = datetime.datetime.combine(
                 earliest_date - datetime.timedelta(days=1),
                 datetime.time(23, 59, 59),
@@ -1962,7 +734,6 @@ async def _fetch_ohlcv_crypto_paginated(
     if not all_dfs:
         return pd.DataFrame()
 
-    # Concatenate all batches, sort by date, and remove duplicates
     combined = pd.concat(all_dfs, ignore_index=True)
     combined = (
         combined.drop_duplicates(subset=["date"])
@@ -1976,12 +747,8 @@ async def _fetch_ohlcv_crypto_paginated(
 async def _fetch_ohlcv_for_indicators(
     symbol: str, market_type: str, count: int = 250
 ) -> pd.DataFrame:
-    """Fetch OHLCV data for indicator calculation.
-
-    Fetches enough data for long-term indicators (200-day SMA needs 200+ candles).
-    """
+    """Fetch OHLCV data for indicator calculation."""
     if market_type == "crypto":
-        # Use pagination for crypto to overcome Upbit's 200 limit
         df = await _fetch_ohlcv_crypto_paginated(symbol, count=count, period="day")
     elif market_type == "equity_kr":
         capped_count = min(count, 250)
@@ -1996,19 +763,6 @@ async def _fetch_ohlcv_for_indicators(
         )
 
     return df
-
-
-# ---------------------------------------------------------------------------
-# Volume Profile Calculations
-# ---------------------------------------------------------------------------
-
-
-def _normalize_number(value: float, decimals: int = 6) -> float | int:
-    """Normalize float output to readable numeric values."""
-    rounded = round(float(value), decimals)
-    if abs(rounded - round(rounded)) < 10 ** (-decimals):
-        return int(round(rounded))
-    return rounded
 
 
 async def _fetch_ohlcv_for_volume_profile(
@@ -2027,150 +781,6 @@ async def _fetch_ohlcv_for_volume_profile(
     return await yahoo_service.fetch_ohlcv(
         ticker=symbol, days=period_days, period="day"
     )
-
-
-def _calculate_volume_profile(
-    df: pd.DataFrame,
-    bins: int,
-    value_area_ratio: float = 0.70,
-) -> dict[str, Any]:
-    """Calculate price-by-volume distribution from OHLCV candles."""
-    if bins < 2:
-        raise ValueError("bins must be >= 2")
-    if not 0 < value_area_ratio <= 1:
-        raise ValueError("value_area_ratio must be between 0 and 1")
-
-    required = {"low", "high", "volume"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    if df.empty:
-        raise ValueError("No OHLCV data available")
-
-    low = pd.to_numeric(df["low"], errors="coerce")
-    high = pd.to_numeric(df["high"], errors="coerce")
-    volume = pd.to_numeric(df["volume"], errors="coerce")
-
-    valid_mask = (~low.isna()) & (~high.isna()) & (~volume.isna())
-    if not valid_mask.any():
-        raise ValueError("No valid OHLCV rows with low/high/volume")
-
-    low_values = low[valid_mask].astype(float).to_numpy()
-    high_values = high[valid_mask].astype(float).to_numpy()
-    candle_low = np.minimum(low_values, high_values)
-    candle_high = np.maximum(low_values, high_values)
-    candle_volume = volume[valid_mask].astype(float).to_numpy()
-
-    price_low = float(candle_low.min())
-    price_high = float(candle_high.max())
-
-    if price_high <= price_low:
-        # Flat-price edge case: make a tiny synthetic range for binning math.
-        epsilon = max(abs(price_low) * 1e-6, 1e-6)
-        bin_edges = np.linspace(
-            price_low - epsilon / 2,
-            price_high + epsilon / 2,
-            bins + 1,
-        )
-    else:
-        bin_edges = np.linspace(price_low, price_high, bins + 1)
-
-    bin_volumes = np.zeros(bins, dtype=float)
-
-    for low_i, high_i, vol_i in zip(
-        candle_low, candle_high, candle_volume, strict=False
-    ):
-        if vol_i <= 0:
-            continue
-
-        if high_i <= low_i:
-            idx = int(
-                np.clip(
-                    np.searchsorted(bin_edges, low_i, side="right") - 1, 0, bins - 1
-                )
-            )
-            bin_volumes[idx] += vol_i
-            continue
-
-        overlaps = np.minimum(bin_edges[1:], high_i) - np.maximum(bin_edges[:-1], low_i)
-        overlaps = np.clip(overlaps, 0.0, None)
-        overlap_sum = float(overlaps.sum())
-
-        if overlap_sum <= 0:
-            mid_price = (low_i + high_i) / 2
-            idx = int(
-                np.clip(
-                    np.searchsorted(bin_edges, mid_price, side="right") - 1,
-                    0,
-                    bins - 1,
-                )
-            )
-            bin_volumes[idx] += vol_i
-            continue
-
-        bin_volumes += vol_i * (overlaps / overlap_sum)
-
-    total_volume = float(bin_volumes.sum())
-    if total_volume <= 0:
-        raise ValueError("Total volume is zero for the selected period")
-
-    bin_volume_pct = (bin_volumes / total_volume) * 100
-    poc_index = int(np.argmax(bin_volumes))
-
-    target_volume = total_volume * value_area_ratio
-    covered_volume = float(bin_volumes[poc_index])
-    left_index = poc_index
-    right_index = poc_index
-
-    while covered_volume < target_volume and (left_index > 0 or right_index < bins - 1):
-        left_vol = bin_volumes[left_index - 1] if left_index > 0 else -np.inf
-        right_vol = bin_volumes[right_index + 1] if right_index < bins - 1 else -np.inf
-
-        if right_vol > left_vol:
-            right_index += 1
-            covered_volume += float(bin_volumes[right_index])
-        else:
-            if left_index > 0:
-                left_index -= 1
-                covered_volume += float(bin_volumes[left_index])
-            elif right_index < bins - 1:
-                right_index += 1
-                covered_volume += float(bin_volumes[right_index])
-            else:
-                break
-
-    profile = [
-        {
-            "price_low": _normalize_number(bin_edges[idx], decimals=6),
-            "price_high": _normalize_number(bin_edges[idx + 1], decimals=6),
-            "volume": _normalize_number(bin_volumes[idx], decimals=2),
-            "volume_pct": _normalize_number(bin_volume_pct[idx], decimals=2),
-        }
-        for idx in range(bins)
-    ]
-
-    return {
-        "price_range": {
-            "low": _normalize_number(price_low, decimals=6),
-            "high": _normalize_number(price_high, decimals=6),
-        },
-        "poc": {
-            "price": _normalize_number(
-                (bin_edges[poc_index] + bin_edges[poc_index + 1]) / 2,
-                decimals=6,
-            ),
-            "volume": _normalize_number(bin_volumes[poc_index], decimals=2),
-        },
-        "value_area": {
-            "high": _normalize_number(bin_edges[right_index + 1], decimals=6),
-            "low": _normalize_number(bin_edges[left_index], decimals=6),
-            "volume_pct": _normalize_number(
-                (covered_volume / total_volume) * 100, decimals=2
-            ),
-        },
-        "profile": profile,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -3289,26 +1899,6 @@ _COINGECKO_LIST_LOCK = asyncio.Lock()
 _COINGECKO_PROFILE_LOCK = asyncio.Lock()
 
 
-def _normalize_crypto_base_symbol(symbol: str) -> str:
-    normalized = (symbol or "").strip().upper()
-    if not normalized:
-        return ""
-
-    if "-" in normalized:
-        normalized = normalized.split("-", 1)[-1]
-    if normalized.endswith("USDT") and len(normalized) > len("USDT"):
-        normalized = normalized[: -len("USDT")]
-
-    return normalized
-
-
-def _coingecko_cache_valid(expires_at: Any, now: float) -> bool:
-    try:
-        return float(expires_at) > now
-    except Exception:
-        return False
-
-
 async def _get_coingecko_symbol_to_ids() -> dict[str, list[str]]:
     now = time.time()
     if _coingecko_cache_valid(_COINGECKO_LIST_CACHE.get("expires_at"), now):
@@ -3451,81 +2041,6 @@ async def _fetch_coingecko_coin_profile(coin_id: str) -> dict[str, Any]:
         return data
 
 
-def _to_optional_money(value: Any) -> int | None:
-    numeric = _to_optional_float(value)
-    if numeric is None:
-        return None
-    return int(round(numeric))
-
-
-def _clean_description_one_line(value: Any) -> str | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    if not text:
-        return None
-
-    if len(text) > 240:
-        text = text[:240].rstrip() + "..."
-    return text
-
-
-def _map_coingecko_profile_to_output(profile: dict[str, Any]) -> dict[str, Any]:
-    market_data = profile.get("market_data") or {}
-    description_map = profile.get("description") or {}
-
-    description = _clean_description_one_line(
-        description_map.get("ko") or description_map.get("en")
-    )
-
-    market_cap_krw = _to_optional_money(
-        (market_data.get("market_cap") or {}).get("krw")
-    )
-    total_volume_krw = _to_optional_money(
-        (market_data.get("total_volume") or {}).get("krw")
-    )
-    ath_krw = _to_optional_money((market_data.get("ath") or {}).get("krw"))
-
-    ath_change_pct = _to_optional_float(
-        (market_data.get("ath_change_percentage") or {}).get("krw")
-    )
-    change_7d = _to_optional_float(
-        (market_data.get("price_change_percentage_7d_in_currency") or {}).get("krw")
-    )
-    if change_7d is None:
-        change_7d = _to_optional_float(market_data.get("price_change_percentage_7d"))
-
-    change_30d = _to_optional_float(
-        (market_data.get("price_change_percentage_30d_in_currency") or {}).get("krw")
-    )
-    if change_30d is None:
-        change_30d = _to_optional_float(market_data.get("price_change_percentage_30d"))
-
-    categories = profile.get("categories")
-    if not isinstance(categories, list):
-        categories = []
-
-    return {
-        "name": profile.get("name"),
-        "symbol": str(profile.get("symbol") or "").upper() or None,
-        "market_cap": market_cap_krw,
-        "market_cap_rank": _to_optional_int(profile.get("market_cap_rank")),
-        "total_volume_24h": total_volume_krw,
-        "circulating_supply": _to_optional_float(market_data.get("circulating_supply")),
-        "total_supply": _to_optional_float(market_data.get("total_supply")),
-        "max_supply": _to_optional_float(market_data.get("max_supply")),
-        "categories": categories,
-        "description": description,
-        "ath": ath_krw,
-        "ath_change_percentage": ath_change_pct,
-        "price_change_percentage_7d": change_7d,
-        "price_change_percentage_30d": change_30d,
-    }
-
-
 async def _resolve_batch_crypto_symbols() -> list[str]:
     try:
         coins = await upbit_service.fetch_my_coins()
@@ -3555,14 +2070,6 @@ async def _resolve_batch_crypto_symbols() -> list[str]:
         pass
 
     return list(DEFAULT_BATCH_CRYPTO_SYMBOLS)
-
-
-def _funding_interpretation_text(rate: float) -> str:
-    if rate > 0:
-        return "positive (롱이 숏에게 지불, 롱 과열)"
-    if rate < 0:
-        return "negative (숏이 롱에게 지불, 숏 과열)"
-    return "neutral"
 
 
 async def _fetch_funding_rate_batch(symbols: list[str]) -> list[dict[str, Any]]:
@@ -3717,30 +2224,6 @@ _DEFAULT_INDICES = ["KOSPI", "KOSDAQ", "SPX", "NASDAQ"]
 
 NAVER_INDEX_BASIC_URL = "https://m.stock.naver.com/api/index/{code}/basic"
 NAVER_INDEX_PRICE_URL = "https://m.stock.naver.com/api/index/{code}/price"
-
-
-def _parse_naver_num(value: Any) -> float | None:
-    """Parse a naver number which may be a string with commas."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        return float(str(value).replace(",", ""))
-    except (ValueError, TypeError):
-        return None
-
-
-def _parse_naver_int(value: Any) -> int | None:
-    """Parse a naver integer which may be a string with commas."""
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    try:
-        return int(float(str(value).replace(",", "")))
-    except (ValueError, TypeError):
-        return None
 
 
 async def _fetch_index_kr_current(naver_code: str, name: str) -> dict[str, Any]:
@@ -3971,96 +2454,6 @@ async def _fetch_funding_rate(symbol: str, limit: int) -> dict[str, Any]:
                 "negative": "숏이 롱에게 지불 (숏 과열 — 시장이 과도하게 약세)",
             },
         }
-
-
-def _parse_change_rate(value: Any) -> float | None:
-    val = _to_optional_float(value)
-    if val is None:
-        return None
-    return val
-
-
-def _normalize_change_rate_equity(value: Any) -> float:
-    val = _parse_change_rate(value)
-    if val is None:
-        return 0.0
-    return val
-
-
-def _normalize_change_rate_crypto(value: Any) -> float:
-    val = _parse_change_rate(value)
-    if val is None:
-        return 0.0
-    return val * 100
-
-
-def _map_kr_row(row: dict, rank: int) -> dict[str, Any]:
-    symbol = row.get("stck_shrn_iscd") or row.get("mksc_shrn_iscd", "")
-    name = row.get("hts_kor_isnm", "")
-    price = _to_float(row.get("stck_prpr"))
-    change_rate = _normalize_change_rate_equity(row.get("prdy_ctrt"))
-    volume = _to_int(row.get("acml_vol") or row.get("frgn_ntby_qty"))
-    market_cap = _to_float(row.get("hts_avls"))
-    trade_amount = _to_float(row.get("acml_tr_pbmn") or row.get("frgn_ntby_tr_pbmn"))
-
-    return {
-        "rank": rank,
-        "symbol": symbol,
-        "name": name,
-        "price": price,
-        "change_rate": round(change_rate, 2) if change_rate is not None else None,
-        "volume": volume,
-        "market_cap": market_cap,
-        "trade_amount": trade_amount,
-    }
-
-
-def _map_us_row(row: dict, rank: int) -> dict[str, Any]:
-    symbol = row.get("symbol", "")
-    name = row.get("longName", "") or row.get("shortName", symbol)
-    price = _to_float(row.get("regularMarketPrice"))
-    prev_close = _to_float(row.get("previousClose"))
-
-    if price is not None and prev_close is not None and prev_close > 0:
-        change_rate = ((price - prev_close) / prev_close) * 100
-    else:
-        change_rate = _to_float(row.get("regularMarketChangePercent", 0))
-
-    volume = _to_int(row.get("regularMarketVolume"))
-    market_cap = _to_float(row.get("marketCap"))
-    trade_amount = None
-
-    return {
-        "rank": rank,
-        "symbol": symbol,
-        "name": name,
-        "price": price,
-        "change_rate": round(change_rate, 2) if change_rate is not None else None,
-        "volume": volume,
-        "market_cap": market_cap,
-        "trade_amount": trade_amount,
-    }
-
-
-def _map_crypto_row(row: dict, rank: int) -> dict[str, Any]:
-    symbol = row.get("market", "")
-    name = symbol.replace("KRW-", "") if symbol.startswith("KRW-") else symbol
-    price = _to_float(row.get("trade_price"))
-    change_rate = _normalize_change_rate_crypto(row.get("signed_change_rate"))
-    volume = _to_float(row.get("acc_trade_volume_24h"))
-    market_cap = None
-    trade_amount = _to_float(row.get("acc_trade_price_24h"))
-
-    return {
-        "rank": rank,
-        "symbol": symbol,
-        "name": name,
-        "price": price,
-        "change_rate": round(change_rate, 2) if change_rate is not None else None,
-        "volume": volume,
-        "market_cap": market_cap,
-        "trade_amount": trade_amount,
-    }
 
 
 async def _get_us_rankings(
@@ -10791,5 +9184,9 @@ def register_tools(mcp: FastMCP) -> None:
     globals()["_normalize_recommend_market"] = _normalize_recommend_market
     globals()["_build_recommend_reason"] = _build_recommend_reason
     globals()["_normalize_candidate"] = _normalize_candidate
+
     globals()["_allocate_budget"] = _allocate_budget
     globals()["get_top_stocks"] = get_top_stocks
+
+
+register_all_tools = register_tools

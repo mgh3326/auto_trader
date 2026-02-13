@@ -6,7 +6,7 @@ from fastmcp import FastMCP
 from app.core.config import settings
 from app.mcp_server.auth import build_auth_provider
 from app.mcp_server.env_utils import _env, _env_int
-from app.mcp_server.tools import register_tools
+from app.mcp_server.tooling import register_all_tools
 
 # 모듈 레벨에서 서버 객체 생성 (fastmcp dev에서 접근 가능)
 _auth_token = _env("MCP_AUTH_TOKEN", "")
@@ -21,7 +21,7 @@ mcp = FastMCP(
     auth=auth_provider,
 )
 
-register_tools(mcp)
+register_all_tools(mcp)
 
 
 def main() -> None:

@@ -1,24 +1,46 @@
-"""auto_trader MCP server (Market Data Tools)
-
-This package exposes a small set of read-only tools over MCP (HTTP/SSE).
-"""
-
+from app.mcp_server.tooling import register_all_tools
 from app.mcp_server.tools import register_tools
 
-__all__ = ["register_tools"]
+__all__ = ["register_all_tools", "register_tools"]
 
-# Available MCP tools (registered via register_tools function)
 AVAILABLE_TOOL_NAMES = [
+    "search_symbol",
+    "get_quote",
     "get_holdings",
-    "get_positions_by_account",
+    "get_position",
+    "place_order",
+    "get_ohlcv",
+    "get_indicators",
+    "get_news",
+    "get_company_profile",
+    "get_crypto_profile",
+    "get_financials",
+    "get_insider_transactions",
+    "get_earnings_calendar",
+    "get_investor_trends",
+    "get_investment_opinions",
+    "get_valuation",
+    "get_short_interest",
+    "get_kimchi_premium",
+    "get_funding_rate",
+    "get_market_index",
+    "get_support_resistance",
+    "get_sector_peers",
+    "get_cash_balance",
+    "cancel_order",
+    "simulate_avg_cost",
+    "update_manual_holdings",
+    "create_dca_plan",
+    "get_dca_status",
+    "analyze_stock",
+    "analyze_portfolio",
+    "get_disclosures",
+    "get_correlation",
+    "get_top_stocks",
+    "get_dividends",
+    "get_fear_greed_index",
+    "get_order_history",
+    "modify_order",
     "screen_stocks",
     "recommend_stocks",
-    "get_stock_price",
-    "analyze_stock",
-    "trade_stock",
-    "cancel_order",
-    "get_orders",
-    "get_account_balance",
-    "get_favorite_stocks",
-    "list_recent_filings",
 ]
