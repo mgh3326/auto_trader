@@ -735,6 +735,11 @@ class TestKRXFallbackLogic:
         today_str = date.today().strftime("%Y%m%d")
         cache_key = f"krx:stock:all:STK:{today_str}"
 
+        async def mock_fetch_max_working_date():
+            return today_str
+
+        monkeypatch.setattr(krx, "_fetch_max_working_date", mock_fetch_max_working_date)
+
         # Inject expired data into memory cache
         expired_timestamp = datetime.now(UTC).timestamp() - (
             krx._MEMORY_CACHE_TTL + 100

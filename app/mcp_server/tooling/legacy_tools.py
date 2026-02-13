@@ -1,27 +1,22 @@
-"""Compatibility facade for MCP tools and test patch points.
+"""Legacy compatibility facade for MCP tools.
 
-This module keeps the historical ``app.mcp_server.tools`` import contract while
-the actual tool registration and implementations are split by domain modules.
+Historically, this module contained a monolithic ``register_tools`` function with
+many nested implementations. The real implementations now live in domain modules
+under ``app.mcp_server.tooling`` and are registered via ``register_all_tools``.
+
+This file remains as a backward-compatible shim for:
+- imports of ``app.mcp_server.tooling.legacy_tools``
+- old call sites expecting ``register_tools`` symbol
+- monkeypatch/test patch points resolved through module attributes
 """
 
 from __future__ import annotations
 
-import sys
-import types
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yfinance as yf
 
 from app.core.config import settings
-from app.mcp_server.tooling import (
-    analysis_rankings as _analysis_rankings,
-)
-from app.mcp_server.tooling import (
-    analysis_recommend as _analysis_recommend,
-)
-from app.mcp_server.tooling import (
-    analysis_screen_core as _analysis_screen_core,
-)
 from app.mcp_server.tooling import (
     analysis_screening as _analysis_screening,
 )
@@ -32,13 +27,7 @@ from app.mcp_server.tooling import (
     fundamentals_sources as _fundamentals_sources,
 )
 from app.mcp_server.tooling import (
-    legacy_tools as _legacy_tools,
-)
-from app.mcp_server.tooling import (
     market_data as _market_data,
-)
-from app.mcp_server.tooling import (
-    order_execution as _order_execution,
 )
 from app.mcp_server.tooling import (
     orders as _orders,
@@ -49,7 +38,7 @@ from app.mcp_server.tooling import (
 from app.mcp_server.tooling import (
     shared as _shared,
 )
-from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling.registry import register_all_tools as _register_all_tools
 from app.services import naver_finance
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
@@ -60,36 +49,31 @@ try:
 except ImportError:
     list_filings = None
 
-register_tools = register_all_tools
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
+
+register_all_tools = _register_all_tools
 
 _MODULE_SEARCH_ORDER = (
     _orders,
     _portfolio,
-    _analysis_screen_core,
     _analysis_screening,
     _fundamentals,
     _market_data,
     _shared,
-)
-
-_LEGACY_COMPAT_EXPORTS: set[str] = set()
-
-_PATCH_TARGET_MODULES = _MODULE_SEARCH_ORDER + (
-    _order_execution,
-    _analysis_screen_core,
-    _analysis_recommend,
-    _analysis_rankings,
     _fundamentals_sources,
-    _legacy_tools,
 )
+
+
+def register_tools(mcp: FastMCP) -> None:
+    """Legacy alias for the refactored domain-based registration entrypoint."""
+    register_all_tools(mcp)
 
 
 def __getattr__(name: str) -> Any:
     for module in _MODULE_SEARCH_ORDER:
         if hasattr(module, name):
             return getattr(module, name)
-    if name in _LEGACY_COMPAT_EXPORTS and hasattr(_legacy_tools, name):
-        return getattr(_legacy_tools, name)
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
@@ -97,21 +81,8 @@ def __dir__() -> list[str]:
     names = set(globals().keys())
     for module in _MODULE_SEARCH_ORDER:
         names.update(dir(module))
-    names.update(_LEGACY_COMPAT_EXPORTS)
     return sorted(names)
 
-
-class _ToolsModule(types.ModuleType):
-    """Propagate patched attributes to domain modules for test compatibility."""
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        super().__setattr__(name, value)
-        for module in _PATCH_TARGET_MODULES:
-            if hasattr(module, name):
-                setattr(module, name, value)
-
-
-sys.modules[__name__].__class__ = _ToolsModule
 
 __all__ = [
     "register_tools",

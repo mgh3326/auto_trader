@@ -13,17 +13,26 @@ import numpy as np
 import pandas as pd
 
 from app.mcp_server.tooling.shared import (
+    _error_payload,
+    _normalize_market,
     _normalize_rows,
+    _normalize_symbol_input,
+    _resolve_market_type,
     _to_float,
     _to_optional_float,
+)
+from app.services import upbit as upbit_service
+from app.services import yahoo as yahoo_service
+from app.services.kis import KISClient
+from data.coins_info import get_or_refresh_maps
+from data.stocks_info import (
+    get_kosdaq_name_to_code,
+    get_kospi_name_to_code,
+    get_us_stocks_data,
 )
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-
-from app.services import upbit as upbit_service
-from app.services import yahoo as yahoo_service
-from app.services.kis import KISClient
 
 # ---------------------------------------------------------------------------
 # Type Definitions and Constants
@@ -42,6 +51,100 @@ DEFAULT_BOLLINGER_STD = 2.0
 DEFAULT_ATR_PERIOD = 14
 
 FIBONACCI_LEVELS = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+
+
+# ---------------------------------------------------------------------------
+# Symbol Search
+# ---------------------------------------------------------------------------
+
+
+async def _search_master_data(
+    query: str, limit: int, instrument_type: str | None = None
+) -> list[dict[str, Any]]:
+    """Search symbols across KRX, US, and Upbit master datasets."""
+    results: list[dict[str, Any]] = []
+    query_lower = query.lower()
+    query_upper = query.upper()
+
+    if instrument_type is None or instrument_type == "equity_kr":
+        kospi = get_kospi_name_to_code()
+        kosdaq = get_kosdaq_name_to_code()
+
+        for name, code in kospi.items():
+            if query_lower in name.lower() or query_upper in code:
+                results.append(
+                    {
+                        "symbol": code,
+                        "name": name,
+                        "instrument_type": "equity_kr",
+                        "exchange": "KOSPI",
+                        "is_active": True,
+                    }
+                )
+                if len(results) >= limit:
+                    return results
+
+        for name, code in kosdaq.items():
+            if query_lower in name.lower() or query_upper in code:
+                results.append(
+                    {
+                        "symbol": code,
+                        "name": name,
+                        "instrument_type": "equity_kr",
+                        "exchange": "KOSDAQ",
+                        "is_active": True,
+                    }
+                )
+                if len(results) >= limit:
+                    return results
+
+    if instrument_type is None or instrument_type == "equity_us":
+        us_data = get_us_stocks_data()
+        symbol_to_exchange = us_data.get("symbol_to_exchange", {})
+        symbol_to_name_kr = us_data.get("symbol_to_name_kr", {})
+        symbol_to_name_en = us_data.get("symbol_to_name_en", {})
+
+        for symbol, exchange in symbol_to_exchange.items():
+            name_kr = symbol_to_name_kr.get(symbol, "")
+            name_en = symbol_to_name_en.get(symbol, "")
+            if (
+                query_upper in symbol.upper()
+                or query_lower in name_kr.lower()
+                or query_lower in name_en.lower()
+            ):
+                results.append(
+                    {
+                        "symbol": symbol,
+                        "name": name_kr or name_en or symbol,
+                        "instrument_type": "equity_us",
+                        "exchange": exchange,
+                        "is_active": True,
+                    }
+                )
+                if len(results) >= limit:
+                    return results
+
+    if instrument_type is None or instrument_type == "crypto":
+        try:
+            crypto_maps = await get_or_refresh_maps()
+            name_to_pair = crypto_maps.get("NAME_TO_PAIR_KR", {})
+            for name, pair in name_to_pair.items():
+                if query_lower in name.lower() or query_upper in pair.upper():
+                    results.append(
+                        {
+                            "symbol": pair,
+                            "name": name,
+                            "instrument_type": "crypto",
+                            "exchange": "Upbit",
+                            "is_active": True,
+                        }
+                    )
+                    if len(results) >= limit:
+                        return results
+        except Exception:
+            pass
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -1021,9 +1124,183 @@ MARKET_DATA_TOOL_NAMES: set[str] = {
 
 
 def register_market_data_tools(mcp: FastMCP) -> None:
-    from app.mcp_server.tooling.registrars import register_tool_subset
+    @mcp.tool(
+        name="search_symbol",
+        description=(
+            "Search symbols by query (symbol or name). Use market to filter: "
+            "kr/kospi/kosdaq (Korean stocks), us/nasdaq/nyse (US stocks), "
+            "crypto/upbit (cryptocurrencies)."
+        ),
+    )
+    async def search_symbol(
+        query: str, limit: int = 20, market: str | None = None
+    ) -> list[dict[str, Any]]:
+        query = (query or "").strip()
+        if not query:
+            return []
 
-    register_tool_subset(mcp, MARKET_DATA_TOOL_NAMES)
+        instrument_type = _normalize_market(market)
+
+        try:
+            capped_limit = min(max(limit, 1), 100)
+            return await _search_master_data(query, capped_limit, instrument_type)
+        except Exception as exc:
+            return [_error_payload(source="master", message=str(exc), query=query)]
+
+    @mcp.tool(
+        name="get_quote",
+        description="Get latest quote/last price for a symbol (KR equity / US equity / crypto).",
+    )
+    async def get_quote(symbol: str | int, market: str | None = None) -> dict[str, Any]:
+        symbol = _normalize_symbol_input(symbol, market)
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        market_type, symbol = _resolve_market_type(symbol, market)
+
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
+
+        try:
+            if market_type == "crypto":
+                return await _fetch_quote_crypto(symbol)
+            if market_type == "equity_kr":
+                return await _fetch_quote_equity_kr(symbol)
+            return await _fetch_quote_equity_us(symbol)
+        except Exception as exc:
+            return _error_payload(
+                source=source,
+                message=str(exc),
+                symbol=symbol,
+                instrument_type=market_type,
+            )
+
+    @mcp.tool(
+        name="get_ohlcv",
+        description=(
+            "Get OHLCV candles for a symbol. Supports daily/weekly/monthly periods "
+            "and date-based pagination."
+        ),
+    )
+    async def get_ohlcv(
+        symbol: str,
+        count: int = 100,
+        period: str = "day",
+        end_date: str | None = None,
+        market: str | None = None,
+    ) -> dict[str, Any]:
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+        count = int(count)
+        if count <= 0:
+            raise ValueError("count must be > 0")
+
+        period = (period or "day").strip().lower()
+        if period not in ("day", "week", "month"):
+            raise ValueError("period must be 'day', 'week', or 'month'")
+
+        parsed_end_date: datetime.datetime | None = None
+        if end_date:
+            try:
+                parsed_end_date = datetime.datetime.fromisoformat(end_date)
+            except ValueError as exc:
+                raise ValueError(
+                    "end_date must be ISO format (e.g., '2024-01-15')"
+                ) from exc
+
+        market_type, symbol = _resolve_market_type(symbol, market)
+
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
+
+        try:
+            if market_type == "crypto":
+                return await _fetch_ohlcv_crypto(symbol, count, period, parsed_end_date)
+            if market_type == "equity_kr":
+                return await _fetch_ohlcv_equity_kr(
+                    symbol, count, period, parsed_end_date
+                )
+            return await _fetch_ohlcv_equity_us(symbol, count, period, parsed_end_date)
+        except Exception as exc:
+            return _error_payload(
+                source=source,
+                message=str(exc),
+                symbol=symbol,
+                instrument_type=market_type,
+            )
+
+    async def _get_indicators_impl(
+        symbol: str, indicators: list[str], market: str | None = None
+    ) -> dict[str, Any]:
+        symbol = (symbol or "").strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        if not indicators:
+            raise ValueError("indicators list is required and cannot be empty")
+
+        valid_indicators: set[IndicatorType] = {
+            "sma",
+            "ema",
+            "rsi",
+            "macd",
+            "bollinger",
+            "atr",
+            "pivot",
+        }
+        normalized_indicators: list[IndicatorType] = []
+        for ind in indicators:
+            ind_lower = ind.lower().strip()
+            if ind_lower not in valid_indicators:
+                raise ValueError(
+                    f"Invalid indicator '{ind}'. Valid options: {', '.join(sorted(valid_indicators))}"
+                )
+            normalized_indicators.append(ind_lower)  # type: ignore[arg-type]
+
+        market_type, symbol = _resolve_market_type(symbol, market)
+
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source = source_map[market_type]
+
+        try:
+            df = await _fetch_ohlcv_for_indicators(symbol, market_type, count=250)
+
+            if df.empty:
+                raise ValueError(f"No data available for symbol '{symbol}'")
+
+            current_price = float(df["close"].iloc[-1]) if "close" in df.columns else None
+            indicator_results = _compute_indicators(df, normalized_indicators)
+
+            return {
+                "symbol": symbol,
+                "price": current_price,
+                "instrument_type": market_type,
+                "source": source,
+                "indicators": indicator_results,
+            }
+
+        except Exception as exc:
+            return _error_payload(
+                source=source,
+                message=str(exc),
+                symbol=symbol,
+                instrument_type=market_type,
+            )
+
+    @mcp.tool(
+        name="get_indicators",
+        description=(
+            "Calculate technical indicators for a symbol. Available indicators: "
+            "sma (Simple Moving Average), ema (Exponential Moving Average), "
+            "rsi (Relative Strength Index), macd (MACD), bollinger (Bollinger Bands), "
+            "atr (Average True Range), pivot (Pivot Points)."
+        ),
+    )
+    async def get_indicators(
+        symbol: str, indicators: list[str], market: str | None = None
+    ) -> dict[str, Any]:
+        return await _get_indicators_impl(symbol, indicators, market)
 
 
 # ---------------------------------------------------------------------------
