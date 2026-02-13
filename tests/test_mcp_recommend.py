@@ -19,7 +19,6 @@ from app.mcp_server.scoring import (
 from app.mcp_server.strategies import (
     VALID_STRATEGIES,
     get_strategy_config,
-    validate_account,
     validate_strategy,
 )
 
@@ -65,7 +64,9 @@ def _mock_kr_sources(
     ) -> dict[str, dict[str, Any]]:
         return valuations or {}
 
-    monkeypatch.setattr(mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached)
+    monkeypatch.setattr(
+        mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+    )
     monkeypatch.setattr(mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
     monkeypatch.setattr(
         mcp_tools,
@@ -120,7 +121,7 @@ class TestScoringFunctions:
         assert 0 <= score <= 100
 
 
-class TestStrategyAndAccountValidation:
+class TestStrategyValidation:
     def test_validate_strategy_values(self):
         for strategy in VALID_STRATEGIES:
             assert validate_strategy(strategy) == strategy
@@ -134,14 +135,6 @@ class TestStrategyAndAccountValidation:
         assert set(config.keys()) == {"description", "screen_params", "scoring_weights"}
         assert "sort_by" in config["screen_params"]
         assert "rsi_weight" in config["scoring_weights"]
-
-    def test_isa_requires_asset_type_even_when_none(self):
-        with pytest.raises(ValueError, match="requires asset_type"):
-            validate_account("isa", "kr", None)
-
-    def test_samsung_pension_requires_asset_type_even_when_none(self):
-        with pytest.raises(ValueError, match="requires asset_type"):
-            validate_account("samsung_pension", "kr", None)
 
 
 class TestBudgetAllocation:
@@ -217,13 +210,23 @@ class TestRecommendStocksIntegration:
             await recommend_stocks(budget=100_000, max_positions=21)
 
     @pytest.mark.asyncio
-    async def test_isa_account_requires_asset_type(self, recommend_stocks):
-        with pytest.raises(ValueError, match="requires asset_type"):
+    async def test_rejects_removed_asset_type_parameter(self, recommend_stocks):
+        with pytest.raises(TypeError, match="asset_type"):
             await recommend_stocks(
                 budget=300_000,
                 market="kr",
-                account="isa",
                 strategy="balanced",
+                asset_type="stock",  # type: ignore[call-arg]
+            )
+
+    @pytest.mark.asyncio
+    async def test_rejects_removed_account_parameter(self, recommend_stocks):
+        with pytest.raises(TypeError, match="account"):
+            await recommend_stocks(
+                budget=300_000,
+                market="kr",
+                strategy="balanced",
+                account="kis",  # type: ignore[call-arg]
             )
 
     @pytest.mark.asyncio
@@ -312,7 +315,9 @@ class TestRecommendStocksIntegration:
             max_positions=2,
         )
 
-        balanced_symbols = {item["symbol"] for item in balanced_result["recommendations"]}
+        balanced_symbols = {
+            item["symbol"] for item in balanced_result["recommendations"]
+        }
         value_symbols = {item["symbol"] for item in value_result["recommendations"]}
         assert "111111" in balanced_symbols
         assert "222222" in balanced_symbols
@@ -418,68 +423,9 @@ class TestRecommendStocksIntegration:
         assert "666666" in symbols
 
     @pytest.mark.asyncio
-    async def test_holdings_auto_exclusion_account_specific(
+    async def test_us_success_path(
         self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
     ):
-        _mock_kr_sources(
-            monkeypatch,
-            stk=[
-                {
-                    "code": "777777",
-                    "name": "보유종목",
-                    "close": 10_000,
-                    "volume": 700_000,
-                    "change_rate": 1.0,
-                    "market_cap": 1500,
-                },
-                {
-                    "code": "888888",
-                    "name": "후보종목",
-                    "close": 10_000,
-                    "volume": 700_000,
-                    "change_rate": 1.0,
-                    "market_cap": 1500,
-                },
-            ],
-            valuations={
-                "777777": {"per": 12.0, "pbr": 1.0, "dividend_yield": 0.02},
-                "888888": {"per": 12.0, "pbr": 1.0, "dividend_yield": 0.02},
-            },
-        )
-
-        captured: dict[str, Any] = {}
-
-        async def mock_collect_portfolio_positions(
-            *,
-            account: str | None,
-            market: str | None,
-            include_current_price: bool,
-            user_id: int,
-        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
-            captured["account"] = account
-            return [{"symbol": "777777"}], [], market, account
-
-        monkeypatch.setattr(
-            mcp_tools,
-            "_collect_portfolio_positions",
-            mock_collect_portfolio_positions,
-        )
-
-        result = await recommend_stocks(
-            budget=300_000,
-            market="kr",
-            account="kis",
-            asset_type="stock",
-            strategy="balanced",
-            max_positions=2,
-        )
-        symbols = {item["symbol"] for item in result["recommendations"]}
-        assert captured["account"] == "kis"
-        assert "777777" not in symbols
-        assert "888888" in symbols
-
-    @pytest.mark.asyncio
-    async def test_us_success_path(self, recommend_stocks, monkeypatch: pytest.MonkeyPatch):
         _mock_empty_holdings(monkeypatch)
 
         def mock_yf_screen(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -527,7 +473,9 @@ class TestRecommendStocksIntegration:
         )
 
         assert result["recommendations"]
-        assert all(item["symbol"] in {"AAPL", "MSFT"} for item in result["recommendations"])
+        assert all(
+            item["symbol"] in {"AAPL", "MSFT"} for item in result["recommendations"]
+        )
         assert isinstance(result["warnings"], list)
 
     @pytest.mark.asyncio
@@ -536,7 +484,9 @@ class TestRecommendStocksIntegration:
     ):
         _mock_empty_holdings(monkeypatch)
 
-        async def mock_fetch_top_traded_coins(fiat: str = "KRW") -> list[dict[str, Any]]:
+        async def mock_fetch_top_traded_coins(
+            fiat: str = "KRW",
+        ) -> list[dict[str, Any]]:
             assert fiat == "KRW"
             return [
                 {
@@ -582,7 +532,9 @@ class TestRecommendStocksIntegration:
     ):
         _mock_empty_holdings(monkeypatch)
 
-        async def mock_fetch_top_traded_coins(fiat: str = "KRW") -> list[dict[str, Any]]:
+        async def mock_fetch_top_traded_coins(
+            fiat: str = "KRW",
+        ) -> list[dict[str, Any]]:
             return [
                 {
                     "market": "KRW-BTC",
@@ -609,3 +561,110 @@ class TestRecommendStocksIntegration:
 
         assert result["recommendations"]
         assert any("dividend_yield" in warning for warning in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_zero_candidates_empty_result(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[],
+            valuations={},
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        result = await recommend_stocks(
+            budget=1_000_000,
+            market="kr",
+            strategy="balanced",
+            max_positions=5,
+        )
+
+        assert result["recommendations"] == []
+        assert result["total_amount"] == 0
+        assert result["remaining_budget"] == 1_000_000
+        assert result["candidates_screened"] == 0
+        assert isinstance(result["warnings"], list)
+        assert "disclaimer" in result
+
+    @pytest.mark.asyncio
+    async def test_all_candidates_excluded(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "005930",
+                    "name": "삼성전자",
+                    "close": 80_000,
+                    "volume": 1_000_000,
+                    "change_rate": 1.2,
+                    "market_cap": 1000,
+                },
+                {
+                    "code": "000660",
+                    "name": "SK하이닉스",
+                    "close": 120_000,
+                    "volume": 900_000,
+                    "change_rate": 0.7,
+                    "market_cap": 1200,
+                },
+            ],
+            valuations={
+                "005930": {"per": 12.0, "pbr": 1.2, "dividend_yield": 0.02},
+                "000660": {"per": 14.0, "pbr": 1.4, "dividend_yield": 0.015},
+            },
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        result = await recommend_stocks(
+            budget=1_000_000,
+            market="kr",
+            strategy="balanced",
+            exclude_symbols=["005930", "000660"],
+            max_positions=5,
+        )
+
+        assert result["recommendations"] == []
+        assert result["total_amount"] == 0
+        assert result["remaining_budget"] == 1_000_000
+        assert result["candidates_screened"] == 2
+        assert isinstance(result["warnings"], list)
+
+    @pytest.mark.asyncio
+    async def test_disclaimer_present(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "005930",
+                    "name": "삼성전자",
+                    "close": 80_000,
+                    "volume": 1_000_000,
+                    "change_rate": 1.2,
+                    "market_cap": 1000,
+                },
+            ],
+            valuations={
+                "005930": {"per": 12.0, "pbr": 1.2, "dividend_yield": 0.02},
+            },
+        )
+        _mock_empty_holdings(monkeypatch)
+
+        result = await recommend_stocks(
+            budget=300_000,
+            market="kr",
+            strategy="balanced",
+            max_positions=1,
+        )
+
+        assert "disclaimer" in result
+        assert isinstance(result["disclaimer"], str)
+        assert len(result["disclaimer"]) > 0
+        assert (
+            "투자" in result["disclaimer"]
+            or "investment" in result["disclaimer"].lower()
+        )

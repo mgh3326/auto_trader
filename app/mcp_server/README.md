@@ -14,7 +14,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `modify_order(order_id, symbol, new_price=None, new_quantity=None)`
 - `cancel_order(order_id)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
-- `recommend_stocks(...)` - Recommend stocks based on budget, strategy, and account constraints.
+- `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
 
 ### `screen_stocks` spec
 Parameters:
@@ -90,12 +90,12 @@ Response format:
 Parameters:
 - `budget`: Total budget to allocate (required, must be positive)
 - `market`: Market to screen - "kr", "us", "crypto" (default: "kr")
-- `account`: Account type for constraints and holdings exclusion - `kis`, `toss`, `isa`, `samsung_pension`, `upbit` (default: None = exclude all holdings)
 - `strategy`: Scoring strategy - "balanced", "growth", "value", "dividend", "momentum" (default: "balanced")
-- `asset_type`: Asset type - "stock", "etf" (default: None)
 - `exclude_symbols`: List of symbols to exclude from recommendations (optional)
 - `sectors`: List of sectors/categories to filter (uses first value only)
 - `max_positions`: Maximum number of positions to recommend 1-20 (default: 5)
+
+> Breaking change: `account` parameter is removed from `recommend_stocks`.
 
 Strategy descriptions:
 - **balanced**: 균형 잡힌 포트폴리오. RSI, 밸류에이션, 모멘텀, 배당을 균등하게 고려
@@ -104,18 +104,11 @@ Strategy descriptions:
 - **dividend**: 배당주 중심. 높은 배당수익률 가중
 - **momentum**: 모멘텀 중심. 강한 상승 모멘텀과 거래량 가중
 
-Account constraints:
-- **kis**: KR + US markets, stocks + ETFs
-- **toss**: KR + US markets, stocks + ETFs
-- **isa**: KR market only, ETFs only
-- **samsung_pension**: KR market only, ETFs only
-- **upbit**: Crypto market only
-
 Behavior:
 - Invalid `market` values raise `ValueError` (no silent fallback)
 - Strategy-specific `screen_params` are applied per market and unsupported filters are ignored with warnings
 - Screens candidates using internal screeners (max 100 candidates)
-- Excludes user holdings from specified account (or all accounts if account=None)
+- Excludes user holdings from all accounts (internal `account=None` query)
 - Applies strategy-weighted composite scoring (0-100)
 - Sorts by score and allocates budget with integer quantities
 - Remaining budget is added to top recommendation if possible
