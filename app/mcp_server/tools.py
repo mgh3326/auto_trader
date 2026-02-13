@@ -4126,8 +4126,10 @@ async def _get_us_rankings(
     # Sort losers by change_rate ascending (most negative first)
     if ranking_type == "losers" and temp_rankings:
         temp_rankings.sort(
-            key=lambda x: (x.get("regularMarketPrice", 0) - x.get("previousClose", 0))
-            / x.get("previousClose", 1)  # Avoid division by zero
+            key=lambda x: (
+                (x.get("regularMarketPrice", 0) - x.get("previousClose", 0))
+                / x.get("previousClose", 1)
+            )  # Avoid division by zero
         )
 
     rankings = []
@@ -4789,17 +4791,13 @@ def register_tools(mcp: FastMCP) -> None:
                 if coin.get("currency") == "KRW":
                     return float(coin.get("balance", 0))
         elif market_type == "equity_kr":
+            # OPSQ2001 방지: 통합증거금(intgr-margin) 대신 국내현금잔고(inquire-balance)만 사용
             kis = KISClient()
-            if hasattr(kis, "inquire_integrated_margin"):
-                margin = await kis.inquire_integrated_margin()
-                if isinstance(margin, dict):
-                    orderable = margin.get("stck_cash_ord_psbl_amt")
-                    if orderable is None:
-                        orderable = margin.get("dnca_tot_amt")
-                    if orderable is not None:
-                        return float(orderable or 0)
             balance_data = await kis.inquire_domestic_cash_balance()
-            return float(balance_data.get("stck_cash_ord_psbl_amt", 0) or 0)
+            orderable = balance_data.get("stck_cash_ord_psbl_amt")
+            if orderable is None:
+                orderable = balance_data.get("dnca_tot_amt")
+            return float(orderable or 0)
         elif market_type == "equity_us":
             kis = KISClient()
             # US 주문 잔고는 해외증거금(외화주문가능금액) 기준으로 조회한다.
@@ -6389,8 +6387,26 @@ def register_tools(mcp: FastMCP) -> None:
             balance_warning: str | None = None
 
             if side_lower == "buy":
-                balance = await _get_balance_for_order(market_type)
+                try:
+                    balance = await _get_balance_for_order(market_type)
+                except Exception as balance_exc:
+                    logger.error(
+                        "balance_precheck 조회 실패: stage=balance_query, market_type=%s, symbol=%s, side=%s, error=%s",
+                        market_type,
+                        normalized_symbol,
+                        side_lower,
+                        balance_exc,
+                    )
+                    raise
                 if balance < order_amount:
+                    logger.warning(
+                        "balance_precheck 경고: stage=insufficient_balance_precheck, market_type=%s, symbol=%s, side=%s, balance=%s, order_amount=%s",
+                        market_type,
+                        normalized_symbol,
+                        side_lower,
+                        balance,
+                        order_amount,
+                    )
                     if market_type == "crypto":
                         balance_warning = (
                             f"Insufficient KRW balance: {balance:,.0f} KRW < {order_amount:,.0f} KRW. "
@@ -6425,14 +6441,24 @@ def register_tools(mcp: FastMCP) -> None:
                     f"Daily order limit ({MAX_ORDERS_PER_DAY}) exceeded"
                 )
 
-            execution_result = await _execute_order(
-                symbol=normalized_symbol,
-                side=side_lower,
-                order_type=order_type_lower,
-                quantity=order_quantity,
-                price=price,
-                market_type=market_type,
-            )
+            try:
+                execution_result = await _execute_order(
+                    symbol=normalized_symbol,
+                    side=side_lower,
+                    order_type=order_type_lower,
+                    quantity=order_quantity,
+                    price=price,
+                    market_type=market_type,
+                )
+            except Exception as exec_exc:
+                logger.error(
+                    "execute_order 실패: stage=execute_order, market_type=%s, symbol=%s, side=%s, error=%s",
+                    market_type,
+                    normalized_symbol,
+                    side_lower,
+                    exec_exc,
+                )
+                raise
 
             await _record_order_history(
                 symbol=normalized_symbol,

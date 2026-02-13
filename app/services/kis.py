@@ -115,6 +115,34 @@ DOMESTIC_DAILY_ORDER_TR = "TTTC8001R"  # 실전투자 국내주식 체결조회
 DOMESTIC_DAILY_ORDER_TR_MOCK = "VTTC8001R"  # 모의투자 국내주식 체결조회
 
 
+def _log_kis_api_failure(
+    api_name: str,
+    endpoint: str,
+    tr_id: str,
+    request_keys: list[str],
+    msg_cd: str,
+    msg1: str,
+) -> None:
+    # Log all key names for debugging (OPSQ2001 diagnosis requires visibility)
+    # Values are never logged - only key names
+    logging.error(
+        "KIS API 실패: api_name=%s, endpoint=%s, tr_id=%s, request_keys=%s, msg_cd=%s, msg1=%s",
+        api_name,
+        endpoint,
+        tr_id,
+        sorted(request_keys),
+        msg_cd,
+        msg1,
+    )
+    if msg_cd == "OPSQ2001" or "CMA_EVLU_AMT_ICLD_YN" in str(msg1):
+        logging.warning(
+            "OPSQ2001/CMA_EVLU_AMT_ICLD_YN 감지: api_name=%s, endpoint=%s, tr_id=%s",
+            api_name,
+            endpoint,
+            tr_id,
+        )
+
+
 class KISClient:
     def __init__(self):
         self._hdr_base = {
@@ -1111,11 +1139,21 @@ class KISClient:
 
         js = r.json()
         if js.get("rt_cd") != "0":
-            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+            msg_cd = js.get("msg_cd", "")
+            msg1 = js.get("msg1", "")
+            _log_kis_api_failure(
+                api_name="inquire_domestic_cash_balance",
+                endpoint=BALANCE_URL,
+                tr_id=tr_id,
+                request_keys=list(params.keys()),
+                msg_cd=msg_cd,
+                msg1=msg1,
+            )
+            if msg_cd in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 return await self.inquire_domestic_cash_balance(is_mock)
-            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
+            raise RuntimeError(f"{msg_cd} {msg1}")
 
         output2 = js.get("output2", [])
         raw = output2[0] if output2 else {}
@@ -1243,7 +1281,9 @@ class KISClient:
             }
             results.append(result)
 
-        usd_rows = [row for row in results if str(row.get("crcy_cd", "")).upper() == "USD"]
+        usd_rows = [
+            row for row in results if str(row.get("crcy_cd", "")).upper() == "USD"
+        ]
         logging.debug("해외증거금 USD 행 개수: %s", len(usd_rows))
         us_row = next(
             (
@@ -1312,11 +1352,21 @@ class KISClient:
 
         js = r.json()
         if js.get("rt_cd") != "0":
-            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+            msg_cd = js.get("msg_cd", "")
+            msg1 = js.get("msg1", "")
+            _log_kis_api_failure(
+                api_name="inquire_integrated_margin",
+                endpoint=INTEGRATED_MARGIN_URL,
+                tr_id=tr_id,
+                request_keys=list(params.keys()),
+                msg_cd=msg_cd,
+                msg1=msg1,
+            )
+            if msg_cd in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 return await self.inquire_integrated_margin(is_mock)
-            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
+            raise RuntimeError(f"{msg_cd} {msg1}")
 
         output = js.get("output1") or js.get("output") or {}
         if isinstance(output, list):
@@ -2185,15 +2235,24 @@ class KISClient:
         js = r.json()
 
         if js.get("rt_cd") != "0":
-            if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+            msg_cd = js.get("msg_cd", "")
+            msg1 = js.get("msg1", "")
+            _log_kis_api_failure(
+                api_name="order_korea_stock",
+                endpoint=KOREA_ORDER_URL,
+                tr_id=tr_id,
+                request_keys=list(body.keys()),
+                msg_cd=msg_cd,
+                msg1=msg1,
+            )
+            if msg_cd in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 return await self.order_korea_stock(
                     stock_code, order_type, quantity, price, is_mock
                 )
 
-            error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
-            logging.error(f"국내주식 주문 실패: {error_msg}")
+            error_msg = f"{msg_cd} {msg1}"
             raise RuntimeError(error_msg)
 
         output = js.get("output", {})

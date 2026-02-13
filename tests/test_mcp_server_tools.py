@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -5254,7 +5255,9 @@ async def test_place_order_us_uses_frcr_gnrl_orderable_when_ord1_is_zero(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_place_order_balance_lookup_failure_returns_query_error(monkeypatch):
+async def test_place_order_balance_lookup_failure_returns_query_error(
+    monkeypatch, caplog
+):
     """Balance lookup failure should return API error, not 0-balance warning."""
     tools = build_tools()
 
@@ -5268,18 +5271,20 @@ async def test_place_order_balance_lookup_failure_returns_query_error(monkeypatc
     monkeypatch.setattr(mcp_tools, "KISClient", FailingKISClient)
     monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
 
-    result = await tools["place_order"](
-        symbol="005930",
-        side="buy",
-        order_type="limit",
-        quantity=1,
-        price=5000.0,
-        dry_run=True,
-    )
+    with caplog.at_level(logging.ERROR):
+        result = await tools["place_order"](
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            quantity=1,
+            price=5000.0,
+            dry_run=True,
+        )
 
     assert result["success"] is False
     assert "KIS balance lookup failed" in result["error"]
     assert "Insufficient KRW balance: 0 KRW" not in result["error"]
+    assert any("stage=balance_query" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -6307,11 +6312,10 @@ class TestPlaceOrderHighAmount:
         tools = build_tools()
 
         class MockKISClient:
-            async def inquire_integrated_margin(self):
+            async def inquire_domestic_cash_balance(self):
                 return {
                     "stck_cash_ord_psbl_amt": "100000000.0",
-                    "dnca_tot_amt": "0",
-                    "usd_ord_psbl_amt": "0",
+                    "dnca_tot_amt": "100000000.0",
                 }
 
         async def fetch_quote(symbol):
@@ -6416,11 +6420,10 @@ class TestPlaceOrderHighAmount:
         order_calls: list[dict[str, object]] = []
 
         class MockKISClient:
-            async def inquire_integrated_margin(self):
+            async def inquire_domestic_cash_balance(self):
                 return {
                     "stck_cash_ord_psbl_amt": "100000000.0",
-                    "usd_ord_psbl_amt": "0",
-                    "dnca_tot_amt": "0",
+                    "dnca_tot_amt": "100000000.0",
                 }
 
             async def order_korea_stock(self, stock_code, order_type, quantity, price):
@@ -7123,3 +7126,127 @@ async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
     assert len(result["accounts"]) == 1
     assert result["accounts"][0]["balance"] == 3500.0
     assert result["accounts"][0]["orderable"] == 3200.0
+
+
+# ----------------------------------------------------------------------
+# OPSQ2001 방지: 국내주식 주문이 통합증거금(inquire_integrated_margin)을 호출하지 않음 검증
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_order_kr_equity_does_not_call_integrated_margin(monkeypatch):
+    """국내주식 주문이 inquire_integrated_margin을 호출하지 않고 inquire_domestic_cash_balance만 사용."""
+    tools = build_tools()
+
+    integrated_margin_called = False
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            nonlocal integrated_margin_called
+            integrated_margin_called = True
+            raise RuntimeError("OPSQ2001 should not be reached")
+
+        async def inquire_domestic_cash_balance(self):
+            return {
+                "stck_cash_ord_psbl_amt": "50000000.0",
+                "dnca_tot_amt": "50000000.0",
+            }
+
+    async def fetch_quote(symbol):
+        return {"price": 80000.0}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="market",
+        amount=1_000_000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert integrated_margin_called is False
+
+
+@pytest.mark.asyncio
+async def test_place_order_kr_equity_opsq2001_does_not_block_order(monkeypatch):
+    """inquire_integrated_margin이 OPSQ2001을 던져도 국내주식 주문은 성공해야 함 (호출되지 않으므로)."""
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            raise RuntimeError("OPSQ2001 CMA_EVLU_AMT_ICLD_YN error")
+
+        async def inquire_domestic_cash_balance(self):
+            return {
+                "stck_cash_ord_psbl_amt": "30000000.0",
+                "dnca_tot_amt": "30000000.0",
+            }
+
+    async def fetch_quote(symbol):
+        return {"price": 60000.0}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="market",
+        amount=500_000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_place_order_kr_equity_dry_run_false_opsq2001_unaffected(monkeypatch):
+    """dry_run=False에서도 inquire_integrated_margin OPSQ2001이 주문을 차단하지 않음."""
+    tools = build_tools()
+
+    order_calls: list[dict[str, object]] = []
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            raise RuntimeError("OPSQ2001 should not be called")
+
+        async def inquire_domestic_cash_balance(self):
+            return {
+                "stck_cash_ord_psbl_amt": "100000000.0",
+                "dnca_tot_amt": "100000000.0",
+            }
+
+        async def order_korea_stock(self, stock_code, order_type, quantity, price):
+            order_calls.append(
+                {
+                    "stock_code": stock_code,
+                    "order_type": order_type,
+                    "quantity": quantity,
+                    "price": price,
+                }
+            )
+            return {"odno": "kr-99999", "ord_qty": quantity}
+
+    async def fetch_quote(symbol):
+        return {"price": 70000.0}
+
+    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        amount=700_000.0,
+        price=70000.0,
+        dry_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is False
+    assert len(order_calls) == 1
