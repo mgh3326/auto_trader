@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-from datetime import UTC
 import hashlib
 import json
 import logging
 import re
 import time
+from datetime import UTC
 from typing import TYPE_CHECKING, Any, Literal
 
 try:
@@ -43,12 +43,18 @@ from app.services.analyst_normalizer import (
     rating_to_bucket,
 )
 from app.services.dca_service import DcaService
-from app.services.disclosures.dart import list_filings
 
 try:
     from app.services.disclosures.dart import list_filings
 except ImportError:
     list_filings = None
+from app.mcp_server.scoring import calc_composite_score
+from app.mcp_server.strategies import (
+    get_strategy_description,
+    get_strategy_scoring_weights,
+    get_strategy_screen_params,
+    validate_strategy,
+)
 from app.services.kis import KISClient
 from app.services.krx import (
     classify_etf_category,
@@ -65,21 +71,6 @@ from data.stocks_info import (
     get_us_stocks_data,
 )
 from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
-
-from app.mcp_server.scoring import calc_composite_score
-from app.mcp_server.strategies import (
-    ACCOUNT_CONSTRAINTS,
-    get_strategy_description,
-    get_strategy_scoring_weights,
-    get_strategy_screen_params,
-    validate_account,
-    validate_strategy,
-)
-
-try:
-    from app.services.disclosures.dart import list_filings
-except ImportError:
-    list_filings = None
 
 logger = logging.getLogger(__name__)
 
@@ -9425,6 +9416,7 @@ def register_tools(mcp: FastMCP) -> None:
 
         if asset_type is None or asset_type == "etf":
             # ETFs are KOSPI-listed, skip for kosdaq market
+            etfs: list[dict[str, Any]] = []
             if market != "kosdaq":
                 # Fetch ETFs
                 etfs = await fetch_etf_all_cached()
@@ -10199,9 +10191,7 @@ def register_tools(mcp: FastMCP) -> None:
     async def recommend_stocks(
         budget: float,
         market: str = "kr",
-        account: str | None = None,
         strategy: str = "balanced",
-        asset_type: Literal["stock", "etf"] | None = None,
         exclude_symbols: list[str] | None = None,
         sectors: list[str] | None = None,
         max_positions: int = 5,
@@ -10213,16 +10203,6 @@ def register_tools(mcp: FastMCP) -> None:
 
         validated_strategy = validate_strategy(strategy)
         normalized_market = _normalize_recommend_market(market)
-        validated_account = validate_account(account, normalized_market, asset_type)
-
-        if validated_account is not None:
-            constraints = ACCOUNT_CONSTRAINTS[validated_account]
-            allowed_markets = constraints["allowed_markets"]
-            if normalized_market not in allowed_markets:
-                raise ValueError(
-                    f"Account '{account}' does not support market '{normalized_market}'. "
-                    f"Allowed: {', '.join(allowed_markets)}"
-                )
 
         candidate_limit = min(100, max(50, max_positions * 20))
         warnings: list[str] = []
@@ -10236,15 +10216,11 @@ def register_tools(mcp: FastMCP) -> None:
         min_dividend_yield = strategy_screen_params.get("min_dividend_yield")
         max_rsi = strategy_screen_params.get("max_rsi")
 
-        screen_asset_type = asset_type
+        screen_asset_type = None
         screen_category = sectors[0] if sectors else None
 
         # Remove unsupported filters by market while keeping call safe.
         if normalized_market == "crypto":
-            if screen_asset_type is not None:
-                warnings.append(
-                    "crypto market ignores asset_type filter; request value was ignored."
-                )
             if screen_category is not None:
                 warnings.append(
                     "crypto market does not support sectors/category filter; ignored."
@@ -10346,7 +10322,7 @@ def register_tools(mcp: FastMCP) -> None:
                 _,
                 _,
             ) = await _collect_portfolio_positions(
-                account=account,
+                account=None,
                 market=normalized_market,
                 include_current_price=False,
                 user_id=_MCP_USER_ID,

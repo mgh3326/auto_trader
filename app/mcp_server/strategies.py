@@ -1,4 +1,4 @@
-"""Strategy and account policy definitions for `recommend_stocks`."""
+"""Strategy definitions for `recommend_stocks`."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from copy import deepcopy
 from typing import Any, Literal, TypedDict
 
 StrategyType = Literal["balanced", "growth", "value", "dividend", "momentum"]
-AccountType = Literal["kis", "toss", "isa", "samsung_pension", "upbit"]
 
 
 class StrategyConfig(TypedDict):
@@ -15,25 +14,12 @@ class StrategyConfig(TypedDict):
     scoring_weights: dict[str, float]
 
 
-class AccountConstraint(TypedDict):
-    allowed_markets: list[str]
-    allowed_asset_types: list[str]
-
-
 VALID_STRATEGIES: list[StrategyType] = [
     "balanced",
     "growth",
     "value",
     "dividend",
     "momentum",
-]
-
-VALID_ACCOUNTS: list[AccountType] = [
-    "kis",
-    "toss",
-    "isa",
-    "samsung_pension",
-    "upbit",
 ]
 
 
@@ -118,82 +104,12 @@ STRATEGY_CONFIGS: dict[StrategyType, StrategyConfig] = {
 }
 
 
-ACCOUNT_CONSTRAINTS: dict[AccountType, AccountConstraint] = {
-    "kis": {
-        "allowed_markets": ["kr", "us"],
-        "allowed_asset_types": ["stock", "etf"],
-    },
-    "toss": {
-        "allowed_markets": ["kr", "us"],
-        "allowed_asset_types": ["stock", "etf"],
-    },
-    "isa": {
-        "allowed_markets": ["kr"],
-        "allowed_asset_types": ["etf"],
-    },
-    "samsung_pension": {
-        "allowed_markets": ["kr"],
-        "allowed_asset_types": ["etf"],
-    },
-    "upbit": {
-        "allowed_markets": ["crypto"],
-        "allowed_asset_types": ["all"],
-    },
-}
-
-
 def validate_strategy(strategy: str | None) -> StrategyType:
     """Validate and normalize strategy value."""
     normalized = strategy.lower().strip() if strategy else "balanced"
     if normalized not in VALID_STRATEGIES:
         valid_list = ", ".join(VALID_STRATEGIES)
         raise ValueError(f"Invalid strategy '{strategy}'. Must be one of: {valid_list}")
-    return normalized  # type: ignore[return-value]
-
-
-def validate_account(
-    account: str | None,
-    market: str,
-    asset_type: str | None,
-) -> AccountType | None:
-    """Validate account policy against target market/asset type."""
-    if account is None:
-        return None
-
-    normalized = account.lower().strip()
-    if normalized not in VALID_ACCOUNTS:
-        valid_list = ", ".join(VALID_ACCOUNTS)
-        raise ValueError(f"Invalid account '{account}'. Must be one of: {valid_list}")
-
-    constraints = ACCOUNT_CONSTRAINTS[normalized]  # validated above
-    allowed_markets = constraints["allowed_markets"]
-    allowed_asset_types = constraints["allowed_asset_types"]
-
-    if market not in allowed_markets:
-        raise ValueError(
-            f"Account '{account}' does not support market '{market}'. "
-            f"Allowed markets: {', '.join(allowed_markets)}"
-        )
-
-    normalized_asset_type = asset_type.lower().strip() if asset_type else None
-    if normalized_asset_type is None:
-        # Strict mode: constrained accounts cannot omit asset_type.
-        if "all" not in allowed_asset_types and len(allowed_asset_types) == 1:
-            raise ValueError(
-                f"Account '{account}' requires asset_type "
-                f"({', '.join(allowed_asset_types)})."
-            )
-        return normalized  # type: ignore[return-value]
-
-    if (
-        "all" not in allowed_asset_types
-        and normalized_asset_type not in allowed_asset_types
-    ):
-        raise ValueError(
-            f"Account '{account}' does not support asset_type '{asset_type}'. "
-            f"Allowed types: {', '.join(allowed_asset_types)}"
-        )
-
     return normalized  # type: ignore[return-value]
 
 
