@@ -626,3 +626,210 @@ class TestCeleryTaskFailureHandler:
             == "kis.run_per_domestic_stock_automation"
         )
         assert call_args.kwargs["additional_context"]["task_id"] == "celery-task-abc123"
+
+
+class TestKISIntegratedMarginParams:
+    """Test KIS 통합증거금 요청 파라미터 검증 (OPSQ2001 방지)."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_inquire_integrated_margin_params_no_cma_field(
+        self, mock_settings, mock_client_class
+    ):
+        """inquire_integrated_margin 실제 요청 파라미터 검증: CMA_EVLU_AMT_ICLD_YN 미포함."""
+        from app.services.kis import (
+            INTEGRATED_MARGIN_TR,
+            INTEGRATED_MARGIN_URL,
+            KISClient,
+        )
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output1": {"dnca_tot_amt": "1000000"},
+        }
+        mock_client.get.return_value = mock_response
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        await client.inquire_integrated_margin()
+
+        call_args = mock_client.get.call_args
+        params = call_args.kwargs["params"]
+        headers = call_args.kwargs["headers"]
+
+        assert "CMA_EVLU_AMT_ICLD_YN" not in params
+        assert set(params.keys()) == {"CANO", "ACNT_PRDT_CD"}
+        assert headers["tr_id"] == INTEGRATED_MARGIN_TR
+        assert INTEGRATED_MARGIN_URL in call_args.args[0]
+
+
+class TestKISFailureLogging:
+    """Test KIS API 실패 로깅 검증."""
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_inquire_domestic_cash_balance_logs_failure_details(
+        self, mock_settings, mock_client_class, caplog
+    ):
+        """inquire_domestic_cash_balance 실패 시 endpoint, tr_id, 실제 key 이름 로깅."""
+        import logging
+
+        from app.services.kis import BALANCE_TR, BALANCE_URL, KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "1",
+            "msg_cd": "TEST_ERROR",
+            "msg1": "Test error message",
+        }
+        mock_client.get.return_value = mock_response
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(RuntimeError):
+                await client.inquire_domestic_cash_balance()
+
+        error_logs = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(error_logs) >= 1
+
+        error_log = error_logs[0].message
+        assert "inquire_domestic_cash_balance" in error_log
+        assert BALANCE_URL in error_log
+        assert BALANCE_TR in error_log
+        assert "CANO" in error_log
+        assert "ACNT_PRDT_CD" in error_log
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_inquire_integrated_margin_logs_failure_details(
+        self, mock_settings, mock_client_class, caplog
+    ):
+        """inquire_integrated_margin 실패 시 endpoint, tr_id, 실제 key 이름 로깅."""
+        import logging
+
+        from app.services.kis import (
+            INTEGRATED_MARGIN_TR,
+            INTEGRATED_MARGIN_URL,
+            KISClient,
+        )
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "1",
+            "msg_cd": "OPSQ2001",
+            "msg1": "CMA_EVLU_AMT_ICLD_YN error",
+        }
+        mock_client.get.return_value = mock_response
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(RuntimeError):
+                await client.inquire_integrated_margin()
+
+        error_logs = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(error_logs) >= 1
+
+        error_log = error_logs[0].message
+        assert "inquire_integrated_margin" in error_log
+        assert INTEGRATED_MARGIN_URL in error_log
+        assert INTEGRATED_MARGIN_TR in error_log
+        assert "CANO" in error_log
+        assert "ACNT_PRDT_CD" in error_log
+        assert "OPSQ2001" in error_log
+
+        warning_logs = [r for r in caplog.records if r.levelno == logging.WARNING]
+        opsq_warning = any(
+            "OPSQ2001" in r.message
+            and INTEGRATED_MARGIN_URL in r.message
+            and INTEGRATED_MARGIN_TR in r.message
+            for r in warning_logs
+        )
+        assert opsq_warning
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_order_korea_stock_logs_failure_details(
+        self, mock_settings, mock_client_class, caplog
+    ):
+        """order_korea_stock 실패 시 endpoint, tr_id, request_keys 로깅."""
+        import logging
+
+        from app.services.kis import KOREA_ORDER_URL, KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "rt_cd": "1",
+            "msg_cd": "ORDER_ERROR",
+            "msg1": "Order failed",
+        }
+        mock_client.post.return_value = mock_response
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(RuntimeError):
+                await client.order_korea_stock(
+                    stock_code="005930",
+                    order_type="buy",
+                    quantity=10,
+                    price=80000,
+                )
+
+        error_logs = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(error_logs) >= 1
+
+        error_log = error_logs[0].message
+        assert "order_korea_stock" in error_log
+        assert KOREA_ORDER_URL in error_log
+        assert "CANO" in error_log
+        assert "ACNT_PRDT_CD" in error_log
+        assert "PDNO" in error_log
+        assert "ORD_QTY" in error_log
+        assert "ORD_UNPR" in error_log
