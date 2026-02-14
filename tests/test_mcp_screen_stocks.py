@@ -1,5 +1,7 @@
 """Tests for screen_stocks MCP tool."""
 
+import logging
+
 import pytest
 
 from app.mcp_server.tooling import analysis_screen_core
@@ -591,6 +593,264 @@ class TestScreenStocksCrypto:
                 sort_order="desc",
                 limit=20,
             )
+
+
+class TestScreenStocksRsiLogging:
+    """Test RSI enrichment logging and symbol selection behavior."""
+
+    @pytest.mark.asyncio
+    async def test_kr_rsi_uses_short_code_over_code(self, monkeypatch):
+        """KR RSI enrichment should prefer short_code for KIS OHLCV lookup."""
+
+        async def mock_fetch_stock_all_cached(market):
+            if market == "STK":
+                return [
+                    {
+                        "code": "KR7005930003",
+                        "short_code": "005930",
+                        "name": "삼성전자",
+                        "close": 80000.0,
+                        "volume": 1000,
+                        "market_cap": 1_000_000,
+                    }
+                ]
+            return []
+
+        async def mock_fetch_valuation_all_cached(market):
+            return {}
+
+        called_symbols: list[tuple[str, str, int]] = []
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            import pandas as pd
+
+            called_symbols.append((symbol, market_type, count))
+            return pd.DataFrame({"close": [100.0 + i for i in range(50)]})
+
+        def mock_calculate_rsi(close):
+            return {"14": 42.0}
+
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+        monkeypatch.setattr(analysis_screen_core, "_calculate_rsi", mock_calculate_rsi)
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kospi",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert called_symbols, "OHLCV fetch should be called for RSI enrichment"
+        assert called_symbols[0][0] == "005930"
+        assert called_symbols[0][1] == "equity_kr"
+        assert result["results"][0]["rsi"] == 42.0
+
+    @pytest.mark.asyncio
+    async def test_crypto_rsi_falls_back_to_market_field(self, monkeypatch, caplog):
+        """Crypto RSI enrichment should fall back to item['market'] when code is missing."""
+
+        async def mock_fetch_top_traded_coins(fiat):
+            return [
+                {
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_volume_24h": 123.0,
+                    "acc_trade_price_24h": 456.0,
+                }
+            ]
+
+        called_symbols: list[str] = []
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            called_symbols.append(symbol)
+            raise RuntimeError("should not be called")
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        caplog.set_level(logging.ERROR)
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["returned_count"] == 1
+        assert called_symbols == ["crypto"]
+        assert any("[RSI-Crypto] ❌ Failed for crypto" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_kr_rsi_ohlcv_exception_logs_error(self, monkeypatch, caplog):
+        """KR RSI enrichment should log errors and return item without RSI on OHLCV failure."""
+
+        async def mock_fetch_stock_all_cached(market):
+            if market == "STK":
+                return [
+                    {
+                        "code": "KR7005930003",
+                        "short_code": "005930",
+                        "name": "삼성전자",
+                        "close": 80000.0,
+                        "volume": 1000,
+                        "market_cap": 1_000_000,
+                    }
+                ]
+            return []
+
+        async def mock_fetch_valuation_all_cached(market):
+            return {}
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            raise RuntimeError("boom-kr")
+
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        caplog.set_level(logging.ERROR)
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kospi",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["returned_count"] == 1
+        assert result["results"][0].get("rsi") is None
+        assert any("[RSI-KR] ❌ Failed" in record.message for record in caplog.records)
+        assert any("RuntimeError" in record.message for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_crypto_rsi_ohlcv_exception_logs_error(self, monkeypatch, caplog):
+        """Crypto RSI enrichment should log errors and continue on OHLCV failure."""
+
+        async def mock_fetch_top_traded_coins(fiat):
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_volume_24h": 123.0,
+                    "acc_trade_price_24h": 456.0,
+                }
+            ]
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            raise RuntimeError("boom-crypto")
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        caplog.set_level(logging.ERROR)
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["returned_count"] == 1
+        assert result["results"][0].get("rsi") is None
+        assert any("[RSI-Crypto] ❌ Failed" in record.message for record in caplog.records)
+        assert any("RuntimeError" in record.message for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_crypto_rsi_gather_exception_is_logged(self, monkeypatch, caplog):
+        """Crypto RSI gather-level exception should be logged and skipped."""
+
+        async def mock_fetch_top_traded_coins(fiat):
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_volume_24h": 123.0,
+                    "acc_trade_price_24h": 456.0,
+                }
+            ]
+
+        async def mock_gather(*aws, **kwargs):
+            for awaitable in aws:
+                awaitable.close()
+            return [RuntimeError("forced gather failure")]
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(analysis_screen_core.asyncio, "gather", mock_gather)
+
+        caplog.set_level(logging.ERROR)
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["returned_count"] == 1
+        assert any(
+            "gather returned exception" in record.message for record in caplog.records
+        )
 
 
 class TestScreenStocksFilters:
