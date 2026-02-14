@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.mcp_server.tooling import order_execution, orders_history, orders_modify_cancel
 from app.mcp_server.tooling.registry import register_all_tools
-from app.mcp_server.tooling import order_execution, orders_history
 from app.services import upbit as upbit_service
 
 
@@ -29,6 +29,7 @@ def build_tools() -> dict[str, object]:
 
 def _patch_kis_client(monkeypatch: pytest.MonkeyPatch, client_factory) -> None:
     monkeypatch.setattr(orders_history, "KISClient", client_factory)
+    monkeypatch.setattr(orders_modify_cancel, "KISClient", client_factory)
     monkeypatch.setattr(order_execution, "KISClient", client_factory)
 
 

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pandas as pd
 import pytest
+import yfinance as yf
 
 from app.core.config import settings
 from app.mcp_server.tooling import (
@@ -23,15 +24,16 @@ from app.mcp_server.tooling import (
     market_data_quotes,
     order_execution,
     orders_history,
+    orders_modify_cancel,
+    portfolio_cash,
     portfolio_holdings,
     shared,
 )
 from app.mcp_server.tooling.registry import register_all_tools
+from app.models.dca_plan import DcaPlan, DcaPlanStatus, DcaPlanStep, DcaStepStatus
 from app.services import naver_finance
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
-import yfinance as yf
-from app.models.dca_plan import DcaPlan, DcaPlanStatus, DcaPlanStep, DcaStepStatus
 from app.services.dca_service import DcaService
 
 # from app.mcp_server.tick_size import adjust_tick_size_kr  # TODO: Remove if not needed
@@ -83,6 +85,8 @@ _PATCH_MODULES = (
     market_data_quotes,
     order_execution,
     orders_history,
+    orders_modify_cancel,
+    portfolio_cash,
     portfolio_holdings,
 )
 
@@ -102,12 +106,19 @@ def _patch_runtime_attr(
 def _patch_httpx_async_client(
     monkeypatch: pytest.MonkeyPatch, async_client_class: type
 ) -> None:
-    for module in (analysis_tool_handlers, fundamentals_sources_naver):
+    for module in (
+        analysis_tool_handlers,
+        fundamentals_sources_binance,
+        fundamentals_sources_coingecko,
+        fundamentals_sources_indices,
+        fundamentals_sources_naver,
+    ):
         monkeypatch.setattr(module.httpx, "AsyncClient", async_client_class)
 
 
 def _patch_yf_ticker(monkeypatch: pytest.MonkeyPatch, ticker_factory: object) -> None:
     monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", ticker_factory)
+    monkeypatch.setattr(fundamentals_sources_indices.yf, "Ticker", ticker_factory)
 
 
 def _single_row_df() -> pd.DataFrame:

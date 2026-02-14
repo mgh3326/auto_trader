@@ -12,6 +12,7 @@ from app.mcp_server.tooling.fundamentals_sources_binance import (
 )
 from app.mcp_server.tooling.fundamentals_sources_coingecko import (
     _fetch_coingecko_coin_profile,
+    _map_coingecko_profile_to_output,
     _normalize_crypto_base_symbol,
     _resolve_batch_crypto_symbols,
     _resolve_coingecko_coin_id,
@@ -44,7 +45,6 @@ from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_sector_peers_us,
     _fetch_valuation_naver,
     _fetch_valuation_yfinance,
-    _map_coingecko_profile_to_output,
 )
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_fibonacci,
@@ -58,11 +58,23 @@ from app.mcp_server.tooling.market_data_indicators import (
 )
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
+)
+from app.mcp_server.tooling.shared import (
     is_crypto_market as _is_crypto_market,
+)
+from app.mcp_server.tooling.shared import (
     is_korean_equity_code as _is_korean_equity_code,
+)
+from app.mcp_server.tooling.shared import (
     is_us_equity_symbol as _is_us_equity_symbol,
+)
+from app.mcp_server.tooling.shared import (
     normalize_symbol_input as _normalize_symbol_input,
+)
+from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
+)
+from app.mcp_server.tooling.shared import (
     to_optional_float as _to_optional_float,
 )
 from app.services import naver_finance

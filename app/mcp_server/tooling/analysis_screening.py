@@ -41,14 +41,24 @@ from app.mcp_server.tooling.market_data_quotes import (
 )
 from app.mcp_server.tooling.shared import (
     build_recommendation_for_equity as _build_recommendation_for_equity,
-    normalize_symbol_input as _normalize_symbol_input,
-    resolve_market_type as _resolve_market_type,
-    to_float as _to_float,
-    to_int as _to_int,
-    to_optional_float as _to_optional_float,
 )
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload_impl,
+)
+from app.mcp_server.tooling.shared import (
+    normalize_symbol_input as _normalize_symbol_input,
+)
+from app.mcp_server.tooling.shared import (
+    resolve_market_type as _resolve_market_type,
+)
+from app.mcp_server.tooling.shared import (
+    to_float as _to_float,
+)
+from app.mcp_server.tooling.shared import (
+    to_int as _to_int,
+)
+from app.mcp_server.tooling.shared import (
+    to_optional_float as _to_optional_float,
 )
 
 

@@ -18,10 +18,10 @@ from app.mcp_server.strategies import (
     get_strategy_config,
     validate_strategy,
 )
-from app.mcp_server.tooling import analysis_tool_handlers
 from app.mcp_server.tooling import (
     analysis_recommend,
     analysis_screen_core,
+    analysis_tool_handlers,
     portfolio_holdings,
 )
 from app.mcp_server.tooling.registry import register_all_tools

@@ -20,8 +20,7 @@ from app.mcp_server.tooling.orders_history import (
     _place_order_impl,
 )
 from app.mcp_server.tooling.portfolio_cash import (
-    extract_usd_orderable_from_row as _extract_usd_orderable_from_row,
-    select_usd_row_for_us_order as _select_usd_row_for_us_order,
+    get_cash_balance_impl as _get_cash_balance_impl,
 )
 from app.mcp_server.tooling.portfolio_dca_core import (
     create_dca_plan_impl,
@@ -43,21 +42,51 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import (
     build_holdings_summary as _build_holdings_summary,
+)
+from app.mcp_server.tooling.shared import (
     canonical_account_id as _canonical_account_id,
+)
+from app.mcp_server.tooling.shared import (
     format_filter_threshold as _format_filter_threshold,
+)
+from app.mcp_server.tooling.shared import (
     instrument_to_manual_market_type as _instrument_to_manual_market_type,
+)
+from app.mcp_server.tooling.shared import (
     is_position_symbol_match as _is_position_symbol_match,
-    manual_market_to_instrument_type as _manual_market_to_instrument_type,
-    match_account_filter as _match_account_filter,
-    normalize_account_filter as _normalize_account_filter,
-    normalize_position_symbol as _normalize_position_symbol,
-    parse_holdings_market_filter as _parse_holdings_market_filter,
-    position_to_output as _position_to_output,
-    recalculate_profit_fields as _recalculate_profit_fields,
-    resolve_market_type as _resolve_market_type,
-    to_float as _to_float,
-    value_for_minimum_filter as _value_for_minimum_filter,
+)
+from app.mcp_server.tooling.shared import (
     logger,
+)
+from app.mcp_server.tooling.shared import (
+    manual_market_to_instrument_type as _manual_market_to_instrument_type,
+)
+from app.mcp_server.tooling.shared import (
+    match_account_filter as _match_account_filter,
+)
+from app.mcp_server.tooling.shared import (
+    normalize_account_filter as _normalize_account_filter,
+)
+from app.mcp_server.tooling.shared import (
+    normalize_position_symbol as _normalize_position_symbol,
+)
+from app.mcp_server.tooling.shared import (
+    parse_holdings_market_filter as _parse_holdings_market_filter,
+)
+from app.mcp_server.tooling.shared import (
+    position_to_output as _position_to_output,
+)
+from app.mcp_server.tooling.shared import (
+    recalculate_profit_fields as _recalculate_profit_fields,
+)
+from app.mcp_server.tooling.shared import (
+    resolve_market_type as _resolve_market_type,
+)
+from app.mcp_server.tooling.shared import (
+    to_float as _to_float,
+)
+from app.mcp_server.tooling.shared import (
+    value_for_minimum_filter as _value_for_minimum_filter,
 )
 from app.services import upbit as upbit_service
 from app.services.dca_service import DcaService
@@ -850,110 +879,6 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
         ),
     )
     async def get_cash_balance(account: str | None = None) -> dict[str, Any]:
-        """Query available cash balances from all accounts."""
-        accounts: list[dict[str, Any]] = []
-        errors: list[dict[str, Any]] = []
-        total_krw = 0.0
-        total_usd = 0.0
-
-        account_filter = _normalize_account_filter(account)
-        strict_mode = account_filter is not None
-
-        if account_filter is None or account_filter in ("upbit",):
-            try:
-                krw_balance = await upbit_service.fetch_krw_balance()
-                accounts.append(
-                    {
-                        "account": "upbit",
-                        "account_name": "기본 계좌",
-                        "broker": "upbit",
-                        "currency": "KRW",
-                        "balance": krw_balance,
-                        "formatted": f"{int(krw_balance):,} KRW",
-                    }
-                )
-                total_krw += krw_balance
-            except Exception as exc:
-                errors.append(
-                    {"source": "upbit", "market": "crypto", "error": str(exc)}
-                )
-
-        if account_filter is None or account_filter in (
-            "kis",
-            "kis_domestic",
-            "kis_overseas",
-        ):
-            kis = KISClient()
-
-            if account_filter is None or account_filter in ("kis", "kis_domestic"):
-                try:
-                    domestic_data = await kis.inquire_domestic_cash_balance()
-                    dncl_amt = float(domestic_data.get("dnca_tot_amt", 0) or 0)
-                    orderable = float(
-                        domestic_data.get("stck_cash_ord_psbl_amt", 0) or 0
-                    )
-                    accounts.append(
-                        {
-                            "account": "kis_domestic",
-                            "account_name": "기본 계좌",
-                            "broker": "kis",
-                            "currency": "KRW",
-                            "balance": dncl_amt,
-                            "orderable": orderable,
-                            "formatted": f"{int(dncl_amt):,} KRW",
-                        }
-                    )
-                    total_krw += dncl_amt
-                except Exception as exc:
-                    if strict_mode:
-                        raise RuntimeError(
-                            f"KIS domestic cash balance query failed: {exc}"
-                        ) from exc
-                    errors.append({"source": "kis", "market": "kr", "error": str(exc)})
-
-            if account_filter is None or account_filter in ("kis", "kis_overseas"):
-                try:
-                    overseas_margin_data = await kis.inquire_overseas_margin()
-                    usd_margin = _select_usd_row_for_us_order(overseas_margin_data)
-                    if usd_margin is None:
-                        raise RuntimeError(
-                            "USD margin data not found in KIS overseas margin"
-                        )
-
-                    balance = _to_float(
-                        usd_margin.get("frcr_dncl_amt1")
-                        or usd_margin.get("frcr_dncl_amt_2"),
-                        default=0.0,
-                    )
-                    orderable = _extract_usd_orderable_from_row(usd_margin)
-
-                    accounts.append(
-                        {
-                            "account": "kis_overseas",
-                            "account_name": "기본 계좌",
-                            "broker": "kis",
-                            "currency": "USD",
-                            "balance": balance,
-                            "orderable": orderable,
-                            "exchange_rate": None,
-                            "formatted": f"${balance:.2f} USD",
-                        }
-                    )
-                    total_usd += balance
-                except Exception as exc:
-                    if strict_mode:
-                        raise RuntimeError(
-                            f"KIS overseas cash balance query failed: {exc}"
-                        ) from exc
-                    errors.append({"source": "kis", "market": "us", "error": str(exc)})
-
-        return {
-            "accounts": accounts,
-            "summary": {
-                "total_krw": total_krw,
-                "total_usd": total_usd,
-            },
-            "errors": errors,
-        }
+        return await _get_cash_balance_impl(account=account)
 
 __all__ = ["PORTFOLIO_TOOL_NAMES", "_register_portfolio_tools_impl", "_collect_portfolio_positions", "_get_indicators_impl"]
