@@ -2,7 +2,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.mcp_server.tooling.testing_proxy import mcp_tools
+from app.mcp_server.tooling import analysis_tool_handlers
+from app.mcp_server.tooling.registry import register_all_tools
+from app.services import upbit as upbit_service
+import yfinance as yf
 
 
 class DummyMCP:
@@ -19,7 +22,7 @@ class DummyMCP:
 
 def build_tools() -> dict[str, object]:
     mcp = DummyMCP()
-    mcp_tools.register_tools(mcp)
+    register_all_tools(mcp)
     return mcp.tools
 
 
@@ -51,7 +54,7 @@ class TestMCPTopStocks:
                     },
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="volume")
 
@@ -83,7 +86,7 @@ class TestMCPTopStocks:
                     }
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="volume")
 
@@ -121,7 +124,7 @@ class TestMCPTopStocks:
                     },
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="volume")
 
@@ -152,7 +155,7 @@ class TestMCPTopStocks:
                     ]
                 return []
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="gainers")
 
@@ -180,7 +183,7 @@ class TestMCPTopStocks:
                     }
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="market_cap")
 
@@ -207,7 +210,7 @@ class TestMCPTopStocks:
                     }
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
@@ -235,7 +238,7 @@ class TestMCPTopStocks:
                     ]
                 return []
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="gainers")
 
@@ -262,7 +265,7 @@ class TestMCPTopStocks:
                     ]
                 return []
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="losers")
 
@@ -287,7 +290,7 @@ class TestMCPTopStocks:
                     }
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
@@ -311,7 +314,7 @@ class TestMCPTopStocks:
                     }
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="market_cap")
 
@@ -333,7 +336,7 @@ class TestMCPTopStocks:
             async def volume_rank(self, market, limit):
                 return [{"stck_shrn_iscd": "005930"}] * 100
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](
             market="kr", ranking_type="volume", limit=10
@@ -349,7 +352,7 @@ class TestMCPTopStocks:
             async def volume_rank(self, market, limit):
                 return []
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](
             market="kr", ranking_type="volume", limit=0
@@ -375,7 +378,7 @@ class TestMCPTopStocks:
                     }
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](
             market="kr", ranking_type="volume", limit=1
@@ -418,7 +421,7 @@ class TestMCPTopStocks:
             }
         )
 
-        monkeypatch.setattr(mcp_tools.yf, "screen", lambda sid: mock_df)
+        monkeypatch.setattr(yf, "screen", lambda sid: mock_df)
 
         result = await tools["get_top_stocks"](
             market="us", ranking_type="volume", limit=2
@@ -445,8 +448,8 @@ class TestMCPTopStocks:
         )
 
         mock_query = MagicMock()
-        monkeypatch.setattr(mcp_tools.yf, "EquityQuery", lambda *args, **kw: mock_query)
-        monkeypatch.setattr(mcp_tools.yf, "screen", lambda *args, **kw: mock_df)
+        monkeypatch.setattr(yf, "EquityQuery", lambda *args, **kw: mock_query)
+        monkeypatch.setattr(yf, "screen", lambda *args, **kw: mock_df)
 
         result = await tools["get_top_stocks"](
             market="us", ranking_type="market_cap", limit=2
@@ -463,7 +466,7 @@ class TestMCPTopStocks:
         def mock_screen_raises(*args, **kw):
             raise RuntimeError("yfinance API error")
 
-        monkeypatch.setattr(mcp_tools.yf, "screen", mock_screen_raises)
+        monkeypatch.setattr(yf, "screen", mock_screen_raises)
 
         result = await tools["get_top_stocks"](
             market="us", ranking_type="market_cap", limit=2
@@ -496,8 +499,8 @@ class TestMCPTopStocks:
             return mock_df
 
         mock_query = MagicMock()
-        monkeypatch.setattr(mcp_tools.yf, "EquityQuery", lambda *args, **kw: mock_query)
-        monkeypatch.setattr(mcp_tools.yf, "screen", mock_screen)
+        monkeypatch.setattr(yf, "EquityQuery", lambda *args, **kw: mock_query)
+        monkeypatch.setattr(yf, "screen", mock_screen)
 
         await tools["get_top_stocks"](market="us", ranking_type="market_cap", limit=10)
 
@@ -529,7 +532,7 @@ class TestMCPTopStocks:
             ]
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
@@ -565,7 +568,7 @@ class TestMCPTopStocks:
             ]
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
@@ -601,7 +604,7 @@ class TestMCPTopStocks:
             ]
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
@@ -630,7 +633,7 @@ class TestMCPTopStocks:
             ]
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
@@ -648,7 +651,7 @@ class TestMCPTopStocks:
             async def volume_rank(self, market, limit):
                 raise RuntimeError("KIS API error")
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="volume")
 
@@ -664,7 +667,7 @@ class TestMCPTopStocks:
                 raise RuntimeError("Upbit API error")
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             MockUpbitService().fetch_top_traded_coins,
         )
@@ -703,7 +706,7 @@ class TestMCPTopStocks:
                     },
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
@@ -749,7 +752,7 @@ class TestMCPLosers:
                     },
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](
             market="kr", ranking_type="losers", limit=5
@@ -777,7 +780,7 @@ class TestMCPLosers:
                     },
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](
             market="kr", ranking_type="gainers", limit=5
@@ -815,7 +818,7 @@ class TestMCPEmptyLosersErrors:
                     },
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](
             market="kr", ranking_type="losers", limit=5
@@ -849,7 +852,7 @@ class TestMCPEmptyLosersErrors:
                     },
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](
             market="kr", ranking_type="losers", limit=5
@@ -883,7 +886,7 @@ class TestMCPRegressionTests:
                     },
                 ]
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
 
         result = await tools["get_top_stocks"](
             market="kr", ranking_type="gainers", limit=5
@@ -915,7 +918,7 @@ class TestMCPRegressionTests:
             }
         )
 
-        monkeypatch.setattr(mcp_tools.yf, "screen", lambda sid: mock_df)
+        monkeypatch.setattr(yf, "screen", lambda sid: mock_df)
 
         result = await tools["get_top_stocks"](
             market="us", ranking_type="losers", limit=5
@@ -952,7 +955,7 @@ class TestMCPRegressionTests:
             ]
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )

@@ -6,7 +6,31 @@ import httpx
 import pandas as pd
 import pytest
 
-from app.mcp_server.tooling.testing_proxy import mcp_tools
+from app.core.config import settings
+from app.mcp_server.tooling import (
+    analysis_rankings,
+    analysis_recommend,
+    analysis_screen_core,
+    analysis_screening,
+    analysis_tool_handlers,
+    fundamentals_handlers,
+    fundamentals_sources_binance,
+    fundamentals_sources_coingecko,
+    fundamentals_sources_finnhub,
+    fundamentals_sources_indices,
+    fundamentals_sources_naver,
+    market_data_indicators,
+    market_data_quotes,
+    order_execution,
+    orders_history,
+    portfolio_holdings,
+    shared,
+)
+from app.mcp_server.tooling.registry import register_all_tools
+from app.services import naver_finance
+from app.services import upbit as upbit_service
+from app.services import yahoo as yahoo_service
+import yfinance as yf
 from app.models.dca_plan import DcaPlan, DcaPlanStatus, DcaPlanStep, DcaStepStatus
 from app.services.dca_service import DcaService
 
@@ -40,8 +64,50 @@ class DummySessionManager:
 
 def build_tools() -> dict[str, object]:
     mcp = DummyMCP()
-    mcp_tools.register_tools(mcp)
+    register_all_tools(mcp)
     return mcp.tools
+
+
+_PATCH_MODULES = (
+    analysis_rankings,
+    analysis_recommend,
+    analysis_screen_core,
+    analysis_screening,
+    analysis_tool_handlers,
+    fundamentals_handlers,
+    fundamentals_sources_binance,
+    fundamentals_sources_coingecko,
+    fundamentals_sources_finnhub,
+    fundamentals_sources_indices,
+    fundamentals_sources_naver,
+    market_data_quotes,
+    order_execution,
+    orders_history,
+    portfolio_holdings,
+)
+
+
+def _patch_runtime_attr(
+    monkeypatch: pytest.MonkeyPatch, attr_name: str, value: object
+) -> None:
+    matched = False
+    for module in _PATCH_MODULES:
+        if hasattr(module, attr_name):
+            monkeypatch.setattr(module, attr_name, value)
+            matched = True
+    if not matched:
+        raise AttributeError(f"No runtime module exposes attribute '{attr_name}'")
+
+
+def _patch_httpx_async_client(
+    monkeypatch: pytest.MonkeyPatch, async_client_class: type
+) -> None:
+    for module in (analysis_tool_handlers, fundamentals_sources_naver):
+        monkeypatch.setattr(module.httpx, "AsyncClient", async_client_class)
+
+
+def _patch_yf_ticker(monkeypatch: pytest.MonkeyPatch, ticker_factory: object) -> None:
+    monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", ticker_factory)
 
 
 def _single_row_df() -> pd.DataFrame:
@@ -87,11 +153,11 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
             ]
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_krw_balance",
         MockUpbitService().fetch_krw_balance,
     )
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"]()
 
@@ -133,9 +199,9 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
                 }
             ]
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_krw_balance",
         AsyncMock(side_effect=RuntimeError("Upbit API error")),
     )
@@ -176,11 +242,11 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
             ]
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_krw_balance",
         MockUpbitService().fetch_krw_balance,
     )
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"]()
 
@@ -204,7 +270,7 @@ async def test_get_cash_balance_kis_domestic_fail_close(monkeypatch):
         async def inquire_domestic_cash_balance(self):
             raise RuntimeError("domestic balance failed")
 
-    monkeypatch.setattr(mcp_tools, "KISClient", FailingKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", FailingKISClient)
 
     with pytest.raises(RuntimeError, match="KIS domestic cash balance query failed"):
         await tools["get_cash_balance"](account="kis_domestic")
@@ -218,7 +284,7 @@ async def test_get_cash_balance_kis_overseas_fail_close(monkeypatch):
         async def inquire_overseas_margin(self):
             raise RuntimeError("overseas margin failed")
 
-    monkeypatch.setattr(mcp_tools, "KISClient", FailingKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", FailingKISClient)
 
     with pytest.raises(RuntimeError, match="KIS overseas cash balance query failed"):
         await tools["get_cash_balance"](account="kis_overseas")
@@ -245,17 +311,17 @@ async def test_place_order_with_amount_crypto_market_buy(monkeypatch):
     )
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_multiple_current_prices",
         mock.fetch_multiple_current_prices,
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_my_coins",
         mock.fetch_my_coins,
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "place_market_buy_order",
         mock.place_market_buy_order,
     )
@@ -278,19 +344,19 @@ async def test_place_order_with_amount_limit_order(monkeypatch):
     tools = build_tools()
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_multiple_current_prices",
         AsyncMock(return_value={"KRW-BTC": 50000000.0}),
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_my_coins",
         AsyncMock(
             return_value=[{"currency": "KRW", "balance": "500000", "locked": "0"}]
         ),
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "place_buy_order",
         AsyncMock(return_value={"uuid": "test-uuid", "side": "bid"}),
     )
@@ -326,8 +392,8 @@ async def test_place_order_with_amount_stock_market_buy(monkeypatch):
     async def fetch_quote(symbol):
         return {"price": 100000.0}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
 
     result = await tools["place_order"](
         symbol="005930",
@@ -402,11 +468,11 @@ async def test_get_order_history_pending_crypto(monkeypatch):
             return []
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_open_orders",
         MockUpbitService().fetch_open_orders,
     )
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_order_history"](status="pending")
 
@@ -444,7 +510,7 @@ async def test_get_order_history_pending_kr_equity(monkeypatch):
         async def inquire_overseas_orders(self, exchange_code):
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_order_history"](status="pending", market="kr")
 
@@ -484,7 +550,7 @@ async def test_get_order_history_pending_us_equity(monkeypatch):
                 ]
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_order_history"](status="pending", market="us")
 
@@ -518,7 +584,7 @@ async def test_get_order_history_pending_with_symbol_filter(monkeypatch):
     )
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_open_orders",
         mock_fetch_open_orders,
     )
@@ -546,11 +612,11 @@ async def test_get_order_history_pending_empty_result(monkeypatch):
             return []
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_open_orders",
         MockUpbitService().fetch_open_orders,
     )
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_order_history"](status="pending")
 
@@ -574,11 +640,11 @@ async def test_get_order_history_pending_partial_failure(monkeypatch):
             return []
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_open_orders",
         MockUpbitService().fetch_open_orders,
     )
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_order_history"](status="pending")
 
@@ -597,7 +663,7 @@ async def test_cancel_order_upbit_uuid(monkeypatch):
             return [{"uuid": test_uuid, "created_at": "2024-01-01T00:00:00Z"}]
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service, "cancel_orders", MockUpbitService().cancel_orders
+        upbit_service, "cancel_orders", MockUpbitService().cancel_orders
     )
 
     result = await tools["cancel_order"](order_id=test_uuid)
@@ -628,7 +694,7 @@ async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
         ):
             return {"ord_no": order_number, "ord_tmd": "2024-01-01 10:00:00"}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["cancel_order"](order_id="12345", symbol="005930", market="kr")
 
@@ -659,7 +725,7 @@ async def test_cancel_order_kis_overseas(monkeypatch):
         ):
             return {"odno": order_number, "ord_tmd": "2024-01-01 10:00:00"}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["cancel_order"](order_id="67890", symbol="AAPL", market="us")
 
@@ -681,7 +747,7 @@ async def test_cancel_order_uuid_auto_detect_market(monkeypatch):
             ]
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service, "cancel_orders", MockUpbitService().cancel_orders
+        upbit_service, "cancel_orders", MockUpbitService().cancel_orders
     )
 
     uuid = "550e8400-e29b-41d4-a716-446655440123"
@@ -705,15 +771,11 @@ async def test_search_symbol_clamps_limit_and_shapes(monkeypatch):
     tools = build_tools()
 
     # Mock master data
-    monkeypatch.setattr(
-        mcp_tools,
-        "get_kospi_name_to_code",
+    _patch_runtime_attr(monkeypatch, "get_kospi_name_to_code",
         lambda: {"삼성전자": "005930", "삼성SDI": "006400"},
     )
-    monkeypatch.setattr(mcp_tools, "get_kosdaq_name_to_code", lambda: {})
-    monkeypatch.setattr(
-        mcp_tools,
-        "get_us_stocks_data",
+    _patch_runtime_attr(monkeypatch, "get_kosdaq_name_to_code", lambda: {})
+    _patch_runtime_attr(monkeypatch, "get_us_stocks_data",
         lambda: {
             "symbol_to_exchange": {},
             "symbol_to_name_kr": {},
@@ -736,15 +798,11 @@ async def test_search_symbol_with_market_filter(monkeypatch):
     tools = build_tools()
 
     # Mock master data
-    monkeypatch.setattr(
-        mcp_tools,
-        "get_kospi_name_to_code",
+    _patch_runtime_attr(monkeypatch, "get_kospi_name_to_code",
         lambda: {"애플": "123456"},
     )
-    monkeypatch.setattr(mcp_tools, "get_kosdaq_name_to_code", lambda: {})
-    monkeypatch.setattr(
-        mcp_tools,
-        "get_us_stocks_data",
+    _patch_runtime_attr(monkeypatch, "get_kosdaq_name_to_code", lambda: {})
+    _patch_runtime_attr(monkeypatch, "get_us_stocks_data",
         lambda: {
             "symbol_to_exchange": {"AAPL": "NASDAQ"},
             "symbol_to_name_kr": {"AAPL": "애플"},
@@ -767,7 +825,7 @@ async def test_search_symbol_returns_error_payload(monkeypatch):
     def raise_error():
         raise RuntimeError("master data failed")
 
-    monkeypatch.setattr(mcp_tools, "get_kospi_name_to_code", raise_error)
+    _patch_runtime_attr(monkeypatch, "get_kospi_name_to_code", raise_error)
 
     result = await tools["search_symbol"]("samsung")
 
@@ -782,7 +840,7 @@ async def test_get_quote_crypto(monkeypatch):
     tools = build_tools()
     mock_fetch = AsyncMock(return_value={"KRW-BTC": 123.4})
     monkeypatch.setattr(
-        mcp_tools.upbit_service, "fetch_multiple_current_prices", mock_fetch
+        upbit_service, "fetch_multiple_current_prices", mock_fetch
     )
 
     result = await tools["get_quote"]("krw-btc")
@@ -801,7 +859,7 @@ async def test_get_quote_crypto_returns_error_payload(monkeypatch):
     tools = build_tools()
     mock_fetch = AsyncMock(side_effect=RuntimeError("upbit down"))
     monkeypatch.setattr(
-        mcp_tools.upbit_service, "fetch_multiple_current_prices", mock_fetch
+        upbit_service, "fetch_multiple_current_prices", mock_fetch
     )
 
     result = await tools["get_quote"]("KRW-BTC")
@@ -823,7 +881,7 @@ async def test_get_quote_korean_equity(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n):
             return df
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_quote"]("005930")
 
@@ -841,7 +899,7 @@ async def test_get_quote_korean_equity_returns_error_payload(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n):
             raise RuntimeError("kis down")
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_quote"]("005930")
 
@@ -863,7 +921,7 @@ async def test_get_quote_korean_etf(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n):
             return df
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_quote"]("0123G0")
 
@@ -882,7 +940,7 @@ async def test_get_quote_korean_etf_with_explicit_market(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n):
             return df
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_quote"]("0117V0", market="kr")
 
@@ -987,7 +1045,7 @@ async def test_get_ohlcv_crypto(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
     mock_fetch = AsyncMock(return_value=df)
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
 
     result = await tools["get_ohlcv"]("KRW-BTC", count=300)
 
@@ -1006,7 +1064,7 @@ async def test_get_ohlcv_with_period_week(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
     mock_fetch = AsyncMock(return_value=df)
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
 
     result = await tools["get_ohlcv"]("KRW-BTC", count=52, period="week")
 
@@ -1021,7 +1079,7 @@ async def test_get_ohlcv_with_end_date(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
     mock_fetch = AsyncMock(return_value=df)
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
 
     await tools["get_ohlcv"]("KRW-BTC", count=100, end_date="2024-06-30")
 
@@ -1049,7 +1107,7 @@ async def test_get_ohlcv_serializes_timestamps(monkeypatch):
         ]
     )
     mock_fetch = AsyncMock(return_value=df)
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_ohlcv", mock_fetch)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
 
     result = await tools["get_ohlcv"]("KRW-BTC", count=1)
 
@@ -1068,7 +1126,7 @@ async def test_get_ohlcv_korean_equity(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n, period, end_date):
             return df
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_ohlcv"]("005930", count=10)
 
@@ -1090,7 +1148,7 @@ async def test_get_ohlcv_korean_equity_with_period_month(monkeypatch):
             called["period"] = period
             return df
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_ohlcv"]("005930", count=24, period="month")
 
@@ -1108,7 +1166,7 @@ async def test_get_ohlcv_korean_etf(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n, period, end_date):
             return df
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_ohlcv"]("0123G0", count=10)
 
@@ -1127,7 +1185,7 @@ async def test_get_ohlcv_korean_etf_with_explicit_market(monkeypatch):
         async def inquire_daily_itemchartprice(self, code, market, n, period, end_date):
             return df
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
     result = await tools["get_ohlcv"]("0117V0", market="kr", count=5)
 
@@ -1139,7 +1197,7 @@ async def test_get_ohlcv_korean_etf_with_explicit_market(monkeypatch):
 async def test_get_ohlcv_us_equity_returns_error_payload(monkeypatch):
     tools = build_tools()
     mock_fetch = AsyncMock(side_effect=RuntimeError("yahoo timeout"))
-    monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
+    monkeypatch.setattr(yahoo_service, "fetch_ohlcv", mock_fetch)
 
     result = await tools["get_ohlcv"]("AAPL", count=5)
 
@@ -1156,7 +1214,7 @@ async def test_get_ohlcv_us_equity(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
     mock_fetch = AsyncMock(return_value=df)
-    monkeypatch.setattr(mcp_tools.yahoo_service, "fetch_ohlcv", mock_fetch)
+    monkeypatch.setattr(yahoo_service, "fetch_ohlcv", mock_fetch)
 
     result = await tools["get_ohlcv"]("AAPL", count=5)
 
@@ -1231,7 +1289,7 @@ def test_calculate_volume_profile_distributes_volume_proportionally():
         ]
     )
 
-    result = mcp_tools._calculate_volume_profile(df, bins=2, value_area_ratio=0.70)
+    result = market_data_indicators._calculate_volume_profile(df, bins=2, value_area_ratio=0.70)
 
     assert result["price_range"] == {"low": 0, "high": 10}
     assert result["poc"]["volume"] == 50
@@ -1246,30 +1304,30 @@ class TestNormalizeMarket:
     """Tests for _normalize_market helper function."""
 
     def test_returns_none_for_empty(self):
-        assert mcp_tools._normalize_market(None) is None
-        assert mcp_tools._normalize_market("") is None
-        assert mcp_tools._normalize_market("   ") is None
+        assert shared.normalize_market(None) is None
+        assert shared.normalize_market("") is None
+        assert shared.normalize_market("   ") is None
 
     def test_crypto_aliases(self):
         for alias in ["crypto", "upbit", "krw", "usdt"]:
-            assert mcp_tools._normalize_market(alias) == "crypto"
+            assert shared.normalize_market(alias) == "crypto"
 
     def test_equity_kr_aliases(self):
         for alias in ["kr", "krx", "korea", "kospi", "kosdaq", "kis", "equity_kr"]:
-            assert mcp_tools._normalize_market(alias) == "equity_kr"
+            assert shared.normalize_market(alias) == "equity_kr"
 
     def test_equity_us_aliases(self):
         for alias in ["us", "usa", "nyse", "nasdaq", "yahoo", "equity_us"]:
-            assert mcp_tools._normalize_market(alias) == "equity_us"
+            assert shared.normalize_market(alias) == "equity_us"
 
     def test_case_insensitive(self):
-        assert mcp_tools._normalize_market("CRYPTO") == "crypto"
-        assert mcp_tools._normalize_market("KR") == "equity_kr"
-        assert mcp_tools._normalize_market("Us") == "equity_us"
+        assert shared.normalize_market("CRYPTO") == "crypto"
+        assert shared.normalize_market("KR") == "equity_kr"
+        assert shared.normalize_market("Us") == "equity_us"
 
     def test_unknown_returns_none(self):
-        assert mcp_tools._normalize_market("unknown") is None
-        assert mcp_tools._normalize_market("invalid") is None
+        assert shared.normalize_market("unknown") is None
+        assert shared.normalize_market("invalid") is None
 
 
 @pytest.mark.unit
@@ -1278,35 +1336,35 @@ class TestSymbolDetection:
 
     def test_is_korean_equity_code(self):
         # Regular stocks (6 digits)
-        assert mcp_tools._is_korean_equity_code("005930") is True
-        assert mcp_tools._is_korean_equity_code("000660") is True
-        assert mcp_tools._is_korean_equity_code("  005930  ") is True
+        assert shared.is_korean_equity_code("005930") is True
+        assert shared.is_korean_equity_code("000660") is True
+        assert shared.is_korean_equity_code("  005930  ") is True
         # ETF/ETN (6 alphanumeric)
-        assert mcp_tools._is_korean_equity_code("0123G0") is True  # ETF
-        assert mcp_tools._is_korean_equity_code("0117V0") is True  # ETF
-        assert mcp_tools._is_korean_equity_code("12345A") is True  # alphanumeric
-        assert mcp_tools._is_korean_equity_code("0123g0") is True  # lowercase
+        assert shared.is_korean_equity_code("0123G0") is True  # ETF
+        assert shared.is_korean_equity_code("0117V0") is True  # ETF
+        assert shared.is_korean_equity_code("12345A") is True  # alphanumeric
+        assert shared.is_korean_equity_code("0123g0") is True  # lowercase
         # Invalid codes
-        assert mcp_tools._is_korean_equity_code("00593") is False  # 5 chars
-        assert mcp_tools._is_korean_equity_code("0059300") is False  # 7 chars
-        assert mcp_tools._is_korean_equity_code("AAPL") is False  # 4 chars
-        assert mcp_tools._is_korean_equity_code("0123-0") is False  # contains hyphen
+        assert shared.is_korean_equity_code("00593") is False  # 5 chars
+        assert shared.is_korean_equity_code("0059300") is False  # 7 chars
+        assert shared.is_korean_equity_code("AAPL") is False  # 4 chars
+        assert shared.is_korean_equity_code("0123-0") is False  # contains hyphen
 
     def test_is_crypto_market(self):
-        assert mcp_tools._is_crypto_market("KRW-BTC") is True
-        assert mcp_tools._is_crypto_market("krw-btc") is True
-        assert mcp_tools._is_crypto_market("USDT-BTC") is True
-        assert mcp_tools._is_crypto_market("usdt-eth") is True
-        assert mcp_tools._is_crypto_market("BTC") is False
-        assert mcp_tools._is_crypto_market("AAPL") is False
-        assert mcp_tools._is_crypto_market("005930") is False
+        assert shared.is_crypto_market("KRW-BTC") is True
+        assert shared.is_crypto_market("krw-btc") is True
+        assert shared.is_crypto_market("USDT-BTC") is True
+        assert shared.is_crypto_market("usdt-eth") is True
+        assert shared.is_crypto_market("BTC") is False
+        assert shared.is_crypto_market("AAPL") is False
+        assert shared.is_crypto_market("005930") is False
 
     def test_is_us_equity_symbol(self):
-        assert mcp_tools._is_us_equity_symbol("AAPL") is True
-        assert mcp_tools._is_us_equity_symbol("MSFT") is True
-        assert mcp_tools._is_us_equity_symbol("BRK.B") is True
-        assert mcp_tools._is_us_equity_symbol("KRW-BTC") is False  # crypto prefix
-        assert mcp_tools._is_us_equity_symbol("005930") is False  # all digits
+        assert shared.is_us_equity_symbol("AAPL") is True
+        assert shared.is_us_equity_symbol("MSFT") is True
+        assert shared.is_us_equity_symbol("BRK.B") is True
+        assert shared.is_us_equity_symbol("KRW-BTC") is False  # crypto prefix
+        assert shared.is_us_equity_symbol("005930") is False  # all digits
 
 
 @pytest.mark.unit
@@ -1314,37 +1372,37 @@ class TestNormalizeValue:
     """Tests for _normalize_value helper function."""
 
     def test_none_returns_none(self):
-        assert mcp_tools._normalize_value(None) is None
+        assert shared.normalize_value(None) is None
 
     def test_nan_returns_none(self):
         import numpy as np
 
-        assert mcp_tools._normalize_value(float("nan")) is None
-        assert mcp_tools._normalize_value(np.nan) is None
+        assert shared.normalize_value(float("nan")) is None
+        assert shared.normalize_value(np.nan) is None
 
     def test_datetime_returns_isoformat(self):
         import datetime
 
         dt = datetime.datetime(2024, 1, 15, 10, 30, 0)
-        assert mcp_tools._normalize_value(dt) == "2024-01-15T10:30:00"
+        assert shared.normalize_value(dt) == "2024-01-15T10:30:00"
 
         d = datetime.date(2024, 1, 15)
-        assert mcp_tools._normalize_value(d) == "2024-01-15"
+        assert shared.normalize_value(d) == "2024-01-15"
 
     def test_timedelta_returns_seconds(self):
         td = pd.Timedelta(hours=1, minutes=30)
-        assert mcp_tools._normalize_value(td) == 5400.0
+        assert shared.normalize_value(td) == 5400.0
 
     def test_numpy_scalar_returns_python_type(self):
         import numpy as np
 
-        assert mcp_tools._normalize_value(np.int64(42)) == 42
-        assert mcp_tools._normalize_value(np.float64(3.14)) == 3.14
+        assert shared.normalize_value(np.int64(42)) == 42
+        assert shared.normalize_value(np.float64(3.14)) == 3.14
 
     def test_regular_values_pass_through(self):
-        assert mcp_tools._normalize_value(42) == 42
-        assert mcp_tools._normalize_value(3.14) == 3.14
-        assert mcp_tools._normalize_value("hello") == "hello"
+        assert shared.normalize_value(42) == 42
+        assert shared.normalize_value(3.14) == 3.14
+        assert shared.normalize_value("hello") == "hello"
 
 
 @pytest.mark.unit
@@ -1352,75 +1410,75 @@ class TestResolveMarketType:
     """Tests for _resolve_market_type helper function."""
 
     def test_explicit_crypto_normalizes_symbol(self):
-        market_type, symbol = mcp_tools._resolve_market_type("krw-btc", "crypto")
+        market_type, symbol = shared.resolve_market_type("krw-btc", "crypto")
         assert market_type == "crypto"
         assert symbol == "KRW-BTC"
 
     def test_explicit_crypto_rejects_invalid_prefix(self):
         with pytest.raises(ValueError, match="KRW-/USDT- prefix"):
-            mcp_tools._resolve_market_type("BTC", "crypto")
+            shared.resolve_market_type("BTC", "crypto")
 
     def test_explicit_equity_kr_validates_digits(self):
-        market_type, symbol = mcp_tools._resolve_market_type("005930", "kr")
+        market_type, symbol = shared.resolve_market_type("005930", "kr")
         assert market_type == "equity_kr"
         assert symbol == "005930"
 
     def test_explicit_equity_kr_validates_etf(self):
         """Test explicit market=kr with ETF alphanumeric code."""
-        market_type, symbol = mcp_tools._resolve_market_type("0123G0", "kr")
+        market_type, symbol = shared.resolve_market_type("0123G0", "kr")
         assert market_type == "equity_kr"
         assert symbol == "0123G0"
 
     def test_explicit_equity_kr_validates_etf_lowercase(self):
         """Test explicit market=kr with lowercase ETF code (should be accepted)."""
-        market_type, symbol = mcp_tools._resolve_market_type("0123g0", "kr")
+        market_type, symbol = shared.resolve_market_type("0123g0", "kr")
         assert market_type == "equity_kr"
         assert symbol == "0123g0"
 
     def test_explicit_equity_kr_rejects_invalid_format(self):
         with pytest.raises(ValueError, match="6 alphanumeric"):
-            mcp_tools._resolve_market_type("AAPL", "kr")
+            shared.resolve_market_type("AAPL", "kr")
 
     def test_explicit_equity_us_rejects_crypto_prefix(self):
         with pytest.raises(ValueError, match="must not include KRW-/USDT-"):
-            mcp_tools._resolve_market_type("KRW-BTC", "us")
+            shared.resolve_market_type("KRW-BTC", "us")
 
     def test_auto_detect_crypto(self):
-        market_type, symbol = mcp_tools._resolve_market_type("krw-eth", None)
+        market_type, symbol = shared.resolve_market_type("krw-eth", None)
         assert market_type == "crypto"
         assert symbol == "KRW-ETH"
 
     def test_auto_detect_korean_equity(self):
-        market_type, symbol = mcp_tools._resolve_market_type("005930", None)
+        market_type, symbol = shared.resolve_market_type("005930", None)
         assert market_type == "equity_kr"
         assert symbol == "005930"
 
     def test_auto_detect_korean_etf(self):
         """Test auto-detection of Korean ETF code (alphanumeric)."""
-        market_type, symbol = mcp_tools._resolve_market_type("0123G0", None)
+        market_type, symbol = shared.resolve_market_type("0123G0", None)
         assert market_type == "equity_kr"
         assert symbol == "0123G0"
 
     def test_auto_detect_korean_etf_another(self):
         """Test auto-detection with another ETF code pattern."""
-        market_type, symbol = mcp_tools._resolve_market_type("0117V0", None)
+        market_type, symbol = shared.resolve_market_type("0117V0", None)
         assert market_type == "equity_kr"
         assert symbol == "0117V0"
 
     def test_auto_detect_us_equity(self):
-        market_type, symbol = mcp_tools._resolve_market_type("AAPL", None)
+        market_type, symbol = shared.resolve_market_type("AAPL", None)
         assert market_type == "equity_us"
         assert symbol == "AAPL"
 
     def test_unsupported_symbol_raises(self):
         with pytest.raises(ValueError, match="Unsupported symbol format"):
-            mcp_tools._resolve_market_type("1234", None)
+            shared.resolve_market_type("1234", None)
 
     def test_market_aliases(self):
         # Test various market aliases
-        assert mcp_tools._resolve_market_type("KRW-BTC", "upbit")[0] == "crypto"
-        assert mcp_tools._resolve_market_type("005930", "kospi")[0] == "equity_kr"
-        assert mcp_tools._resolve_market_type("AAPL", "nasdaq")[0] == "equity_us"
+        assert shared.resolve_market_type("KRW-BTC", "upbit")[0] == "crypto"
+        assert shared.resolve_market_type("005930", "kospi")[0] == "equity_kr"
+        assert shared.resolve_market_type("AAPL", "nasdaq")[0] == "equity_us"
 
 
 @pytest.mark.unit
@@ -1428,11 +1486,11 @@ class TestErrorPayload:
     """Tests for _error_payload helper function."""
 
     def test_minimal_payload(self):
-        result = mcp_tools._error_payload(source="test", message="error occurred")
+        result = shared.error_payload(source="test", message="error occurred")
         assert result == {"error": "error occurred", "source": "test"}
 
     def test_with_symbol(self):
-        result = mcp_tools._error_payload(
+        result = shared.error_payload(
             source="upbit", message="not found", symbol="KRW-BTC"
         )
         assert result == {
@@ -1442,7 +1500,7 @@ class TestErrorPayload:
         }
 
     def test_with_all_fields(self):
-        result = mcp_tools._error_payload(
+        result = shared.error_payload(
             source="yahoo",
             message="API error",
             symbol="AAPL",
@@ -1458,7 +1516,7 @@ class TestErrorPayload:
         }
 
     def test_none_values_excluded(self):
-        result = mcp_tools._error_payload(
+        result = shared.error_payload(
             source="kis", message="error", symbol=None, instrument_type=None
         )
         assert "symbol" not in result
@@ -1471,16 +1529,16 @@ class TestNormalizeRows:
 
     def test_empty_dataframe(self):
         df = pd.DataFrame()
-        assert mcp_tools._normalize_rows(df) == []
+        assert shared.normalize_rows(df) == []
 
     def test_single_row(self):
         df = pd.DataFrame([{"a": 1, "b": "text"}])
-        result = mcp_tools._normalize_rows(df)
+        result = shared.normalize_rows(df)
         assert result == [{"a": 1, "b": "text"}]
 
     def test_multiple_rows(self):
         df = pd.DataFrame([{"x": 1}, {"x": 2}, {"x": 3}])
-        result = mcp_tools._normalize_rows(df)
+        result = shared.normalize_rows(df)
         assert len(result) == 3
         assert result[0]["x"] == 1
         assert result[2]["x"] == 3
@@ -1497,7 +1555,7 @@ class TestNormalizeRows:
                 }
             ]
         )
-        result = mcp_tools._normalize_rows(df)
+        result = shared.normalize_rows(df)
         assert result[0]["date"] == "2024-01-15"
         assert result[0]["value"] is None
         assert result[0]["count"] == 42
@@ -1513,7 +1571,7 @@ class TestSymbolNotFound:
         # Return None for the symbol (not found)
         mock_fetch = AsyncMock(return_value={"KRW-INVALID": None})
         monkeypatch.setattr(
-            mcp_tools.upbit_service, "fetch_multiple_current_prices", mock_fetch
+            upbit_service, "fetch_multiple_current_prices", mock_fetch
         )
 
         result = await tools["get_quote"]("KRW-INVALID")
@@ -1530,7 +1588,7 @@ class TestSymbolNotFound:
             async def inquire_daily_itemchartprice(self, code, market, n):
                 return pd.DataFrame()  # Empty DataFrame
 
-        monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+        _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
 
         result = await tools["get_quote"]("999999")
 
@@ -1603,7 +1661,7 @@ class TestCalculateSMA:
 
     def test_calculates_sma_for_all_periods(self):
         df = _sample_ohlcv_df(250)
-        result = mcp_tools._calculate_sma(df["close"])
+        result = market_data_indicators._calculate_sma(df["close"])
 
         assert "5" in result
         assert "20" in result
@@ -1614,7 +1672,7 @@ class TestCalculateSMA:
 
     def test_returns_none_for_insufficient_data(self):
         df = _sample_ohlcv_df(10)
-        result = mcp_tools._calculate_sma(df["close"])
+        result = market_data_indicators._calculate_sma(df["close"])
 
         assert result["5"] is not None
         assert result["20"] is None
@@ -1622,7 +1680,7 @@ class TestCalculateSMA:
 
     def test_custom_periods(self):
         df = _sample_ohlcv_df(50)
-        result = mcp_tools._calculate_sma(df["close"], periods=[5, 10, 25])
+        result = market_data_indicators._calculate_sma(df["close"], periods=[5, 10, 25])
 
         assert "5" in result
         assert "10" in result
@@ -1636,7 +1694,7 @@ class TestCalculateEMA:
 
     def test_calculates_ema_for_all_periods(self):
         df = _sample_ohlcv_df(250)
-        result = mcp_tools._calculate_ema(df["close"])
+        result = market_data_indicators._calculate_ema(df["close"])
 
         assert "5" in result
         assert "20" in result
@@ -1645,15 +1703,15 @@ class TestCalculateEMA:
 
     def test_returns_none_for_insufficient_data(self):
         df = _sample_ohlcv_df(10)
-        result = mcp_tools._calculate_ema(df["close"])
+        result = market_data_indicators._calculate_ema(df["close"])
 
         assert result["5"] is not None
         assert result["20"] is None
 
     def test_ema_differs_from_sma(self):
         df = _sample_ohlcv_df(50)
-        sma = mcp_tools._calculate_sma(df["close"], periods=[20])
-        ema = mcp_tools._calculate_ema(df["close"], periods=[20])
+        sma = market_data_indicators._calculate_sma(df["close"], periods=[20])
+        ema = market_data_indicators._calculate_ema(df["close"], periods=[20])
 
         # EMA gives more weight to recent prices, so values should differ
         assert sma["20"] != ema["20"]
@@ -1665,7 +1723,7 @@ class TestCalculateRSI:
 
     def test_calculates_rsi(self):
         df = _sample_ohlcv_df(50)
-        result = mcp_tools._calculate_rsi(df["close"])
+        result = market_data_indicators._calculate_rsi(df["close"])
 
         assert "14" in result
         assert result["14"] is not None
@@ -1674,13 +1732,13 @@ class TestCalculateRSI:
 
     def test_returns_none_for_insufficient_data(self):
         df = _sample_ohlcv_df(10)
-        result = mcp_tools._calculate_rsi(df["close"])
+        result = market_data_indicators._calculate_rsi(df["close"])
 
         assert result["14"] is None
 
     def test_custom_period(self):
         df = _sample_ohlcv_df(50)
-        result = mcp_tools._calculate_rsi(df["close"], period=7)
+        result = market_data_indicators._calculate_rsi(df["close"], period=7)
 
         assert "7" in result
         assert result["7"] is not None
@@ -1692,7 +1750,7 @@ class TestCalculateMACD:
 
     def test_calculates_macd(self):
         df = _sample_ohlcv_df(50)
-        result = mcp_tools._calculate_macd(df["close"])
+        result = market_data_indicators._calculate_macd(df["close"])
 
         assert "macd" in result
         assert "signal" in result
@@ -1701,7 +1759,7 @@ class TestCalculateMACD:
 
     def test_returns_none_for_insufficient_data(self):
         df = _sample_ohlcv_df(20)
-        result = mcp_tools._calculate_macd(df["close"])
+        result = market_data_indicators._calculate_macd(df["close"])
 
         assert result["macd"] is None
         assert result["signal"] is None
@@ -1709,7 +1767,7 @@ class TestCalculateMACD:
 
     def test_histogram_equals_macd_minus_signal(self):
         df = _sample_ohlcv_df(100)
-        result = mcp_tools._calculate_macd(df["close"])
+        result = market_data_indicators._calculate_macd(df["close"])
 
         assert result["macd"] is not None
         assert result["signal"] is not None
@@ -1724,7 +1782,7 @@ class TestCalculateBollinger:
 
     def test_calculates_bollinger_bands(self):
         df = _sample_ohlcv_df(50)
-        result = mcp_tools._calculate_bollinger(df["close"])
+        result = market_data_indicators._calculate_bollinger(df["close"])
 
         assert "upper" in result
         assert "middle" in result
@@ -1738,7 +1796,7 @@ class TestCalculateBollinger:
 
     def test_returns_none_for_insufficient_data(self):
         df = _sample_ohlcv_df(10)
-        result = mcp_tools._calculate_bollinger(df["close"])
+        result = market_data_indicators._calculate_bollinger(df["close"])
 
         assert result["upper"] is None
         assert result["middle"] is None
@@ -1746,8 +1804,8 @@ class TestCalculateBollinger:
 
     def test_middle_equals_sma(self):
         df = _sample_ohlcv_df(50)
-        bollinger = mcp_tools._calculate_bollinger(df["close"], period=20)
-        sma = mcp_tools._calculate_sma(df["close"], periods=[20])
+        bollinger = market_data_indicators._calculate_bollinger(df["close"], period=20)
+        sma = market_data_indicators._calculate_sma(df["close"], periods=[20])
 
         assert bollinger["middle"] is not None
         assert sma["20"] is not None
@@ -1760,7 +1818,7 @@ class TestCalculateATR:
 
     def test_calculates_atr(self):
         df = _sample_ohlcv_df(50)
-        result = mcp_tools._calculate_atr(df["high"], df["low"], df["close"])
+        result = market_data_indicators._calculate_atr(df["high"], df["low"], df["close"])
 
         assert "14" in result
         assert result["14"] is not None
@@ -1768,7 +1826,7 @@ class TestCalculateATR:
 
     def test_returns_none_for_insufficient_data(self):
         df = _sample_ohlcv_df(10)
-        result = mcp_tools._calculate_atr(df["high"], df["low"], df["close"])
+        result = market_data_indicators._calculate_atr(df["high"], df["low"], df["close"])
 
         assert result["14"] is None
 
@@ -1779,7 +1837,7 @@ class TestCalculatePivot:
 
     def test_calculates_pivot_points(self):
         df = _sample_ohlcv_df(50)
-        result = mcp_tools._calculate_pivot(df["high"], df["low"], df["close"])
+        result = market_data_indicators._calculate_pivot(df["high"], df["low"], df["close"])
 
         assert "p" in result
         assert "r1" in result
@@ -1792,7 +1850,7 @@ class TestCalculatePivot:
 
     def test_returns_none_for_insufficient_data(self):
         df = _sample_ohlcv_df(1)
-        result = mcp_tools._calculate_pivot(df["high"], df["low"], df["close"])
+        result = market_data_indicators._calculate_pivot(df["high"], df["low"], df["close"])
 
         assert result["p"] is None
         assert result["r1"] is None
@@ -1800,7 +1858,7 @@ class TestCalculatePivot:
 
     def test_pivot_ordering(self):
         df = _sample_ohlcv_df(50)
-        result = mcp_tools._calculate_pivot(df["high"], df["low"], df["close"])
+        result = market_data_indicators._calculate_pivot(df["high"], df["low"], df["close"])
 
         # R3 > R2 > R1 > P > S1 > S2 > S3
         assert result["r3"] is not None
@@ -1819,14 +1877,14 @@ class TestComputeIndicators:
 
     def test_computes_single_indicator(self):
         df = _sample_ohlcv_df(50)
-        result = mcp_tools._compute_indicators(df, ["rsi"])
+        result = market_data_indicators._compute_indicators(df, ["rsi"])
 
         assert "rsi" in result
         assert len(result) == 1
 
     def test_computes_multiple_indicators(self):
         df = _sample_ohlcv_df(100)
-        result = mcp_tools._compute_indicators(df, ["sma", "ema", "rsi", "macd"])
+        result = market_data_indicators._compute_indicators(df, ["sma", "ema", "rsi", "macd"])
 
         assert "sma" in result
         assert "ema" in result
@@ -1836,7 +1894,7 @@ class TestComputeIndicators:
     def test_computes_all_indicators(self):
         df = _sample_ohlcv_df(250)
         all_indicators = ["sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot"]
-        result = mcp_tools._compute_indicators(df, all_indicators)
+        result = market_data_indicators._compute_indicators(df, all_indicators)
 
         for indicator in all_indicators:
             assert indicator in result
@@ -1845,7 +1903,7 @@ class TestComputeIndicators:
         df = pd.DataFrame({"close": [1, 2, 3]})
 
         with pytest.raises(ValueError, match="Missing required columns"):
-            mcp_tools._compute_indicators(df, ["atr"])
+            market_data_indicators._compute_indicators(df, ["atr"])
 
 
 @pytest.mark.asyncio
@@ -1878,7 +1936,7 @@ class TestAnalyzeStock:
         }
 
         # Test _build_recommendation_for_equity directly
-        recommendation = mcp_tools._build_recommendation_for_equity(
+        recommendation = shared.build_recommendation_for_equity(
             mock_analysis, "equity_kr"
         )
 
@@ -1913,8 +1971,7 @@ class TestAnalyzeStock:
             },
         }
 
-        monkeypatch.setattr(
-            mcp_tools, "_analyze_stock_impl", lambda s, m, i: mock_analysis
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", lambda s, m, i: mock_analysis
         )
 
         result = await tools["analyze_stock"]("KRW-BTC", market="crypto")
@@ -1951,13 +2008,11 @@ class TestAnalyzeStock:
         async def mock_fetch(symbol, limit):
             return mock_opinions
 
-        monkeypatch.setattr(
-            mcp_tools,
-            "_fetch_investment_opinions_yfinance",
+        _patch_runtime_attr(monkeypatch, "_fetch_investment_opinions_yfinance",
             mock_fetch,
         )
 
-        result = await mcp_tools._fetch_investment_opinions_yfinance("AAPL", 10)
+        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance("AAPL", 10)
 
         # Only opinions key should exist
         assert "opinions" in result
@@ -1974,8 +2029,7 @@ class TestAnalyzeStock:
             "quote": {"price": 75000},
         }
 
-        monkeypatch.setattr(
-            mcp_tools, "_analyze_stock_impl", lambda s, m, i: mock_analysis
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", lambda s, m, i: mock_analysis
         )
 
         # Test with integer input
@@ -1998,7 +2052,7 @@ class TestAnalyzeStock:
                 "quote": {"price": 75000},
             }
 
-        monkeypatch.setattr(mcp_tools, "_analyze_stock_impl", mock_impl)
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", mock_impl)
 
         # Test with mixed numeric and string symbols
         result = await tools["analyze_portfolio"](
@@ -2037,7 +2091,7 @@ class TestGetValuation:
             return mock_valuation
 
         monkeypatch.setattr(
-            mcp_tools.naver_finance, "fetch_valuation", mock_fetch_valuation
+            naver_finance, "fetch_valuation", mock_fetch_valuation
         )
 
         result = await tools["get_valuation"]("005930")
@@ -2076,7 +2130,7 @@ class TestGetValuation:
             def info(self):
                 return mock_info
 
-        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.yf.Ticker", lambda s: MockTicker())
+        _patch_yf_ticker(monkeypatch, lambda s: MockTicker())
 
         result = await tools["get_valuation"]("AAPL")
 
@@ -2113,7 +2167,7 @@ class TestGetValuation:
             def info(self):
                 return mock_info
 
-        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.yf.Ticker", lambda s: MockTicker())
+        _patch_yf_ticker(monkeypatch, lambda s: MockTicker())
 
         result = await tools["get_valuation"]("NVDA", market="us")
 
@@ -2157,7 +2211,7 @@ class TestGetValuation:
             return mock_valuation
 
         monkeypatch.setattr(
-            mcp_tools.naver_finance, "fetch_valuation", mock_fetch_valuation
+            naver_finance, "fetch_valuation", mock_fetch_valuation
         )
 
         result = await tools["get_valuation"]("298040")
@@ -2175,7 +2229,7 @@ class TestGetValuation:
             raise Exception("Network error")
 
         monkeypatch.setattr(
-            mcp_tools.naver_finance, "fetch_valuation", mock_fetch_valuation
+            naver_finance, "fetch_valuation", mock_fetch_valuation
         )
 
         result = await tools["get_valuation"]("005930")
@@ -2194,7 +2248,7 @@ class TestGetValuation:
             def info(self):
                 raise Exception("API error")
 
-        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.yf.Ticker", lambda s: MockTicker())
+        _patch_yf_ticker(monkeypatch, lambda s: MockTicker())
 
         result = await tools["get_valuation"]("AAPL")
 
@@ -2252,7 +2306,7 @@ class TestGetShortInterest:
             return mock_short_interest
 
         monkeypatch.setattr(
-            mcp_tools.naver_finance, "fetch_short_interest", mock_fetch_short_interest
+            naver_finance, "fetch_short_interest", mock_fetch_short_interest
         )
 
         result = await tools["get_short_interest"]("005930", days=20)
@@ -2304,7 +2358,7 @@ class TestGetShortInterest:
             }
 
         monkeypatch.setattr(
-            mcp_tools.naver_finance, "fetch_short_interest", mock_fetch_short_interest
+            naver_finance, "fetch_short_interest", mock_fetch_short_interest
         )
 
         await tools["get_short_interest"]("005930", days=100)
@@ -2319,7 +2373,7 @@ class TestGetShortInterest:
             raise Exception("KRX API error")
 
         monkeypatch.setattr(
-            mcp_tools.naver_finance, "fetch_short_interest", mock_fetch_short_interest
+            naver_finance, "fetch_short_interest", mock_fetch_short_interest
         )
 
         result = await tools["get_short_interest"]("005930")
@@ -2344,7 +2398,7 @@ class TestGetShortInterest:
             return mock_short_interest
 
         monkeypatch.setattr(
-            mcp_tools.naver_finance, "fetch_short_interest", mock_fetch_short_interest
+            naver_finance, "fetch_short_interest", mock_fetch_short_interest
         )
 
         result = await tools["get_short_interest"]("000000")
@@ -2367,7 +2421,7 @@ class TestGetKimchiPremium:
             return upbit_prices
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_multiple_current_prices",
             mock_upbit,
         )
@@ -2400,7 +2454,7 @@ class TestGetKimchiPremium:
                 # exchange rate
                 return MockResponse({"rates": {"KRW": exchange_rate}})
 
-        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
+        _patch_httpx_async_client(monkeypatch, MockClient)
 
     async def test_single_symbol(self, monkeypatch):
         """Test kimchi premium for a single coin."""
@@ -2432,9 +2486,7 @@ class TestGetKimchiPremium:
         """Test batch fetch when symbol is omitted."""
         tools = build_tools()
 
-        monkeypatch.setattr(
-            mcp_tools,
-            "_resolve_batch_crypto_symbols",
+        _patch_runtime_attr(monkeypatch, "_resolve_batch_crypto_symbols",
             AsyncMock(return_value=["BTC", "ETH"]),
         )
 
@@ -2485,7 +2537,7 @@ class TestGetKimchiPremium:
             raise Exception("Upbit API down")
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_multiple_current_prices",
             mock_upbit,
         )
@@ -2536,7 +2588,7 @@ class TestGetFundingRate:
                     return MockResponse(premium_resp)
                 return MockResponse(history_resp)
 
-        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
+        _patch_httpx_async_client(monkeypatch, MockClient)
 
     async def test_successful_fetch(self, monkeypatch):
         """Test successful funding rate fetch for BTC."""
@@ -2619,9 +2671,7 @@ class TestGetFundingRate:
         """Test funding-rate batch response when symbol is omitted."""
         tools = build_tools()
 
-        monkeypatch.setattr(
-            mcp_tools,
-            "_resolve_batch_crypto_symbols",
+        _patch_runtime_attr(monkeypatch, "_resolve_batch_crypto_symbols",
             AsyncMock(return_value=["BTC", "ETH"]),
         )
 
@@ -2669,7 +2719,7 @@ class TestGetFundingRate:
                     ]
                 )
 
-        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
+        _patch_httpx_async_client(monkeypatch, MockClient)
 
         result = await tools["get_funding_rate"]()
 
@@ -2719,7 +2769,7 @@ class TestGetFundingRate:
                     }
                 )
 
-        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
+        _patch_httpx_async_client(monkeypatch, MockClient)
 
         await tools["get_funding_rate"]("BTC", limit=200)
 
@@ -2742,7 +2792,7 @@ class TestGetFundingRate:
             async def get(self, url, params=None, **kw):
                 raise Exception("Binance API down")
 
-        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
+        _patch_httpx_async_client(monkeypatch, MockClient)
 
         result = await tools["get_funding_rate"]("BTC")
 
@@ -2826,22 +2876,22 @@ class TestParseNaverNum:
     """Tests for _parse_naver_num and _parse_naver_int."""
 
     def test_none(self):
-        assert mcp_tools._parse_naver_num(None) is None
-        assert mcp_tools._parse_naver_int(None) is None
+        assert fundamentals_sources_naver._parse_naver_num(None) is None
+        assert fundamentals_sources_naver._parse_naver_int(None) is None
 
     def test_numeric(self):
-        assert mcp_tools._parse_naver_num(1234.5) == 1234.5
-        assert mcp_tools._parse_naver_num(100) == 100.0
-        assert mcp_tools._parse_naver_int(42) == 42
+        assert fundamentals_sources_naver._parse_naver_num(1234.5) == 1234.5
+        assert fundamentals_sources_naver._parse_naver_num(100) == 100.0
+        assert fundamentals_sources_naver._parse_naver_int(42) == 42
 
     def test_string_with_commas(self):
-        assert mcp_tools._parse_naver_num("2,450.50") == 2450.50
-        assert mcp_tools._parse_naver_num("-45.30") == -45.30
-        assert mcp_tools._parse_naver_int("450,000,000") == 450000000
+        assert fundamentals_sources_naver._parse_naver_num("2,450.50") == 2450.50
+        assert fundamentals_sources_naver._parse_naver_num("-45.30") == -45.30
+        assert fundamentals_sources_naver._parse_naver_int("450,000,000") == 450000000
 
     def test_invalid_string(self):
-        assert mcp_tools._parse_naver_num("abc") is None
-        assert mcp_tools._parse_naver_int("abc") is None
+        assert fundamentals_sources_naver._parse_naver_num("abc") is None
+        assert fundamentals_sources_naver._parse_naver_int("abc") is None
 
 
 @pytest.mark.unit
@@ -2849,29 +2899,29 @@ class TestIndexMeta:
     """Tests for _INDEX_META and _DEFAULT_INDICES."""
 
     def test_all_default_indices_have_meta(self):
-        for sym in mcp_tools._DEFAULT_INDICES:
-            assert sym in mcp_tools._INDEX_META
+        for sym in fundamentals_sources_indices._DEFAULT_INDICES:
+            assert sym in fundamentals_sources_indices._INDEX_META
 
     def test_korean_indices_have_naver_code(self):
         for sym in ("KOSPI", "KOSDAQ"):
-            meta = mcp_tools._INDEX_META[sym]
+            meta = fundamentals_sources_indices._INDEX_META[sym]
             assert meta["source"] == "naver"
             assert "naver_code" in meta
 
     def test_us_indices_have_yf_ticker(self):
         for sym in ("SPX", "NASDAQ", "DJI"):
-            meta = mcp_tools._INDEX_META[sym]
+            meta = fundamentals_sources_indices._INDEX_META[sym]
             assert meta["source"] == "yfinance"
             assert "yf_ticker" in meta
 
     def test_aliases(self):
         assert (
-            mcp_tools._INDEX_META["SPX"]["yf_ticker"]
-            == mcp_tools._INDEX_META["SP500"]["yf_ticker"]
+            fundamentals_sources_indices._INDEX_META["SPX"]["yf_ticker"]
+            == fundamentals_sources_indices._INDEX_META["SP500"]["yf_ticker"]
         )
         assert (
-            mcp_tools._INDEX_META["DJI"]["yf_ticker"]
-            == mcp_tools._INDEX_META["DOW"]["yf_ticker"]
+            fundamentals_sources_indices._INDEX_META["DJI"]["yf_ticker"]
+            == fundamentals_sources_indices._INDEX_META["DOW"]["yf_ticker"]
         )
 
 
@@ -3268,7 +3318,7 @@ class TestCalculateFibonacci:
     def test_uptrend_retracement_from_high(self):
         df = _fib_df_uptrend()
         current_price = float(df["close"].iloc[-1])
-        result = mcp_tools._calculate_fibonacci(df, current_price)
+        result = market_data_indicators._calculate_fibonacci(df, current_price)
 
         assert result["trend"] == "retracement_from_high"
         assert result["swing_high"]["price"] > result["swing_low"]["price"]
@@ -3278,7 +3328,7 @@ class TestCalculateFibonacci:
     def test_downtrend_bounce_from_low(self):
         df = _fib_df_downtrend()
         current_price = float(df["close"].iloc[-1])
-        result = mcp_tools._calculate_fibonacci(df, current_price)
+        result = market_data_indicators._calculate_fibonacci(df, current_price)
 
         assert result["trend"] == "bounce_from_low"
         assert result["swing_high"]["price"] > result["swing_low"]["price"]
@@ -3287,7 +3337,7 @@ class TestCalculateFibonacci:
 
     def test_all_seven_levels_present(self):
         df = _fib_df_uptrend()
-        result = mcp_tools._calculate_fibonacci(df, 150.0)
+        result = market_data_indicators._calculate_fibonacci(df, 150.0)
 
         expected_keys = {"0.0", "0.236", "0.382", "0.5", "0.618", "0.786", "1.0"}
         assert set(result["levels"].keys()) == expected_keys
@@ -3297,7 +3347,7 @@ class TestCalculateFibonacci:
         swing_high = float(df["high"].max())
         swing_low = float(df["low"].min())
         mid = (swing_high + swing_low) / 2
-        result = mcp_tools._calculate_fibonacci(df, mid)
+        result = market_data_indicators._calculate_fibonacci(df, mid)
 
         if result["nearest_support"] is not None:
             assert result["nearest_support"]["price"] < mid
@@ -3306,7 +3356,7 @@ class TestCalculateFibonacci:
 
     def test_dates_are_strings(self):
         df = _fib_df_uptrend()
-        result = mcp_tools._calculate_fibonacci(df, 150.0)
+        result = market_data_indicators._calculate_fibonacci(df, 150.0)
 
         assert isinstance(result["swing_high"]["date"], str)
         assert isinstance(result["swing_low"]["date"], str)
@@ -3318,7 +3368,7 @@ class TestCalculateFibonacci:
         """If current price matches a level exactly, no crash."""
         df = _fib_df_uptrend()
         swing_high = float(df["high"].max())
-        result = mcp_tools._calculate_fibonacci(df, swing_high)
+        result = market_data_indicators._calculate_fibonacci(df, swing_high)
 
         assert result["current_price"] == swing_high
 
@@ -3380,7 +3430,7 @@ class TestGetSectorPeers:
             ],
         }
         mock_fetch = AsyncMock(return_value=mock_data)
-        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_sector_peers", mock_fetch)
+        monkeypatch.setattr(naver_finance, "fetch_sector_peers", mock_fetch)
 
         result = await tools["get_sector_peers"]("298040")
 
@@ -3401,7 +3451,7 @@ class TestGetSectorPeers:
     async def test_korean_equity_error_returns_payload(self, monkeypatch):
         tools = build_tools()
         mock_fetch = AsyncMock(side_effect=RuntimeError("naver down"))
-        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_sector_peers", mock_fetch)
+        monkeypatch.setattr(naver_finance, "fetch_sector_peers", mock_fetch)
 
         result = await tools["get_sector_peers"]("298040")
 
@@ -3418,8 +3468,7 @@ class TestGetSectorPeers:
             def company_peers(self, symbol):
                 return ["MSFT", "GOOGL", "META"]
 
-        monkeypatch.setattr(
-            mcp_tools, "_get_finnhub_client", lambda: MockFinnhubClient()
+        _patch_runtime_attr(monkeypatch, "_get_finnhub_client", lambda: MockFinnhubClient()
         )
 
         # Mock yfinance
@@ -3474,7 +3523,7 @@ class TestGetSectorPeers:
             def info(self):
                 return _yf_data.get(self._ticker, {})
 
-        monkeypatch.setattr(mcp_tools.yf, "Ticker", MockTicker)
+        monkeypatch.setattr(yf, "Ticker", MockTicker)
 
         result = await tools["get_sector_peers"]("AAPL")
 
@@ -3497,9 +3546,7 @@ class TestGetSectorPeers:
         def raise_err():
             raise RuntimeError("finnhub down")
 
-        monkeypatch.setattr(
-            mcp_tools,
-            "_get_finnhub_client",
+        _patch_runtime_attr(monkeypatch, "_get_finnhub_client",
             lambda: type(
                 "C", (), {"company_peers": lambda self, symbol: raise_err()}
             )(),
@@ -3526,7 +3573,7 @@ class TestGetSectorPeers:
                 "peers": [],
             }
         )
-        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_sector_peers", mock_fetch)
+        monkeypatch.setattr(naver_finance, "fetch_sector_peers", mock_fetch)
 
         result = await tools["get_sector_peers"]("005930")
 
@@ -3549,7 +3596,7 @@ class TestGetSectorPeers:
                 "peers": [],
             }
         )
-        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_sector_peers", mock_fetch)
+        monkeypatch.setattr(naver_finance, "fetch_sector_peers", mock_fetch)
 
         await tools["get_sector_peers"]("005930", limit=50)
 
@@ -3592,7 +3639,7 @@ class TestGetSectorPeers:
             ],
         }
         monkeypatch.setattr(
-            mcp_tools.naver_finance,
+            naver_finance,
             "fetch_sector_peers",
             AsyncMock(return_value=mock_data),
         )
@@ -3826,9 +3873,9 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
                 }
             ]
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_my_coins",
         AsyncMock(
             return_value=[
@@ -3843,14 +3890,10 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
             ]
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "get_or_refresh_maps",
+    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
         AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인"}}),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_manual_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
         AsyncMock(
             return_value=(
                 [
@@ -3875,19 +3918,17 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
             )
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools, "_fetch_quote_equity_kr", AsyncMock(return_value={"price": 71000.0})
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", AsyncMock(return_value={"price": 71000.0})
+    )
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", AsyncMock(return_value={"price": 220.0})
     )
     monkeypatch.setattr(
-        mcp_tools, "_fetch_quote_equity_us", AsyncMock(return_value={"price": 220.0})
-    )
-    monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_multiple_current_prices",
         AsyncMock(return_value={"KRW-BTC": 60000000.0}),
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_all_market_codes",
         AsyncMock(return_value=["KRW-BTC"]),
     )
@@ -3929,9 +3970,9 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
         async def fetch_my_us_stocks(self):
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_my_coins",
         AsyncMock(
             return_value=[
@@ -3952,20 +3993,16 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
             ]
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "get_or_refresh_maps",
+    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
         AsyncMock(
             return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "ETH": "이더리움"}}
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_manual_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_all_market_codes",
         AsyncMock(return_value=["KRW-BTC", "KRW-ETH"]),
     )
@@ -3976,7 +4013,7 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
 
     quote_mock = AsyncMock(side_effect=mock_fetch)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_multiple_current_prices",
         quote_mock,
     )
@@ -4006,9 +4043,9 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
         async def fetch_my_us_stocks(self):
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_my_coins",
         AsyncMock(
             return_value=[
@@ -4029,20 +4066,16 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
             ]
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "get_or_refresh_maps",
+    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
         AsyncMock(
             return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "DOGE": "도지"}}
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_manual_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_all_market_codes",
         AsyncMock(return_value=["KRW-BTC", "KRW-DOGE"]),
     )
@@ -4053,7 +4086,7 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
 
     quote_mock = AsyncMock(side_effect=mock_fetch)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_multiple_current_prices",
         quote_mock,
     )
@@ -4096,9 +4129,9 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
         async def fetch_my_us_stocks(self):
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_my_coins",
         AsyncMock(
             return_value=[
@@ -4133,9 +4166,7 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
             ]
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "get_or_refresh_maps",
+    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
         AsyncMock(
             return_value={
                 "COIN_TO_NAME_KR": {
@@ -4147,13 +4178,11 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_manual_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_all_market_codes",
         AsyncMock(return_value=["KRW-BTC", "KRW-ONG", "KRW-XYM", "KRW-PCI"]),
     )
@@ -4168,7 +4197,7 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
 
     quote_mock = AsyncMock(side_effect=mock_fetch)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_multiple_current_prices",
         quote_mock,
     )
@@ -4212,9 +4241,9 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
         async def fetch_my_us_stocks(self):
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_my_coins",
         AsyncMock(
             return_value=[
@@ -4235,20 +4264,16 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
             ]
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "get_or_refresh_maps",
+    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
         AsyncMock(
             return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "PCI": "페이코인"}}
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_manual_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_all_market_codes",
         AsyncMock(return_value=["KRW-BTC"]),
     )
@@ -4259,7 +4284,7 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
 
     quote_mock = AsyncMock(side_effect=mock_fetch)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_multiple_current_prices",
         quote_mock,
     )
@@ -4295,9 +4320,9 @@ async def test_get_holdings_filters_account_market_and_disables_prices(monkeypat
         async def fetch_my_us_stocks(self):
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_my_coins",
         AsyncMock(
             return_value=[
@@ -4311,19 +4336,15 @@ async def test_get_holdings_filters_account_market_and_disables_prices(monkeypat
             ]
         ),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "get_or_refresh_maps",
+    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
         AsyncMock(return_value={"COIN_TO_NAME_KR": {"ETH": "이더리움"}}),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_manual_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
     quote_mock = AsyncMock(return_value={"KRW-ETH": 4300000.0})
     monkeypatch.setattr(
-        mcp_tools.upbit_service, "fetch_multiple_current_prices", quote_mock
+        upbit_service, "fetch_multiple_current_prices", quote_mock
     )
 
     result = await tools["get_holdings"](
@@ -4387,9 +4408,7 @@ async def test_get_holdings_includes_top_level_summary(monkeypatch):
         },
     ]
 
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_portfolio_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", "upbit")),
     )
 
@@ -4432,9 +4451,7 @@ async def test_get_holdings_summary_sets_price_dependent_fields_null(monkeypatch
         }
     ]
 
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_portfolio_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", "upbit")),
     )
 
@@ -4485,17 +4502,15 @@ async def test_get_holdings_preserves_kis_values_on_yahoo_failure(monkeypatch):
                 },
             ]
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_manual_positions",
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
 
     async def mock_fetch_yahoo_raise(symbol: str) -> dict[str, object]:
         raise ValueError(f"Symbol '{symbol}' not found")
 
-    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", mock_fetch_yahoo_raise)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", mock_fetch_yahoo_raise)
 
     result = await tools["get_holdings"](account="kis", market="us")
 
@@ -4594,9 +4609,7 @@ async def test_get_position_returns_positions_and_not_holding_status(monkeypatch
         },
     ]
 
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_portfolio_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "equity_kr", None)),
     )
 
@@ -4606,9 +4619,7 @@ async def test_get_position_returns_positions_and_not_holding_status(monkeypatch
     assert result["position_count"] == 2
     assert sorted(result["accounts"]) == ["kis", "toss"]
 
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_portfolio_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "equity_us", None)),
     )
     not_holding = await tools["get_position"]("NVDA", market="us")
@@ -4639,9 +4650,7 @@ async def test_get_position_crypto_accepts_symbol_without_prefix(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_portfolio_positions",
+    _patch_runtime_attr(monkeypatch, "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
     )
 
@@ -4654,9 +4663,9 @@ async def test_get_position_crypto_accepts_symbol_without_prefix(monkeypatch):
 @pytest.mark.asyncio
 class TestGetCryptoProfile:
     def _reset_cache(self):
-        mcp_tools._COINGECKO_LIST_CACHE["expires_at"] = 0.0
-        mcp_tools._COINGECKO_LIST_CACHE["symbol_to_ids"] = {}
-        mcp_tools._COINGECKO_PROFILE_CACHE.clear()
+        fundamentals_sources_coingecko._COINGECKO_LIST_CACHE["expires_at"] = 0.0
+        fundamentals_sources_coingecko._COINGECKO_LIST_CACHE["symbol_to_ids"] = {}
+        fundamentals_sources_coingecko._COINGECKO_PROFILE_CACHE.clear()
 
     async def test_get_crypto_profile_success_and_cache(self, monkeypatch):
         tools = build_tools()
@@ -4713,7 +4722,7 @@ class TestGetCryptoProfile:
                     )
                 raise AssertionError(f"Unexpected URL: {url}")
 
-        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
+        _patch_httpx_async_client(monkeypatch, MockClient)
 
         result_first = await tools["get_crypto_profile"]("KRW-BTC")
         result_second = await tools["get_crypto_profile"]("BTC")
@@ -4762,7 +4771,7 @@ class TestGetCryptoProfile:
                     )
                 raise AssertionError(f"Unexpected URL: {url}")
 
-        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
+        _patch_httpx_async_client(monkeypatch, MockClient)
 
         result = await tools["get_crypto_profile"]("ZZZ")
 
@@ -4787,19 +4796,13 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
         ]
     )
 
-    monkeypatch.setattr(
-        mcp_tools,
-        "_fetch_ohlcv_for_indicators",
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators",
         AsyncMock(return_value=base_df[["date", "high", "low", "close"]]),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "_fetch_ohlcv_for_volume_profile",
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_volume_profile",
         AsyncMock(return_value=base_df),
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "_calculate_fibonacci",
+    _patch_runtime_attr(monkeypatch, "_calculate_fibonacci",
         lambda df, current_price: {
             "swing_high": {"price": 120.0, "date": "2026-02-01"},
             "swing_low": {"price": 80.0, "date": "2026-01-01"},
@@ -4810,9 +4813,7 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
             "nearest_resistance": {"level": "0.382", "price": 110.0},
         },
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "_calculate_volume_profile",
+    _patch_runtime_attr(monkeypatch, "_calculate_volume_profile",
         lambda df, bins, value_area_ratio=0.70: {
             "price_range": {"low": 80.0, "high": 120.0},
             "poc": {"price": 90.0, "volume": 5000.0},
@@ -4820,9 +4821,7 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
             "profile": [],
         },
     )
-    monkeypatch.setattr(
-        mcp_tools,
-        "_compute_indicators",
+    _patch_runtime_attr(monkeypatch, "_compute_indicators",
         lambda df, indicators: {
             "bollinger": {"upper": 111.0, "middle": 100.0, "lower": 90.0}
         },
@@ -4866,10 +4865,8 @@ async def test_place_order_upbit_buy_limit_dry_run(monkeypatch):
         async def fetch_my_coins(self):
             return [{"currency": "KRW", "balance": 2000000.0}]
 
-    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
-    monkeypatch.setattr(
-        mcp_tools,
-        "_preview_order",
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
+    _patch_runtime_attr(monkeypatch, "_preview_order",
         AsyncMock(
             return_value={
                 "symbol": "KRW-BTC",
@@ -4915,10 +4912,8 @@ async def test_place_order_upbit_buy_market_dry_run(monkeypatch):
         async def fetch_my_coins(self):
             return [{"currency": "KRW", "balance": 2000000.0}]
 
-    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
-    monkeypatch.setattr(
-        mcp_tools,
-        "_preview_order",
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
+    _patch_runtime_attr(monkeypatch, "_preview_order",
         AsyncMock(
             return_value={
                 "symbol": "KRW-BTC",
@@ -4958,10 +4953,8 @@ async def test_place_order_sell_limit_price_below_minimum(monkeypatch):
         async def fetch_my_coins(self):
             return [{"currency": "BTC", "balance": 0.1, "avg_buy_price": 40000000.0}]
 
-    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
-    monkeypatch.setattr(
-        mcp_tools,
-        "_preview_order",
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
+    _patch_runtime_attr(monkeypatch, "_preview_order",
         AsyncMock(
             return_value={
                 "estimated_value": 50000.0,
@@ -4995,7 +4988,7 @@ async def test_place_order_market_buy_calculates_quantity(monkeypatch):
         async def fetch_my_coins(self):
             return [{"currency": "KRW", "balance": 2000000.0}]
 
-    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
 
     result = await tools["place_order"](
         symbol="KRW-BTC",
@@ -5024,10 +5017,8 @@ async def test_place_order_market_sell_uses_full_quantity(monkeypatch):
         async def fetch_my_coins(self):
             return [{"currency": "BTC", "balance": 0.5, "avg_buy_price": 40000000.0}]
 
-    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
-    monkeypatch.setattr(
-        mcp_tools,
-        "_preview_order",
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
+    _patch_runtime_attr(monkeypatch, "_preview_order",
         AsyncMock(
             return_value={
                 "estimated_value": 25000000.0,
@@ -5063,7 +5054,7 @@ async def test_place_order_insufficient_balance_upbit(monkeypatch):
         async def fetch_my_coins(self):
             return [{"currency": "KRW", "balance": 50000.0}]
 
-    monkeypatch.setattr(mcp_tools, "upbit_service", DummyUpbit())
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
 
     result = await tools["place_order"](
         symbol="KRW-BTC",
@@ -5093,10 +5084,8 @@ async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
         async def inquire_domestic_cash_balance(self):
             return {"dnca_tot_amt": "100000.0", "stck_cash_ord_psbl_amt": "100000.0"}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
-    monkeypatch.setattr(
-        mcp_tools,
-        "_preview_order",
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "_preview_order",
         AsyncMock(
             return_value={
                 "estimated_value": 5000000.0,
@@ -5136,10 +5125,8 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
                 }
             ]
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
-    monkeypatch.setattr(
-        mcp_tools,
-        "_preview_order",
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "_preview_order",
         AsyncMock(
             return_value={
                 "estimated_value": 500.0,
@@ -5190,8 +5177,8 @@ async def test_place_order_us_dry_run_uses_overseas_margin_only(monkeypatch):
     async def fetch_quote(symbol):
         return {"price": 400.0}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
-    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", fetch_quote)
 
     result = await tools["place_order"](
         symbol="MSFT",
@@ -5227,11 +5214,9 @@ async def test_place_order_us_uses_frcr_gnrl_orderable_when_ord1_is_zero(monkeyp
     async def fetch_quote(symbol):
         return {"price": 500.0}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", DummyKISClient)
-    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
-    monkeypatch.setattr(
-        mcp_tools,
-        "_preview_order",
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", fetch_quote)
+    _patch_runtime_attr(monkeypatch, "_preview_order",
         AsyncMock(
             return_value={
                 "estimated_value": 500.0,
@@ -5268,8 +5253,8 @@ async def test_place_order_balance_lookup_failure_returns_query_error(
     async def fetch_quote(symbol):
         return {"price": 5000.0}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", FailingKISClient)
-    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+    _patch_runtime_attr(monkeypatch, "KISClient", FailingKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
 
     with caplog.at_level(logging.ERROR):
         result = await tools["place_order"](
@@ -5323,9 +5308,8 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
             )
             return {"odno": "99999", "success": True}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-    monkeypatch.setattr(
-        mcp_tools, "get_exchange_by_symbol", lambda s: "NYSE" if s == "TSM" else None
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "get_exchange_by_symbol", lambda s: "NYSE" if s == "TSM" else None
     )
 
     result = await tools["place_order"](
@@ -5357,7 +5341,7 @@ class TestComputeRsiWeights:
 
     def test_oversold_returns_front_heavy_weights(self):
         """RSI < 30: linear decreasing weights (more early)."""
-        result = mcp_tools._compute_rsi_weights(25.0, 3)
+        result = market_data_indicators._compute_rsi_weights(25.0, 3)
 
         assert len(result) == 3
         assert abs(sum(result) - 1.0) < 0.001
@@ -5366,7 +5350,7 @@ class TestComputeRsiWeights:
 
     def test_oversold_with_four_splits(self):
         """RSI < 30 with splits=4."""
-        result = mcp_tools._compute_rsi_weights(28.0, 4)
+        result = market_data_indicators._compute_rsi_weights(28.0, 4)
 
         assert len(result) == 4
         assert abs(sum(result) - 1.0) < 0.001
@@ -5376,7 +5360,7 @@ class TestComputeRsiWeights:
 
     def test_overbought_returns_back_heavy_weights(self):
         """RSI > 50: linear increasing weights (more later)."""
-        result = mcp_tools._compute_rsi_weights(65.0, 3)
+        result = market_data_indicators._compute_rsi_weights(65.0, 3)
 
         assert len(result) == 3
         assert abs(sum(result) - 1.0) < 0.001
@@ -5385,7 +5369,7 @@ class TestComputeRsiWeights:
 
     def test_neutral_returns_equal_weights(self):
         """RSI 30-50: equal distribution."""
-        result = mcp_tools._compute_rsi_weights(40.0, 3)
+        result = market_data_indicators._compute_rsi_weights(40.0, 3)
 
         assert len(result) == 3
         assert abs(sum(result) - 1.0) < 0.001
@@ -5394,7 +5378,7 @@ class TestComputeRsiWeights:
 
     def test_none_rsi_returns_equal_weights(self):
         """None RSI: equal distribution (same as neutral)."""
-        result = mcp_tools._compute_rsi_weights(None, 3)
+        result = market_data_indicators._compute_rsi_weights(None, 3)
 
         assert len(result) == 3
         assert abs(sum(result) - 1.0) < 0.001
@@ -5417,7 +5401,7 @@ class TestComputeDcaPriceLevels:
             {"price": 80000.0, "source": "fib_61.8"},
         ]
 
-        result = mcp_tools._compute_dca_price_levels(
+        result = market_data_indicators._compute_dca_price_levels(
             "support", 3, current_price, supports
         )
 
@@ -5435,7 +5419,7 @@ class TestComputeDcaPriceLevels:
             {"price": 80000.0, "source": "fib_61.8"},
         ]
 
-        result = mcp_tools._compute_dca_price_levels(
+        result = market_data_indicators._compute_dca_price_levels(
             "support", 4, current_price, supports
         )
 
@@ -5449,7 +5433,7 @@ class TestComputeDcaPriceLevels:
         current_price = 100000.0
         supports = []
 
-        result = mcp_tools._compute_dca_price_levels(
+        result = market_data_indicators._compute_dca_price_levels(
             "support", 3, current_price, supports
         )
 
@@ -5467,7 +5451,7 @@ class TestComputeDcaPriceLevels:
             {"price": 85000.0, "source": "fib_50.0"},
         ]
 
-        result = mcp_tools._compute_dca_price_levels(
+        result = market_data_indicators._compute_dca_price_levels(
             "equal", 3, current_price, supports
         )
 
@@ -5482,7 +5466,7 @@ class TestComputeDcaPriceLevels:
         current_price = 100000.0
         supports = []
 
-        result = mcp_tools._compute_dca_price_levels(
+        result = market_data_indicators._compute_dca_price_levels(
             "equal", 3, current_price, supports
         )
 
@@ -5497,7 +5481,7 @@ class TestComputeDcaPriceLevels:
             {"price": 80000.0, "source": "fib_61.8"},
         ]
 
-        result = mcp_tools._compute_dca_price_levels(
+        result = market_data_indicators._compute_dca_price_levels(
             "aggressive", 3, current_price, supports
         )
 
@@ -5514,12 +5498,96 @@ class TestComputeDcaPriceLevels:
         supports = []
 
         with pytest.raises(ValueError, match="Invalid strategy"):
-            mcp_tools._compute_dca_price_levels("invalid", 3, current_price, supports)
+            market_data_indicators._compute_dca_price_levels("invalid", 3, current_price, supports)
 
 
 @pytest.mark.asyncio
 class TestCreateDcaPlan:
     """Tests for create_dca_plan MCP tool."""
+
+    async def test_create_dca_plan_market_hint_regression(self, monkeypatch):
+        tools = build_tools()
+
+        sr_calls: list[tuple[str, str | None]] = []
+        indicator_calls: list[tuple[str, list[str], str | None]] = []
+
+        async def mock_sr(symbol: str, market: str | None):
+            sr_calls.append((symbol, market))
+            return {
+                "symbol": symbol,
+                "current_price": 80000.0,
+                "supports": [{"price": 76000.0, "source": "fib_23.6"}],
+                "resistances": [],
+            }
+
+        async def mock_indicators(
+            symbol: str, indicators: list[str], market: str | None
+        ):
+            indicator_calls.append((symbol, indicators, market))
+            return {
+                "symbol": symbol,
+                "price": 80000.0,
+                "indicators": {"rsi": {"14": 42.0}},
+            }
+
+        _patch_runtime_attr(monkeypatch, "_get_support_resistance_impl", mock_sr)
+        _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_indicators)
+
+        db = AsyncMock()
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
+            lambda: DummySessionManager(db),
+        )
+
+        created_plan = DcaPlan(
+            id=101,
+            user_id=1,
+            symbol="005930",
+            market="equity_kr",
+            status=DcaPlanStatus.ACTIVE,
+            steps=[],
+        )
+        created_plan.total_amount = Decimal("900000")
+
+        async def mock_create_plan(self, **kwargs):
+            return created_plan
+
+        async def mock_get_plan(self, plan_id, user_id=None):
+            return created_plan
+
+        monkeypatch.setattr(DcaService, "create_plan", mock_create_plan)
+        monkeypatch.setattr(DcaService, "get_plan", mock_get_plan)
+
+        with pytest.raises(
+            ValueError, match="korean equity symbols must be 6 alphanumeric characters"
+        ):
+            await tools["create_dca_plan"](
+                symbol="AAPL",
+                market="kr",
+                total_amount=900000.0,
+                splits=3,
+                strategy="support",
+                dry_run=True,
+            )
+
+        assert sr_calls == []
+        assert indicator_calls == []
+
+        result = await tools["create_dca_plan"](
+            symbol="005930",
+            market="kr",
+            total_amount=900000.0,
+            splits=3,
+            strategy="support",
+            dry_run=True,
+        )
+
+        assert result["success"] is True
+        assert sr_calls[-1] == ("005930", "kr")
+        assert indicator_calls[-1][0] == "005930"
+        assert indicator_calls[-1][1] == ["rsi"]
+        assert indicator_calls[-1][2] == "kr"
 
     async def test_support_strategy_dry_run_crypto(self, monkeypatch):
         """Support strategy with dry_run=True for crypto."""
@@ -5551,14 +5619,12 @@ class TestCreateDcaPlan:
         async def mock_indicators(_symbol, _indicators, _market):
             return mock_indicator_result
 
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+        _patch_runtime_attr(monkeypatch, "_get_support_resistance_impl", mock_sr)
+        _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_indicators)
 
         # Mock DB session and DcaService.create_plan so persistence succeeds for dry_run
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -5637,14 +5703,12 @@ class TestCreateDcaPlan:
         async def mock_indicators(_symbol, _indicators, _market):
             return mock_indicator_result
 
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+        _patch_runtime_attr(monkeypatch, "_get_support_resistance_impl", mock_sr)
+        _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_indicators)
 
         # Mock DB session and DcaService.create_plan so persistence succeeds for dry_run
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -5712,13 +5776,11 @@ class TestCreateDcaPlan:
         async def mock_indicators(_symbol, _indicators, _market):
             return mock_indicator_result
 
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+        _patch_runtime_attr(monkeypatch, "_get_support_resistance_impl", mock_sr)
+        _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_indicators)
 
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -5785,13 +5847,11 @@ class TestCreateDcaPlan:
         async def mock_indicators(_symbol, _indicators, _market):
             return mock_indicator_result
 
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+        _patch_runtime_attr(monkeypatch, "_get_support_resistance_impl", mock_sr)
+        _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_indicators)
 
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -5863,14 +5923,12 @@ class TestCreateDcaPlan:
         async def mock_indicators(_symbol, _indicators, _market):
             return mock_indicator_result
 
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+        _patch_runtime_attr(monkeypatch, "_get_support_resistance_impl", mock_sr)
+        _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_indicators)
 
         # Mock DB session factory
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -5918,7 +5976,7 @@ class TestCreateDcaPlan:
         async def mock_place_order_impl(*args, **kwargs):
             return {"success": True, "order_id": "ORDER-XYZ"}
 
-        monkeypatch.setattr(mcp_tools, "_place_order_impl", mock_place_order_impl)
+        _patch_runtime_attr(monkeypatch, "_place_order_impl", mock_place_order_impl)
 
         # Mock mark_step_ordered
         mock_mark_step_ordered = AsyncMock()
@@ -5986,7 +6044,7 @@ class TestGetDcaStatus:
     @staticmethod
     def build_tools():
         mcp = DummyMCP()
-        mcp_tools.register_tools(mcp)
+        register_all_tools(mcp)
         return mcp.tools
 
     @pytest.mark.asyncio
@@ -5996,9 +6054,7 @@ class TestGetDcaStatus:
 
         # Mock database
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6094,9 +6150,7 @@ class TestGetDcaStatus:
         )
 
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6141,9 +6195,7 @@ class TestGetDcaStatus:
         )
 
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6192,9 +6244,7 @@ class TestGetDcaStatus:
         )
 
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6253,9 +6303,7 @@ class TestGetDcaStatus:
             )
 
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6332,9 +6380,7 @@ class TestGetDcaStatus:
         )
 
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6357,7 +6403,7 @@ class TestGetDcaStatus:
         async def mock_place_order(**kwargs):
             return {"success": True, "order_id": "ORDER-123"}
 
-        monkeypatch.setattr(mcp_tools, "_place_order_impl", mock_place_order)
+        _patch_runtime_attr(monkeypatch, "_place_order_impl", mock_place_order)
 
         # Mock market data
         async def mock_sr(_symbol, _market):
@@ -6379,8 +6425,8 @@ class TestGetDcaStatus:
                 },
             }
 
-        monkeypatch.setattr(mcp_tools, "_get_support_resistance_impl", mock_sr)
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_indicators)
+        _patch_runtime_attr(monkeypatch, "_get_support_resistance_impl", mock_sr)
+        _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_indicators)
 
         # Execute with execute_steps to trigger order placement
         result = await tools["create_dca_plan"](
@@ -6416,9 +6462,7 @@ class TestGetDcaStatus:
         )
 
         db = AsyncMock()
-        monkeypatch.setattr(
-            mcp_tools,
-            "AsyncSessionLocal",
+        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6435,7 +6479,7 @@ class TestGetDcaStatus:
                 "total_plans": 1,
             }
 
-        monkeypatch.setattr(mcp_tools, "_get_dca_status_impl", mock_impl)
+        _patch_runtime_attr(monkeypatch, "_get_dca_status_impl", mock_impl)
 
         # Execute
         result = await tools["get_dca_status"](plan_id=1)
@@ -6451,7 +6495,7 @@ class TestPlaceOrderHighAmount:
     @staticmethod
     def build_tools():
         mcp = DummyMCP()
-        mcp_tools.register_tools(mcp)
+        register_all_tools(mcp)
         return mcp.tools
 
     @pytest.mark.asyncio
@@ -6469,8 +6513,8 @@ class TestPlaceOrderHighAmount:
         async def fetch_quote(symbol):
             return {"price": 100000.0}
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+        _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+        _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
 
         result = await tools["place_order"](
             symbol="005930",
@@ -6510,8 +6554,8 @@ class TestPlaceOrderHighAmount:
         async def fetch_quote(symbol):
             return {"price": 205.0}
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
+        _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+        _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", fetch_quote)
 
         result = await tools["place_order"](
             symbol="AAPL",
@@ -6538,12 +6582,12 @@ class TestPlaceOrderHighAmount:
         )
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_multiple_current_prices",
             mock.fetch_multiple_current_prices,
         )
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_my_coins",
             mock.fetch_my_coins,
         )
@@ -6588,8 +6632,8 @@ class TestPlaceOrderHighAmount:
         async def fetch_quote(symbol):
             return {"price": 120000.0}
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+        _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+        _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
 
         result = await tools["place_order"](
             symbol="005930",
@@ -6648,9 +6692,9 @@ class TestPlaceOrderHighAmount:
         async def fetch_quote(symbol):
             return {"price": 250.0}
 
-        monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_us", fetch_quote)
-        monkeypatch.setattr(mcp_tools, "get_exchange_by_symbol", lambda _: "NASD")
+        _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+        _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", fetch_quote)
+        _patch_runtime_attr(monkeypatch, "get_exchange_by_symbol", lambda _: "NASD")
 
         result = await tools["place_order"](
             symbol="AAPL",
@@ -6687,17 +6731,17 @@ class TestPlaceOrderHighAmount:
         )
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_multiple_current_prices",
             mock.fetch_multiple_current_prices,
         )
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_my_coins",
             mock.fetch_my_coins,
         )
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "place_market_buy_order",
             mock.place_market_buy_order,
         )
@@ -6732,22 +6776,22 @@ class TestPlaceOrderHighAmount:
         )
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_multiple_current_prices",
             mock.fetch_multiple_current_prices,
         )
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_my_coins",
             mock.fetch_my_coins,
         )
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "place_market_buy_order",
             mock.place_market_buy_order,
         )
         monkeypatch.setattr(
-            mcp_tools.settings, "redis_url", "redis://localhost:6379/0", raising=False
+            settings, "redis_url", "redis://localhost:6379/0", raising=False
         )
 
         class FakeRedisClient:
@@ -6812,7 +6856,7 @@ class TestGetInvestmentOpinions:
                 **mock_opinions,
             }
 
-        monkeypatch.setattr(mcp_tools, "_fetch_investment_opinions_naver", mock_fetch)
+        _patch_runtime_attr(monkeypatch, "_fetch_investment_opinions_naver", mock_fetch)
 
         # Pass integer 12450, should be normalized to "012450"
         result = await tools["get_investment_opinions"](12450, market="kr")
@@ -6860,7 +6904,7 @@ class TestGetInvestmentOpinions:
                 **mock_opinions,
             }
 
-        monkeypatch.setattr(mcp_tools, "_fetch_investment_opinions_naver", mock_fetch)
+        _patch_runtime_attr(monkeypatch, "_fetch_investment_opinions_naver", mock_fetch)
 
         # Pass integer 5930, should be normalized to "005930"
         result = await tools["get_investment_opinions"](5930)
@@ -6896,8 +6940,7 @@ class TestGetInvestmentOpinions:
                 **mock_opinions,
             }
 
-        monkeypatch.setattr(
-            mcp_tools, "_fetch_investment_opinions_yfinance", mock_fetch_yf
+        _patch_runtime_attr(monkeypatch, "_fetch_investment_opinions_yfinance", mock_fetch_yf
         )
 
         result = await tools["get_investment_opinions"]("AAPL", market="us")
@@ -6936,7 +6979,7 @@ class TestGetInvestmentOpinions:
         }
 
         # Test _build_recommendation_for_equity directly
-        recommendation = mcp_tools._build_recommendation_for_equity(
+        recommendation = shared.build_recommendation_for_equity(
             mock_analysis, "equity_kr"
         )
 
@@ -6963,7 +7006,7 @@ class TestGetInvestmentOpinions:
         async def mock_impl(s, m, i):
             return mock_analysis
 
-        monkeypatch.setattr(mcp_tools, "_analyze_stock_impl", mock_impl)
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", mock_impl)
 
         result = await tools["analyze_stock"]("KRW-BTC")
 
@@ -6988,7 +7031,7 @@ class TestSymbolNormalizationIntegration:
         async def mock_fetch_quote_kr(symbol):
             return mock_quote
 
-        monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", mock_fetch_quote_kr)
+        _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", mock_fetch_quote_kr)
 
         # Test with integer input
         result = await tools["get_quote"](12450, market="kr")
@@ -7013,7 +7056,7 @@ class TestSymbolNormalizationIntegration:
             return mock_valuation
 
         monkeypatch.setattr(
-            mcp_tools.naver_finance, "fetch_valuation", mock_fetch_valuation
+            naver_finance, "fetch_valuation", mock_fetch_valuation
         )
 
         # Test with integer input
@@ -7040,7 +7083,7 @@ class TestSymbolNormalizationIntegration:
         async def mock_fetch_news(code, limit):
             return mock_news["news"]
 
-        monkeypatch.setattr(mcp_tools.naver_finance, "fetch_news", mock_fetch_news)
+        monkeypatch.setattr(naver_finance, "fetch_news", mock_fetch_news)
 
         # Test with integer input
         result = await tools["get_news"](12450, market="kr", limit=10)
@@ -7082,10 +7125,9 @@ async def test_screen_stocks_smoke(monkeypatch):
     async def mock_fetch_etf_all_cached():
         return []
 
-    monkeypatch.setattr(
-        mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+    _patch_runtime_attr(monkeypatch, "fetch_stock_all_cached", mock_fetch_stock_all_cached
     )
-    monkeypatch.setattr(mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
+    _patch_runtime_attr(monkeypatch, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
 
     result = await tools["screen_stocks"](market="kr", limit=5)
 
@@ -7157,7 +7199,7 @@ async def test_get_cash_balance_kis_overseas_prefers_usd_us_row_for_orderable(
                 },
             ]
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"](account="kis_overseas")
 
@@ -7200,7 +7242,7 @@ async def test_get_cash_balance_kis_overseas_us_row_missing_falls_back_to_usd_ma
                 },
             ]
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"](account="kis_overseas")
 
@@ -7235,7 +7277,7 @@ async def test_get_cash_balance_kis_overseas_real_balance(monkeypatch):
                 }
             ]
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"](account="kis_overseas")
 
@@ -7267,7 +7309,7 @@ async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
                 }
             ]
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"](account="kis_overseas")
 
@@ -7296,8 +7338,8 @@ async def test_place_order_kr_limit_keeps_valid_tick_without_adjustment_metadata
     async def fetch_quote(symbol):
         return {"price": 1_100_000.0}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
 
     result = await tools["place_order"](
         symbol="005930",
@@ -7344,8 +7386,8 @@ async def test_place_order_kr_limit_applies_tick_adjustment_and_metadata(
     async def fetch_quote(symbol):
         return {"price": 1_100_000.0}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
 
     result = await tools["place_order"](
         symbol="005930",
@@ -7404,8 +7446,8 @@ async def test_place_order_kr_equity_does_not_call_integrated_margin(monkeypatch
     async def fetch_quote(symbol):
         return {"price": 80000.0}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
 
     result = await tools["place_order"](
         symbol="005930",
@@ -7438,8 +7480,8 @@ async def test_place_order_kr_equity_opsq2001_does_not_block_order(monkeypatch):
     async def fetch_quote(symbol):
         return {"price": 60000.0}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
 
     result = await tools["place_order"](
         symbol="005930",
@@ -7484,8 +7526,8 @@ async def test_place_order_kr_equity_dry_run_false_opsq2001_unaffected(monkeypat
     async def fetch_quote(symbol):
         return {"price": 70000.0}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", MockKISClient)
-    monkeypatch.setattr(mcp_tools, "_fetch_quote_equity_kr", fetch_quote)
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
 
     result = await tools["place_order"](
         symbol="005930",

@@ -546,7 +546,7 @@
                                 return `<span class="badge broker-badge ${brokerClass}" title="평단 $${h.avg_price.toFixed(2)}">${brokerName} ${qtyDisplay}</span>`;
                             }).join('');
                         } else if (stock.kis_quantity > 0) {
-                            // Fallback for backward compatibility
+                            // Fallback for older payload fields
                             brokerBadges = `<span class="badge broker-badge broker-kis" title="평단 $${stock.kis_avg_price?.toFixed(2) || '-'}">KIS ${stock.kis_quantity}</span>`;
                         }
 

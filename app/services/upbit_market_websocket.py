@@ -41,7 +41,7 @@ class UpbitPublicWebSocketClient:
             subscription_type: Type of subscription ("ticker", "orderbook", "trade")
             codes: List of market codes to subscribe (e.g., ["KRW-BTC", "KRW-ETH"])
                    None means subscribe to all markets
-            verify_ssl: SSL certificate verification (default: False for macOS compatibility)
+            verify_ssl: SSL certificate verification (default: False on macOS)
             on_message: Optional callback for received messages
         """
         self.websocket_url = UPBIT_PUBLIC_WS_URL
@@ -65,7 +65,7 @@ class UpbitPublicWebSocketClient:
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-            logger.info("SSL certificate verification disabled (macOS compatibility)")
+            logger.info("SSL certificate verification disabled (macOS default)")
         return ssl_context
 
     def _create_subscribe_message(self) -> list:
@@ -108,9 +108,9 @@ class UpbitPublicWebSocketClient:
 
         ssl_context = self._create_ssl_context()
 
-        import websockets.legacy.client
+        import websockets
 
-        self.websocket = await websockets.legacy.client.connect(
+        self.websocket = await websockets.connect(
             self.websocket_url,
             ssl=ssl_context,
             ping_interval=30,

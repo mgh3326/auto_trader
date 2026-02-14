@@ -3,7 +3,7 @@
 This package contains the refactored MCP tools split by domain:
 - shared: Common utilities, normalizers, and constants
 - market_data_quotes / market_data_indicators / market_data_registration
-- fundamentals_handlers / fundamentals_sources_* / fundamentals_registration
+- fundamentals_handlers / fundamentals_sources_naver / fundamentals_sources_* / fundamentals_registration
 - orders_history / orders_modify_cancel / orders_registration
 - order_execution: Order execution pipeline helpers
 - portfolio_holdings / portfolio_cash / portfolio_registration

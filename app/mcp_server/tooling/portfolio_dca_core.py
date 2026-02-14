@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from app.mcp_server.tick_size import adjust_tick_size_kr
-from app.mcp_server.tooling.market_data_quotes import (
+from app.mcp_server.tooling.market_data_indicators import (
     _compute_dca_price_levels,
     _compute_rsi_weights,
 )

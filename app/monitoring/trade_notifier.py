@@ -880,7 +880,7 @@ class TradeNotifier:
         Send Toss price recommendation notification with AI analysis.
 
         Always sends regardless of AI decision (buy/hold/sell).
-        Uses HTML parse mode for better compatibility with special characters.
+        Uses HTML parse mode for robust handling of special characters.
         """
         if not self._enabled:
             return False

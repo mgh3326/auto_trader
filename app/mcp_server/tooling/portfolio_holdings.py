@@ -8,14 +8,20 @@ from typing import TYPE_CHECKING, Any
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tooling.fundamentals_handlers import _get_support_resistance_impl
-from app.mcp_server.tooling.market_data_quotes import (
+from app.mcp_server.tooling.market_data_indicators import (
     _compute_indicators,
     _fetch_ohlcv_for_indicators,
+)
+from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
 )
 from app.mcp_server.tooling.orders_history import (
     _place_order_impl,
+)
+from app.mcp_server.tooling.portfolio_cash import (
+    extract_usd_orderable_from_row as _extract_usd_orderable_from_row,
+    select_usd_row_for_us_order as _select_usd_row_for_us_order,
 )
 from app.mcp_server.tooling.portfolio_dca_core import (
     create_dca_plan_impl,
@@ -25,26 +31,32 @@ from app.mcp_server.tooling.portfolio_dca_status import (
     get_dca_status_impl as _get_dca_status_impl,
 )
 from app.mcp_server.tooling.shared import (
-    _DEFAULT_MINIMUM_VALUES,
-    _INSTRUMENT_TO_MARKET,
-    _MCP_DCA_USER_ID,
-    _MCP_USER_ID,
-    _UPBIT_TICKER_BATCH_SIZE,
-    _build_holdings_summary,
-    _canonical_account_id,
-    _format_filter_threshold,
-    _instrument_to_manual_market_type,
-    _is_position_symbol_match,
-    _manual_market_to_instrument_type,
-    _match_account_filter,
-    _normalize_account_filter,
-    _normalize_position_symbol,
-    _parse_holdings_market_filter,
-    _position_to_output,
-    _recalculate_profit_fields,
-    _resolve_market_type,
-    _to_float,
-    _value_for_minimum_filter,
+    DEFAULT_MINIMUM_VALUES as _DEFAULT_MINIMUM_VALUES,
+)
+from app.mcp_server.tooling.shared import (
+    INSTRUMENT_TO_MARKET as _INSTRUMENT_TO_MARKET,
+)
+from app.mcp_server.tooling.shared import MCP_DCA_USER_ID as _MCP_DCA_USER_ID
+from app.mcp_server.tooling.shared import MCP_USER_ID as _MCP_USER_ID
+from app.mcp_server.tooling.shared import (
+    UPBIT_TICKER_BATCH_SIZE as _UPBIT_TICKER_BATCH_SIZE,
+)
+from app.mcp_server.tooling.shared import (
+    build_holdings_summary as _build_holdings_summary,
+    canonical_account_id as _canonical_account_id,
+    format_filter_threshold as _format_filter_threshold,
+    instrument_to_manual_market_type as _instrument_to_manual_market_type,
+    is_position_symbol_match as _is_position_symbol_match,
+    manual_market_to_instrument_type as _manual_market_to_instrument_type,
+    match_account_filter as _match_account_filter,
+    normalize_account_filter as _normalize_account_filter,
+    normalize_position_symbol as _normalize_position_symbol,
+    parse_holdings_market_filter as _parse_holdings_market_filter,
+    position_to_output as _position_to_output,
+    recalculate_profit_fields as _recalculate_profit_fields,
+    resolve_market_type as _resolve_market_type,
+    to_float as _to_float,
+    value_for_minimum_filter as _value_for_minimum_filter,
     logger,
 )
 from app.services import upbit as upbit_service
@@ -66,44 +78,6 @@ PORTFOLIO_TOOL_NAMES: set[str] = {
     "create_dca_plan",
     "get_dca_status",
 }
-
-
-def _is_us_nation_name(value: Any) -> bool:
-    normalized = str(value or "").strip().casefold()
-    return normalized in {
-        "미국",
-        "us",
-        "usa",
-        "united states",
-        "united states of america",
-    }
-
-
-def _extract_usd_orderable_from_row(row: dict[str, Any] | None) -> float:
-    if not isinstance(row, dict):
-        return 0.0
-    return _to_float(row.get("frcr_gnrl_ord_psbl_amt"), default=0.0)
-
-
-def _select_usd_row_for_us_order(
-    rows: list[dict[str, Any]] | None,
-) -> dict[str, Any] | None:
-    if not rows:
-        return None
-
-    usd_rows = [
-        row for row in rows if str(row.get("crcy_cd", "")).strip().upper() == "USD"
-    ]
-    if not usd_rows:
-        return None
-
-    us_row = next(
-        (row for row in usd_rows if _is_us_nation_name(row.get("natn_name"))), None
-    )
-    if us_row is not None:
-        return us_row
-
-    return max(usd_rows, key=_extract_usd_orderable_from_row)
 
 
 async def _collect_kis_positions(

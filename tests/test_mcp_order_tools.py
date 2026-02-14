@@ -4,7 +4,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.mcp_server.tooling.testing_proxy import mcp_tools
+from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling import order_execution, orders_history
+from app.services import upbit as upbit_service
 
 
 class DummyMCP:
@@ -21,8 +23,13 @@ class DummyMCP:
 
 def build_tools() -> dict[str, object]:
     mcp = DummyMCP()
-    mcp_tools.register_tools(mcp)
+    register_all_tools(mcp)
     return mcp.tools
+
+
+def _patch_kis_client(monkeypatch: pytest.MonkeyPatch, client_factory) -> None:
+    monkeypatch.setattr(orders_history, "KISClient", client_factory)
+    monkeypatch.setattr(order_execution, "KISClient", client_factory)
 
 
 @pytest.mark.asyncio
@@ -50,8 +57,8 @@ async def test_get_order_history_filters(monkeypatch):
         },
     ]
 
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_closed_orders", AsyncMock(return_value=orders_data))
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(upbit_service, "fetch_closed_orders", AsyncMock(return_value=orders_data))
+    monkeypatch.setattr(upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
 
     # Test 1: Filter by side="buy"
     res_buy = await tools["get_order_history"](symbol="KRW-BTC", status="filled", side="buy")
@@ -81,7 +88,7 @@ async def test_get_order_history_filters(monkeypatch):
     # It IS supported for Pending (fetch_open_orders(market=None)).
 
     # Let's test pending by ID without symbol
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_open_orders", AsyncMock(return_value=[
+    monkeypatch.setattr(upbit_service, "fetch_open_orders", AsyncMock(return_value=[
         {
             "uuid": "pending-1", "market": "KRW-ETH", "side": "bid", "state": "wait",
             "created_at": "2025-01-03", "ord_type": "limit", "price": "200", "volume": "1", "remaining_volume": "1", "executed_volume": "0"
@@ -106,13 +113,13 @@ async def test_get_order_history_pending_without_symbol(monkeypatch):
                 "state": "wait"
             }]
 
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_open_orders", MockUpbitService().fetch_open_orders)
+    monkeypatch.setattr(upbit_service, "fetch_open_orders", MockUpbitService().fetch_open_orders)
 
     class MockKIS:
         async def inquire_korea_orders(self): return []
         async def inquire_overseas_orders(self, exchange_code): return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: MockKIS())
+    _patch_kis_client(monkeypatch, lambda: MockKIS())
 
     result = await tools["get_order_history"](status="pending")
 
@@ -144,10 +151,10 @@ async def test_get_order_history_crypto_uses_closed_orders(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service, "fetch_closed_orders", mock_closed_orders
+        upbit_service, "fetch_closed_orders", mock_closed_orders
     )
     # Mock open orders to return empty (since status="all" by default calls both)
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
 
     # explicitly status='filled'
     result = await tools["get_order_history"](
@@ -167,8 +174,8 @@ async def test_get_order_history_limit_logic(monkeypatch):
     tools = build_tools()
 
     # Mock valid response
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_closed_orders", AsyncMock(return_value=[]))
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(upbit_service, "fetch_closed_orders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
 
     # Limit = 0 => Should pass limit=100 (or max) to service or similar logic
     # Our impl: limit=0 or -1 means unlimited (in our logic we used if limit > 0 else 100 for closed_orders)
@@ -193,8 +200,8 @@ async def test_get_order_history_truncated_response(monkeypatch):
             "price": "100"
         })
 
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_closed_orders", AsyncMock(return_value=orders))
-    monkeypatch.setattr(mcp_tools.upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(upbit_service, "fetch_closed_orders", AsyncMock(return_value=orders))
+    monkeypatch.setattr(upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
 
     # limit=5, should get 5 orders and truncated=True
     result = await tools["get_order_history"](symbol="KRW-BTC", status="filled", limit=5)
@@ -227,7 +234,7 @@ async def test_get_order_history_kr_order_id_normalizes_list_response(monkeypatc
             ]
         async def inquire_korea_orders(self): return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
 
     # status="filled" to trigger inquire_daily_order_domestic
     result = await tools["get_order_history"](
@@ -265,7 +272,7 @@ async def test_modify_order_crypto_success(monkeypatch):
     tools = build_tools()
 
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "fetch_order_detail",
         AsyncMock(
             return_value={
@@ -278,7 +285,7 @@ async def test_modify_order_crypto_success(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        mcp_tools.upbit_service,
+        upbit_service,
         "cancel_and_reorder",
         AsyncMock(
             return_value={
@@ -337,8 +344,9 @@ async def test_modify_order_us_falls_back_exchange(monkeypatch):
             return {"odno": "US-OD-2", "msg": "ok"}
 
     fake_kis = FakeKIS()
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: fake_kis)
-    monkeypatch.setattr(mcp_tools, "get_exchange_by_symbol", lambda _symbol: "NASD")
+    _patch_kis_client(monkeypatch, lambda: fake_kis)
+    monkeypatch.setattr(orders_history, "get_exchange_by_symbol", lambda _symbol: "NASD")
+    monkeypatch.setattr(order_execution, "get_exchange_by_symbol", lambda _symbol: "NASD")
 
     result = await tools["modify_order"](
         order_id="US-OD-1",
@@ -402,7 +410,7 @@ async def test_get_order_history_us_deduplicates_by_order_id(monkeypatch, caplog
             ]
         async def inquire_overseas_orders(self, *args, **kwargs): return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
 
     caplog.set_level("INFO")
     result = await tools["get_order_history"](
@@ -441,7 +449,7 @@ async def test_get_order_history_kr_pending_uppercase_fields(monkeypatch):
         async def inquire_overseas_orders(self, exchange_code):
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
 
     result = await tools["get_order_history"](status="pending", market="kr")
 
@@ -485,7 +493,7 @@ async def test_get_order_history_kr_pending_uses_odno_for_order_id(monkeypatch):
         async def inquire_overseas_orders(self, exchange_code):
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
 
     result = await tools["get_order_history"](status="pending", market="kr")
 
@@ -533,7 +541,7 @@ async def test_get_order_history_kr_pending_deduplicates_by_order_id(
         async def inquire_overseas_orders(self, exchange_code):
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
     caplog.set_level("INFO")
 
     result = await tools["get_order_history"](status="pending", market="kr")
@@ -581,7 +589,7 @@ async def test_get_order_history_kr_pending_generates_temp_order_id_when_missing
         async def inquire_overseas_orders(self, exchange_code):
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
     caplog.set_level("WARNING")
 
     result = await tools["get_order_history"](status="pending", market="kr")
@@ -621,7 +629,7 @@ async def test_get_order_history_us_pending_uppercase_fields(monkeypatch):
                 ]
             return []
 
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
 
     result = await tools["get_order_history"](status="pending", market="us")
 
@@ -663,7 +671,7 @@ async def test_cancel_order_kr_uppercase_fields(monkeypatch):
         ):
             return {"odno": "KR-OD-UPPER", "ord_tmd": "093000"}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
 
     result = await tools["cancel_order"](order_id="KR-OD-UPPER", market="kr")
 
@@ -692,7 +700,7 @@ async def test_modify_order_kr_uppercase_fields(monkeypatch):
         async def modify_korea_order(self, order_id, stock_code, quantity, price):
             return {"odno": "KR-OD-UPPER"}
 
-    monkeypatch.setattr(mcp_tools, "KISClient", lambda: FakeKIS())
+    _patch_kis_client(monkeypatch, lambda: FakeKIS())
 
     result = await tools["modify_order"](
         order_id="KR-OD-UPPER",

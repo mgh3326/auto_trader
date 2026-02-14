@@ -1,7 +1,7 @@
 """Data-source helpers for fundamentals and analysis tools.
 
 This module hosts concrete integrations (Finnhub/Naver/CoinGecko/Binance/index)
-that were previously embedded in legacy tooling.
+that were previously embedded in earlier tooling modules.
 """
 
 from __future__ import annotations
@@ -24,10 +24,10 @@ import yfinance as yf
 
 from app.core.config import settings
 from app.mcp_server.tooling.shared import (
-    _normalize_value,
-    _to_float,
-    _to_optional_float,
-    _to_optional_int,
+    normalize_value as _normalize_value,
+    to_float as _to_float,
+    to_optional_float as _to_optional_float,
+    to_optional_int as _to_optional_int,
 )
 from app.services import naver_finance
 from app.services import upbit as upbit_service

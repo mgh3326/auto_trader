@@ -2,7 +2,10 @@
 
 import pytest
 
-from app.mcp_server.tooling.testing_proxy import mcp_tools
+from app.mcp_server.tooling import analysis_screen_core
+from app.mcp_server.tooling.registry import register_all_tools
+from app.services import naver_finance
+from app.services import upbit as upbit_service
 
 
 class DummyMCP:
@@ -19,7 +22,7 @@ class DummyMCP:
 
 def build_tools() -> dict[str, object]:
     mcp = DummyMCP()
-    mcp_tools.register_tools(mcp)
+    register_all_tools(mcp)
     return mcp.tools
 
 
@@ -94,7 +97,7 @@ class TestScreenStocksKRRegression:
             return []
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -126,7 +129,7 @@ class TestScreenStocksKRRegression:
             return []
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -174,9 +177,9 @@ class TestScreenStocksKRRegression:
             return []
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
-        monkeypatch.setattr(mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
+        monkeypatch.setattr(analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -210,10 +213,10 @@ class TestScreenStocksKRRegression:
             return mock_valuation_data
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            mcp_tools, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
+            analysis_screen_core, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
         )
 
         tools = build_tools()
@@ -253,10 +256,10 @@ class TestScreenStocksKRRegression:
             raise RuntimeError("KRX valuation temporary failure")
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            mcp_tools, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
+            analysis_screen_core, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
         )
 
         tools = build_tools()
@@ -331,7 +334,7 @@ class TestScreenStocksKR:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -365,7 +368,7 @@ class TestScreenStocksKR:
             return mock_krx_etfs
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -395,7 +398,7 @@ class TestScreenStocksKR:
             return mock_krx_etfs
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -500,7 +503,7 @@ class TestScreenStocksCrypto:
             return mock_upbit_coins
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
@@ -535,7 +538,7 @@ class TestScreenStocksCrypto:
             return mock_upbit_coins
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
@@ -566,7 +569,7 @@ class TestScreenStocksCrypto:
             return mock_upbit_coins
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
@@ -601,7 +604,7 @@ class TestScreenStocksFilters:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -657,7 +660,7 @@ class TestScreenStocksFilters:
             return mock_upbit_coins
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
@@ -690,7 +693,7 @@ class TestScreenStocksFilters:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         # Track whether advanced queries are called
@@ -710,9 +713,9 @@ class TestScreenStocksFilters:
             return pd.DataFrame()
 
         monkeypatch.setattr(
-            mcp_tools.naver_finance, "fetch_valuation", mock_fetch_valuation
+            naver_finance, "fetch_valuation", mock_fetch_valuation
         )
-        monkeypatch.setattr(mcp_tools, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
+        monkeypatch.setattr(analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
 
         tools = build_tools()
 
@@ -751,7 +754,7 @@ class TestScreenStocksSorting:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -839,7 +842,7 @@ class TestScreenStocksLimit:
             return mock_krx_stocks * 5
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -878,7 +881,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -913,7 +916,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -948,7 +951,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -981,7 +984,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -1027,7 +1030,7 @@ class TestScreenStocksDividendYieldNormalization:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -1061,7 +1064,7 @@ class TestScreenStocksPhase2Spec:
             return mock_krx_etfs
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -1101,7 +1104,7 @@ class TestScreenStocksPhase2Spec:
             return mock_krx_etfs
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -1141,7 +1144,7 @@ class TestScreenStocksPhase2Spec:
             return []
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -1241,7 +1244,7 @@ class TestScreenStocksPhase2Spec:
                     }
                 )
 
-        monkeypatch.setattr(mcp_tools, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
+        monkeypatch.setattr(analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
 
         tools = build_tools()
 
@@ -1288,13 +1291,13 @@ class TestScreenStocksPhase2Spec:
 
     @pytest.mark.asyncio
     async def test_limit_over_50_capped(self, mock_krx_stocks, monkeypatch):
-        """Test limit>50 is capped to 50 (not an error, for backward compatibility)."""
+        """Test limit>50 is capped to 50 (not an error, by design)."""
 
         async def mock_fetch_stock_all_cached(market):
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()

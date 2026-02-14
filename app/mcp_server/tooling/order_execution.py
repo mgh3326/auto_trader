@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
-from typing import Any, Literal
+from typing import Literal
 
 from app.core.config import settings
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
@@ -12,7 +12,17 @@ from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
 )
-from app.mcp_server.tooling.shared import _resolve_market_type, _to_float, logger
+from app.mcp_server.tooling.portfolio_cash import (
+    extract_usd_orderable_from_row as _extract_usd_orderable_from_row,
+    select_usd_row_for_us_order as _select_usd_row_for_us_order,
+)
+from app.mcp_server.tooling.shared import (
+    resolve_market_type as _resolve_market_type,
+)
+from app.mcp_server.tooling.shared import (
+    to_float as _to_float,
+)
+from app.mcp_server.tooling.shared import logger
 from app.services import upbit as upbit_service
 from app.services.kis import KISClient
 from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
@@ -88,44 +98,6 @@ async def _get_holdings_for_order(
             "avg_price": _to_float(stock.get("pchs_avg_pric"), default=0.0),
         }
     return None
-
-
-def _is_us_nation_name(value: Any) -> bool:
-    normalized = str(value or "").strip().casefold()
-    return normalized in {
-        "미국",
-        "us",
-        "usa",
-        "united states",
-        "united states of america",
-    }
-
-
-def _extract_usd_orderable_from_row(row: dict[str, Any] | None) -> float:
-    if not isinstance(row, dict):
-        return 0.0
-    return _to_float(row.get("frcr_gnrl_ord_psbl_amt"), default=0.0)
-
-
-def _select_usd_row_for_us_order(
-    rows: list[dict[str, Any]] | None,
-) -> dict[str, Any] | None:
-    if not rows:
-        return None
-
-    usd_rows = [
-        row for row in rows if str(row.get("crcy_cd", "")).strip().upper() == "USD"
-    ]
-    if not usd_rows:
-        return None
-
-    us_row = next(
-        (row for row in usd_rows if _is_us_nation_name(row.get("natn_name"))), None
-    )
-    if us_row is not None:
-        return us_row
-
-    return max(usd_rows, key=_extract_usd_orderable_from_row)
 
 
 async def _get_balance_for_order(market_type: str) -> float:
@@ -685,9 +657,6 @@ __all__ = [
     "_normalize_market_type_to_external",
     "_get_current_price_for_order",
     "_get_holdings_for_order",
-    "_is_us_nation_name",
-    "_extract_usd_orderable_from_row",
-    "_select_usd_row_for_us_order",
     "_get_balance_for_order",
     "_check_daily_order_limit",
     "_record_order_history",

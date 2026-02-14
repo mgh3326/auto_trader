@@ -786,7 +786,7 @@ class TestKRXFallbackLogic:
 
 
 class TestKRXValuationCacheRecovery:
-    """Test KRX valuation cache schema backward compatibility."""
+    """Test KRX valuation cache schema migration tolerance."""
 
     @pytest.mark.asyncio
     async def test_valuation_cache_old_format_recovery(self, monkeypatch):

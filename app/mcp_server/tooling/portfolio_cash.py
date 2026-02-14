@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.mcp_server.tooling.shared import _to_float
+from app.mcp_server.tooling.shared import to_float
 
 
 def is_us_nation_name(value: Any) -> bool:
@@ -21,7 +21,7 @@ def is_us_nation_name(value: Any) -> bool:
 def extract_usd_orderable_from_row(row: dict[str, Any] | None) -> float:
     if not isinstance(row, dict):
         return 0.0
-    return _to_float(row.get("frcr_gnrl_ord_psbl_amt"), default=0.0)
+    return to_float(row.get("frcr_gnrl_ord_psbl_amt"), default=0.0)
 
 
 def select_usd_row_for_us_order(

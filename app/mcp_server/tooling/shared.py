@@ -41,15 +41,6 @@ DEFAULT_MINIMUM_VALUES: dict[str, float] = {
     "crypto": 5000.0,
 }
 
-# Backward compatibility aliases (for shim exports)
-_MCP_USER_ID = MCP_USER_ID
-_MCP_DCA_USER_ID = MCP_DCA_USER_ID
-_DEFAULT_ACCOUNT_KEYS = DEFAULT_ACCOUNT_KEYS
-_INSTRUMENT_TO_MARKET = INSTRUMENT_TO_MARKET
-_ACCOUNT_FILTER_ALIASES = ACCOUNT_FILTER_ALIASES
-_UPBIT_TICKER_BATCH_SIZE = UPBIT_TICKER_BATCH_SIZE
-_DEFAULT_MINIMUM_VALUES = DEFAULT_MINIMUM_VALUES
-
 # ---------------------------------------------------------------------------
 # Symbol Detection
 # ---------------------------------------------------------------------------
@@ -68,12 +59,6 @@ def is_crypto_market(symbol: str) -> bool:
 def is_us_equity_symbol(symbol: str) -> bool:
     s = symbol.strip().upper()
     return (not is_crypto_market(s)) and any(c.isalpha() for c in s)
-
-
-# Backward compatibility aliases
-_is_korean_equity_code = is_korean_equity_code
-_is_crypto_market = is_crypto_market
-_is_us_equity_symbol = is_us_equity_symbol
 
 
 # ---------------------------------------------------------------------------
@@ -99,9 +84,6 @@ def normalize_symbol_input(symbol: str | int, market: str | None = None) -> str:
         if s.isdigit():
             s = s.zfill(6)
     return s
-
-
-_normalize_symbol_input = normalize_symbol_input
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +117,6 @@ def normalize_market(market: str | None) -> str | None:
         "equity_us": "equity_us",
     }
     return mapping.get(normalized)
-
-
-_normalize_market = normalize_market
 
 
 def resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
@@ -174,9 +153,6 @@ def resolve_market_type(symbol: str, market: str | None) -> tuple[str, str]:
     raise ValueError("Unsupported symbol format")
 
 
-_resolve_market_type = resolve_market_type
-
-
 # ---------------------------------------------------------------------------
 # Value Normalization
 # ---------------------------------------------------------------------------
@@ -202,17 +178,11 @@ def normalize_value(value: Any) -> Any:
     return value
 
 
-_normalize_value = normalize_value
-
-
 def normalize_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
     return [
         {str(key): normalize_value(value) for key, value in row.items()}
         for row in df.to_dict(orient="records")
     ]
-
-
-_normalize_rows = normalize_rows
 
 
 # ---------------------------------------------------------------------------
@@ -229,9 +199,6 @@ def to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-_to_float = to_float
-
-
 def to_optional_float(value: Any) -> float | None:
     try:
         if value in (None, ""):
@@ -239,9 +206,6 @@ def to_optional_float(value: Any) -> float | None:
         return float(value)
     except Exception:
         return None
-
-
-_to_optional_float = to_optional_float
 
 
 def to_optional_int(value: Any) -> int | None:
@@ -253,9 +217,6 @@ def to_optional_int(value: Any) -> int | None:
         return None
 
 
-_to_optional_int = to_optional_int
-
-
 def to_int(value: Any, default: int = 0) -> int:
     try:
         if value in (None, ""):
@@ -263,9 +224,6 @@ def to_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
-
-
-_to_int = to_int
 
 
 # ---------------------------------------------------------------------------
@@ -297,9 +255,6 @@ def error_payload(
     return payload
 
 
-_error_payload = error_payload
-
-
 # ---------------------------------------------------------------------------
 # Account Normalization
 # ---------------------------------------------------------------------------
@@ -310,9 +265,6 @@ def normalize_account_key(value: str | None) -> str:
         return ""
     normalized = value.strip().lower()
     return "".join(ch if ch.isalnum() else "_" for ch in normalized).strip("_")
-
-
-_normalize_account_key = normalize_account_key
 
 
 def canonical_account_id(broker: str, account_name: str | None) -> str:
@@ -333,9 +285,6 @@ def canonical_account_id(broker: str, account_name: str | None) -> str:
     return account_key
 
 
-_canonical_account_id = canonical_account_id
-
-
 def normalize_account_filter(account: str | None) -> str | None:
     key = normalize_account_key(account)
     if not key:
@@ -344,9 +293,6 @@ def normalize_account_filter(account: str | None) -> str | None:
         if key == canonical or key in aliases:
             return canonical
     return key
-
-
-_normalize_account_filter = normalize_account_filter
 
 
 def match_account_filter(position: dict[str, Any], account_filter: str | None) -> bool:
@@ -370,9 +316,6 @@ def match_account_filter(position: dict[str, Any], account_filter: str | None) -
     return account_filter in account_keys
 
 
-_match_account_filter = match_account_filter
-
-
 # ---------------------------------------------------------------------------
 # Holdings Helpers
 # ---------------------------------------------------------------------------
@@ -387,9 +330,6 @@ def parse_holdings_market_filter(market: str | None) -> str | None:
     return market_type
 
 
-_parse_holdings_market_filter = parse_holdings_market_filter
-
-
 def manual_market_to_instrument_type(market_type: MarketType) -> str:
     if market_type == MarketType.KR:
         return "equity_kr"
@@ -398,9 +338,6 @@ def manual_market_to_instrument_type(market_type: MarketType) -> str:
     if market_type == MarketType.CRYPTO:
         return "crypto"
     raise ValueError(f"Unsupported market type: {market_type}")
-
-
-_manual_market_to_instrument_type = manual_market_to_instrument_type
 
 
 def instrument_to_manual_market_type(market_type: str | None) -> MarketType | None:
@@ -413,9 +350,6 @@ def instrument_to_manual_market_type(market_type: str | None) -> MarketType | No
     return None
 
 
-_instrument_to_manual_market_type = instrument_to_manual_market_type
-
-
 def normalize_position_symbol(symbol: str, instrument_type: str) -> str:
     normalized = symbol.strip().upper()
     if instrument_type == "crypto" and normalized and "-" not in normalized:
@@ -423,9 +357,6 @@ def normalize_position_symbol(symbol: str, instrument_type: str) -> str:
     if instrument_type == "equity_us":
         return to_db_symbol(normalized).upper()
     return normalized
-
-
-_normalize_position_symbol = normalize_position_symbol
 
 
 def position_to_output(position: dict[str, Any]) -> dict[str, Any]:
@@ -445,9 +376,6 @@ def position_to_output(position: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
-_position_to_output = position_to_output
-
-
 def value_for_minimum_filter(position: dict[str, Any]) -> float:
     evaluation_amount = position.get("evaluation_amount")
     if evaluation_amount is not None:
@@ -461,14 +389,8 @@ def value_for_minimum_filter(position: dict[str, Any]) -> float:
     return quantity * current_price
 
 
-_value_for_minimum_filter = value_for_minimum_filter
-
-
 def format_filter_threshold(value: float) -> str:
     return f"{value:g}"
-
-
-_format_filter_threshold = format_filter_threshold
 
 
 def build_holdings_summary(
@@ -531,9 +453,6 @@ def build_holdings_summary(
     }
 
 
-_build_holdings_summary = build_holdings_summary
-
-
 def is_position_symbol_match(
     *,
     position_symbol: str,
@@ -555,9 +474,6 @@ def is_position_symbol_match(
         )
 
     return position_symbol.upper() == query_symbol.upper()
-
-
-_is_position_symbol_match = is_position_symbol_match
 
 
 def recalculate_profit_fields(position: dict[str, Any]) -> None:
@@ -585,9 +501,6 @@ def recalculate_profit_fields(position: dict[str, Any]) -> None:
     else:
         position["profit_loss"] = None
         position["profit_rate"] = None
-
-
-_recalculate_profit_fields = recalculate_profit_fields
 
 
 # ---------------------------------------------------------------------------
@@ -840,9 +753,6 @@ def build_recommendation_for_equity(
     return recommendation
 
 
-_build_recommendation_for_equity = build_recommendation_for_equity
-
-
 __all__ = [
     # Constants
     "MCP_USER_ID",
@@ -891,40 +801,4 @@ __all__ = [
     "build_recommendation_for_equity",
     # Logger
     "logger",
-    # Backward compatibility aliases (prefixed with _)
-    "_MCP_USER_ID",
-    "_MCP_DCA_USER_ID",
-    "_DEFAULT_ACCOUNT_KEYS",
-    "_INSTRUMENT_TO_MARKET",
-    "_ACCOUNT_FILTER_ALIASES",
-    "_UPBIT_TICKER_BATCH_SIZE",
-    "_DEFAULT_MINIMUM_VALUES",
-    "_is_korean_equity_code",
-    "_is_crypto_market",
-    "_is_us_equity_symbol",
-    "_normalize_symbol_input",
-    "_normalize_market",
-    "_resolve_market_type",
-    "_normalize_value",
-    "_normalize_rows",
-    "_to_float",
-    "_to_optional_float",
-    "_to_optional_int",
-    "_to_int",
-    "_error_payload",
-    "_normalize_account_key",
-    "_canonical_account_id",
-    "_normalize_account_filter",
-    "_match_account_filter",
-    "_parse_holdings_market_filter",
-    "_manual_market_to_instrument_type",
-    "_instrument_to_manual_market_type",
-    "_normalize_position_symbol",
-    "_position_to_output",
-    "_value_for_minimum_filter",
-    "_format_filter_threshold",
-    "_build_holdings_summary",
-    "_is_position_symbol_match",
-    "_recalculate_profit_fields",
-    "_build_recommendation_for_equity",
 ]

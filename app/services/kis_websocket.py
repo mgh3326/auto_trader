@@ -10,7 +10,7 @@ import ssl
 from typing import Callable
 
 import httpx
-import websockets.legacy.client
+import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from app.core.config import settings
@@ -188,7 +188,7 @@ class KISExecutionWebSocket:
         Raises:
             Exception: 연결/구독 실패 시
         """
-        self.websocket = await websockets.legacy.client.connect(
+        self.websocket = await websockets.connect(
             self.websocket_url,
             ssl=self.ssl_context,
             ping_interval=self.ping_interval,

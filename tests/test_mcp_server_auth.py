@@ -34,6 +34,6 @@ class TestBuildAuthProvider:
         assert isinstance(provider, DebugTokenVerifier)
 
     def test_has_get_middleware(self):
-        """Provider should have get_middleware for FastMCP compatibility."""
+        """Provider should expose get_middleware for FastMCP integration."""
         provider = build_auth_provider("test-token")
         assert hasattr(provider, "get_middleware")

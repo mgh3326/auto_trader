@@ -21,11 +21,13 @@ from app.mcp_server.tooling.analysis_screen_core import (
     _screen_crypto,
     _screen_kr,
 )
-from app.mcp_server.tooling.fundamentals_sources_naver import (
+from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
+    _fetch_news_finnhub,
+)
+from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_investment_opinions_naver,
     _fetch_investment_opinions_yfinance,
-    _fetch_news_finnhub,
     _fetch_news_naver,
     _fetch_sector_peers_naver,
     _fetch_sector_peers_us,
@@ -38,15 +40,15 @@ from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_us,
 )
 from app.mcp_server.tooling.shared import (
-    _build_recommendation_for_equity,
-    _normalize_symbol_input,
-    _resolve_market_type,
-    _to_float,
-    _to_int,
-    _to_optional_float,
+    build_recommendation_for_equity as _build_recommendation_for_equity,
+    normalize_symbol_input as _normalize_symbol_input,
+    resolve_market_type as _resolve_market_type,
+    to_float as _to_float,
+    to_int as _to_int,
+    to_optional_float as _to_optional_float,
 )
 from app.mcp_server.tooling.shared import (
-    _error_payload as _error_payload_impl,
+    error_payload as _error_payload_impl,
 )
 
 

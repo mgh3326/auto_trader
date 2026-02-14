@@ -6,7 +6,8 @@ Tests for screenshot-based holdings update service and MCP tool.
 
 import pytest
 
-from app.mcp_server.tooling.testing_proxy import mcp_tools
+from app.mcp_server.tooling import market_data_quotes
+from app.mcp_server.tooling.registry import register_all_tools
 from app.models.manual_holdings import MarketType
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
@@ -35,7 +36,7 @@ class DummySessionManager:
 
 def build_tools() -> dict[str, object]:
     mcp = DummyMCP()
-    mcp_tools.register_tools(mcp)
+    register_all_tools(mcp)
     return mcp.tools
 
 
@@ -333,7 +334,7 @@ async def test_update_manual_holdings_krx_master_resolution(monkeypatch):
 
     # Mock master data
     monkeypatch.setattr(
-        mcp_tools, "get_kosdaq_name_to_code", lambda: {"셀트리온": "068270"}
+        market_data_quotes, "get_kosdaq_name_to_code", lambda: {"셀트리온": "068270"}
     )
 
     async def mock_resolve_and_update(self, **kwargs):
@@ -395,7 +396,7 @@ async def test_update_manual_holdings_us_master_resolution(monkeypatch):
 
     # Mock master data
     monkeypatch.setattr(
-        mcp_tools,
+        market_data_quotes,
         "get_us_stocks_data",
         lambda: {"name_to_symbol": {"애플": "AAPL"}, "symbol_to_exchange": {}},
     )
@@ -458,8 +459,8 @@ async def test_update_manual_holdings_fallback_resolution(monkeypatch):
     ]
 
     # Mock empty master data
-    monkeypatch.setattr(mcp_tools, "get_kospi_name_to_code", lambda: {})
-    monkeypatch.setattr(mcp_tools, "get_kosdaq_name_to_code", lambda: {})
+    monkeypatch.setattr(market_data_quotes, "get_kospi_name_to_code", lambda: {})
+    monkeypatch.setattr(market_data_quotes, "get_kosdaq_name_to_code", lambda: {})
 
     async def mock_resolve_and_update(self, **kwargs):
         holdings_data = kwargs.get("holdings_data", [])

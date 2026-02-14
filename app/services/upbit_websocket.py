@@ -111,12 +111,11 @@ class UpbitMyOrderWebSocket:
             raise Exception("JWT 인증 토큰 생성에 실패했습니다.")
 
         # WebSocket 연결 (헤더 인증 방식)
-        # websockets 15+ 버전에서는 create_connection을 직접 사용해야 함
-        import websockets.legacy.client
+        import websockets
 
         headers = {"Authorization": f"Bearer {auth_token}"}
 
-        self.websocket = await websockets.legacy.client.connect(
+        self.websocket = await websockets.connect(
             self.websocket_url,
             ssl=ssl_context,
             extra_headers=headers,  # 헤더 방식 인증

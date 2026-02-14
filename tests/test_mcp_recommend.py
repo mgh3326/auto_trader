@@ -19,7 +19,13 @@ from app.mcp_server.strategies import (
     validate_strategy,
 )
 from app.mcp_server.tooling import analysis_tool_handlers
-from app.mcp_server.tooling.testing_proxy import mcp_tools
+from app.mcp_server.tooling import (
+    analysis_recommend,
+    analysis_screen_core,
+    portfolio_holdings,
+)
+from app.mcp_server.tooling.registry import register_all_tools
+from app.services import upbit as upbit_service
 
 
 class DummyMCP:
@@ -36,7 +42,7 @@ class DummyMCP:
 
 def build_tools() -> dict[str, object]:
     mcp = DummyMCP()
-    mcp_tools.register_tools(mcp)
+    register_all_tools(mcp)
     return mcp.tools
 
 
@@ -63,13 +69,10 @@ def _mock_kr_sources(
     ) -> dict[str, dict[str, Any]]:
         return valuations or {}
 
-    monkeypatch.setattr(
-        mcp_tools, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+    monkeypatch.setattr(analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
     )
-    monkeypatch.setattr(mcp_tools, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
-    monkeypatch.setattr(
-        mcp_tools,
-        "fetch_valuation_all_cached",
+    monkeypatch.setattr(analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
+    monkeypatch.setattr(analysis_screen_core, "fetch_valuation_all_cached",
         mock_fetch_valuation_all_cached,
     )
 
@@ -84,9 +87,7 @@ def _mock_empty_holdings(monkeypatch: pytest.MonkeyPatch) -> None:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
         return [], [], market, account
 
-    monkeypatch.setattr(
-        mcp_tools,
-        "_collect_portfolio_positions",
+    monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions",
         mock_collect_portfolio_positions,
     )
 
@@ -140,7 +141,7 @@ class TestBudgetAllocation:
     @pytest.fixture
     def allocate_budget(self):
         build_tools()
-        return mcp_tools._allocate_budget
+        return analysis_recommend._allocate_budget
 
     def test_score_proportional_allocation(self, allocate_budget):
         candidates = [
@@ -174,7 +175,7 @@ class TestCandidateNormalization:
     @pytest.fixture
     def normalize_candidate(self):
         build_tools()
-        return mcp_tools._normalize_candidate
+        return analysis_recommend._normalize_candidate
 
     def test_symbol_priority_symbol_first(self, normalize_candidate):
         item = {
@@ -404,9 +405,7 @@ class TestRecommendStocksIntegration:
             captured["account"] = account
             return [{"symbol": "555555"}], [], market, account
 
-        monkeypatch.setattr(
-            mcp_tools,
-            "_collect_portfolio_positions",
+        monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions",
             mock_collect_portfolio_positions,
         )
 
@@ -451,9 +450,7 @@ class TestRecommendStocksIntegration:
                 },
             ], "yfinance"
 
-        monkeypatch.setattr(
-            mcp_tools,
-            "_get_us_rankings",
+        monkeypatch.setattr(analysis_tool_handlers, "_get_us_rankings",
             mock_get_us_rankings,
         )
 
@@ -541,7 +538,7 @@ class TestRecommendStocksIntegration:
                 "indicators": {"rsi": {"14": 37.5}},
             }
 
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_get_indicators_impl)
+        monkeypatch.setattr(portfolio_holdings, "_get_indicators_impl", mock_get_indicators_impl)
 
         result = await recommend_stocks(
             budget=1_000_000,
@@ -585,7 +582,7 @@ class TestRecommendStocksIntegration:
                 "indicators": {"rsi": {"14": 28.0}},
             }
 
-        monkeypatch.setattr(mcp_tools, "_get_indicators_impl", mock_get_indicators_impl)
+        monkeypatch.setattr(portfolio_holdings, "_get_indicators_impl", mock_get_indicators_impl)
 
         result = await recommend_stocks(
             budget=300_000,
@@ -631,7 +628,7 @@ class TestRecommendStocksIntegration:
             ]
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
@@ -670,7 +667,7 @@ class TestRecommendStocksIntegration:
             ]
 
         monkeypatch.setattr(
-            mcp_tools.upbit_service,
+            upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
         )
@@ -1042,9 +1039,7 @@ class TestRecommendStocksIntegration:
         async def mock_fetch_stock_all_cached(market: str) -> list[dict[str, Any]]:
             raise RuntimeError()
 
-        monkeypatch.setattr(
-            mcp_tools,
-            "fetch_stock_all_cached",
+        monkeypatch.setattr(analysis_screen_core, "fetch_stock_all_cached",
             mock_fetch_stock_all_cached,
         )
         _mock_empty_holdings(monkeypatch)
