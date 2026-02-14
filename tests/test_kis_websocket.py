@@ -150,27 +150,45 @@ class TestKISWebSocketClient:
 
     @pytest.mark.asyncio
     async def test_parse_message_non_execution_type(self, execution_callback):
-        """체결 타입이 숫자가 아닌 경우 execution_type=None 테스트"""
+        """0|TR코드 envelope 형식은 execution_type=1로 정규화"""
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
 
-        # execution_type이 숫자가 아님 (H0STCNI0 is not a digit)
+        # 0|TR|count|payload 형식
         message = "0|H0STCNI0|005930|..."
         result = client._parse_message(message)
 
         assert result is not None
-        assert result["execution_type"] is None
+        assert result["execution_type"] == 1
+        assert result["tr_code"] == "H0STCNI0"
+        assert result["market"] == "kr"
 
     @pytest.mark.asyncio
     async def test_parse_message_pingpong(self, execution_callback):
-        """Ping/Pong 시스템 메시지 파싱 테스트 - 현재 구현은 일반 메시지로 파싱"""
+        """Ping/Pong 시스템 메시지는 분기 처리 가능한 형태로 파싱"""
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
 
-        # PINGPONG은 현재 구현에서 특별 처리되지 않음 - 일반 파싱 결과 반환
         message = "0|pingpong"
         result = client._parse_message(message)
 
-        # 2 parts only (< 3), so returns None
-        assert result is None
+        assert result is not None
+        assert result["system"] == "pingpong"
+
+    @pytest.mark.asyncio
+    async def test_parse_message_extracts_fill_fields_best_effort(self, execution_callback):
+        """payload에서 side/price/qty/order_id/timestamp를 best-effort로 추출"""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        message = "0|H0STCNI0|1|005930^02^A123456789^70000^10^093001"
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["tr_code"] == "H0STCNI0"
+        assert result["symbol"] == "005930"
+        assert result["side"] == "bid"
+        assert result["order_id"] == "A123456789"
+        assert result["filled_price"] == 70000
+        assert result["filled_qty"] == 10
+        assert "filled_at" in result
 
     @pytest.mark.asyncio
     async def test_parse_message_json_response(self, execution_callback):
