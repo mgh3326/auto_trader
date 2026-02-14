@@ -118,7 +118,7 @@ class UpbitMyOrderWebSocket:
         self.websocket = await websockets.connect(
             self.websocket_url,
             ssl=ssl_context,
-            extra_headers=headers,  # 헤더 방식 인증
+            additional_headers=headers,  # 헤더 방식 인증
             ping_interval=30,
             ping_timeout=10,
             close_timeout=10,

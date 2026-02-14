@@ -26,6 +26,7 @@ class TestKISWebSocketMonitorInit:
 
         assert monitor.dca_service is None
         assert monitor.websocket_client is None
+        assert monitor._db_engine is None
         assert monitor.is_running is False
 
     def test_signal_handlers_installed(self):
@@ -218,6 +219,17 @@ class TestKISWebSocketMonitorSignalHandling:
 class TestKISWebSocketMonitorStartStop:
     """Tests for monitor start/stop lifecycle"""
 
+    def test_initialize_db_returns_session_factory(self):
+        """_initialize_db가 호출 가능한 세션 팩토리를 반환하는지 테스트"""
+        monitor = KISWebSocketMonitor()
+        mock_engine = MagicMock()
+
+        with patch("kis_websocket_monitor.create_async_engine", return_value=mock_engine):
+            session_factory = monitor._initialize_db()
+
+        assert callable(session_factory)
+        assert monitor._db_engine is mock_engine
+
     @pytest.mark.asyncio
     async def test_start_initializes_services(self):
         """모니터 시작 시 서비스 초기화 테스트"""
@@ -239,7 +251,7 @@ class TestKISWebSocketMonitorStartStop:
 
         mock_session_maker = MockSessionMaker()
 
-        async def mock_init_db():
+        def mock_init_db():
             return mock_session_maker
 
         with patch.object(monitor, "_initialize_db", side_effect=mock_init_db):
@@ -254,6 +266,34 @@ class TestKISWebSocketMonitorStartStop:
 
                     mock_ws.connect_and_subscribe.assert_called_once()
                     mock_ws.listen.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_raises_when_websocket_not_initialized(self):
+        """웹소켓 초기화 실패 시 RuntimeError 발생 테스트"""
+        monitor = KISWebSocketMonitor()
+
+        mock_db_session = AsyncMock()
+
+        class MockSessionMaker:
+            def __call__(self):
+                return self
+
+            async def __aenter__(self):
+                return mock_db_session
+
+            async def __aexit__(self, *args):
+                return None
+
+        with (
+            patch.object(monitor, "_initialize_db", return_value=MockSessionMaker()),
+            patch.object(monitor, "_initialize_dca_service"),
+            patch.object(monitor, "_initialize_websocket"),
+        ):
+            monitor.websocket_client = None
+            with pytest.raises(
+                RuntimeError, match="KIS WebSocket client initialization failed"
+            ):
+                await monitor.start()
 
     @pytest.mark.asyncio
     async def test_stop_websocket(self):
@@ -276,6 +316,21 @@ class TestKISWebSocketMonitorStartStop:
             assert monitor.is_running is False
             mock_ws_client.stop.assert_awaited_once()
             mock_close_redis.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_disposes_db_engine(self):
+        """DB 엔진 dispose 호출 테스트"""
+        monitor = KISWebSocketMonitor()
+        mock_engine = AsyncMock()
+        monitor._db_engine = mock_engine
+
+        mock_close_redis = AsyncMock()
+        with patch("kis_websocket_monitor.close_execution_redis", new=mock_close_redis):
+            await monitor.stop()
+
+        mock_engine.dispose.assert_awaited_once()
+        assert monitor._db_engine is None
+        mock_close_redis.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_stop_when_not_running(self):
