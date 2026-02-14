@@ -266,7 +266,7 @@ def _calculate_order_summary(orders: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def register_order_tools(mcp: FastMCP) -> None:
+def _register_order_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_order_history",
         description=(
@@ -1121,4 +1121,4 @@ def register_order_tools(mcp: FastMCP) -> None:
             "dry_run": dry_run,
         }
 
-__all__ = ["ORDER_TOOL_NAMES", "register_order_tools"]
+__all__ = ["ORDER_TOOL_NAMES", "_register_order_tools_impl"]

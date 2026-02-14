@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from app.core.config import settings
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
-from app.mcp_server.tooling.market_data import (
+from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
 )

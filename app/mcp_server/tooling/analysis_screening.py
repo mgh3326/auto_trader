@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from typing import Any
 
 from app.mcp_server.tooling.analysis_rankings import (
@@ -16,29 +15,13 @@ from app.mcp_server.tooling.analysis_rankings import (
     get_us_rankings_impl as _get_us_rankings_impl,
 )
 from app.mcp_server.tooling.analysis_recommend import (
-    _allocate_budget,
-    _build_recommend_reason,
-    _normalize_candidate,
-    _normalize_recommend_market,
-)
-from app.mcp_server.tooling.analysis_recommend import (
     recommend_stocks_impl as _recommend_stocks_impl_core,
 )
 from app.mcp_server.tooling.analysis_screen_core import (
-    _apply_basic_filters,
-    _build_screen_response,
-    _normalize_asset_type,
-    _normalize_dividend_yield_threshold,
-    _normalize_screen_market,
-    _normalize_sort_by,
-    _normalize_sort_order,
     _screen_crypto,
     _screen_kr,
-    _screen_us,
-    _sort_and_limit,
-    _validate_screen_filters,
 )
-from app.mcp_server.tooling.fundamentals_sources import (
+from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_company_profile_finnhub,
     _fetch_investment_opinions_naver,
     _fetch_investment_opinions_yfinance,
@@ -49,7 +32,7 @@ from app.mcp_server.tooling.fundamentals_sources import (
     _fetch_valuation_naver,
     _fetch_valuation_yfinance,
 )
-from app.mcp_server.tooling.market_data import (
+from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_crypto,
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
@@ -61,7 +44,6 @@ from app.mcp_server.tooling.shared import (
     _to_float,
     _to_int,
     _to_optional_float,
-    _to_optional_int,
 )
 from app.mcp_server.tooling.shared import (
     _error_payload as _error_payload_impl,
@@ -72,35 +54,6 @@ def _error_payload(
     source: str, message: str, **kwargs: Any,
 ) -> dict[str, Any]:
     return _error_payload_impl(source=source, message=message, **kwargs)
-
-# ---------------------------------------------------------------------------
-# Naver Data Parsing Helpers
-# ---------------------------------------------------------------------------
-
-
-def _parse_naver_num(value: Any) -> float | None:
-    """Parse a naver number which may be a string with commas."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        return float(str(value).replace(",", ""))
-    except (ValueError, TypeError):
-        return None
-
-
-def _parse_naver_int(value: Any) -> int | None:
-    """Parse a naver integer which may be a string with commas."""
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    try:
-        return int(float(str(value).replace(",", "")))
-    except (ValueError, TypeError):
-        return None
-
 
 # ---------------------------------------------------------------------------
 # Change Rate Normalization
@@ -203,128 +156,6 @@ def _map_crypto_row(row: dict, rank: int) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Crypto Symbol Normalization
-# ---------------------------------------------------------------------------
-
-
-def _normalize_crypto_base_symbol(symbol: str) -> str:
-    """Normalize crypto symbol to base currency (e.g., 'KRW-BTC' -> 'BTC')."""
-    normalized = symbol.upper().strip()
-    if normalized.startswith("KRW-"):
-        normalized = normalized[len("KRW-") :]
-    if normalized.startswith("USDT-"):
-        normalized = normalized[len("USDT-") :]
-    if normalized.endswith("-KRW"):
-        normalized = normalized[: -len("-KRW")]
-    if normalized.endswith("-USDT"):
-        normalized = normalized[: -len("-USDT")]
-    if normalized.endswith("USDT"):
-        normalized = normalized[: -len("USDT")]
-
-    return normalized
-
-
-# ---------------------------------------------------------------------------
-# CoinGecko Helpers
-# ---------------------------------------------------------------------------
-
-
-def _coingecko_cache_valid(expires_at: Any, now: float) -> bool:
-    try:
-        return float(expires_at) > now
-    except Exception:
-        return False
-
-
-def _to_optional_money(value: Any) -> int | None:
-    numeric = _to_optional_float(value)
-    if numeric is None:
-        return None
-    return int(round(numeric))
-
-
-def _clean_description_one_line(value: Any) -> str | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    if not text:
-        return None
-
-    if len(text) > 240:
-        text = text[:240].rstrip() + "..."
-    return text
-
-
-def _map_coingecko_profile_to_output(profile: dict[str, Any]) -> dict[str, Any]:
-    market_data = profile.get("market_data") or {}
-    description_map = profile.get("description") or {}
-
-    description = _clean_description_one_line(
-        description_map.get("ko") or description_map.get("en")
-    )
-
-    market_cap_krw = _to_optional_money(
-        (market_data.get("market_cap") or {}).get("krw")
-    )
-    total_volume_krw = _to_optional_money(
-        (market_data.get("total_volume") or {}).get("krw")
-    )
-    ath_krw = _to_optional_money((market_data.get("ath") or {}).get("krw"))
-
-    ath_change_pct = _to_optional_float(
-        (market_data.get("ath_change_percentage") or {}).get("krw")
-    )
-    change_7d = _to_optional_float(
-        (market_data.get("price_change_percentage_7d_in_currency") or {}).get("krw")
-    )
-    if change_7d is None:
-        change_7d = _to_optional_float(market_data.get("price_change_percentage_7d"))
-
-    change_30d = _to_optional_float(
-        (market_data.get("price_change_percentage_30d_in_currency") or {}).get("krw")
-    )
-    if change_30d is None:
-        change_30d = _to_optional_float(market_data.get("price_change_percentage_30d"))
-
-    categories = profile.get("categories")
-    if not isinstance(categories, list):
-        categories = []
-
-    return {
-        "name": profile.get("name"),
-        "symbol": str(profile.get("symbol") or "").upper() or None,
-        "market_cap": market_cap_krw,
-        "market_cap_rank": _to_optional_int(profile.get("market_cap_rank")),
-        "total_volume_24h": total_volume_krw,
-        "circulating_supply": _to_optional_float(market_data.get("circulating_supply")),
-        "total_supply": _to_optional_float(market_data.get("total_supply")),
-        "max_supply": _to_optional_float(market_data.get("max_supply")),
-        "categories": categories,
-        "description": description,
-        "ath": ath_krw,
-        "ath_change_percentage": ath_change_pct,
-        "price_change_percentage_7d": change_7d,
-        "price_change_percentage_30d": change_30d,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Funding Rate Helpers
-# ---------------------------------------------------------------------------
-
-
-def _funding_interpretation_text(rate: float) -> str:
-    if rate > 0:
-        return "positive (롱이 숏에게 지불, 롱 과열)"
-    if rate < 0:
-        return "negative (숏이 롱에게 지불, 숏 과열)"
-    return "neutral"
-
-
-# ---------------------------------------------------------------------------
 # Ranking Fetchers
 # ---------------------------------------------------------------------------
 
@@ -366,7 +197,7 @@ async def _get_indicators_impl(
     indicators: list[str],
     market: str | None = None,
 ) -> dict[str, Any]:
-    from app.mcp_server.tooling.portfolio import _get_indicators_impl as _impl
+    from app.mcp_server.tooling.portfolio_holdings import _get_indicators_impl as _impl
 
     return await _impl(symbol, indicators, market)
 
@@ -375,7 +206,7 @@ async def _get_support_resistance_impl(
     symbol: str,
     market: str | None = None,
 ) -> dict[str, Any]:
-    from app.mcp_server.tooling.fundamentals import (
+    from app.mcp_server.tooling.fundamentals_handlers import (
         _get_support_resistance_impl as _impl,
     )
 
@@ -583,44 +414,18 @@ async def _recommend_stocks_impl(
 
 
 # ---------------------------------------------------------------------------
-# Backward Compatibility Aliases
+# Public Helper Exports
 # ---------------------------------------------------------------------------
 
 __all__ = [
-    "_parse_naver_num",
-    "_parse_naver_int",
-    "_parse_change_rate",
-    "_normalize_change_rate_equity",
-    "_normalize_change_rate_crypto",
+    "_error_payload",
     "_map_kr_row",
     "_map_us_row",
     "_map_crypto_row",
-    "_normalize_crypto_base_symbol",
-    "_coingecko_cache_valid",
-    "_to_optional_money",
-    "_clean_description_one_line",
-    "_map_coingecko_profile_to_output",
-    "_funding_interpretation_text",
     "_get_us_rankings",
     "_get_crypto_rankings",
     "_calculate_pearson_correlation",
     "_get_quote_impl",
     "_analyze_stock_impl",
-    "_normalize_screen_market",
-    "_normalize_asset_type",
-    "_normalize_sort_by",
-    "_normalize_sort_order",
-    "_normalize_dividend_yield_threshold",
-    "_validate_screen_filters",
-    "_apply_basic_filters",
-    "_sort_and_limit",
-    "_build_screen_response",
-    "_screen_kr",
-    "_screen_us",
-    "_screen_crypto",
-    "_normalize_recommend_market",
-    "_build_recommend_reason",
-    "_normalize_candidate",
-    "_allocate_budget",
     "_recommend_stocks_impl",
 ]

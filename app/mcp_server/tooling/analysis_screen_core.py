@@ -8,7 +8,7 @@ from typing import Any
 
 import yfinance as yf
 
-from app.mcp_server.tooling.market_data import (
+from app.mcp_server.tooling.market_data_quotes import (
     _calculate_rsi,
     _fetch_ohlcv_for_indicators,
 )

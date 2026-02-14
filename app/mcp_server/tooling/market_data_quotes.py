@@ -1123,7 +1123,7 @@ MARKET_DATA_TOOL_NAMES: set[str] = {
 }
 
 
-def register_market_data_tools(mcp: FastMCP) -> None:
+def _register_market_data_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="search_symbol",
         description=(
@@ -1304,13 +1304,10 @@ def register_market_data_tools(mcp: FastMCP) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Backward Compatibility Aliases (for tools.py shim exports)
+# Public/Shared Exports
 # ---------------------------------------------------------------------------
 
-# These aliases allow the functions to be imported from either this module
-# or from tools.py during the migration period.
 __all__ = [
-    # Constants
     "IndicatorType",
     "DEFAULT_SMA_PERIODS",
     "DEFAULT_EMA_PERIODS",
@@ -1322,18 +1319,15 @@ __all__ = [
     "DEFAULT_BOLLINGER_STD",
     "DEFAULT_ATR_PERIOD",
     "FIBONACCI_LEVELS",
-    # Quote functions
     "_fetch_quote_crypto",
     "_fetch_quote_equity_kr",
     "_fetch_quote_equity_us",
-    # OHLCV functions
     "_fetch_ohlcv_crypto",
     "_fetch_ohlcv_equity_kr",
     "_fetch_ohlcv_equity_us",
     "_fetch_ohlcv_crypto_paginated",
     "_fetch_ohlcv_for_indicators",
     "_fetch_ohlcv_for_volume_profile",
-    # Technical indicators
     "_calculate_sma",
     "_calculate_ema",
     "_calculate_rsi",
@@ -1343,17 +1337,13 @@ __all__ = [
     "_calculate_pivot",
     "_calculate_fibonacci",
     "_compute_indicators",
-    # Support/Resistance helpers
     "_format_fibonacci_source",
     "_cluster_price_levels",
     "_split_support_resistance_levels",
-    # DCA helpers
     "_compute_rsi_weights",
     "_compute_dca_price_levels",
-    # Volume profile
     "_normalize_number",
     "_calculate_volume_profile",
-    # Tool registration
     "MARKET_DATA_TOOL_NAMES",
-    "register_market_data_tools",
+    "_register_market_data_tools_impl",
 ]

@@ -1,4 +1,4 @@
-"""Fundamentals MCP tool registration."""
+"""Fundamentals tool handlers and registration implementation."""
 
 from __future__ import annotations
 
@@ -6,17 +6,7 @@ import asyncio
 import datetime
 from typing import TYPE_CHECKING, Any
 
-from app.mcp_server.tooling.analysis_screening import (
-    _map_coingecko_profile_to_output,
-    _normalize_crypto_base_symbol,
-)
-from app.mcp_server.tooling.fundamentals_sources import (
-    _COINGECKO_LIST_CACHE as _FS_COINGECKO_LIST_CACHE,
-)
-from app.mcp_server.tooling.fundamentals_sources import (
-    _COINGECKO_PROFILE_CACHE as _FS_COINGECKO_PROFILE_CACHE,
-)
-from app.mcp_server.tooling.fundamentals_sources import (
+from app.mcp_server.tooling.fundamentals_sources_naver import (
     _DEFAULT_INDICES,
     _INDEX_META,
     _fetch_coingecko_coin_profile,
@@ -43,13 +33,12 @@ from app.mcp_server.tooling.fundamentals_sources import (
     _fetch_sector_peers_us,
     _fetch_valuation_naver,
     _fetch_valuation_yfinance,
+    _map_coingecko_profile_to_output,
+    _normalize_crypto_base_symbol,
     _resolve_batch_crypto_symbols,
     _resolve_coingecko_coin_id,
 )
-from app.mcp_server.tooling.fundamentals_sources import (
-    _get_finnhub_client as _FS_GET_FINNHUB_CLIENT,
-)
-from app.mcp_server.tooling.market_data import (
+from app.mcp_server.tooling.market_data_quotes import (
     _calculate_fibonacci,
     _calculate_volume_profile,
     _cluster_price_levels,
@@ -72,11 +61,6 @@ from app.services import naver_finance
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
-
-# Backward-compatible symbols used by tools.py compatibility facade/tests.
-_COINGECKO_LIST_CACHE = _FS_COINGECKO_LIST_CACHE
-_COINGECKO_PROFILE_CACHE = _FS_COINGECKO_PROFILE_CACHE
-_get_finnhub_client = _FS_GET_FINNHUB_CLIENT
 
 FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_news",
@@ -205,7 +189,7 @@ async def _get_support_resistance_impl(
 _DEFAULT_GET_SUPPORT_RESISTANCE_IMPL = _get_support_resistance_impl
 
 
-def register_fundamentals_tools(mcp: FastMCP) -> None:
+def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_news",
         description=(
@@ -922,4 +906,4 @@ def register_fundamentals_tools(mcp: FastMCP) -> None:
             )
 
 
-__all__ = ["FUNDAMENTALS_TOOL_NAMES", "register_fundamentals_tools"]
+__all__ = ["FUNDAMENTALS_TOOL_NAMES", "_register_fundamentals_tools_impl", "_get_support_resistance_impl"]

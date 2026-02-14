@@ -1,8 +1,6 @@
-"""Test-time compatibility helper for MCP tool module access.
+"""Test-time MCP tooling proxy namespace.
 
-This shim keeps test code stable while removing legacy public imports from the
-application package itself. Tests import ``mcp_tools`` from this module and use it
-as a mutable namespace for patching tool implementation symbols.
+This module is only for tests that patch symbols across multiple tooling modules.
 """
 
 from __future__ import annotations
@@ -17,12 +15,12 @@ import app.mcp_server.tooling.analysis_recommend as analysis_recommend
 import app.mcp_server.tooling.analysis_screen_core as analysis_screen_core
 import app.mcp_server.tooling.analysis_screening as analysis_screening
 import app.mcp_server.tooling.analysis_tool_handlers as analysis_tool_handlers
-import app.mcp_server.tooling.fundamentals as fundamentals
-import app.mcp_server.tooling.fundamentals_sources as fundamentals_sources
-import app.mcp_server.tooling.market_data as market_data
+import app.mcp_server.tooling.fundamentals_handlers as fundamentals
+import app.mcp_server.tooling.fundamentals_sources_naver as fundamentals_sources
+import app.mcp_server.tooling.market_data_quotes as market_data
 import app.mcp_server.tooling.order_execution as order_execution
-import app.mcp_server.tooling.orders as orders
-import app.mcp_server.tooling.portfolio as portfolio
+import app.mcp_server.tooling.orders_history as orders
+import app.mcp_server.tooling.portfolio_holdings as portfolio
 import app.mcp_server.tooling.shared as shared
 import app.services.naver_finance as naver_finance
 import app.services.upbit as upbit_service
@@ -31,9 +29,9 @@ from app.core.config import settings
 from app.mcp_server.tooling.registry import register_all_tools
 from app.services.kis import KISClient
 
-_TEST_SHIM_TARGETS = (
+# Keep explicit patch targets as live globals for test monkeypatch paths.
+_BASE_PATCH_TARGETS = (
     settings,
-    order_execution,
     upbit_service,
     naver_finance,
     yahoo_service,
@@ -107,33 +105,13 @@ class _MCPToolsNamespace:
             "httpx",
             "KISClient",
         }:
-            if name == "KISClient":
-                globals()["KISClient"] = value
-            else:
-                globals()[name] = value
+            globals()[name] = value
             _set_attr_on_modules(name, value)
             return
         if name in {"register_all_tools", "register_tools"}:
             return
         _set_attr_on_modules(name, value)
         globals()[name] = value
-
-    def __dir__(self) -> list[str]:
-        names: set[str] = {
-            "settings",
-            "upbit_service",
-            "naver_finance",
-            "yahoo_service",
-            "yf",
-            "httpx",
-            "KISClient",
-            "register_all_tools",
-            "register_tools",
-            "_get_dca_status_impl",
-        }
-        for module in _PROXY_MODULES:
-            names.update(dir(module))
-        return sorted(names)
 
 
 mcp_tools = _MCPToolsNamespace()

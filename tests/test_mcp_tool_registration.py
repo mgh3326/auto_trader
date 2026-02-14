@@ -5,19 +5,19 @@ from app.mcp_server.tooling.analysis_registration import (
     ANALYSIS_TOOL_NAMES,
     register_analysis_tools,
 )
-from app.mcp_server.tooling.fundamentals import (
+from app.mcp_server.tooling.fundamentals_registration import (
     FUNDAMENTALS_TOOL_NAMES,
     register_fundamentals_tools,
 )
-from app.mcp_server.tooling.market_data import (
+from app.mcp_server.tooling.market_data_registration import (
     MARKET_DATA_TOOL_NAMES,
     register_market_data_tools,
 )
-from app.mcp_server.tooling.orders import (
+from app.mcp_server.tooling.orders_registration import (
     ORDER_TOOL_NAMES,
     register_order_tools,
 )
-from app.mcp_server.tooling.portfolio import (
+from app.mcp_server.tooling.portfolio_registration import (
     PORTFOLIO_TOOL_NAMES,
     register_portfolio_tools,
 )

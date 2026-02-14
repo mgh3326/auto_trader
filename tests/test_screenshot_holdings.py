@@ -6,11 +6,11 @@ Tests for screenshot-based holdings update service and MCP tool.
 
 import pytest
 
+from app.mcp_server.tooling.testing_proxy import mcp_tools
 from app.models.manual_holdings import MarketType
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.stock_alias_service import StockAliasService
-from tests.mcp_tools import mcp_tools
 
 
 class DummyMCP:

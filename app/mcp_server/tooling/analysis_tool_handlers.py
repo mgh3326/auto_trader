@@ -35,7 +35,7 @@ from app.mcp_server.tooling.analysis_screening import (
     _resolve_market_type,
     _to_float,
 )
-from app.mcp_server.tooling.market_data import (
+from app.mcp_server.tooling.market_data_quotes import (
     _fetch_ohlcv_for_indicators,
 )
 from app.services.kis import KISClient

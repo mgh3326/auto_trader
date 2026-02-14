@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import re
 import time
 from typing import Any
 
@@ -88,6 +89,76 @@ def _funding_interpretation_text(rate: float) -> str:
     if rate < 0:
         return "negative (숏이 롱에게 지불, 숏 과열)"
     return "neutral"
+
+
+def _to_optional_money(value: Any) -> int | None:
+    numeric = _to_optional_float(value)
+    if numeric is None:
+        return None
+    return int(round(numeric))
+
+
+def _clean_description_one_line(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return None
+    if len(text) > 240:
+        text = text[:240].rstrip() + "..."
+    return text
+
+
+def _map_coingecko_profile_to_output(profile: dict[str, Any]) -> dict[str, Any]:
+    market_data = profile.get("market_data") or {}
+    description_map = profile.get("description") or {}
+
+    description = _clean_description_one_line(
+        description_map.get("ko") or description_map.get("en")
+    )
+    market_cap_krw = _to_optional_money((market_data.get("market_cap") or {}).get("krw"))
+    total_volume_krw = _to_optional_money(
+        (market_data.get("total_volume") or {}).get("krw")
+    )
+    ath_krw = _to_optional_money((market_data.get("ath") or {}).get("krw"))
+
+    ath_change_pct = _to_optional_float(
+        (market_data.get("ath_change_percentage") or {}).get("krw")
+    )
+    change_7d = _to_optional_float(
+        (market_data.get("price_change_percentage_7d_in_currency") or {}).get("krw")
+    )
+    if change_7d is None:
+        change_7d = _to_optional_float(market_data.get("price_change_percentage_7d"))
+
+    change_30d = _to_optional_float(
+        (market_data.get("price_change_percentage_30d_in_currency") or {}).get("krw")
+    )
+    if change_30d is None:
+        change_30d = _to_optional_float(market_data.get("price_change_percentage_30d"))
+
+    categories = profile.get("categories")
+    if not isinstance(categories, list):
+        categories = []
+
+    return {
+        "name": profile.get("name"),
+        "symbol": str(profile.get("symbol") or "").upper() or None,
+        "market_cap": market_cap_krw,
+        "market_cap_rank": _to_optional_int(profile.get("market_cap_rank")),
+        "total_volume_24h": total_volume_krw,
+        "circulating_supply": _to_optional_float(market_data.get("circulating_supply")),
+        "total_supply": _to_optional_float(market_data.get("total_supply")),
+        "max_supply": _to_optional_float(market_data.get("max_supply")),
+        "categories": categories,
+        "description": description,
+        "ath": ath_krw,
+        "ath_change_percentage": ath_change_pct,
+        "price_change_percentage_7d": change_7d,
+        "price_change_percentage_30d": change_30d,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1324,6 +1395,7 @@ __all__ = [
     "_COINGECKO_PROFILE_CACHE",
     "_DEFAULT_INDICES",
     "_INDEX_META",
+    "_clean_description_one_line",
     "_fetch_coingecko_coin_profile",
     "_fetch_company_profile_finnhub",
     "_fetch_company_profile_naver",
@@ -1349,6 +1421,11 @@ __all__ = [
     "_fetch_valuation_naver",
     "_fetch_valuation_yfinance",
     "_get_finnhub_client",
+    "_map_coingecko_profile_to_output",
+    "_normalize_crypto_base_symbol",
+    "_parse_naver_int",
+    "_parse_naver_num",
     "_resolve_batch_crypto_symbols",
     "_resolve_coingecko_coin_id",
+    "_to_optional_money",
 ]

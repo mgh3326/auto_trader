@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from app.mcp_server.tick_size import adjust_tick_size_kr
-from app.mcp_server.tooling.market_data import (
+from app.mcp_server.tooling.market_data_quotes import (
     _compute_dca_price_levels,
     _compute_rsi_weights,
 )
@@ -146,6 +146,7 @@ def _validate_create_dca_input(
     splits: int,
     strategy: str,
     execute_steps: list[int] | None,
+    market: str | None,
     resolve_market_type: Callable[[str, str | None], tuple[str, str]],
 ) -> tuple[str, str, str]:
     """Validate shared create_dca_plan inputs.
@@ -176,7 +177,7 @@ def _validate_create_dca_input(
                 f"execute_steps must be between 1 and {splits}, got: {invalid_steps}"
             )
 
-    market_type, normalized_symbol = resolve_market_type(symbol, None)
+    market_type, normalized_symbol = resolve_market_type(symbol, market)
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
     return market_type, normalized_symbol, source_map[market_type]
 
@@ -469,13 +470,14 @@ async def create_dca_plan_impl(
         splits=splits,
         strategy=strategy,
         execute_steps=execute_steps,
+        market=market,
         resolve_market_type=resolve_market_type,
     )
 
     total_amount = float(total_amount)
 
     try:
-        sr_result = await sr_impl(normalized_symbol, None)
+        sr_result = await sr_impl(normalized_symbol, market)
         if "error" in sr_result:
             return {
                 "success": False,
@@ -489,7 +491,7 @@ async def create_dca_plan_impl(
             raise ValueError("current_price is not available")
         supports = sr_result.get("supports", [])
 
-        indicator_result = await indicators_impl(normalized_symbol, ["rsi"], None)
+        indicator_result = await indicators_impl(normalized_symbol, ["rsi"], market)
         if "error" in indicator_result:
             return {
                 "success": False,

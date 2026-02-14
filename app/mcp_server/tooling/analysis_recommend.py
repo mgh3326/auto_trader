@@ -173,7 +173,7 @@ async def recommend_stocks_impl(
     screen_crypto_fn: Callable[..., Awaitable[dict[str, Any]]],
     top_stocks_override: Any = None,
 ) -> dict[str, Any]:
-    from app.mcp_server.tooling.portfolio import (
+    from app.mcp_server.tooling.portfolio_holdings import (
         _collect_portfolio_positions,
         _get_indicators_impl,
     )

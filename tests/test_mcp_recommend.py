@@ -19,7 +19,7 @@ from app.mcp_server.strategies import (
     validate_strategy,
 )
 from app.mcp_server.tooling import analysis_tool_handlers
-from tests.mcp_tools import mcp_tools
+from app.mcp_server.tooling.testing_proxy import mcp_tools
 
 
 class DummyMCP:

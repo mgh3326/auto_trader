@@ -6,9 +6,9 @@ import httpx
 import pandas as pd
 import pytest
 
+from app.mcp_server.tooling.testing_proxy import mcp_tools
 from app.models.dca_plan import DcaPlan, DcaPlanStatus, DcaPlanStep, DcaStepStatus
 from app.services.dca_service import DcaService
-from tests.mcp_tools import mcp_tools
 
 # from app.mcp_server.tick_size import adjust_tick_size_kr  # TODO: Remove if not needed
 
@@ -2076,7 +2076,7 @@ class TestGetValuation:
             def info(self):
                 return mock_info
 
-        monkeypatch.setattr("tests.mcp_tools.yf.Ticker", lambda s: MockTicker())
+        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.yf.Ticker", lambda s: MockTicker())
 
         result = await tools["get_valuation"]("AAPL")
 
@@ -2113,7 +2113,7 @@ class TestGetValuation:
             def info(self):
                 return mock_info
 
-        monkeypatch.setattr("tests.mcp_tools.yf.Ticker", lambda s: MockTicker())
+        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.yf.Ticker", lambda s: MockTicker())
 
         result = await tools["get_valuation"]("NVDA", market="us")
 
@@ -2194,7 +2194,7 @@ class TestGetValuation:
             def info(self):
                 raise Exception("API error")
 
-        monkeypatch.setattr("tests.mcp_tools.yf.Ticker", lambda s: MockTicker())
+        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.yf.Ticker", lambda s: MockTicker())
 
         result = await tools["get_valuation"]("AAPL")
 
@@ -2400,7 +2400,7 @@ class TestGetKimchiPremium:
                 # exchange rate
                 return MockResponse({"rates": {"KRW": exchange_rate}})
 
-        monkeypatch.setattr("tests.mcp_tools.httpx.AsyncClient", MockClient)
+        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
 
     async def test_single_symbol(self, monkeypatch):
         """Test kimchi premium for a single coin."""
@@ -2536,7 +2536,7 @@ class TestGetFundingRate:
                     return MockResponse(premium_resp)
                 return MockResponse(history_resp)
 
-        monkeypatch.setattr("tests.mcp_tools.httpx.AsyncClient", MockClient)
+        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
 
     async def test_successful_fetch(self, monkeypatch):
         """Test successful funding rate fetch for BTC."""
@@ -2669,7 +2669,7 @@ class TestGetFundingRate:
                     ]
                 )
 
-        monkeypatch.setattr("tests.mcp_tools.httpx.AsyncClient", MockClient)
+        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
 
         result = await tools["get_funding_rate"]()
 
@@ -2719,7 +2719,7 @@ class TestGetFundingRate:
                     }
                 )
 
-        monkeypatch.setattr("tests.mcp_tools.httpx.AsyncClient", MockClient)
+        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
 
         await tools["get_funding_rate"]("BTC", limit=200)
 
@@ -2742,7 +2742,7 @@ class TestGetFundingRate:
             async def get(self, url, params=None, **kw):
                 raise Exception("Binance API down")
 
-        monkeypatch.setattr("tests.mcp_tools.httpx.AsyncClient", MockClient)
+        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
 
         result = await tools["get_funding_rate"]("BTC")
 
@@ -4713,7 +4713,7 @@ class TestGetCryptoProfile:
                     )
                 raise AssertionError(f"Unexpected URL: {url}")
 
-        monkeypatch.setattr("tests.mcp_tools.httpx.AsyncClient", MockClient)
+        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
 
         result_first = await tools["get_crypto_profile"]("KRW-BTC")
         result_second = await tools["get_crypto_profile"]("BTC")
@@ -4762,7 +4762,7 @@ class TestGetCryptoProfile:
                     )
                 raise AssertionError(f"Unexpected URL: {url}")
 
-        monkeypatch.setattr("tests.mcp_tools.httpx.AsyncClient", MockClient)
+        monkeypatch.setattr("app.mcp_server.tooling.testing_proxy.httpx.AsyncClient", MockClient)
 
         result = await tools["get_crypto_profile"]("ZZZ")
 

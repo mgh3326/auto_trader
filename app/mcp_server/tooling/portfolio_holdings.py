@@ -7,14 +7,14 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.env_utils import _env_int
-from app.mcp_server.tooling.fundamentals import _get_support_resistance_impl
-from app.mcp_server.tooling.market_data import (
+from app.mcp_server.tooling.fundamentals_handlers import _get_support_resistance_impl
+from app.mcp_server.tooling.market_data_quotes import (
     _compute_indicators,
     _fetch_ohlcv_for_indicators,
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
 )
-from app.mcp_server.tooling.orders import (
+from app.mcp_server.tooling.orders_history import (
     _place_order_impl,
 )
 from app.mcp_server.tooling.portfolio_dca_core import (
@@ -555,7 +555,7 @@ async def _get_indicators_impl(
         }
 
 
-def register_portfolio_tools(mcp: FastMCP) -> None:
+def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_holdings",
         description=(
@@ -982,4 +982,4 @@ def register_portfolio_tools(mcp: FastMCP) -> None:
             "errors": errors,
         }
 
-__all__ = ["PORTFOLIO_TOOL_NAMES", "register_portfolio_tools"]
+__all__ = ["PORTFOLIO_TOOL_NAMES", "_register_portfolio_tools_impl", "_collect_portfolio_positions", "_get_indicators_impl"]

@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
-from app.mcp_server.tooling.fundamentals import register_fundamentals_tools
-from app.mcp_server.tooling.market_data import register_market_data_tools
-from app.mcp_server.tooling.orders import register_order_tools
-from app.mcp_server.tooling.portfolio import register_portfolio_tools
+from app.mcp_server.tooling.fundamentals_registration import register_fundamentals_tools
+from app.mcp_server.tooling.market_data_registration import register_market_data_tools
+from app.mcp_server.tooling.orders_registration import register_order_tools
+from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
