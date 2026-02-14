@@ -3,6 +3,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock
 
 import httpx
+import numpy as np
 import pandas as pd
 import pytest
 import yfinance as yf
@@ -782,11 +783,15 @@ async def test_search_symbol_clamps_limit_and_shapes(monkeypatch):
     tools = build_tools()
 
     # Mock master data
-    _patch_runtime_attr(monkeypatch, "get_kospi_name_to_code",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_kospi_name_to_code",
         lambda: {"삼성전자": "005930", "삼성SDI": "006400"},
     )
     _patch_runtime_attr(monkeypatch, "get_kosdaq_name_to_code", lambda: {})
-    _patch_runtime_attr(monkeypatch, "get_us_stocks_data",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_us_stocks_data",
         lambda: {
             "symbol_to_exchange": {},
             "symbol_to_name_kr": {},
@@ -809,11 +814,15 @@ async def test_search_symbol_with_market_filter(monkeypatch):
     tools = build_tools()
 
     # Mock master data
-    _patch_runtime_attr(monkeypatch, "get_kospi_name_to_code",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_kospi_name_to_code",
         lambda: {"애플": "123456"},
     )
     _patch_runtime_attr(monkeypatch, "get_kosdaq_name_to_code", lambda: {})
-    _patch_runtime_attr(monkeypatch, "get_us_stocks_data",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_us_stocks_data",
         lambda: {
             "symbol_to_exchange": {"AAPL": "NASDAQ"},
             "symbol_to_name_kr": {"AAPL": "애플"},
@@ -850,9 +859,7 @@ async def test_search_symbol_returns_error_payload(monkeypatch):
 async def test_get_quote_crypto(monkeypatch):
     tools = build_tools()
     mock_fetch = AsyncMock(return_value={"KRW-BTC": 123.4})
-    monkeypatch.setattr(
-        upbit_service, "fetch_multiple_current_prices", mock_fetch
-    )
+    monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", mock_fetch)
 
     result = await tools["get_quote"]("krw-btc")
 
@@ -869,9 +876,7 @@ async def test_get_quote_crypto(monkeypatch):
 async def test_get_quote_crypto_returns_error_payload(monkeypatch):
     tools = build_tools()
     mock_fetch = AsyncMock(side_effect=RuntimeError("upbit down"))
-    monkeypatch.setattr(
-        upbit_service, "fetch_multiple_current_prices", mock_fetch
-    )
+    monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", mock_fetch)
 
     result = await tools["get_quote"]("KRW-BTC")
 
@@ -1288,6 +1293,79 @@ async def test_get_ohlcv_market_us_rejects_crypto_prefix():
         await tools["get_ohlcv"]("KRW-BTC", market="us")
 
 
+@pytest.mark.asyncio
+async def test_get_indicators_supports_new_indicators(monkeypatch):
+    tools = build_tools()
+    rows = 80
+    close = pd.Series([100.0 + i * 0.2 + np.sin(i) for i in range(rows)])
+    df = pd.DataFrame(
+        {
+            "close": close,
+            "high": close + 1.5,
+            "low": close - 1.5,
+            "volume": pd.Series([1000.0 + i * 10 for i in range(rows)]),
+        }
+    )
+
+    _patch_runtime_attr(
+        monkeypatch, "_fetch_ohlcv_for_indicators", AsyncMock(return_value=df)
+    )
+
+    result = await tools["get_indicators"](
+        "KRW-BTC", indicators=["adx", "stoch_rsi", "obv"]
+    )
+
+    assert "error" not in result
+    assert "indicators" in result
+    assert "adx" in result["indicators"]
+    assert "stoch_rsi" in result["indicators"]
+    assert "obv" in result["indicators"]
+    assert set(result["indicators"]["adx"].keys()) == {"adx", "plus_di", "minus_di"}
+    assert set(result["indicators"]["stoch_rsi"].keys()) == {"k", "d"}
+    assert set(result["indicators"]["obv"].keys()) == {"obv", "signal", "divergence"}
+
+
+@pytest.mark.asyncio
+async def test_get_indicators_rejects_invalid_indicator_with_new_valid_options():
+    tools = build_tools()
+
+    with pytest.raises(ValueError, match="Invalid indicator") as exc_info:
+        await tools["get_indicators"]("KRW-BTC", indicators=["not_a_real_indicator"])
+
+    message = str(exc_info.value)
+    assert "Valid options" in message
+    assert "adx" in message
+    assert "stoch_rsi" in message
+    assert "obv" in message
+
+
+@pytest.mark.asyncio
+async def test_get_indicators_obv_returns_error_when_volume_column_missing(monkeypatch):
+    tools = build_tools()
+    rows = 40
+    close = pd.Series([100.0 + i * 0.1 for i in range(rows)])
+    df_no_volume = pd.DataFrame(
+        {
+            "close": close,
+            "high": close + 1.0,
+            "low": close - 1.0,
+        }
+    )
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df_no_volume),
+    )
+
+    result = await tools["get_indicators"]("AAPL", indicators=["obv"])
+
+    assert result["source"] == "yahoo"
+    assert "error" in result
+    assert "Missing required columns" in result["error"]
+    assert "volume" in result["error"]
+
+
 @pytest.mark.unit
 def test_calculate_volume_profile_distributes_volume_proportionally():
     df = pd.DataFrame(
@@ -1300,7 +1378,9 @@ def test_calculate_volume_profile_distributes_volume_proportionally():
         ]
     )
 
-    result = market_data_indicators._calculate_volume_profile(df, bins=2, value_area_ratio=0.70)
+    result = market_data_indicators._calculate_volume_profile(
+        df, bins=2, value_area_ratio=0.70
+    )
 
     assert result["price_range"] == {"low": 0, "high": 10}
     assert result["poc"]["volume"] == 50
@@ -1581,9 +1661,7 @@ class TestSymbolNotFound:
         tools = build_tools()
         # Return None for the symbol (not found)
         mock_fetch = AsyncMock(return_value={"KRW-INVALID": None})
-        monkeypatch.setattr(
-            upbit_service, "fetch_multiple_current_prices", mock_fetch
-        )
+        monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", mock_fetch)
 
         result = await tools["get_quote"]("KRW-INVALID")
 
@@ -1829,7 +1907,9 @@ class TestCalculateATR:
 
     def test_calculates_atr(self):
         df = _sample_ohlcv_df(50)
-        result = market_data_indicators._calculate_atr(df["high"], df["low"], df["close"])
+        result = market_data_indicators._calculate_atr(
+            df["high"], df["low"], df["close"]
+        )
 
         assert "14" in result
         assert result["14"] is not None
@@ -1837,7 +1917,9 @@ class TestCalculateATR:
 
     def test_returns_none_for_insufficient_data(self):
         df = _sample_ohlcv_df(10)
-        result = market_data_indicators._calculate_atr(df["high"], df["low"], df["close"])
+        result = market_data_indicators._calculate_atr(
+            df["high"], df["low"], df["close"]
+        )
 
         assert result["14"] is None
 
@@ -1848,7 +1930,9 @@ class TestCalculatePivot:
 
     def test_calculates_pivot_points(self):
         df = _sample_ohlcv_df(50)
-        result = market_data_indicators._calculate_pivot(df["high"], df["low"], df["close"])
+        result = market_data_indicators._calculate_pivot(
+            df["high"], df["low"], df["close"]
+        )
 
         assert "p" in result
         assert "r1" in result
@@ -1861,7 +1945,9 @@ class TestCalculatePivot:
 
     def test_returns_none_for_insufficient_data(self):
         df = _sample_ohlcv_df(1)
-        result = market_data_indicators._calculate_pivot(df["high"], df["low"], df["close"])
+        result = market_data_indicators._calculate_pivot(
+            df["high"], df["low"], df["close"]
+        )
 
         assert result["p"] is None
         assert result["r1"] is None
@@ -1869,7 +1955,9 @@ class TestCalculatePivot:
 
     def test_pivot_ordering(self):
         df = _sample_ohlcv_df(50)
-        result = market_data_indicators._calculate_pivot(df["high"], df["low"], df["close"])
+        result = market_data_indicators._calculate_pivot(
+            df["high"], df["low"], df["close"]
+        )
 
         # R3 > R2 > R1 > P > S1 > S2 > S3
         assert result["r3"] is not None
@@ -1880,6 +1968,238 @@ class TestCalculatePivot:
         assert result["s3"] is not None
         assert result["r3"] > result["r2"] > result["r1"]
         assert result["s1"] > result["s2"] > result["s3"]
+
+
+@pytest.mark.unit
+class TestCalculateADX:
+    """Tests for _calculate_adx function."""
+
+    def test_calculates_adx(self):
+        df = _sample_ohlcv_df(50)
+        result = market_data_indicators._calculate_adx(
+            df["high"], df["low"], df["close"]
+        )
+
+        assert "adx" in result
+        assert "plus_di" in result
+        assert "minus_di" in result
+        assert all(v is not None for v in result.values())
+        assert result["adx"] is not None
+        assert 0 <= result["adx"] <= 100
+
+    def test_returns_none_for_insufficient_data(self):
+        df = _sample_ohlcv_df(10)
+        result = market_data_indicators._calculate_adx(
+            df["high"], df["low"], df["close"]
+        )
+
+        assert result["adx"] is None
+        assert result["plus_di"] is None
+        assert result["minus_di"] is None
+
+    def test_custom_period(self):
+        df = _sample_ohlcv_df(60)
+        result = market_data_indicators._calculate_adx(
+            df["high"], df["low"], df["close"], period=10
+        )
+
+        assert result["adx"] is not None
+        assert result["plus_di"] is not None
+        assert result["minus_di"] is not None
+
+
+@pytest.mark.unit
+class TestCalculateStochRSI:
+    """Tests for _calculate_stoch_rsi function."""
+
+    def test_calculates_stoch_rsi(self):
+        df = _sample_ohlcv_df(100)
+        result = market_data_indicators._calculate_stoch_rsi(df["close"])
+
+        assert "k" in result
+        assert "d" in result
+        assert result["k"] is not None
+        assert result["d"] is not None
+        assert 0 <= result["k"] <= 100
+        assert 0 <= result["d"] <= 100
+
+    def test_returns_none_for_insufficient_data(self):
+        df = _sample_ohlcv_df(10)
+        result = market_data_indicators._calculate_stoch_rsi(df["close"])
+
+        assert result["k"] is None
+        assert result["d"] is None
+
+    def test_custom_periods(self):
+        df = _sample_ohlcv_df(100)
+        result = market_data_indicators._calculate_stoch_rsi(
+            df["close"], rsi_period=7, k_period=5, d_period=3
+        )
+
+        assert result["k"] is not None
+        assert result["d"] is not None
+
+
+@pytest.mark.unit
+class TestCalculateOBV:
+    """Tests for _calculate_obv function."""
+
+    def test_calculates_obv(self):
+        df = _sample_ohlcv_df(50)
+        result = market_data_indicators._calculate_obv(df["close"], df["volume"])
+
+        assert "obv" in result
+        assert "signal" in result
+        assert "divergence" in result
+        assert result["obv"] is not None
+        assert result["signal"] is not None
+        assert result["divergence"] in ("bullish", "bearish", "none")
+
+    def test_returns_none_for_insufficient_data(self):
+        df = _sample_ohlcv_df(10)
+        result = market_data_indicators._calculate_obv(df["close"], df["volume"])
+
+        assert result["obv"] is None
+        assert result["signal"] is None
+        assert result["divergence"] is None
+
+    def test_bullish_divergence_detected(self):
+        n = 30
+        close = pd.Series([100.0] * n)
+        volume = pd.Series([1000.0] * n)
+        close.iloc[-5:] = [100, 98, 96, 98, 95]
+        volume.iloc[-5:] = [1000, 1000, 1000, 10000, 1000]
+
+        result = market_data_indicators._calculate_obv(close, volume)
+
+        assert result["divergence"] == "bullish"
+
+    def test_bearish_divergence_detected(self):
+        n = 30
+        close = pd.Series([95.0] * n)
+        volume = pd.Series([1000.0] * n)
+        close.iloc[-5:] = [95, 97, 99, 97, 100]
+        volume.iloc[-5:] = [1000, 1000, 1000, 10000, 1000]
+
+        result = market_data_indicators._calculate_obv(close, volume)
+
+        assert result["divergence"] == "bearish"
+
+    def test_signal_is_ema_not_sma(self):
+        close = pd.Series([100.0 + i * 0.5 for i in range(30)])
+        volume = pd.Series([1000.0] * 30)
+
+        result = market_data_indicators._calculate_obv(close, volume, signal_period=10)
+
+        assert result["signal"] is not None
+        direction = np.where(
+            close > close.shift(1), 1, np.where(close < close.shift(1), -1, 0)
+        )
+        obv = (volume * direction).cumsum()
+        expected_signal = obv.ewm(span=10, adjust=False).mean().iloc[-1]
+        assert result["signal"] == pytest.approx(round(float(expected_signal), 2), abs=0.01)
+
+
+@pytest.mark.unit
+class TestADXRegression:
+    """Regression tests for ADX DM calculation fix."""
+
+    def test_dm_independent_filtering(self):
+        high = pd.Series([100, 105, 100, 100, 102, 101])
+        low = pd.Series([95, 94, 95, 95, 94, 94])
+        close = pd.Series([98, 103, 98, 98, 100, 99])
+
+        result = market_data_indicators._calculate_adx(high, low, close, period=2)
+
+        assert result["adx"] is not None
+        assert result["plus_di"] is not None
+        assert result["minus_di"] is not None
+
+    def test_up_move_greater_than_down_move(self):
+        high = pd.Series([100, 105, 100, 100, 102, 101])
+        low = pd.Series([95, 94, 95, 95, 94, 94])
+        close = pd.Series([98, 103, 98, 98, 100, 99])
+
+        result = market_data_indicators._calculate_adx(high, low, close, period=2)
+
+        assert result["plus_di"] is not None
+        assert result["minus_di"] is not None
+
+    def test_down_move_greater_than_up_move(self):
+        high = pd.Series([100, 100, 100, 100, 100, 100])
+        low = pd.Series([95, 90, 95, 95, 92, 92])
+        close = pd.Series([98, 93, 98, 98, 96, 96])
+
+        result = market_data_indicators._calculate_adx(high, low, close, period=2)
+
+        assert result["plus_di"] is not None
+        assert result["minus_di"] is not None
+
+
+@pytest.mark.unit
+class TestStochRSIRegression:
+    """Regression tests for Stoch RSI calculation fix."""
+
+    def test_returns_values_at_minimum_length_boundary(self):
+        boundary_len = 14 + 3 + 3
+        df = _sample_ohlcv_df(boundary_len)
+
+        result = market_data_indicators._calculate_stoch_rsi(
+            df["close"], rsi_period=14, k_period=3, d_period=3
+        )
+
+        assert result["k"] is not None
+        assert result["d"] is not None
+
+    def test_uses_rsi_period_for_rolling_min_max(self):
+        df = _sample_ohlcv_df(100)
+        result = market_data_indicators._calculate_stoch_rsi(
+            df["close"], rsi_period=14, k_period=3, d_period=3
+        )
+
+        assert result["k"] is not None
+        assert result["d"] is not None
+        assert 0 <= result["k"] <= 100
+        assert 0 <= result["d"] <= 100
+
+    def test_k_is_smoothed_stoch_rsi(self):
+        df = _sample_ohlcv_df(100)
+
+        result = market_data_indicators._calculate_stoch_rsi(
+            df["close"], rsi_period=14, k_period=3, d_period=3
+        )
+
+        assert result["k"] is not None
+        assert result["d"] is not None
+
+
+@pytest.mark.unit
+class TestOBVRegression:
+    """Regression tests for OBV calculation fix."""
+
+    def test_signal_uses_ema(self):
+        close = pd.Series([100.0 + i for i in range(30)])
+        volume = pd.Series([1000.0] * 30)
+
+        result = market_data_indicators._calculate_obv(close, volume, signal_period=10)
+
+        direction = np.where(
+            close > close.shift(1), 1, np.where(close < close.shift(1), -1, 0)
+        )
+        obv = (volume * direction).cumsum()
+        expected_signal = obv.ewm(span=10, adjust=False).mean().iloc[-1]
+
+        assert result["signal"] is not None
+        assert abs(result["signal"] - expected_signal) < 0.01
+
+    def test_divergence_uses_lookback_plus_one_index(self):
+        close = pd.Series([100.0, 110.0, 90.0, 91.0, 92.0, 93.0, 94.0, 95.0, 96.0, 97.0, 98.0, 95.0])
+        volume = pd.Series([1000.0] * len(close))
+
+        result = market_data_indicators._calculate_obv(close, volume, signal_period=5)
+
+        # With lookback=10 and index -lookback-1, price_change<0 while obv_change>0 => bullish
+        assert result["divergence"] == "bullish"
 
 
 @pytest.mark.unit
@@ -1895,7 +2215,9 @@ class TestComputeIndicators:
 
     def test_computes_multiple_indicators(self):
         df = _sample_ohlcv_df(100)
-        result = market_data_indicators._compute_indicators(df, ["sma", "ema", "rsi", "macd"])
+        result = market_data_indicators._compute_indicators(
+            df, ["sma", "ema", "rsi", "macd"]
+        )
 
         assert "sma" in result
         assert "ema" in result
@@ -1904,7 +2226,18 @@ class TestComputeIndicators:
 
     def test_computes_all_indicators(self):
         df = _sample_ohlcv_df(250)
-        all_indicators = ["sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot"]
+        all_indicators = [
+            "sma",
+            "ema",
+            "rsi",
+            "macd",
+            "bollinger",
+            "atr",
+            "pivot",
+            "adx",
+            "stoch_rsi",
+            "obv",
+        ]
         result = market_data_indicators._compute_indicators(df, all_indicators)
 
         for indicator in all_indicators:
@@ -1915,6 +2248,18 @@ class TestComputeIndicators:
 
         with pytest.raises(ValueError, match="Missing required columns"):
             market_data_indicators._compute_indicators(df, ["atr"])
+
+    def test_raises_on_missing_columns_for_adx(self):
+        df = pd.DataFrame({"close": [1, 2, 3], "high": [4, 5, 6]})
+
+        with pytest.raises(ValueError, match="Missing required columns"):
+            market_data_indicators._compute_indicators(df, ["adx"])
+
+    def test_raises_on_missing_columns_for_obv(self):
+        df = pd.DataFrame({"close": [1, 2, 3]})
+
+        with pytest.raises(ValueError, match="Missing required columns"):
+            market_data_indicators._compute_indicators(df, ["obv"])
 
 
 @pytest.mark.asyncio
@@ -1982,7 +2327,8 @@ class TestAnalyzeStock:
             },
         }
 
-        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", lambda s, m, i: mock_analysis
+        _patch_runtime_attr(
+            monkeypatch, "_analyze_stock_impl", lambda s, m, i: mock_analysis
         )
 
         result = await tools["analyze_stock"]("KRW-BTC", market="crypto")
@@ -2019,11 +2365,15 @@ class TestAnalyzeStock:
         async def mock_fetch(symbol, limit):
             return mock_opinions
 
-        _patch_runtime_attr(monkeypatch, "_fetch_investment_opinions_yfinance",
+        _patch_runtime_attr(
+            monkeypatch,
+            "_fetch_investment_opinions_yfinance",
             mock_fetch,
         )
 
-        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance("AAPL", 10)
+        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
+            "AAPL", 10
+        )
 
         # Only opinions key should exist
         assert "opinions" in result
@@ -2040,7 +2390,8 @@ class TestAnalyzeStock:
             "quote": {"price": 75000},
         }
 
-        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", lambda s, m, i: mock_analysis
+        _patch_runtime_attr(
+            monkeypatch, "_analyze_stock_impl", lambda s, m, i: mock_analysis
         )
 
         # Test with integer input
@@ -2101,9 +2452,7 @@ class TestGetValuation:
         async def mock_fetch_valuation(code):
             return mock_valuation
 
-        monkeypatch.setattr(
-            naver_finance, "fetch_valuation", mock_fetch_valuation
-        )
+        monkeypatch.setattr(naver_finance, "fetch_valuation", mock_fetch_valuation)
 
         result = await tools["get_valuation"]("005930")
 
@@ -2221,9 +2570,7 @@ class TestGetValuation:
         async def mock_fetch_valuation(code):
             return mock_valuation
 
-        monkeypatch.setattr(
-            naver_finance, "fetch_valuation", mock_fetch_valuation
-        )
+        monkeypatch.setattr(naver_finance, "fetch_valuation", mock_fetch_valuation)
 
         result = await tools["get_valuation"]("298040")
 
@@ -2239,9 +2586,7 @@ class TestGetValuation:
         async def mock_fetch_valuation(code):
             raise Exception("Network error")
 
-        monkeypatch.setattr(
-            naver_finance, "fetch_valuation", mock_fetch_valuation
-        )
+        monkeypatch.setattr(naver_finance, "fetch_valuation", mock_fetch_valuation)
 
         result = await tools["get_valuation"]("005930")
 
@@ -2497,7 +2842,9 @@ class TestGetKimchiPremium:
         """Test batch fetch when symbol is omitted."""
         tools = build_tools()
 
-        _patch_runtime_attr(monkeypatch, "_resolve_batch_crypto_symbols",
+        _patch_runtime_attr(
+            monkeypatch,
+            "_resolve_batch_crypto_symbols",
             AsyncMock(return_value=["BTC", "ETH"]),
         )
 
@@ -2682,7 +3029,9 @@ class TestGetFundingRate:
         """Test funding-rate batch response when symbol is omitted."""
         tools = build_tools()
 
-        _patch_runtime_attr(monkeypatch, "_resolve_batch_crypto_symbols",
+        _patch_runtime_attr(
+            monkeypatch,
+            "_resolve_batch_crypto_symbols",
             AsyncMock(return_value=["BTC", "ETH"]),
         )
 
@@ -3479,7 +3828,8 @@ class TestGetSectorPeers:
             def company_peers(self, symbol):
                 return ["MSFT", "GOOGL", "META"]
 
-        _patch_runtime_attr(monkeypatch, "_get_finnhub_client", lambda: MockFinnhubClient()
+        _patch_runtime_attr(
+            monkeypatch, "_get_finnhub_client", lambda: MockFinnhubClient()
         )
 
         # Mock yfinance
@@ -3557,7 +3907,9 @@ class TestGetSectorPeers:
         def raise_err():
             raise RuntimeError("finnhub down")
 
-        _patch_runtime_attr(monkeypatch, "_get_finnhub_client",
+        _patch_runtime_attr(
+            monkeypatch,
+            "_get_finnhub_client",
             lambda: type(
                 "C", (), {"company_peers": lambda self, symbol: raise_err()}
             )(),
@@ -3901,10 +4253,14 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
             ]
         ),
     )
-    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_or_refresh_maps",
         AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인"}}),
     )
-    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
         AsyncMock(
             return_value=(
                 [
@@ -3929,9 +4285,13 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
             )
         ),
     )
-    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", AsyncMock(return_value={"price": 71000.0})
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_quote_equity_kr",
+        AsyncMock(return_value={"price": 71000.0}),
     )
-    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", AsyncMock(return_value={"price": 220.0})
+    _patch_runtime_attr(
+        monkeypatch, "_fetch_quote_equity_us", AsyncMock(return_value={"price": 220.0})
     )
     monkeypatch.setattr(
         upbit_service,
@@ -4004,12 +4364,16 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
             ]
         ),
     )
-    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_or_refresh_maps",
         AsyncMock(
             return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "ETH": "이더리움"}}
         ),
     )
-    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
     monkeypatch.setattr(
@@ -4077,12 +4441,16 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
             ]
         ),
     )
-    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_or_refresh_maps",
         AsyncMock(
             return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "DOGE": "도지"}}
         ),
     )
-    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
     monkeypatch.setattr(
@@ -4177,7 +4545,9 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
             ]
         ),
     )
-    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_or_refresh_maps",
         AsyncMock(
             return_value={
                 "COIN_TO_NAME_KR": {
@@ -4189,7 +4559,9 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
             }
         ),
     )
-    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
     monkeypatch.setattr(
@@ -4275,12 +4647,16 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
             ]
         ),
     )
-    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_or_refresh_maps",
         AsyncMock(
             return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "PCI": "페이코인"}}
         ),
     )
-    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
     monkeypatch.setattr(
@@ -4347,16 +4723,18 @@ async def test_get_holdings_filters_account_market_and_disables_prices(monkeypat
             ]
         ),
     )
-    _patch_runtime_attr(monkeypatch, "get_or_refresh_maps",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_or_refresh_maps",
         AsyncMock(return_value={"COIN_TO_NAME_KR": {"ETH": "이더리움"}}),
     )
-    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
     quote_mock = AsyncMock(return_value={"KRW-ETH": 4300000.0})
-    monkeypatch.setattr(
-        upbit_service, "fetch_multiple_current_prices", quote_mock
-    )
+    monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", quote_mock)
 
     result = await tools["get_holdings"](
         account="upbit", market="crypto", include_current_price=False
@@ -4419,7 +4797,9 @@ async def test_get_holdings_includes_top_level_summary(monkeypatch):
         },
     ]
 
-    _patch_runtime_attr(monkeypatch, "_collect_portfolio_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", "upbit")),
     )
 
@@ -4462,7 +4842,9 @@ async def test_get_holdings_summary_sets_price_dependent_fields_null(monkeypatch
         }
     ]
 
-    _patch_runtime_attr(monkeypatch, "_collect_portfolio_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", "upbit")),
     )
 
@@ -4514,7 +4896,9 @@ async def test_get_holdings_preserves_kis_values_on_yahoo_failure(monkeypatch):
             ]
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
-    _patch_runtime_attr(monkeypatch, "_collect_manual_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
 
@@ -4620,7 +5004,9 @@ async def test_get_position_returns_positions_and_not_holding_status(monkeypatch
         },
     ]
 
-    _patch_runtime_attr(monkeypatch, "_collect_portfolio_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "equity_kr", None)),
     )
 
@@ -4630,7 +5016,9 @@ async def test_get_position_returns_positions_and_not_holding_status(monkeypatch
     assert result["position_count"] == 2
     assert sorted(result["accounts"]) == ["kis", "toss"]
 
-    _patch_runtime_attr(monkeypatch, "_collect_portfolio_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "equity_us", None)),
     )
     not_holding = await tools["get_position"]("NVDA", market="us")
@@ -4661,7 +5049,9 @@ async def test_get_position_crypto_accepts_symbol_without_prefix(monkeypatch):
         }
     ]
 
-    _patch_runtime_attr(monkeypatch, "_collect_portfolio_positions",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
     )
 
@@ -4807,13 +5197,19 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
         ]
     )
 
-    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
         AsyncMock(return_value=base_df[["date", "high", "low", "close"]]),
     )
-    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_volume_profile",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_volume_profile",
         AsyncMock(return_value=base_df),
     )
-    _patch_runtime_attr(monkeypatch, "_calculate_fibonacci",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_calculate_fibonacci",
         lambda df, current_price: {
             "swing_high": {"price": 120.0, "date": "2026-02-01"},
             "swing_low": {"price": 80.0, "date": "2026-01-01"},
@@ -4824,7 +5220,9 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
             "nearest_resistance": {"level": "0.382", "price": 110.0},
         },
     )
-    _patch_runtime_attr(monkeypatch, "_calculate_volume_profile",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_calculate_volume_profile",
         lambda df, bins, value_area_ratio=0.70: {
             "price_range": {"low": 80.0, "high": 120.0},
             "poc": {"price": 90.0, "volume": 5000.0},
@@ -4832,7 +5230,9 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
             "profile": [],
         },
     )
-    _patch_runtime_attr(monkeypatch, "_compute_indicators",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_compute_indicators",
         lambda df, indicators: {
             "bollinger": {"upper": 111.0, "middle": 100.0, "lower": 90.0}
         },
@@ -4877,7 +5277,9 @@ async def test_place_order_upbit_buy_limit_dry_run(monkeypatch):
             return [{"currency": "KRW", "balance": 2000000.0}]
 
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
-    _patch_runtime_attr(monkeypatch, "_preview_order",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
         AsyncMock(
             return_value={
                 "symbol": "KRW-BTC",
@@ -4924,7 +5326,9 @@ async def test_place_order_upbit_buy_market_dry_run(monkeypatch):
             return [{"currency": "KRW", "balance": 2000000.0}]
 
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
-    _patch_runtime_attr(monkeypatch, "_preview_order",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
         AsyncMock(
             return_value={
                 "symbol": "KRW-BTC",
@@ -4965,7 +5369,9 @@ async def test_place_order_sell_limit_price_below_minimum(monkeypatch):
             return [{"currency": "BTC", "balance": 0.1, "avg_buy_price": 40000000.0}]
 
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
-    _patch_runtime_attr(monkeypatch, "_preview_order",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
         AsyncMock(
             return_value={
                 "estimated_value": 50000.0,
@@ -5029,7 +5435,9 @@ async def test_place_order_market_sell_uses_full_quantity(monkeypatch):
             return [{"currency": "BTC", "balance": 0.5, "avg_buy_price": 40000000.0}]
 
     _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
-    _patch_runtime_attr(monkeypatch, "_preview_order",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
         AsyncMock(
             return_value={
                 "estimated_value": 25000000.0,
@@ -5096,7 +5504,9 @@ async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
             return {"dnca_tot_amt": "100000.0", "stck_cash_ord_psbl_amt": "100000.0"}
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
-    _patch_runtime_attr(monkeypatch, "_preview_order",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
         AsyncMock(
             return_value={
                 "estimated_value": 5000000.0,
@@ -5137,7 +5547,9 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
             ]
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
-    _patch_runtime_attr(monkeypatch, "_preview_order",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
         AsyncMock(
             return_value={
                 "estimated_value": 500.0,
@@ -5227,7 +5639,9 @@ async def test_place_order_us_uses_frcr_gnrl_orderable_when_ord1_is_zero(monkeyp
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", fetch_quote)
-    _patch_runtime_attr(monkeypatch, "_preview_order",
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
         AsyncMock(
             return_value={
                 "estimated_value": 500.0,
@@ -5320,7 +5734,8 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
             return {"odno": "99999", "success": True}
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
-    _patch_runtime_attr(monkeypatch, "get_exchange_by_symbol", lambda s: "NYSE" if s == "TSM" else None
+    _patch_runtime_attr(
+        monkeypatch, "get_exchange_by_symbol", lambda s: "NYSE" if s == "TSM" else None
     )
 
     result = await tools["place_order"](
@@ -5509,7 +5924,9 @@ class TestComputeDcaPriceLevels:
         supports = []
 
         with pytest.raises(ValueError, match="Invalid strategy"):
-            market_data_indicators._compute_dca_price_levels("invalid", 3, current_price, supports)
+            market_data_indicators._compute_dca_price_levels(
+                "invalid", 3, current_price, supports
+            )
 
 
 @pytest.mark.asyncio
@@ -5635,7 +6052,9 @@ class TestCreateDcaPlan:
 
         # Mock DB session and DcaService.create_plan so persistence succeeds for dry_run
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -5719,7 +6138,9 @@ class TestCreateDcaPlan:
 
         # Mock DB session and DcaService.create_plan so persistence succeeds for dry_run
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -5791,7 +6212,9 @@ class TestCreateDcaPlan:
         _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_indicators)
 
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -5862,7 +6285,9 @@ class TestCreateDcaPlan:
         _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_indicators)
 
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -5939,7 +6364,9 @@ class TestCreateDcaPlan:
 
         # Mock DB session factory
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6065,7 +6492,9 @@ class TestGetDcaStatus:
 
         # Mock database
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6161,7 +6590,9 @@ class TestGetDcaStatus:
         )
 
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6206,7 +6637,9 @@ class TestGetDcaStatus:
         )
 
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6255,7 +6688,9 @@ class TestGetDcaStatus:
         )
 
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6314,7 +6749,9 @@ class TestGetDcaStatus:
             )
 
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6391,7 +6828,9 @@ class TestGetDcaStatus:
         )
 
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6473,7 +6912,9 @@ class TestGetDcaStatus:
         )
 
         db = AsyncMock()
-        _patch_runtime_attr(monkeypatch, "AsyncSessionLocal",
+        _patch_runtime_attr(
+            monkeypatch,
+            "AsyncSessionLocal",
             lambda: DummySessionManager(db),
         )
 
@@ -6951,7 +7392,8 @@ class TestGetInvestmentOpinions:
                 **mock_opinions,
             }
 
-        _patch_runtime_attr(monkeypatch, "_fetch_investment_opinions_yfinance", mock_fetch_yf
+        _patch_runtime_attr(
+            monkeypatch, "_fetch_investment_opinions_yfinance", mock_fetch_yf
         )
 
         result = await tools["get_investment_opinions"]("AAPL", market="us")
@@ -7066,9 +7508,7 @@ class TestSymbolNormalizationIntegration:
         async def mock_fetch_valuation(code):
             return mock_valuation
 
-        monkeypatch.setattr(
-            naver_finance, "fetch_valuation", mock_fetch_valuation
-        )
+        monkeypatch.setattr(naver_finance, "fetch_valuation", mock_fetch_valuation)
 
         # Test with integer input
         result = await tools["get_valuation"](12450, market="kr")
@@ -7136,7 +7576,8 @@ async def test_screen_stocks_smoke(monkeypatch):
     async def mock_fetch_etf_all_cached():
         return []
 
-    _patch_runtime_attr(monkeypatch, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+    _patch_runtime_attr(
+        monkeypatch, "fetch_stock_all_cached", mock_fetch_stock_all_cached
     )
     _patch_runtime_attr(monkeypatch, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
 
@@ -7331,7 +7772,7 @@ async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_place_order_kr_limit_keeps_valid_tick_without_adjustment_metadata(
-    monkeypatch
+    monkeypatch,
 ):
     """KR limit order with valid tick price should not include tick_adjusted metadata."""
     tools = build_tools()

@@ -18,7 +18,12 @@ from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
 
-IndicatorType = Literal["sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot"]
+IndicatorType = Literal[
+    "sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot", "adx", "stoch_rsi", "obv"
+]
+
+# Type alias for indicator scalar values (supports string for OBV divergence)
+IndicatorScalar = float | str | None
 
 DEFAULT_SMA_PERIODS = [5, 20, 60, 120, 200]
 DEFAULT_EMA_PERIODS = [5, 20, 60, 120, 200]
@@ -29,6 +34,11 @@ DEFAULT_MACD_SIGNAL = 9
 DEFAULT_BOLLINGER_PERIOD = 20
 DEFAULT_BOLLINGER_STD = 2.0
 DEFAULT_ATR_PERIOD = 14
+DEFAULT_ADX_PERIOD = 14
+DEFAULT_STOCH_RSI_PERIOD = 14
+DEFAULT_STOCH_RSI_K_PERIOD = 3
+DEFAULT_STOCH_RSI_D_PERIOD = 3
+DEFAULT_OBV_SIGNAL_PERIOD = 20
 
 FIBONACCI_LEVELS = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
 
@@ -259,6 +269,129 @@ def _calculate_pivot(
     }
 
 
+def _calculate_adx(
+    high: pd.Series, low: pd.Series, close: pd.Series, period: int = DEFAULT_ADX_PERIOD
+) -> dict[str, float | None]:
+    if len(close) < period * 2:
+        return {"adx": None, "plus_di": None, "minus_di": None}
+
+    prev_close = close.shift(1)
+    # Calculate up_move and down_move separately (standard ADX DM calculation)
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+
+    # Apply DM rules: +DM when up_move > down_move AND up_move > 0
+    #                -DM when down_move > up_move AND down_move > 0
+    # Important: use original up_move/down_move for comparison, not filtered values
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr = true_range.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    smoothed_plus_dm = plus_dm.ewm(
+        alpha=1 / period, min_periods=period, adjust=False
+    ).mean()
+    smoothed_minus_dm = minus_dm.ewm(
+        alpha=1 / period, min_periods=period, adjust=False
+    ).mean()
+
+    plus_di = 100 * (smoothed_plus_dm / atr.replace(0, np.nan))
+    minus_di = 100 * (smoothed_minus_dm / atr.replace(0, np.nan))
+
+    dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
+    adx = dx.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+
+    adx_val = adx.iloc[-1]
+    plus_di_val = plus_di.iloc[-1]
+    minus_di_val = minus_di.iloc[-1]
+
+    return {
+        "adx": round(float(adx_val), 2) if pd.notna(adx_val) else None,
+        "plus_di": round(float(plus_di_val), 2) if pd.notna(plus_di_val) else None,
+        "minus_di": round(float(minus_di_val), 2) if pd.notna(minus_di_val) else None,
+    }
+
+
+def _calculate_stoch_rsi(
+    close: pd.Series,
+    rsi_period: int = DEFAULT_STOCH_RSI_PERIOD,
+    k_period: int = DEFAULT_STOCH_RSI_K_PERIOD,
+    d_period: int = DEFAULT_STOCH_RSI_D_PERIOD,
+) -> dict[str, float | None]:
+    min_data = rsi_period + k_period + d_period
+    if len(close) < min_data:
+        return {"k": None, "d": None}
+
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+
+    avg_gain = gain.ewm(
+        alpha=1 / rsi_period, min_periods=rsi_period, adjust=False
+    ).mean()
+    avg_loss = loss.ewm(
+        alpha=1 / rsi_period, min_periods=rsi_period, adjust=False
+    ).mean()
+
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+
+    rsi_min = rsi.rolling(window=rsi_period, min_periods=1).min()
+    rsi_max = rsi.rolling(window=rsi_period, min_periods=1).max()
+
+    stoch_rsi = (rsi - rsi_min) / (rsi_max - rsi_min).replace(0, np.nan)
+    percent_k = stoch_rsi.rolling(window=k_period, min_periods=k_period).mean() * 100
+    percent_d = percent_k.rolling(window=d_period, min_periods=d_period).mean()
+
+    k_val = percent_k.iloc[-1]
+    d_val = percent_d.iloc[-1]
+
+    return {
+        "k": round(float(k_val), 2) if pd.notna(k_val) else None,
+        "d": round(float(d_val), 2) if pd.notna(d_val) else None,
+    }
+
+
+def _calculate_obv(
+    close: pd.Series, volume: pd.Series, signal_period: int = DEFAULT_OBV_SIGNAL_PERIOD
+) -> dict[str, IndicatorScalar]:
+    if len(close) < signal_period or len(volume) < signal_period:
+        return {"obv": None, "signal": None, "divergence": None}
+
+    direction = np.where(
+        close > close.shift(1), 1, np.where(close < close.shift(1), -1, 0)
+    )
+    obv = (volume * direction).cumsum()
+    obv_signal = obv.ewm(span=signal_period, adjust=False).mean()
+
+    obv_val = obv.iloc[-1]
+    signal_val = obv_signal.iloc[-1]
+
+    lookback = min(10, len(close) - 1)
+    if lookback < 2:
+        divergence: str = "none"
+    else:
+        price_change = close.iloc[-1] - close.iloc[-lookback - 1]
+        obv_change = obv.iloc[-1] - obv.iloc[-lookback - 1]
+
+        if price_change < 0 and obv_change > 0:
+            divergence = "bullish"
+        elif price_change > 0 and obv_change < 0:
+            divergence = "bearish"
+        else:
+            divergence = "none"
+
+    return {
+        "obv": round(float(obv_val), 2) if pd.notna(obv_val) else None,
+        "signal": round(float(signal_val), 2) if pd.notna(signal_val) else None,
+        "divergence": divergence,
+    }
+
+
 def _calculate_fibonacci(df: pd.DataFrame, current_price: float) -> dict[str, Any]:
     high = df["high"].astype(float)
     low = df["low"].astype(float)
@@ -320,12 +453,14 @@ def _calculate_fibonacci(df: pd.DataFrame, current_price: float) -> dict[str, An
 
 def _compute_indicators(
     df: pd.DataFrame, indicators: list[IndicatorType]
-) -> dict[str, dict[str, float | None]]:
-    results: dict[str, dict[str, float | None]] = {}
+) -> dict[str, dict[str, IndicatorScalar]]:
+    results: dict[str, dict[str, IndicatorScalar]] = {}
 
     required = {"close"}
-    if "atr" in indicators or "pivot" in indicators:
+    if "atr" in indicators or "pivot" in indicators or "adx" in indicators:
         required |= {"high", "low"}
+    if "obv" in indicators:
+        required |= {"volume"}
 
     missing = required - set(df.columns)
     if missing:
@@ -334,6 +469,7 @@ def _compute_indicators(
     close = df["close"].astype(float)
     high = df["high"].astype(float) if "high" in df.columns else None
     low = df["low"].astype(float) if "low" in df.columns else None
+    volume = df["volume"].astype(float) if "volume" in df.columns else None
 
     for indicator in indicators:
         if indicator == "sma":
@@ -354,6 +490,18 @@ def _compute_indicators(
         elif indicator == "pivot":
             if high is not None and low is not None:
                 results["pivot"] = _calculate_pivot(high, low, close)
+        elif indicator == "adx":
+            if high is not None and low is not None:
+                results["adx"] = _calculate_adx(high, low, close)
+            else:
+                results["adx"] = {"adx": None, "plus_di": None, "minus_di": None}
+        elif indicator == "stoch_rsi":
+            results["stoch_rsi"] = _calculate_stoch_rsi(close)
+        elif indicator == "obv":
+            if volume is not None:
+                results["obv"] = _calculate_obv(close, volume)
+            else:
+                results["obv"] = {"obv": None, "signal": None, "divergence": None}
 
     return results
 
@@ -478,7 +626,10 @@ def _compute_dca_price_levels(
 
     if strategy == "support":
         if len(support_prices) >= splits:
-            return [{"price": price, "source": "support"} for price in support_prices[:splits]]
+            return [
+                {"price": price, "source": "support"}
+                for price in support_prices[:splits]
+            ]
         if len(support_prices) > 0:
             support_levels: list[dict[str, Any]] = []
             start_price = current_price * 0.995
@@ -515,7 +666,9 @@ def _compute_dca_price_levels(
 
     if strategy == "aggressive":
         first_price = current_price * 0.995
-        levels: list[dict[str, Any]] = [{"price": first_price, "source": "aggressive_first"}]
+        levels: list[dict[str, Any]] = [
+            {"price": first_price, "source": "aggressive_first"}
+        ]
         if splits <= 1:
             return levels
 
@@ -603,13 +756,17 @@ def _calculate_volume_profile(
         bin_edges = np.linspace(price_low, price_high, bins + 1)
 
     bin_volumes = np.zeros(bins, dtype=float)
-    for low_i, high_i, vol_i in zip(candle_low, candle_high, candle_volume, strict=False):
+    for low_i, high_i, vol_i in zip(
+        candle_low, candle_high, candle_volume, strict=False
+    ):
         if vol_i <= 0:
             continue
 
         if high_i <= low_i:
             idx = int(
-                np.clip(np.searchsorted(bin_edges, low_i, side="right") - 1, 0, bins - 1)
+                np.clip(
+                    np.searchsorted(bin_edges, low_i, side="right") - 1, 0, bins - 1
+                )
             )
             bin_volumes[idx] += vol_i
             continue
@@ -684,7 +841,9 @@ def _calculate_volume_profile(
         "value_area": {
             "high": _normalize_number(bin_edges[right_index + 1], decimals=6),
             "low": _normalize_number(bin_edges[left_index], decimals=6),
-            "volume_pct": _normalize_number((covered_volume / total_volume) * 100, decimals=2),
+            "volume_pct": _normalize_number(
+                (covered_volume / total_volume) * 100, decimals=2
+            ),
         },
         "profile": profile,
     }
@@ -692,6 +851,7 @@ def _calculate_volume_profile(
 
 __all__ = [
     "IndicatorType",
+    "IndicatorScalar",
     "DEFAULT_SMA_PERIODS",
     "DEFAULT_EMA_PERIODS",
     "DEFAULT_RSI_PERIOD",
@@ -701,6 +861,11 @@ __all__ = [
     "DEFAULT_BOLLINGER_PERIOD",
     "DEFAULT_BOLLINGER_STD",
     "DEFAULT_ATR_PERIOD",
+    "DEFAULT_ADX_PERIOD",
+    "DEFAULT_STOCH_RSI_PERIOD",
+    "DEFAULT_STOCH_RSI_K_PERIOD",
+    "DEFAULT_STOCH_RSI_D_PERIOD",
+    "DEFAULT_OBV_SIGNAL_PERIOD",
     "FIBONACCI_LEVELS",
     "_fetch_ohlcv_crypto_paginated",
     "_fetch_ohlcv_for_indicators",
@@ -712,6 +877,9 @@ __all__ = [
     "_calculate_bollinger",
     "_calculate_atr",
     "_calculate_pivot",
+    "_calculate_adx",
+    "_calculate_stoch_rsi",
+    "_calculate_obv",
     "_calculate_fibonacci",
     "_compute_indicators",
     "_format_fibonacci_source",
