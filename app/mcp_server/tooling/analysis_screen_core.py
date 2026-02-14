@@ -161,7 +161,15 @@ def _sort_and_limit(
     }
     field = sort_field_map.get(sort_by, "volume")
     reverse = sort_order == "desc"
-    results.sort(key=lambda x: x.get(field, 0) or 0, reverse=reverse)
+
+    def sort_value(item: dict[str, Any]) -> float:
+        value = item.get(field)
+        # Crypto candidates do not always have market cap; use 24h trade amount fallback.
+        if field == "market_cap" and (value is None or value == 0):
+            value = item.get("trade_amount_24h")
+        return float(value or 0)
+
+    results.sort(key=sort_value, reverse=reverse)
     return results[:limit]
 
 
@@ -194,6 +202,7 @@ async def _screen_kr(
     sort_by: str,
     sort_order: str,
     limit: int,
+    enrich_rsi: bool = True,
 ) -> dict[str, Any]:
     """Screen Korean market stocks/ETFs."""
     min_dividend_yield_input, min_dividend_yield_normalized = (
@@ -279,7 +288,8 @@ async def _screen_kr(
         "max_rsi": max_rsi,
     }
 
-    if max_rsi is not None:
+    always_enrich_rsi = True
+    if enrich_rsi and (max_rsi is not None or always_enrich_rsi):
         subset_limit = min(len(candidates), limit * 3, 150)
         subset = candidates[:subset_limit]
         semaphore = asyncio.Semaphore(10)
@@ -289,7 +299,7 @@ async def _screen_kr(
                 item_copy = item.copy()
                 code = item["code"]
 
-                if max_rsi is not None and item_copy.get("rsi") is None:
+                if item_copy.get("rsi") is None:
                     try:
                         df = await _fetch_ohlcv_for_indicators(
                             code, "equity_kr", count=50
@@ -350,6 +360,7 @@ async def _screen_us(
     sort_by: str,
     sort_order: str,
     limit: int,
+    enrich_rsi: bool = True,
 ) -> dict[str, Any]:
     """Screen US market stocks using yfinance screener."""
     min_dividend_yield_input, min_dividend_yield_normalized = (
@@ -430,23 +441,52 @@ async def _screen_us(
             _complete_filters_applied()
             return _build_screen_response([], 0, filters_applied, market)
 
+        def _first_value(quote: dict[str, Any], *keys: str) -> Any:
+            for key in keys:
+                value = quote.get(key)
+                if value is not None:
+                    return value
+            return None
+
         results = []
         for quote in quotes:
-            results.append(
-                {
-                    "code": quote.get("symbol"),
-                    "name": quote.get("shortname") or quote.get("longname"),
-                    "close": quote.get("lastprice"),
-                    "change_rate": quote.get("percentchange", 0),
-                    "volume": quote.get("dayvolume", 0),
-                    "market_cap": quote.get("intradaymarketcap", 0),
-                    "per": quote.get("peratio"),
-                    "dividend_yield": quote.get("forward_dividend_yield"),
-                    "market": "us",
-                }
-            )
+            mapped = {
+                "code": quote.get("symbol"),
+                "name": _first_value(quote, "shortName", "longName", "shortname", "longname"),
+                "close": _first_value(quote, "regularMarketPrice", "lastPrice", "lastprice"),
+                "change_rate": _first_value(
+                    quote,
+                    "regularMarketChangePercent",
+                    "percentchange",
+                )
+                or 0,
+                "volume": _first_value(quote, "regularMarketVolume", "dayVolume", "dayvolume")
+                or 0,
+                "market_cap": _first_value(
+                    quote, "marketCap", "intradayMarketCap", "intradaymarketcap"
+                )
+                or 0,
+                "per": _first_value(
+                    quote,
+                    "trailingPE",
+                    "forwardPE",
+                    "peRatio",
+                    "peratio",
+                ),
+                "dividend_yield": _first_value(
+                    quote,
+                    "dividendYield",
+                    "forwardDividendYield",
+                    "forward_dividend_yield",
+                ),
+                "market": "us",
+            }
+            # Drop rows without usable price; these often come from stale/partial screener rows.
+            if mapped["close"] in (None, 0):
+                continue
+            results.append(mapped)
 
-        if max_rsi is not None:
+        if enrich_rsi and results:
             semaphore = asyncio.Semaphore(10)
 
             async def calculate_rsi_for_stock(item: dict[str, Any]):
@@ -465,15 +505,28 @@ async def _screen_us(
 
                     return item_copy
 
+            subset_limit = min(len(results), limit * 3, 150)
+            subset = results[:subset_limit]
             try:
-                results_with_rsi = await asyncio.gather(
-                    *[calculate_rsi_for_stock(item) for item in results],
-                    return_exceptions=True,
+                subset_with_rsi = await asyncio.wait_for(
+                    asyncio.gather(
+                        *[calculate_rsi_for_stock(item) for item in subset],
+                        return_exceptions=True,
+                    ),
+                    timeout=30.0,
                 )
-                results = [r for r in results_with_rsi if not isinstance(r, Exception)]
+                for i, enriched in enumerate(subset_with_rsi):
+                    if isinstance(enriched, Exception):
+                        continue
+                    rsi_value = enriched.get("rsi")
+                    if rsi_value is not None:
+                        results[i]["rsi"] = rsi_value
+            except TimeoutError:
+                pass
             except Exception:
                 pass
 
+        if max_rsi is not None:
             results = _apply_basic_filters(
                 results,
                 min_market_cap=None,
@@ -483,19 +536,9 @@ async def _screen_us(
                 max_rsi=max_rsi,
             )
 
-            pre_limit_count = len(results)
-            results = _sort_and_limit(results, sort_by, sort_order, limit)
-            _complete_filters_applied()
-            return _build_screen_response(
-                results, pre_limit_count, filters_applied, market
-            )
-
         _complete_filters_applied()
-        pre_limit_count = (
-            screen_result.get("total", len(results))
-            if isinstance(screen_result, dict)
-            else len(results)
-        )
+        pre_limit_count = len(results)
+        results = _sort_and_limit(results, sort_by, sort_order, limit)
         return _build_screen_response(results, pre_limit_count, filters_applied, market)
     except ImportError:
         return _error_payload(
@@ -520,6 +563,7 @@ async def _screen_crypto(
     sort_by: str,
     sort_order: str,
     limit: int,
+    enrich_rsi: bool = True,
 ) -> dict[str, Any]:
     """Screen crypto market coins using Upbit."""
     min_dividend_yield_input, min_dividend_yield_normalized = (
@@ -544,10 +588,18 @@ async def _screen_crypto(
         if "change_rate" not in item:
             item["change_rate"] = item.get("signed_change_rate", 0)
 
-        if "market_cap" not in item:
-            item["market_cap"] = item.get("acc_trade_price_24h", 0)
+        if "volume" not in item:
+            item["volume"] = item.get("acc_trade_volume_24h", 0)
 
-    if max_rsi is not None:
+        # Upbit ticker does not provide market cap; keep it explicit and expose 24h trade amount.
+        item["trade_amount_24h"] = item.get("trade_amount_24h") or item.get(
+            "acc_trade_price_24h", 0
+        )
+        if "market_cap" not in item:
+            item["market_cap"] = None
+
+    always_enrich_rsi = True
+    if enrich_rsi and (max_rsi is not None or always_enrich_rsi):
         subset_limit = min(len(candidates), limit * 3, 150)
         subset = candidates[:subset_limit]
         semaphore = asyncio.Semaphore(10)
@@ -597,14 +649,24 @@ async def _screen_crypto(
     if min_dividend_yield_normalized is not None:
         filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
+    min_trade_amount_24h = min_market_cap
+    if min_trade_amount_24h is not None:
+        filters_applied["min_market_cap_interpreted_as"] = "trade_amount_24h"
+
     filtered = _apply_basic_filters(
         candidates,
-        min_market_cap=min_market_cap,
+        min_market_cap=None,
         max_per=None,
         max_pbr=None,
         min_dividend_yield=None,
         max_rsi=max_rsi,
     )
+    if min_trade_amount_24h is not None:
+        filtered = [
+            item
+            for item in filtered
+            if (item.get("trade_amount_24h") or 0) >= min_trade_amount_24h
+        ]
     results = _sort_and_limit(filtered, sort_by, sort_order, limit)
     return _build_screen_response(results, len(filtered), filters_applied, market)
 

@@ -407,6 +407,7 @@ async def _recommend_stocks_impl(
     exclude_symbols: list[str] | None,
     sectors: list[str] | None,
     max_positions: int,
+    exclude_held: bool = True,
     top_stocks_fallback: Any,
 ) -> dict[str, Any]:
     return await _recommend_stocks_impl_core(
@@ -416,6 +417,7 @@ async def _recommend_stocks_impl(
         exclude_symbols=exclude_symbols,
         sectors=sectors,
         max_positions=max_positions,
+        exclude_held=exclude_held,
         top_stocks_fallback=top_stocks_fallback,
         screen_kr_fn=_screen_kr,
         screen_crypto_fn=_screen_crypto,

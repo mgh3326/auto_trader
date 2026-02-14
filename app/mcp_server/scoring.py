@@ -292,16 +292,30 @@ def calc_composite_score(
         Composite score 0-100 where higher is better
     """
     # Extract values from item, handling multiple possible keys
+    market = str(item.get("market", "")).strip().lower()
     rsi = item.get("rsi") or item.get("rsi_14")
     per = item.get("per")
     pbr = item.get("pbr")
     change_rate = item.get("change_rate")
     volume = item.get("volume")
     dividend_yield = item.get("dividend_yield")
+    trade_amount_24h = item.get("trade_amount_24h")
 
     # Calculate individual scores
     rsi_score = calc_rsi_score(rsi)
-    valuation_score = calc_valuation_score(per, pbr)
+    if market == "crypto":
+        # Crypto has no PER/PBR in practice; use liquidity/stability proxy.
+        liquidity = _to_float(trade_amount_24h or item.get("market_cap"), default=0.0)
+        if liquidity >= 100_000_000_000:  # 1,000억+
+            valuation_score = 80.0
+        elif liquidity >= 10_000_000_000:  # 100억+
+            valuation_score = 60.0
+        elif liquidity >= 1_000_000_000:  # 10억+
+            valuation_score = 40.0
+        else:
+            valuation_score = 20.0
+    else:
+        valuation_score = calc_valuation_score(per, pbr)
     momentum_score = calc_momentum_score(change_rate)
     volume_score = calc_volume_score(volume)
     dividend_score = calc_dividend_score(dividend_yield)

@@ -363,6 +363,7 @@ async def screen_stocks_impl(
     market: Literal["kr", "kospi", "kosdaq", "us", "crypto"] = "kr",
     asset_type: Literal["stock", "etf", "etn"] | None = None,
     category: str | None = None,
+    strategy: str | None = None,
     sort_by: Literal["volume", "market_cap", "change_rate", "dividend_yield"] = "volume",
     sort_order: Literal["asc", "desc"] = "desc",
     min_market_cap: float | None = None,
@@ -372,6 +373,24 @@ async def screen_stocks_impl(
     max_rsi: float | None = None,
     limit: int = 20,
 ) -> dict[str, Any]:
+    strategy_presets: dict[str, dict[str, Any]] = {
+        "oversold": {"max_rsi": 30.0, "sort_by": "volume", "sort_order": "desc"},
+        "momentum": {"sort_by": "change_rate", "sort_order": "desc"},
+        "high_volume": {"sort_by": "volume", "sort_order": "desc"},
+    }
+    if strategy:
+        strategy_key = strategy.strip().lower()
+        if strategy_key not in strategy_presets:
+            valid = ", ".join(sorted(strategy_presets.keys()))
+            raise ValueError(
+                f"screen strategy must be one of: {valid}"
+            )
+        preset = strategy_presets[strategy_key]
+        sort_by = preset.get("sort_by", sort_by)
+        sort_order = preset.get("sort_order", sort_order)
+        if max_rsi is None and "max_rsi" in preset:
+            max_rsi = preset["max_rsi"]
+
     market = _normalize_screen_market(market)
     asset_type = _normalize_asset_type(asset_type)
     sort_by = _normalize_sort_by(sort_by)
@@ -446,6 +465,7 @@ async def recommend_stocks_impl(
     exclude_symbols: list[str] | None = None,
     sectors: list[str] | None = None,
     max_positions: int = 5,
+    exclude_held: bool = True,
 ) -> dict[str, Any]:
     return await _recommend_stocks_impl(
         budget=budget,
@@ -454,6 +474,7 @@ async def recommend_stocks_impl(
         exclude_symbols=exclude_symbols,
         sectors=sectors,
         max_positions=max_positions,
+        exclude_held=exclude_held,
         top_stocks_fallback=get_top_stocks_impl,
     )
 

@@ -78,11 +78,14 @@ def _normalize_candidate(item: dict[str, Any], market: str) -> dict[str, Any]:
     )
     return {
         "symbol": symbol,
-        "name": item.get("name") or item.get("shortname") or "",
+        "name": item.get("name") or item.get("shortName") or item.get("shortname") or "",
         "price": _to_float(item.get("close") or item.get("price") or item.get("trade_price")),
         "change_rate": _to_float(item.get("change_rate") or 0),
         "volume": _to_int(item.get("volume") or 0),
         "market_cap": _to_float(item.get("market_cap") or 0),
+        "trade_amount_24h": _to_float(
+            item.get("trade_amount_24h") or item.get("acc_trade_price_24h") or 0
+        ),
         "per": _to_optional_float(item.get("per")),
         "pbr": _to_optional_float(item.get("pbr")),
         "dividend_yield": _to_optional_float(item.get("dividend_yield")),
@@ -182,6 +185,7 @@ async def recommend_stocks_impl(
     screen_kr_fn: Callable[..., Awaitable[dict[str, Any]]],
     screen_crypto_fn: Callable[..., Awaitable[dict[str, Any]]],
     top_stocks_override: Any = None,
+    exclude_held: bool = True,
 ) -> dict[str, Any]:
     from app.mcp_server.tooling.portfolio_holdings import (
         _collect_portfolio_positions,
@@ -196,11 +200,12 @@ async def recommend_stocks_impl(
     validated_strategy = validate_strategy(strategy)
     normalized_market = _normalize_recommend_market(market)
     logger.info(
-        "recommend_stocks start market=%s strategy=%s budget=%.2f max_positions=%d",
+        "recommend_stocks start market=%s strategy=%s budget=%.2f max_positions=%d exclude_held=%s",
         normalized_market,
         validated_strategy,
         budget,
         max_positions,
+        exclude_held,
     )
 
     try:
@@ -285,6 +290,7 @@ async def recommend_stocks_impl(
                 sort_by=sort_by,
                 sort_order=sort_order,
                 limit=candidate_limit,
+                enrich_rsi=False,
             )
             screen_error_raw = screen_result.get("error")
             if screen_error_raw is not None:
@@ -385,40 +391,45 @@ async def recommend_stocks_impl(
             exclude_set.update(manual_excludes)
             logger.debug("recommend_stocks manual exclusions=%d", len(manual_excludes))
 
-        logger.debug("recommend_stocks holdings exclusion lookup start")
-        try:
-            (
-                holdings_positions,
-                holdings_errors,
-                _,
-                _,
-            ) = await _collect_portfolio_positions(
-                account=None,
-                market=normalized_market,
-                include_current_price=False,
-                user_id=_MCP_USER_ID,
+        if exclude_held:
+            logger.debug("recommend_stocks holdings exclusion lookup start")
+            try:
+                (
+                    holdings_positions,
+                    holdings_errors,
+                    _,
+                    _,
+                ) = await _collect_portfolio_positions(
+                    account=None,
+                    market=normalized_market,
+                    include_current_price=False,
+                    user_id=_MCP_USER_ID,
+                )
+                holdings_exclusions = 0
+                for pos in holdings_positions:
+                    symbol = pos.get("symbol", "")
+                    if symbol:
+                        holdings_exclusions += 1
+                        exclude_set.add(str(symbol).upper())
+                if holdings_errors:
+                    warnings.append(f"보유 종목 조회 중 일부 오류: {len(holdings_errors)}건")
+                logger.debug(
+                    "recommend_stocks holdings exclusions=%d total_exclusions=%d",
+                    holdings_exclusions,
+                    len(exclude_set),
+                )
+            except Exception as exc:
+                holdings_error = str(exc).strip() or exc.__class__.__name__
+                logger.warning(
+                    "recommend_stocks holdings lookup failed: %s",
+                    holdings_error,
+                    exc_info=True,
+                )
+                warnings.append(f"보유 종목 조회 실패: {holdings_error}")
+        else:
+            warnings.append(
+                "exclude_held=False: 보유 종목도 추천 대상에 포함됩니다."
             )
-            holdings_exclusions = 0
-            for pos in holdings_positions:
-                symbol = pos.get("symbol", "")
-                if symbol:
-                    holdings_exclusions += 1
-                    exclude_set.add(str(symbol).upper())
-            if holdings_errors:
-                warnings.append(f"보유 종목 조회 중 일부 오류: {len(holdings_errors)}건")
-            logger.debug(
-                "recommend_stocks holdings exclusions=%d total_exclusions=%d",
-                holdings_exclusions,
-                len(exclude_set),
-            )
-        except Exception as exc:
-            holdings_error = str(exc).strip() or exc.__class__.__name__
-            logger.warning(
-                "recommend_stocks holdings lookup failed: %s",
-                holdings_error,
-                exc_info=True,
-            )
-            warnings.append(f"보유 종목 조회 실패: {holdings_error}")
 
         filtered_candidates = [
             c for c in candidates if c.get("symbol", "").upper() not in exclude_set
@@ -506,6 +517,7 @@ async def recommend_stocks_impl(
                     sort_by=sort_by,
                     sort_order=sort_order,
                     limit=candidate_limit,
+                    enrich_rsi=False,
                 )
                 if not fallback_result.get("error"):
                     fallback_raw = fallback_result.get("results", [])
