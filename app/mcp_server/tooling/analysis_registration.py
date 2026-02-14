@@ -137,6 +137,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         market: str = "kr",
         asset_type: str | None = None,
         category: str | None = None,
+        strategy: str | None = None,
         sort_by: str = "volume",
         sort_order: str = "desc",
         min_market_cap: float | None = None,
@@ -150,6 +151,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             market=market,  # type: ignore[arg-type]
             asset_type=asset_type,  # type: ignore[arg-type]
             category=category,
+            strategy=strategy,
             sort_by=sort_by,  # type: ignore[arg-type]
             sort_order=sort_order,  # type: ignore[arg-type]
             min_market_cap=min_market_cap,
@@ -173,6 +175,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         exclude_symbols: list[str] | None = None,
         sectors: list[str] | None = None,
         max_positions: int = 5,
+        exclude_held: bool = True,
     ) -> dict:
         return await recommend_stocks_impl(
             budget=budget,
@@ -181,6 +184,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             exclude_symbols=exclude_symbols,
             sectors=sectors,
             max_positions=max_positions,
+            exclude_held=exclude_held,
         )
 
     @mcp.tool(

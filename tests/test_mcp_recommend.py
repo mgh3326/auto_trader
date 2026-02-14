@@ -120,6 +120,27 @@ class TestScoringFunctions:
         )
         assert 0 <= score <= 100
 
+    def test_calc_composite_score_crypto_liquidity_weighting(self):
+        high_liquidity = calc_composite_score(
+            {
+                "market": "crypto",
+                "rsi_14": 50,
+                "change_rate": 1.0,
+                "volume": 1_000_000,
+                "trade_amount_24h": 150_000_000_000,
+            }
+        )
+        low_liquidity = calc_composite_score(
+            {
+                "market": "crypto",
+                "rsi_14": 50,
+                "change_rate": 1.0,
+                "volume": 1_000_000,
+                "trade_amount_24h": 500_000_000,
+            }
+        )
+        assert high_liquidity > low_liquidity
+
 
 class TestStrategyValidation:
     def test_validate_strategy_values(self):
@@ -419,6 +440,61 @@ class TestRecommendStocksIntegration:
         assert captured["account"] is None
         assert "555555" not in symbols
         assert "666666" in symbols
+
+    @pytest.mark.asyncio
+    async def test_exclude_held_false_includes_holdings(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_kr_sources(
+            monkeypatch,
+            stk=[
+                {
+                    "code": "777001",
+                    "name": "보유종목",
+                    "close": 10_000,
+                    "volume": 700_000,
+                    "change_rate": 1.0,
+                    "market_cap": 1500,
+                },
+                {
+                    "code": "777002",
+                    "name": "후보종목",
+                    "close": 10_000,
+                    "volume": 700_000,
+                    "change_rate": 1.0,
+                    "market_cap": 1500,
+                },
+            ],
+            valuations={
+                "777001": {"per": 12.0, "pbr": 1.0, "dividend_yield": 0.02},
+                "777002": {"per": 12.0, "pbr": 1.0, "dividend_yield": 0.02},
+            },
+        )
+
+        async def mock_collect_portfolio_positions(
+            *,
+            account: str | None,
+            market: str | None,
+            include_current_price: bool,
+            user_id: int,
+        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
+            return [{"symbol": "777001"}], [], market, account
+
+        monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions",
+            mock_collect_portfolio_positions,
+        )
+
+        result = await recommend_stocks(
+            budget=300_000,
+            market="kr",
+            strategy="balanced",
+            max_positions=2,
+            exclude_held=False,
+        )
+        symbols = {item["symbol"] for item in result["recommendations"]}
+        assert "777001" in symbols
+        assert "777002" in symbols
+        assert any("exclude_held=False" in warning for warning in result["warnings"])
 
     @pytest.mark.asyncio
     async def test_us_success_path(
@@ -1235,3 +1311,153 @@ class TestTwoStageRelaxation:
         symbols = {item["symbol"] for item in result["recommendations"]}
         assert "555555" not in symbols
         assert "666666" in symbols
+
+
+class TestScreenCryptoBehavior:
+    @pytest.mark.asyncio
+    async def test_screen_crypto_market_cap_not_misrepresented(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        async def mock_fetch_top_traded_coins(
+            fiat: str = "KRW",
+        ) -> list[dict[str, Any]]:
+            assert fiat == "KRW"
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_price_24h": 1_000_000_000_000,
+                    "acc_trade_volume_24h": 10_000,
+                }
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        result = await analysis_screen_core._screen_crypto(
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+            enrich_rsi=False,
+        )
+
+        assert result["results"]
+        first = result["results"][0]
+        assert first["trade_amount_24h"] == 1_000_000_000_000
+        assert first["market_cap"] is None
+
+    @pytest.mark.asyncio
+    async def test_screen_crypto_min_market_cap_uses_trade_amount(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        async def mock_fetch_top_traded_coins(
+            fiat: str = "KRW",
+        ) -> list[dict[str, Any]]:
+            assert fiat == "KRW"
+            return [
+                {
+                    "market": "KRW-AAA",
+                    "trade_price": 1000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_price_24h": 1000,
+                    "acc_trade_volume_24h": 10_000,
+                },
+                {
+                    "market": "KRW-BBB",
+                    "trade_price": 1000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_price_24h": 5000,
+                    "acc_trade_volume_24h": 10_000,
+                },
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        result = await analysis_screen_core._screen_crypto(
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=3000,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+            enrich_rsi=False,
+        )
+
+        symbols = [item["symbol"] for item in result["results"]]
+        assert symbols == ["KRW-BBB"]
+        assert (
+            result["filters_applied"]["min_market_cap_interpreted_as"]
+            == "trade_amount_24h"
+        )
+
+
+class TestScreenUsBehavior:
+    @pytest.mark.asyncio
+    async def test_screen_us_maps_camel_case_fields_and_skips_empty_price(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        def mock_screen(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {
+                "quotes": [
+                    {
+                        "symbol": "IVDA",
+                        "shortName": "Iveda Solutions",
+                        "regularMarketPrice": 5.12,
+                        "regularMarketChangePercent": 1.5,
+                        "regularMarketVolume": 1_234_567,
+                        "marketCap": 500_000_000,
+                        "trailingPE": 18.2,
+                        "dividendYield": 0.01,
+                    },
+                    {
+                        "symbol": "NOPX",
+                        "shortName": "No Price Inc",
+                        "regularMarketPrice": None,
+                        "regularMarketVolume": 100,
+                    },
+                ],
+                "total": 2,
+            }
+
+        monkeypatch.setattr(analysis_screen_core.yf, "screen", mock_screen)
+
+        result = await analysis_screen_core._screen_us(
+            market="us",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=10,
+            enrich_rsi=False,
+        )
+
+        assert result["returned_count"] == 1
+        first = result["results"][0]
+        assert first["code"] == "IVDA"
+        assert first["name"] == "Iveda Solutions"
+        assert first["close"] == 5.12
+        assert first["volume"] == 1_234_567
+        assert first["market_cap"] == 500_000_000
