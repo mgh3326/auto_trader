@@ -18,8 +18,12 @@ import sys
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.core.config import settings
 from app.monitoring.sentry import capture_exception, init_sentry
@@ -45,6 +49,7 @@ class KISWebSocketMonitor:
     def __init__(self):
         self.dca_service: DcaService | None = None
         self.websocket_client: KISExecutionWebSocket | None = None
+        self._db_engine: AsyncEngine | None = None
         self.is_running = False
         self._setup_signal_handlers()
 
@@ -72,18 +77,19 @@ class KISWebSocketMonitor:
         )
         self.is_running = False
 
-    async def _initialize_db(self):
+    def _initialize_db(self) -> async_sessionmaker[AsyncSession]:
         """
         데이터베이스 엔진 초기화
 
         Returns:
-            AsyncSession: 비동기 DB 세션
+            async_sessionmaker[AsyncSession]: 비동기 DB 세션 팩토리
         """
-        engine = create_async_engine(settings.DATABASE_URL, echo=False)
-        async_session_maker = sessionmaker(
-            engine, expire_on_commit=False, class_=AsyncSession
+        self._db_engine = create_async_engine(settings.DATABASE_URL, echo=False)
+        return async_sessionmaker(
+            self._db_engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
         )
-        return async_session_maker()
 
     async def _initialize_dca_service(self, db_session: AsyncSession):
         """
@@ -195,11 +201,13 @@ class KISWebSocketMonitor:
         logger.info("Starting KIS WebSocket monitor...")
         self.is_running = True
 
-        async_session_maker = await self._initialize_db()
+        async_session_maker = self._initialize_db()
 
         async with async_session_maker() as db_session:
             await self._initialize_dca_service(db_session)
             await self._initialize_websocket()
+            if self.websocket_client is None:
+                raise RuntimeError("KIS WebSocket client initialization failed")
 
             await self.websocket_client.connect_and_subscribe()
 
@@ -216,6 +224,10 @@ class KISWebSocketMonitor:
 
         if self.websocket_client:
             await self.websocket_client.stop()
+
+        if self._db_engine is not None:
+            await self._db_engine.dispose()
+            self._db_engine = None
 
         await close_execution_redis()
 
