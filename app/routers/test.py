@@ -2,9 +2,8 @@
 Test endpoints for monitoring and observability.
 
 These endpoints are used to test:
-- Error reporting to Telegram
-- OpenTelemetry tracing
-- Custom span creation
+- Error reporting
+- Health checks
 """
 
 import asyncio
@@ -14,9 +13,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from app.monitoring.telemetry import get_tracer
-
 logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/test", tags=["test"])
 
 
@@ -26,9 +24,7 @@ async def test_error() -> dict[str, str]:
     Test endpoint that raises a general error.
 
     This will trigger:
-    - Error reporting to Telegram (if enabled)
-    - Error span recording (if telemetry enabled)
-    - Error metric increment
+    - Error logging with full traceback
 
     Returns:
         Never returns - always raises an exception
@@ -45,8 +41,7 @@ async def test_critical_error() -> dict[str, str]:
     """
     Test endpoint that raises a critical error.
 
-    This simulates a critical system failure that should be
-    immediately reported to Telegram.
+    This simulates a critical system failure.
 
     Returns:
         Never returns - always raises an exception
@@ -63,64 +58,38 @@ async def test_critical_error() -> dict[str, str]:
 @router.get("/trace")
 async def test_trace() -> dict[str, Any]:
     """
-    Test endpoint for custom span creation and tracing.
+    Test endpoint for simulating traced operations.
 
     This endpoint demonstrates:
-    - Creating custom spans
-    - Adding span attributes
-    - Nested span operations
-    - Span timing
+    - Nested operation timing
+    - Multi-step workflow
 
     Returns:
         Dict with operation results and timing information
     """
-    tracer = get_tracer(__name__)
+    start_time = time.time()
 
-    with tracer.start_as_current_span("test_trace_operation") as span:
-        # Add custom attributes
-        span.set_attribute("test.type", "trace")
-        span.set_attribute("test.endpoint", "/api/test/trace")
+    # Nested operation 1: Database query simulation
+    await asyncio.sleep(0.05)  # 50ms
 
-        # Simulate some work
-        start_time = time.time()
+    # Nested operation 2: External API call simulation
+    await asyncio.sleep(0.1)  # 100ms
 
-        # Nested span 1: Database query simulation
-        with tracer.start_as_current_span("simulate_db_query") as db_span:
-            db_span.set_attribute("db.operation", "SELECT")
-            db_span.set_attribute("db.table", "test_table")
-            await asyncio.sleep(0.05)  # 50ms
-            db_span.set_attribute("db.rows_returned", 42)
+    # Nested operation 3: Data processing simulation
+    await asyncio.sleep(0.03)  # 30ms
 
-        # Nested span 2: External API call simulation
-        with tracer.start_as_current_span("simulate_api_call") as api_span:
-            api_span.set_attribute("http.method", "GET")
-            api_span.set_attribute("http.url", "https://api.example.com/data")
-            await asyncio.sleep(0.1)  # 100ms
-            api_span.set_attribute("http.status_code", 200)
+    total_time = time.time() - start_time
 
-        # Nested span 3: Data processing simulation
-        with tracer.start_as_current_span("simulate_data_processing") as process_span:
-            process_span.set_attribute("processing.items", 100)
-            await asyncio.sleep(0.03)  # 30ms
-            process_span.set_attribute("processing.completed", True)
-
-        total_time = time.time() - start_time
-
-        # Add final attributes to parent span
-        span.set_attribute("operation.duration_ms", total_time * 1000)
-        span.set_attribute("operation.status", "success")
-
-        return {
-            "status": "success",
-            "message": "Trace test completed successfully",
-            "total_duration_ms": f"{total_time * 1000:.2f}",
-            "operations": {
-                "db_query": "50ms",
-                "api_call": "100ms",
-                "data_processing": "30ms",
-            },
-            "info": "Check SigNoz dashboard to see the trace spans",
-        }
+    return {
+        "status": "success",
+        "message": "Trace test completed successfully",
+        "total_duration_ms": f"{total_time * 1000:.2f}",
+        "operations": {
+            "db_query": "50ms",
+            "api_call": "100ms",
+            "data_processing": "30ms",
+        },
+    }
 
 
 @router.get("/http-error")
@@ -128,8 +97,7 @@ async def test_http_error() -> dict[str, str]:
     """
     Test endpoint that raises an HTTP exception.
 
-    This tests how HTTP errors (4xx, 5xx) are handled by the
-    monitoring system.
+    This tests how HTTP errors (4xx, 5xx) are handled.
 
     Returns:
         Never returns - always raises an exception
@@ -150,29 +118,20 @@ async def test_slow_endpoint() -> dict[str, Any]:
     Test endpoint that simulates a slow operation.
 
     This is useful for testing:
-    - Request duration metrics
-    - Span timing
+    - Request duration
     - Performance monitoring
 
     Returns:
         Dict with timing information
     """
-    tracer = get_tracer(__name__)
+    # Simulate slow operation (2 seconds)
+    await asyncio.sleep(2.0)
 
-    with tracer.start_as_current_span("slow_operation") as span:
-        span.set_attribute("operation.type", "slow")
-
-        # Simulate slow operation (2 seconds)
-        await asyncio.sleep(2.0)
-
-        span.set_attribute("operation.duration_ms", 2000)
-
-        return {
-            "status": "success",
-            "message": "Slow operation completed",
-            "duration_ms": 2000,
-            "info": "Check metrics for request duration histogram",
-        }
+    return {
+        "status": "success",
+        "message": "Slow operation completed",
+        "duration_ms": 2000,
+    }
 
 
 @router.get("/health-check")

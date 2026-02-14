@@ -60,7 +60,7 @@ uv run alembic upgrade head
 
 5. 애플리케이션 실행
 ```bash
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:api --reload
 ```
 
 ### MCP 서버 실행
@@ -282,263 +282,29 @@ GitHub Actions를 통해 자동으로 다음을 실행합니다:
 - **보안**: bandit, safety 검사
 - **커버리지**: 테스트 커버리지 리포트 생성
 
-## 모니터링 및 관찰성 (Monitoring & Observability)
+## 모니터링 안내
 
-이 프로젝트는 **SigNoz**와 **OpenTelemetry**를 사용하여 분산 추적, 메트릭 수집, 에러 리포팅을 지원합니다.
+OTEL/Grafana 전용 스택은 제거되었습니다.
+현재 표준 모니터링은 Sentry입니다.
 
-### SigNoz 설정
-
-#### 1. SigNoz 로컬 실행 (Docker Compose)
-
-```bash
-# 애플리케이션 스택 + SigNoz
-docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
-
-# SigNoz만 실행
-docker compose -f docker-compose.monitoring.yml up -d
-
-# 상태 확인
-docker compose -f docker-compose.monitoring.yml ps
-```
-
-**SigNoz 서비스 접속:**
-- **UI 대시보드**: http://localhost:3301
-- **OTLP gRPC Endpoint**: localhost:4317
-
-#### 2. 환경 변수 설정
-
-`.env` 파일에 다음 설정을 추가:
+### Sentry 환경 변수
 
 ```bash
-# OpenTelemetry 설정 (Grafana Stack)
-OTEL_ENABLED=true
-OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
-OTEL_INSECURE=true
-OTEL_SERVICE_NAME=auto-trader
-OTEL_SERVICE_VERSION=0.1.0
-OTEL_ENVIRONMENT=development
-
-# Telegram 에러 리포팅
-ERROR_REPORTING_ENABLED=true
-ERROR_REPORTING_CHAT_ID=your_telegram_chat_id
-TELEGRAM_TOKEN=your_telegram_bot_token
-ERROR_DUPLICATE_WINDOW=300
+SENTRY_DSN=
+SENTRY_ENVIRONMENT=
+SENTRY_RELEASE=
+SENTRY_TRACES_SAMPLE_RATE=1.0
+SENTRY_PROFILES_SAMPLE_RATE=1.0
+SENTRY_SEND_DEFAULT_PII=true
+SENTRY_ENABLE_LOG_EVENTS=true
 ```
 
-#### 3. Telegram Chat ID 찾기
+### 운영 정책
 
-1. **Telegram 봇 생성:**
-   - Telegram에서 [@BotFather](https://t.me/botfather) 검색
-   - `/newbot` 명령으로 새 봇 생성
-   - Bot Token 저장
-
-2. **Chat ID 확인:**
-   - 생성한 봇에게 아무 메시지나 전송
-   - 브라우저에서 다음 URL 접속:
-     ```
-     https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
-     ```
-   - 응답에서 `"chat":{"id":123456789}` 부분의 숫자가 Chat ID
-
-3. **.env에 설정:**
-   ```bash
-   TELEGRAM_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
-   ERROR_REPORTING_CHAT_ID=123456789
-   ```
-
-#### 4. 애플리케이션 실행 및 확인
-
-```bash
-# 의존성 설치 (OpenTelemetry 패키지 포함)
-uv sync
-
-# 애플리케이션 실행
-uv run uvicorn app.main:app --reload
-```
-
-**로그 확인:**
-```
-INFO: Telemetry initialized: auto-trader v0.1.0 (development)
-INFO: Error reporting initialized: chat_id=123456789, duplicate_window=300s
-INFO: FastAPI instrumented for telemetry
-```
-
-#### 5. 모니터링 테스트 엔드포인트
-
-애플리케이션에는 모니터링 기능을 테스트할 수 있는 엔드포인트가 포함되어 있습니다:
-
-```bash
-# 헬스 체크
-curl http://localhost:8000/api/test/health-check
-
-# 일반 에러 테스트 (Telegram으로 에러 전송)
-curl http://localhost:8000/api/test/error
-
-# 크리티컬 에러 테스트
-curl http://localhost:8000/api/test/critical
-
-# 커스텀 트레이싱 테스트 (SigNoz에서 스팬 확인)
-curl http://localhost:8000/api/test/trace
-
-# 느린 요청 테스트 (메트릭 확인)
-curl http://localhost:8000/api/test/slow
-
-# HTTP 에러 테스트
-curl http://localhost:8000/api/test/http-error
-```
-
-#### 6. SigNoz 대시보드 사용
-
-1. **http://localhost:3301** 접속
-2. **Services** 탭에서 `auto-trader` 서비스 확인
-3. **Traces** 탭:
-   - HTTP 요청 추적
-   - 커스텀 스팬 확인 (`/api/test/trace` 호출 후)
-   - 에러 스팬 확인
-4. **Metrics** 탭:
-   - `http.server.request.duration`: 요청 처리 시간
-   - `http.server.request.count`: 요청 카운트
-   - `http.server.error.count`: 에러 카운트
-
-#### 7. 프로덕션 환경 설정
-
-**원격 Grafana Stack 사용 (Grafana Cloud 또는 자체 호스팅):**
-
-```bash
-# .env
-OTEL_ENABLED=true
-OTEL_EXPORTER_OTLP_ENDPOINT=your-tempo-host:443  # Grafana Cloud 또는 자체 호스팅 Tempo
-OTEL_INSECURE=false  # TLS 사용
-OTEL_SERVICE_NAME=auto-trader
-OTEL_ENVIRONMENT=production
-```
-
-**자체 호스팅 Grafana Stack:**
-
-```bash
-# .env
-OTEL_ENABLED=true
-OTEL_EXPORTER_OTLP_ENDPOINT=your-tempo-server:4317
-OTEL_INSECURE=false  # TLS 권장
-OTEL_SERVICE_NAME=auto-trader
-OTEL_ENVIRONMENT=production
-```
-
-### 모니터링 기능
-
-#### 자동 수집 데이터
-
-- **HTTP 요청 추적**: 모든 API 요청의 상세 트레이싱
-- **데이터베이스 쿼리**: SQLAlchemy 쿼리 추적
-- **Redis 작업**: Redis 명령 추적
-- **HTTP 클라이언트**: httpx, requests 호출 추적
-- **메트릭**: 요청 시간, 카운트, 에러율
-
-#### Telegram 에러 리포팅
-
-- **자동 에러 감지**: ERROR/CRITICAL 레벨 자동 전송
-- **중복 방지**: 동일 에러 5분간 1회만 전송 (Redis 기반)
-- **풍부한 컨텍스트**:
-  - 에러 타입 및 메시지
-  - 전체 스택 트레이스
-  - 요청 정보 (URL, method, client IP)
-  - 타임스탬프
-
-#### 커스텀 트레이싱
-
-코드에서 커스텀 스팬 추가:
-
-```python
-from app.monitoring.telemetry import get_tracer
-
-tracer = get_tracer(__name__)
-
-with tracer.start_as_current_span("my_operation") as span:
-    span.set_attribute("user_id", user_id)
-    span.set_attribute("operation_type", "analysis")
-    # Your code here
-```
-
-#### 커스텀 메트릭
-
-코드에서 커스텀 메트릭 추가:
-
-```python
-from app.monitoring.telemetry import get_meter
-
-meter = get_meter(__name__)
-
-# Counter
-counter = meter.create_counter(
-    name="trades.executed",
-    description="Number of trades executed",
-    unit="1"
-)
-counter.add(1, {"market": "upbit", "result": "success"})
-
-# Histogram
-histogram = meter.create_histogram(
-    name="trade.amount",
-    description="Trade amount in KRW",
-    unit="KRW"
-)
-histogram.record(100000, {"market": "upbit"})
-```
-
-### 모니터링 비활성화
-
-개발 중 모니터링이 필요 없는 경우:
-
-```bash
-# .env
-OTEL_ENABLED=false
-ERROR_REPORTING_ENABLED=false
-```
-
-### 트러블슈팅
-
-**SigNoz에 데이터가 보이지 않는 경우:**
-
-1. OTLP endpoint 연결 확인:
-   ```bash
-   telnet localhost 4317
-   ```
-
-2. SigNoz 컨테이너 상태 확인:
-   ```bash
-   cd signoz/deploy/
-   docker compose -f docker/clickhouse-setup/docker-compose.yaml logs
-   ```
-
-3. 애플리케이션 로그 확인:
-   ```bash
-   # "Telemetry initialized" 로그 확인
-   uv run uvicorn app.main:app --reload
-   ```
-
-**Telegram 메시지가 전송되지 않는 경우:**
-
-1. Bot Token 확인:
-   ```bash
-   curl https://api.telegram.org/bot<YOUR_TOKEN>/getMe
-   ```
-
-2. Chat ID 확인:
-   ```bash
-   curl https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
-   ```
-
-3. Redis 연결 확인 (에러 중복 방지용):
-   ```bash
-   docker compose exec redis redis-cli ping
-   ```
-
-### 추가 문서
-
-자세한 내용은 다음 문서를 참고하세요:
-- [MONITORING_README.md](MONITORING_README.md) - 모니터링 상세 가이드
-- [OpenTelemetry 문서](https://opentelemetry.io/docs/)
-- [SigNoz 문서](https://signoz.io/docs/)
+- `SENTRY_DSN`이 있으면 환경과 무관하게 활성화
+- 단일 프로젝트에서 `service` 태그로 프로세스 분리
+- `logger.error` 이벤트 수집 활성화
+- 민감 필드(`authorization`, `cookie`, `token`, `secret`, `password`)는 마스킹
 
 ## 라이센스
 

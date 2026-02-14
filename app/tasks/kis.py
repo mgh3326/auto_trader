@@ -7,7 +7,6 @@ from celery import shared_task
 
 from app.analysis.service_analyzers import KISAnalyzer
 from app.core.symbol import to_db_symbol
-from app.monitoring.error_reporter import get_error_reporter
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.kis import KISClient
 from app.services.kis_trading_service import (
@@ -24,62 +23,6 @@ logger = logging.getLogger(__name__)
 STATUS_FETCHING_HOLDINGS = "보유 주식 조회 중..."
 NO_DOMESTIC_STOCKS_MESSAGE = "보유 중인 국내 주식이 없습니다."
 NO_OVERSEAS_STOCKS_MESSAGE = "보유 중인 해외 주식이 없습니다."
-
-
-async def _report_step_error_async(
-    task_name: str,
-    stock_name: str,
-    stock_code: str,
-    step_name: str,
-    error_message: str,
-) -> None:
-    """태스크 step 에러를 Telegram으로 알림 (비동기)."""
-    error_reporter = get_error_reporter()
-    if not error_reporter._enabled:
-        return
-
-    # 가상의 Exception 생성하여 ErrorReporter 형식 활용
-    class StepError(Exception):
-        pass
-
-    error = StepError(error_message)
-
-    additional_context = {
-        "task_name": task_name,
-        "stock": f"{stock_name} ({stock_code})",
-        "step": step_name,
-    }
-
-    try:
-        await error_reporter.send_error_to_telegram(
-            error=error,
-            additional_context=additional_context,
-        )
-        logger.info(f"Step error reported to Telegram: {task_name} - {step_name}")
-    except Exception as e:
-        logger.error(f"Failed to report step error to Telegram: {e}")
-
-
-def _report_step_error(
-    task_name: str,
-    stock_name: str,
-    stock_code: str,
-    step_name: str,
-    error_message: str,
-) -> None:
-    """태스크 step 에러를 Telegram으로 알림 (동기 wrapper)."""
-    try:
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(
-                _report_step_error_async(
-                    task_name, stock_name, stock_code, step_name, error_message
-                )
-            )
-        finally:
-            loop.close()
-    except Exception as e:
-        logger.error(f"Failed to report step error: {e}")
 
 
 async def _send_toss_recommendation_async(
@@ -708,12 +651,9 @@ def run_per_domestic_stock_automation(self) -> dict:
                             "result": {"success": False, "error": error_msg},
                         }
                     )
-                    await _report_step_error_async(
-                        "kis.run_per_domestic_stock_automation",
-                        name,
-                        code,
-                        "분석",
-                        error_msg,
+                    logger.error(
+                        f"[분석 실패] {name}({code}): {error_msg}",
+                        extra={"task": "kis.run_per_domestic_stock_automation"},
                     )
                     results.append({"name": name, "code": code, "steps": stock_steps})
                     continue  # 분석 실패시 매수/매도 건너뜀
@@ -768,14 +708,11 @@ def run_per_domestic_stock_automation(self) -> dict:
                         kis, code, current_price, avg_price
                     )
                     stock_steps.append({"step": "매수", "result": res})
-                    # 매수 결과에 error가 있으면 알림
+                    # 매수 결과에 error가 있으면 로깅
                     if res.get("error"):
-                        await _report_step_error_async(
-                            "kis.run_per_domestic_stock_automation",
-                            name,
-                            code,
-                            "매수",
-                            res["error"],
+                        logger.error(
+                            f"[매수 에러] {name}({code}): {res['error']}",
+                            extra={"task": "kis.run_per_domestic_stock_automation"},
                         )
                     # 매수 성공 시 텔레그램 알림
                     elif res.get("success") and res.get("orders_placed", 0) > 0:
@@ -800,12 +737,9 @@ def run_per_domestic_stock_automation(self) -> dict:
                             "result": {"success": False, "error": error_msg},
                         }
                     )
-                    await _report_step_error_async(
-                        "kis.run_per_domestic_stock_automation",
-                        name,
-                        code,
-                        "매수",
-                        error_msg,
+                    logger.error(
+                        f"[매수 실패] {name}({code}): {error_msg}",
+                        extra={"task": "kis.run_per_domestic_stock_automation"},
                     )
 
                 # 매수 후 잔고/평단가를 최신화하여 매도 단계에 반영
@@ -956,14 +890,11 @@ def run_per_domestic_stock_automation(self) -> dict:
                         refreshed_qty,
                     )
                     stock_steps.append({"step": "매도", "result": res})
-                    # 매도 결과에 error가 있으면 알림
+                    # 매도 결과에 error가 있으면 로깅
                     if res.get("error"):
-                        await _report_step_error_async(
-                            "kis.run_per_domestic_stock_automation",
-                            name,
-                            code,
-                            "매도",
-                            res["error"],
+                        logger.error(
+                            f"[매도 에러] {name}({code}): {res['error']}",
+                            extra={"task": "kis.run_per_domestic_stock_automation"},
                         )
                     # 매도 성공 시 텔레그램 알림
                     elif res.get("success") and res.get("orders_placed", 0) > 0:
@@ -989,12 +920,9 @@ def run_per_domestic_stock_automation(self) -> dict:
                             "result": {"success": False, "error": error_msg},
                         }
                     )
-                    await _report_step_error_async(
-                        "kis.run_per_domestic_stock_automation",
-                        name,
-                        code,
-                        "매도",
-                        error_msg,
+                    logger.error(
+                        f"[매도 실패] {name}({code}): {error_msg}",
+                        extra={"task": "kis.run_per_domestic_stock_automation"},
                     )
 
                 results.append({"name": name, "code": code, "steps": stock_steps})
@@ -1005,9 +933,10 @@ def run_per_domestic_stock_automation(self) -> dict:
                 "results": results,
             }
         except Exception as e:
-            # 태스크 전체 실패 시에도 알림
-            await _report_step_error_async(
-                "kis.run_per_domestic_stock_automation", "전체", "-", "태스크", str(e)
+            # 태스크 전체 실패 시 로깅
+            logger.error(
+                f"[태스크 실패] kis.run_per_domestic_stock_automation: {e}",
+                exc_info=True,
             )
             return {"status": "failed", "error": str(e)}
         finally:

@@ -22,9 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
+from app.monitoring.sentry import capture_exception, init_sentry
 from app.services.dca_service import DcaService
 from app.services.execution_event import (
     close_redis as close_execution_redis,
+)
+from app.services.execution_event import (
     publish_execution_event,
 )
 from app.services.kis_websocket import KISExecutionWebSocket
@@ -229,6 +232,7 @@ async def main():
         level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    init_sentry(service_name="auto-trader-kis-ws")
 
     monitor = KISWebSocketMonitor()
 
@@ -237,6 +241,7 @@ async def main():
     except KeyboardInterrupt:
         logger.info("Received KeyboardInterrupt, shutting down...")
     except Exception as e:
+        capture_exception(e, process="kis_websocket_monitor")
         logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
     finally:

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kis_websocket_monitor import KISWebSocketMonitor
+from kis_websocket_monitor import KISWebSocketMonitor, main
 
 
 @pytest.mark.unit
@@ -293,3 +293,27 @@ class TestKISWebSocketMonitorStartStop:
             await monitor.stop()
 
             mock_close_redis.assert_awaited_once()
+
+
+@pytest.mark.unit
+class TestKISWebSocketMonitorSentry:
+    """Tests for Sentry capture integration."""
+
+    @pytest.mark.asyncio
+    async def test_main_captures_fatal_exception(self):
+        mock_monitor = AsyncMock()
+        mock_monitor.start = AsyncMock(side_effect=RuntimeError("fatal"))
+        mock_monitor.stop = AsyncMock()
+
+        with (
+            patch("kis_websocket_monitor.init_sentry") as mock_init_sentry,
+            patch("kis_websocket_monitor.capture_exception") as mock_capture_exception,
+            patch("kis_websocket_monitor.KISWebSocketMonitor", return_value=mock_monitor),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                await main()
+
+        assert exc_info.value.code == 1
+        mock_init_sentry.assert_called_once_with(service_name="auto-trader-kis-ws")
+        mock_capture_exception.assert_called_once()
+        mock_monitor.stop.assert_awaited_once()
