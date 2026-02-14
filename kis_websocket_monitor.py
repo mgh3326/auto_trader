@@ -25,9 +25,12 @@ from app.core.config import settings
 from app.services.dca_service import DcaService
 from app.services.execution_event import (
     close_redis as close_execution_redis,
+)
+from app.services.execution_event import (
     publish_execution_event,
 )
 from app.services.kis_websocket import KISExecutionWebSocket
+from app.services.openclaw_client import OpenClawClient
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,7 @@ class KISWebSocketMonitor:
     def __init__(self):
         self.dca_service: DcaService | None = None
         self.websocket_client: KISExecutionWebSocket | None = None
+        self.openclaw_client = OpenClawClient()
         self.is_running = False
         self._setup_signal_handlers()
 
@@ -118,15 +122,14 @@ class KISWebSocketMonitor:
         order_id = event.get("order_id")
         if not order_id:
             logger.debug("Execution event without order_id, skipping DCA update")
-            await self._publish_execution_event(event)
-            return
-
-        try:
-            await self._update_dca_step(order_id, event)
-        except Exception as e:
-            logger.warning(f"DCA step update failed: {e}, continuing...")
+        else:
+            try:
+                await self._update_dca_step(order_id, event)
+            except Exception as e:
+                logger.warning(f"DCA step update failed: {e}, continuing...")
 
         await self._publish_execution_event(event)
+        await self._notify_openclaw(event)
 
     async def _update_dca_step(self, order_id: str, event: dict[str, Any]) -> None:
         """
@@ -182,6 +185,18 @@ class KISWebSocketMonitor:
             await publish_execution_event(event)
         except Exception as e:
             logger.error(f"Failed to publish execution event: {e}", exc_info=True)
+
+    async def _notify_openclaw(self, event: dict[str, Any]) -> None:
+        """OpenClaw execution 알림 전송 (실패해도 체결 파이프라인은 유지)."""
+        try:
+            sent = await self.openclaw_client.send_execution_notification(event)
+            if not sent:
+                logger.debug(
+                    "OpenClaw execution notification skipped/failed: symbol=%s",
+                    event.get("symbol"),
+                )
+        except Exception as e:
+            logger.warning(f"OpenClaw notification failed (non-fatal): {e}")
 
     async def start(self):
         """

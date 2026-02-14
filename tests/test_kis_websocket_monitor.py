@@ -54,6 +54,10 @@ class TestKISWebSocketMonitorDCAIntegration:
         monitor = KISWebSocketMonitor()
         monitor.dca_service = AsyncMock()
         monitor.websocket_client = AsyncMock()
+        monitor.openclaw_client = AsyncMock()
+        monitor.openclaw_client.send_execution_notification = AsyncMock(
+            return_value=True
+        )
 
         mock_publish = AsyncMock()
         with patch("kis_websocket_monitor.publish_execution_event", mock_publish):
@@ -70,6 +74,9 @@ class TestKISWebSocketMonitorDCAIntegration:
             monitor.dca_service.find_step_by_order_id.assert_not_called()
             monitor.dca_service.mark_step_filled.assert_not_called()
             mock_publish.assert_called_once_with(event)
+            monitor.openclaw_client.send_execution_notification.assert_awaited_once_with(
+                event
+            )
 
     @pytest.mark.asyncio
     async def test_on_execution_with_matching_order_id(self):
@@ -84,6 +91,10 @@ class TestKISWebSocketMonitorDCAIntegration:
         monitor.dca_service.find_step_by_order_id = AsyncMock(return_value=mock_step)
         monitor.dca_service.mark_step_filled = AsyncMock()
         monitor.dca_service.get_next_pending_step = AsyncMock(return_value=None)
+        monitor.openclaw_client = AsyncMock()
+        monitor.openclaw_client.send_execution_notification = AsyncMock(
+            return_value=True
+        )
 
         mock_publish = AsyncMock()
         with patch("kis_websocket_monitor.publish_execution_event", mock_publish):
@@ -105,6 +116,9 @@ class TestKISWebSocketMonitorDCAIntegration:
                 step_id=1,
                 filled_price=Decimal("49500"),
                 filled_qty=Decimal("0.001"),
+            )
+            monitor.openclaw_client.send_execution_notification.assert_awaited_once_with(
+                event
             )
 
     @pytest.mark.asyncio
@@ -128,6 +142,10 @@ class TestKISWebSocketMonitorDCAIntegration:
         monitor.dca_service.get_next_pending_step = AsyncMock(
             return_value=mock_next_step
         )
+        monitor.openclaw_client = AsyncMock()
+        monitor.openclaw_client.send_execution_notification = AsyncMock(
+            return_value=True
+        )
 
         mock_publish = AsyncMock()
         with patch("kis_websocket_monitor.publish_execution_event", mock_publish):
@@ -149,6 +167,9 @@ class TestKISWebSocketMonitorDCAIntegration:
             assert event["dca_next_step"]["target_quantity"] == "0.002"
 
             mock_publish.assert_called_once_with(event)
+            monitor.openclaw_client.send_execution_notification.assert_awaited_once_with(
+                event
+            )
 
     @pytest.mark.asyncio
     async def test_on_execution_dca_failure_continues(self):
@@ -156,6 +177,10 @@ class TestKISWebSocketMonitorDCAIntegration:
         monitor = KISWebSocketMonitor()
         monitor.dca_service = AsyncMock()
         monitor.dca_service.find_step_by_order_id = AsyncMock(return_value=None)
+        monitor.openclaw_client = AsyncMock()
+        monitor.openclaw_client.send_execution_notification = AsyncMock(
+            return_value=True
+        )
 
         mock_publish = AsyncMock()
         with patch("kis_websocket_monitor.publish_execution_event", mock_publish):
@@ -169,6 +194,35 @@ class TestKISWebSocketMonitorDCAIntegration:
 
             monitor.dca_service.mark_step_filled.assert_not_called()
             mock_publish.assert_called_once()
+            monitor.openclaw_client.send_execution_notification.assert_awaited_once_with(
+                event
+            )
+
+    @pytest.mark.asyncio
+    async def test_on_execution_openclaw_failure_continues(self):
+        """OpenClaw 전송 실패 시에도 이벤트 발행과 체결 처리가 유지되는지 테스트"""
+        monitor = KISWebSocketMonitor()
+        monitor.dca_service = AsyncMock()
+        monitor.dca_service.find_step_by_order_id = AsyncMock(return_value=None)
+        monitor.openclaw_client = AsyncMock()
+        monitor.openclaw_client.send_execution_notification = AsyncMock(
+            side_effect=Exception("openclaw error")
+        )
+
+        mock_publish = AsyncMock()
+        with patch("kis_websocket_monitor.publish_execution_event", mock_publish):
+            event = {
+                "type": "execution",
+                "market": "kr",
+                "order_id": "ORDER-123",
+            }
+
+            await monitor._on_execution(event)
+
+            mock_publish.assert_called_once_with(event)
+            monitor.openclaw_client.send_execution_notification.assert_awaited_once_with(
+                event
+            )
 
     @pytest.mark.asyncio
     async def test_update_dca_step_without_service(self):
