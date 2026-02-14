@@ -59,9 +59,9 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         name="get_disclosures",
         description=(
             "Get DART (OPENDART) disclosure filings for Korean corporations. "
-            "Supports both 6-digit corp codes (e.g., '005930') and Korean company names "
-            "(e.g., '삼성전자'). Returns filing date, report name, report number, and "
-            "corporation name."
+            "Supports Korean company names (삼성전자), 6-digit stock codes (005930), "
+            "and 8-digit DART corp codes. Returns filing date, report name, report number, "
+            "and corporation name."
         ),
     )
     async def get_disclosures(

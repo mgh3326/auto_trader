@@ -180,8 +180,9 @@ async def get_disclosures_impl(
             "success": False,
             "error": "DART functionality not available (dart_fss package not installed)",
         }
+    normalized_symbol = (symbol or "").strip().strip("'\"")
     try:
-        result = await list_filings(symbol, days, limit, report_type)
+        result = await list_filings(normalized_symbol, days, limit, report_type)
         if isinstance(result, list):
             return {"success": True, "filings": result}
         return result
@@ -189,7 +190,7 @@ async def get_disclosures_impl(
         return {
             "success": False,
             "error": str(exc),
-            "symbol": symbol,
+            "symbol": normalized_symbol,
         }
 
 
@@ -337,7 +338,9 @@ async def analyze_portfolio_impl(
                 errors.append(f"{sym}: {str(exc)}")
                 return {"symbol": sym, "error": str(exc)}
 
-    analyze_results = await asyncio.gather(*[_analyze_one(s) for s in normalized_symbols])
+    analyze_results = await asyncio.gather(
+        *[_analyze_one(s) for s in normalized_symbols]
+    )
 
     success_count = 0
     fail_count = 0
@@ -363,7 +366,9 @@ async def screen_stocks_impl(
     market: Literal["kr", "kospi", "kosdaq", "us", "crypto"] = "kr",
     asset_type: Literal["stock", "etf", "etn"] | None = None,
     category: str | None = None,
-    sort_by: Literal["volume", "market_cap", "change_rate", "dividend_yield"] = "volume",
+    sort_by: Literal[
+        "volume", "market_cap", "change_rate", "dividend_yield"
+    ] = "volume",
     sort_order: Literal["asc", "desc"] = "desc",
     min_market_cap: float | None = None,
     max_per: float | None = None,
