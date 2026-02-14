@@ -1,7 +1,8 @@
 """Market data utilities: quotes, OHLCV, and technical indicators.
 
 This module contains functions for fetching market data (quotes, OHLCV candles)
-and computing technical indicators (SMA, EMA, RSI, MACD, Bollinger, ATR, Pivot, Fibonacci).
+and computing technical indicators (SMA, EMA, RSI, MACD, Bollinger, ATR, Pivot,
+ADX, Stochastic RSI, OBV, Fibonacci).
 """
 
 from __future__ import annotations
@@ -407,6 +408,13 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
     async def _get_indicators_impl(
         symbol: str, indicators: list[str], market: str | None = None
     ) -> dict[str, Any]:
+        """Calculate requested indicators for a symbol.
+
+        Supported indicators:
+        - adx: returns adx, plus_di, minus_di
+        - stoch_rsi: returns k, d
+        - obv: returns obv, signal, divergence
+        """
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
@@ -422,6 +430,9 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             "bollinger",
             "atr",
             "pivot",
+            "adx",
+            "stoch_rsi",
+            "obv",
         }
         normalized_indicators: list[IndicatorType] = []
         for ind in indicators:
@@ -443,7 +454,9 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             if df.empty:
                 raise ValueError(f"No data available for symbol '{symbol}'")
 
-            current_price = float(df["close"].iloc[-1]) if "close" in df.columns else None
+            current_price = (
+                float(df["close"].iloc[-1]) if "close" in df.columns else None
+            )
             indicator_results = _compute_indicators(df, normalized_indicators)
 
             return {
@@ -468,7 +481,10 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             "Calculate technical indicators for a symbol. Available indicators: "
             "sma (Simple Moving Average), ema (Exponential Moving Average), "
             "rsi (Relative Strength Index), macd (MACD), bollinger (Bollinger Bands), "
-            "atr (Average True Range), pivot (Pivot Points)."
+            "atr (Average True Range), pivot (Pivot Points), "
+            "adx (Average Directional Index - returns adx, plus_di, minus_di), "
+            "stoch_rsi (Stochastic RSI - returns k, d), "
+            "obv (On-Balance Volume - returns obv, signal, divergence)."
         ),
     )
     async def get_indicators(
