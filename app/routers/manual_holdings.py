@@ -35,6 +35,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/manual-holdings", tags=["Manual Holdings"])
 
 
+def _parse_broker_type(value: str | BrokerType | None) -> BrokerType | None:
+    if value is None or isinstance(value, BrokerType):
+        return value
+    try:
+        return BrokerType(value)
+    except ValueError:
+        logger.warning("Unknown broker_type returned from DB: %s", value)
+        return None
+
+
 # =============================================================================
 # 웹 페이지
 # =============================================================================
@@ -161,7 +171,7 @@ async def list_holdings(
     result = []
     for h in holdings:
         data = ManualHoldingResponse.model_validate(h)
-        data.broker_type = h.broker_account.broker_type
+        data.broker_type = _parse_broker_type(h.broker_account.broker_type)
         data.account_name = h.broker_account.account_name
         result.append(data)
 
@@ -202,7 +212,7 @@ async def create_holding(
     )
 
     result = ManualHoldingResponse.model_validate(holding)
-    result.broker_type = account.broker_type
+    result.broker_type = _parse_broker_type(account.broker_type)
     result.account_name = account.account_name
     return result
 
@@ -247,7 +257,7 @@ async def create_holdings_bulk(
     result = []
     for h in holdings:
         r = ManualHoldingResponse.model_validate(h)
-        r.broker_type = account.broker_type
+        r.broker_type = _parse_broker_type(account.broker_type)
         r.account_name = account.account_name
         result.append(r)
 
@@ -273,7 +283,7 @@ async def update_holding(
     )
 
     result = ManualHoldingResponse.model_validate(updated)
-    result.broker_type = holding.broker_account.broker_type
+    result.broker_type = _parse_broker_type(holding.broker_account.broker_type)
     result.account_name = holding.broker_account.account_name
     return result
 

@@ -155,6 +155,18 @@ class MergedPortfolioService:
         return total_value / total_quantity
 
     @staticmethod
+    def _resolve_broker_type(raw_broker_type: Any) -> str:
+        """브로커 타입을 문자열로 정규화 (enum 또는 plain string 모두 지원)."""
+        if isinstance(raw_broker_type, str):
+            return raw_broker_type.lower()
+
+        value = getattr(raw_broker_type, "value", None)
+        if isinstance(value, str):
+            return value.lower()
+
+        return str(raw_broker_type).lower()
+
+    @staticmethod
     def _get_or_create_holding(
         merged: dict[str, MergedHolding],
         ticker: str,
@@ -233,7 +245,7 @@ class MergedPortfolioService:
 
         for holding in manual_holdings:
             ticker = holding.ticker
-            broker_type = holding.broker_account.broker_type.value
+            broker_type = self._resolve_broker_type(holding.broker_account.broker_type)
             qty = int(holding.quantity)
             avg_price = float(holding.avg_price)
             name = holding.display_name or ticker
@@ -389,7 +401,7 @@ class MergedPortfolioService:
         )
 
         for holding in manual_holdings:
-            broker_type = holding.broker_account.broker_type.value
+            broker_type = self._resolve_broker_type(holding.broker_account.broker_type)
             qty = float(holding.quantity)
             avg = float(holding.avg_price)
 

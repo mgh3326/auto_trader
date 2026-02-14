@@ -206,7 +206,7 @@ class TestApplyManualHoldings:
         mock_holding.avg_price = Decimal("220000")
         mock_holding.display_name = "현대차"
         mock_holding.broker_account = MagicMock()
-        mock_holding.broker_account.broker_type = MagicMock(value="toss")
+        mock_holding.broker_account.broker_type = "toss"
 
         merged_portfolio_service.manual_holdings_service.get_holdings_by_user = (
             AsyncMock(return_value=[mock_holding])
@@ -244,7 +244,7 @@ class TestApplyManualHoldings:
         mock_holding.avg_price = Decimal("75000")
         mock_holding.display_name = "삼성전자"
         mock_holding.broker_account = MagicMock()
-        mock_holding.broker_account.broker_type = MagicMock(value="toss")
+        mock_holding.broker_account.broker_type = "toss"
 
         merged_portfolio_service.manual_holdings_service.get_holdings_by_user = (
             AsyncMock(return_value=[mock_holding])
@@ -507,7 +507,7 @@ class TestBuildMergedPortfolio:
         mock_holding.avg_price = Decimal("220000")
         mock_holding.display_name = "현대차"
         mock_holding.broker_account = MagicMock()
-        mock_holding.broker_account.broker_type = MagicMock(value="toss")
+        mock_holding.broker_account.broker_type = "toss"
 
         merged_portfolio_service.manual_holdings_service.get_holdings_by_user = (
             AsyncMock(return_value=[mock_holding])
@@ -563,7 +563,7 @@ class TestBuildMergedPortfolio:
         mock_holding.avg_price = Decimal("220000")
         mock_holding.display_name = "현대차"
         mock_holding.broker_account = MagicMock()
-        mock_holding.broker_account.broker_type = MagicMock(value="toss")
+        mock_holding.broker_account.broker_type = "toss"
 
         merged_portfolio_service.manual_holdings_service.get_holdings_by_user = (
             AsyncMock(return_value=[mock_holding])

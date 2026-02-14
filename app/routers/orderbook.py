@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/orderbook", tags=["Orderbook"])
 
-UPDATE_INTERVAL = 1
+UPDATE_INTERVAL = 2
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -43,7 +43,7 @@ async def get_available_markets(db: AsyncSession = Depends(get_db)):
     """
     try:
         await upbit_pairs.prime_upbit_constants()
-        markets = sorted(upbit_pairs.KRW_TRADABLE_COINS)
+        markets = sorted(upbit_pairs.COIN_TO_PAIR.values())
         return {"markets": markets}
     except Exception as e:
         logger.error(f"Failed to get markets: {e}")
@@ -112,7 +112,7 @@ async def fetch_all_orderbooks():
     """
     try:
         await upbit_pairs.prime_upbit_constants()
-        markets = upbit_pairs.KRW_TRADABLE_COINS
+        markets = list(upbit_pairs.COIN_TO_PAIR.values())
 
         orderbooks = await upbit_orderbook.fetch_multiple_orderbooks(markets)
 
