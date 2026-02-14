@@ -28,7 +28,6 @@ NC='\033[0m' # No Color
 DOMAIN="${1:-${DOMAIN_NAME:-localhost}}"
 HTTP_URL="http://${DOMAIN}"
 HTTPS_URL="https://${DOMAIN}"
-GRAFANA_URL="${HTTPS_URL}/grafana"
 
 # 결과 카운터
 PASSED=0
@@ -121,7 +120,7 @@ check_caddy_running() {
         fi
     else
         print_failure "Caddy 컨테이너가 실행되지 않았습니다."
-        print_info "다음 명령으로 시작하세요: docker compose -f docker-compose.monitoring-rpi.yml up -d caddy"
+        print_info "Caddy 컨테이너를 먼저 실행한 뒤 다시 시도하세요."
         return 1
     fi
 }
@@ -269,35 +268,6 @@ test_ssl_certificate() {
     print_info "인증서 주체: $SUBJECT"
 }
 
-# Grafana 서브패스 접근 테스트
-test_grafana_subpath() {
-    print_test "Grafana 서브패스 접근 테스트"
-
-    if [ "$DOMAIN" = "localhost" ]; then
-        CURL_OPTS="-k"
-    else
-        CURL_OPTS=""
-    fi
-
-    RESPONSE=$(curl -sI -m 10 $CURL_OPTS "$GRAFANA_URL/login" 2>/dev/null || echo "ERROR")
-
-    if [ "$RESPONSE" = "ERROR" ]; then
-        print_failure "Grafana 서브패스 연결 실패"
-        print_info "Grafana 컨테이너가 실행 중인지 확인하세요."
-    elif echo "$RESPONSE" | grep -q "HTTP/"; then
-        HTTP_STATUS=$(echo "$RESPONSE" | head -n 1 | awk '{print $2}')
-        if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "302" ]; then
-            print_success "Grafana 서브패스 접근 성공 (HTTP 상태: $HTTP_STATUS)"
-        else
-            print_warning "Grafana 응답 상태 코드: $HTTP_STATUS"
-        fi
-    else
-        print_failure "Grafana 서브패스에서 응답을 받지 못했습니다."
-    fi
-}
-
-
-
 # Auto-trader 앱 접근 테스트
 test_autotrader_access() {
     print_test "Auto-trader 앱 접근 테스트"
@@ -378,7 +348,6 @@ main() {
     test_https_connection
     test_security_headers
     test_ssl_certificate
-    test_grafana_subpath
     test_autotrader_access
 
 

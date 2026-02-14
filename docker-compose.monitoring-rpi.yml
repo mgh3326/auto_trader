@@ -1,213 +1,21 @@
-# Docker Compose for Grafana Observability Stack (Raspberry Pi 5 optimized)
-# Caddy + Grafana + Loki (logs) + Tempo (traces) + Prometheus (metrics) + OTEL Collector + Promtail
+# Raspberry Pi edge proxy compose (legacy filename kept for compatibility)
+#
+# NOTE:
+# - OTEL/Grafana/Signoz monitoring stack has been removed.
+# - This file now runs only Caddy reverse proxy for HTTPS termination.
 #
 # Usage:
-#   docker compose -f docker-compose.monitoring-rpi.yml up -d
-#
-# Access Points (via Caddy reverse proxy):
-#   - HTTPS: https://${DOMAIN_NAME} (auto-trader app)
-#   - HTTPS: https://${DOMAIN_NAME}/grafana (Grafana UI)
-#   - Direct access (internal only):
-#     - Grafana UI: http://localhost:3000 (credentials from .env or default: admin/admin)
-#     - OTLP gRPC: localhost:4317 (send traces/metrics here)
-#     - OTLP HTTP: localhost:4318 (send traces/metrics here)
-#     - Tempo HTTP: http://localhost:3200
-#     - Loki HTTP: http://localhost:3100
-#     - Prometheus: http://localhost:9090 (NOT exposed via Caddy for security)
-#
-# Configuration:
-#   Set GRAFANA_ADMIN_PASSWORD in .env for production (default: admin)
-#   Set GRAFANA_ANONYMOUS_ENABLED=false in .env for production security
-#
-# Architecture:
-#   Application → OTEL Collector (4317/4318) → {Tempo, Prometheus}
-#   - Traces: OTEL Collector → Tempo
-#   - Metrics: OTEL Collector → Prometheus
-#   - Logs: Promtail scrapes Docker containers → Loki
-#
-# Resource Limits (optimized for Raspberry Pi 5 - 8GB RAM):
-#   - Memory: ~3GB total (512MB × 5 main + 256MB × 2 lightweight)
-#   - CPU: ~4.5 cores total (1.0 for main services, 0.5 for Collector/Promtail/Caddy)
-#   - Tested on: Raspberry Pi 5 with 8GB RAM
-#
-# Security:
-#   - All services run as non-root users (10001:10001)
-#   - Security hardening applied to Tempo and Loki:
-#     * no-new-privileges: Prevent privilege escalation
-#     * cap_drop: ALL - Drop all Linux capabilities
-#     * cap_add: Only essential capabilities (CHOWN, DAC_OVERRIDE, SETUID, SETGID)
-#   - Named volumes automatically get correct ownership from container user
-#   - If permission issues occur on Raspberry Pi, see troubleshooting in README
-#
-# Verification Steps:
-#   1. Start the stack:
-#      docker compose -f docker-compose.monitoring-rpi.yml up -d
-#
-#   2. Check all services are running:
-#      docker compose -f docker-compose.monitoring-rpi.yml ps
-#      (Expected: tempo, loki, promtail, prometheus, grafana all "Up")
-#
-#   3. Verify Tempo is receiving traces:
-#      curl http://localhost:3200/status
-#
-#   4. Verify Loki is ready:
-#      curl http://localhost:3100/ready
-#
-#   5. Access Grafana and verify datasources:
-#      - Open http://localhost:3000
-#      - Go to Configuration > Data Sources
-#      - Verify Tempo, Loki, and Prometheus are connected (green checkmark)
-#
-#   6. Test trace-to-log correlation:
-#      - In Grafana, go to Explore
-#      - Select Tempo datasource
-#      - Search for traces
-#      - Click on a trace and look for "Logs for this span" button
-#      - Verify logs appear with matching service/container labels
-#
-# To enable in your app, set in .env:
-#   OTEL_ENABLED=true
-#   OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
-#   OTEL_INSECURE=true
+#   docker compose -f docker-compose.monitoring-rpi.yml up -d caddy
 
-name: grafana-observability
+name: caddy-edge
 
 services:
-  # OpenTelemetry Collector - Central telemetry router
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.145.0
-    container_name: otel-collector
-    command: [ "--config=/etc/otel-collector.yaml" ]
-    volumes:
-      - ./grafana-config/otel-collector.yaml:/etc/otel-collector.yaml:ro
-    ports:
-      - "4317:4317" # OTLP gRPC (application sends here)
-      - "4318:4318" # OTLP HTTP (application sends here)
-      - "8888:8888" # Prometheus metrics endpoint
-      - "13133:13133" # OTEL health check endpoint
-    mem_limit: 512m
-    mem_reservation: 256m
-    cpus: '0.5' # Limit to 0.5 CPU core
-    depends_on:
-      tempo:
-        condition: service_started # Tempo has no healthcheck (distroless image)
-      loki:
-        condition: service_started # Start immediately, OTEL has retry logic
-      prometheus:
-        condition: service_started # Start immediately, OTEL has retry logic
-    # Note: OTEL Collector uses minimal base image without wget/curl
-    # Healthcheck removed - service readiness verified by port availability
-    # The collector starts quickly and exports readiness via :13133 (health_check extension)
-    networks:
-      - observability
-    restart: unless-stopped
-
-  # Grafana Tempo - Distributed tracing backend
-  tempo:
-    image: grafana/tempo:2.10.0
-    container_name: tempo
-    user: "10001:10001" # Non-root user (default tempo user)
-    command: [ "-config.file=/etc/tempo.yaml" ]
-    volumes:
-      - ./grafana-config/tempo.yaml:/etc/tempo.yaml:ro
-      - tempo_data:/var/tempo
-    ports:
-      - "3200:3200" # Tempo HTTP
-    mem_limit: 512m
-    mem_reservation: 256m
-    cpus: '1.0' # Limit to 1 CPU core
-    security_opt:
-      - no-new-privileges:true # Prevent privilege escalation
-    # Note: Tempo uses distroless image without wget/curl/sh
-    # Healthcheck removed - service readiness checked by otel-collector startup delay
-    networks:
-      - observability
-    restart: unless-stopped
-
-  # Grafana Loki - Log aggregation system
-  loki:
-    image: grafana/loki:3.6.5
-    container_name: loki
-    user: "10001:10001" # Non-root user (default loki user)
-    command: [ "-config.file=/etc/loki/local-config.yaml" ]
-    volumes:
-      - ./grafana-config/loki.yaml:/etc/loki/local-config.yaml:ro
-      - loki_data:/loki
-    ports:
-      - "3100:3100" # Loki HTTP
-    mem_limit: 512m
-    mem_reservation: 256m
-    cpus: '1.0' # Limit to 1 CPU core
-    security_opt:
-      - no-new-privileges:true # Prevent privilege escalation
-    networks:
-      - observability
-    healthcheck:
-      disable: true  # Loki 이미지에 wget/curl 없음, 외부에서 curl localhost:3100/ready로 확인
-    restart: unless-stopped
-
-  # Promtail - Log collector for Loki
-  promtail:
-    image: grafana/promtail:3.6.5
-    container_name: promtail
-    command: [ "-config.file=/etc/promtail/config.yaml" ]
-    volumes:
-      - ./grafana-config/promtail.yaml:/etc/promtail/config.yaml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - promtail_data:/data/promtail
-    ports:
-      - "9080:9080" # Promtail HTTP for healthcheck
-    mem_limit: 256m
-    mem_reservation: 128m
-    cpus: '0.5' # Limit to 0.5 CPU core (lightweight)
-    networks:
-      - observability
-    depends_on:
-      loki:
-        condition: service_started # Start immediately, Promtail will retry connection
-    healthcheck:
-      disable: true  # Promtail 이미지에 wget/curl 없음, 외부에서 curl localhost:9080/ready로 확인
-    restart: unless-stopped
-
-  # Prometheus - Metrics collection and storage
-  prometheus:
-    image: prom/prometheus:v3.9.1
-    container_name: prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=7d' # 7 days retention (aligned with Tempo/Loki)
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-      - '--web.enable-remote-write-receiver' # Enable OTLP remote write from Collector
-    volumes:
-      - ./grafana-config/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    # ports:
-    #   - "9090:9090"  # Not exposed for security, only accessible via internal network
-    mem_limit: 512m
-    mem_reservation: 256m
-    cpus: '1.0' # Limit to 1 CPU core
-    networks:
-      - observability
-    healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
-
-  # Caddy - Reverse proxy with automatic HTTPS
   caddy:
     image: ghcr.io/${GITHUB_REPOSITORY}-caddy:latest
     container_name: caddy
     ports:
       - "80:80"
       - "443:443"
-    networks:
-      - observability
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -218,14 +26,8 @@ services:
       - caddy_data:/data
       - caddy_config:/config
       - caddy_logs:/data/logs
-      - ./static:/srv
-    mem_limit: 256m
-    mem_reservation: 128m
-    cpus: '0.5' # Limit to 0.5 CPU core (lightweight reverse proxy)
+      - ./static:/srv:ro
     restart: unless-stopped
-    depends_on:
-      grafana:
-        condition: service_healthy
     healthcheck:
       test: [ "CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile" ]
       interval: 10s
@@ -233,65 +35,7 @@ services:
       retries: 3
       start_period: 10s
 
-  # Grafana - Visualization and dashboards
-  grafana:
-    image: grafana/grafana:12.3.2
-    container_name: grafana
-    environment:
-      # Authentication settings (can be overridden via .env file)
-      # For production: set GRAFANA_ADMIN_PASSWORD in .env with a strong password
-      - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS_ENABLED:-true}
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=${GRAFANA_ANONYMOUS_ORG_ROLE:-Admin}
-      - GF_AUTH_DISABLE_LOGIN_FORM=${GRAFANA_DISABLE_LOGIN_FORM:-false}
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      # Subpath configuration for reverse proxy
-      - GF_SERVER_ROOT_URL=https://${DOMAIN_NAME:-localhost}/grafana
-      - GF_SERVER_SERVE_FROM_SUB_PATH=true
-    volumes:
-      - ./grafana-config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
-      - grafana_data:/var/lib/grafana
-    ports:
-      - "3000:3000"
-    mem_limit: 512m
-    mem_reservation: 256m
-    cpus: '1.0' # Limit to 1 CPU core
-    depends_on:
-      tempo:
-        condition: service_started
-      loki:
-        condition: service_started # Start immediately, Grafana will retry datasource connection
-      prometheus:
-        condition: service_started # Start immediately, Grafana will retry datasource connection
-    healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health" ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-    networks:
-      - observability
-    restart: unless-stopped
-
 volumes:
-  tempo_data:
-    name: tempo_data
-  loki_data:
-    name: loki_data
-  prometheus_data:
-    name: prometheus_data
-  grafana_data:
-    name: grafana_data
-  promtail_data:
-    name: promtail_data
   caddy_data:
-    name: caddy_data # IMPORTANT: Back up this volume to preserve Let's Encrypt certificates
   caddy_config:
-    name: caddy_config
   caddy_logs:
-    name: caddy_logs
-
-networks:
-  observability:
-    name: observability
-    driver: bridge

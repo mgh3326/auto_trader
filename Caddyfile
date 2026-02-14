@@ -33,7 +33,7 @@
 		# Prevent MIME type sniffing
 		X-Content-Type-Options "nosniff"
 
-		# Allow framing from same origin (Grafana needs this for dashboards)
+		# Allow framing from same origin
 		X-Frame-Options "SAMEORIGIN"
 
 		# Content Security Policy (CSP)
@@ -47,15 +47,6 @@
 	handle /favicon.ico {
 		root * /srv
 		file_server
-	}
-
-	# Grafana subpath → Grafana service (must come first - more specific)
-	handle /grafana* {
-		reverse_proxy grafana:3000 {
-			# Headers for proper subpath handling
-			header_up Host {host}
-			header_up X-Real-IP {remote_host}
-		}
 	}
 
 	# MCP subpath → MCP server
