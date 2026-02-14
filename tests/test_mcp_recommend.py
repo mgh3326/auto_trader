@@ -781,7 +781,7 @@ class TestRecommendStocksIntegration:
         assert result["remaining_budget"] == 1_000_000
         assert result["candidates_screened"] == 0
         assert isinstance(result["warnings"], list)
-        assert "disclaimer" in result
+        assert "disclaimer" not in result
 
     @pytest.mark.asyncio
     async def test_all_candidates_excluded(
@@ -827,43 +827,6 @@ class TestRecommendStocksIntegration:
         assert result["remaining_budget"] == 1_000_000
         assert result["candidates_screened"] == 2
         assert isinstance(result["warnings"], list)
-
-    @pytest.mark.asyncio
-    async def test_disclaimer_present(
-        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
-    ):
-        _mock_kr_sources(
-            monkeypatch,
-            stk=[
-                {
-                    "code": "005930",
-                    "name": "삼성전자",
-                    "close": 80_000,
-                    "volume": 1_000_000,
-                    "change_rate": 1.2,
-                    "market_cap": 1000,
-                },
-            ],
-            valuations={
-                "005930": {"per": 12.0, "pbr": 1.2, "dividend_yield": 0.02},
-            },
-        )
-        _mock_empty_holdings(monkeypatch)
-
-        result = await recommend_stocks(
-            budget=300_000,
-            market="kr",
-            strategy="balanced",
-            max_positions=1,
-        )
-
-        assert "disclaimer" in result
-        assert isinstance(result["disclaimer"], str)
-        assert len(result["disclaimer"]) > 0
-        assert (
-            "투자" in result["disclaimer"]
-            or "investment" in result["disclaimer"].lower()
-        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

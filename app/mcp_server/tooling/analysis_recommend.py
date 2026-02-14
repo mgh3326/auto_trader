@@ -305,7 +305,6 @@ async def recommend_stocks_impl(
                     "candidates_screened": 0,
                     "diagnostics": diagnostics,
                     "fallback_applied": False,
-                    "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
                     "warnings": [*warnings, f"KR 후보 스크리닝 실패: {screen_error}"],
                     "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
                 }
@@ -367,7 +366,6 @@ async def recommend_stocks_impl(
                     "candidates_screened": 0,
                     "diagnostics": diagnostics,
                     "fallback_applied": False,
-                    "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
                     "warnings": [*warnings, f"Crypto 후보 스크리닝 실패: {screen_error}"],
                     "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
                 }
@@ -702,7 +700,6 @@ async def recommend_stocks_impl(
             "candidates_screened": len(candidates),
             "diagnostics": diagnostics,
             "fallback_applied": diagnostics.get("fallback_applied", False),
-            "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
             "warnings": warnings,
             "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         }

@@ -175,7 +175,6 @@ Response format:
     }
   },
   "fallback_applied": false,
-  "disclaimer": "투자 권유가 아닙니다. 모든 투자의 책임은 투자자에게 있습니다.",
   "warnings": [],
   "timestamp": "2026-02-13T02:11:52.950534+00:00"
 }
