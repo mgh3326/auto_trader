@@ -110,6 +110,7 @@ def init_sentry(
             integrations=integrations,
             before_send=_before_send,
             before_breadcrumb=_before_breadcrumb,
+            enable_logs=True,
         )
         sentry_sdk.set_tag("service", service_name)
         sentry_sdk.set_tag("runtime", "python")
