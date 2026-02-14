@@ -35,18 +35,59 @@ async def kis_overseas_trading_dashboard(request: Request):
     )
 
 
+def _is_us_nation_name(value: str | None) -> bool:
+    if not value:
+        return False
+    normalized = value.strip().casefold()
+    return normalized in {
+        "미국",
+        "us",
+        "usa",
+        "united states",
+        "united states of america",
+    }
+
+
+def _select_usd_row_for_balance(rows: list[dict]) -> dict | None:
+    if not rows:
+        return None
+
+    usd_rows = [
+        row for row in rows if str(row.get("crcy_cd", "")).strip().upper() == "USD"
+    ]
+    if not usd_rows:
+        return None
+
+    us_row = next(
+        (row for row in usd_rows if _is_us_nation_name(row.get("natn_name"))), None
+    )
+    if us_row:
+        return us_row
+
+    def _orderable_amount(row: dict) -> float:
+        try:
+            return float(row.get("frcr_gnrl_ord_psbl_amt") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return max(usd_rows, key=_orderable_amount)
+
+
 @router.get("/api/my-stocks")
 async def get_my_overseas_stocks(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_authenticated_user),
 ):
-    """보유 해외 주식 조회 API (KIS + 수동 잔고 통합)"""
     try:
         kis = KISClient()
 
-        # 통합 증거금 조회 (달러 예수금 확인용)
-        margin = await kis.inquire_integrated_margin()
-        usd_balance = margin.get("usd_balance", 0)
+        margin_data = await kis.inquire_overseas_margin()
+        usd_row = _select_usd_row_for_balance(margin_data)
+        if usd_row is None:
+            raise RuntimeError("USD margin data not found in overseas margin response")
+        usd_balance = float(
+            usd_row.get("frcr_dncl_amt1") or usd_row.get("frcr_dncl_amt_2") or 0
+        )
 
         # MergedPortfolioService를 사용하여 KIS + 수동 잔고 통합
         service = MergedPortfolioService(db)

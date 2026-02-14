@@ -1305,12 +1305,16 @@ class KISClient:
 
         return results
 
-    async def inquire_integrated_margin(self, is_mock: bool = False) -> dict:
+    async def inquire_integrated_margin(
+        self, is_mock: bool = False, cma_evlu_amt_icld_yn: str = "N"
+    ) -> dict:
         """
         통합증거금 조회 (원화 + 외화 예수금)
 
         Args:
             is_mock: True면 모의투자, False면 실전투자
+            cma_evlu_amt_icld_yn: CMA 평가금액 포함 여부 ("N": 미포함, "Y": 포함)
+                                  기본값 "N", OPSQ2001 오류 시 "Y"로 자동 재시도
 
         Returns:
             통합 증거금 정보
@@ -1341,9 +1345,10 @@ class KISClient:
         params = {
             "CANO": cano,
             "ACNT_PRDT_CD": acnt_prdt_cd,
+            "CMA_EVLU_AMT_ICLD_YN": cma_evlu_amt_icld_yn,
         }
 
-        logging.info("통합증거금 조회")
+        logging.info("통합증거금 조회 (CMA_EVLU_AMT_ICLD_YN=%s)", cma_evlu_amt_icld_yn)
 
         async with httpx.AsyncClient(timeout=5) as cli:
             r = await cli.get(
@@ -1362,11 +1367,24 @@ class KISClient:
                 msg_cd=msg_cd,
                 msg1=msg1,
             )
+            # 토큰 만료 시 재발급 후 재시도
             if msg_cd in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
-                return await self.inquire_integrated_margin(is_mock)
-            raise RuntimeError(f"{msg_cd} {msg1}")
+                return await self.inquire_integrated_margin(
+                    is_mock, cma_evlu_amt_icld_yn
+                )
+            # msg1 타입 안전 처리 (None 또는 비문자열 대응)
+            msg1_text = str(msg1 or "")
+            # OPSQ2001 + CMA_EVLU_AMT_ICLD_YN 오류 시 "Y"로 1회 재시도
+            if (
+                msg_cd == "OPSQ2001"
+                and "CMA_EVLU_AMT_ICLD_YN" in msg1_text
+                and cma_evlu_amt_icld_yn == "N"
+            ):
+                logging.info("OPSQ2001 CMA_EVLU_AMT_ICLD_YN 오류 발생, Y로 재시도")
+                return await self.inquire_integrated_margin(is_mock, "Y")
+            raise RuntimeError(f"{msg_cd} {msg1_text}")
 
         output = js.get("output1") or js.get("output") or {}
         if isinstance(output, list):
@@ -1582,7 +1600,7 @@ class KISClient:
                 "AUTH": "",
                 "EXCD": excd,  # 거래소코드 (3자리)
                 "SYMB": to_kis_symbol(symbol),  # 심볼 (DB형식 . -> KIS형식 /)
-                "GUBN": "0",  # 0:일, 1:주, 2:월
+                "GUBN": {"D": "0", "W": "1", "M": "2"}.get(period.upper(), "0"),
                 "BYMD": bymd,  # 조회기준일자
                 "MODP": "1",  # 0:수정주가 미반영, 1:수정주가 반영
             }
@@ -1608,23 +1626,57 @@ class KISClient:
                 raise
 
             if js.get("rt_cd") != "0":
-                error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
-            logging.error(f"해외주식 주문 실패: {error_msg}")
-            raise RuntimeError(error_msg)
+                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                    await self._token_manager.clear_token()
+                    await self._ensure_token()
+                    continue
+                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
-        output = js.get("output", {})
+            chunk = js.get("output2") or js.get("output") or []
+            if not chunk:
+                logging.info(f"더 이상 과거 데이터가 없음. 현재까지 수집: {len(rows)}개")
+                break
 
-        result = {
-            "odno": output.get("ODNO"),  # 주문번호
-            "ord_tmd": output.get("ORD_TMD"),  # 주문시각
-            "msg": js.get("msg1"),  # 응답메시지
-        }
+            rows.extend(chunk)
+            iteration += 1
+            logging.info(f"누적 데이터: {len(rows)}개 / 목표: {n}개")
 
-        logging.info(
-            f"{order_type_korean} 주문 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}"
+        if not rows:
+            return pd.DataFrame(
+                columns=["date", "open", "high", "low", "close", "volume"]
+            )
+
+        df = (
+            pd.DataFrame(rows)
+            .rename(
+                columns={
+                    "xymd": "date",
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "clos": "close",
+                    "tvol": "volume",
+                }
+            )
+            .astype(
+                {
+                    "date": "str",
+                    "open": "float",
+                    "high": "float",
+                    "low": "float",
+                    "close": "float",
+                    "volume": "int",
+                },
+                errors="ignore",
+            )
+            .assign(date=lambda d: pd.to_datetime(d["date"], format="%Y%m%d"))
+            .drop_duplicates(subset=["date"], keep="first")
+            .sort_values("date")
+            .tail(n)
+            .reset_index(drop=True)
         )
-
-        return result
+        logging.info(f"해외주식 일봉 조회 완료: {len(df)}개 데이터 반환")
+        return df
 
     async def order_overseas_stock(
         self,

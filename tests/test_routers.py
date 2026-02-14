@@ -2,6 +2,8 @@
 Tests for API routers.
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -101,3 +103,85 @@ class TestUpbitTradingRouter:
 
         assert exc_info.value.status_code == 500
         assert "boom" in exc_info.value.detail
+
+
+class TestKISOverseasTradingRouter:
+    @pytest.mark.asyncio
+    async def test_get_my_overseas_stocks_usd_row_missing_returns_500(
+        self, monkeypatch
+    ):
+        from app.routers import kis_overseas_trading
+
+        class FakeKISClient:
+            async def inquire_overseas_margin(self):
+                return []
+
+            async def inquire_integrated_margin(self):
+                raise AssertionError("inquire_integrated_margin should not be called")
+
+        class FakeMergedPortfolioService:
+            def __init__(self, db):
+                self.db = db
+
+            async def get_merged_portfolio_overseas(self, user_id, kis):
+                return []
+
+        monkeypatch.setattr(kis_overseas_trading, "KISClient", FakeKISClient)
+        monkeypatch.setattr(
+            kis_overseas_trading,
+            "MergedPortfolioService",
+            FakeMergedPortfolioService,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await kis_overseas_trading.get_my_overseas_stocks(
+                db=AsyncMock(), current_user=MagicMock(id=1)
+            )
+
+        assert exc_info.value.status_code == 500
+        assert "USD margin data not found" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_get_my_overseas_stocks_does_not_call_integrated_margin(
+        self, monkeypatch
+    ):
+        from app.routers import kis_overseas_trading
+
+        call_state = {"integrated_called": False}
+
+        class FakeKISClient:
+            async def inquire_overseas_margin(self):
+                return [
+                    {
+                        "natn_name": "미국",
+                        "crcy_cd": "USD",
+                        "frcr_dncl_amt1": "321.5",
+                        "frcr_gnrl_ord_psbl_amt": "300.0",
+                    }
+                ]
+
+            async def inquire_integrated_margin(self):
+                call_state["integrated_called"] = True
+                raise RuntimeError("inquire_integrated_margin should not be called")
+
+        class FakeMergedPortfolioService:
+            def __init__(self, db):
+                self.db = db
+
+            async def get_merged_portfolio_overseas(self, user_id, kis):
+                return []
+
+        monkeypatch.setattr(kis_overseas_trading, "KISClient", FakeKISClient)
+        monkeypatch.setattr(
+            kis_overseas_trading,
+            "MergedPortfolioService",
+            FakeMergedPortfolioService,
+        )
+
+        result = await kis_overseas_trading.get_my_overseas_stocks(
+            db=AsyncMock(), current_user=MagicMock(id=1)
+        )
+
+        assert result["success"] is True
+        assert result["usd_balance"] == 321.5
+        assert call_state["integrated_called"] is False
