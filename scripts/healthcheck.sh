@@ -50,7 +50,6 @@ check_service "redis" "redis-cli ping" "Redis Connection"
 echo -e "${BLUE}🐳 Docker Containers${NC}"
 check_service "api" "docker ps --filter 'name=auto_trader_api_prod' --filter 'status=running' | grep -q auto_trader_api_prod" "API Container"
 check_service "websocket" "docker ps --filter 'name=auto_trader_ws_prod' --filter 'status=running' | grep -q auto_trader_ws_prod" "WebSocket Container"
-check_service "kis_websocket" "docker ps --filter 'name=auto_trader_kis_ws_prod' --filter 'status=running' | grep -q auto_trader_kis_ws_prod" "KIS WebSocket Container"
 
 # API 엔드포인트 체크
 echo -e "${BLUE}🌐 API Endpoints${NC}"
@@ -76,12 +75,20 @@ else
     echo -e "${GREEN}✅ No recent errors in WebSocket logs${NC}"
 fi
 
-# KIS WebSocket 컨테이너 로그에서 에러 검색
-kis_ws_errors=$(docker logs auto_trader_kis_ws_prod --since=10m 2>&1 | grep -i "error\|exception\|fail" | wc -l)
-if [ $kis_ws_errors -gt 0 ]; then
-    echo -e "${YELLOW}⚠️  Found $kis_ws_errors error(s) in KIS WebSocket logs (last 10 minutes)${NC}"
+echo -e "${BLUE}🔌 Unified WebSocket Internal Status${NC}"
+upbit_health_line=$(docker logs auto_trader_ws_prod --since=10m 2>&1 | grep "Upbit" | tail -n 1)
+kis_health_line=$(docker logs auto_trader_ws_prod --since=10m 2>&1 | grep "KIS" | tail -n 1)
+
+if [ -n "$upbit_health_line" ]; then
+    echo -e "${GREEN}✅ Upbit status log found${NC}: $upbit_health_line"
 else
-    echo -e "${GREEN}✅ No recent errors in KIS WebSocket logs${NC}"
+    echo -e "${YELLOW}⚠️  No recent Upbit status log in websocket container${NC}"
+fi
+
+if [ -n "$kis_health_line" ]; then
+    echo -e "${GREEN}✅ KIS status log found${NC}: $kis_health_line"
+else
+    echo -e "${YELLOW}⚠️  No recent KIS status log in websocket container${NC}"
 fi
 
 # 디스크 용량 체크
@@ -116,4 +123,3 @@ docker images --filter "reference=ghcr.io/*/*auto*" --format "table {{.Repositor
 echo ""
 echo -e "${GREEN}🎉 Health check completed!${NC}"
 echo "For detailed logs: docker compose -f docker-compose.prod.yml logs"
-

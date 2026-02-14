@@ -5,9 +5,12 @@ KIS (한국투자증권) WebSocket Client for Execution Data
 """
 
 import asyncio
+import json
 import logging
 import ssl
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 import websockets
@@ -16,6 +19,25 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+DOMESTIC_EXECUTION_TR = "H0STCNI0"
+OVERSEAS_EXECUTION_TR = "H0GSCNI0"
+EXECUTION_TR_CODES = {DOMESTIC_EXECUTION_TR, OVERSEAS_EXECUTION_TR}
+
+_SIDE_MAP = {
+    "01": "ask",
+    "1": "ask",
+    "S": "ask",
+    "SELL": "ask",
+    "ASK": "ask",
+    "매도": "ask",
+    "02": "bid",
+    "2": "bid",
+    "B": "bid",
+    "BUY": "bid",
+    "BID": "bid",
+    "매수": "bid",
+}
 
 
 async def get_approval_key() -> str:
@@ -212,8 +234,8 @@ class KISExecutionWebSocket:
         Raises:
             Exception: 구독 요청 실패 시
         """
-        domestic_tr = "H0STCNI0"
-        overseas_tr = "H0GSCNI0"
+        domestic_tr = DOMESTIC_EXECUTION_TR
+        overseas_tr = OVERSEAS_EXECUTION_TR
 
         request_domestic = f"0|{domestic_tr}|{self.approval_key}|..."
         request_overseas = f"0|{overseas_tr}|{self.approval_key}|..."
@@ -266,7 +288,7 @@ class KISExecutionWebSocket:
                         await self._handle_pingpong()
                         continue
 
-                    if data.get("execution_type") == 1:
+                    if self._is_execution_event(data):
                         logger.debug(f"Execution received: {data}")
                         if self.on_execution:
                             await self.on_execution(data)
@@ -280,6 +302,13 @@ class KISExecutionWebSocket:
         except WebSocketException as e:
             logger.error(f"KIS WebSocket error: {e}", exc_info=True)
             self.is_connected = False
+
+    def _is_execution_event(self, data: dict[str, Any]) -> bool:
+        if data.get("type") in {"error", "ack"}:
+            return False
+        if data.get("execution_type") == 1:
+            return True
+        return str(data.get("tr_code", "")) in EXECUTION_TR_CODES
 
     def _parse_message(self, message: str | bytes) -> dict | None:
         """
@@ -311,35 +340,243 @@ class KISExecutionWebSocket:
 
         if message.startswith("{"):
             try:
-                import json
-
                 return json.loads(message)
             except Exception as e:
                 logger.error(f"JSON parse error: {e}, message: {message}")
                 return None
+
+        if "pingpong" in message.lower():
+            return {"system": "pingpong"}
 
         parts = message.split("|")
         if len(parts) < 3:
             logger.warning(f"Invalid message format: {message}")
             return None
 
-        try:
+        envelope = self._extract_envelope(parts)
+        if envelope is None:
+            logger.warning(f"Unsupported message envelope: {message}")
+            return None
+
+        parsed = {
+            "tr_code": envelope["tr_code"],
+            "execution_type": envelope["execution_type"],
+            "market": "kr"
+            if envelope["tr_code"] == DOMESTIC_EXECUTION_TR
+            else "us"
+            if envelope["tr_code"] == OVERSEAS_EXECUTION_TR
+            else "unknown",
+        }
+
+        payload_fields = envelope["payload_fields"]
+        if payload_fields:
+            parsed.update(self._parse_execution_payload(payload_fields, parsed["market"]))
+
+        if not parsed.get("symbol"):
+            parsed["symbol"] = self._extract_symbol(payload_fields, parsed["market"]) or ""
+
+        if parsed["tr_code"] in EXECUTION_TR_CODES and (
+            not parsed.get("filled_price") or not parsed.get("filled_qty")
+        ):
+            logger.debug("KIS execution payload parsed with fallback values: raw=%s", message)
+
+        return parsed
+
+    def _extract_envelope(self, parts: list[str]) -> dict[str, Any] | None:
+        first = parts[0]
+        second = parts[1] if len(parts) > 1 else ""
+
+        if first in {"0", "1"} and second in EXECUTION_TR_CODES:
+            payload_source = (
+                "|".join(parts[3:])
+                if len(parts) > 3 and parts[2].isdigit() and len(parts[2]) <= 3
+                else "|".join(parts[2:])
+            )
             return {
-                "tr_code": parts[0] if len(parts) > 0 else "",
-                "execution_type": int(parts[1])
-                if len(parts) > 1 and parts[1].isdigit()
-                else None,
-                "symbol": parts[2] if len(parts) > 2 else "",
-                "market": "kr"
-                if "H0STCNI0" in message
-                else "us"
-                if "H0GSCNI0" in message
-                else "unknown",
+                "tr_code": second,
+                "execution_type": 1,
+                "payload_fields": self._split_payload(payload_source),
             }
 
-        except (ValueError, IndexError) as e:
-            logger.error(f"Parse error: {e}, message: {message}")
+        if first in EXECUTION_TR_CODES:
+            execution_type = int(second) if second.isdigit() else 1
+            return {
+                "tr_code": first,
+                "execution_type": execution_type,
+                "payload_fields": self._split_payload("|".join(parts[2:])),
+            }
+
+        execution_type = int(second) if second.isdigit() else None
+        return {
+            "tr_code": first,
+            "execution_type": execution_type,
+            "payload_fields": self._split_payload("|".join(parts[2:])),
+        }
+
+    def _split_payload(self, payload: str) -> list[str]:
+        if not payload:
+            return []
+        if "^" in payload:
+            return payload.split("^")
+        return [part for part in payload.split("|") if part]
+
+    def _parse_execution_payload(
+        self, payload_fields: list[str], market: str
+    ) -> dict[str, Any]:
+        fields = [field.strip() for field in payload_fields if field and field.strip()]
+        if not fields:
+            return {}
+
+        kv: dict[str, str] = {}
+        for token in fields:
+            if "=" in token:
+                key, value = token.split("=", 1)
+                kv[key.strip().lower()] = value.strip()
+
+        symbol = self._extract_symbol(fields, market)
+
+        side_token = self._first_token(
+            kv,
+            fields,
+            ["side", "sll_buy_dvsn_cd", "buy_sell", "bsop_gb"],
+            lambda v: v.upper() in _SIDE_MAP,
+        )
+        side = _SIDE_MAP.get(side_token.upper(), "unknown") if side_token else "unknown"
+
+        order_id = self._first_token(
+            kv,
+            fields,
+            ["order_id", "ord_no", "odno", "orgn_ord_no"],
+            lambda v: len(v) >= 6 and not (v.isdigit() and len(v) == 6),
+        )
+        filled_price = self._to_float(
+            self._first_token(
+                kv,
+                fields,
+                ["filled_price", "ccld_unpr", "ft_ccld_unpr3", "price", "trade_price"],
+                lambda v: self._to_float(v) > 0,
+                scan_fields=False,
+            )
+        )
+        filled_qty = self._to_float(
+            self._first_token(
+                kv,
+                fields,
+                ["filled_qty", "ccld_qty", "ft_ccld_qty", "qty", "trade_volume"],
+                lambda v: self._to_float(v) > 0,
+                scan_fields=False,
+            )
+        )
+        filled_amount = self._to_float(
+            self._first_token(
+                kv,
+                fields,
+                ["filled_amount", "ccld_amt", "ft_ccld_amt3", "amount", "trade_amount"],
+                lambda v: self._to_float(v) > 0,
+                scan_fields=False,
+            )
+        )
+
+        if filled_price <= 0 and len(fields) >= 4:
+            filled_price = self._to_float(fields[3])
+        if filled_qty <= 0 and len(fields) >= 5:
+            filled_qty = self._to_float(fields[4])
+        if filled_amount <= 0 and len(fields) >= 6:
+            filled_amount = self._to_float(fields[5])
+
+        if filled_price <= 0 or filled_qty <= 0:
+            numeric_candidates = []
+            for token in fields:
+                if token in {symbol, side_token, order_id}:
+                    continue
+                numeric_value = self._to_float(token)
+                if numeric_value > 0:
+                    numeric_candidates.append(numeric_value)
+            if filled_price <= 0 and numeric_candidates:
+                filled_price = max(numeric_candidates)
+            if filled_qty <= 0 and numeric_candidates:
+                filled_qty = min(numeric_candidates)
+
+        if filled_amount <= 0 and filled_price > 0 and filled_qty > 0:
+            filled_amount = filled_price * filled_qty
+
+        filled_at = self._extract_timestamp(
+            self._first_token(
+                kv,
+                fields,
+                ["filled_at", "timestamp", "exec_time", "ord_tmd", "ccld_time"],
+                lambda v: bool(v.strip()),
+            )
+        )
+
+        return {
+            "symbol": symbol or "",
+            "side": side,
+            "order_id": order_id,
+            "filled_price": filled_price,
+            "filled_qty": filled_qty,
+            "filled_amount": filled_amount,
+            "filled_at": filled_at,
+        }
+
+    def _first_token(
+        self,
+        kv: dict[str, str],
+        fields: list[str],
+        preferred_keys: list[str],
+        predicate: Callable[[str], bool],
+        *,
+        scan_fields: bool = True,
+    ) -> str | None:
+        for key in preferred_keys:
+            value = kv.get(key.lower())
+            if value and predicate(value):
+                return value
+
+        if not scan_fields:
             return None
+
+        for token in fields:
+            if predicate(token):
+                return token
+        return None
+
+    def _extract_symbol(self, fields: list[str], market: str) -> str | None:
+        for token in fields:
+            stripped = token.strip()
+            if market == "kr" and stripped.isdigit() and len(stripped) == 6:
+                return stripped
+            if (
+                market == "us"
+                and stripped.replace(".", "").replace("-", "").isalnum()
+                and stripped.upper() == stripped
+                and 1 <= len(stripped) <= 10
+            ):
+                return stripped
+        return None
+
+    def _extract_timestamp(self, value: str | None) -> str:
+        if not value:
+            return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+        cleaned = value.strip()
+        if "T" in cleaned:
+            return cleaned
+        if cleaned.isdigit():
+            if len(cleaned) == 6:
+                today = datetime.now(UTC).strftime("%Y%m%d")
+                return datetime.strptime(today + cleaned, "%Y%m%d%H%M%S").isoformat()
+            if len(cleaned) == 14:
+                return datetime.strptime(cleaned, "%Y%m%d%H%M%S").isoformat()
+        return cleaned
+
+    def _to_float(self, value: Any) -> float:
+        if value is None:
+            return 0.0
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _parse_response(self, message: str) -> dict:
         """

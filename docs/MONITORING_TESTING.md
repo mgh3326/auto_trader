@@ -30,7 +30,6 @@ docker compose -f docker-compose.prod.yml logs -f api
 docker compose -f docker-compose.prod.yml logs -f worker
 docker compose -f docker-compose.prod.yml logs -f mcp
 docker compose -f docker-compose.prod.yml logs -f websocket
-docker compose -f docker-compose.prod.yml logs -f kis_websocket
 ```
 
 ## 4. 수동 시나리오
@@ -39,10 +38,10 @@ docker compose -f docker-compose.prod.yml logs -f kis_websocket
 2. 의도적 예외 1건 발생
 3. Celery task 실패 1건 발생
 4. MCP 잘못된 `MCP_TYPE` 실행
-5. websocket 프로세스 예외 1건 발생
+5. 통합 websocket 프로세스에서 Upbit/KIS 중 1개 연결 실패 유도
 
 ## 5. Sentry 확인 포인트
 
-- `service` 태그로 5개 프로세스 분리 조회
+- `service` 태그로 4개 프로세스(api/worker/mcp/websocket) 분리 조회
 - Errors/Transactions/Profiles 데이터 유입
 - 민감 필드(`authorization`, `cookie`, `token`, `secret`, `password`) 마스킹 여부

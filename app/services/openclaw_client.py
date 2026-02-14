@@ -3,8 +3,19 @@ import logging
 from uuid import uuid4
 
 import httpx
+from tenacity import (
+    AsyncRetrying,
+    RetryError,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.core.config import settings
+from app.services.fill_notification import (
+    FillOrderLike,
+    coerce_fill_order,
+    format_fill_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +87,77 @@ class OpenClawClient:
             res.status_code,
         )
         return request_id
+
+    async def send_fill_notification(self, order: FillOrderLike) -> str | None:
+        """
+        체결 알림을 OpenClaw Gateway로 전송
+
+        Fire-and-forget 텍스트 알림으로 전송하며, 최대 4회 시도합니다
+        (초기 1회 + 재시도 3회, 1s -> 2s -> 4s 백오프).
+        모든 재시도 실패 시 None을 반환하고 예외를 삼킵니다.
+
+        Args:
+            order: 정규화된 체결 데이터
+
+        Returns:
+            str | None: 성공 시 request_id, 실패 시 None
+        """
+        if not settings.OPENCLAW_ENABLED:
+            logger.debug("OpenClaw disabled, skipping fill notification")
+            return None
+
+        normalized_order = coerce_fill_order(order)
+        request_id = str(uuid4())
+        message = format_fill_message(normalized_order)
+
+        order_id = normalized_order.order_id or request_id
+        session_key = f"auto-trader:fill:{normalized_order.account}:{order_id}"
+
+        payload = {
+            "message": message,
+            "name": "auto-trader:fill",
+            "sessionKey": session_key,
+            "wakeMode": "now",
+        }
+
+        headers = {"Content-Type": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(4),
+                wait=wait_exponential(multiplier=1, min=1, max=4),
+                reraise=False,
+            ):
+                with attempt:
+                    async with httpx.AsyncClient(timeout=10) as cli:
+                        res = await cli.post(
+                            self._webhook_url, json=payload, headers=headers
+                        )
+                        res.raise_for_status()
+                    logger.info(
+                        "OpenClaw fill notification sent: request_id=%s symbol=%s account=%s",
+                        request_id,
+                        normalized_order.symbol,
+                        normalized_order.account,
+                    )
+                    return request_id
+
+        except RetryError as e:
+            logger.error(
+                "OpenClaw fill notification failed after retries: request_id=%s error=%s",
+                request_id,
+                e,
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                "OpenClaw fill notification error: request_id=%s error=%s",
+                request_id,
+                e,
+            )
+            return None
 
 
 def _build_openclaw_message(
