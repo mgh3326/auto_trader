@@ -15,8 +15,7 @@ from app.models.manual_holdings import ManualHolding, MarketType
 from app.services.broker_account_service import BrokerAccountService
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.stock_alias_service import StockAliasService
-
-# 마스터 데이터 (lazy loading)
+from data.coins_info import get_or_refresh_maps
 from data.stocks_info import (
     get_kosdaq_name_to_code,
     get_kospi_name_to_code,
@@ -49,7 +48,8 @@ class ScreenshotHoldingsService:
             (ticker, market_type, resolution_method)
             - ticker: 해석된 티커
             - market_type: "KR" | "US" | "CRYPTO"
-            - resolution_method: "alias" | "krx_master" | "us_master" | "fallback"
+            - resolution_method:
+              "alias" | "krx_master" | "us_master" | "crypto_name_kr" | "fallback"
         """
         market_section = market_section.lower()
         if market_section == "kr":
@@ -83,6 +83,21 @@ class ScreenshotHoldingsService:
                 from app.core.symbol import to_db_symbol
 
                 return to_db_symbol(ticker), market_type.value, "us_master"
+        elif market_type == MarketType.CRYPTO:
+            try:
+                crypto_maps = await get_or_refresh_maps()
+                name_to_pair = crypto_maps.get("NAME_TO_PAIR_KR", {})
+                ticker = name_to_pair.get(stock_name)
+                if ticker:
+                    return ticker, market_type.value, "crypto_name_kr"
+
+                coin_to_name = crypto_maps.get("COIN_TO_NAME_KR", {})
+                for coin_symbol, kr_name in coin_to_name.items():
+                    if kr_name == stock_name:
+                        pair = f"KRW-{coin_symbol}"
+                        return pair, market_type.value, "crypto_name_kr"
+            except Exception as e:
+                logger.warning(f"Crypto map lookup failed: {e}")
 
         # 3단계: Fallback - 이름 그대로 대문자로 반환
         logger.warning(
@@ -120,12 +135,14 @@ class ScreenshotHoldingsService:
             holdings_data: 파싱된 보유 종목 데이터 리스트
                 [
                     {
-                        "stock_name": "효성중공업",
+                        "stock_name": "이더리움",  # 선택 (symbol이 있으면 생략 가능)
+                        "symbol": "KRW-ETH",      # 선택 (있으면 직접 사용, 우선순위)
                         "quantity": 1,
-                        "eval_amount": 2230000,
-                        "profit_loss": -170000,
-                        "profit_rate": -7.0,
-                        "market_section": "kr",
+                        "eval_amount": 3000000,
+                        "profit_loss": 100000,
+                        "profit_rate": 3.4,
+                        "avg_buy_price": 2900000,  # 선택 (있으면 직접 사용)
+                        "market_section": "crypto",  # 필수: kr|us|crypto
                         "action": "upsert"  # 또는 "remove"
                     },
                     ...
@@ -142,11 +159,6 @@ class ScreenshotHoldingsService:
                 "broker": str,
                 "account_name": str,
                 "parsed_count": int,
-                "added_count": int,  # dry_run=False일 때만
-                "updated_count": int,  # dry_run=False일 때만
-                "removed_count": int,  # dry_run=False일 때만
-                "unchanged_count": int,  # dry_run=False일 때만
-                "diff": [...],  # dry_run=False일 때만
                 "holdings": [
                     {
                         "stock_name": str,
@@ -163,6 +175,12 @@ class ScreenshotHoldingsService:
                     ...
                 ],
                 "warnings": [...],
+                # The following fields are ONLY included when dry_run=False:
+                # "added_count": int,
+                # "updated_count": int,
+                # "removed_count": int,
+                # "unchanged_count": int,
+                # "diff": [...],
             }
         """
         warnings: list[str] = []
@@ -215,25 +233,40 @@ class ScreenshotHoldingsService:
 
         for holding_data in holdings_data:
             stock_name = holding_data.get("stock_name", "").strip()
-            market_section = holding_data.get("market_section", "kr").lower()
+            symbol = holding_data.get("symbol", "").strip().upper()
+            market_section_raw = holding_data.get("market_section", "")
+            market_section = (
+                market_section_raw.lower().strip() if market_section_raw else ""
+            )
             action = holding_data.get("action", "upsert").lower()
 
-            # 필수 필드 검증
-            if not stock_name:
-                warnings.append("Skipping holding: missing stock_name")
+            if market_section not in ("kr", "us", "crypto"):
+                warnings.append(
+                    f"Skipping holding: invalid or missing market_section '{market_section_raw}' "
+                    f"(must be kr|us|crypto)"
+                )
                 continue
 
+            if not stock_name and not symbol:
+                warnings.append(
+                    "Skipping holding: both stock_name and symbol are empty"
+                )
+                continue
+
+            if market_section == "kr":
+                market_type = MarketType.KR
+            elif market_section == "crypto":
+                market_type = MarketType.CRYPTO
+            else:
+                market_type = MarketType.US
+
             if action == "remove":
-                # 삭제 요청
-                if market_section == "kr":
-                    market_type = MarketType.KR
-                elif market_section == "crypto":
-                    market_type = MarketType.CRYPTO
+                if symbol:
+                    ticker = symbol
                 else:
-                    market_type = MarketType.US
-                ticker = (
-                    await self._resolve_symbol(stock_name, market_section, broker)
-                )[0]
+                    ticker, _, _ = await self._resolve_symbol(
+                        stock_name, market_section, broker
+                    )
 
                 existing = old_map.get((ticker, market_type.value))
                 if existing:
@@ -249,31 +282,38 @@ class ScreenshotHoldingsService:
                     )
                 else:
                     warnings.append(
-                        f"Cannot remove: {stock_name} not found in holdings"
+                        f"Cannot remove: {symbol or stock_name} not found in holdings"
                     )
                 continue
 
-            # upsert 요청
             quantity = float(holding_data.get("quantity", 0))
             eval_amount = float(holding_data.get("eval_amount", 0))
             profit_loss = float(holding_data.get("profit_loss", 0))
             profit_rate = float(holding_data.get("profit_rate", 0))
+            input_avg_buy_price = float(holding_data.get("avg_buy_price", 0) or 0)
 
-            # 심볼 해석
-            ticker, market_type, resolution_method = await self._resolve_symbol(
-                stock_name, market_section, broker
-            )
+            if symbol:
+                ticker = symbol
+                resolution_method = "direct"
+            else:
+                ticker, _, resolution_method = await self._resolve_symbol(
+                    stock_name, market_section, broker
+                )
 
-            # 평균매입가 계산
-            avg_buy_price = await self._calculate_avg_buy_price(
-                eval_amount, profit_loss, quantity
-            )
+            if input_avg_buy_price > 0:
+                avg_buy_price = input_avg_buy_price
+            else:
+                avg_buy_price = await self._calculate_avg_buy_price(
+                    eval_amount, profit_loss, quantity
+                )
+
+            display_name = stock_name if stock_name else symbol
 
             processed_holdings.append(
                 {
-                    "stock_name": stock_name,
+                    "stock_name": display_name,
                     "resolved_ticker": ticker,
-                    "market_type": market_type,
+                    "market_type": market_type.value,
                     "quantity": quantity,
                     "avg_buy_price": round(avg_buy_price, 2),
                     "eval_amount": eval_amount,
@@ -285,11 +325,9 @@ class ScreenshotHoldingsService:
             )
 
             if not dry_run:
-                market_enum = MarketType(market_type)
-                existing = old_map.get((ticker, market_type))
+                existing = old_map.get((ticker, market_type.value))
 
                 if existing:
-                    # 기존 종목 업데이트
                     old_qty = float(existing.quantity)
                     old_avg = float(existing.avg_price)
 
@@ -307,7 +345,7 @@ class ScreenshotHoldingsService:
                             {
                                 "action": "updated",
                                 "ticker": ticker,
-                                "market_type": market_type,
+                                "market_type": market_type.value,
                                 "old_quantity": old_qty,
                                 "new_quantity": quantity,
                                 "old_avg_price": old_avg,
@@ -317,28 +355,26 @@ class ScreenshotHoldingsService:
                     else:
                         unchanged_count += 1
                 else:
-                    # 신규 종목 추가
                     await manual_holdings_service.create_holding(
                         broker_account_id=broker_account_id,
                         ticker=ticker,
-                        market_type=market_enum,
+                        market_type=market_type,
                         quantity=self._to_decimal(quantity),
                         avg_price=self._to_decimal(avg_buy_price),
-                        display_name=stock_name,
+                        display_name=display_name,
                     )
                     added_count += 1
                     diff.append(
                         {
                             "action": "added",
                             "ticker": ticker,
-                            "market_type": market_type,
+                            "market_type": market_type.value,
                             "quantity": quantity,
                             "avg_buy_price": avg_buy_price,
                         }
                     )
             else:
-                # dry_run: 미리보기용 diff 계산
-                existing = old_map.get((ticker, market_type))
+                existing = old_map.get((ticker, market_type.value))
                 if existing:
                     old_qty = float(existing.quantity)
                     old_avg = float(existing.avg_price)
@@ -351,7 +387,7 @@ class ScreenshotHoldingsService:
                             {
                                 "action": "updated",
                                 "ticker": ticker,
-                                "market_type": market_type,
+                                "market_type": market_type.value,
                                 "old_quantity": old_qty,
                                 "new_quantity": quantity,
                                 "old_avg_price": old_avg,
@@ -365,7 +401,7 @@ class ScreenshotHoldingsService:
                         {
                             "action": "added",
                             "ticker": ticker,
-                            "market_type": market_type,
+                            "market_type": market_type.value,
                             "quantity": quantity,
                             "avg_buy_price": avg_buy_price,
                         }
