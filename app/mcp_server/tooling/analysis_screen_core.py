@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 from typing import Any
 
 import yfinance as yf
@@ -20,6 +21,8 @@ from app.services.krx import (
     fetch_stock_all_cached,
     fetch_valuation_all_cached,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_screen_market(market: str | None) -> str:
@@ -294,40 +297,97 @@ async def _screen_kr(
         subset = candidates[:subset_limit]
         semaphore = asyncio.Semaphore(10)
 
-        async def fetch_advanced_data(item: dict[str, Any]):
+        async def calculate_rsi_for_stock(item: dict[str, Any]):
             async with semaphore:
                 item_copy = item.copy()
-                code = item["code"]
+                symbol = item.get("short_code") or item.get("code")
+                logger.info("[RSI-KR] Starting calculation for symbol: %s", symbol)
 
-                if item_copy.get("rsi") is None:
-                    try:
-                        df = await _fetch_ohlcv_for_indicators(
-                            code, "equity_kr", count=50
+                if not symbol:
+                    logger.warning(
+                        "[RSI-KR] No valid symbol found in item keys=%s",
+                        sorted(item.keys()),
+                    )
+                    return item_copy
+
+                if item_copy.get("rsi") is not None:
+                    logger.debug(
+                        "[RSI-KR] RSI already exists for %s, skipping recalculation",
+                        symbol,
+                    )
+                    return item_copy
+
+                try:
+                    logger.debug("[RSI-KR] Fetching OHLCV data for %s", symbol)
+                    df = await _fetch_ohlcv_for_indicators(symbol, "equity_kr", count=50)
+                    candle_count = len(df) if df is not None else 0
+                    logger.info("[RSI-KR] Got %d candles for %s", candle_count, symbol)
+
+                    if df.empty or "close" not in df.columns:
+                        logger.warning(
+                            "[RSI-KR] Missing OHLCV close data for %s (columns=%s)",
+                            symbol,
+                            list(df.columns) if df is not None else [],
                         )
-                        if not df.empty and "close" in df.columns:
-                            rsi_result = _calculate_rsi(df["close"])
-                            if rsi_result and "14" in rsi_result:
-                                item_copy["rsi"] = rsi_result["14"]
-                    except Exception:
-                        pass
+                        return item_copy
+
+                    if candle_count < 14:
+                        logger.warning(
+                            "[RSI-KR] Insufficient candles (%d) for %s",
+                            candle_count,
+                            symbol,
+                        )
+                        return item_copy
+
+                    logger.debug("[RSI-KR] Calculating RSI for %s", symbol)
+                    rsi_result = _calculate_rsi(df["close"])
+                    rsi_value = rsi_result.get("14") if rsi_result else None
+                    if rsi_value is None:
+                        logger.warning(
+                            "[RSI-KR] RSI calculation returned None for %s", symbol
+                        )
+                        return item_copy
+
+                    item_copy["rsi"] = rsi_value
+                    logger.info("[RSI-KR] ✅ Success: %s RSI=%.2f", symbol, rsi_value)
+                except Exception as exc:
+                    logger.error(
+                        "[RSI-KR] ❌ Failed for %s: %s: %s",
+                        symbol or "UNKNOWN",
+                        type(exc).__name__,
+                        exc,
+                    )
 
                 return item_copy
 
         try:
             subset_results = await asyncio.wait_for(
                 asyncio.gather(
-                    *[fetch_advanced_data(item) for item in subset],
+                    *[calculate_rsi_for_stock(item) for item in subset],
                     return_exceptions=True,
                 ),
                 timeout=30.0,
             )
             for i, result in enumerate(subset_results):
-                if not isinstance(result, Exception) and result.get("rsi") is not None:
+                if isinstance(result, Exception):
+                    symbol = subset[i].get("short_code") or subset[i].get("code")
+                    logger.error(
+                        "[RSI-KR] gather returned exception for %s: %s: %s",
+                        symbol or "UNKNOWN",
+                        type(result).__name__,
+                        result,
+                    )
+                    continue
+                if result.get("rsi") is not None:
                     candidates[i]["rsi"] = result["rsi"]
         except TimeoutError:
-            pass
-        except Exception:
-            pass
+            logger.warning("[RSI-KR] RSI enrichment timed out after 30 seconds")
+        except Exception as exc:
+            logger.error(
+                "[RSI-KR] RSI enrichment batch failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     filters_applied.update(advanced_filters_applied)
     filters_applied["sort_by"] = sort_by
@@ -607,32 +667,96 @@ async def _screen_crypto(
         async def calculate_rsi_for_coin(item: dict[str, Any]):
             async with semaphore:
                 item_copy = item.copy()
-                market_code = item["original_market"]
+                symbol = (
+                    item.get("original_market")
+                    or item.get("symbol")
+                    or item.get("market")
+                )
+                logger.info("[RSI-Crypto] Starting calculation for symbol: %s", symbol)
+
+                if not symbol:
+                    logger.warning(
+                        "[RSI-Crypto] No valid symbol found in item keys=%s",
+                        sorted(item.keys()),
+                    )
+                    return item_copy
 
                 try:
-                    df = await _fetch_ohlcv_for_indicators(
-                        market_code, "crypto", count=50
+                    logger.debug("[RSI-Crypto] Fetching OHLCV data for %s", symbol)
+                    df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=50)
+                    candle_count = len(df) if df is not None else 0
+                    logger.info(
+                        "[RSI-Crypto] Got %d candles for %s", candle_count, symbol
                     )
-                    if not df.empty and "close" in df.columns:
-                        rsi_result = _calculate_rsi(df["close"])
-                        if rsi_result and "14" in rsi_result:
-                            item_copy["rsi"] = rsi_result["14"]
-                except Exception:
-                    pass
+
+                    if df.empty or "close" not in df.columns:
+                        logger.warning(
+                            "[RSI-Crypto] Missing OHLCV close data for %s (columns=%s)",
+                            symbol,
+                            list(df.columns) if df is not None else [],
+                        )
+                        return item_copy
+
+                    if candle_count < 14:
+                        logger.warning(
+                            "[RSI-Crypto] Insufficient candles (%d) for %s",
+                            candle_count,
+                            symbol,
+                        )
+                        return item_copy
+
+                    logger.debug("[RSI-Crypto] Calculating RSI for %s", symbol)
+                    rsi_result = _calculate_rsi(df["close"])
+                    rsi_value = rsi_result.get("14") if rsi_result else None
+                    if rsi_value is None:
+                        logger.warning(
+                            "[RSI-Crypto] RSI calculation returned None for %s", symbol
+                        )
+                        return item_copy
+
+                    item_copy["rsi"] = rsi_value
+                    logger.info("[RSI-Crypto] ✅ Success: %s RSI=%.2f", symbol, rsi_value)
+                except Exception as exc:
+                    logger.error(
+                        "[RSI-Crypto] ❌ Failed for %s: %s: %s",
+                        symbol or "UNKNOWN",
+                        type(exc).__name__,
+                        exc,
+                    )
 
                 return item_copy
 
         try:
             subset = await asyncio.wait_for(
-                asyncio.gather(*[calculate_rsi_for_coin(item) for item in subset]),
+                asyncio.gather(
+                    *[calculate_rsi_for_coin(item) for item in subset],
+                    return_exceptions=True,
+                ),
                 timeout=30.0,
             )
             for i, coin in enumerate(subset[: len(candidates)]):
+                if isinstance(coin, Exception):
+                    symbol = (
+                        candidates[i].get("original_market")
+                        or candidates[i].get("symbol")
+                        or candidates[i].get("market")
+                    )
+                    logger.error(
+                        "[RSI-Crypto] gather returned exception for %s: %s: %s",
+                        symbol or "UNKNOWN",
+                        type(coin).__name__,
+                        coin,
+                    )
+                    continue
                 candidates[i].update(coin)
         except TimeoutError:
-            pass
-        except Exception:
-            pass
+            logger.warning("[RSI-Crypto] RSI enrichment timed out after 30 seconds")
+        except Exception as exc:
+            logger.error(
+                "[RSI-Crypto] RSI enrichment batch failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     filters_applied.update(
         {
