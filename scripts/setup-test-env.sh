@@ -101,6 +101,9 @@ while IFS= read -r line; do
             "REDIS_SOCKET_CONNECT_TIMEOUT")
                 echo "REDIS_SOCKET_CONNECT_TIMEOUT=5" >> "$OUTPUT_TARGET"
                 ;;
+            "SENTRY_DSN")
+                echo "SENTRY_DSN=" >> "$OUTPUT_TARGET"
+                ;;
             *)
                 # 기타 변수들은 env.example에 정의된 값을 사용
                 echo "${key}=${value}" >> "$OUTPUT_TARGET"

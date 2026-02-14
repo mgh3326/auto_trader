@@ -285,7 +285,26 @@ GitHub Actions를 통해 자동으로 다음을 실행합니다:
 ## 모니터링 안내
 
 OTEL/Grafana 전용 스택은 제거되었습니다.
-Sentry 연동 전까지는 기본 애플리케이션 로그와 Telegram 알림을 기준으로 운영하세요.
+현재 표준 모니터링은 Sentry입니다.
+
+### Sentry 환경 변수
+
+```bash
+SENTRY_DSN=
+SENTRY_ENVIRONMENT=
+SENTRY_RELEASE=
+SENTRY_TRACES_SAMPLE_RATE=1.0
+SENTRY_PROFILES_SAMPLE_RATE=1.0
+SENTRY_SEND_DEFAULT_PII=true
+SENTRY_ENABLE_LOG_EVENTS=true
+```
+
+### 운영 정책
+
+- `SENTRY_DSN`이 있으면 환경과 무관하게 활성화
+- 단일 프로젝트에서 `service` 태그로 프로세스 분리
+- `logger.error` 이벤트 수집 활성화
+- 민감 필드(`authorization`, `cookie`, `token`, `secret`, `password`)는 마스킹
 
 ## 라이센스
 

@@ -111,6 +111,15 @@ class Settings(BaseSettings):
     redis_socket_timeout: int = 5
     redis_socket_connect_timeout: int = 5
 
+    # Sentry
+    SENTRY_DSN: str = ""
+    SENTRY_ENVIRONMENT: str | None = None
+    SENTRY_RELEASE: str | None = None
+    SENTRY_TRACES_SAMPLE_RATE: float = 1.0
+    SENTRY_PROFILES_SAMPLE_RATE: float = 1.0
+    SENTRY_SEND_DEFAULT_PII: bool = True
+    SENTRY_ENABLE_LOG_EVENTS: bool = True
+
     # Monitoring test route exposure
     EXPOSE_MONITORING_TEST_ROUTES: bool = False
 
@@ -179,6 +188,14 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [path.strip() for path in v.split(",") if path.strip()]
         return v or []
+
+    @field_validator("SENTRY_TRACES_SAMPLE_RATE", "SENTRY_PROFILES_SAMPLE_RATE")
+    @classmethod
+    def validate_sentry_sample_rate(cls, value: float) -> float:
+        """Ensure Sentry sample rate is between 0.0 and 1.0."""
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("Sentry sample rates must be between 0.0 and 1.0")
+        return value
 
     # Environment setting for cookie security
     ENVIRONMENT: str = "development"  # development, production

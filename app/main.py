@@ -13,6 +13,7 @@ from app.auth.web_router import limiter
 from app.auth.web_router import router as web_auth_router
 from app.core.config import settings
 from app.middleware.auth import AuthMiddleware
+from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
     analysis_json,
@@ -52,6 +53,7 @@ def configure_logging() -> None:
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
     configure_logging()
+    init_sentry(service_name="auto-trader-api", enable_fastapi=True)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -81,6 +83,12 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """Log all unhandled exceptions with full traceback"""
+        capture_exception(
+            exc,
+            path=request.url.path,
+            method=request.method,
+            client=request.client.host if request.client else None,
+        )
         logger.error(
             f"Unhandled exception on {request.method} {request.url.path}: {str(exc)}",
             exc_info=True,

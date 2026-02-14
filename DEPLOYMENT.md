@@ -19,6 +19,15 @@ cp env.prod.example .env.prod
 - API 키(KIS/Upbit/Google/OpenDART)
 - `DOCS_ENABLED=false`
 
+Sentry:
+- `SENTRY_DSN`
+- `SENTRY_ENVIRONMENT`
+- `SENTRY_RELEASE`
+- `SENTRY_TRACES_SAMPLE_RATE=1.0`
+- `SENTRY_PROFILES_SAMPLE_RATE=1.0`
+- `SENTRY_SEND_DEFAULT_PII=true`
+- `SENTRY_ENABLE_LOG_EVENTS=true`
+
 선택 항목 (HTTPS reverse proxy):
 - `ACME_EMAIL`
 - `DOMAIN_NAME`
@@ -63,7 +72,17 @@ docker compose -f docker-compose.prod.yml logs -f websocket
 docker compose -f docker-compose.prod.yml logs -f kis_websocket
 ```
 
-## 5. 업데이트 절차
+## 5. Sentry 확인
+
+- 단일 프로젝트에서 `service` 태그로 분리 조회:
+  - `auto-trader-api`
+  - `auto-trader-worker`
+  - `auto-trader-mcp`
+  - `auto-trader-upbit-ws`
+  - `auto-trader-kis-ws`
+- 에러/트랜잭션/프로파일 유입 확인
+
+## 6. 업데이트 절차
 
 ```bash
 git pull origin production
@@ -71,9 +90,21 @@ docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-## 6. 롤백
+## 7. 롤백
 
 ```bash
 docker compose -f docker-compose.prod.yml down
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+## 8. 문제 해결
+
+### Sentry 이벤트 미수집
+
+- `SENTRY_DSN` 값 확인
+- 샘플링 설정(`SENTRY_TRACES_SAMPLE_RATE`, `SENTRY_PROFILES_SAMPLE_RATE`) 확인
+- 로그 이벤트 정책(`SENTRY_ENABLE_LOG_EVENTS`) 확인
+
+### 즉시 비활성화
+
+- `SENTRY_DSN`을 비우고 재기동

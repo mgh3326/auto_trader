@@ -41,6 +41,7 @@ dependencies = [
     "lxml>=5.0.0,<6.0.0",
     "pykrx>=1.0.0,<2.0.0",
     "setuptools>=70.0.0",
+    "sentry-sdk[fastapi,celery]>=2.18.0,<3.0.0",
 ]
 
 [dependency-groups]

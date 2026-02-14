@@ -2,6 +2,7 @@ from celery import Celery
 from celery.signals import worker_process_init
 
 from app.core.config import settings
+from app.monitoring.sentry import init_sentry
 
 
 def _get_broker_url() -> str:
@@ -38,12 +39,14 @@ def setup_periodic_tasks(sender, **kwargs):
 @worker_process_init.connect
 def init_worker(**kwargs):
     """Initialize monitoring when worker process starts."""
+    del kwargs
     import logging
 
     from app.core.config import settings
     from app.monitoring.trade_notifier import get_trade_notifier
 
     logger = logging.getLogger(__name__)
+    init_sentry(service_name="auto-trader-worker", enable_celery=True)
 
     # Initialize Trade Notifier
     if settings.telegram_token and settings.telegram_chat_id:
@@ -56,4 +59,4 @@ def init_worker(**kwargs):
             )
             logger.info("Worker: Trade notifier initialized")
         except Exception as e:
-            logger.error(f"Worker: Failed to initialize trade notifier: {e}")
+            logger.error(f"Worker: Failed to initialize trade notifier: {e}", exc_info=True)

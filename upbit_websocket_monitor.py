@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from app.analysis.service_analyzers import UpbitAnalyzer
+from app.monitoring.sentry import capture_exception, init_sentry
 from app.services.upbit_websocket import UpbitOrderAnalysisService
 from data.coins_info import upbit_pairs
 
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 async def main():
     """메인 실행 함수"""
+    init_sentry(service_name="auto-trader-upbit-ws")
+
     # Upbit 상수 초기화
     await upbit_pairs.prime_upbit_constants()
 
@@ -57,7 +60,8 @@ async def main():
     except KeyboardInterrupt:
         logger.info("사용자에 의해 중지되었습니다.")
     except Exception as e:
-        logger.error(f"오류 발생: {e}")
+        capture_exception(e, process="upbit_websocket_monitor")
+        logger.error(f"오류 발생: {e}", exc_info=True)
     finally:
         # 정리 작업
         await service.stop_monitoring()
