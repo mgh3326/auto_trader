@@ -111,22 +111,6 @@ class Settings(BaseSettings):
     redis_socket_timeout: int = 5
     redis_socket_connect_timeout: int = 5
 
-    # Monitoring and Observability
-    # OpenTelemetry settings (vendor-agnostic)
-    OTEL_EXPORTER_OTLP_ENDPOINT: str = "localhost:4317"  # OTLP gRPC endpoint
-    OTEL_ENABLED: bool = False  # 기본적으로 비활성화
-    OTEL_INSECURE: bool = (
-        True  # OTLP gRPC insecure 연결 (개발 환경용, 프로덕션에서는 False)
-    )
-    OTEL_SERVICE_NAME: str = "auto-trader"
-    OTEL_SERVICE_VERSION: str = "0.1.0"
-    OTEL_ENVIRONMENT: str = "development"
-
-    # Telegram Error Reporting
-    ERROR_REPORTING_ENABLED: bool = False  # 기본적으로 비활성화
-    ERROR_REPORTING_CHAT_ID: str = ""  # Telegram chat ID (단일)
-    ERROR_DUPLICATE_WINDOW: int = 300  # 중복 에러 방지 시간 (초, 기본 5분)
-
     # Monitoring test route exposure
     EXPOSE_MONITORING_TEST_ROUTES: bool = False
 
