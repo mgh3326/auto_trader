@@ -898,3 +898,100 @@ class TestKRXValuationCacheRecovery:
         assert len(captured_cache_data) == 1
         assert captured_cache_data[0]["ISU_SRT_CD"] == "005930"
         assert captured_cache_data[0]["per"] == 12.5
+
+
+class TestGetStockNameByCode:
+    """Test get_stock_name_by_code utility."""
+
+    @pytest.mark.asyncio
+    async def test_get_stock_name_by_code_success(self, monkeypatch):
+        """Test successful code to name resolution."""
+        mock_stk_data = [
+            {"short_code": "005930", "name": "삼성전자"},
+            {"short_code": "000660", "name": "SK하이닉스"},
+        ]
+        mock_ksq_data = [
+            {"short_code": "035720", "name": "카카오"},
+        ]
+
+        async def mock_fetch_stock_all_cached(market, trd_date=None):
+            if market == "STK":
+                return mock_stk_data
+            elif market == "KSQ":
+                return mock_ksq_data
+            return []
+
+        monkeypatch.setattr(krx, "fetch_stock_all_cached", mock_fetch_stock_all_cached)
+        krx._CODE_TO_NAME_CACHE.clear()
+
+        result = await krx.get_stock_name_by_code("005930")
+        assert result == "삼성전자"
+
+        result2 = await krx.get_stock_name_by_code("035720")
+        assert result2 == "카카오"
+
+    @pytest.mark.asyncio
+    async def test_get_stock_name_by_code_not_found(self, monkeypatch):
+        """Test code not found returns None."""
+        mock_stk_data = [{"short_code": "005930", "name": "삼성전자"}]
+        mock_ksq_data = []
+
+        async def mock_fetch_stock_all_cached(market, trd_date=None):
+            return mock_stk_data if market == "STK" else mock_ksq_data
+
+        monkeypatch.setattr(krx, "fetch_stock_all_cached", mock_fetch_stock_all_cached)
+        krx._CODE_TO_NAME_CACHE.clear()
+
+        result = await krx.get_stock_name_by_code("999999")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_stock_name_by_code_cache_reuse(self, monkeypatch):
+        """Test second call uses cache without re-fetching."""
+        fetch_call_count = 0
+
+        async def mock_fetch_stock_all_cached(market, trd_date=None):
+            nonlocal fetch_call_count
+            fetch_call_count += 1
+            if market == "STK":
+                return [{"short_code": "005930", "name": "삼성전자"}]
+            return []
+
+        monkeypatch.setattr(krx, "fetch_stock_all_cached", mock_fetch_stock_all_cached)
+        krx._CODE_TO_NAME_CACHE.clear()
+
+        await krx.get_stock_name_by_code("005930")
+        assert fetch_call_count == 2
+
+        fetch_call_count = 0
+        result = await krx.get_stock_name_by_code("005930")
+        assert result == "삼성전자"
+        assert fetch_call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_get_stock_name_by_code_exception_propagation(self, monkeypatch):
+        """Test exceptions from fetch propagate to caller."""
+
+        async def mock_fetch_stock_all_cached(market, trd_date=None):
+            raise RuntimeError("KRX API error")
+
+        monkeypatch.setattr(krx, "fetch_stock_all_cached", mock_fetch_stock_all_cached)
+        krx._CODE_TO_NAME_CACHE.clear()
+
+        with pytest.raises(RuntimeError, match="KRX API error"):
+            await krx.get_stock_name_by_code("005930")
+
+    @pytest.mark.asyncio
+    async def test_get_stock_name_by_code_whitespace_handling(self, monkeypatch):
+        """Test whitespace in code is stripped."""
+
+        async def mock_fetch_stock_all_cached(market, trd_date=None):
+            if market == "STK":
+                return [{"short_code": "005930", "name": "삼성전자"}]
+            return []
+
+        monkeypatch.setattr(krx, "fetch_stock_all_cached", mock_fetch_stock_all_cached)
+        krx._CODE_TO_NAME_CACHE.clear()
+
+        result = await krx.get_stock_name_by_code("  005930  ")
+        assert result == "삼성전자"

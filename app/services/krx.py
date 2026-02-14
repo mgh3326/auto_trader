@@ -42,6 +42,8 @@ KRX_HEADERS = {
 _MEMORY_CACHE: dict[str, tuple[list[dict[str, Any]], float]] = {}
 _MEMORY_CACHE_TTL = 300  # Same as Redis TTL
 
+_CODE_TO_NAME_CACHE: dict[str, str] = {}
+
 logger = logging.getLogger(__name__)
 
 
@@ -500,6 +502,41 @@ async def fetch_stock_all_cached(
 ) -> list[dict[str, Any]]:
     """Wrapper for fetch_stock_all with automatic caching."""
     return await fetch_stock_all(market, trd_date)
+
+
+async def get_stock_name_by_code(code: str) -> str | None:
+    """Get Korean stock name from 6-digit code.
+
+    Args:
+        code: 6-digit stock code (e.g., "005930")
+
+    Returns:
+        Korean stock name (e.g., "삼성전자") or None if not found.
+    """
+    normalized_code = code.strip()
+
+    if _CODE_TO_NAME_CACHE:
+        return _CODE_TO_NAME_CACHE.get(normalized_code)
+
+    try:
+        stk_stocks = await fetch_stock_all_cached(market="STK")
+        ksq_stocks = await fetch_stock_all_cached(market="KSQ")
+
+        for stock in stk_stocks:
+            short_code = stock.get("short_code", "").strip()
+            name = stock.get("name", "").strip()
+            if short_code and name:
+                _CODE_TO_NAME_CACHE[short_code] = name
+
+        for stock in ksq_stocks:
+            short_code = stock.get("short_code", "").strip()
+            name = stock.get("name", "").strip()
+            if short_code and name and short_code not in _CODE_TO_NAME_CACHE:
+                _CODE_TO_NAME_CACHE[short_code] = name
+
+        return _CODE_TO_NAME_CACHE.get(normalized_code)
+    except Exception:
+        raise
 
 
 async def fetch_etf_all_cached(

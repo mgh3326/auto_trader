@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 from typing import Any, Literal
 
 import httpx
@@ -40,10 +41,32 @@ from app.mcp_server.tooling.market_data_indicators import (
 )
 from app.services.kis import KISClient
 
+logger = logging.getLogger(__name__)
+
 try:
     from app.services.disclosures.dart import list_filings
 except ImportError:
     list_filings = None
+
+try:
+    from data.disclosures.dart_corp_index import NAME_TO_CORP, prime_index
+except ImportError:
+    NAME_TO_CORP = {}
+    prime_index = None
+
+
+async def get_stock_name_by_code(code: str) -> str | None:
+    try:
+        from app.services.krx import get_stock_name_by_code as _get_stock_name_by_code
+
+        return await _get_stock_name_by_code(code)
+    except Exception as exc:
+        logger.debug(
+            "Failed to resolve stock code to Korean name: code=%s, error=%s",
+            code,
+            exc,
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -180,8 +203,40 @@ async def get_disclosures_impl(
             "success": False,
             "error": "DART functionality not available (dart_fss package not installed)",
         }
+
+    korean_name = symbol.strip()
+
+    if korean_name.isdigit():
+        try:
+            resolved_name = await get_stock_name_by_code(korean_name)
+            if resolved_name:
+                korean_name = resolved_name
+        except Exception as exc:
+            logger.debug(
+                "Stock code conversion raised unexpected error: symbol=%s, error=%s",
+                symbol,
+                exc,
+            )
+            pass
+
+    if NAME_TO_CORP is not None and not NAME_TO_CORP:
+        if prime_index is None:
+            return {
+                "success": False,
+                "error": "DART index not available",
+                "symbol": symbol,
+            }
+        try:
+            await prime_index()
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"Failed to prime DART index: {exc}",
+                "symbol": symbol,
+            }
+
     try:
-        result = await list_filings(symbol, days, limit, report_type)
+        result = await list_filings(korean_name, days, limit, report_type)
         if isinstance(result, list):
             return {"success": True, "filings": result}
         return result
@@ -337,7 +392,9 @@ async def analyze_portfolio_impl(
                 errors.append(f"{sym}: {str(exc)}")
                 return {"symbol": sym, "error": str(exc)}
 
-    analyze_results = await asyncio.gather(*[_analyze_one(s) for s in normalized_symbols])
+    analyze_results = await asyncio.gather(
+        *[_analyze_one(s) for s in normalized_symbols]
+    )
 
     success_count = 0
     fail_count = 0
@@ -364,7 +421,9 @@ async def screen_stocks_impl(
     asset_type: Literal["stock", "etf", "etn"] | None = None,
     category: str | None = None,
     strategy: str | None = None,
-    sort_by: Literal["volume", "market_cap", "change_rate", "dividend_yield"] = "volume",
+    sort_by: Literal[
+        "volume", "market_cap", "change_rate", "dividend_yield"
+    ] = "volume",
     sort_order: Literal["asc", "desc"] = "desc",
     min_market_cap: float | None = None,
     max_per: float | None = None,
@@ -382,9 +441,7 @@ async def screen_stocks_impl(
         strategy_key = strategy.strip().lower()
         if strategy_key not in strategy_presets:
             valid = ", ".join(sorted(strategy_presets.keys()))
-            raise ValueError(
-                f"screen strategy must be one of: {valid}"
-            )
+            raise ValueError(f"screen strategy must be one of: {valid}")
         preset = strategy_presets[strategy_key]
         sort_by = preset.get("sort_by", sort_by)
         sort_order = preset.get("sort_order", sort_order)
