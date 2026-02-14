@@ -2298,3 +2298,205 @@ class TestOverseasManualHoldings:
 
         # 결과에도 AAPL은 한 번만 포함
         assert len(result["results"]) == 1
+
+
+def test_run_per_domestic_stock_automation_uses_passed_user_id(monkeypatch):
+    """run_per_domestic_stock_automation는 전달받은 user_id를 사용해야 한다."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.tasks import kis as kis_tasks
+
+    captured = {"user_id": None}
+
+    class DummyAnalyzer:
+        async def close(self):
+            return None
+
+    class DummyKIS:
+        async def fetch_my_stocks(self):
+            return []
+
+    class MockManualService:
+        def __init__(self, db):
+            pass
+
+        async def get_holdings_by_user(self, user_id, market_type):
+            captured["user_id"] = user_id
+            return []
+
+    mock_db_session = MagicMock()
+    mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+    mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+        patch(
+            "app.services.manual_holdings_service.ManualHoldingsService",
+            MockManualService,
+        ),
+    ):
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(
+            kis_tasks.run_per_domestic_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_domestic_stock_automation.apply(args=(777,)).result
+
+    assert result["status"] == "completed"
+    assert captured["user_id"] == 777
+
+
+def test_run_per_domestic_stock_automation_defaults_to_user_id_1(monkeypatch):
+    """run_per_domestic_stock_automation는 user_id 미전달 시 1을 사용해야 한다."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.tasks import kis as kis_tasks
+
+    captured = {"user_id": None}
+
+    class DummyAnalyzer:
+        async def close(self):
+            return None
+
+    class DummyKIS:
+        async def fetch_my_stocks(self):
+            return []
+
+    class MockManualService:
+        def __init__(self, db):
+            pass
+
+        async def get_holdings_by_user(self, user_id, market_type):
+            captured["user_id"] = user_id
+            return []
+
+    mock_db_session = MagicMock()
+    mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+    mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+        patch(
+            "app.services.manual_holdings_service.ManualHoldingsService",
+            MockManualService,
+        ),
+    ):
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(
+            kis_tasks.run_per_domestic_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+
+    assert result["status"] == "completed"
+    assert captured["user_id"] == 1
+
+
+def test_run_per_overseas_stock_automation_uses_passed_user_id(monkeypatch):
+    """run_per_overseas_stock_automation는 전달받은 user_id를 사용해야 한다."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.analysis import service_analyzers
+    from app.tasks import kis as kis_tasks
+
+    captured = {"user_id": None}
+
+    class DummyAnalyzer:
+        async def close(self):
+            return None
+
+    class DummyKIS:
+        async def fetch_my_overseas_stocks(self):
+            return []
+
+    class MockManualService:
+        def __init__(self, db):
+            pass
+
+        async def get_holdings_by_user(self, user_id, market_type):
+            captured["user_id"] = user_id
+            return []
+
+    mock_db_session = MagicMock()
+    mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+    mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+        patch(
+            "app.services.manual_holdings_service.ManualHoldingsService",
+            MockManualService,
+        ),
+    ):
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(
+            kis_tasks.run_per_overseas_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_overseas_stock_automation.apply(args=(888,)).result
+
+    assert result["status"] == "completed"
+    assert captured["user_id"] == 888
+
+
+def test_run_per_overseas_stock_automation_defaults_to_user_id_1(monkeypatch):
+    """run_per_overseas_stock_automation는 user_id 미전달 시 1을 사용해야 한다."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.analysis import service_analyzers
+    from app.tasks import kis as kis_tasks
+
+    captured = {"user_id": None}
+
+    class DummyAnalyzer:
+        async def close(self):
+            return None
+
+    class DummyKIS:
+        async def fetch_my_overseas_stocks(self):
+            return []
+
+    class MockManualService:
+        def __init__(self, db):
+            pass
+
+        async def get_holdings_by_user(self, user_id, market_type):
+            captured["user_id"] = user_id
+            return []
+
+    mock_db_session = MagicMock()
+    mock_db_session.__aenter__ = AsyncMock(return_value=MagicMock())
+    mock_db_session.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
+        patch(
+            "app.services.manual_holdings_service.ManualHoldingsService",
+            MockManualService,
+        ),
+    ):
+        monkeypatch.setattr(kis_tasks, "KISClient", DummyKIS)
+        monkeypatch.setattr(service_analyzers, "YahooAnalyzer", DummyAnalyzer)
+        monkeypatch.setattr(
+            kis_tasks.run_per_overseas_stock_automation,
+            "update_state",
+            lambda *_, **__: None,
+            raising=False,
+        )
+
+        result = kis_tasks.run_per_overseas_stock_automation.apply().result
+
+    assert result["status"] == "completed"
+    assert captured["user_id"] == 1

@@ -3,6 +3,8 @@ KIS 해외주식 자동 매매 웹 인터페이스 라우터
 - 보유 주식 조회 (KIS + 수동 잔고 통합)
 - AI 분석 실행
 - 자동 매수/매도 주문 (Placeholder)
+
+접근 정책: trader, admin만 접근 가능 (viewer 차단)
 """
 
 import logging
@@ -14,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.core.templates import templates
 from app.models.trading import User
-from app.routers.dependencies import get_authenticated_user
+from app.routers.dependencies import require_trader_user
 from app.services.kis import KISClient
 from app.services.merged_portfolio_service import MergedPortfolioService
 
@@ -23,14 +25,15 @@ router = APIRouter(prefix="/kis-overseas-trading", tags=["KIS Overseas Trading"]
 
 
 @router.get("/", response_class=HTMLResponse)
-async def kis_overseas_trading_dashboard(request: Request):
-    """KIS 해외주식 자동 매매 대시보드 페이지"""
-    user = getattr(request.state, "user", None)
+async def kis_overseas_trading_dashboard(
+    request: Request, current_user: User = Depends(require_trader_user)
+):
+    """KIS 해외주식 자동 매매 대시보드 페이지 (trader/admin 전용)"""
     return templates.TemplateResponse(
         "kis_overseas_trading_dashboard.html",
         {
             "request": request,
-            "user": user,
+            "user": current_user,
         },
     )
 
@@ -76,7 +79,7 @@ def _select_usd_row_for_balance(rows: list[dict]) -> dict | None:
 @router.get("/api/my-stocks")
 async def get_my_overseas_stocks(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_authenticated_user),
+    current_user: User = Depends(require_trader_user),
 ):
     try:
         kis = KISClient()
@@ -148,10 +151,12 @@ from app.core.celery_app import celery_app
 
 
 @router.post("/api/analyze-stocks")
-async def analyze_my_overseas_stocks():
+async def analyze_my_overseas_stocks(current_user: User = Depends(require_trader_user)):
     """보유 해외 주식 AI 분석 실행 (Celery)"""
     try:
-        async_result = celery_app.send_task("kis.run_analysis_for_my_overseas_stocks")
+        async_result = celery_app.send_task(
+            "kis.run_analysis_for_my_overseas_stocks", args=[current_user.id]
+        )
 
         return {
             "success": True,
@@ -163,7 +168,9 @@ async def analyze_my_overseas_stocks():
 
 
 @router.get("/api/analyze-task/{task_id}")
-async def get_analyze_task_status(task_id: str):
+async def get_analyze_task_status(
+    task_id: str, current_user: User = Depends(require_trader_user)
+):
     """Celery 작업 상태 조회 API"""
 
     result = celery_app.AsyncResult(task_id)
@@ -188,10 +195,12 @@ async def get_analyze_task_status(task_id: str):
 
 
 @router.post("/api/buy-orders")
-async def execute_buy_orders():
+async def execute_buy_orders(current_user: User = Depends(require_trader_user)):
     """보유 해외 주식 자동 매수 주문 실행 (Celery)"""
     try:
-        async_result = celery_app.send_task("kis.execute_overseas_buy_orders")
+        async_result = celery_app.send_task(
+            "kis.execute_overseas_buy_orders", args=[current_user.id]
+        )
         return {
             "success": True,
             "message": "매수 주문이 시작되었습니다.",
@@ -202,10 +211,12 @@ async def execute_buy_orders():
 
 
 @router.post("/api/sell-orders")
-async def execute_sell_orders():
+async def execute_sell_orders(current_user: User = Depends(require_trader_user)):
     """보유 해외 주식 자동 매도 주문 실행 (Celery)"""
     try:
-        async_result = celery_app.send_task("kis.execute_overseas_sell_orders")
+        async_result = celery_app.send_task(
+            "kis.execute_overseas_sell_orders", args=[current_user.id]
+        )
         return {
             "success": True,
             "message": "매도 주문이 시작되었습니다.",
@@ -216,9 +227,11 @@ async def execute_sell_orders():
 
 
 @router.post("/api/automation/per-stock")
-async def run_per_stock_automation():
+async def run_per_stock_automation(current_user: User = Depends(require_trader_user)):
     """보유 종목별 자동 실행 (분석 -> 매수 -> 매도)"""
-    task = celery_app.send_task("kis.run_per_overseas_stock_automation")
+    task = celery_app.send_task(
+        "kis.run_per_overseas_stock_automation", args=[current_user.id]
+    )
     return {
         "success": True,
         "message": "종목별 자동 실행이 시작되었습니다.",
@@ -227,21 +240,27 @@ async def run_per_stock_automation():
 
 
 @router.post("/api/analyze-stock/{symbol}")
-async def analyze_stock(symbol: str):
+async def analyze_stock(symbol: str, current_user: User = Depends(require_trader_user)):
     """단일 종목 분석 요청"""
-    task = celery_app.send_task("kis.analyze_overseas_stock_task", args=[symbol])
+    task = celery_app.send_task(
+        "kis.analyze_overseas_stock_task", args=[symbol, current_user.id]
+    )
     return {"success": True, "message": f"{symbol} 분석 요청 완료", "task_id": task.id}
 
 
 @router.post("/api/buy-order/{symbol}")
-async def buy_order(symbol: str):
+async def buy_order(symbol: str, current_user: User = Depends(require_trader_user)):
     """단일 종목 매수 요청"""
-    task = celery_app.send_task("kis.execute_overseas_buy_order_task", args=[symbol])
+    task = celery_app.send_task(
+        "kis.execute_overseas_buy_order_task", args=[symbol, current_user.id]
+    )
     return {"success": True, "message": f"{symbol} 매수 요청 완료", "task_id": task.id}
 
 
 @router.post("/api/sell-order/{symbol}")
-async def sell_order(symbol: str):
+async def sell_order(symbol: str, current_user: User = Depends(require_trader_user)):
     """단일 종목 매도 요청"""
-    task = celery_app.send_task("kis.execute_overseas_sell_order_task", args=[symbol])
+    task = celery_app.send_task(
+        "kis.execute_overseas_sell_order_task", args=[symbol, current_user.id]
+    )
     return {"success": True, "message": f"{symbol} 매도 요청 완료", "task_id": task.id}

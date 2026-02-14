@@ -164,12 +164,13 @@ async def _send_toss_recommendation_async(
 
 
 async def _analyze_domestic_stock_async(
-    code: str, progress_cb: ProgressCallback = None
+    code: str, progress_cb: ProgressCallback = None, user_id: int | None = None
 ) -> dict[str, object]:
     """단일 국내 주식 분석 비동기 헬퍼"""
     if not code:
         return {"status": "failed", "error": "종목 코드가 필요합니다."}
 
+    effective_user_id = user_id if user_id is not None else 1
     kis = KISClient()
     analyzer = KISAnalyzer()
 
@@ -224,9 +225,6 @@ async def _analyze_domestic_stock_async(
                 )
 
                 async with AsyncSessionLocal() as db:
-                    # USER_ID는 현재 1로 고정 (추후 다중 사용자 지원 시 변경 필요)
-                    user_id = 1
-
                     # 매수/매도 추천 가격 추출
                     recommended_buy_price = None
                     recommended_sell_price = None
@@ -235,17 +233,15 @@ async def _analyze_domestic_stock_async(
                     if result.decision == "buy" and hasattr(
                         result, "appropriate_buy_min"
                     ):
-                        # 4개 구간 중 가장 적절한 매수가 (appropriate_buy_min)
                         recommended_buy_price = float(result.appropriate_buy_min)
                     elif result.decision == "sell" and hasattr(
                         result, "appropriate_sell_min"
                     ):
-                        # 4개 구간 중 가장 적절한 매도가 (appropriate_sell_min)
                         recommended_sell_price = float(result.appropriate_sell_min)
 
                     await send_toss_notification_if_needed(
                         db=db,
-                        user_id=user_id,
+                        user_id=effective_user_id,
                         ticker=code,
                         name=name,
                         market_type=MarketType.KR,
@@ -271,7 +267,7 @@ async def _analyze_domestic_stock_async(
 
 
 @shared_task(name="kis.run_analysis_for_my_domestic_stocks", bind=True)
-def run_analysis_for_my_domestic_stocks(self) -> dict:
+def run_analysis_for_my_domestic_stocks(self, user_id: int | None = None) -> dict:
     """보유 국내 주식 AI 분석 실행"""
 
     async def _run() -> dict:
@@ -356,7 +352,7 @@ def run_analysis_for_my_domestic_stocks(self) -> dict:
 
 
 @shared_task(name="kis.execute_domestic_buy_orders", bind=True)
-def execute_domestic_buy_orders(self) -> dict:
+def execute_domestic_buy_orders(self, user_id: int | None = None) -> dict:
     """국내 주식 자동 매수 주문 실행"""
 
     async def _run() -> dict:
@@ -437,7 +433,7 @@ def execute_domestic_buy_orders(self) -> dict:
 
 
 @shared_task(name="kis.execute_domestic_sell_orders", bind=True)
-def execute_domestic_sell_orders(self) -> dict:
+def execute_domestic_sell_orders(self, user_id: int | None = None) -> dict:
     """국내 주식 자동 매도 주문 실행"""
 
     async def _run() -> dict:
@@ -583,7 +579,7 @@ async def _cancel_domestic_pending_orders(
 
 
 @shared_task(name="kis.run_per_domestic_stock_automation", bind=True)
-def run_per_domestic_stock_automation(self) -> dict:
+def run_per_domestic_stock_automation(self, user_id: int | None = None) -> dict:
     """국내 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
 
     async def _run() -> dict:
@@ -591,6 +587,7 @@ def run_per_domestic_stock_automation(self) -> dict:
         from app.models.manual_holdings import MarketType
         from app.services.manual_holdings_service import ManualHoldingsService
 
+        effective_user_id = user_id if user_id is not None else 1
         kis = KISClient()
         analyzer = KISAnalyzer()
 
@@ -606,10 +603,8 @@ def run_per_domestic_stock_automation(self) -> dict:
             # 2. 수동 잔고(토스 등) 국내 주식 조회
             async with AsyncSessionLocal() as db:
                 manual_service = ManualHoldingsService(db)
-                # USER_ID는 현재 1로 고정 (추후 다중 사용자 지원 시 변경 필요)
-                user_id = 1
                 manual_holdings = await manual_service.get_holdings_by_user(
-                    user_id=user_id, market_type=MarketType.KR
+                    user_id=effective_user_id, market_type=MarketType.KR
                 )
 
             # 3. 수동 잔고 종목을 한투 형식으로 변환하여 병합
@@ -1017,13 +1012,15 @@ def run_per_domestic_stock_automation(self) -> dict:
 
 
 @shared_task(name="kis.analyze_domestic_stock_task", bind=True)
-def analyze_domestic_stock_task(self, symbol: str) -> dict:
+def analyze_domestic_stock_task(self, symbol: str, user_id: int | None = None) -> dict:
     """단일 국내 주식 분석 실행"""
-    return asyncio.run(_analyze_domestic_stock_async(symbol))
+    return asyncio.run(_analyze_domestic_stock_async(symbol, user_id=user_id))
 
 
 @shared_task(name="kis.execute_domestic_buy_order_task", bind=True)
-def execute_domestic_buy_order_task(self, symbol: str) -> dict:
+def execute_domestic_buy_order_task(
+    self, symbol: str, user_id: int | None = None
+) -> dict:
     """단일 국내 주식 매수 주문 실행"""
 
     async def _run() -> dict:
@@ -1053,7 +1050,9 @@ def execute_domestic_buy_order_task(self, symbol: str) -> dict:
 
 
 @shared_task(name="kis.execute_domestic_sell_order_task", bind=True)
-def execute_domestic_sell_order_task(self, symbol: str) -> dict:
+def execute_domestic_sell_order_task(
+    self, symbol: str, user_id: int | None = None
+) -> dict:
     """단일 국내 주식 매도 주문 실행"""
 
     async def _run() -> dict:
@@ -1080,13 +1079,15 @@ def execute_domestic_sell_order_task(self, symbol: str) -> dict:
 
 
 @shared_task(name="kis.analyze_overseas_stock_task", bind=True)
-def analyze_overseas_stock_task(self, symbol: str) -> dict:
+def analyze_overseas_stock_task(self, symbol: str, user_id: int | None = None) -> dict:
     """단일 해외 주식 분석 실행"""
-    return asyncio.run(_analyze_overseas_stock_async(symbol))
+    return asyncio.run(_analyze_overseas_stock_async(symbol, user_id=user_id))
 
 
 @shared_task(name="kis.execute_overseas_buy_order_task", bind=True)
-def execute_overseas_buy_order_task(self, symbol: str) -> dict:
+def execute_overseas_buy_order_task(
+    self, symbol: str, user_id: int | None = None
+) -> dict:
     """단일 해외 주식 매수 주문 실행"""
 
     async def _run() -> dict:
@@ -1130,7 +1131,9 @@ def execute_overseas_buy_order_task(self, symbol: str) -> dict:
 
 
 @shared_task(name="kis.execute_overseas_sell_order_task", bind=True)
-def execute_overseas_sell_order_task(self, symbol: str) -> dict:
+def execute_overseas_sell_order_task(
+    self, symbol: str, user_id: int | None = None
+) -> dict:
     """단일 해외 주식 매도 주문 실행"""
 
     async def _run() -> dict:
@@ -1177,12 +1180,13 @@ def execute_overseas_sell_order_task(self, symbol: str) -> dict:
 
 
 async def _analyze_overseas_stock_async(
-    symbol: str, progress_cb: ProgressCallback = None
+    symbol: str, progress_cb: ProgressCallback = None, user_id: int | None = None
 ) -> dict[str, object]:
     """단일 해외 주식 분석 비동기 헬퍼"""
     if not symbol:
         return {"status": "failed", "error": "심볼이 필요합니다."}
 
+    effective_user_id = user_id if user_id is not None else 1
     from app.analysis.service_analyzers import YahooAnalyzer
     from app.services import yahoo
 
@@ -1244,9 +1248,6 @@ async def _analyze_overseas_stock_async(
                     logger.warning(f"현재가 조회 실패 ({symbol}): {price_error}")
 
                 async with AsyncSessionLocal() as db:
-                    # USER_ID는 현재 1로 고정 (추후 다중 사용자 지원 시 변경 필요)
-                    user_id = 1
-
                     # 매수/매도 추천 가격 추출
                     recommended_buy_price = None
                     recommended_sell_price = None
@@ -1255,17 +1256,15 @@ async def _analyze_overseas_stock_async(
                     if result.decision == "buy" and hasattr(
                         result, "appropriate_buy_min"
                     ):
-                        # 4개 구간 중 가장 적절한 매수가 (appropriate_buy_min)
                         recommended_buy_price = float(result.appropriate_buy_min)
                     elif result.decision == "sell" and hasattr(
                         result, "appropriate_sell_min"
                     ):
-                        # 4개 구간 중 가장 적절한 매도가 (appropriate_sell_min)
                         recommended_sell_price = float(result.appropriate_sell_min)
 
                     await send_toss_notification_if_needed(
                         db=db,
-                        user_id=user_id,
+                        user_id=effective_user_id,
                         ticker=symbol,
                         name=symbol,
                         market_type=MarketType.US,
@@ -1290,7 +1289,7 @@ async def _analyze_overseas_stock_async(
 
 
 @shared_task(name="kis.run_analysis_for_my_overseas_stocks", bind=True)
-def run_analysis_for_my_overseas_stocks(self) -> dict:
+def run_analysis_for_my_overseas_stocks(self, user_id: int | None = None) -> dict:
     """보유 해외 주식 AI 분석 실행"""
 
     async def _run() -> dict:
@@ -1383,7 +1382,7 @@ def run_analysis_for_my_overseas_stocks(self) -> dict:
 
 
 @shared_task(name="kis.execute_overseas_buy_orders", bind=True)
-def execute_overseas_buy_orders(self) -> dict:
+def execute_overseas_buy_orders(self, user_id: int | None = None) -> dict:
     """해외 주식 자동 매수 주문 실행"""
 
     async def _run() -> dict:
@@ -1488,7 +1487,7 @@ def execute_overseas_buy_orders(self) -> dict:
 
 
 @shared_task(name="kis.execute_overseas_sell_orders", bind=True)
-def execute_overseas_sell_orders(self) -> dict:
+def execute_overseas_sell_orders(self, user_id: int | None = None) -> dict:
     """해외 주식 자동 매도 주문 실행"""
 
     async def _run() -> dict:
@@ -1671,7 +1670,7 @@ async def _cancel_overseas_pending_orders(
 
 
 @shared_task(name="kis.run_per_overseas_stock_automation", bind=True)
-def run_per_overseas_stock_automation(self) -> dict:
+def run_per_overseas_stock_automation(self, user_id: int | None = None) -> dict:
     """해외 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
 
     async def _run() -> dict:
@@ -1679,6 +1678,7 @@ def run_per_overseas_stock_automation(self) -> dict:
         from app.models.manual_holdings import MarketType
         from app.services.manual_holdings_service import ManualHoldingsService
 
+        effective_user_id = user_id if user_id is not None else 1
         kis = KISClient()
         from app.analysis.service_analyzers import YahooAnalyzer
 
@@ -1696,9 +1696,8 @@ def run_per_overseas_stock_automation(self) -> dict:
             # 2. 수동 잔고(토스 등) 해외 주식 조회
             async with AsyncSessionLocal() as db:
                 manual_service = ManualHoldingsService(db)
-                user_id = 1  # USER_ID는 현재 1로 고정
                 manual_holdings = await manual_service.get_holdings_by_user(
-                    user_id=user_id, market_type=MarketType.US
+                    user_id=effective_user_id, market_type=MarketType.US
                 )
 
             # 3. 수동 잔고 종목을 KIS 형식으로 변환하여 병합
