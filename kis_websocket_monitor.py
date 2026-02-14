@@ -77,13 +77,13 @@ class KISWebSocketMonitor:
         데이터베이스 엔진 초기화
 
         Returns:
-            AsyncSession: 비동기 DB 세션
+            sessionmaker: 비동기 DB 세션 팩토리
         """
         engine = create_async_engine(settings.DATABASE_URL, echo=False)
         async_session_maker = sessionmaker(
             engine, expire_on_commit=False, class_=AsyncSession
         )
-        return async_session_maker()
+        return async_session_maker
 
     async def _initialize_dca_service(self, db_session: AsyncSession):
         """
