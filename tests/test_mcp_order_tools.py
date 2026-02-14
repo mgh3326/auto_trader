@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.mcp_server import tools as mcp_tools
+from tests.mcp_tools import mcp_tools
 
 
 class DummyMCP:

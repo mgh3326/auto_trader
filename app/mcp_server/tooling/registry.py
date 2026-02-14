@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.mcp_server.tooling.analysis_screening import register_analysis_tools
+from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 from app.mcp_server.tooling.fundamentals import register_fundamentals_tools
 from app.mcp_server.tooling.market_data import register_market_data_tools
 from app.mcp_server.tooling.orders import register_order_tools

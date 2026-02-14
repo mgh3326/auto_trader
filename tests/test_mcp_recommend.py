@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 
-from app.mcp_server import tools as mcp_tools
 from app.mcp_server.scoring import (
     calc_composite_score,
     calc_dividend_score,
@@ -19,6 +18,8 @@ from app.mcp_server.strategies import (
     get_strategy_config,
     validate_strategy,
 )
+from app.mcp_server.tooling import analysis_tool_handlers
+from tests.mcp_tools import mcp_tools
 
 
 class DummyMCP:
@@ -480,7 +481,11 @@ class TestRecommendStocksIntegration:
         ) -> dict[str, Any]:
             raise RuntimeError("US source timeout")
 
-        monkeypatch.setattr(mcp_tools, "get_top_stocks", mock_get_top_stocks_raises)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "get_top_stocks_impl",
+            mock_get_top_stocks_raises,
+        )
 
         result = await recommend_stocks(
             budget=2_000,
@@ -1012,7 +1017,11 @@ class TestRecommendStocksIntegration:
                 ]
             }
 
-        monkeypatch.setattr(mcp_tools, "get_top_stocks", mock_get_top_stocks)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "get_top_stocks_impl",
+            mock_get_top_stocks,
+        )
 
         result = await recommend_stocks(
             budget=2_000,

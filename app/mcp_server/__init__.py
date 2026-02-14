@@ -1,7 +1,6 @@
 from app.mcp_server.tooling import register_all_tools
-from app.mcp_server.tools import register_tools
 
-__all__ = ["register_all_tools", "register_tools"]
+__all__ = ["register_all_tools"]
 
 AVAILABLE_TOOL_NAMES = [
     "search_symbol",

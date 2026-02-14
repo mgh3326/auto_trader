@@ -1,7 +1,7 @@
 import pytest
 
 from app.mcp_server import AVAILABLE_TOOL_NAMES, register_all_tools
-from app.mcp_server.tooling.analysis_screening import (
+from app.mcp_server.tooling.analysis_registration import (
     ANALYSIS_TOOL_NAMES,
     register_analysis_tools,
 )

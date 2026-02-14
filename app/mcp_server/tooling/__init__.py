@@ -7,11 +7,10 @@ This package contains the refactored MCP tools split by domain:
 - orders: Order placement and management tools
 - order_execution: Order execution pipeline helpers
 - portfolio: Holdings and position management tools
-- analysis_screening: Stock analysis and screening tool registration
+- analysis_screening: Stock analysis and screening implementations
 - analysis_screen_core: Stock screening core helpers
 - analysis_rankings: Ranking and correlation helpers
 - analysis_recommend: Recommend-stocks helpers
-- legacy_tools: Legacy nested MCP tool implementations (temporary bridge)
 - registry: Tool registration orchestration
 """
 
