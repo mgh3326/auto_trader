@@ -582,6 +582,8 @@ class TestScreenStocksCrypto:
         # Verify sort_by and sort_order are always recorded
         assert result["filters_applied"]["sort_by"] == "rsi"
         assert result["filters_applied"]["sort_order"] == "asc"
+        assert result["filters_applied"]["top_n"] == 30
+        assert result["top_n"] == 30
         assert result["meta"]["top_by_volume"] == 2
         assert "rsi_bucket" in result["results"][0]
         assert "trade_amount_24h" in result["results"][0]
@@ -672,6 +674,118 @@ class TestScreenStocksCrypto:
         assert symbols == ["KRW-ETH", "KRW-SOL", "KRW-BTC"]
         assert all("trade_amount_24h" in item for item in result["results"])
         assert all("volume" not in item for item in result["results"])
+
+    @pytest.mark.asyncio
+    async def test_crypto_top_n_controls_trade_amount_candidate_pool(self, monkeypatch):
+        async def mock_fetch_top_traded_coins(fiat):
+            assert fiat == "KRW"
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_volume_24h": 10,
+                    "acc_trade_price_24h": 4_000,
+                },
+                {
+                    "market": "KRW-ETH",
+                    "korean_name": "이더리움",
+                    "trade_price": 5_000_000,
+                    "signed_change_rate": 0.02,
+                    "acc_trade_volume_24h": 10,
+                    "acc_trade_price_24h": 3_000,
+                },
+                {
+                    "market": "KRW-SOL",
+                    "korean_name": "솔라나",
+                    "trade_price": 200_000,
+                    "signed_change_rate": 0.03,
+                    "acc_trade_volume_24h": 10,
+                    "acc_trade_price_24h": 2_000,
+                },
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="trade_amount",
+            sort_order="desc",
+            top_n=2,
+            limit=10,
+        )
+
+        symbols = [item["symbol"] for item in result["results"]]
+        assert symbols == ["KRW-BTC", "KRW-ETH"]
+        assert result["filters_applied"]["top_n"] == 2
+        assert result["meta"]["top_by_volume"] == 2
+        assert result["top_n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_crypto_top_n_is_clamped_to_200(self, monkeypatch):
+        async def mock_fetch_top_traded_coins(fiat):
+            assert fiat == "KRW"
+            coins = [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_volume_24h": 10,
+                    "acc_trade_price_24h": 1_000_000,
+                }
+            ]
+            coins.extend(
+                {
+                    "market": f"KRW-C{i:03d}",
+                    "korean_name": f"Coin{i}",
+                    "trade_price": 1_000 + i,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_volume_24h": 10,
+                    "acc_trade_price_24h": 1_000_000 - i,
+                }
+                for i in range(1, 230)
+            )
+            return coins
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="trade_amount",
+            sort_order="desc",
+            top_n=999,
+            limit=50,
+        )
+
+        assert result["filters_applied"]["top_n"] == 200
+        assert result["meta"]["top_by_volume"] == 200
+        assert result["top_n"] == 200
 
     @pytest.mark.asyncio
     async def test_crypto_per_filter_raises_error(self, mock_upbit_coins, monkeypatch):
