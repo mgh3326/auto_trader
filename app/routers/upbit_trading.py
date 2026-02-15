@@ -16,12 +16,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.analysis.service_analyzers import UpbitAnalyzer
 from app.core.config import settings
 from app.core.db import get_db
+from app.core.taskiq_result import build_task_status_response
 from app.core.templates import templates
 from app.services import upbit
 from app.services.stock_info_service import (
     StockAnalysisService,
 )
 from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
+from app.tasks.analyze import (
+    execute_buy_order_for_coin_task,
+    execute_buy_orders_task,
+    execute_sell_order_for_coin_task,
+    execute_sell_orders_task,
+    run_analysis_for_coin_task,
+    run_analysis_for_my_coins,
+    run_per_coin_automation_task,
+)
 from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)
@@ -211,7 +221,7 @@ async def get_my_coins(
 
 @router.post("/api/analyze-coins")
 async def analyze_my_coins():
-    """보유 코인 AI 분석 실행 (Celery)"""
+    """보유 코인 AI 분석 실행 (TaskIQ)"""
     try:
         # API 키 확인
         if not settings.upbit_access_key or not settings.upbit_secret_key:
@@ -219,15 +229,12 @@ async def analyze_my_coins():
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        # Celery 작업 큐에 등록
-        from app.core.celery_app import celery_app
-
-        async_result = celery_app.send_task("analyze.run_for_my_coins")
+        task = await run_analysis_for_my_coins.kiq()
 
         return {
             "success": True,
             "message": "코인 분석이 시작되었습니다.",
-            "task_id": async_result.id,
+            "task_id": task.task_id,
         }
 
     except HTTPException:
@@ -238,37 +245,13 @@ async def analyze_my_coins():
 
 @router.get("/api/analyze-task/{task_id}")
 async def get_analyze_task_status(task_id: str):
-    """Celery 분석 작업 상태 조회 API"""
-    from app.core.celery_app import celery_app
-
-    result = celery_app.AsyncResult(task_id)
-
-    response = {
-        "task_id": task_id,
-        "state": result.state,
-        "ready": result.ready(),
-    }
-
-    if result.state == "PROGRESS":
-        # 진행 중 - meta 정보 반환
-        response["progress"] = result.info
-    elif result.successful():
-        # 완료 - 결과 반환
-        try:
-            response["result"] = result.get(timeout=0)
-        except Exception:
-            response["result"] = None
-    elif result.failed():
-        # 실패 - 에러 반환
-        response["error"] = str(result.result)
-
-    return response
+    """TaskIQ 분석 작업 상태 조회 API"""
+    return await build_task_status_response(task_id)
 
 
 @router.post("/api/buy-orders")
 async def execute_buy_orders():
-    """보유 코인 자동 매수 주문 실행 (Celery)"""
-    from app.core.celery_app import celery_app
+    """보유 코인 자동 매수 주문 실행 (TaskIQ)"""
 
     try:
         # API 키 확인
@@ -277,11 +260,11 @@ async def execute_buy_orders():
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        async_result = celery_app.send_task("upbit.execute_buy_orders")
+        task = await execute_buy_orders_task.kiq()
         return {
             "success": True,
             "message": "매수 주문이 시작되었습니다.",
-            "task_id": async_result.id,
+            "task_id": task.task_id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -289,8 +272,7 @@ async def execute_buy_orders():
 
 @router.post("/api/sell-orders")
 async def execute_sell_orders():
-    """보유 코인 자동 매도 주문 실행 (Celery)"""
-    from app.core.celery_app import celery_app
+    """보유 코인 자동 매도 주문 실행 (TaskIQ)"""
 
     try:
         # API 키 확인
@@ -299,11 +281,11 @@ async def execute_sell_orders():
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        async_result = celery_app.send_task("upbit.execute_sell_orders")
+        task = await execute_sell_orders_task.kiq()
         return {
             "success": True,
             "message": "매도 주문이 시작되었습니다.",
-            "task_id": async_result.id,
+            "task_id": task.task_id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -312,19 +294,17 @@ async def execute_sell_orders():
 @router.post("/api/automation/per-coin")
 async def execute_per_coin_automation():
     """보유 코인별 자동 실행 (분석 → 분할 매수 → 분할 매도)"""
-    from app.core.celery_app import celery_app
-
     try:
         if not settings.upbit_access_key or not settings.upbit_secret_key:
             raise HTTPException(
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        async_result = celery_app.send_task("upbit.run_per_coin_automation")
+        task = await run_per_coin_automation_task.kiq()
         return {
             "success": True,
             "message": "코인별 자동 실행이 시작되었습니다.",
-            "task_id": async_result.id,
+            "task_id": task.task_id,
         }
     except HTTPException:
         raise
@@ -334,8 +314,7 @@ async def execute_per_coin_automation():
 
 @router.post("/api/coin/{currency}/buy-orders")
 async def execute_coin_buy_orders(currency: str):
-    """특정 코인에 대한 분할 매수 주문 실행 (Celery)"""
-    from app.core.celery_app import celery_app
+    """특정 코인에 대한 분할 매수 주문 실행 (TaskIQ)"""
 
     currency_code = currency.upper()
 
@@ -345,14 +324,12 @@ async def execute_coin_buy_orders(currency: str):
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        async_result = celery_app.send_task(
-            "upbit.execute_buy_order_for_coin", args=[currency_code]
-        )
+        task = await execute_buy_order_for_coin_task.kiq(currency_code)
         return {
             "success": True,
             "currency": currency_code,
             "message": f"{currency_code} 분할 매수 주문이 시작되었습니다.",
-            "task_id": async_result.id,
+            "task_id": task.task_id,
         }
     except HTTPException:
         raise
@@ -362,8 +339,7 @@ async def execute_coin_buy_orders(currency: str):
 
 @router.post("/api/coin/{currency}/analysis")
 async def analyze_coin(currency: str):
-    """특정 코인에 대한 AI 분석 실행 (Celery)"""
-    from app.core.celery_app import celery_app
+    """특정 코인에 대한 AI 분석 실행 (TaskIQ)"""
 
     currency_code = currency.upper()
 
@@ -376,14 +352,12 @@ async def analyze_coin(currency: str):
                 detail=f"{currency_code}는 KRW 마켓 거래 대상이 아닙니다.",
             )
 
-        async_result = celery_app.send_task(
-            "analyze.run_for_coin", args=[currency_code]
-        )
+        task = await run_analysis_for_coin_task.kiq(currency_code)
         return {
             "success": True,
             "currency": currency_code,
             "message": f"{currency_code} 분석이 시작되었습니다.",
-            "task_id": async_result.id,
+            "task_id": task.task_id,
         }
     except HTTPException:
         raise
@@ -393,8 +367,7 @@ async def analyze_coin(currency: str):
 
 @router.post("/api/coin/{currency}/sell-orders")
 async def execute_coin_sell_orders(currency: str):
-    """특정 코인에 대한 분할 매도 주문 실행 (Celery)"""
-    from app.core.celery_app import celery_app
+    """특정 코인에 대한 분할 매도 주문 실행 (TaskIQ)"""
 
     currency_code = currency.upper()
 
@@ -404,14 +377,12 @@ async def execute_coin_sell_orders(currency: str):
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        async_result = celery_app.send_task(
-            "upbit.execute_sell_order_for_coin", args=[currency_code]
-        )
+        task = await execute_sell_order_for_coin_task.kiq(currency_code)
         return {
             "success": True,
             "currency": currency_code,
             "message": f"{currency_code} 분할 매도 주문이 시작되었습니다.",
-            "task_id": async_result.id,
+            "task_id": task.task_id,
         }
     except HTTPException:
         raise

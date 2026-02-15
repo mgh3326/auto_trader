@@ -12,11 +12,21 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
+from app.core.taskiq_result import build_task_status_response
 from app.core.templates import templates
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
 from app.services.kis import KISClient
 from app.services.merged_portfolio_service import MergedPortfolioService
+from app.tasks.kis import (
+    analyze_domestic_stock_task,
+    execute_domestic_buy_order_task,
+    execute_domestic_buy_orders,
+    execute_domestic_sell_order_task,
+    execute_domestic_sell_orders,
+    run_analysis_for_my_domestic_stocks,
+    run_per_domestic_stock_automation,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/kis-domestic-trading", tags=["KIS Domestic Trading"])
@@ -105,19 +115,16 @@ async def get_my_domestic_stocks(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-from app.core.celery_app import celery_app
-
-
 @router.post("/api/analyze-stocks")
 async def analyze_my_domestic_stocks():
-    """보유 국내 주식 AI 분석 실행 (Celery)"""
+    """보유 국내 주식 AI 분석 실행 (TaskIQ)"""
     try:
-        async_result = celery_app.send_task("kis.run_analysis_for_my_domestic_stocks")
+        task = await run_analysis_for_my_domestic_stocks.kiq()
 
         return {
             "success": True,
             "message": "국내 주식 분석이 시작되었습니다.",
-            "task_id": async_result.id,
+            "task_id": task.task_id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -125,38 +132,20 @@ async def analyze_my_domestic_stocks():
 
 @router.get("/api/analyze-task/{task_id}")
 async def get_analyze_task_status(task_id: str):
-    """Celery 작업 상태 조회 API"""
+    """TaskIQ 작업 상태 조회 API"""
 
-    result = celery_app.AsyncResult(task_id)
-
-    response = {
-        "task_id": task_id,
-        "state": result.state,
-        "ready": result.ready(),
-    }
-
-    if result.state == "PROGRESS":
-        response["progress"] = result.info
-    elif result.successful():
-        try:
-            response["result"] = result.get(timeout=0)
-        except Exception:
-            response["result"] = None
-    elif result.failed():
-        response["error"] = str(result.result)
-
-    return response
+    return await build_task_status_response(task_id)
 
 
 @router.post("/api/buy-orders")
 async def execute_buy_orders():
-    """보유 국내 주식 자동 매수 주문 실행 (Celery)"""
+    """보유 국내 주식 자동 매수 주문 실행 (TaskIQ)"""
     try:
-        async_result = celery_app.send_task("kis.execute_domestic_buy_orders")
+        task = await execute_domestic_buy_orders.kiq()
         return {
             "success": True,
             "message": "매수 주문이 시작되었습니다.",
-            "task_id": async_result.id,
+            "task_id": task.task_id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -164,13 +153,13 @@ async def execute_buy_orders():
 
 @router.post("/api/sell-orders")
 async def execute_sell_orders():
-    """보유 국내 주식 자동 매도 주문 실행 (Celery)"""
+    """보유 국내 주식 자동 매도 주문 실행 (TaskIQ)"""
     try:
-        async_result = celery_app.send_task("kis.execute_domestic_sell_orders")
+        task = await execute_domestic_sell_orders.kiq()
         return {
             "success": True,
             "message": "매도 주문이 시작되었습니다.",
-            "task_id": async_result.id,
+            "task_id": task.task_id,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -179,30 +168,42 @@ async def execute_sell_orders():
 @router.post("/api/automation/per-stock")
 async def run_per_stock_automation():
     """보유 종목별 자동 실행 (분석 -> 매수 -> 매도)"""
-    task = celery_app.send_task("kis.run_per_domestic_stock_automation")
+    task = await run_per_domestic_stock_automation.kiq()
     return {
         "success": True,
         "message": "종목별 자동 실행이 시작되었습니다.",
-        "task_id": task.id,
+        "task_id": task.task_id,
     }
 
 
 @router.post("/api/analyze-stock/{symbol}")
 async def analyze_stock(symbol: str):
     """단일 종목 분석 요청"""
-    task = celery_app.send_task("kis.analyze_domestic_stock_task", args=[symbol])
-    return {"success": True, "message": f"{symbol} 분석 요청 완료", "task_id": task.id}
+    task = await analyze_domestic_stock_task.kiq(symbol)
+    return {
+        "success": True,
+        "message": f"{symbol} 분석 요청 완료",
+        "task_id": task.task_id,
+    }
 
 
 @router.post("/api/buy-order/{symbol}")
 async def buy_order(symbol: str):
     """단일 종목 매수 요청"""
-    task = celery_app.send_task("kis.execute_domestic_buy_order_task", args=[symbol])
-    return {"success": True, "message": f"{symbol} 매수 요청 완료", "task_id": task.id}
+    task = await execute_domestic_buy_order_task.kiq(symbol)
+    return {
+        "success": True,
+        "message": f"{symbol} 매수 요청 완료",
+        "task_id": task.task_id,
+    }
 
 
 @router.post("/api/sell-order/{symbol}")
 async def sell_order(symbol: str):
     """단일 종목 매도 요청"""
-    task = celery_app.send_task("kis.execute_domestic_sell_order_task", args=[symbol])
-    return {"success": True, "message": f"{symbol} 매도 요청 완료", "task_id": task.id}
+    task = await execute_domestic_sell_order_task.kiq(symbol)
+    return {
+        "success": True,
+        "message": f"{symbol} 매도 요청 완료",
+        "task_id": task.task_id,
+    }

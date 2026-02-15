@@ -55,13 +55,13 @@ clean: ## Clean up generated files
 	find . -type d -name ".ruff_cache" -exec rm -rf {} +
 
 dev: ## Start development server
-	uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+	uv run uvicorn app.main:api --reload --host 0.0.0.0 --port 8000
 
-celery-worker: ## Start Celery worker
-	uv run celery -A app.core.celery_app worker --loglevel=info
+taskiq-worker: ## Start TaskIQ worker
+	uv run taskiq worker app.core.taskiq_broker:broker app.tasks.analyze app.tasks.kis app.tasks.krx app.tasks.scheduler_tasks
 
-celery-flower: ## Start Celery Flower (monitoring UI)
-	uv run celery -A app.core.celery_app flower --port=5555
+taskiq-scheduler: ## Start TaskIQ scheduler
+	uv run taskiq scheduler app.core.scheduler:sched app.tasks.analyze app.tasks.kis app.tasks.krx app.tasks.scheduler_tasks
 
 docker-build: ## Build Docker image
 	docker build -t auto-trader .

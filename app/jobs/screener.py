@@ -1,8 +1,8 @@
 import pandas as pd
 
 from app.core.config import settings
+from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.kis import kis
-from app.services.telegram import send  # type: ignore[import-not-found]
 
 
 async def screen_once_async():
@@ -18,4 +18,5 @@ async def screen_once_async():
             f"*{r.hts_kor_isnm}* `{r.mksc_shrn_iscd}`\n"
             f"▼{r.prdy_ctrt:+.2f}% · 거래량 {r.acml_vol:,}"
         )
-        await send(msg)
+        notifier = get_trade_notifier()
+        await notifier._send_to_telegram(msg)

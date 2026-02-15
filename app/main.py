@@ -2,6 +2,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import taskiq_fastapi
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
@@ -12,6 +13,7 @@ from app.auth.router import router as auth_router
 from app.auth.web_router import limiter
 from app.auth.web_router import router as web_auth_router
 from app.core.config import settings
+from app.core.taskiq_broker import broker
 from app.middleware.auth import AuthMiddleware
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
@@ -63,13 +65,17 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         """Handle startup/shutdown lifecycle without deprecated hooks."""
-        # Initialize monitoring
+        if not broker.is_worker_process:
+            await broker.startup()
+
         await setup_monitoring()
 
         try:
             yield
         finally:
             await cleanup_monitoring()
+            if not broker.is_worker_process:
+                await broker.shutdown()
 
     app = FastAPI(
         title="KIS Auto Screener",
@@ -137,6 +143,8 @@ def create_app() -> FastAPI:
     # Add middlewares (order matters: last added = first executed)
     app.add_middleware(AuthMiddleware)
 
+    taskiq_fastapi.init(broker, "app.main:api")
+
     return app
 
 
@@ -181,3 +189,4 @@ async def cleanup_monitoring() -> None:
 
 # Create app instance
 api = create_app()
+app = api

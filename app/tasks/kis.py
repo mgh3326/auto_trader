@@ -1,12 +1,10 @@
 import asyncio
 import json
 import logging
-from collections.abc import Callable
-
-from celery import shared_task
 
 from app.analysis.service_analyzers import KISAnalyzer
 from app.core.symbol import to_db_symbol
+from app.core.taskiq_broker import broker
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.kis import KISClient
 from app.services.kis_trading_service import (
@@ -17,7 +15,6 @@ from app.services.kis_trading_service import (
 )
 from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
 
-ProgressCallback = Callable[[dict[str, str]], None] | None
 logger = logging.getLogger(__name__)
 
 STATUS_FETCHING_HOLDINGS = "보유 주식 조회 중..."
@@ -106,9 +103,7 @@ async def _send_toss_recommendation_async(
 # --- Domestic Stocks Tasks ---
 
 
-async def _analyze_domestic_stock_async(
-    code: str, progress_cb: ProgressCallback = None
-) -> dict[str, object]:
+async def _analyze_domestic_stock_async(code: str) -> dict[str, object]:
     """단일 국내 주식 분석 비동기 헬퍼"""
     if not code:
         return {"status": "failed", "error": "종목 코드가 필요합니다."}
@@ -121,15 +116,6 @@ async def _analyze_domestic_stock_async(
         info = await kis.fetch_fundamental_info(code)
         name = info.get("종목명", code)
         current_price = info.get("현재가", 0)
-
-        if progress_cb:
-            progress_cb(
-                {
-                    "status": f"{name}({code}) 분석 중...",
-                    "symbol": code,
-                    "step": "analysis",
-                }
-            )
 
         result, _ = await analyzer.analyze_stock_json(name)
 
@@ -213,8 +199,8 @@ async def _analyze_domestic_stock_async(
         await analyzer.close()
 
 
-@shared_task(name="kis.run_analysis_for_my_domestic_stocks", bind=True)
-def run_analysis_for_my_domestic_stocks(self) -> dict:
+@broker.task(task_name="kis.run_analysis_for_my_domestic_stocks")
+async def run_analysis_for_my_domestic_stocks() -> dict:
     """보유 국내 주식 AI 분석 실행"""
 
     async def _run() -> dict:
@@ -222,11 +208,6 @@ def run_analysis_for_my_domestic_stocks(self) -> dict:
         analyzer = KISAnalyzer()
 
         try:
-            self.update_state(
-                state="PROGRESS",
-                meta={"status": STATUS_FETCHING_HOLDINGS, "current": 0, "total": 0},
-            )
-
             my_stocks = await kis.fetch_my_stocks()
             if not my_stocks:
                 return {
@@ -240,20 +221,9 @@ def run_analysis_for_my_domestic_stocks(self) -> dict:
             total_count = len(my_stocks)
             results = []
 
-            for index, stock in enumerate(my_stocks, 1):
+            for _index, stock in enumerate(my_stocks, 1):
                 code = stock.get("pdno")
                 name = stock.get("prdt_name")
-
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "current": index,
-                        "total": total_count,
-                        "status": f"{name} 분석 중... ({index}/{total_count})",
-                        "current_stock": name,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
 
                 try:
                     result, _ = await analyzer.analyze_stock_json(name)
@@ -295,21 +265,16 @@ def run_analysis_for_my_domestic_stocks(self) -> dict:
         finally:
             await analyzer.close()
 
-    return asyncio.run(_run())
+    return await _run()
 
 
-@shared_task(name="kis.execute_domestic_buy_orders", bind=True)
-def execute_domestic_buy_orders(self) -> dict:
+@broker.task(task_name="kis.execute_domestic_buy_orders")
+async def execute_domestic_buy_orders() -> dict:
     """국내 주식 자동 매수 주문 실행"""
 
     async def _run() -> dict:
         kis = KISClient()
         try:
-            self.update_state(
-                state="PROGRESS",
-                meta={"status": STATUS_FETCHING_HOLDINGS, "current": 0, "total": 0},
-            )
-
             # 보유 주식 조회 (평단가 확인용)
             my_stocks = await kis.fetch_my_stocks()
 
@@ -329,24 +294,13 @@ def execute_domestic_buy_orders(self) -> dict:
             total_count = len(my_stocks)
             results = []
 
-            for index, stock in enumerate(my_stocks, 1):
+            for _index, stock in enumerate(my_stocks, 1):
                 code = stock.get("pdno")
                 name = stock.get("prdt_name")
                 avg_price = float(stock.get("pchs_avg_pric", 0))
                 current_price = float(
                     stock.get("prpr", 0)
                 )  # 현재가 (fetch_my_stocks에서 가져옴)
-
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "current": index,
-                        "total": total_count,
-                        "status": f"{name} 매수 주문 처리 중... ({index}/{total_count})",
-                        "current_stock": name,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
 
                 try:
                     res = await process_kis_domestic_buy_orders_with_analysis(
@@ -376,21 +330,16 @@ def execute_domestic_buy_orders(self) -> dict:
         except Exception as e:
             return {"status": "failed", "error": str(e)}
 
-    return asyncio.run(_run())
+    return await _run()
 
 
-@shared_task(name="kis.execute_domestic_sell_orders", bind=True)
-def execute_domestic_sell_orders(self) -> dict:
+@broker.task(task_name="kis.execute_domestic_sell_orders")
+async def execute_domestic_sell_orders() -> dict:
     """국내 주식 자동 매도 주문 실행"""
 
     async def _run() -> dict:
         kis = KISClient()
         try:
-            self.update_state(
-                state="PROGRESS",
-                meta={"status": STATUS_FETCHING_HOLDINGS, "current": 0, "total": 0},
-            )
-
             my_stocks = await kis.fetch_my_stocks()
             if not my_stocks:
                 return {
@@ -404,23 +353,12 @@ def execute_domestic_sell_orders(self) -> dict:
             total_count = len(my_stocks)
             results = []
 
-            for index, stock in enumerate(my_stocks, 1):
+            for _index, stock in enumerate(my_stocks, 1):
                 code = stock.get("pdno")
                 name = stock.get("prdt_name")
                 avg_price = float(stock.get("pchs_avg_pric", 0))
                 current_price = float(stock.get("prpr", 0))
                 qty = int(stock.get("hldg_qty", 0))
-
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "current": index,
-                        "total": total_count,
-                        "status": f"{name} 매도 주문 처리 중... ({index}/{total_count})",
-                        "current_stock": name,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
 
                 try:
                     res = await process_kis_domestic_sell_orders_with_analysis(
@@ -450,7 +388,7 @@ def execute_domestic_sell_orders(self) -> dict:
         except Exception as e:
             return {"status": "failed", "error": str(e)}
 
-    return asyncio.run(_run())
+    return await _run()
 
 
 async def _cancel_domestic_pending_orders(
@@ -525,8 +463,8 @@ async def _cancel_domestic_pending_orders(
     return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
 
 
-@shared_task(name="kis.run_per_domestic_stock_automation", bind=True)
-def run_per_domestic_stock_automation(self) -> dict:
+@broker.task(task_name="kis.run_per_domestic_stock_automation")
+async def run_per_domestic_stock_automation() -> dict:
     """국내 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
 
     async def _run() -> dict:
@@ -538,11 +476,6 @@ def run_per_domestic_stock_automation(self) -> dict:
         analyzer = KISAnalyzer()
 
         try:
-            self.update_state(
-                state="PROGRESS",
-                meta={"status": STATUS_FETCHING_HOLDINGS, "current": 0, "total": 0},
-            )
-
             # 1. 한투 보유 종목 조회
             my_stocks = await kis.fetch_my_stocks()
 
@@ -584,22 +517,13 @@ def run_per_domestic_stock_automation(self) -> dict:
                     "results": [],
                 }
 
-            total_count = len(my_stocks)
             results = []
 
             # 미체결 주문 조회 (한 번만 조회하여 재사용)
-            self.update_state(
-                state="PROGRESS",
-                meta={
-                    "status": "미체결 주문 조회 중...",
-                    "current": 0,
-                    "total": total_count,
-                },
-            )
             all_open_orders = await kis.inquire_korea_orders(is_mock=False)
             logger.info(f"국내주식 미체결 주문 조회 완료: {len(all_open_orders)}건")
 
-            for index, stock in enumerate(my_stocks, 1):
+            for _index, stock in enumerate(my_stocks, 1):
                 code = stock.get("pdno")
                 name = stock.get("prdt_name")
                 avg_price = float(stock.get("pchs_avg_pric", 0))
@@ -626,15 +550,6 @@ def run_per_domestic_stock_automation(self) -> dict:
                 stock_steps = []
 
                 # 1. 분석
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "status": f"{name} 분석 중...",
-                        "current": index,
-                        "total": total_count,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
                 try:
                     await analyzer.analyze_stock_json(name)
                     stock_steps.append(
@@ -659,15 +574,6 @@ def run_per_domestic_stock_automation(self) -> dict:
                     continue  # 분석 실패시 매수/매도 건너뜀
 
                 # 2. 기존 미체결 매수 주문 취소
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "status": f"{name} 미체결 매수 주문 취소 중...",
-                        "current": index,
-                        "total": total_count,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
                 try:
                     cancel_result = await _cancel_domestic_pending_orders(
                         kis, code, "buy", all_open_orders
@@ -694,15 +600,6 @@ def run_per_domestic_stock_automation(self) -> dict:
                     )
 
                 # 3. 매수
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "status": f"{name} 매수 주문 중...",
-                        "current": index,
-                        "total": total_count,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
                 try:
                     res = await process_kis_domestic_buy_orders_with_analysis(
                         kis, code, current_price, avg_price
@@ -810,15 +707,6 @@ def run_per_domestic_stock_automation(self) -> dict:
                     continue
 
                 # 4. 기존 미체결 매도 주문 취소
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "status": f"{name} 미체결 매도 주문 취소 중...",
-                        "current": index,
-                        "total": total_count,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
                 sell_orders_cancelled = False
                 try:
                     cancel_result = await _cancel_domestic_pending_orders(
@@ -872,15 +760,6 @@ def run_per_domestic_stock_automation(self) -> dict:
                         )
 
                 # 5. 매도
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "status": f"{name} 매도 주문 중...",
-                        "current": index,
-                        "total": total_count,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
                 try:
                     res = await process_kis_domestic_sell_orders_with_analysis(
                         kis,
@@ -942,17 +821,17 @@ def run_per_domestic_stock_automation(self) -> dict:
         finally:
             await analyzer.close()
 
-    return asyncio.run(_run())
+    return await _run()
 
 
-@shared_task(name="kis.analyze_domestic_stock_task", bind=True)
-def analyze_domestic_stock_task(self, symbol: str) -> dict:
+@broker.task(task_name="kis.analyze_domestic_stock_task")
+async def analyze_domestic_stock_task(symbol: str) -> dict:
     """단일 국내 주식 분석 실행"""
-    return asyncio.run(_analyze_domestic_stock_async(symbol))
+    return await _analyze_domestic_stock_async(symbol)
 
 
-@shared_task(name="kis.execute_domestic_buy_order_task", bind=True)
-def execute_domestic_buy_order_task(self, symbol: str) -> dict:
+@broker.task(task_name="kis.execute_domestic_buy_order_task")
+async def execute_domestic_buy_order_task(symbol: str) -> dict:
     """단일 국내 주식 매수 주문 실행"""
 
     async def _run() -> dict:
@@ -978,11 +857,11 @@ def execute_domestic_buy_order_task(self, symbol: str) -> dict:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    return asyncio.run(_run())
+    return await _run()
 
 
-@shared_task(name="kis.execute_domestic_sell_order_task", bind=True)
-def execute_domestic_sell_order_task(self, symbol: str) -> dict:
+@broker.task(task_name="kis.execute_domestic_sell_order_task")
+async def execute_domestic_sell_order_task(symbol: str) -> dict:
     """단일 국내 주식 매도 주문 실행"""
 
     async def _run() -> dict:
@@ -1005,17 +884,17 @@ def execute_domestic_sell_order_task(self, symbol: str) -> dict:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    return asyncio.run(_run())
+    return await _run()
 
 
-@shared_task(name="kis.analyze_overseas_stock_task", bind=True)
-def analyze_overseas_stock_task(self, symbol: str) -> dict:
+@broker.task(task_name="kis.analyze_overseas_stock_task")
+async def analyze_overseas_stock_task(symbol: str) -> dict:
     """단일 해외 주식 분석 실행"""
-    return asyncio.run(_analyze_overseas_stock_async(symbol))
+    return await _analyze_overseas_stock_async(symbol)
 
 
-@shared_task(name="kis.execute_overseas_buy_order_task", bind=True)
-def execute_overseas_buy_order_task(self, symbol: str) -> dict:
+@broker.task(task_name="kis.execute_overseas_buy_order_task")
+async def execute_overseas_buy_order_task(symbol: str) -> dict:
     """단일 해외 주식 매수 주문 실행"""
 
     async def _run() -> dict:
@@ -1055,11 +934,11 @@ def execute_overseas_buy_order_task(self, symbol: str) -> dict:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    return asyncio.run(_run())
+    return await _run()
 
 
-@shared_task(name="kis.execute_overseas_sell_order_task", bind=True)
-def execute_overseas_sell_order_task(self, symbol: str) -> dict:
+@broker.task(task_name="kis.execute_overseas_sell_order_task")
+async def execute_overseas_sell_order_task(symbol: str) -> dict:
     """단일 해외 주식 매도 주문 실행"""
 
     async def _run() -> dict:
@@ -1099,15 +978,13 @@ def execute_overseas_sell_order_task(self, symbol: str) -> dict:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    return asyncio.run(_run())
+    return await _run()
 
 
 # --- Overseas Stocks Tasks ---
 
 
-async def _analyze_overseas_stock_async(
-    symbol: str, progress_cb: ProgressCallback = None
-) -> dict[str, object]:
+async def _analyze_overseas_stock_async(symbol: str) -> dict[str, object]:
     """단일 해외 주식 분석 비동기 헬퍼"""
     if not symbol:
         return {"status": "failed", "error": "심볼이 필요합니다."}
@@ -1120,15 +997,6 @@ async def _analyze_overseas_stock_async(
     )  # 해외 주식은 YahooAnalyzer 사용 (또는 KISAnalyzer 확장 필요 시 변경)
 
     try:
-        if progress_cb:
-            progress_cb(
-                {
-                    "status": f"{symbol} 분석 중...",
-                    "symbol": symbol,
-                    "step": "analysis",
-                }
-            )
-
         result, _ = await analyzer.analyze_stock_json(symbol)
 
         if result is None:
@@ -1218,8 +1086,8 @@ async def _analyze_overseas_stock_async(
         await analyzer.close()
 
 
-@shared_task(name="kis.run_analysis_for_my_overseas_stocks", bind=True)
-def run_analysis_for_my_overseas_stocks(self) -> dict:
+@broker.task(task_name="kis.run_analysis_for_my_overseas_stocks")
+async def run_analysis_for_my_overseas_stocks() -> dict:
     """보유 해외 주식 AI 분석 실행"""
 
     async def _run() -> dict:
@@ -1229,11 +1097,6 @@ def run_analysis_for_my_overseas_stocks(self) -> dict:
         analyzer = YahooAnalyzer()
 
         try:
-            self.update_state(
-                state="PROGRESS",
-                meta={"status": STATUS_FETCHING_HOLDINGS, "current": 0, "total": 0},
-            )
-
             my_stocks = await kis.fetch_my_overseas_stocks()
             if not my_stocks:
                 return {
@@ -1247,20 +1110,9 @@ def run_analysis_for_my_overseas_stocks(self) -> dict:
             total_count = len(my_stocks)
             results = []
 
-            for index, stock in enumerate(my_stocks, 1):
+            for _index, stock in enumerate(my_stocks, 1):
                 symbol = stock.get("ovrs_pdno")  # 심볼
                 name = stock.get("ovrs_item_name")
-
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "current": index,
-                        "total": total_count,
-                        "status": f"{symbol} 분석 중... ({index}/{total_count})",
-                        "current_stock": symbol,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
 
                 try:
                     # 해외주식은 심볼로 분석
@@ -1308,21 +1160,16 @@ def run_analysis_for_my_overseas_stocks(self) -> dict:
         finally:
             await analyzer.close()
 
-    return asyncio.run(_run())
+    return await _run()
 
 
-@shared_task(name="kis.execute_overseas_buy_orders", bind=True)
-def execute_overseas_buy_orders(self) -> dict:
+@broker.task(task_name="kis.execute_overseas_buy_orders")
+async def execute_overseas_buy_orders() -> dict:
     """해외 주식 자동 매수 주문 실행"""
 
     async def _run() -> dict:
         kis = KISClient()
         try:
-            self.update_state(
-                state="PROGRESS",
-                meta={"status": STATUS_FETCHING_HOLDINGS, "current": 0, "total": 0},
-            )
-
             my_stocks = await kis.fetch_my_overseas_stocks()
             if not my_stocks:
                 return {
@@ -1336,23 +1183,12 @@ def execute_overseas_buy_orders(self) -> dict:
             total_count = len(my_stocks)
             results = []
 
-            for index, stock in enumerate(my_stocks, 1):
+            for _index, stock in enumerate(my_stocks, 1):
                 symbol = stock.get("ovrs_pdno")
                 name = stock.get("ovrs_item_name")
                 avg_price = float(stock.get("pchs_avg_pric", 0))
                 current_price = float(stock.get("now_pric2", 0))
                 exchange_code = stock.get("ovrs_excg_cd", "NASD")
-
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "current": index,
-                        "total": total_count,
-                        "status": f"{symbol} 매수 주문 처리 중... ({index}/{total_count})",
-                        "current_stock": symbol,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
 
                 try:
                     res = await process_kis_overseas_buy_orders_with_analysis(
@@ -1413,21 +1249,16 @@ def execute_overseas_buy_orders(self) -> dict:
         except Exception as e:
             return {"status": "failed", "error": str(e)}
 
-    return asyncio.run(_run())
+    return await _run()
 
 
-@shared_task(name="kis.execute_overseas_sell_orders", bind=True)
-def execute_overseas_sell_orders(self) -> dict:
+@broker.task(task_name="kis.execute_overseas_sell_orders")
+async def execute_overseas_sell_orders() -> dict:
     """해외 주식 자동 매도 주문 실행"""
 
     async def _run() -> dict:
         kis = KISClient()
         try:
-            self.update_state(
-                state="PROGRESS",
-                meta={"status": STATUS_FETCHING_HOLDINGS, "current": 0, "total": 0},
-            )
-
             my_stocks = await kis.fetch_my_overseas_stocks()
             if not my_stocks:
                 return {
@@ -1441,7 +1272,7 @@ def execute_overseas_sell_orders(self) -> dict:
             total_count = len(my_stocks)
             results = []
 
-            for index, stock in enumerate(my_stocks, 1):
+            for _index, stock in enumerate(my_stocks, 1):
                 symbol = stock.get("ovrs_pdno")
                 name = stock.get("ovrs_item_name")
                 avg_price = float(stock.get("pchs_avg_pric", 0))
@@ -1452,17 +1283,6 @@ def execute_overseas_sell_orders(self) -> dict:
                     float(stock.get("ord_psbl_qty", stock.get("ovrs_cblc_qty", 0)))
                 )
                 exchange_code = stock.get("ovrs_excg_cd", "NASD")
-
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "current": index,
-                        "total": total_count,
-                        "status": f"{symbol} 매도 주문 처리 중... ({index}/{total_count})",
-                        "current_stock": symbol,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
 
                 try:
                     res = await process_kis_overseas_sell_orders_with_analysis(
@@ -1524,7 +1344,7 @@ def execute_overseas_sell_orders(self) -> dict:
         except Exception as e:
             return {"status": "failed", "error": str(e)}
 
-    return asyncio.run(_run())
+    return await _run()
 
 
 async def _cancel_overseas_pending_orders(
@@ -1599,8 +1419,8 @@ async def _cancel_overseas_pending_orders(
     return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
 
 
-@shared_task(name="kis.run_per_overseas_stock_automation", bind=True)
-def run_per_overseas_stock_automation(self) -> dict:
+@broker.task(task_name="kis.run_per_overseas_stock_automation")
+async def run_per_overseas_stock_automation() -> dict:
     """해외 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
 
     async def _run() -> dict:
@@ -1614,11 +1434,6 @@ def run_per_overseas_stock_automation(self) -> dict:
         analyzer = YahooAnalyzer()
 
         try:
-            self.update_state(
-                state="PROGRESS",
-                meta={"status": STATUS_FETCHING_HOLDINGS, "current": 0, "total": 0},
-            )
-
             # 1. KIS 보유 종목 조회
             my_stocks = await kis.fetch_my_overseas_stocks()
 
@@ -1661,24 +1476,15 @@ def run_per_overseas_stock_automation(self) -> dict:
                     "results": [],
                 }
 
-            total_count = len(my_stocks)
             results = []
 
             # 미체결 주문 조회 (한 번만 조회하여 재사용)
-            self.update_state(
-                state="PROGRESS",
-                meta={
-                    "status": "미체결 주문 조회 중...",
-                    "current": 0,
-                    "total": total_count,
-                },
-            )
             all_open_orders = await kis.inquire_overseas_orders(
                 exchange_code="NASD", is_mock=False
             )
             logger.info(f"미체결 주문 조회 완료: {len(all_open_orders)}건")
 
-            for index, stock in enumerate(my_stocks, 1):
+            for _index, stock in enumerate(my_stocks, 1):
                 symbol = stock.get("ovrs_pdno")
                 name = stock.get("ovrs_item_name")
                 avg_price = float(stock.get("pchs_avg_pric", 0))
@@ -1708,15 +1514,6 @@ def run_per_overseas_stock_automation(self) -> dict:
                 stock_steps = []
 
                 # 1. 분석
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "status": f"{symbol} 분석 중...",
-                        "current": index,
-                        "total": total_count,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
                 try:
                     await analyzer.analyze_stock_json(symbol)
                     stock_steps.append(
@@ -1735,15 +1532,6 @@ def run_per_overseas_stock_automation(self) -> dict:
                     continue
 
                 # 2. 기존 미체결 매수 주문 취소
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "status": f"{symbol} 미체결 매수 주문 취소 중...",
-                        "current": index,
-                        "total": total_count,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
                 try:
                     cancel_result = await _cancel_overseas_pending_orders(
                         kis, symbol, exchange_code, "buy", all_open_orders
@@ -1770,15 +1558,6 @@ def run_per_overseas_stock_automation(self) -> dict:
                     )
 
                 # 3. 매수
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "status": f"{symbol} 매수 주문 중...",
-                        "current": index,
-                        "total": total_count,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
                 try:
                     res = await process_kis_overseas_buy_orders_with_analysis(
                         kis, symbol, current_price, avg_price
@@ -1858,15 +1637,6 @@ def run_per_overseas_stock_automation(self) -> dict:
                     continue
 
                 # 4. 기존 미체결 매도 주문 취소
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "status": f"{symbol} 미체결 매도 주문 취소 중...",
-                        "current": index,
-                        "total": total_count,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
                 try:
                     cancel_result = await _cancel_overseas_pending_orders(
                         kis, symbol, exchange_code, "sell", all_open_orders
@@ -1893,15 +1663,6 @@ def run_per_overseas_stock_automation(self) -> dict:
                     )
 
                 # 5. 매도
-                self.update_state(
-                    state="PROGRESS",
-                    meta={
-                        "status": f"{symbol} 매도 주문 중...",
-                        "current": index,
-                        "total": total_count,
-                        "percentage": int((index / total_count) * 100),
-                    },
-                )
                 try:
                     res = await process_kis_overseas_sell_orders_with_analysis(
                         kis, symbol, current_price, avg_price, qty, exchange_code
@@ -1951,4 +1712,4 @@ def run_per_overseas_stock_automation(self) -> dict:
         finally:
             await analyzer.close()
 
-    return asyncio.run(_run())
+    return await _run()

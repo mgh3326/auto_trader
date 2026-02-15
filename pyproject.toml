@@ -11,8 +11,6 @@ dependencies = [
     "fastapi>=0.128.0,<0.129.0",
     "uvicorn>=0.40.0,<0.41.0",
     "pydantic-settings>=2.10.1,<3.0.0",
-    "pytz>=2025.2,<2026.0",
-    "apscheduler>=3.11.0,<4.0.0",
     "pandas>=3.0.0,<3.1.0",
     "httpx>=0.28.1,<0.29.0",
     "ta>=0.11.0,<0.12.0",
@@ -29,8 +27,9 @@ dependencies = [
     "passlib[bcrypt]>=1.7.4,<2.0.0",
     "python-multipart>=0.0.6,<0.1.0",
     "websockets>=15,<15.1",
-    "celery[redis]>=5.6.0,<6.0.0",
-    "flower>=2.0.1",
+    "taskiq>=0.11.18,<1.0.0",
+    "taskiq-redis>=1.0.0,<2.0.0",
+    "taskiq-fastapi>=0.3.4,<1.0.0",
     "email-validator>=2.0.0,<3.0.0",
     "itsdangerous>=2.0.0,<3.0.0",
     "pandas-stubs==3.0.0.260204",
@@ -41,7 +40,7 @@ dependencies = [
     "lxml>=5.0.0,<6.0.0",
     "pykrx>=1.0.0,<2.0.0",
     "setuptools>=70.0.0",
-    "sentry-sdk[fastapi,celery]>=2.18.0,<3.0.0",
+    "sentry-sdk[fastapi]>=2.18.0,<3.0.0",
     "tenacity>=9.0.0,<10.0.0",
 ]
 
@@ -145,9 +144,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"app/core/celery_app.py" = ["E402"]  # Delayed import for Celery signals
-"app/routers/kis_domestic_trading.py" = ["E402"]  # Delayed Celery import
-"app/routers/kis_overseas_trading.py" = ["E402"]  # Delayed Celery import
 "tests/conftest.py" = ["E402"]  # Delayed import after env setup
 
 [tool.ruff.lint.isort]

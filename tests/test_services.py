@@ -982,3 +982,66 @@ class TestKISOverseasDailyPrice:
         assert len(result) == 1
         assert mock_client.get.call_count == 2
         client._token_manager.clear_token.assert_awaited_once()
+
+
+class TestKISRequestWithRateLimit:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "params", "json_body", "expected_call"),
+        [
+            ("GET", {"foo": "bar"}, None, "get"),
+            ("POST", None, {"foo": "bar"}, "post"),
+        ],
+    )
+    @patch("app.services.kis.get_limiter")
+    @patch("app.services.kis.httpx.AsyncClient")
+    async def test_request_with_rate_limit_passes_timeout_keyword(
+        self,
+        mock_client_class,
+        mock_get_limiter,
+        method,
+        params,
+        json_body,
+        expected_call,
+    ):
+        """_request_with_rate_limit calls httpx with explicit timeout keyword."""
+        from app.services.kis import KISClient
+
+        timeout_value = 7.5
+        mock_limiter = AsyncMock()
+        mock_get_limiter.return_value = mock_limiter
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {"rt_cd": "0", "output": []}
+
+        mock_client = AsyncMock()
+        if expected_call == "get":
+            mock_client.get.return_value = mock_response
+        else:
+            mock_client.post.return_value = mock_response
+
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+
+        client = KISClient()
+        result = await client._request_with_rate_limit(
+            method,
+            "https://example.com/uapi/domestic-stock/v1/quotations/inquire-price",
+            headers={"authorization": "Bearer token"},
+            params=params,
+            json_body=json_body,
+            timeout=timeout_value,
+            api_name="test_api",
+            tr_id="TEST123",
+        )
+
+        assert result == {"rt_cd": "0", "output": []}
+        mock_get_limiter.assert_awaited_once()
+        mock_client_class.assert_called_once_with(timeout=timeout_value)
+
+        request_call = getattr(mock_client, expected_call)
+        request_call.assert_awaited_once()
+        assert request_call.await_args.kwargs["timeout"] == timeout_value

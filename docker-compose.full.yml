@@ -64,7 +64,26 @@ services:
       context: .
       dockerfile: Dockerfile.api
     container_name: auto_trader_worker
-    command: bash -lc "uv run celery -A app.core.celery_app.celery_app worker --loglevel=INFO"
+    command: >
+      bash -lc "uv run taskiq worker app.core.taskiq_broker:broker app.tasks.analyze app.tasks.kis app.tasks.krx app.tasks.scheduler_tasks"
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - local_dev
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: auto_trader_scheduler
+    command: >
+      bash -lc "uv run taskiq scheduler app.core.scheduler:sched app.tasks.analyze app.tasks.kis app.tasks.krx app.tasks.scheduler_tasks"
     env_file:
       - .env
     depends_on:
@@ -95,5 +114,3 @@ volumes:
 networks:
   local_dev:
     driver: bridge
-
-

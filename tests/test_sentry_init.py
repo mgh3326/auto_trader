@@ -17,7 +17,6 @@ def reset_sentry_state(monkeypatch):
         "_enabled_integration_flags",
         {
             "fastapi": False,
-            "celery": False,
             "sqlalchemy": False,
             "httpx": False,
             "mcp": False,
@@ -46,7 +45,7 @@ def test_init_sentry_no_dsn(monkeypatch):
 
 
 @pytest.mark.unit
-def test_init_sentry_with_fastapi_and_celery(monkeypatch):
+def test_init_sentry_with_fastapi(monkeypatch):
     monkeypatch.setattr(
         sentry_module.settings,
         "SENTRY_DSN",
@@ -62,7 +61,6 @@ def test_init_sentry_with_fastapi_and_celery(monkeypatch):
     result = sentry_module.init_sentry(
         "auto-trader-api",
         enable_fastapi=True,
-        enable_celery=True,
     )
 
     assert result is True
@@ -81,7 +79,6 @@ def test_init_sentry_with_fastapi_and_celery(monkeypatch):
     }
     assert "LoggingIntegration" in integration_names
     assert "FastApiIntegration" in integration_names
-    assert "CeleryIntegration" in integration_names
 
     mock_set_tag.assert_any_call("service", "auto-trader-api")
     mock_set_tag.assert_any_call("runtime", "python")
@@ -118,7 +115,6 @@ def test_init_sentry_with_sqlalchemy_and_httpx(monkeypatch):
     assert "SqlalchemyIntegration" in integration_names
     assert "HttpxIntegration" in integration_names
     assert "FastApiIntegration" not in integration_names
-    assert "CeleryIntegration" not in integration_names
 
 
 @pytest.mark.unit
@@ -137,7 +133,6 @@ def test_init_sentry_all_integrations(monkeypatch):
     result = sentry_module.init_sentry(
         "auto-trader-api",
         enable_fastapi=True,
-        enable_celery=True,
         enable_sqlalchemy=True,
         enable_httpx=True,
     )
@@ -150,7 +145,6 @@ def test_init_sentry_all_integrations(monkeypatch):
     }
     assert "LoggingIntegration" in integration_names
     assert "FastApiIntegration" in integration_names
-    assert "CeleryIntegration" in integration_names
     assert "SqlalchemyIntegration" in integration_names
     assert "HttpxIntegration" in integration_names
 

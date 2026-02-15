@@ -1,5 +1,5 @@
 """
-Order-related helper functions shared between router endpoints and Celery tasks.
+Order-related helper functions shared between router endpoints and TaskIQ tasks.
 """
 
 from __future__ import annotations

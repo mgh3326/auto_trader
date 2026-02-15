@@ -5,10 +5,11 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.celery_app import celery_app
 from app.core.db import get_db
+from app.core.taskiq_result import build_task_status_response
 from app.core.templates import templates
 from app.models.analysis import StockAnalysisResult, StockInfo
+from app.tasks.analyze import run_analysis_for_stock
 
 router = APIRouter(prefix="/stock-latest", tags=["Stock Latest Analysis"])
 
@@ -434,7 +435,7 @@ async def get_latest_analysis_statistics(db: AsyncSession = Depends(get_db)):
 
 @router.post("/api/analyze/{stock_info_id}")
 async def trigger_new_analysis(stock_info_id: int, db: AsyncSession = Depends(get_db)):
-    """특정 종목에 대한 새로운 분석을 Celery로 비동기 트리거"""
+    """특정 종목에 대한 새로운 분석을 TaskIQ로 비동기 트리거"""
 
     # 종목 정보 확인
     stock_info_query = select(StockInfo).where(StockInfo.id == stock_info_id)
@@ -447,15 +448,13 @@ async def trigger_new_analysis(stock_info_id: int, db: AsyncSession = Depends(ge
     if not stock_info.is_active:
         raise HTTPException(status_code=400, detail="비활성화된 종목입니다.")
 
-    # Celery 작업 큐에 등록
-    async_result = celery_app.send_task(
-        "analyze.run_for_stock",
-        args=[stock_info.symbol, stock_info.name, stock_info.instrument_type],
+    task = await run_analysis_for_stock.kiq(
+        stock_info.symbol, stock_info.name, stock_info.instrument_type
     )
 
     return {
         "message": "분석이 큐에 등록되었습니다.",
-        "task_id": async_result.id,
+        "task_id": task.task_id,
         "stock_info": {
             "id": stock_info.id,
             "symbol": stock_info.symbol,
@@ -467,18 +466,5 @@ async def trigger_new_analysis(stock_info_id: int, db: AsyncSession = Depends(ge
 
 @router.get("/api/analyze-task/{task_id}")
 async def get_analyze_task_status(task_id: str):
-    """Celery 작업 상태 조회 API"""
-    result = celery_app.AsyncResult(task_id)
-    response = {
-        "task_id": task_id,
-        "state": result.state,
-        "ready": result.ready(),
-    }
-    if result.successful():
-        try:
-            response["result"] = result.get(timeout=0)
-        except Exception:
-            response["result"] = None
-    elif result.failed():
-        response["error"] = str(result.result)
-    return response
+    """TaskIQ 작업 상태 조회 API"""
+    return await build_task_status_response(task_id)
