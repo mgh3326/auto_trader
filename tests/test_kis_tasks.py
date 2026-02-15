@@ -1,5 +1,6 @@
-"""Tests for KIS-related Celery tasks."""
+"""Tests for KIS-related TaskIQ tasks."""
 
+import asyncio
 from typing import Any
 
 
@@ -94,14 +95,8 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
         monkeypatch.setattr(
             kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
         )
-        monkeypatch.setattr(
-            kis_tasks.run_per_domestic_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
 
-        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+        result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
     # 태스크가 성공적으로 완료되어야 함
     assert result["status"] == "completed"
@@ -202,12 +197,6 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
 
     monkeypatch.setattr(kis_tasks, "KISClient", lambda: dummy_kis)
     monkeypatch.setattr(kis_tasks, "KISAnalyzer", DummyAnalyzer)
-    monkeypatch.setattr(
-        kis_tasks.run_per_domestic_stock_automation,
-        "update_state",
-        lambda *_, **__: None,
-        raising=False,
-    )
 
     # Mock ManualHoldingsService to return empty list
     class MockManualService:
@@ -243,7 +232,7 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
         mock_settings_service_cls.return_value = mock_settings_service
         mock_settings_service.get_by_symbol.return_value = mock_settings
 
-        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+        result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
     # 결과 검증
     assert result["status"] == "completed"
@@ -342,14 +331,8 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
         monkeypatch.setattr(
             kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
         )
-        monkeypatch.setattr(
-            kis_tasks.run_per_domestic_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
 
-        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+        result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
     assert result["status"] == "completed"
     steps = result["results"][0]["steps"]
@@ -436,14 +419,8 @@ def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
         monkeypatch.setattr(
             kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
         )
-        monkeypatch.setattr(
-            kis_tasks.run_per_domestic_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
 
-        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+        result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
     assert result["status"] == "completed"
     steps = result["results"][0]["steps"]
@@ -548,14 +525,8 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
         monkeypatch.setattr(
             kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
         )
-        monkeypatch.setattr(
-            kis_tasks.run_per_domestic_stock_automation,
-            "update_state",
-            lambda *_, **__: None,
-            raising=False,
-        )
 
-        result = kis_tasks.run_per_domestic_stock_automation.apply().result
+        result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
     assert result["status"] == "completed"
     assert sell_calls, "매도 단계가 호출되어야 합니다."
@@ -597,7 +568,11 @@ def test_execute_overseas_buy_order_fetches_price_for_new_symbol(monkeypatch):
         kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_process
     )
 
-    result = kis_tasks.execute_overseas_buy_order_task.apply(args=("AAPL",)).result
+    result = asyncio.run(
+        kis_tasks.execute_overseas_buy_order_task(
+            "AAPL",
+        )
+    )
 
     assert result["success"] is True
     assert captured["symbol"] == "AAPL"
@@ -693,14 +668,8 @@ class TestOverseasStockTelegramNotifications:
                 kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell
             )
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-            monkeypatch.setattr(
-                kis_tasks.run_per_overseas_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
 
         assert result["status"] == "completed"
 
@@ -804,14 +773,8 @@ class TestOverseasStockTelegramNotifications:
                 kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell
             )
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-            monkeypatch.setattr(
-                kis_tasks.run_per_overseas_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
 
         assert result["status"] == "completed"
 
@@ -923,14 +886,8 @@ class TestOverseasStockTelegramNotifications:
                 kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell
             )
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-            monkeypatch.setattr(
-                kis_tasks.run_per_overseas_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
 
         assert result["status"] == "completed"
 
@@ -1037,14 +994,8 @@ class TestOverseasStockTelegramNotifications:
                 kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell
             )
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-            monkeypatch.setattr(
-                kis_tasks.run_per_overseas_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
 
         assert result["status"] == "completed"
 
@@ -1176,14 +1127,8 @@ class TestOverseasStockTelegramNotifications:
                 kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell
             )
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-            monkeypatch.setattr(
-                kis_tasks.run_per_overseas_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
 
         assert result["status"] == "completed"
 
@@ -1308,14 +1253,8 @@ class TestDomesticStockPendingOrderCancel:
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_domestic_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
         assert result["status"] == "completed"
 
@@ -1415,14 +1354,8 @@ class TestOrderableQuantityUsage:
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_domestic_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
         assert result["status"] == "completed"
         assert len(sell_qty_received) == 1
@@ -1518,14 +1451,8 @@ class TestOrderableQuantityUsage:
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_domestic_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
         assert result["status"] == "completed"
         assert len(sell_qty_received) == 1
@@ -1645,14 +1572,8 @@ class TestOrderableQuantityUsage:
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_domestic_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
         assert result["status"] == "completed"
         assert len(sell_qty_received) == 1
@@ -1776,14 +1697,8 @@ class TestOverseasManualHoldings:
             monkeypatch.setattr(
                 kis_tasks, "_send_toss_recommendation_async", mock_toss_recommendation
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_overseas_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
 
         assert result["status"] == "completed"
 
@@ -1891,14 +1806,8 @@ class TestOverseasManualHoldings:
             monkeypatch.setattr(
                 kis_tasks, "_send_toss_recommendation_async", mock_toss_recommendation
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_overseas_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
 
         assert result["status"] == "completed"
 
@@ -2008,14 +1917,8 @@ class TestOverseasManualHoldings:
                 kis_tasks, "process_kis_overseas_sell_orders_with_analysis", fake_sell
             )
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
-            monkeypatch.setattr(
-                kis_tasks.run_per_overseas_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_overseas_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
 
         assert result["status"] == "completed"
 

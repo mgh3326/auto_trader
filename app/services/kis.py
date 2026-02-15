@@ -275,10 +275,18 @@ class KISClient:
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     if method.upper() == "GET":
-                        response = await client.get(url, headers=headers, params=params)
+                        response = await client.get(
+                            url,
+                            headers=headers,
+                            params=params,
+                            timeout=timeout,
+                        )
                     else:
                         response = await client.post(
-                            url, headers=headers, json=json_body
+                            url,
+                            headers=headers,
+                            json=json_body,
+                            timeout=timeout,
                         )
 
                 if response.status_code == 429:
@@ -302,7 +310,12 @@ class KISClient:
                     continue
 
                 response.raise_for_status()
-                data = response.json()
+                try:
+                    data = response.json()
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"KIS API non-JSON response: {api_name}"
+                    ) from exc
 
                 rt_cd = data.get("rt_cd")
                 msg_cd = str(data.get("msg_cd", ""))
@@ -375,22 +388,43 @@ class KISClient:
 
     def _get_rate_limit_for_api(self, api_key: str) -> tuple[int, float]:
         """Get rate limit for a specific API key, falling back to defaults."""
-        api_limits = settings.kis_api_rate_limits
-        if api_key in api_limits:
+
+        def _safe_rate(value: object, default: int) -> int:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return default
+            return parsed if parsed > 0 else default
+
+        def _safe_period(value: object, default: float) -> float:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return default
+            return parsed if parsed > 0 else default
+
+        default_rate = _safe_rate(getattr(settings, "kis_rate_limit_rate", 19), 19)
+        default_period = _safe_period(
+            getattr(settings, "kis_rate_limit_period", 1.0), 1.0
+        )
+
+        api_limits = getattr(settings, "kis_api_rate_limits", {})
+        if isinstance(api_limits, dict) and api_key in api_limits:
             limit_config = api_limits[api_key]
-            rate = int(limit_config.get("rate", settings.kis_rate_limit_rate))
-            period = float(limit_config.get("period", settings.kis_rate_limit_period))
-            return rate, period
+            if isinstance(limit_config, dict):
+                rate = _safe_rate(limit_config.get("rate"), default_rate)
+                period = _safe_period(limit_config.get("period"), default_period)
+                return rate, period
 
         if api_key not in self._unmapped_rate_limit_keys_logged:
             logging.warning(
                 "[kis] Unmapped API rate limit for %s, using defaults (%s/%ss)",
                 api_key,
-                settings.kis_rate_limit_rate,
-                settings.kis_rate_limit_period,
+                default_rate,
+                default_period,
             )
             self._unmapped_rate_limit_keys_logged.add(api_key)
-        return settings.kis_rate_limit_rate, settings.kis_rate_limit_period
+        return default_rate, default_period
 
     async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
         await self._ensure_token()

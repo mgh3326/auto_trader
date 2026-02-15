@@ -52,7 +52,28 @@ services:
     restart: unless-stopped
     network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
     command: >
-      /app/.venv/bin/celery -A app.core.celery_app.celery_app worker --loglevel=INFO -c 1 --max-tasks-per-child=100
+      /app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks.analyze app.tasks.kis app.tasks.krx app.tasks.scheduler_tasks
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+
+  scheduler:
+    image: ghcr.io/${GITHUB_REPOSITORY}:production
+    container_name: auto_trader_scheduler_prod
+    env_file:
+      - .env.prod
+    volumes:
+      - ./tmp:/app/tmp
+      - ./logs:/app/logs
+    restart: unless-stopped
+    network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
+    command: >
+      /app/.venv/bin/taskiq scheduler app.core.scheduler:sched app.tasks.analyze app.tasks.kis app.tasks.krx app.tasks.scheduler_tasks
     deploy:
       resources:
         limits:

@@ -4,6 +4,7 @@ Tests for manual holdings integration in KIS automation tasks.
 수동 잔고(토스 등)를 자동화 태스크에 통합하는 기능 테스트
 """
 
+import asyncio
 import json
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -110,14 +111,8 @@ class TestManualHoldingsIntegration:
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_domestic_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
         # 태스크가 성공적으로 완료되어야 함
         assert result["status"] == "completed"
@@ -213,14 +208,8 @@ class TestManualHoldingsIntegration:
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_domestic_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
         # 태스크가 성공적으로 완료되어야 함
         assert result["status"] == "completed"
@@ -303,14 +292,8 @@ class TestManualHoldingsIntegration:
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_domestic_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
         # 태스크가 성공적으로 완료되어야 함
         assert result["status"] == "completed"
@@ -390,14 +373,8 @@ class TestManualHoldingsIntegration:
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_domestic_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
         # 태스크가 성공적으로 완료되어야 함
         assert result["status"] == "completed"
@@ -485,14 +462,8 @@ class TestManualHoldingsIntegration:
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_domestic_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
         # 태스크가 성공적으로 완료되어야 함
         assert result["status"] == "completed"
@@ -585,14 +556,8 @@ class TestManualHoldingsIntegration:
             monkeypatch.setattr(
                 kis_tasks, "process_kis_domestic_sell_orders_with_analysis", fake_sell
             )
-            monkeypatch.setattr(
-                kis_tasks.run_per_domestic_stock_automation,
-                "update_state",
-                lambda *_, **__: None,
-                raising=False,
-            )
 
-            result = kis_tasks.run_per_domestic_stock_automation.apply().result
+            result = asyncio.run(kis_tasks.run_per_domestic_stock_automation())
 
         # 태스크가 성공적으로 완료되어야 함
         assert result["status"] == "completed"

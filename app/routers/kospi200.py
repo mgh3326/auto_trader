@@ -4,9 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.celery_app import celery_app
 from app.core.db import get_db
+from app.core.taskiq_result import build_task_status_response
 from app.models.kospi200 import Kospi200Constituent
+from app.tasks.krx import (
+    sync_kospi200_to_stock_info_task,
+    update_kospi200_constituents_task,
+)
 
 router = APIRouter(prefix="/kospi200", tags=["KOSPI200"])
 
@@ -142,11 +146,11 @@ async def get_kospi200_sectors(db: AsyncSession = Depends(get_db)):
 async def trigger_kospi200_update():
     """KOSPI200 구성종목 업데이트 트리거"""
 
-    task = celery_app.send_task("krx.update_kospi200_constituents")
+    task = await update_kospi200_constituents_task.kiq()
 
     return {
         "message": "KOSPI200 업데이트가 시작되었습니다.",
-        "task_id": task.id,
+        "task_id": task.task_id,
     }
 
 
@@ -154,23 +158,15 @@ async def trigger_kospi200_update():
 async def trigger_kospi200_sync():
     """KOSPI200 구성종목을 StockInfo에 동기화 트리거"""
 
-    task = celery_app.send_task("krx.sync_kospi200_to_stock_info")
+    task = await sync_kospi200_to_stock_info_task.kiq()
 
     return {
         "message": "KOSPI200 동기화가 시작되었습니다.",
-        "task_id": task.id,
+        "task_id": task.task_id,
     }
 
 
 @router.get("/task/{task_id}")
 async def get_task_status(task_id: str):
     """태스크 상태 조회"""
-
-    result = celery_app.AsyncResult(task_id)
-
-    return {
-        "task_id": task_id,
-        "state": result.state,
-        "ready": result.ready(),
-        "result": result.result if result.ready() else None,
-    }
+    return await build_task_status_response(task_id)

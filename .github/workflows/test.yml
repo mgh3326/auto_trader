@@ -104,6 +104,18 @@ jobs:
       run: |
         uv run pytest tests/ -v --cov=app --cov-report=xml --cov-report=html
 
+    - name: TaskIQ worker smoke test
+      run: |
+        set -euo pipefail
+        timeout 25s uv run taskiq worker app.core.taskiq_broker:broker app.tasks.analyze app.tasks.kis app.tasks.krx app.tasks.scheduler_tasks 2>&1 | tee taskiq-worker.log || true
+        grep -q "Listening started." taskiq-worker.log
+
+    - name: TaskIQ scheduler smoke test
+      run: |
+        set -euo pipefail
+        timeout 25s uv run taskiq scheduler app.core.scheduler:sched app.tasks.analyze app.tasks.kis app.tasks.krx app.tasks.scheduler_tasks --skip-first-run 2>&1 | tee taskiq-scheduler.log || true
+        grep -q "Startup completed." taskiq-scheduler.log
+
     - name: Upload coverage reports to GitHub
       uses: codecov/codecov-action@v5
       with:

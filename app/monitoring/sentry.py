@@ -7,7 +7,6 @@ import os
 from typing import Any
 
 import sentry_sdk
-from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.httpx import HttpxIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 _initialized = False
 _enabled_integration_flags: dict[str, bool] = {
     "fastapi": False,
-    "celery": False,
     "sqlalchemy": False,
     "httpx": False,
     "mcp": False,
@@ -205,7 +203,6 @@ def _before_send_transaction(
 def init_sentry(
     service_name: str,
     enable_fastapi: bool = False,
-    enable_celery: bool = False,
     enable_sqlalchemy: bool = False,
     enable_httpx: bool = False,
     enable_mcp: bool = False,
@@ -216,7 +213,6 @@ def init_sentry(
 
     requested_flags = {
         "fastapi": enable_fastapi,
-        "celery": enable_celery,
         "sqlalchemy": enable_sqlalchemy,
         "httpx": enable_httpx,
         "mcp": enable_mcp,
@@ -243,8 +239,6 @@ def init_sentry(
     ]
     if effective_flags["fastapi"]:
         integrations.append(FastApiIntegration())
-    if effective_flags["celery"]:
-        integrations.append(CeleryIntegration())
     if effective_flags["sqlalchemy"]:
         integrations.append(SqlalchemyIntegration())
     if effective_flags["httpx"]:

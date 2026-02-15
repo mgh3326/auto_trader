@@ -110,27 +110,29 @@ async def test_get_my_coins_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_buy_orders_triggers_celery(monkeypatch):
-    """매수 작업이 Celery 태스크를 enqueue 하는지 확인."""
+async def test_execute_buy_orders_triggers_taskiq(monkeypatch):
+    """매수 작업이 TaskIQ 태스크를 enqueue 하는지 확인."""
     from app.routers import upbit_trading
 
     class DummyResult:
         def __init__(self):
-            self.id = "task-123"
+            self.task_id = "task-123"
 
-    class DummyCelery:
+    class DummyTask:
         def __init__(self):
-            self.called_with = None
+            self.called = False
 
-        def send_task(self, name, args=None):
-            self.called_with = (name, args)
+        async def kiq(self, *args, **kwargs):
+            del args, kwargs
+            self.called = True
             return DummyResult()
 
-    dummy_celery = DummyCelery()
+    dummy_task = DummyTask()
 
     monkeypatch.setattr(
-        "app.core.celery_app.celery_app",
-        dummy_celery,
+        upbit_trading,
+        "execute_buy_orders_task",
+        dummy_task,
     )
     monkeypatch.setattr(
         upbit_trading,
@@ -142,4 +144,4 @@ async def test_execute_buy_orders_triggers_celery(monkeypatch):
 
     assert response["success"] is True
     assert response["task_id"] == "task-123"
-    assert dummy_celery.called_with[0] == "upbit.execute_buy_orders"
+    assert dummy_task.called is True
