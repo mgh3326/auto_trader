@@ -13,7 +13,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.kis_websocket import KISExecutionWebSocket, get_approval_key
+from app.services.kis_websocket import (
+    APPROVAL_KEY_CACHE_KEY,
+    APPROVAL_KEY_TTL_SECONDS,
+    KISExecutionWebSocket,
+    _cache_approval_key,
+    _get_cached_approval_key,
+    _is_valid_approval_key,
+    close_approval_key_redis,
+    get_approval_key,
+)
 
 
 @pytest.mark.unit
@@ -268,24 +277,84 @@ class TestKISWebSocketClient:
         client.is_running = True
         client.is_connected = True
         client.websocket = AsyncMock()
+        ws_mock = client.websocket
 
-        await client.stop()
+        close_redis_mock = AsyncMock()
+        with patch(
+            "app.services.kis_websocket.close_approval_key_redis",
+            close_redis_mock,
+        ):
+            await client.stop()
 
         assert client.is_running is False
         assert client.is_connected is False
-        client.websocket.close.assert_called_once()
+        assert client.websocket is None
+        ws_mock.close.assert_awaited_once()
+        close_redis_mock.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_stop_already_stopped(self, execution_callback):
-        """이미 정지된 상태에서 stop 호출 테스트"""
+        """이미 정지된 상태에서도 cleanup 수행 테스트"""
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
         client.is_running = False
         client.websocket = AsyncMock()
 
-        await client.stop()
+        ws_mock = client.websocket
+        close_redis_mock = AsyncMock()
+        with patch(
+            "app.services.kis_websocket.close_approval_key_redis",
+            close_redis_mock,
+        ):
+            await client.stop()
 
         assert client.is_running is False
-        client.websocket.close.assert_not_called()
+        assert client.is_connected is False
+        assert client.websocket is None
+        ws_mock.close.assert_awaited_once()
+        close_redis_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_subscription_request_without_websocket_raises(
+        self, execution_callback
+    ):
+        """웹소켓 미초기화 상태에서 구독 요청 시 RuntimeError"""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        client.websocket = None
+
+        with pytest.raises(RuntimeError, match="WebSocket is not connected"):
+            await client._send_subscription_request("0|H0STCNI0|key|...")
+
+    @pytest.mark.asyncio
+    async def test_listen_without_websocket_raises(self, execution_callback):
+        """웹소켓 미초기화 상태에서 listen 호출 시 RuntimeError"""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        client.websocket = None
+
+        with pytest.raises(RuntimeError, match="WebSocket is not connected"):
+            await client.listen()
+
+    @pytest.mark.asyncio
+    async def test_stop_still_closes_redis_when_websocket_close_fails(
+        self, execution_callback
+    ):
+        """웹소켓 close 실패 시에도 Redis cleanup 수행"""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        client.is_running = True
+        client.is_connected = True
+        client.websocket = AsyncMock()
+        client.websocket.close = AsyncMock(side_effect=RuntimeError("close failed"))
+
+        close_redis_mock = AsyncMock()
+        with patch(
+            "app.services.kis_websocket.close_approval_key_redis",
+            close_redis_mock,
+        ):
+            await client.stop()
+
+        assert client.is_running is False
+        assert client.is_connected is False
+        assert client.websocket is None
+        close_redis_mock.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -315,3 +384,305 @@ class TestKISWebSocketIndexSafety:
         # dict는 반환되지만 execution_type은 None
         assert result is not None
         assert result["execution_type"] is None
+
+
+@pytest.mark.unit
+class TestApprovalKeyRedisCache:
+    """Tests for Approval Key Redis caching"""
+
+    @pytest.mark.asyncio
+    async def test_get_cached_approval_key_hit(self):
+        """Redis GET 성공 시 캐시된 키 반환"""
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value="cached_approval_key_123")
+
+        with patch(
+            "app.services.kis_websocket._get_redis_client",
+            return_value=mock_redis,
+        ):
+            result = await _get_cached_approval_key()
+
+            assert result == "cached_approval_key_123"
+            mock_redis.get.assert_called_once_with(APPROVAL_KEY_CACHE_KEY)
+
+    @pytest.mark.asyncio
+    async def test_get_cached_approval_key_miss(self):
+        """Redis GET 빈값(None) 시 None 반환"""
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+
+        with patch(
+            "app.services.kis_websocket._get_redis_client",
+            return_value=mock_redis,
+        ):
+            result = await _get_cached_approval_key()
+
+            assert result is None
+            mock_redis.get.assert_called_once_with(APPROVAL_KEY_CACHE_KEY)
+
+    @pytest.mark.asyncio
+    async def test_get_cached_approval_key_redis_error_propagates(self):
+        """Redis 예외 발생 시 전파 (엄격 실패 정책)"""
+        from redis.asyncio import RedisError
+
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(side_effect=RedisError("Connection refused"))
+
+        with patch(
+            "app.services.kis_websocket._get_redis_client",
+            return_value=mock_redis,
+        ):
+            with pytest.raises(RedisError, match="Connection refused"):
+                await _get_cached_approval_key()
+
+    @pytest.mark.asyncio
+    async def test_cache_approval_key_sets_with_ttl(self):
+        """Redis SET 호출 시 23시간 TTL 적용"""
+        mock_redis = AsyncMock()
+        mock_redis.set = AsyncMock(return_value=True)
+
+        with patch(
+            "app.services.kis_websocket._get_redis_client",
+            return_value=mock_redis,
+        ):
+            await _cache_approval_key("new_approval_key_456")
+
+            mock_redis.set.assert_called_once_with(
+                APPROVAL_KEY_CACHE_KEY,
+                "new_approval_key_456",
+                ex=APPROVAL_KEY_TTL_SECONDS,
+            )
+
+    @pytest.mark.asyncio
+    async def test_cache_approval_key_redis_error_propagates(self):
+        """Redis SET 예외 발생 시 전파 (엄격 실패 정책)"""
+        from redis.asyncio import RedisError
+
+        mock_redis = AsyncMock()
+        mock_redis.set = AsyncMock(side_effect=RedisError("Write failed"))
+
+        with patch(
+            "app.services.kis_websocket._get_redis_client",
+            return_value=mock_redis,
+        ):
+            with pytest.raises(RedisError, match="Write failed"):
+                await _cache_approval_key("new_key")
+
+    @pytest.mark.asyncio
+    async def test_get_approval_key_uses_cached_value(self):
+        """캐시 히트 시 재발급 없이 캐시 값 반환"""
+        with patch(
+            "app.services.kis_websocket._get_cached_approval_key",
+            return_value="cached_key_789",
+        ):
+            result = await get_approval_key()
+
+            assert result == "cached_key_789"
+
+    @pytest.mark.asyncio
+    async def test_get_approval_key_issues_and_caches_on_miss(self):
+        """캐시 미스 시 새로 발급하고 캐시에 저장"""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"approval_key": "fresh_key_abc"}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client_instance = AsyncMock()
+        mock_client_instance.post = AsyncMock(return_value=mock_response)
+
+        cache_spy = AsyncMock()
+
+        with patch("app.services.kis_websocket.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "app.services.kis_websocket._get_cached_approval_key",
+                return_value=None,
+            ):
+                with patch(
+                    "app.services.kis_websocket._cache_approval_key",
+                    cache_spy,
+                ):
+                    result = await get_approval_key()
+
+                    assert result == "fresh_key_abc"
+                    cache_spy.assert_called_once_with("fresh_key_abc")
+
+    @pytest.mark.asyncio
+    async def test_cache_constants_are_correct(self):
+        """캐시 상수값 검증"""
+        assert APPROVAL_KEY_CACHE_KEY == "kis:websocket:approval_key"
+        assert APPROVAL_KEY_TTL_SECONDS == 82800  # 23시간
+
+
+@pytest.mark.unit
+class TestApprovalKeyValidation:
+    """Tests for Approval Key validation helper"""
+
+    def test_valid_key_returns_true(self):
+        """유효한 키는 True 반환"""
+        assert _is_valid_approval_key("valid_key_123") is True
+
+    def test_none_returns_false(self):
+        """None은 False 반환"""
+        assert _is_valid_approval_key(None) is False
+
+    def test_empty_string_returns_false(self):
+        """빈 문자열은 False 반환"""
+        assert _is_valid_approval_key("") is False
+
+    def test_whitespace_only_returns_false(self):
+        """공백만 있는 문자열은 False 반환"""
+        assert _is_valid_approval_key("   ") is False
+        assert _is_valid_approval_key("\t\n") is False
+
+    def test_key_with_surrounding_whitespace_is_valid(self):
+        """앞뒤 공백이 있는 키는 유효"""
+        assert _is_valid_approval_key("  valid_key  ") is True
+
+
+@pytest.mark.unit
+class TestApprovalKeyEmptyCacheMiss:
+    """Tests for empty/whitespace cache values being treated as cache miss"""
+
+    @pytest.mark.asyncio
+    async def test_empty_string_cache_treated_as_miss(self):
+        """빈 문자열 캐시값은 미스로 처리되어 재발급"""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"approval_key": "fresh_key_empty"}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client_instance = AsyncMock()
+        mock_client_instance.post = AsyncMock(return_value=mock_response)
+
+        cache_spy = AsyncMock()
+
+        with patch("app.services.kis_websocket.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "app.services.kis_websocket._get_cached_approval_key",
+                return_value="",  # Empty string from cache
+            ):
+                with patch(
+                    "app.services.kis_websocket._cache_approval_key",
+                    cache_spy,
+                ):
+                    result = await get_approval_key()
+
+                    assert result == "fresh_key_empty"
+                    cache_spy.assert_called_once_with("fresh_key_empty")
+
+    @pytest.mark.asyncio
+    async def test_whitespace_cache_treated_as_miss(self):
+        """공백 캐시값은 미스로 처리되어 재발급"""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"approval_key": "fresh_key_ws"}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client_instance = AsyncMock()
+        mock_client_instance.post = AsyncMock(return_value=mock_response)
+
+        cache_spy = AsyncMock()
+
+        with patch("app.services.kis_websocket.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__ = AsyncMock(
+                return_value=mock_client_instance
+            )
+            mock_client.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            with patch(
+                "app.services.kis_websocket._get_cached_approval_key",
+                return_value="   ",  # Whitespace from cache
+            ):
+                with patch(
+                    "app.services.kis_websocket._cache_approval_key",
+                    cache_spy,
+                ):
+                    result = await get_approval_key()
+
+                    assert result == "fresh_key_ws"
+                    cache_spy.assert_called_once_with("fresh_key_ws")
+
+
+@pytest.mark.unit
+class TestApprovalKeyCacheHitNoReissue:
+    """Tests for cache hit blocking re-issuance"""
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_does_not_call_issue_or_cache(self):
+        """캐시 히트 시 _issue_approval_key와 _cache_approval_key 호출되지 않음"""
+        issue_spy = AsyncMock(return_value="should_not_be_called")
+        cache_spy = AsyncMock()
+
+        with patch(
+            "app.services.kis_websocket._get_cached_approval_key",
+            return_value="cached_valid_key",
+        ):
+            with patch(
+                "app.services.kis_websocket._issue_approval_key",
+                issue_spy,
+            ):
+                with patch(
+                    "app.services.kis_websocket._cache_approval_key",
+                    cache_spy,
+                ):
+                    result = await get_approval_key()
+
+                    assert result == "cached_valid_key"
+                    issue_spy.assert_not_called()
+                    cache_spy.assert_not_called()
+
+
+@pytest.mark.unit
+class TestCloseApprovalKeyRedis:
+    """Tests for Redis client cleanup function"""
+
+    @pytest.mark.asyncio
+    async def test_close_existing_client(self):
+        """기존 클라이언트 존재 시 close 호출"""
+        import app.services.kis_websocket as mod
+
+        mock_redis = AsyncMock()
+        mock_redis.close = AsyncMock()
+        mod._redis_client = mock_redis
+
+        await close_approval_key_redis()
+
+        mock_redis.close.assert_called_once()
+        assert mod._redis_client is None
+
+    @pytest.mark.asyncio
+    async def test_close_no_client_is_idempotent(self):
+        """클라이언트 없을 때 호출해도 예외 없음 (idempotent)"""
+        import app.services.kis_websocket as mod
+
+        mod._redis_client = None
+
+        # Should not raise
+        await close_approval_key_redis()
+
+        assert mod._redis_client is None
+
+    @pytest.mark.asyncio
+    async def test_close_multiple_times_is_idempotent(self):
+        """여러 번 호출해도 안전 (idempotent)"""
+        import app.services.kis_websocket as mod
+
+        mock_redis = AsyncMock()
+        mock_redis.close = AsyncMock()
+        mod._redis_client = mock_redis
+
+        await close_approval_key_redis()
+        assert mock_redis.close.call_count == 1
+
+        # Second call should be safe
+        await close_approval_key_redis()
+        assert mock_redis.close.call_count == 1  # Not called again
+
+        assert mod._redis_client is None

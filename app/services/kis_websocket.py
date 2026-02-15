@@ -13,12 +13,75 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+import redis.asyncio as redis
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Approval Key 캐시 설정
+APPROVAL_KEY_CACHE_KEY = "kis:websocket:approval_key"
+APPROVAL_KEY_TTL_SECONDS = 82800  # 23시간 (24시간 유효, 1시간 버퍼)
+
+# 전역 Redis 클라이언트 (지연 초기화)
+_redis_client: redis.Redis | None = None
+
+
+async def _get_redis_client() -> redis.Redis:
+    """
+    Redis 클라이언트 가져오기 (지연 초기화)
+
+    Returns:
+        redis.Redis: Redis 클라이언트
+
+    Raises:
+        redis.RedisError: Redis 연결 실패 시
+    """
+    global _redis_client
+
+    if _redis_client is None:
+        redis_url = settings.get_redis_url()
+        _redis_client = redis.from_url(
+            redis_url,
+            max_connections=settings.redis_max_connections,
+            socket_timeout=settings.redis_socket_timeout,
+            socket_connect_timeout=settings.redis_socket_connect_timeout,
+            decode_responses=True,
+        )
+
+    return _redis_client
+
+
+async def close_approval_key_redis() -> None:
+    """
+    Approval Key 캐시용 Redis 클라이언트 정리
+
+    모듈 전역 Redis 클라이언트를 안전하게 종료합니다.
+    idempotent하며 여러 번 호출해도 안전합니다.
+    """
+    global _redis_client
+
+    if _redis_client is not None:
+        await _redis_client.close()
+        _redis_client = None
+
+
+def _is_valid_approval_key(key: str | None) -> bool:
+    """
+    Approval Key 유효성 검사
+
+    None, 빈 문자열, 공백만 있는 문자열을 무효로 처리합니다.
+
+    Args:
+        key: 검사할 Approval Key
+
+    Returns:
+        bool: 유효한 키면 True, 아니면 False
+    """
+    return key is not None and bool(key.strip())
+
 
 DOMESTIC_EXECUTION_TR = "H0STCNI0"
 OVERSEAS_EXECUTION_TR = "H0GSCNI0"
@@ -54,21 +117,44 @@ async def get_approval_key() -> str:
     """
     approval_key = await _get_cached_approval_key()
 
-    if approval_key is None:
+    if not _is_valid_approval_key(approval_key):
         approval_key = await _issue_approval_key()
         await _cache_approval_key(approval_key)
 
+    assert approval_key is not None  # _issue_approval_key() guarantees str return
     return approval_key
 
 
 async def _get_cached_approval_key() -> str | None:
-    """캐시된 Approval Key 조회 (만료 체크 포함)"""
-    raise NotImplementedError("Redis caching to be implemented")
+    """
+    캐시된 Approval Key 조회 (만료 체크 포함)
+
+    Returns:
+        str | None: 캐시된 Approval Key (없거나 만료된 경우 None)
+
+    Raises:
+        redis.RedisError: Redis 접근 실패 시 (엄격 실패 정책)
+    """
+    redis_client = await _get_redis_client()
+    cached_key = await redis_client.get(APPROVAL_KEY_CACHE_KEY)
+    return cached_key
 
 
 async def _cache_approval_key(approval_key: str) -> None:
-    """Approval Key 캐싱 (23시간 TTL)"""
-    raise NotImplementedError("Redis caching to be implemented")
+    """
+    Approval Key 캐싱 (23시간 TTL)
+
+    Args:
+        approval_key: 캐싱할 Approval Key
+
+    Raises:
+        redis.RedisError: Redis 접근 실패 시 (엄격 실패 정책)
+    """
+    redis_client = await _get_redis_client()
+    await redis_client.set(
+        APPROVAL_KEY_CACHE_KEY, approval_key, ex=APPROVAL_KEY_TTL_SECONDS
+    )
+    logger.info("KIS Approval Key cached in Redis (TTL: 23h)")
 
 
 async def _issue_approval_key() -> str:
@@ -255,9 +341,13 @@ class KISExecutionWebSocket:
         Raises:
             Exception: 구독 실패 (에러 응답) 시
         """
-        await self.websocket.send(request)
+        if self.websocket is None:
+            raise RuntimeError("WebSocket is not connected")
 
-        response = await self.websocket.recv()
+        websocket = self.websocket
+        await websocket.send(request)
+
+        response = await websocket.recv()
         parsed = self._parse_response(response)
 
         if parsed.get("type") == "error":
@@ -276,8 +366,13 @@ class KISExecutionWebSocket:
             logger.info("Mock mode: skipping message listening")
             return
 
+        if self.websocket is None:
+            raise RuntimeError("WebSocket is not connected")
+
+        websocket = self.websocket
+
         try:
-            async for message in self.websocket:
+            async for message in websocket:
                 try:
                     data = self._parse_message(message)
 
@@ -615,16 +710,23 @@ class KISExecutionWebSocket:
         """
         WebSocket 연결 종료 (Graceful Shutdown)
         """
-        if not self.is_running:
-            logger.warning("KIS WebSocket not running")
-            return
-
         logger.info("Stopping KIS WebSocket client...")
         self.is_running = False
 
-        if self.websocket:
-            await self.websocket.close()
+        try:
+            if self.websocket:
+                await self.websocket.close()
+        except Exception as e:
+            logger.warning(f"Failed to close KIS WebSocket cleanly: {e}")
+        finally:
+            self.websocket = None
             self.is_connected = False
+            try:
+                await close_approval_key_redis()
+            except Exception as e:
+                logger.warning(
+                    f"Failed to close Approval Key Redis client cleanly: {e}"
+                )
 
         logger.info("KIS WebSocket stopped")
 
