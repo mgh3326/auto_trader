@@ -23,6 +23,13 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 _initialized = False
+_enabled_integration_flags: dict[str, bool] = {
+    "fastapi": False,
+    "celery": False,
+    "sqlalchemy": False,
+    "httpx": False,
+    "mcp": False,
+}
 
 _SENSITIVE_KEYWORDS = (
     "authorization",
@@ -165,9 +172,21 @@ def init_sentry(
     enable_mcp: bool = False,
 ) -> bool:
     """Initialize Sentry once per process."""
-    global _initialized
+    global _enabled_integration_flags, _initialized
 
-    if _initialized:
+    requested_flags = {
+        "fastapi": enable_fastapi,
+        "celery": enable_celery,
+        "sqlalchemy": enable_sqlalchemy,
+        "httpx": enable_httpx,
+        "mcp": enable_mcp,
+    }
+    effective_flags = {
+        key: _enabled_integration_flags[key] or requested_flags[key]
+        for key in _enabled_integration_flags
+    }
+
+    if _initialized and effective_flags == _enabled_integration_flags:
         return True
 
     dsn = (settings.SENTRY_DSN or "").strip()
@@ -182,19 +201,20 @@ def init_sentry(
     integrations: list[Any] = [
         LoggingIntegration(level=logging.INFO, event_level=log_event_level)
     ]
-    if enable_fastapi:
+    if effective_flags["fastapi"]:
         integrations.append(FastApiIntegration())
-    if enable_celery:
+    if effective_flags["celery"]:
         integrations.append(CeleryIntegration())
-    if enable_sqlalchemy:
+    if effective_flags["sqlalchemy"]:
         integrations.append(SqlalchemyIntegration())
-    if enable_httpx:
+    if effective_flags["httpx"]:
         integrations.append(HttpxIntegration())
-    if enable_mcp:
+    if effective_flags["mcp"]:
         if MCPIntegration is None:
             logger.warning(
                 "Sentry MCP integration unavailable in current sentry-sdk version"
             )
+            effective_flags["mcp"] = False
         else:
             integrations.append(
                 MCPIntegration(
@@ -203,6 +223,12 @@ def init_sentry(
             )
 
     try:
+        if _initialized:
+            logger.info(
+                "Reinitializing Sentry to add integrations: previous=%s requested=%s",
+                sorted(key for key, enabled in _enabled_integration_flags.items() if enabled),
+                sorted(key for key, enabled in effective_flags.items() if enabled),
+            )
         sentry_sdk.init(
             dsn=dsn,
             environment=environment,
@@ -220,6 +246,7 @@ def init_sentry(
         sentry_sdk.set_tag("runtime", "python")
         sentry_sdk.set_tag("app", "auto-trader")
         _initialized = True
+        _enabled_integration_flags = effective_flags
         logger.info(
             "Sentry initialized: service=%s environment=%s", service_name, environment
         )

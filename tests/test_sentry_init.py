@@ -12,6 +12,17 @@ import app.monitoring.sentry as sentry_module
 @pytest.fixture(autouse=True)
 def reset_sentry_state(monkeypatch):
     monkeypatch.setattr(sentry_module, "_initialized", False)
+    monkeypatch.setattr(
+        sentry_module,
+        "_enabled_integration_flags",
+        {
+            "fastapi": False,
+            "celery": False,
+            "sqlalchemy": False,
+            "httpx": False,
+            "mcp": False,
+        },
+    )
     monkeypatch.setattr(sentry_module.settings, "SENTRY_DSN", "")
     monkeypatch.setattr(sentry_module.settings, "SENTRY_ENVIRONMENT", None)
     monkeypatch.setattr(sentry_module.settings, "SENTRY_RELEASE", None)
@@ -217,6 +228,52 @@ def test_init_sentry_mcp_unavailable(monkeypatch):
         type(integration).__name__ for integration in kwargs["integrations"]
     }
     assert "MCPIntegration" not in integration_names
+
+
+@pytest.mark.unit
+def test_init_sentry_reinitializes_to_add_mcp(monkeypatch):
+    monkeypatch.setattr(
+        sentry_module.settings,
+        "SENTRY_DSN",
+        "https://public@example.ingest.sentry.io/1",
+    )
+    monkeypatch.setattr(sentry_module.settings, "SENTRY_MCP_INCLUDE_PROMPTS", True)
+
+    mock_init = Mock()
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", mock_init)
+    monkeypatch.setattr(sentry_module.sentry_sdk, "set_tag", Mock())
+
+    class DummyMCPIntegration:
+        def __init__(self, include_prompts: bool = False):
+            self.include_prompts = include_prompts
+
+    monkeypatch.setattr(sentry_module, "MCPIntegration", DummyMCPIntegration)
+
+    first = sentry_module.init_sentry(
+        "auto-trader-api",
+        enable_sqlalchemy=True,
+        enable_httpx=True,
+    )
+    second = sentry_module.init_sentry(
+        "auto-trader-mcp",
+        enable_mcp=True,
+    )
+
+    assert first is True
+    assert second is True
+    assert mock_init.call_count == 2
+
+    first_kwargs = mock_init.call_args_list[0].kwargs
+    second_kwargs = mock_init.call_args_list[1].kwargs
+    first_names = {type(integration).__name__ for integration in first_kwargs["integrations"]}
+    second_names = {
+        type(integration).__name__ for integration in second_kwargs["integrations"]
+    }
+
+    assert "DummyMCPIntegration" not in first_names
+    assert "DummyMCPIntegration" in second_names
+    assert "SqlalchemyIntegration" in second_names
+    assert "HttpxIntegration" in second_names
 
 
 @pytest.mark.unit
