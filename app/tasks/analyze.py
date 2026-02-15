@@ -1,7 +1,6 @@
 import asyncio
 
 from app.analysis.service_analyzers import KISAnalyzer, UpbitAnalyzer, YahooAnalyzer
-from app.core.taskiq_broker import broker
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services import upbit
 from app.services.order_service import (
@@ -343,7 +342,6 @@ async def _execute_sell_order_for_coin_async(currency: str) -> dict[str, object]
         }
 
 
-@broker.task(task_name="analyze.run_for_stock")
 async def run_analysis_for_stock(symbol: str, name: str, instrument_type: str) -> dict:
     analyzer = None
     try:
@@ -381,7 +379,6 @@ async def run_analysis_for_stock(symbol: str, name: str, instrument_type: str) -
             await analyzer.close()
 
 
-@broker.task(task_name="analyze.run_for_my_coins")
 async def run_analysis_for_my_coins() -> dict:
     await upbit_pairs.prime_upbit_constants()
     analyzer = UpbitAnalyzer()
@@ -446,7 +443,6 @@ async def run_analysis_for_my_coins() -> dict:
         await analyzer.close()
 
 
-@broker.task(task_name="upbit.execute_buy_orders")
 async def execute_buy_orders_task() -> dict:
     from app.services.stock_info_service import process_buy_orders_with_analysis
 
@@ -550,7 +546,6 @@ async def execute_buy_orders_task() -> dict:
         await analyzer.close()
 
 
-@broker.task(task_name="upbit.execute_sell_orders")
 async def execute_sell_orders_task() -> dict:
     await upbit_pairs.prime_upbit_constants()
     analyzer = UpbitAnalyzer()
@@ -665,28 +660,24 @@ async def execute_sell_orders_task() -> dict:
         await analyzer.close()
 
 
-@broker.task(task_name="upbit.execute_buy_order_for_coin")
 async def execute_buy_order_for_coin_task(currency: str) -> dict:
     """특정 코인에 대한 분할 매수 주문 실행."""
 
     return await _execute_buy_order_for_coin_async(currency)
 
 
-@broker.task(task_name="upbit.execute_sell_order_for_coin")
 async def execute_sell_order_for_coin_task(currency: str) -> dict:
     """특정 코인에 대한 분할 매도 주문 실행."""
 
     return await _execute_sell_order_for_coin_async(currency)
 
 
-@broker.task(task_name="analyze.run_for_coin")
 async def run_analysis_for_coin_task(currency: str) -> dict:
     """단일 코인에 대한 AI 분석 실행."""
 
     return await _analyze_coin_async(currency)
 
 
-@broker.task(task_name="upbit.run_per_coin_automation")
 async def run_per_coin_automation_task() -> dict:
     """보유 코인 각각에 대해 분석 → 분할 매수 → 분할 매도를 순차 실행."""
 

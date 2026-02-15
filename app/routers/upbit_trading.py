@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.analysis.service_analyzers import UpbitAnalyzer
 from app.core.config import settings
 from app.core.db import get_db
-from app.core.taskiq_result import build_task_status_response
 from app.core.templates import templates
 from app.services import upbit
 from app.services.stock_info_service import (
@@ -221,7 +220,7 @@ async def get_my_coins(
 
 @router.post("/api/analyze-coins")
 async def analyze_my_coins():
-    """보유 코인 AI 분석 실행 (TaskIQ)"""
+    """보유 코인 AI 분석 실행"""
     try:
         # API 키 확인
         if not settings.upbit_access_key or not settings.upbit_secret_key:
@@ -229,13 +228,8 @@ async def analyze_my_coins():
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        task = await run_analysis_for_my_coins.kiq()
-
-        return {
-            "success": True,
-            "message": "코인 분석이 시작되었습니다.",
-            "task_id": task.task_id,
-        }
+        result = await run_analysis_for_my_coins()
+        return {"success": True, **result}
 
     except HTTPException:
         raise
@@ -243,15 +237,9 @@ async def analyze_my_coins():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/api/analyze-task/{task_id}")
-async def get_analyze_task_status(task_id: str):
-    """TaskIQ 분석 작업 상태 조회 API"""
-    return await build_task_status_response(task_id)
-
-
 @router.post("/api/buy-orders")
 async def execute_buy_orders():
-    """보유 코인 자동 매수 주문 실행 (TaskIQ)"""
+    """보유 코인 자동 매수 주문 실행"""
 
     try:
         # API 키 확인
@@ -260,19 +248,15 @@ async def execute_buy_orders():
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        task = await execute_buy_orders_task.kiq()
-        return {
-            "success": True,
-            "message": "매수 주문이 시작되었습니다.",
-            "task_id": task.task_id,
-        }
+        result = await execute_buy_orders_task()
+        return {"success": True, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/sell-orders")
 async def execute_sell_orders():
-    """보유 코인 자동 매도 주문 실행 (TaskIQ)"""
+    """보유 코인 자동 매도 주문 실행"""
 
     try:
         # API 키 확인
@@ -281,12 +265,8 @@ async def execute_sell_orders():
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        task = await execute_sell_orders_task.kiq()
-        return {
-            "success": True,
-            "message": "매도 주문이 시작되었습니다.",
-            "task_id": task.task_id,
-        }
+        result = await execute_sell_orders_task()
+        return {"success": True, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -300,12 +280,8 @@ async def execute_per_coin_automation():
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        task = await run_per_coin_automation_task.kiq()
-        return {
-            "success": True,
-            "message": "코인별 자동 실행이 시작되었습니다.",
-            "task_id": task.task_id,
-        }
+        result = await run_per_coin_automation_task()
+        return {"success": True, **result}
     except HTTPException:
         raise
     except Exception as e:
@@ -314,7 +290,7 @@ async def execute_per_coin_automation():
 
 @router.post("/api/coin/{currency}/buy-orders")
 async def execute_coin_buy_orders(currency: str):
-    """특정 코인에 대한 분할 매수 주문 실행 (TaskIQ)"""
+    """특정 코인에 대한 분할 매수 주문 실행"""
 
     currency_code = currency.upper()
 
@@ -324,13 +300,8 @@ async def execute_coin_buy_orders(currency: str):
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        task = await execute_buy_order_for_coin_task.kiq(currency_code)
-        return {
-            "success": True,
-            "currency": currency_code,
-            "message": f"{currency_code} 분할 매수 주문이 시작되었습니다.",
-            "task_id": task.task_id,
-        }
+        result = await execute_buy_order_for_coin_task(currency_code)
+        return {"success": True, **result}
     except HTTPException:
         raise
     except Exception as e:
@@ -339,7 +310,7 @@ async def execute_coin_buy_orders(currency: str):
 
 @router.post("/api/coin/{currency}/analysis")
 async def analyze_coin(currency: str):
-    """특정 코인에 대한 AI 분석 실행 (TaskIQ)"""
+    """특정 코인에 대한 AI 분석 실행"""
 
     currency_code = currency.upper()
 
@@ -352,13 +323,8 @@ async def analyze_coin(currency: str):
                 detail=f"{currency_code}는 KRW 마켓 거래 대상이 아닙니다.",
             )
 
-        task = await run_analysis_for_coin_task.kiq(currency_code)
-        return {
-            "success": True,
-            "currency": currency_code,
-            "message": f"{currency_code} 분석이 시작되었습니다.",
-            "task_id": task.task_id,
-        }
+        result = await run_analysis_for_coin_task(currency_code)
+        return {"success": True, **result}
     except HTTPException:
         raise
     except Exception as e:
@@ -367,7 +333,7 @@ async def analyze_coin(currency: str):
 
 @router.post("/api/coin/{currency}/sell-orders")
 async def execute_coin_sell_orders(currency: str):
-    """특정 코인에 대한 분할 매도 주문 실행 (TaskIQ)"""
+    """특정 코인에 대한 분할 매도 주문 실행"""
 
     currency_code = currency.upper()
 
@@ -377,13 +343,8 @@ async def execute_coin_sell_orders(currency: str):
                 status_code=400, detail="Upbit API 키가 설정되지 않았습니다."
             )
 
-        task = await execute_sell_order_for_coin_task.kiq(currency_code)
-        return {
-            "success": True,
-            "currency": currency_code,
-            "message": f"{currency_code} 분할 매도 주문이 시작되었습니다.",
-            "task_id": task.task_id,
-        }
+        result = await execute_sell_order_for_coin_task(currency_code)
+        return {"success": True, **result}
     except HTTPException:
         raise
     except Exception as e:

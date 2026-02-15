@@ -12,7 +12,6 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
-from app.core.taskiq_result import build_task_status_response
 from app.core.templates import templates
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
@@ -117,50 +116,30 @@ async def get_my_domestic_stocks(
 
 @router.post("/api/analyze-stocks")
 async def analyze_my_domestic_stocks():
-    """보유 국내 주식 AI 분석 실행 (TaskIQ)"""
+    """보유 국내 주식 AI 분석 실행"""
     try:
-        task = await run_analysis_for_my_domestic_stocks.kiq()
-
-        return {
-            "success": True,
-            "message": "국내 주식 분석이 시작되었습니다.",
-            "task_id": task.task_id,
-        }
+        result = await run_analysis_for_my_domestic_stocks()
+        return {"success": True, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.get("/api/analyze-task/{task_id}")
-async def get_analyze_task_status(task_id: str):
-    """TaskIQ 작업 상태 조회 API"""
-
-    return await build_task_status_response(task_id)
-
-
 @router.post("/api/buy-orders")
 async def execute_buy_orders():
-    """보유 국내 주식 자동 매수 주문 실행 (TaskIQ)"""
+    """보유 국내 주식 자동 매수 주문 실행"""
     try:
-        task = await execute_domestic_buy_orders.kiq()
-        return {
-            "success": True,
-            "message": "매수 주문이 시작되었습니다.",
-            "task_id": task.task_id,
-        }
+        result = await execute_domestic_buy_orders()
+        return {"success": True, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/api/sell-orders")
 async def execute_sell_orders():
-    """보유 국내 주식 자동 매도 주문 실행 (TaskIQ)"""
+    """보유 국내 주식 자동 매도 주문 실행"""
     try:
-        task = await execute_domestic_sell_orders.kiq()
-        return {
-            "success": True,
-            "message": "매도 주문이 시작되었습니다.",
-            "task_id": task.task_id,
-        }
+        result = await execute_domestic_sell_orders()
+        return {"success": True, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -168,42 +147,26 @@ async def execute_sell_orders():
 @router.post("/api/automation/per-stock")
 async def run_per_stock_automation():
     """보유 종목별 자동 실행 (분석 -> 매수 -> 매도)"""
-    task = await run_per_domestic_stock_automation.kiq()
-    return {
-        "success": True,
-        "message": "종목별 자동 실행이 시작되었습니다.",
-        "task_id": task.task_id,
-    }
+    result = await run_per_domestic_stock_automation()
+    return {"success": True, **result}
 
 
 @router.post("/api/analyze-stock/{symbol}")
 async def analyze_stock(symbol: str):
     """단일 종목 분석 요청"""
-    task = await analyze_domestic_stock_task.kiq(symbol)
-    return {
-        "success": True,
-        "message": f"{symbol} 분석 요청 완료",
-        "task_id": task.task_id,
-    }
+    result = await analyze_domestic_stock_task(symbol)
+    return {"success": True, **result}
 
 
 @router.post("/api/buy-order/{symbol}")
 async def buy_order(symbol: str):
     """단일 종목 매수 요청"""
-    task = await execute_domestic_buy_order_task.kiq(symbol)
-    return {
-        "success": True,
-        "message": f"{symbol} 매수 요청 완료",
-        "task_id": task.task_id,
-    }
+    result = await execute_domestic_buy_order_task(symbol)
+    return {"success": True, **result}
 
 
 @router.post("/api/sell-order/{symbol}")
 async def sell_order(symbol: str):
     """단일 종목 매도 요청"""
-    task = await execute_domestic_sell_order_task.kiq(symbol)
-    return {
-        "success": True,
-        "message": f"{symbol} 매도 요청 완료",
-        "task_id": task.task_id,
-    }
+    result = await execute_domestic_sell_order_task(symbol)
+    return {"success": True, **result}
