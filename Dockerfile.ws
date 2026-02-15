@@ -41,7 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # 비루트 유저 생성 (Create a non-root user with UID 10002)
-RUN useradd -u 10002 -m appuser
+RUN useradd -u 10001 -m appuser
 
 # ✨ 가장 중요한 부분 ✨
 # 'builder' 스테이지에서 설치 완료된 .venv를 그대로 복사해옵니다.
