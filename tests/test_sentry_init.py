@@ -74,6 +74,7 @@ def test_init_sentry_with_fastapi_and_celery(monkeypatch):
     assert kwargs["traces_sample_rate"] == 1.0
     assert kwargs["profiles_sample_rate"] == 1.0
     assert kwargs["send_default_pii"] is True
+    assert kwargs["before_send_transaction"] is sentry_module._before_send_transaction
 
     integration_names = {
         type(integration).__name__ for integration in kwargs["integrations"]
@@ -265,7 +266,9 @@ def test_init_sentry_reinitializes_to_add_mcp(monkeypatch):
 
     first_kwargs = mock_init.call_args_list[0].kwargs
     second_kwargs = mock_init.call_args_list[1].kwargs
-    first_names = {type(integration).__name__ for integration in first_kwargs["integrations"]}
+    first_names = {
+        type(integration).__name__ for integration in first_kwargs["integrations"]
+    }
     second_names = {
         type(integration).__name__ for integration in second_kwargs["integrations"]
     }
@@ -285,6 +288,7 @@ def test_before_send_masks_sensitive_fields():
 
     sanitized = sentry_module._before_send(event, {})
 
+    assert sanitized is not None
     assert sanitized["request"]["headers"]["authorization"] == "[Filtered]"
     assert sanitized["request"]["headers"]["x-api-key"] == "[Filtered]"
     assert sanitized["extra"]["token"] == "[Filtered]"
@@ -328,6 +332,59 @@ def test_before_send_log_keeps_non_healthz_uvicorn_access_log():
 
     assert kept is not None
     assert kept["body"] == '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 200'
+
+
+@pytest.mark.unit
+def test_before_send_transaction_renames_mcp_tool_call():
+    event = {
+        "transaction": "POST http://127.0.0.1:8765/mcp",
+        "spans": [
+            {
+                "op": "mcp.server",
+                "data": {
+                    "mcp.tool.name": "get_support_resistance",
+                    "mcp.method.name": "tools/call",
+                },
+            }
+        ],
+    }
+
+    renamed = sentry_module._before_send_transaction(event, {})
+
+    assert renamed is not None
+    assert renamed["transaction"] == "tools/call get_support_resistance"
+    assert renamed["transaction_info"]["source"] == "custom"
+
+
+@pytest.mark.unit
+def test_before_send_transaction_drops_protocol_noise_without_mcp_span():
+    event = {
+        "transaction": "POST http://127.0.0.1:8765/mcp",
+        "spans": [
+            {
+                "op": "http.client",
+                "data": {"http.method": "POST"},
+            }
+        ],
+    }
+
+    dropped = sentry_module._before_send_transaction(event, {})
+
+    assert dropped is None
+
+
+@pytest.mark.unit
+def test_before_send_transaction_keeps_non_mcp_transactions():
+    event = {
+        "transaction": "GET /api/v1/orders",
+        "spans": [],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is event
+    assert kept is not None
+    assert kept["transaction"] == "GET /api/v1/orders"
 
 
 @pytest.mark.unit

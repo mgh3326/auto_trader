@@ -279,7 +279,9 @@ class TestKISWebSocketClient:
             patch.object(
                 client,
                 "_build_websocket_url",
-                new=AsyncMock(return_value="ws://ops.koreainvestment.com:21000/tryitout"),
+                new=AsyncMock(
+                    return_value="ws://ops.koreainvestment.com:21000/tryitout"
+                ),
             ),
             patch.object(
                 client,
@@ -332,7 +334,9 @@ class TestKISWebSocketClient:
             patch.object(
                 client,
                 "_build_websocket_url",
-                new=AsyncMock(return_value="ws://ops.koreainvestment.com:21000/tryitout"),
+                new=AsyncMock(
+                    return_value="ws://ops.koreainvestment.com:21000/tryitout"
+                ),
             ),
             patch.object(
                 client,
@@ -380,7 +384,9 @@ class TestKISWebSocketClient:
             patch.object(
                 client,
                 "_build_websocket_url",
-                new=AsyncMock(return_value="ws://ops.koreainvestment.com:21000/tryitout"),
+                new=AsyncMock(
+                    return_value="ws://ops.koreainvestment.com:21000/tryitout"
+                ),
             ),
             patch.object(client, "_connect_and_subscribe_internal", connect_mock),
             patch.object(client, "_close_websocket_best_effort", close_mock),

@@ -133,9 +133,7 @@ def _sanitize_in_place(value: Any, parent_key: str | None = None) -> Any:
     return value
 
 
-def _before_send(
-    event: dict[str, Any], hint: dict[str, Any]
-) -> dict[str, Any] | None:
+def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] | None:
     logger_name, message = _extract_log_context(event, hint)
     if _is_healthcheck_access_log(logger_name, message):
         return None
@@ -161,6 +159,47 @@ def _before_send_log(
     if _is_healthcheck_access_log(logger_name, message):
         return None
     return _sanitize_in_place(sentry_log)
+
+
+def _before_send_transaction(
+    event: dict[str, Any], hint: dict[str, Any]
+) -> dict[str, Any] | None:
+    del hint
+
+    transaction_name = event.get("transaction", "")
+    if not isinstance(transaction_name, str) or "/mcp" not in transaction_name:
+        return event
+
+    spans = event.get("spans", [])
+    if not isinstance(spans, list):
+        spans = []
+
+    for span in spans:
+        if not isinstance(span, dict) or span.get("op") != "mcp.server":
+            continue
+
+        span_data = span.get("data", {})
+        if not isinstance(span_data, dict):
+            span_data = {}
+
+        tool_name = span_data.get("mcp.tool.name", "")
+        method_name = span_data.get("mcp.method.name", "")
+        if isinstance(tool_name, str) and tool_name:
+            method_prefix = (
+                method_name
+                if isinstance(method_name, str) and method_name
+                else "tools/call"
+            )
+            event["transaction"] = f"{method_prefix} {tool_name}"
+            transaction_info = event.get("transaction_info")
+            if not isinstance(transaction_info, dict):
+                transaction_info = {}
+            transaction_info["source"] = "custom"
+            event["transaction_info"] = transaction_info
+
+        return event
+
+    return None
 
 
 def init_sentry(
@@ -229,7 +268,11 @@ def init_sentry(
         if _initialized:
             logger.info(
                 "Reinitializing Sentry to add integrations: previous=%s requested=%s",
-                sorted(key for key, enabled in _enabled_integration_flags.items() if enabled),
+                sorted(
+                    key
+                    for key, enabled in _enabled_integration_flags.items()
+                    if enabled
+                ),
                 sorted(key for key, enabled in effective_flags.items() if enabled),
             )
         sentry_sdk.init(
@@ -244,6 +287,7 @@ def init_sentry(
             before_send=_before_send,
             before_breadcrumb=_before_breadcrumb,
             before_send_log=_before_send_log,
+            before_send_transaction=_before_send_transaction,
             enable_logs=True,
         )
         sentry_sdk.set_tag("service", service_name)
