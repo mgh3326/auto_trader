@@ -174,7 +174,9 @@ class TestKISWebSocketClient:
         assert result["system"] == "pingpong"
 
     @pytest.mark.asyncio
-    async def test_parse_message_extracts_fill_fields_best_effort(self, execution_callback):
+    async def test_parse_message_extracts_fill_fields_best_effort(
+        self, execution_callback
+    ):
         """payload에서 side/price/qty/order_id/timestamp를 best-effort로 추출"""
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
 

@@ -21,7 +21,9 @@ def _format_dca_plan(plan: DcaPlan) -> dict[str, Any]:
         "user_id": plan.user_id,
         "symbol": plan.symbol,
         "market": plan.market,
-        "status": plan.status.value if hasattr(plan.status, "value") else str(plan.status),
+        "status": plan.status.value
+        if hasattr(plan.status, "value")
+        else str(plan.status),
         "total_amount": float(plan.total_amount)
         if getattr(plan, "total_amount", None) is not None
         else None,
@@ -103,7 +105,9 @@ def _format_dca_plan(plan: DcaPlan) -> dict[str, Any]:
                     else None,
                     "status": status_name,
                     "order_id": step.order_id,
-                    "ordered_at": ordered_at.isoformat() if ordered_at is not None else None,
+                    "ordered_at": ordered_at.isoformat()
+                    if ordered_at is not None
+                    else None,
                     "filled_price": float(step.filled_price)
                     if getattr(step, "filled_price", None) is not None
                     else None,
@@ -113,7 +117,9 @@ def _format_dca_plan(plan: DcaPlan) -> dict[str, Any]:
                     "filled_amount": float(step.filled_amount)
                     if getattr(step, "filled_amount", None) is not None
                     else None,
-                    "filled_at": filled_at.isoformat() if filled_at is not None else None,
+                    "filled_at": filled_at.isoformat()
+                    if filled_at is not None
+                    else None,
                     "level_source": getattr(step, "level_source", None),
                 }
             )
@@ -137,7 +143,9 @@ def _format_dca_plan(plan: DcaPlan) -> dict[str, Any]:
         "skipped": counts["skipped"],
         "invested": round(invested, 2),
         "remaining": round(remaining, 2) if remaining is not None else None,
-        "avg_filled_price": round(avg_filled_price, 8) if avg_filled_price is not None else None,
+        "avg_filled_price": round(avg_filled_price, 8)
+        if avg_filled_price is not None
+        else None,
     }
 
     return p

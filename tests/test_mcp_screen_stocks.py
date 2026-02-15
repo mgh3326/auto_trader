@@ -181,7 +181,9 @@ class TestScreenStocksKRRegression:
         monkeypatch.setattr(
             analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
-        monkeypatch.setattr(analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+        )
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -218,7 +220,9 @@ class TestScreenStocksKRRegression:
             analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
+            analysis_screen_core,
+            "fetch_valuation_all_cached",
+            mock_fetch_valuation_all_cached,
         )
 
         tools = build_tools()
@@ -261,7 +265,9 @@ class TestScreenStocksKRRegression:
             analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
+            analysis_screen_core,
+            "fetch_valuation_all_cached",
+            mock_fetch_valuation_all_cached,
         )
 
         tools = build_tools()
@@ -634,7 +640,9 @@ class TestScreenStocksRsiLogging:
             analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
+            analysis_screen_core,
+            "fetch_valuation_all_cached",
+            mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
             analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
@@ -704,7 +712,9 @@ class TestScreenStocksRsiLogging:
 
         assert result["returned_count"] == 1
         assert called_symbols == ["crypto"]
-        assert any("[RSI-Crypto] ❌ Failed for crypto" in r.message for r in caplog.records)
+        assert any(
+            "[RSI-Crypto] ❌ Failed for crypto" in r.message for r in caplog.records
+        )
 
     @pytest.mark.asyncio
     async def test_kr_rsi_ohlcv_exception_logs_error(self, monkeypatch, caplog):
@@ -734,7 +744,9 @@ class TestScreenStocksRsiLogging:
             analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
+            analysis_screen_core,
+            "fetch_valuation_all_cached",
+            mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
             analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
@@ -803,7 +815,9 @@ class TestScreenStocksRsiLogging:
 
         assert result["returned_count"] == 1
         assert result["results"][0].get("rsi") is None
-        assert any("[RSI-Crypto] ❌ Failed" in record.message for record in caplog.records)
+        assert any(
+            "[RSI-Crypto] ❌ Failed" in record.message for record in caplog.records
+        )
         assert any("RuntimeError" in record.message for record in caplog.records)
 
     @pytest.mark.asyncio
@@ -972,10 +986,10 @@ class TestScreenStocksFilters:
 
             return pd.DataFrame()
 
+        monkeypatch.setattr(naver_finance, "fetch_valuation", mock_fetch_valuation)
         monkeypatch.setattr(
-            naver_finance, "fetch_valuation", mock_fetch_valuation
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
-        monkeypatch.setattr(analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
 
         tools = build_tools()
 
@@ -1504,7 +1518,9 @@ class TestScreenStocksPhase2Spec:
                     }
                 )
 
-        monkeypatch.setattr(analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
 
         tools = build_tools()
 

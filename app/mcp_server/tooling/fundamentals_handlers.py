@@ -116,9 +116,7 @@ async def _get_support_resistance_impl(
     source = source_map[market_type]
 
     try:
-        df = await _fetch_ohlcv_for_indicators(
-            normalized_symbol, market_type, count=60
-        )
+        df = await _fetch_ohlcv_for_indicators(normalized_symbol, market_type, count=60)
         if df.empty:
             raise ValueError(f"No data available for symbol '{normalized_symbol}'")
 
@@ -174,7 +172,9 @@ async def _get_support_resistance_impl(
 
         bollinger = indicator_result.get("bollinger")
         if not isinstance(bollinger, dict):
-            bollinger = (indicator_result.get("indicators") or {}).get("bollinger") or {}
+            bollinger = (indicator_result.get("indicators") or {}).get(
+                "bollinger"
+            ) or {}
         bb_upper = _to_optional_float(bollinger.get("upper"))
         bb_middle = _to_optional_float(bollinger.get("middle"))
         bb_lower = _to_optional_float(bollinger.get("lower"))
@@ -284,7 +284,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         symbol: str,
         market: str | None = None,
     ) -> dict[str, Any]:
-
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
@@ -337,7 +336,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         ),
     )
     async def get_crypto_profile(symbol: str) -> dict[str, Any]:
-
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
@@ -376,7 +374,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         freq: str = "annual",
         market: str | None = None,
     ) -> dict[str, Any]:
-
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
@@ -445,7 +442,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         symbol: str,
         limit: int = 20,
     ) -> dict[str, Any]:
-
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
@@ -479,7 +475,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         from_date: str | None = None,
         to_date: str | None = None,
     ) -> dict[str, Any]:
-
         symbol = (symbol or "").strip() if symbol else None
 
         if symbol:
@@ -521,7 +516,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         symbol: str,
         days: int = 20,
     ) -> dict[str, Any]:
-
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
@@ -556,7 +550,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         limit: int = 10,
         market: str | None = None,
     ) -> dict[str, Any]:
-
         symbol = _normalize_symbol_input(symbol, market)
         if not symbol:
             raise ValueError("symbol is required")
@@ -620,7 +613,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         symbol: str | int,
         market: str | None = None,
     ) -> dict[str, Any]:
-
         symbol = _normalize_symbol_input(symbol, market)
         if not symbol:
             raise ValueError("symbol is required")
@@ -676,7 +668,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         symbol: str,
         days: int = 20,
     ) -> dict[str, Any]:
-
         symbol = (symbol or "").strip()
         if not symbol:
             raise ValueError("symbol is required")
@@ -709,7 +700,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
     async def get_kimchi_premium(
         symbol: str | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
-
         try:
             if symbol:
                 sym = _normalize_crypto_base_symbol(symbol)
@@ -751,7 +741,6 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         symbol: str | None = None,
         limit: int = 10,
     ) -> dict[str, Any] | list[dict[str, Any]]:
-
         if symbol is not None and not symbol.strip():
             raise ValueError("symbol is required")
 
@@ -811,16 +800,16 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
                     )
                 else:
                     current_data, history = await asyncio.gather(
-                        _fetch_index_us_current(
-                            meta["yf_ticker"], meta["name"], sym
-                        ),
+                        _fetch_index_us_current(meta["yf_ticker"], meta["name"], sym),
                         _fetch_index_us_history(
                             meta["yf_ticker"], capped_count, period
                         ),
                     )
                 return {"indices": [current_data], "history": history}
             except Exception as exc:
-                return _error_payload(source=meta["source"], message=str(exc), symbol=sym)
+                return _error_payload(
+                    source=meta["source"], message=str(exc), symbol=sym
+                )
 
         tasks = []
         for idx_sym in _DEFAULT_INDICES:
@@ -829,9 +818,7 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
                 tasks.append(_fetch_index_kr_current(meta["naver_code"], meta["name"]))
             else:
                 tasks.append(
-                    _fetch_index_us_current(
-                        meta["yf_ticker"], meta["name"], idx_sym
-                    )
+                    _fetch_index_us_current(meta["yf_ticker"], meta["name"], idx_sym)
                 )
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -926,4 +913,8 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
             )
 
 
-__all__ = ["FUNDAMENTALS_TOOL_NAMES", "_register_fundamentals_tools_impl", "_get_support_resistance_impl"]
+__all__ = [
+    "FUNDAMENTALS_TOOL_NAMES",
+    "_register_fundamentals_tools_impl",
+    "_get_support_resistance_impl",
+]

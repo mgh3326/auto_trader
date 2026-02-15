@@ -63,9 +63,12 @@ from app.mcp_server.tooling.shared import (
 
 
 def _error_payload(
-    source: str, message: str, **kwargs: Any,
+    source: str,
+    message: str,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     return _error_payload_impl(source=source, message=message, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Change Rate Normalization
@@ -251,7 +254,9 @@ async def _analyze_stock_impl(
     tasks.append(quote_task)
 
     indicators_task = asyncio.create_task(
-        _get_indicators_impl(normalized_symbol, ["rsi", "macd", "bollinger", "sma"], None),
+        _get_indicators_impl(
+            normalized_symbol, ["rsi", "macd", "bollinger", "sma"], None
+        ),
     )
     tasks.append(indicators_task)
 
@@ -382,9 +387,7 @@ async def _analyze_stock_impl(
         analysis["errors"] = []
 
     if market_type in ("equity_kr", "equity_us"):
-        recommendation = _build_recommendation_for_equity(
-            analysis, market_type
-        )
+        recommendation = _build_recommendation_for_equity(analysis, market_type)
         if recommendation:
             analysis["recommendation"] = recommendation
 
@@ -423,8 +426,6 @@ async def _recommend_stocks_impl(
         screen_crypto_fn=_screen_crypto,
         top_stocks_override=top_stocks_fallback,
     )
-
-
 
 
 # ---------------------------------------------------------------------------

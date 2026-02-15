@@ -476,7 +476,9 @@ async def _fetch_investment_opinions_yfinance(
     consensus = build_consensus(recommendations, current_price)
 
     if isinstance(targets, dict):
-        if targets.get("mean") and (not consensus or not consensus.get("avg_target_price")):
+        if targets.get("mean") and (
+            not consensus or not consensus.get("avg_target_price")
+        ):
             if consensus is None:
                 consensus = {}
             if not consensus.get("avg_target_price"):
@@ -496,7 +498,9 @@ async def _fetch_investment_opinions_yfinance(
                 and isinstance(current_price, (int, float))
             ):
                 consensus["upside_pct"] = round(
-                    (consensus["avg_target_price"] - current_price) / current_price * 100,
+                    (consensus["avg_target_price"] - current_price)
+                    / current_price
+                    * 100,
                     2,
                 )
 
@@ -531,7 +535,9 @@ async def _fetch_valuation_yfinance(symbol: str) -> dict[str, Any]:
     current_position_52w = None
     if current_price is not None and high_52w is not None and low_52w is not None:
         if high_52w > low_52w:
-            current_position_52w = round((current_price - low_52w) / (high_52w - low_52w), 2)
+            current_position_52w = round(
+                (current_price - low_52w) / (high_52w - low_52w), 2
+            )
 
     roe_raw = info.get("returnOnEquity")
     roe = round(roe_raw * 100, 2) if roe_raw is not None else None
@@ -561,8 +567,16 @@ async def _fetch_sector_peers_naver(
     target_per = data.get("per")
     target_pbr = data.get("pbr")
 
-    all_pers = [v for v in [target_per] + [p.get("per") for p in peers] if v is not None and v > 0]
-    all_pbrs = [v for v in [target_pbr] + [p.get("pbr") for p in peers] if v is not None and v > 0]
+    all_pers = [
+        v
+        for v in [target_per] + [p.get("per") for p in peers]
+        if v is not None and v > 0
+    ]
+    all_pbrs = [
+        v
+        for v in [target_pbr] + [p.get("pbr") for p in peers]
+        if v is not None and v > 0
+    ]
 
     avg_per = round(sum(all_pers) / len(all_pers), 2) if all_pers else None
     avg_pbr = round(sum(all_pbrs) / len(all_pbrs), 2) if all_pbrs else None
@@ -608,7 +622,9 @@ async def _fetch_sector_peers_us(
         peer_tickers = [t.upper() for t in manual_peers if t.upper() != upper_symbol]
         peer_tickers = peer_tickers[:limit]
     else:
-        peer_tickers: list[str] = await asyncio.to_thread(client.company_peers, upper_symbol)
+        peer_tickers: list[str] = await asyncio.to_thread(
+            client.company_peers, upper_symbol
+        )
         peer_tickers = [t for t in peer_tickers if t.upper() != upper_symbol]
         peer_tickers = peer_tickers[: limit + 5]
 
@@ -616,7 +632,9 @@ async def _fetch_sector_peers_us(
 
     async def _fetch_yf_info(ticker: str) -> tuple[str, dict[str, Any] | None]:
         try:
-            info: dict[str, Any] = await asyncio.to_thread(lambda t=ticker: yf.Ticker(t).info)
+            info: dict[str, Any] = await asyncio.to_thread(
+                lambda t=ticker: yf.Ticker(t).info
+            )
             return (ticker, info)
         except Exception:
             return (ticker, None)
@@ -629,7 +647,9 @@ async def _fetch_sector_peers_us(
     target_sector = target_info.get("sector")
     target_industry = target_info.get("industry")
     target_price = target_info.get("currentPrice")
-    target_prev = target_info.get("previousClose") or target_info.get("regularMarketPreviousClose")
+    target_prev = target_info.get("previousClose") or target_info.get(
+        "regularMarketPreviousClose"
+    )
     target_change_pct = (
         round((target_price - target_prev) / target_prev * 100, 2)
         if target_price and target_prev and target_prev > 0
@@ -661,7 +681,9 @@ async def _fetch_sector_peers_us(
         price = info.get("currentPrice")
         prev = info.get("previousClose") or info.get("regularMarketPreviousClose")
         change_pct = (
-            round((price - prev) / prev * 100, 2) if price and prev and prev > 0 else None
+            round((price - prev) / prev * 100, 2)
+            if price and prev and prev > 0
+            else None
         )
         peers.append(
             {
@@ -686,8 +708,16 @@ async def _fetch_sector_peers_us(
     )
     peers = peers[:limit]
 
-    all_pers = [v for v in [target_per] + [p.get("per") for p in peers] if v is not None and v > 0]
-    all_pbrs = [v for v in [target_pbr] + [p.get("pbr") for p in peers] if v is not None and v > 0]
+    all_pers = [
+        v
+        for v in [target_per] + [p.get("per") for p in peers]
+        if v is not None and v > 0
+    ]
+    all_pbrs = [
+        v
+        for v in [target_pbr] + [p.get("pbr") for p in peers]
+        if v is not None and v > 0
+    ]
 
     avg_per = round(sum(all_pers) / len(all_pers), 2) if all_pers else None
     avg_pbr = round(sum(all_pbrs) / len(all_pbrs), 2) if all_pbrs else None

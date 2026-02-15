@@ -58,7 +58,9 @@ async def _fetch_funding_rate_batch(symbols: list[str]) -> list[dict[str, Any]]:
         if funding_rate is None or next_ts is None or next_ts <= 0:
             continue
 
-        next_funding_time = datetime.datetime.fromtimestamp(next_ts / 1000, tz=datetime.UTC)
+        next_funding_time = datetime.datetime.fromtimestamp(
+            next_ts / 1000, tz=datetime.UTC
+        )
         rows.append(
             {
                 "symbol": base_symbol,
@@ -86,16 +88,18 @@ async def _fetch_funding_rate(symbol: str, limit: int) -> dict[str, Any]:
         premium_data = premium_resp.json()
         current_rate = float(premium_data.get("lastFundingRate", 0))
         next_funding_ts = int(premium_data.get("nextFundingTime", 0))
-        next_funding_time = datetime.datetime.fromtimestamp(next_funding_ts / 1000, tz=datetime.UTC)
+        next_funding_time = datetime.datetime.fromtimestamp(
+            next_funding_ts / 1000, tz=datetime.UTC
+        )
 
         funding_history: list[dict[str, Any]] = []
         rates_for_avg: list[float] = []
         for entry in history_resp.json():
             rate = float(entry.get("fundingRate", 0))
             ts = int(entry.get("fundingTime", 0))
-            time_str = datetime.datetime.fromtimestamp(ts / 1000, tz=datetime.UTC).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            )
+            time_str = datetime.datetime.fromtimestamp(
+                ts / 1000, tz=datetime.UTC
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
             funding_history.append(
                 {
                     "time": time_str,

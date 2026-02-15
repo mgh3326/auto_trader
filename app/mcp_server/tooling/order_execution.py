@@ -233,7 +233,9 @@ async def _preview_order(
                 else:
                     min_market_buy_amount = 0.0
                 estimated_value = (
-                    balance if balance >= min_market_buy_amount else min_market_buy_amount
+                    balance
+                    if balance >= min_market_buy_amount
+                    else min_market_buy_amount
                 )
 
             if estimated_value <= 0:
@@ -329,7 +331,9 @@ async def _execute_order(
             return await upbit_service.place_market_sell_order(symbol, volume_str)
 
         adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
-        return await upbit_service.place_sell_order(symbol, volume_str, f"{adjusted_price}")
+        return await upbit_service.place_sell_order(
+            symbol, volume_str, f"{adjusted_price}"
+        )
 
     if market_type == "equity_kr":
         kis = KISClient()
@@ -501,7 +505,9 @@ async def _place_order_impl(
 
             available_quantity = _to_float(holdings.get("quantity"), default=0.0)
             order_quantity = (
-                available_quantity if quantity is None else min(quantity, available_quantity)
+                available_quantity
+                if quantity is None
+                else min(quantity, available_quantity)
             )
 
             if order_type_lower == "limit" and price is not None:
@@ -543,7 +549,9 @@ async def _place_order_impl(
         dry_run_result.setdefault("side", side_lower)
         dry_run_result.setdefault("order_type", order_type_lower)
         if dry_run_result.get("price") is None:
-            dry_run_result["price"] = current_price if order_type_lower == "market" else price
+            dry_run_result["price"] = (
+                current_price if order_type_lower == "market" else price
+            )
 
         order_amount = _to_float(dry_run_result.get("estimated_value"), default=0.0)
         balance_warning: str | None = None

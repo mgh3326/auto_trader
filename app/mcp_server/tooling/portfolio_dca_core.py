@@ -31,7 +31,9 @@ async def simulate_avg_cost_impl(
         h_price = holdings.get("avg_price")
     h_qty = holdings.get("quantity")
     if h_price is None or h_qty is None:
-        raise ValueError("holdings must contain 'price' (or 'avg_price') and 'quantity'")
+        raise ValueError(
+            "holdings must contain 'price' (or 'avg_price') and 'quantity'"
+        )
     h_price = float(h_price)
     h_qty = float(h_qty)
     if h_price < 0 or h_qty < 0:
@@ -223,9 +225,7 @@ def _build_dca_plan_rows(
             quantity = int(step_amount / step_price)
             if quantity == 0:
                 raise ValueError(
-
-                        f"Amount {step_amount:.0f} is insufficient for 1 unit at price {step_price}"
-
+                    f"Amount {step_amount:.0f} is insufficient for 1 unit at price {step_price}"
                 )
 
         total_quantity += quantity
@@ -237,9 +237,7 @@ def _build_dca_plan_rows(
                 "price": round(step_price, 2),
                 "distance_pct": distance_pct,
                 "amount": round(step_amount, 0),
-                "quantity": round(quantity, 8)
-                if market_type == "crypto"
-                else quantity,
+                "quantity": round(quantity, 8) if market_type == "crypto" else quantity,
                 "source": level_source,
             }
         )
@@ -370,15 +368,19 @@ async def _execute_dca_plan_steps(
         order_price = plan_step["price"]
 
         if order_amount > 1_000_000:
-            return execution_results, executed_steps, {
-                "success": False,
-                "error": (
-                    f"Step {plan_step['step']} amount {order_amount:.0f} KRW exceeds limit 1,000,000 KRW"
-                ),
-                "dry_run": not should_execute,
-                "executed": bool(executed_steps),
-                "plan_id": plan_id,
-            }
+            return (
+                execution_results,
+                executed_steps,
+                {
+                    "success": False,
+                    "error": (
+                        f"Step {plan_step['step']} amount {order_amount:.0f} KRW exceeds limit 1,000,000 KRW"
+                    ),
+                    "dry_run": not should_execute,
+                    "executed": bool(executed_steps),
+                    "plan_id": plan_id,
+                },
+            )
 
         order_result = await place_order_fn(
             symbol=normalized_symbol,
@@ -408,14 +410,18 @@ async def _execute_dca_plan_steps(
                         await mark_step_ordered_fn(db, step.id, str(order_id))
                 except Exception as exc:
                     logger_obj.error("Failed to mark step ordered: %s", exc)
-                    return execution_results, executed_steps, {
-                        "success": False,
-                        "error": f"Failed to mark step ordered: {exc}",
-                        "dry_run": not should_execute,
-                        "executed": bool(executed_steps),
-                        "plan_id": plan_id,
-                        "execution_results": execution_results,
-                    }
+                    return (
+                        execution_results,
+                        executed_steps,
+                        {
+                            "success": False,
+                            "error": f"Failed to mark step ordered: {exc}",
+                            "dry_run": not should_execute,
+                            "executed": bool(executed_steps),
+                            "plan_id": plan_id,
+                            "execution_results": execution_results,
+                        },
+                    )
             elif order_id:
                 logger_obj.error(
                     "Step %s not found in plan %s - available steps: %s",
@@ -423,25 +429,33 @@ async def _execute_dca_plan_steps(
                     plan_id,
                     list(created_plan_steps.keys()),
                 )
-                return execution_results, executed_steps, {
+                return (
+                    execution_results,
+                    executed_steps,
+                    {
+                        "success": False,
+                        "error": (
+                            f"Step {plan_step['step']} not found in plan {plan_id}"
+                        ),
+                        "dry_run": not should_execute,
+                        "plan_id": plan_id,
+                        "execution_results": execution_results,
+                    },
+                )
+
+        if not order_result.get("success"):
+            return (
+                execution_results,
+                executed_steps,
+                {
                     "success": False,
-                    "error": (
-                        f"Step {plan_step['step']} not found in plan {plan_id}"
-                    ),
+                    "error": f"Order failed at step {plan_step['step']}",
+                    "failed_step": plan_step["step"],
                     "dry_run": not should_execute,
                     "plan_id": plan_id,
                     "execution_results": execution_results,
-                }
-
-        if not order_result.get("success"):
-            return execution_results, executed_steps, {
-                "success": False,
-                "error": f"Order failed at step {plan_step['step']}",
-                "failed_step": plan_step["step"],
-                "dry_run": not should_execute,
-                "plan_id": plan_id,
-                "execution_results": execution_results,
-            }
+                },
+            )
 
     return execution_results, executed_steps, None
 
@@ -536,7 +550,11 @@ async def create_dca_plan_impl(
         executed_steps: list[int] = []
 
         if should_execute:
-            execution_results, executed_steps, error_payload = await _execute_dca_plan_steps(
+            (
+                execution_results,
+                executed_steps,
+                error_payload,
+            ) = await _execute_dca_plan_steps(
                 plans=plans,
                 splits=splits,
                 execute_steps=execute_steps,
@@ -545,7 +563,9 @@ async def create_dca_plan_impl(
                 plan_id=plan_id,
                 created_plan_steps=created_plan_steps,
                 place_order_fn=place_order_impl,
-                mark_step_ordered_fn=lambda db, step_id, order_id: dca_service_factory(db).mark_step_ordered(
+                mark_step_ordered_fn=lambda db, step_id, order_id: dca_service_factory(
+                    db
+                ).mark_step_ordered(
                     step_id,
                     order_id,
                 ),

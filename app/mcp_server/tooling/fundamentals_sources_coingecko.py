@@ -102,7 +102,9 @@ def _map_coingecko_profile_to_output(profile: dict[str, Any]) -> dict[str, Any]:
     description = _clean_description_one_line(
         description_map.get("ko") or description_map.get("en")
     )
-    market_cap_krw = _to_optional_money((market_data.get("market_cap") or {}).get("krw"))
+    market_cap_krw = _to_optional_money(
+        (market_data.get("market_cap") or {}).get("krw")
+    )
     total_volume_krw = _to_optional_money(
         (market_data.get("total_volume") or {}).get("krw")
     )

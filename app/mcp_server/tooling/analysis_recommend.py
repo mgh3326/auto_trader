@@ -78,8 +78,13 @@ def _normalize_candidate(item: dict[str, Any], market: str) -> dict[str, Any]:
     )
     return {
         "symbol": symbol,
-        "name": item.get("name") or item.get("shortName") or item.get("shortname") or "",
-        "price": _to_float(item.get("close") or item.get("price") or item.get("trade_price")),
+        "name": item.get("name")
+        or item.get("shortName")
+        or item.get("shortname")
+        or "",
+        "price": _to_float(
+            item.get("close") or item.get("price") or item.get("trade_price")
+        ),
         "change_rate": _to_float(item.get("change_rate") or 0),
         "volume": _to_int(item.get("volume") or 0),
         "market_cap": _to_float(item.get("market_cap") or 0),
@@ -249,10 +254,14 @@ async def recommend_stocks_impl(
             screen_asset_type = None
             screen_category = None
             if max_per is not None:
-                warnings.append("crypto market does not support max_per filter; ignored.")
+                warnings.append(
+                    "crypto market does not support max_per filter; ignored."
+                )
                 max_per = None
             if max_pbr is not None:
-                warnings.append("crypto market does not support max_pbr filter; ignored.")
+                warnings.append(
+                    "crypto market does not support max_pbr filter; ignored."
+                )
                 max_pbr = None
             if min_dividend_yield is not None:
                 warnings.append(
@@ -266,7 +275,9 @@ async def recommend_stocks_impl(
                 sort_by = "volume"
 
         if normalized_market == "us" and max_pbr is not None:
-            warnings.append("us market screener does not support max_pbr filter; ignored.")
+            warnings.append(
+                "us market screener does not support max_pbr filter; ignored."
+            )
             max_pbr = None
 
         logger.info(
@@ -301,7 +312,9 @@ async def recommend_stocks_impl(
                     "total_amount": 0,
                     "remaining_budget": budget,
                     "strategy": validated_strategy,
-                    "strategy_description": get_strategy_description(validated_strategy),
+                    "strategy_description": get_strategy_description(
+                        validated_strategy
+                    ),
                     "candidates_screened": 0,
                     "diagnostics": diagnostics,
                     "fallback_applied": False,
@@ -311,7 +324,9 @@ async def recommend_stocks_impl(
             raw_candidates = screen_result.get("results", [])
         elif normalized_market == "us":
             us_limit = min(candidate_limit, 50)
-            top_stocks_fn = top_stocks_override if callable(top_stocks_override) else None
+            top_stocks_fn = (
+                top_stocks_override if callable(top_stocks_override) else None
+            )
             if top_stocks_fn is None:
                 top_stocks_fn = top_stocks_fallback
             try:
@@ -362,11 +377,16 @@ async def recommend_stocks_impl(
                     "total_amount": 0,
                     "remaining_budget": budget,
                     "strategy": validated_strategy,
-                    "strategy_description": get_strategy_description(validated_strategy),
+                    "strategy_description": get_strategy_description(
+                        validated_strategy
+                    ),
                     "candidates_screened": 0,
                     "diagnostics": diagnostics,
                     "fallback_applied": False,
-                    "warnings": [*warnings, f"Crypto 후보 스크리닝 실패: {screen_error}"],
+                    "warnings": [
+                        *warnings,
+                        f"Crypto 후보 스크리닝 실패: {screen_error}",
+                    ],
                     "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
                 }
             raw_candidates = screen_result.get("results", [])
@@ -375,7 +395,9 @@ async def recommend_stocks_impl(
             normalized_market,
             len(raw_candidates),
         )
-        candidates = [_normalize_candidate(c, normalized_market) for c in raw_candidates]
+        candidates = [
+            _normalize_candidate(c, normalized_market) for c in raw_candidates
+        ]
         if not candidates:
             warnings.append("스크리닝 결과가 없어 추천 가능한 종목이 없습니다.")
 
@@ -410,7 +432,9 @@ async def recommend_stocks_impl(
                         holdings_exclusions += 1
                         exclude_set.add(str(symbol).upper())
                 if holdings_errors:
-                    warnings.append(f"보유 종목 조회 중 일부 오류: {len(holdings_errors)}건")
+                    warnings.append(
+                        f"보유 종목 조회 중 일부 오류: {len(holdings_errors)}건"
+                    )
                 logger.debug(
                     "recommend_stocks holdings exclusions=%d total_exclusions=%d",
                     holdings_exclusions,
@@ -425,9 +449,7 @@ async def recommend_stocks_impl(
                 )
                 warnings.append(f"보유 종목 조회 실패: {holdings_error}")
         else:
-            warnings.append(
-                "exclude_held=False: 보유 종목도 추천 대상에 포함됩니다."
-            )
+            warnings.append("exclude_held=False: 보유 종목도 추천 대상에 포함됩니다.")
 
         filtered_candidates = [
             c for c in candidates if c.get("symbol", "").upper() not in exclude_set
@@ -551,7 +573,9 @@ async def recommend_stocks_impl(
                             "min_market_cap": fallback_params.get("min_market_cap"),
                             "max_per": fallback_params.get("max_per"),
                             "max_pbr": fallback_params.get("max_pbr"),
-                            "min_dividend_yield": fallback_params.get("min_dividend_yield"),
+                            "min_dividend_yield": fallback_params.get(
+                                "min_dividend_yield"
+                            ),
                         }
                         warnings.append(
                             f"{validated_strategy} strict 단계에서 후보가 부족해 fallback을 적용했습니다 (추가 {added_count}건)"
@@ -580,7 +604,9 @@ async def recommend_stocks_impl(
             )
             rsi_semaphore = asyncio.Semaphore(5)
 
-            async def _fetch_rsi_for_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+            async def _fetch_rsi_for_candidate(
+                candidate: dict[str, Any],
+            ) -> dict[str, Any]:
                 async with rsi_semaphore:
                     symbol = candidate.get("symbol", "")
                     if not symbol:
@@ -667,7 +693,9 @@ async def recommend_stocks_impl(
 
         recommendations = []
         for item in allocated:
-            reason = _build_recommend_reason(item, validated_strategy, item.get("score", 0))
+            reason = _build_recommend_reason(
+                item, validated_strategy, item.get("score", 0)
+            )
             recommendations.append(
                 {
                     "symbol": item.get("symbol"),

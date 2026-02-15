@@ -918,7 +918,14 @@ class TestKISOverseasDailyPrice:
         result = await client.inquire_overseas_daily_price(symbol="AAPL", n=2)
 
         assert len(result) == 2
-        assert list(result.columns) == ["date", "open", "high", "low", "close", "volume"]
+        assert list(result.columns) == [
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+        ]
         assert float(result.iloc[-1]["close"]) == 193.8
 
         params = mock_client.get.call_args.kwargs["params"]

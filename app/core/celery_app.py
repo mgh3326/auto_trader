@@ -46,7 +46,12 @@ def init_worker(**kwargs):
     from app.monitoring.trade_notifier import get_trade_notifier
 
     logger = logging.getLogger(__name__)
-    init_sentry(service_name="auto-trader-worker", enable_celery=True)
+    init_sentry(
+        service_name="auto-trader-worker",
+        enable_celery=True,
+        enable_sqlalchemy=True,
+        enable_httpx=True,
+    )
 
     # Initialize Trade Notifier
     if settings.telegram_token and settings.telegram_chat_id:
@@ -59,4 +64,6 @@ def init_worker(**kwargs):
             )
             logger.info("Worker: Trade notifier initialized")
         except Exception as e:
-            logger.error(f"Worker: Failed to initialize trade notifier: {e}", exc_info=True)
+            logger.error(
+                f"Worker: Failed to initialize trade notifier: {e}", exc_info=True
+            )

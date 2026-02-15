@@ -83,7 +83,9 @@ def _parse_timestamp(value: Any) -> str:
         numeric = float(value)
         if numeric > 1e12:
             numeric /= 1000
-        return datetime.fromtimestamp(numeric, tz=UTC).replace(microsecond=0).isoformat()
+        return (
+            datetime.fromtimestamp(numeric, tz=UTC).replace(microsecond=0).isoformat()
+        )
 
     text = str(value).strip()
     if not text:
@@ -124,7 +126,9 @@ def normalize_upbit_fill(raw: Mapping[str, Any]) -> FillOrder:
     symbol = str(_pick_first(raw, ["code", "market", "symbol"]) or "UNKNOWN")
     side = _normalize_side(str(_pick_first(raw, ["ask_bid", "side"]) or ""))
     filled_price = _safe_float(_pick_first(raw, ["trade_price", "price", "avg_price"]))
-    filled_qty = _safe_float(_pick_first(raw, ["trade_volume", "executed_volume", "volume"]))
+    filled_qty = _safe_float(
+        _pick_first(raw, ["trade_volume", "executed_volume", "volume"])
+    )
     filled_amount = _safe_float(_pick_first(raw, ["trade_amount", "executed_amount"]))
     if filled_amount <= 0 and filled_price > 0 and filled_qty > 0:
         filled_amount = filled_price * filled_qty
@@ -136,7 +140,16 @@ def normalize_upbit_fill(raw: Mapping[str, Any]) -> FillOrder:
         filled_qty=filled_qty,
         filled_amount=filled_amount,
         filled_at=_parse_timestamp(
-            _pick_first(raw, ["trade_timestamp", "trade_time", "filled_at", "created_at", "timestamp"])
+            _pick_first(
+                raw,
+                [
+                    "trade_timestamp",
+                    "trade_time",
+                    "filled_at",
+                    "created_at",
+                    "timestamp",
+                ],
+            )
         ),
         account="upbit",
         order_price=_safe_float_or_none(_pick_first(raw, ["order_price", "price"])),
@@ -172,11 +185,17 @@ def normalize_kis_fill(raw: Mapping[str, Any]) -> FillOrder:
         filled_qty=filled_qty,
         filled_amount=filled_amount,
         filled_at=_parse_timestamp(
-            _pick_first(raw, ["filled_at", "timestamp", "exec_time", "ord_tmd", "ccld_time"])
+            _pick_first(
+                raw, ["filled_at", "timestamp", "exec_time", "ord_tmd", "ccld_time"]
+            )
         ),
         account=str(_pick_first(raw, ["account"]) or "kis"),
-        order_price=_safe_float_or_none(_pick_first(raw, ["order_price", "ord_unpr", "ft_ord_unpr3"])),
-        order_id=_safe_text_or_none(_pick_first(raw, ["order_id", "ord_no", "odno", "orgn_ord_no"])),
+        order_price=_safe_float_or_none(
+            _pick_first(raw, ["order_price", "ord_unpr", "ft_ord_unpr3"])
+        ),
+        order_id=_safe_text_or_none(
+            _pick_first(raw, ["order_id", "ord_no", "odno", "orgn_ord_no"])
+        ),
         order_type=_safe_text_or_none(_pick_first(raw, ["order_type", "ord_dvsn"])),
     )
 
@@ -219,7 +238,9 @@ def format_fill_message(order: FillOrderLike) -> str:
 
     price_diff = ""
     if normalized.order_price and normalized.order_price != 0:
-        diff_pct = ((normalized.filled_price - normalized.order_price) / normalized.order_price) * 100
+        diff_pct = (
+            (normalized.filled_price - normalized.order_price) / normalized.order_price
+        ) * 100
         price_diff = f" ({diff_pct:+.2f}%)"
 
     message = (

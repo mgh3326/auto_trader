@@ -319,7 +319,9 @@ async def _screen_kr(
 
                 try:
                     logger.debug("[RSI-KR] Fetching OHLCV data for %s", symbol)
-                    df = await _fetch_ohlcv_for_indicators(symbol, "equity_kr", count=50)
+                    df = await _fetch_ohlcv_for_indicators(
+                        symbol, "equity_kr", count=50
+                    )
                     candle_count = len(df) if df is not None else 0
                     logger.info("[RSI-KR] Got %d candles for %s", candle_count, symbol)
 
@@ -496,7 +498,9 @@ async def _screen_us(
             _complete_filters_applied()
             return _build_screen_response([], 0, filters_applied, market)
 
-        quotes = screen_result.get("quotes", []) if isinstance(screen_result, dict) else []
+        quotes = (
+            screen_result.get("quotes", []) if isinstance(screen_result, dict) else []
+        )
         if not quotes:
             _complete_filters_applied()
             return _build_screen_response([], 0, filters_applied, market)
@@ -512,15 +516,21 @@ async def _screen_us(
         for quote in quotes:
             mapped = {
                 "code": quote.get("symbol"),
-                "name": _first_value(quote, "shortName", "longName", "shortname", "longname"),
-                "close": _first_value(quote, "regularMarketPrice", "lastPrice", "lastprice"),
+                "name": _first_value(
+                    quote, "shortName", "longName", "shortname", "longname"
+                ),
+                "close": _first_value(
+                    quote, "regularMarketPrice", "lastPrice", "lastprice"
+                ),
                 "change_rate": _first_value(
                     quote,
                     "regularMarketChangePercent",
                     "percentchange",
                 )
                 or 0,
-                "volume": _first_value(quote, "regularMarketVolume", "dayVolume", "dayvolume")
+                "volume": _first_value(
+                    quote, "regularMarketVolume", "dayVolume", "dayvolume"
+                )
                 or 0,
                 "market_cap": _first_value(
                     quote, "marketCap", "intradayMarketCap", "intradaymarketcap"
@@ -715,7 +725,9 @@ async def _screen_crypto(
                         return item_copy
 
                     item_copy["rsi"] = rsi_value
-                    logger.info("[RSI-Crypto] ✅ Success: %s RSI=%.2f", symbol, rsi_value)
+                    logger.info(
+                        "[RSI-Crypto] ✅ Success: %s RSI=%.2f", symbol, rsi_value
+                    )
                 except Exception as exc:
                     logger.error(
                         "[RSI-Crypto] ❌ Failed for %s: %s: %s",

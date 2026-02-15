@@ -84,12 +84,16 @@ async def fetch_orderbook(market: str = "KRW-BTC") -> dict[str, Any]:
             data = response.json()
 
             if not data or len(data) == 0:
-                logger.warning("마켓 %s에 대한 호가 데이터가 없습니다.", normalized_market)
+                logger.warning(
+                    "마켓 %s에 대한 호가 데이터가 없습니다.", normalized_market
+                )
                 return {}
 
             return _build_orderbook_result(data).get(normalized_market, {})
     except httpx.HTTPStatusError as e:
-        logger.error("Upbit API 호출 실패 (%s): %s", normalized_market, e.response.status_code)
+        logger.error(
+            "Upbit API 호출 실패 (%s): %s", normalized_market, e.response.status_code
+        )
         raise
     except httpx.RequestError as e:
         logger.error("요청 에러 (%s): %s", normalized_market, e)
@@ -136,7 +140,9 @@ async def fetch_multiple_orderbooks(markets: list[str]) -> dict[str, dict[str, A
         for index, chunk in enumerate(market_chunks):
             markets_query = ",".join(chunk)
             try:
-                response = await client.get(f"{UPBIT_ORDERBOOK_URL}?markets={markets_query}")
+                response = await client.get(
+                    f"{UPBIT_ORDERBOOK_URL}?markets={markets_query}"
+                )
                 response.raise_for_status()
             except HTTPStatusError as exc:
                 status = exc.response.status_code
@@ -147,15 +153,21 @@ async def fetch_multiple_orderbooks(markets: list[str]) -> dict[str, dict[str, A
                         len(results),
                     )
                     break
-                logger.error("Upbit API 호출 실패 (batch=%s): %s", markets_query, status)
+                logger.error(
+                    "Upbit API 호출 실패 (batch=%s): %s", markets_query, status
+                )
                 continue
             except httpx.RequestError as exc:
-                logger.error("Upbit orderbook 요청 에러 (batch=%s): %s", markets_query, exc)
+                logger.error(
+                    "Upbit orderbook 요청 에러 (batch=%s): %s", markets_query, exc
+                )
                 continue
 
             rows = response.json()
             if not isinstance(rows, list):
-                logger.warning("Upbit orderbook 응답 형식 이상 (batch=%s)", markets_query)
+                logger.warning(
+                    "Upbit orderbook 응답 형식 이상 (batch=%s)", markets_query
+                )
                 continue
 
             results.update(_build_orderbook_result(rows))

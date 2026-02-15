@@ -2,14 +2,15 @@ import logging
 
 from fastmcp import FastMCP
 
-# settings import 시 pydantic-settings가 .env 자동 로드
 from app.core.config import settings
 from app.mcp_server.auth import build_auth_provider
 from app.mcp_server.env_utils import _env, _env_int
+from app.mcp_server.sentry_middleware import McpSentryTracingMiddleware
 from app.mcp_server.tooling import register_all_tools
 from app.monitoring.sentry import capture_exception, init_sentry
 
-# 모듈 레벨에서 서버 객체 생성 (fastmcp dev에서 접근 가능)
+_SENTRY_MIDDLEWARE_REGISTERED = False
+
 _auth_token = _env("MCP_AUTH_TOKEN", "")
 auth_provider = build_auth_provider(_auth_token)
 mcp = FastMCP(
@@ -25,6 +26,17 @@ mcp = FastMCP(
 register_all_tools(mcp)
 
 
+def _register_sentry_middleware() -> None:
+    global _SENTRY_MIDDLEWARE_REGISTERED
+    if _SENTRY_MIDDLEWARE_REGISTERED:
+        return
+    mcp.add_middleware(McpSentryTracingMiddleware())
+    _SENTRY_MIDDLEWARE_REGISTERED = True
+
+
+_register_sentry_middleware()
+
+
 def main() -> None:
     log_level_name = str(getattr(settings, "LOG_LEVEL", "INFO") or "INFO").upper()
     log_level = getattr(logging, log_level_name, logging.INFO)
@@ -36,9 +48,13 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
-    init_sentry(service_name="auto-trader-mcp")
+    init_sentry(
+        service_name="auto-trader-mcp",
+        enable_sqlalchemy=True,
+        enable_httpx=True,
+    )
 
-    mcp_type = _env("MCP_TYPE", "streamable-http")  # stdio | sse | streamable-http
+    mcp_type = _env("MCP_TYPE", "streamable-http")
     mcp_host = _env("MCP_HOST", "0.0.0.0")
     mcp_port = _env_int("MCP_PORT", 8765)
     mcp_path = _env("MCP_PATH", "/mcp")

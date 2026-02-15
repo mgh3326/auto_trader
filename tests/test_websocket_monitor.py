@@ -21,9 +21,7 @@ class TestUnifiedWebSocketMonitor:
     """통합 WebSocket 모니터 테스트"""
 
     @pytest.mark.asyncio
-    async def test_on_upbit_trade_sends_notification(
-        self, mock_settings: None
-    ) -> None:
+    async def test_on_upbit_trade_sends_notification(self, mock_settings: None) -> None:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
@@ -68,7 +66,9 @@ class TestUnifiedWebSocketMonitor:
         send_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_on_kis_execution_sends_notification(self, mock_settings: None) -> None:
+    async def test_on_kis_execution_sends_notification(
+        self, mock_settings: None
+    ) -> None:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
@@ -139,7 +139,9 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        monitor.openclaw_client.send_fill_notification = AsyncMock(return_value="req-123")
+        monitor.openclaw_client.send_fill_notification = AsyncMock(
+            return_value="req-123"
+        )
 
         await monitor._send_fill_notification(
             FillOrder(

@@ -49,32 +49,56 @@ async def test_get_order_history_filters(monkeypatch):
     orders_data = [
         # KRW-BTC orders
         {
-            "uuid": "bid-1", "market": "KRW-BTC", "side": "bid", "state": "done",
-            "created_at": "2025-01-02", "ord_type": "limit", "price": "100", "volume": "1", "remaining_volume": "0", "executed_volume": "1"
+            "uuid": "bid-1",
+            "market": "KRW-BTC",
+            "side": "bid",
+            "state": "done",
+            "created_at": "2025-01-02",
+            "ord_type": "limit",
+            "price": "100",
+            "volume": "1",
+            "remaining_volume": "0",
+            "executed_volume": "1",
         },
         {
-            "uuid": "ask-1", "market": "KRW-BTC", "side": "ask", "state": "done",
-            "created_at": "2025-01-01", "ord_type": "limit", "price": "110", "volume": "1", "remaining_volume": "0", "executed_volume": "1"
+            "uuid": "ask-1",
+            "market": "KRW-BTC",
+            "side": "ask",
+            "state": "done",
+            "created_at": "2025-01-01",
+            "ord_type": "limit",
+            "price": "110",
+            "volume": "1",
+            "remaining_volume": "0",
+            "executed_volume": "1",
         },
     ]
 
-    monkeypatch.setattr(upbit_service, "fetch_closed_orders", AsyncMock(return_value=orders_data))
+    monkeypatch.setattr(
+        upbit_service, "fetch_closed_orders", AsyncMock(return_value=orders_data)
+    )
     monkeypatch.setattr(upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
 
     # Test 1: Filter by side="buy"
-    res_buy = await tools["get_order_history"](symbol="KRW-BTC", status="filled", side="buy")
+    res_buy = await tools["get_order_history"](
+        symbol="KRW-BTC", status="filled", side="buy"
+    )
     assert len(res_buy["orders"]) == 1
     assert res_buy["orders"][0]["order_id"] == "bid-1"
     assert res_buy["orders"][0]["side"] == "buy"
 
     # Test 2: Filter by side="sell"
-    res_sell = await tools["get_order_history"](symbol="KRW-BTC", status="filled", side="sell")
+    res_sell = await tools["get_order_history"](
+        symbol="KRW-BTC", status="filled", side="sell"
+    )
     assert len(res_sell["orders"]) == 1
     assert res_sell["orders"][0]["order_id"] == "ask-1"
     assert res_sell["orders"][0]["side"] == "sell"
 
     # Test 3: Filter by order_id
-    res_id = await tools["get_order_history"](symbol="KRW-BTC", status="filled", order_id="bid-1")
+    res_id = await tools["get_order_history"](
+        symbol="KRW-BTC", status="filled", order_id="bid-1"
+    )
     assert len(res_id["orders"]) == 1
     assert res_id["orders"][0]["order_id"] == "bid-1"
 
@@ -89,14 +113,30 @@ async def test_get_order_history_filters(monkeypatch):
     # It IS supported for Pending (fetch_open_orders(market=None)).
 
     # Let's test pending by ID without symbol
-    monkeypatch.setattr(upbit_service, "fetch_open_orders", AsyncMock(return_value=[
-        {
-            "uuid": "pending-1", "market": "KRW-ETH", "side": "bid", "state": "wait",
-            "created_at": "2025-01-03", "ord_type": "limit", "price": "200", "volume": "1", "remaining_volume": "1", "executed_volume": "0"
-        }
-    ]))
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_open_orders",
+        AsyncMock(
+            return_value=[
+                {
+                    "uuid": "pending-1",
+                    "market": "KRW-ETH",
+                    "side": "bid",
+                    "state": "wait",
+                    "created_at": "2025-01-03",
+                    "ord_type": "limit",
+                    "price": "200",
+                    "volume": "1",
+                    "remaining_volume": "1",
+                    "executed_volume": "0",
+                }
+            ]
+        ),
+    )
 
-    res_pending_id = await tools["get_order_history"](status="pending", order_id="pending-1")
+    res_pending_id = await tools["get_order_history"](
+        status="pending", order_id="pending-1"
+    )
     assert len(res_pending_id["orders"]) == 1
     assert res_pending_id["orders"][0]["order_id"] == "pending-1"
 
@@ -107,18 +147,30 @@ async def test_get_order_history_pending_without_symbol(monkeypatch):
 
     class MockUpbitService:
         async def fetch_open_orders(self, market):
-            return [{
-                "uuid": "uuid-1", "side": "bid", "ord_type": "limit",
-                "price": "50000000", "volume": "0.1", "remaining_volume": "0.1",
-                "market": "KRW-BTC", "created_at": "2025-01-01T00:00:00",
-                "state": "wait"
-            }]
+            return [
+                {
+                    "uuid": "uuid-1",
+                    "side": "bid",
+                    "ord_type": "limit",
+                    "price": "50000000",
+                    "volume": "0.1",
+                    "remaining_volume": "0.1",
+                    "market": "KRW-BTC",
+                    "created_at": "2025-01-01T00:00:00",
+                    "state": "wait",
+                }
+            ]
 
-    monkeypatch.setattr(upbit_service, "fetch_open_orders", MockUpbitService().fetch_open_orders)
+    monkeypatch.setattr(
+        upbit_service, "fetch_open_orders", MockUpbitService().fetch_open_orders
+    )
 
     class MockKIS:
-        async def inquire_korea_orders(self): return []
-        async def inquire_overseas_orders(self, exchange_code): return []
+        async def inquire_korea_orders(self):
+            return []
+
+        async def inquire_overseas_orders(self, exchange_code):
+            return []
 
     _patch_kis_client(monkeypatch, lambda: MockKIS())
 
@@ -127,7 +179,6 @@ async def test_get_order_history_pending_without_symbol(monkeypatch):
     assert len(result["orders"]) == 1
     assert result["orders"][0]["order_id"] == "uuid-1"
     # source check removed as per plan normalisation requirements
-
 
 
 @pytest.mark.asyncio
@@ -151,9 +202,7 @@ async def test_get_order_history_crypto_uses_closed_orders(monkeypatch):
             }
         ]
     )
-    monkeypatch.setattr(
-        upbit_service, "fetch_closed_orders", mock_closed_orders
-    )
+    monkeypatch.setattr(upbit_service, "fetch_closed_orders", mock_closed_orders)
     # Mock open orders to return empty (since status="all" by default calls both)
     monkeypatch.setattr(upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
 
@@ -175,7 +224,9 @@ async def test_get_order_history_limit_logic(monkeypatch):
     tools = build_tools()
 
     # Mock valid response
-    monkeypatch.setattr(upbit_service, "fetch_closed_orders", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        upbit_service, "fetch_closed_orders", AsyncMock(return_value=[])
+    )
     monkeypatch.setattr(upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
 
     # Limit = 0 => Should pass limit=100 (or max) to service or similar logic
@@ -185,7 +236,7 @@ async def test_get_order_history_limit_logic(monkeypatch):
     await tools["get_order_history"](symbol="KRW-BTC", limit=-1)
 
     with pytest.raises(ValueError, match="limit must be >= -1"):
-         await tools["get_order_history"](symbol="KRW-BTC", limit=-2)
+        await tools["get_order_history"](symbol="KRW-BTC", limit=-2)
 
 
 @pytest.mark.asyncio
@@ -194,19 +245,29 @@ async def test_get_order_history_truncated_response(monkeypatch):
 
     orders = []
     for i in range(10):
-        orders.append({
-            "uuid": f"id-{i}", "market": "KRW-BTC", "side": "bid", "state": "done",
-            "created_at": f"2025-01-0{i+1}",
-            "volume": "1", "remaining_volume": "0", "executed_volume": "1",
-            "price": "100"
-        })
+        orders.append(
+            {
+                "uuid": f"id-{i}",
+                "market": "KRW-BTC",
+                "side": "bid",
+                "state": "done",
+                "created_at": f"2025-01-0{i + 1}",
+                "volume": "1",
+                "remaining_volume": "0",
+                "executed_volume": "1",
+                "price": "100",
+            }
+        )
 
-    monkeypatch.setattr(upbit_service, "fetch_closed_orders", AsyncMock(return_value=orders))
+    monkeypatch.setattr(
+        upbit_service, "fetch_closed_orders", AsyncMock(return_value=orders)
+    )
     monkeypatch.setattr(upbit_service, "fetch_open_orders", AsyncMock(return_value=[]))
 
     # limit=5, should get 5 orders and truncated=True
-    result = await tools["get_order_history"](symbol="KRW-BTC", status="filled", limit=5)
-
+    result = await tools["get_order_history"](
+        symbol="KRW-BTC", status="filled", limit=5
+    )
 
     assert len(result["orders"]) == 5
     assert result["truncated"] is True
@@ -233,7 +294,9 @@ async def test_get_order_history_kr_order_id_normalizes_list_response(monkeypatc
                     "prcs_stat_name": "체결",
                 }
             ]
-        async def inquire_korea_orders(self): return []
+
+        async def inquire_korea_orders(self):
+            return []
 
     _patch_kis_client(monkeypatch, lambda: FakeKIS())
 
@@ -346,8 +409,12 @@ async def test_modify_order_us_falls_back_exchange(monkeypatch):
 
     fake_kis = FakeKIS()
     _patch_kis_client(monkeypatch, lambda: fake_kis)
-    monkeypatch.setattr(orders_history, "get_exchange_by_symbol", lambda _symbol: "NASD")
-    monkeypatch.setattr(order_execution, "get_exchange_by_symbol", lambda _symbol: "NASD")
+    monkeypatch.setattr(
+        orders_history, "get_exchange_by_symbol", lambda _symbol: "NASD"
+    )
+    monkeypatch.setattr(
+        order_execution, "get_exchange_by_symbol", lambda _symbol: "NASD"
+    )
 
     result = await tools["modify_order"](
         order_id="US-OD-1",
@@ -409,7 +476,9 @@ async def test_get_order_history_us_deduplicates_by_order_id(monkeypatch, caplog
                     "prcs_stat_name": "체결",
                 },
             ]
-        async def inquire_overseas_orders(self, *args, **kwargs): return []
+
+        async def inquire_overseas_orders(self, *args, **kwargs):
+            return []
 
     _patch_kis_client(monkeypatch, lambda: FakeKIS())
 

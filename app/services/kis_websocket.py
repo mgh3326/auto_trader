@@ -370,15 +370,21 @@ class KISExecutionWebSocket:
 
         payload_fields = envelope["payload_fields"]
         if payload_fields:
-            parsed.update(self._parse_execution_payload(payload_fields, parsed["market"]))
+            parsed.update(
+                self._parse_execution_payload(payload_fields, parsed["market"])
+            )
 
         if not parsed.get("symbol"):
-            parsed["symbol"] = self._extract_symbol(payload_fields, parsed["market"]) or ""
+            parsed["symbol"] = (
+                self._extract_symbol(payload_fields, parsed["market"]) or ""
+            )
 
         if parsed["tr_code"] in EXECUTION_TR_CODES and (
             not parsed.get("filled_price") or not parsed.get("filled_qty")
         ):
-            logger.debug("KIS execution payload parsed with fallback values: raw=%s", message)
+            logger.debug(
+                "KIS execution payload parsed with fallback values: raw=%s", message
+            )
 
         return parsed
 

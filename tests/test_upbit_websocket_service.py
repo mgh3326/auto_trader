@@ -25,7 +25,9 @@ class TestUpbitMyOrderWebSocket:
                 "websockets.connect",
                 new=AsyncMock(return_value=mock_websocket),
             ) as mock_connect,
-            patch.object(client, "_listen_for_messages", new=AsyncMock()) as mock_listen,
+            patch.object(
+                client, "_listen_for_messages", new=AsyncMock()
+            ) as mock_listen,
         ):
             await client._connect_and_subscribe_internal()
 

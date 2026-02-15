@@ -1634,7 +1634,9 @@ class KISClient:
 
             chunk = js.get("output2") or js.get("output") or []
             if not chunk:
-                logging.info(f"더 이상 과거 데이터가 없음. 현재까지 수집: {len(rows)}개")
+                logging.info(
+                    f"더 이상 과거 데이터가 없음. 현재까지 수집: {len(rows)}개"
+                )
                 break
 
             rows.extend(chunk)

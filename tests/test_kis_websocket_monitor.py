@@ -224,7 +224,9 @@ class TestKISWebSocketMonitorStartStop:
         monitor = KISWebSocketMonitor()
         mock_engine = MagicMock()
 
-        with patch("kis_websocket_monitor.create_async_engine", return_value=mock_engine):
+        with patch(
+            "kis_websocket_monitor.create_async_engine", return_value=mock_engine
+        ):
             session_factory = monitor._initialize_db()
 
         assert callable(session_factory)
@@ -310,7 +312,6 @@ class TestKISWebSocketMonitorStartStop:
             "kis_websocket_monitor.close_execution_redis",
             new=mock_close_redis,
         ):
-
             await monitor.stop()
 
             assert monitor.is_running is False
@@ -344,7 +345,6 @@ class TestKISWebSocketMonitorStartStop:
             "kis_websocket_monitor.close_execution_redis",
             new=mock_close_redis,
         ):
-
             await monitor.stop()
 
             mock_close_redis.assert_awaited_once()
@@ -363,7 +363,9 @@ class TestKISWebSocketMonitorSentry:
         with (
             patch("kis_websocket_monitor.init_sentry") as mock_init_sentry,
             patch("kis_websocket_monitor.capture_exception") as mock_capture_exception,
-            patch("kis_websocket_monitor.KISWebSocketMonitor", return_value=mock_monitor),
+            patch(
+                "kis_websocket_monitor.KISWebSocketMonitor", return_value=mock_monitor
+            ),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 await main()
