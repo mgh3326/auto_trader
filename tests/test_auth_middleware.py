@@ -62,6 +62,11 @@ def test_api_path_access(client, mock_session_local):
     assert response.json() == {"data": "ok"}
 
 
+def test_create_session_token_returns_string():
+    token = create_session_token(1)
+    assert isinstance(token, str)
+
+
 def test_protected_route_no_auth(client, mock_session_local):
     # Should redirect to login
     response = client.get("/test-protected", follow_redirects=False)

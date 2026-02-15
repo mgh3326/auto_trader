@@ -732,7 +732,7 @@ def _calculate_volume_profile(
     high = pd.to_numeric(df["high"], errors="coerce")
     volume = pd.to_numeric(df["volume"], errors="coerce")
 
-    valid_mask = (~low.isna()) & (~high.isna()) & (~volume.isna())
+    valid_mask = low.notna() & high.notna() & volume.notna()
     if not valid_mask.any():
         raise ValueError("No valid OHLCV rows with low/high/volume")
 

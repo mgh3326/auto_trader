@@ -1391,6 +1391,26 @@ def test_calculate_volume_profile_distributes_volume_proportionally():
 
 
 @pytest.mark.unit
+def test_calculate_volume_profile_ignores_rows_with_nan_values():
+    df = pd.DataFrame(
+        [
+            {"low": 0.0, "high": 10.0, "volume": 100.0},
+            {"low": np.nan, "high": 12.0, "volume": 40.0},
+            {"low": 1.0, "high": np.nan, "volume": 40.0},
+            {"low": 2.0, "high": 8.0, "volume": np.nan},
+        ]
+    )
+
+    result = market_data_indicators._calculate_volume_profile(
+        df, bins=2, value_area_ratio=0.70
+    )
+
+    assert result["price_range"] == {"low": 0, "high": 10}
+    assert sum(level["volume"] for level in result["profile"]) == 100
+    assert result["poc"]["volume"] == 50
+
+
+@pytest.mark.unit
 class TestNormalizeMarket:
     """Tests for _normalize_market helper function."""
 
@@ -7406,6 +7426,32 @@ class TestGetInvestmentOpinions:
         assert result["consensus"]["avg_target_price"] == 195.5
         assert result["consensus"]["current_price"] == 185.5
         assert result["consensus"]["upside_pct"] == 5.4
+
+    async def test_us_market_skips_upside_when_avg_target_not_numeric(
+        self, monkeypatch
+    ):
+        class MockTicker:
+            def __init__(self, symbol: str):
+                self.symbol = symbol
+                self.analyst_price_targets = {
+                    "mean": "N/A",
+                    "median": 195.0,
+                    "low": 180.0,
+                    "high": 210.0,
+                    "current": 185.5,
+                }
+                self.upgrades_downgrades = pd.DataFrame()
+                self.info = {"currentPrice": 185.5}
+
+        monkeypatch.setattr(yf, "Ticker", MockTicker)
+
+        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
+            "AAPL", 10
+        )
+
+        assert result["consensus"]["avg_target_price"] == "N/A"
+        assert result["consensus"]["current_price"] == 185.5
+        assert result["consensus"]["upside_pct"] is None
 
     async def test_analyze_stock_generates_recommendation_kr(self):
         """Test that _build_recommendation_for_equity generates recommendation for Korean stocks."""

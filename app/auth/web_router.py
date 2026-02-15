@@ -58,7 +58,10 @@ def _hash_session_token(token: str) -> str:
 
 def create_session_token(user_id: int) -> str:
     """Create a secure session token for the user."""
-    return session_serializer.dumps({"user_id": user_id})
+    token = session_serializer.dumps({"user_id": user_id})
+    if isinstance(token, bytes):
+        return token.decode("utf-8")
+    return token
 
 
 def verify_session_token(token: str, max_age: int = SESSION_TTL) -> int | None:

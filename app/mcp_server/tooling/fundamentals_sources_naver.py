@@ -58,7 +58,9 @@ def _parse_naver_int(value: Any) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-def _get_finnhub_client() -> finnhub.Client:
+def _get_finnhub_client() -> Any:
+    if finnhub is None:
+        raise ImportError("finnhub-python is required to use Finnhub providers")
     api_key = settings.finnhub_api_key
     if not api_key:
         raise ValueError("FINNHUB_API_KEY environment variable is not set")
@@ -492,15 +494,12 @@ async def _fetch_investment_opinions_yfinance(
             if not consensus.get("current_price"):
                 consensus["current_price"] = current_price or targets.get("current")
 
-            if (
-                consensus.get("avg_target_price")
-                and current_price
-                and isinstance(current_price, (int, float))
+            avg_target_price = consensus.get("avg_target_price")
+            if isinstance(avg_target_price, (int, float)) and isinstance(
+                current_price, (int, float)
             ):
                 consensus["upside_pct"] = round(
-                    (consensus["avg_target_price"] - current_price)
-                    / current_price
-                    * 100,
+                    (avg_target_price - current_price) / current_price * 100,
                     2,
                 )
 

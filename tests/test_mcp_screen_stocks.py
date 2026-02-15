@@ -1830,3 +1830,37 @@ class TestScreenStocksPhase2Spec:
         # Should not raise error, but cap to 50
         assert result is not None
         assert result["returned_count"] <= 50
+
+    @pytest.mark.asyncio
+    async def test_strategy_preset_with_case_insensitive_inputs(
+        self, mock_krx_stocks, monkeypatch
+    ):
+        """Uppercase inputs should normalize and strategy presets should override sort."""
+
+        async def mock_fetch_stock_all_cached(market):
+            if market == "STK":
+                return mock_krx_stocks
+            return []
+
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="KOSPI",
+            asset_type="STOCK",
+            category=None,
+            strategy="MOMENTUM",
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="asc",
+            limit=20,
+        )
+
+        assert result["market"] == "kospi"
+        assert result["filters_applied"]["sort_by"] == "change_rate"
+        assert result["filters_applied"]["sort_order"] == "desc"

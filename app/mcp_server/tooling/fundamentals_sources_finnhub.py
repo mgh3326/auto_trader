@@ -14,7 +14,9 @@ except ImportError:
 from app.core.config import settings
 
 
-def _get_finnhub_client() -> finnhub.Client:
+def _get_finnhub_client() -> Any:
+    if finnhub is None:
+        raise ImportError("finnhub-python is required to use Finnhub providers")
     api_key = settings.finnhub_api_key
     if not api_key:
         raise ValueError("FINNHUB_API_KEY environment variable is not set")

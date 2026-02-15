@@ -2,7 +2,7 @@ import asyncio
 import datetime
 import logging
 import random
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pandas as pd
@@ -1077,19 +1077,18 @@ class KISClient:
         df_complete["time"] = df_complete["datetime"].dt.time
 
         # 원본 컬럼 순서로 재정렬
-        return df_complete[
-            [
-                "datetime",
-                "date",
-                "time",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "value",
-            ]
+        columns = [
+            "datetime",
+            "date",
+            "time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "value",
         ]
+        return cast(DataFrame, df_complete.loc[:, columns].copy())
 
     async def fetch_my_stocks(
         self,
