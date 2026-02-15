@@ -2,6 +2,13 @@
 
 MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
+## Observability (Sentry MCP)
+- MCP tracing uses `sentry_sdk.integrations.mcp.MCPIntegration` when enabled.
+- Recommended trace filter:
+  - `service:auto-trader-mcp op:mcp.server`
+- `profile` flamegraph and `trace` spans are different datasets, so some frames may appear only in profiling.
+- It is normal to see only high-level spans when a tool does not execute DB/HTTP operations.
+
 ## Tools
 - `search_symbol(query, limit=20)`
 - `get_quote(symbol, market=None)`

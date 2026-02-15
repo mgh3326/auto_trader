@@ -19,6 +19,7 @@ def reset_sentry_state(monkeypatch):
     monkeypatch.setattr(sentry_module.settings, "SENTRY_PROFILES_SAMPLE_RATE", 1.0)
     monkeypatch.setattr(sentry_module.settings, "SENTRY_SEND_DEFAULT_PII", True)
     monkeypatch.setattr(sentry_module.settings, "SENTRY_ENABLE_LOG_EVENTS", True)
+    monkeypatch.setattr(sentry_module.settings, "SENTRY_MCP_INCLUDE_PROMPTS", False)
     monkeypatch.setattr(sentry_module.settings, "ENVIRONMENT", "development")
 
 
@@ -164,6 +165,58 @@ def test_init_sentry_disables_error_log_events(monkeypatch):
         if type(integration).__name__ == "LoggingIntegration"
     )
     assert logging_integration._handler is None
+
+
+@pytest.mark.unit
+def test_init_sentry_includes_mcp_integration(monkeypatch):
+    monkeypatch.setattr(
+        sentry_module.settings,
+        "SENTRY_DSN",
+        "https://public@example.ingest.sentry.io/1",
+    )
+    monkeypatch.setattr(sentry_module.settings, "SENTRY_MCP_INCLUDE_PROMPTS", True)
+
+    mock_init = Mock()
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", mock_init)
+
+    class DummyMCPIntegration:
+        def __init__(self, include_prompts: bool = False):
+            self.include_prompts = include_prompts
+
+    monkeypatch.setattr(sentry_module, "MCPIntegration", DummyMCPIntegration)
+
+    result = sentry_module.init_sentry("auto-trader-mcp", enable_mcp=True)
+
+    assert result is True
+    kwargs = mock_init.call_args.kwargs
+    mcp_integration = next(
+        integration
+        for integration in kwargs["integrations"]
+        if type(integration).__name__ == "DummyMCPIntegration"
+    )
+    assert mcp_integration.include_prompts is True
+
+
+@pytest.mark.unit
+def test_init_sentry_mcp_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        sentry_module.settings,
+        "SENTRY_DSN",
+        "https://public@example.ingest.sentry.io/1",
+    )
+
+    mock_init = Mock()
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", mock_init)
+    monkeypatch.setattr(sentry_module, "MCPIntegration", None)
+
+    result = sentry_module.init_sentry("auto-trader-mcp", enable_mcp=True)
+
+    assert result is True
+    kwargs = mock_init.call_args.kwargs
+    integration_names = {
+        type(integration).__name__ for integration in kwargs["integrations"]
+    }
+    assert "MCPIntegration" not in integration_names
 
 
 @pytest.mark.unit

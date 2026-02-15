@@ -13,6 +13,11 @@ from sentry_sdk.integrations.httpx import HttpxIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
+try:
+    from sentry_sdk.integrations.mcp import MCPIntegration
+except ImportError:  # pragma: no cover - dependent on sentry-sdk version
+    MCPIntegration = None
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -157,6 +162,7 @@ def init_sentry(
     enable_celery: bool = False,
     enable_sqlalchemy: bool = False,
     enable_httpx: bool = False,
+    enable_mcp: bool = False,
 ) -> bool:
     """Initialize Sentry once per process."""
     global _initialized
@@ -184,6 +190,17 @@ def init_sentry(
         integrations.append(SqlalchemyIntegration())
     if enable_httpx:
         integrations.append(HttpxIntegration())
+    if enable_mcp:
+        if MCPIntegration is None:
+            logger.warning(
+                "Sentry MCP integration unavailable in current sentry-sdk version"
+            )
+        else:
+            integrations.append(
+                MCPIntegration(
+                    include_prompts=settings.SENTRY_MCP_INCLUDE_PROMPTS,
+                )
+            )
 
     try:
         sentry_sdk.init(

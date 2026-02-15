@@ -52,6 +52,7 @@ def main() -> None:
         service_name="auto-trader-mcp",
         enable_sqlalchemy=True,
         enable_httpx=True,
+        enable_mcp=True,
     )
 
     mcp_type = _env("MCP_TYPE", "streamable-http")
