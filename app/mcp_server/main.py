@@ -28,7 +28,6 @@ init_sentry(
 from fastmcp import FastMCP  # noqa: E402
 
 from app.mcp_server.auth import build_auth_provider  # noqa: E402
-from app.mcp_server.sentry_middleware import McpSentryTracingMiddleware  # noqa: E402
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
@@ -44,20 +43,6 @@ mcp = FastMCP(
 )
 
 register_all_tools(mcp)
-
-# 3) Fallback middleware — skips automatically when native MCPIntegration is active.
-_SENTRY_MIDDLEWARE_REGISTERED = False
-
-
-def _register_sentry_middleware() -> None:
-    global _SENTRY_MIDDLEWARE_REGISTERED
-    if _SENTRY_MIDDLEWARE_REGISTERED:
-        return
-    mcp.add_middleware(McpSentryTracingMiddleware())
-    _SENTRY_MIDDLEWARE_REGISTERED = True
-
-
-_register_sentry_middleware()
 
 
 def main() -> None:
