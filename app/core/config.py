@@ -169,6 +169,14 @@ class Settings(BaseSettings):
     OPENCLAW_CALLBACK_URL: str = "http://localhost:8000/api/v1/openclaw/callback"
     OPENCLAW_ENABLED: bool = False
 
+    DAILY_SCAN_ENABLED: bool = False
+    DAILY_SCAN_CRASH_THRESHOLD: float = 0.05
+    DAILY_SCAN_RSI_OVERBOUGHT: float = 70.0
+    DAILY_SCAN_RSI_OVERSOLD: float = 35.0
+    DAILY_SCAN_FNG_LOW: int = 10
+    DAILY_SCAN_FNG_HIGH: int = 80
+    DAILY_SCAN_TOP_COINS_COUNT: int = 30
+
     # JWT Authentication settings
     SECRET_KEY: str
     ALGORITHM: Literal["HS256", "HS384", "HS512"] = "HS256"

@@ -159,6 +159,53 @@ class OpenClawClient:
             )
             return None
 
+    async def send_scan_alert(self, message: str) -> str | None:
+        if not settings.OPENCLAW_ENABLED:
+            logger.debug("OpenClaw disabled, skipping scan alert")
+            return None
+
+        request_id = str(uuid4())
+        payload = {
+            "message": message,
+            "name": "auto-trader:scan",
+            "sessionKey": f"auto-trader:scan:{request_id}",
+            "wakeMode": "now",
+        }
+
+        headers = {"Content-Type": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(4),
+                wait=wait_exponential(multiplier=1, min=1, max=4),
+                reraise=False,
+            ):
+                with attempt:
+                    async with httpx.AsyncClient(timeout=10) as cli:
+                        res = await cli.post(
+                            self._webhook_url, json=payload, headers=headers
+                        )
+                        res.raise_for_status()
+                    logger.info("OpenClaw scan alert sent: request_id=%s", request_id)
+                    return request_id
+
+        except RetryError as e:
+            logger.error(
+                "OpenClaw scan alert failed after retries: request_id=%s error=%s",
+                request_id,
+                e,
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                "OpenClaw scan alert error: request_id=%s error=%s",
+                request_id,
+                e,
+            )
+            return None
+
 
 def _build_openclaw_message(
     *,

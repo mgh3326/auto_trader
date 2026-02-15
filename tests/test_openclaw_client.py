@@ -256,3 +256,70 @@ async def test_send_fill_notification_returns_none_after_all_retries_fail(
 
     assert result is None
     assert mock_cli.post.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_send_scan_alert_returns_none_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENCLAW_ENABLED", False)
+
+    result = await OpenClawClient().send_scan_alert("scan message")
+    assert result is None
+
+
+@pytest.mark.asyncio
+@patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_scan_alert_success(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
+    monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
+    monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "test-token")
+
+    mock_cli = AsyncMock()
+    mock_res = MagicMock(status_code=200)
+    mock_res.raise_for_status.return_value = None
+    mock_cli.post.return_value = mock_res
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    result = await OpenClawClient().send_scan_alert("scan message")
+
+    assert result is not None
+    mock_cli.post.assert_awaited_once()
+    called_json = mock_cli.post.call_args.kwargs["json"]
+    assert called_json["name"] == "auto-trader:scan"
+    assert called_json["wakeMode"] == "now"
+    assert called_json["sessionKey"].startswith("auto-trader:scan:")
+    assert called_json["message"] == "scan message"
+
+
+@pytest.mark.asyncio
+@patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_scan_alert_returns_none_after_all_retries_fail(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
+    monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
+    monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "test-token")
+
+    mock_cli = AsyncMock()
+    mock_res_fail = MagicMock()
+    mock_res_fail.raise_for_status.side_effect = Exception("Network error")
+    mock_cli.post.return_value = mock_res_fail
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    result = await OpenClawClient().send_scan_alert("scan message")
+
+    assert result is None
+    assert mock_cli.post.call_count == 4
