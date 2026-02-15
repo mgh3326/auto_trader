@@ -1,15 +1,35 @@
 import logging
 
-from fastmcp import FastMCP
-
 from app.core.config import settings
-from app.mcp_server.auth import build_auth_provider
 from app.mcp_server.env_utils import _env, _env_int
-from app.mcp_server.sentry_middleware import McpSentryTracingMiddleware
-from app.mcp_server.tooling import register_all_tools
 from app.monitoring.sentry import capture_exception, init_sentry
 
-_SENTRY_MIDDLEWARE_REGISTERED = False
+# ──────────────────────────────────────────────────────────────────────
+# 1) Sentry MUST be initialised BEFORE FastMCP is instantiated.
+#
+#    MCPIntegration.setup_once() monkey-patches
+#      mcp.server.lowlevel.Server.call_tool   (decorator)
+#      mcp.server.streamable_http.StreamableHTTPServerTransport.handle_request
+#      fastmcp.FastMCP._get_prompt_mcp / _read_resource_mcp
+#
+#    FastMCP.__init__() → _setup_handlers() → _mcp_server.call_tool()(...)
+#    registers the tool handler through that decorator.  If Sentry has NOT
+#    yet patched it, the handler is registered *un-instrumented* and no
+#    child spans (tools/call, DB, httpx) ever appear in the trace.
+# ──────────────────────────────────────────────────────────────────────
+init_sentry(
+    service_name="auto-trader-mcp",
+    enable_sqlalchemy=True,
+    enable_httpx=True,
+    enable_mcp=True,
+)
+
+# 2) Now it is safe to create the FastMCP instance and register tools.
+from fastmcp import FastMCP  # noqa: E402
+
+from app.mcp_server.auth import build_auth_provider  # noqa: E402
+from app.mcp_server.sentry_middleware import McpSentryTracingMiddleware  # noqa: E402
+from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
 auth_provider = build_auth_provider(_auth_token)
@@ -24,6 +44,9 @@ mcp = FastMCP(
 )
 
 register_all_tools(mcp)
+
+# 3) Fallback middleware — skips automatically when native MCPIntegration is active.
+_SENTRY_MIDDLEWARE_REGISTERED = False
 
 
 def _register_sentry_middleware() -> None:
@@ -47,12 +70,6 @@ def main() -> None:
         level=log_level,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
-    )
-    init_sentry(
-        service_name="auto-trader-mcp",
-        enable_sqlalchemy=True,
-        enable_httpx=True,
-        enable_mcp=True,
     )
 
     mcp_type = _env("MCP_TYPE", "streamable-http")

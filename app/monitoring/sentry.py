@@ -170,6 +170,7 @@ def init_sentry(
     enable_sqlalchemy: bool = False,
     enable_httpx: bool = False,
     enable_mcp: bool = False,
+    debug: bool | None = None,
 ) -> bool:
     """Initialize Sentry once per process."""
     global _enabled_integration_flags, _initialized
@@ -222,6 +223,8 @@ def init_sentry(
                 )
             )
 
+    enable_debug = debug if debug is not None else settings.SENTRY_DEBUG
+
     try:
         if _initialized:
             logger.info(
@@ -233,6 +236,7 @@ def init_sentry(
             dsn=dsn,
             environment=environment,
             release=release,
+            debug=enable_debug,
             traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
             profiles_sample_rate=settings.SENTRY_PROFILES_SAMPLE_RATE,
             send_default_pii=settings.SENTRY_SEND_DEFAULT_PII,

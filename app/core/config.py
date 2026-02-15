@@ -157,6 +157,7 @@ class Settings(BaseSettings):
     SENTRY_SEND_DEFAULT_PII: bool = True
     SENTRY_ENABLE_LOG_EVENTS: bool = True
     SENTRY_MCP_INCLUDE_PROMPTS: bool = False
+    SENTRY_DEBUG: bool = False
 
     # Monitoring test route exposure
     EXPOSE_MONITORING_TEST_ROUTES: bool = False
