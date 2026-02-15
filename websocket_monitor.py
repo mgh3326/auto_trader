@@ -6,6 +6,7 @@ Upbit/KIS 체결 WebSocket을 통합하여 OpenClaw Gateway로 체결 알림을 
 """
 
 import asyncio
+import argparse
 import logging
 import signal
 import sys
@@ -24,6 +25,7 @@ from app.services.upbit_websocket import UpbitMyOrderWebSocket
 from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)
+VALID_MONITOR_MODES = {"upbit", "kis", "both"}
 
 
 class UnifiedWebSocketMonitor:
@@ -33,7 +35,13 @@ class UnifiedWebSocketMonitor:
     Upbit/KIS 체결 이벤트를 수신하여 OpenClaw로 체결 알림을 전송합니다.
     """
 
-    def __init__(self):
+    def __init__(self, mode: str = "both"):
+        if mode not in VALID_MONITOR_MODES:
+            raise ValueError(
+                f"Invalid mode '{mode}'. Expected one of: {sorted(VALID_MONITOR_MODES)}"
+            )
+
+        self.mode = mode
         self.is_running = False
         self.openclaw_client = OpenClawClient()
         self.upbit_ws: UpbitMyOrderWebSocket | None = None
@@ -151,13 +159,22 @@ class UnifiedWebSocketMonitor:
 
     async def start(self) -> None:
         """통합 모니터링 시작"""
-        logger.info("Starting Unified WebSocket Monitor...")
+        logger.info("Starting Unified WebSocket Monitor (mode=%s)...", self.mode)
         self.is_running = True
 
-        task_map = {
-            "upbit": asyncio.create_task(self._start_upbit(), name="upbit-websocket"),
-            "kis": asyncio.create_task(self._start_kis(), name="kis-websocket"),
-        }
+        task_map: dict[str, asyncio.Task[Any]] = {}
+        if self.mode in {"upbit", "both"}:
+            task_map["upbit"] = asyncio.create_task(
+                self._start_upbit(), name="upbit-websocket"
+            )
+        if self.mode in {"kis", "both"}:
+            task_map["kis"] = asyncio.create_task(
+                self._start_kis(), name="kis-websocket"
+            )
+
+        if not task_map:
+            raise RuntimeError(f"No websocket task selected for mode={self.mode}")
+
         failure: RuntimeError | None = None
 
         try:
@@ -176,7 +193,9 @@ class UnifiedWebSocketMonitor:
                         continue
 
                     if task.cancelled():
-                        failure = RuntimeError(f"{name} task was cancelled unexpectedly")
+                        failure = RuntimeError(
+                            f"{name} task was cancelled unexpectedly"
+                        )
                         logger.error("%s task cancelled unexpectedly", name)
                     else:
                         exc = task.exception()
@@ -231,15 +250,20 @@ class UnifiedWebSocketMonitor:
         logger.info("Unified WebSocket Monitor stopped")
 
 
-async def main() -> None:
+async def main(mode: str = "both") -> None:
     """메인 엔트리포인트"""
     logging.basicConfig(
         level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    init_sentry(service_name="auto-trader-websocket")
+    service_name = {
+        "upbit": "auto-trader-upbit-ws",
+        "kis": "auto-trader-kis-ws",
+        "both": "auto-trader-websocket",
+    }[mode]
+    init_sentry(service_name=service_name)
 
-    monitor = UnifiedWebSocketMonitor()
+    monitor = UnifiedWebSocketMonitor(mode=mode)
 
     try:
         await monitor.start()
@@ -255,4 +279,12 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Unified websocket monitor")
+    parser.add_argument(
+        "--mode",
+        choices=sorted(VALID_MONITOR_MODES),
+        default="both",
+        help="Run only selected websocket backend",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(mode=args.mode))

@@ -75,7 +75,7 @@ curl http://localhost:8000/healthz
 docker compose -f docker-compose.prod.yml logs -f api
 docker compose -f docker-compose.prod.yml logs -f worker
 docker compose -f docker-compose.prod.yml logs -f mcp
-docker compose -f docker-compose.prod.yml logs -f websocket
+docker compose -f docker-compose.prod.yml logs -f upbit_websocket
 docker compose -f docker-compose.prod.yml logs -f kis_websocket
 
 # Caddy 로그

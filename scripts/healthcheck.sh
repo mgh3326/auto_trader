@@ -49,7 +49,8 @@ check_service "redis" "redis-cli ping" "Redis Connection"
 # Docker 컨테이너 체크
 echo -e "${BLUE}🐳 Docker Containers${NC}"
 check_service "api" "docker ps --filter 'name=auto_trader_api_prod' --filter 'status=running' | grep -q auto_trader_api_prod" "API Container"
-check_service "websocket" "docker ps --filter 'name=auto_trader_ws_prod' --filter 'status=running' | grep -q auto_trader_ws_prod" "WebSocket Container"
+check_service "upbit_websocket" "docker ps --filter 'name=auto_trader_upbit_ws_prod' --filter 'status=running' | grep -q auto_trader_upbit_ws_prod" "Upbit WebSocket Container"
+check_service "kis_websocket" "docker ps --filter 'name=auto_trader_kis_ws_prod' --filter 'status=running' | grep -q auto_trader_kis_ws_prod" "KIS WebSocket Container"
 
 # API 엔드포인트 체크
 echo -e "${BLUE}🌐 API Endpoints${NC}"
@@ -67,28 +68,36 @@ else
     echo -e "${GREEN}✅ No recent errors in API logs${NC}"
 fi
 
-# WebSocket 컨테이너 로그에서 에러 검색
-ws_errors=$(docker logs auto_trader_ws_prod --since=10m 2>&1 | grep -i "error\|exception\|fail" | wc -l)
-if [ $ws_errors -gt 0 ]; then
-    echo -e "${YELLOW}⚠️  Found $ws_errors error(s) in WebSocket logs (last 10 minutes)${NC}"
+# Upbit WebSocket 컨테이너 로그에서 에러 검색
+upbit_ws_errors=$(docker logs auto_trader_upbit_ws_prod --since=10m 2>&1 | grep -i "error\|exception\|fail" | wc -l)
+if [ $upbit_ws_errors -gt 0 ]; then
+    echo -e "${YELLOW}⚠️  Found $upbit_ws_errors error(s) in Upbit WebSocket logs (last 10 minutes)${NC}"
 else
-    echo -e "${GREEN}✅ No recent errors in WebSocket logs${NC}"
+    echo -e "${GREEN}✅ No recent errors in Upbit WebSocket logs${NC}"
 fi
 
-echo -e "${BLUE}🔌 Unified WebSocket Internal Status${NC}"
-upbit_health_line=$(docker logs auto_trader_ws_prod --since=10m 2>&1 | grep "Upbit" | tail -n 1)
-kis_health_line=$(docker logs auto_trader_ws_prod --since=10m 2>&1 | grep "KIS" | tail -n 1)
+# KIS WebSocket 컨테이너 로그에서 에러 검색
+kis_ws_errors=$(docker logs auto_trader_kis_ws_prod --since=10m 2>&1 | grep -i "error\|exception\|fail" | wc -l)
+if [ $kis_ws_errors -gt 0 ]; then
+    echo -e "${YELLOW}⚠️  Found $kis_ws_errors error(s) in KIS WebSocket logs (last 10 minutes)${NC}"
+else
+    echo -e "${GREEN}✅ No recent errors in KIS WebSocket logs${NC}"
+fi
+
+echo -e "${BLUE}🔌 WebSocket Services Status${NC}"
+upbit_health_line=$(docker logs auto_trader_upbit_ws_prod --since=10m 2>&1 | tail -n 1)
+kis_health_line=$(docker logs auto_trader_kis_ws_prod --since=10m 2>&1 | tail -n 1)
 
 if [ -n "$upbit_health_line" ]; then
     echo -e "${GREEN}✅ Upbit status log found${NC}: $upbit_health_line"
 else
-    echo -e "${YELLOW}⚠️  No recent Upbit status log in websocket container${NC}"
+    echo -e "${YELLOW}⚠️  No recent Upbit status log in upbit_websocket container${NC}"
 fi
 
 if [ -n "$kis_health_line" ]; then
     echo -e "${GREEN}✅ KIS status log found${NC}: $kis_health_line"
 else
-    echo -e "${YELLOW}⚠️  No recent KIS status log in websocket container${NC}"
+    echo -e "${YELLOW}⚠️  No recent KIS status log in kis_websocket container${NC}"
 fi
 
 # 디스크 용량 체크

@@ -80,9 +80,9 @@ Parameters:
 - `market`: Market to screen ("kr", "us", "crypto") (default: "kr")
 - `asset_type`: Asset type ("stock", "etf", "etn") - only applicable to KR
 - `category`: Category filter (ETF categories for KR, sector for US)
-- `sort_by`: Sort criteria ("volume", "market_cap", "change_rate", "dividend_yield") (default: "volume")
+- `sort_by`: Sort criteria ("volume", "trade_amount", "market_cap", "change_rate", "dividend_yield") (default: crypto="trade_amount", KR/US="volume")
 - `sort_order`: Sort order ("asc" or "desc") (default: "desc")
-- `min_market_cap`: Minimum market cap filter (억원 for KR, USD for US, KRW 24h volume for crypto)
+- `min_market_cap`: Minimum market cap filter (억원 for KR, USD for US; not supported for crypto, warning returned)
 - `max_per`: Maximum P/E ratio filter (not applicable to crypto)
 - `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
 - `max_rsi`: Maximum RSI filter (0-100, filters out overbought)
@@ -115,7 +115,9 @@ Market-specific behavior:
   - Sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
 
 - **Crypto market**: Uses Upbit top traded coins.
-  - `market_cap` uses `acc_trade_price_24h` (24h trading volume in KRW)
+  - Default sort is `trade_amount` and maps to `acc_trade_price_24h` (24h traded value in KRW)
+  - `sort_by="volume"` is not supported for crypto and returns an error (use `trade_amount`)
+  - Crypto response payload uses `trade_amount_24h` and does not include `volume`
   - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
   - RSI calculated using OHLCV data (subset due to API limits: min(len(candidates), limit*3, 150))
 

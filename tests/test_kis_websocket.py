@@ -9,14 +9,23 @@ Tests for KIS WebSocket client implementation including:
 - Graceful shutdown
 """
 
+import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from app.core.config import settings
 from app.services.kis_websocket import (
     APPROVAL_KEY_CACHE_KEY,
     APPROVAL_KEY_TTL_SECONDS,
+    DOMESTIC_EXECUTION_TR_MOCK,
+    DOMESTIC_EXECUTION_TR_REAL,
+    KISSubscriptionAckError,
     KISExecutionWebSocket,
+    OVERSEAS_EXECUTION_TR_REAL,
+    OVERSEAS_EXECUTION_TR_MOCK,
     _cache_approval_key,
     _get_cached_approval_key,
     _is_valid_approval_key,
@@ -118,14 +127,312 @@ class TestKISWebSocketClient:
         assert client.ping_timeout == 10
 
     @pytest.mark.asyncio
-    async def test_mock_mode_bypasses_connection(self, execution_callback):
-        """Mock 모드에서 실제 연결 바이패스 테스트"""
-        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+    async def test_build_websocket_url_real_and_mock(self, execution_callback):
+        real_client = KISExecutionWebSocket(
+            on_execution=execution_callback, mock_mode=False
+        )
+        mock_client = KISExecutionWebSocket(
+            on_execution=execution_callback, mock_mode=True
+        )
 
-        await client.connect_and_subscribe()
+        assert (
+            await real_client._build_websocket_url()
+            == "ws://ops.koreainvestment.com:21000/tryitout"
+        )
+        assert (
+            await mock_client._build_websocket_url()
+            == "ws://ops.koreainvestment.com:31000/tryitout"
+        )
+
+    @pytest.mark.asyncio
+    async def test_connect_internal_omits_ssl_for_ws_scheme(self, execution_callback):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        client.websocket_url = "ws://ops.koreainvestment.com:21000/tryitout"
+
+        mock_websocket = AsyncMock()
+
+        with (
+            patch(
+                "websockets.connect", new=AsyncMock(return_value=mock_websocket)
+            ) as mock_connect,
+            patch.object(client, "_subscribe_execution_tr", new=AsyncMock()),
+        ):
+            await client._connect_and_subscribe_internal()
+
+        assert mock_connect.await_count == 1
+        kwargs = mock_connect.await_args_list[0][1]
+        assert "ssl" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_build_subscription_request_json_structure(self, execution_callback):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        client.approval_key = "approval-key"
+
+        request = client._build_subscription_request("H0STCNI0", "hts-user")
+
+        assert request["header"]["approval_key"] == "approval-key"
+        assert request["header"]["custtype"] == "P"
+        assert request["header"]["tr_type"] == "1"
+        assert request["header"]["content-type"] == "utf-8"
+        assert request["body"]["input"]["tr_id"] == "H0STCNI0"
+        assert request["body"]["input"]["tr_key"] == "hts-user"
+
+    @pytest.mark.asyncio
+    async def test_subscribe_execution_tr_uses_mock_tr_ids(self, execution_callback):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        client.approval_key = "approval-key"
+
+        send_mock = AsyncMock()
+        with (
+            patch.object(client, "_send_subscription_request", send_mock),
+            patch.object(settings, "kis_ws_hts_id", "hts-user"),
+        ):
+            await client._subscribe_execution_tr()
+
+        assert send_mock.await_count == 2
+        first_request, first_tr = send_mock.await_args_list[0][0]
+        second_request, second_tr = send_mock.await_args_list[1][0]
+
+        assert first_tr == DOMESTIC_EXECUTION_TR_MOCK
+        assert second_tr == OVERSEAS_EXECUTION_TR_MOCK
+        assert first_request["body"]["input"]["tr_id"] == DOMESTIC_EXECUTION_TR_MOCK
+        assert second_request["body"]["input"]["tr_id"] == OVERSEAS_EXECUTION_TR_MOCK
+        assert first_request["body"]["input"]["tr_key"] == "hts-user"
+        assert second_request["body"]["input"]["tr_key"] == "hts-user"
+
+    @pytest.mark.asyncio
+    async def test_validate_subscription_ack_stores_key_and_iv(
+        self, execution_callback
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+
+        parsed = {
+            "header": {"tr_id": DOMESTIC_EXECUTION_TR_REAL},
+            "body": {
+                "rt_cd": "0",
+                "msg_cd": "OPSP0000",
+                "msg1": "OK",
+                "output": {"key": "test-key-123456", "iv": "1234567890ABCDEF"},
+            },
+        }
+
+        client._validate_subscription_ack(
+            parsed, expected_tr_id=DOMESTIC_EXECUTION_TR_REAL
+        )
+
+        assert client._encryption_keys_by_tr[DOMESTIC_EXECUTION_TR_REAL] == (
+            "test-key-123456",
+            "1234567890ABCDEF",
+        )
+
+    @pytest.mark.asyncio
+    async def test_validate_subscription_ack_fails_when_rt_cd_not_zero(
+        self, execution_callback
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+
+        parsed = {
+            "header": {"tr_id": DOMESTIC_EXECUTION_TR_REAL},
+            "body": {
+                "rt_cd": "1",
+                "msg_cd": "ERROR",
+                "msg1": "failure",
+            },
+        }
+
+        with pytest.raises(KISSubscriptionAckError, match="Subscription failed"):
+            client._validate_subscription_ack(
+                parsed, expected_tr_id=DOMESTIC_EXECUTION_TR_REAL
+            )
+
+    @pytest.mark.asyncio
+    async def test_reissues_approval_key_on_invalid_approval_msg_code(
+        self, execution_callback
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        client.is_running = True
+        client.reconnect_delay = 0
+        client.max_reconnect_attempts = 3
+        client.approval_key = "cached-key"
+
+        async def connect_fail_then_success() -> None:
+            if not hasattr(connect_fail_then_success, "called"):
+                connect_fail_then_success.called = True
+                raise KISSubscriptionAckError(
+                    tr_id=DOMESTIC_EXECUTION_TR_REAL,
+                    rt_cd="1",
+                    msg_cd="OPSP0011",
+                    msg1="invalid approval : NOT FOUND",
+                )
+            client.is_connected = True
+
+        reissue_mock = AsyncMock(return_value="fresh-key")
+        cache_mock = AsyncMock()
+        close_mock = AsyncMock()
+
+        with (
+            patch.object(
+                client,
+                "_issue_approval_key_if_needed",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                client,
+                "_build_websocket_url",
+                new=AsyncMock(return_value="ws://ops.koreainvestment.com:21000/tryitout"),
+            ),
+            patch.object(
+                client,
+                "_connect_and_subscribe_internal",
+                new=AsyncMock(side_effect=connect_fail_then_success),
+            ),
+            patch.object(client, "_close_websocket_best_effort", close_mock),
+            patch("app.services.kis_websocket._issue_approval_key", reissue_mock),
+            patch("app.services.kis_websocket._cache_approval_key", cache_mock),
+        ):
+            await client.connect_and_subscribe()
 
         assert client.is_connected is True
-        assert client.websocket is None
+        assert client.approval_key == "fresh-key"
+        reissue_mock.assert_awaited_once()
+        cache_mock.assert_awaited_once_with("fresh-key")
+        assert close_mock.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_reissues_approval_key_on_already_in_use_msg_code(
+        self, execution_callback
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        client.is_running = True
+        client.reconnect_delay = 0
+        client.max_reconnect_attempts = 3
+        client.approval_key = "cached-key"
+
+        async def connect_fail_then_success() -> None:
+            if not hasattr(connect_fail_then_success, "called"):
+                connect_fail_then_success.called = True
+                raise KISSubscriptionAckError(
+                    tr_id=DOMESTIC_EXECUTION_TR_REAL,
+                    rt_cd="9",
+                    msg_cd="OPSP8996",
+                    msg1="ALREADY IN USE appkey",
+                )
+            client.is_connected = True
+
+        reissue_mock = AsyncMock(return_value="fresh-key-2")
+        cache_mock = AsyncMock()
+        close_mock = AsyncMock()
+
+        with (
+            patch.object(
+                client,
+                "_issue_approval_key_if_needed",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                client,
+                "_build_websocket_url",
+                new=AsyncMock(return_value="ws://ops.koreainvestment.com:21000/tryitout"),
+            ),
+            patch.object(
+                client,
+                "_connect_and_subscribe_internal",
+                new=AsyncMock(side_effect=connect_fail_then_success),
+            ),
+            patch.object(client, "_close_websocket_best_effort", close_mock),
+            patch("app.services.kis_websocket._issue_approval_key", reissue_mock),
+            patch("app.services.kis_websocket._cache_approval_key", cache_mock),
+        ):
+            await client.connect_and_subscribe()
+
+        assert client.is_connected is True
+        assert client.approval_key == "fresh-key-2"
+        reissue_mock.assert_awaited_once()
+        cache_mock.assert_awaited_once_with("fresh-key-2")
+        assert close_mock.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_connect_and_subscribe_raises_after_max_attempts(
+        self, execution_callback
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        client.is_running = True
+        client.reconnect_delay = 0
+        client.max_reconnect_attempts = 2
+        client.approval_key = "cached-key"
+
+        connect_mock = AsyncMock(
+            side_effect=KISSubscriptionAckError(
+                tr_id=OVERSEAS_EXECUTION_TR_REAL,
+                rt_cd="9",
+                msg_cd="OPSP0001",
+                msg1="fatal ack error",
+            )
+        )
+        close_mock = AsyncMock()
+
+        with (
+            patch.object(
+                client,
+                "_issue_approval_key_if_needed",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                client,
+                "_build_websocket_url",
+                new=AsyncMock(return_value="ws://ops.koreainvestment.com:21000/tryitout"),
+            ),
+            patch.object(client, "_connect_and_subscribe_internal", connect_mock),
+            patch.object(client, "_close_websocket_best_effort", close_mock),
+            patch("app.services.kis_websocket._issue_approval_key", new=AsyncMock()),
+            patch("app.services.kis_websocket._cache_approval_key", new=AsyncMock()),
+        ):
+            with pytest.raises(
+                RuntimeError, match="KIS WebSocket connection not established"
+            ):
+                await client.connect_and_subscribe()
+
+        assert connect_mock.await_count == 2
+        assert close_mock.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_parse_message_decrypts_encrypted_frame(self, execution_callback):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+        key = "0123456789ABCDEF0123456789ABCDEF"
+        iv = "1234567890ABCDEF"
+        client._encryption_keys_by_tr[DOMESTIC_EXECUTION_TR_REAL] = (key, iv)
+
+        plain_payload = "005930^02^A123456789^70000^10^093001"
+        padder = padding.PKCS7(algorithms.AES.block_size).padder()
+        padded_payload = (
+            padder.update(plain_payload.encode("utf-8")) + padder.finalize()
+        )
+        encryptor = Cipher(
+            algorithms.AES(key.encode("utf-8")),
+            modes.CBC(iv.encode("utf-8")),
+        ).encryptor()
+        encrypted_payload = encryptor.update(padded_payload) + encryptor.finalize()
+        encrypted_base64 = base64.b64encode(encrypted_payload).decode("utf-8")
+
+        message = f"1|{DOMESTIC_EXECUTION_TR_REAL}|005930|{encrypted_base64}"
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["symbol"] == "005930"
+        assert result["side"] == "bid"
+        assert result["filled_price"] == 70000
+        assert result["filled_qty"] == 10
+
+    @pytest.mark.asyncio
+    async def test_parse_message_returns_none_when_encryption_key_missing(
+        self, execution_callback
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=False)
+
+        message = f"1|{DOMESTIC_EXECUTION_TR_REAL}|005930|YWJj"
+        result = client._parse_message(message)
+
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_parse_message_domestic_kr(self, execution_callback):
@@ -322,7 +629,13 @@ class TestKISWebSocketClient:
         client.websocket = None
 
         with pytest.raises(RuntimeError, match="WebSocket is not connected"):
-            await client._send_subscription_request("0|H0STCNI0|key|...")
+            await client._send_subscription_request(
+                {
+                    "header": {},
+                    "body": {"input": {"tr_id": DOMESTIC_EXECUTION_TR_REAL}},
+                },
+                DOMESTIC_EXECUTION_TR_REAL,
+            )
 
     @pytest.mark.asyncio
     async def test_listen_without_websocket_raises(self, execution_callback):

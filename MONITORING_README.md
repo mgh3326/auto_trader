@@ -45,8 +45,9 @@ uv run celery -A app.core.celery_app.celery_app worker --loglevel=info
 uv run python -m app.mcp_server.main
 
 # WS
-uv run python upbit_websocket_monitor.py
-uv run python kis_websocket_monitor.py
+uv run python websocket_monitor.py --mode upbit
+uv run python websocket_monitor.py --mode kis
+uv run python websocket_monitor.py --mode both
 ```
 
 ## 운영 확인
@@ -55,7 +56,7 @@ uv run python kis_websocket_monitor.py
 docker compose -f docker-compose.prod.yml logs -f api
 docker compose -f docker-compose.prod.yml logs -f worker
 docker compose -f docker-compose.prod.yml logs -f mcp
-docker compose -f docker-compose.prod.yml logs -f websocket
+docker compose -f docker-compose.prod.yml logs -f upbit_websocket
 docker compose -f docker-compose.prod.yml logs -f kis_websocket
 ```
 

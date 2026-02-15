@@ -95,7 +95,7 @@ class TestUnifiedWebSocketMonitor:
     async def test_start_stops_when_child_task_fails(self, mock_settings: None) -> None:
         from websocket_monitor import UnifiedWebSocketMonitor
 
-        monitor = UnifiedWebSocketMonitor()
+        monitor = UnifiedWebSocketMonitor(mode="both")
 
         async def slow_upbit() -> None:
             await asyncio.sleep(60)
@@ -110,6 +110,54 @@ class TestUnifiedWebSocketMonitor:
             await monitor.start()
 
         assert monitor.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_start_mode_upbit_does_not_start_kis(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+
+        async def fail_upbit() -> None:
+            raise RuntimeError("upbit boom")
+
+        never_called_kis = AsyncMock()
+
+        monitor._start_upbit = fail_upbit  # type: ignore[method-assign]
+        monitor._start_kis = never_called_kis  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="upbit task failed"):
+            await monitor.start()
+
+        never_called_kis.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_mode_kis_does_not_start_upbit(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="kis")
+
+        async def fail_kis() -> None:
+            raise RuntimeError("kis boom")
+
+        never_called_upbit = AsyncMock()
+
+        monitor._start_kis = fail_kis  # type: ignore[method-assign]
+        monitor._start_upbit = never_called_upbit  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="kis task failed"):
+            await monitor.start()
+
+        never_called_upbit.assert_not_awaited()
+
+    def test_invalid_mode_raises_value_error(self, mock_settings: None) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        with pytest.raises(ValueError, match="Invalid mode"):
+            UnifiedWebSocketMonitor(mode="invalid")
 
     @pytest.mark.asyncio
     async def test_stop_cleans_up_resources(self, mock_settings: None) -> None:
