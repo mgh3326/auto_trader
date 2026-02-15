@@ -69,15 +69,11 @@ class TestIsErrorResult:
         assert _is_error_result(result) is True
 
     def test_tool_result_with_nested_is_error(self):
-        result = ToolResult(
-            content=[], structured_content={"result": {"isError": True}}
-        )
+        result = ToolResult(content=[], structured_content={"result": {"isError": True}})
         assert _is_error_result(result) is True
 
     def test_tool_result_with_nested_is_error_false(self):
-        result = ToolResult(
-            content=[], structured_content={"result": {"isError": False}}
-        )
+        result = ToolResult(content=[], structured_content={"result": {"isError": False}})
         assert _is_error_result(result) is False
 
     def test_tool_result_no_error(self):
@@ -113,28 +109,31 @@ class TestMcpSentryTracingMiddleware:
         context.message.arguments = {"action": "buy", "symbol": "AAPL"}
         return context
 
+    @staticmethod
+    def _make_scope(active_span: bool = True):
+        scope = Mock()
+        scope.transaction = None
+        scope.span = Mock() if active_span else None
+        scope.set_transaction_name = Mock()
+        scope.set_tag = Mock()
+        return scope
+
+    @staticmethod
+    def _make_span():
+        span = MagicMock()
+        span.__enter__ = Mock(return_value=span)
+        span.__exit__ = Mock(return_value=False)
+        span.set_tag = Mock()
+        span.set_data = Mock()
+        span.set_status = Mock()
+        return span
+
     @pytest.mark.asyncio
     async def test_on_call_tool_sets_transaction_name(
         self, middleware, mock_context, monkeypatch
     ):
-        mock_span = MagicMock()
-        mock_span.__enter__ = Mock(return_value=mock_span)
-        mock_span.__exit__ = Mock(return_value=False)
-        mock_span.set_tag = Mock()
-        mock_span.set_data = Mock()
-        mock_span.set_status = Mock()
-
-        mock_transaction = Mock()
-        mock_transaction.name = "old-name"
-
-        mock_scope = Mock()
-        mock_scope.transaction = mock_transaction
-
-        mock_result = Mock()
-        mock_result.isError = False
-        mock_result.content = []
-
-        call_next = AsyncMock(return_value=mock_result)
+        mock_scope = self._make_scope(active_span=True)
+        call_next = AsyncMock(return_value=CallToolResult(content=[], isError=False))
 
         monkeypatch.setattr(
             "app.mcp_server.sentry_middleware.sentry_sdk.get_current_scope",
@@ -142,35 +141,23 @@ class TestMcpSentryTracingMiddleware:
         )
         monkeypatch.setattr(
             "app.mcp_server.sentry_middleware.sentry_sdk.start_span",
-            Mock(return_value=mock_span),
+            Mock(return_value=self._make_span()),
         )
 
         await middleware.on_call_tool(mock_context, call_next)
 
-        assert mock_transaction.name == "mcp.place_order"
-        assert mock_transaction.source == "custom"
+        mock_scope.set_transaction_name.assert_called_once_with(
+            "mcp.place_order", source="custom"
+        )
 
     @pytest.mark.asyncio
     async def test_on_call_tool_creates_span_with_tool_name(
         self, middleware, mock_context, monkeypatch
     ):
-        mock_span = MagicMock()
-        mock_span.__enter__ = Mock(return_value=mock_span)
-        mock_span.__exit__ = Mock(return_value=False)
-        mock_span.set_tag = Mock()
-        mock_span.set_data = Mock()
-        mock_span.set_status = Mock()
+        mock_scope = self._make_scope(active_span=True)
+        call_next = AsyncMock(return_value=CallToolResult(content=[], isError=False))
 
-        mock_scope = Mock()
-        mock_scope.transaction = None
-
-        mock_result = Mock()
-        mock_result.isError = False
-        mock_result.content = []
-
-        call_next = AsyncMock(return_value=mock_result)
-
-        mock_start_span = Mock(return_value=mock_span)
+        mock_start_span = Mock(return_value=self._make_span())
 
         monkeypatch.setattr(
             "app.mcp_server.sentry_middleware.sentry_sdk.get_current_scope",
@@ -187,21 +174,9 @@ class TestMcpSentryTracingMiddleware:
 
     @pytest.mark.asyncio
     async def test_on_call_tool_sets_tags(self, middleware, mock_context, monkeypatch):
-        mock_span = MagicMock()
-        mock_span.__enter__ = Mock(return_value=mock_span)
-        mock_span.__exit__ = Mock(return_value=False)
-        mock_span.set_tag = Mock()
-        mock_span.set_data = Mock()
-        mock_span.set_status = Mock()
-
-        mock_scope = Mock()
-        mock_scope.transaction = None
-
-        mock_result = Mock()
-        mock_result.isError = False
-        mock_result.content = []
-
-        call_next = AsyncMock(return_value=mock_result)
+        mock_scope = self._make_scope(active_span=True)
+        mock_span = self._make_span()
+        call_next = AsyncMock(return_value=CallToolResult(content=[], isError=False))
 
         monkeypatch.setattr(
             "app.mcp_server.sentry_middleware.sentry_sdk.get_current_scope",
@@ -217,26 +192,17 @@ class TestMcpSentryTracingMiddleware:
         mock_span.set_tag.assert_any_call("mcp.tool_name", "place_order")
         mock_span.set_tag.assert_any_call("mcp.method", "tools/call")
         mock_span.set_tag.assert_any_call("mcp.action", "buy")
+        mock_scope.set_tag.assert_any_call("mcp.tool_name", "place_order")
+        mock_scope.set_tag.assert_any_call("mcp.method", "tools/call")
+        mock_scope.set_tag.assert_any_call("mcp.action", "buy")
 
     @pytest.mark.asyncio
     async def test_on_call_tool_stores_argument_keys_only(
         self, middleware, mock_context, monkeypatch
     ):
-        mock_span = MagicMock()
-        mock_span.__enter__ = Mock(return_value=mock_span)
-        mock_span.__exit__ = Mock(return_value=False)
-        mock_span.set_tag = Mock()
-        mock_span.set_data = Mock()
-        mock_span.set_status = Mock()
-
-        mock_scope = Mock()
-        mock_scope.transaction = None
-
-        mock_result = Mock()
-        mock_result.isError = False
-        mock_result.content = []
-
-        call_next = AsyncMock(return_value=mock_result)
+        mock_scope = self._make_scope(active_span=True)
+        mock_span = self._make_span()
+        call_next = AsyncMock(return_value=CallToolResult(content=[], isError=False))
 
         monkeypatch.setattr(
             "app.mcp_server.sentry_middleware.sentry_sdk.get_current_scope",
@@ -255,19 +221,9 @@ class TestMcpSentryTracingMiddleware:
     async def test_on_call_tool_sets_ok_status_on_success(
         self, middleware, mock_context, monkeypatch
     ):
-        mock_span = MagicMock()
-        mock_span.__enter__ = Mock(return_value=mock_span)
-        mock_span.__exit__ = Mock(return_value=False)
-        mock_span.set_tag = Mock()
-        mock_span.set_data = Mock()
-        mock_span.set_status = Mock()
-
-        mock_scope = Mock()
-        mock_scope.transaction = None
-
-        mock_result = CallToolResult(content=[], isError=False)
-
-        call_next = AsyncMock(return_value=mock_result)
+        mock_scope = self._make_scope(active_span=True)
+        mock_span = self._make_span()
+        call_next = AsyncMock(return_value=CallToolResult(content=[], isError=False))
 
         monkeypatch.setattr(
             "app.mcp_server.sentry_middleware.sentry_sdk.get_current_scope",
@@ -286,19 +242,9 @@ class TestMcpSentryTracingMiddleware:
     async def test_on_call_tool_sets_error_status_on_error_result(
         self, middleware, mock_context, monkeypatch
     ):
-        mock_span = MagicMock()
-        mock_span.__enter__ = Mock(return_value=mock_span)
-        mock_span.__exit__ = Mock(return_value=False)
-        mock_span.set_tag = Mock()
-        mock_span.set_data = Mock()
-        mock_span.set_status = Mock()
-
-        mock_scope = Mock()
-        mock_scope.transaction = None
-
-        mock_result = CallToolResult(content=[], isError=True)
-
-        call_next = AsyncMock(return_value=mock_result)
+        mock_scope = self._make_scope(active_span=True)
+        mock_span = self._make_span()
+        call_next = AsyncMock(return_value=CallToolResult(content=[], isError=True))
 
         monkeypatch.setattr(
             "app.mcp_server.sentry_middleware.sentry_sdk.get_current_scope",
@@ -317,16 +263,8 @@ class TestMcpSentryTracingMiddleware:
     async def test_on_call_tool_sets_error_status_on_exception(
         self, middleware, mock_context, monkeypatch
     ):
-        mock_span = MagicMock()
-        mock_span.__enter__ = Mock(return_value=mock_span)
-        mock_span.__exit__ = Mock(return_value=False)
-        mock_span.set_tag = Mock()
-        mock_span.set_data = Mock()
-        mock_span.set_status = Mock()
-
-        mock_scope = Mock()
-        mock_scope.transaction = None
-
+        mock_scope = self._make_scope(active_span=True)
+        mock_span = self._make_span()
         call_next = AsyncMock(side_effect=ValueError("Tool failed"))
 
         monkeypatch.setattr(
@@ -351,21 +289,9 @@ class TestMcpSentryTracingMiddleware:
         context.message.name = "get_quote"
         context.message.arguments = {"symbol": "AAPL"}
 
-        mock_span = MagicMock()
-        mock_span.__enter__ = Mock(return_value=mock_span)
-        mock_span.__exit__ = Mock(return_value=False)
-        mock_span.set_tag = Mock()
-        mock_span.set_data = Mock()
-        mock_span.set_status = Mock()
-
-        mock_scope = Mock()
-        mock_scope.transaction = None
-
-        mock_result = Mock()
-        mock_result.isError = False
-        mock_result.content = []
-
-        call_next = AsyncMock(return_value=mock_result)
+        mock_scope = self._make_scope(active_span=True)
+        mock_span = self._make_span()
+        call_next = AsyncMock(return_value=CallToolResult(content=[], isError=False))
 
         mock_start_span = Mock(return_value=mock_span)
 
@@ -383,3 +309,39 @@ class TestMcpSentryTracingMiddleware:
         mock_start_span.assert_called_once_with(op="mcp.tool", name="get_quote")
         calls = [str(call) for call in mock_span.set_tag.call_args_list]
         assert not any("mcp.action" in call for call in calls)
+
+    @pytest.mark.asyncio
+    async def test_on_call_tool_starts_transaction_when_no_active_span(
+        self, middleware, mock_context, monkeypatch
+    ):
+        mock_scope = self._make_scope(active_span=False)
+        mock_span = self._make_span()
+
+        mock_transaction = MagicMock()
+        mock_transaction.__enter__ = Mock(return_value=mock_transaction)
+        mock_transaction.__exit__ = Mock(return_value=False)
+        mock_transaction.set_tag = Mock()
+        mock_transaction.set_status = Mock()
+
+        call_next = AsyncMock(return_value=CallToolResult(content=[], isError=False))
+        start_transaction = Mock(return_value=mock_transaction)
+
+        monkeypatch.setattr(
+            "app.mcp_server.sentry_middleware.sentry_sdk.get_current_scope",
+            Mock(return_value=mock_scope),
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.sentry_middleware.sentry_sdk.start_span",
+            Mock(return_value=mock_span),
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.sentry_middleware.sentry_sdk.start_transaction",
+            start_transaction,
+        )
+
+        await middleware.on_call_tool(mock_context, call_next)
+
+        start_transaction.assert_called_once_with(
+            name="mcp.place_order", op="mcp.request", source="custom"
+        )
+        mock_transaction.set_status.assert_called_once_with("ok")

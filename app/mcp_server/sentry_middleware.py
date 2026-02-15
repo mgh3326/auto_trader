@@ -67,15 +67,57 @@ class McpSentryTracingMiddleware(Middleware):
         arguments = getattr(message, "arguments", None)
         action = _extract_action(arguments)
         span_name = f"{tool_name}:{action}" if action else tool_name
+        transaction_name = f"mcp.{tool_name}"
 
         scope = sentry_sdk.get_current_scope()
-        transaction = scope.transaction
+        scope.set_transaction_name(transaction_name, source="custom")
+        scope.set_tag("mcp.tool_name", tool_name)
+        scope.set_tag("mcp.method", "tools/call")
+        if action:
+            scope.set_tag("mcp.action", action)
 
-        if transaction:
-            transaction.name = f"mcp.{tool_name}"
-            transaction.source = "custom"
+        # FastMCP tool execution can happen without an active Sentry span context.
+        # In that case create a transaction so child DB/http spans are captured.
+        active_span = scope.span
+        if active_span is None:
+            with sentry_sdk.start_transaction(
+                name=transaction_name,
+                op="mcp.request",
+                source="custom",
+            ) as transaction:
+                transaction.set_tag("mcp.tool_name", tool_name)
+                transaction.set_tag("mcp.method", "tools/call")
+                if action:
+                    transaction.set_tag("mcp.action", action)
+                return await self._run_tool_span(
+                    context=context,
+                    call_next=call_next,
+                    span_name=span_name,
+                    arguments=arguments,
+                    transaction=transaction,
+                )
 
+        return await self._run_tool_span(
+            context=context,
+            call_next=call_next,
+            span_name=span_name,
+            arguments=arguments,
+            transaction=None,
+        )
+
+    async def _run_tool_span(
+        self,
+        context: MiddlewareContext[Any],
+        call_next: Callable[[MiddlewareContext[Any]], Awaitable[ToolResultType]],
+        span_name: str,
+        arguments: Any,
+        transaction: Any | None,
+    ) -> ToolResultType:
         with sentry_sdk.start_span(op="mcp.tool", name=span_name) as span:
+            message = context.message
+            tool_name = getattr(message, "name", "unknown")
+            action = _extract_action(arguments if isinstance(arguments, dict) else None)
+
             span.set_tag("mcp.tool_name", tool_name)
             span.set_tag("mcp.method", "tools/call")
             if action:
@@ -86,9 +128,15 @@ class McpSentryTracingMiddleware(Middleware):
 
             try:
                 result = await call_next(context)
-                span.set_status("internal_error" if _is_error_result(result) else "ok")
+                is_error = _is_error_result(result)
+                status = "internal_error" if is_error else "ok"
+                span.set_status(status)
+                if transaction is not None:
+                    transaction.set_status(status)
                 return result
             except Exception as exc:
                 span.set_status("internal_error")
                 span.set_data("error_type", type(exc).__name__)
+                if transaction is not None:
+                    transaction.set_status("internal_error")
                 raise
