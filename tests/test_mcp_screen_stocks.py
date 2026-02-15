@@ -4,6 +4,7 @@ import logging
 
 import pytest
 
+from app.core.async_rate_limiter import RateLimitExceededError
 from app.mcp_server.tooling import analysis_screen_core
 from app.mcp_server.tooling.registry import register_all_tools
 from app.services import naver_finance
@@ -821,6 +822,108 @@ class TestScreenStocksRsiLogging:
         assert any("RuntimeError" in record.message for record in caplog.records)
 
     @pytest.mark.asyncio
+    async def test_kr_rsi_rate_limited_diagnostic_counts(self, monkeypatch):
+        """KR RSI enrichment should surface rate-limited diagnostics."""
+
+        async def mock_fetch_stock_all_cached(market):
+            if market == "STK":
+                return [
+                    {
+                        "code": "KR7005930003",
+                        "short_code": "005930",
+                        "name": "삼성전자",
+                        "close": 80000.0,
+                        "volume": 1000,
+                        "market_cap": 1_000_000,
+                    }
+                ]
+            return []
+
+        async def mock_fetch_valuation_all_cached(market):
+            return {}
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            raise RateLimitExceededError("KIS rate limit retries exhausted")
+
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "fetch_valuation_all_cached",
+            mock_fetch_valuation_all_cached,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kospi",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        diagnostics = result["meta"]["rsi_enrichment"]
+        assert diagnostics["attempted"] == 1
+        assert diagnostics["succeeded"] == 0
+        assert diagnostics["rate_limited"] == 1
+        assert diagnostics["failed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_crypto_rsi_rate_limited_diagnostic_counts(self, monkeypatch):
+        """Crypto RSI enrichment should surface rate-limited diagnostics."""
+
+        async def mock_fetch_top_traded_coins(fiat):
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_volume_24h": 123.0,
+                    "acc_trade_price_24h": 456.0,
+                }
+            ]
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            raise RateLimitExceededError("Upbit rate limit retries exhausted")
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        diagnostics = result["meta"]["rsi_enrichment"]
+        assert diagnostics["attempted"] == 1
+        assert diagnostics["succeeded"] == 0
+        assert diagnostics["rate_limited"] == 1
+        assert diagnostics["failed"] == 0
+
+    @pytest.mark.asyncio
     async def test_crypto_rsi_gather_exception_is_logged(self, monkeypatch, caplog):
         """Crypto RSI gather-level exception should be logged and skipped."""
 
@@ -958,10 +1061,10 @@ class TestScreenStocksFilters:
         assert result["filters_applied"]["min_market_cap"] == 300000000000
 
     @pytest.mark.asyncio
-    async def test_kr_min_market_cap_only_no_advanced_queries(
+    async def test_kr_min_market_cap_only_no_naver_queries(
         self, mock_krx_stocks, monkeypatch
     ):
-        """Test KR market with min_market_cap only - no advanced queries called."""
+        """Test KR market with min_market_cap only - Naver Finance not called, but RSI enrichment still runs."""
 
         async def mock_fetch_stock_all_cached(market):
             return mock_krx_stocks
@@ -970,26 +1073,18 @@ class TestScreenStocksFilters:
             analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
-        # Track whether advanced queries are called
+        # Track whether Naver Finance valuation queries are called (they shouldn't be)
         naver_finance_called = False
-        ohlcv_fetch_called = False
 
         async def mock_fetch_valuation(code):
             nonlocal naver_finance_called
             naver_finance_called = True
             return {}
 
-        async def mock_fetch_ohlcv(symbol, market_type, count):
-            nonlocal ohlcv_fetch_called
-            ohlcv_fetch_called = True
-            import pandas as pd
-
-            return pd.DataFrame()
-
         monkeypatch.setattr(naver_finance, "fetch_valuation", mock_fetch_valuation)
-        monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
-        )
+
+        # RSI enrichment IS expected to run even with min_market_cap only
+        # (policy: RSI auto-enrichment is maintained)
 
         tools = build_tools()
 
@@ -1008,12 +1103,9 @@ class TestScreenStocksFilters:
 
         assert result is not None
         assert result["filters_applied"]["min_market_cap"] == 100000
-        # Verify advanced queries were NOT called
+        # Verify Naver Finance was NOT called (uses KRX batch valuation instead)
         assert not naver_finance_called, (
             "Naver Finance should not be called for min_market_cap only"
-        )
-        assert not ohlcv_fetch_called, (
-            "OHLCV fetch should not be called for min_market_cap only"
         )
 
 
