@@ -381,11 +381,10 @@ def value_for_minimum_filter(position: dict[str, Any]) -> float:
     if evaluation_amount is not None:
         return to_float(evaluation_amount, default=0.0)
 
-    if position.get("current_price") is None:
-        return float("inf")
-
     quantity = to_float(position.get("quantity"))
     current_price = to_float(position.get("current_price"))
+    if current_price <= 0:
+        return 0.0
     return quantity * current_price
 
 
