@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 DROP_THRESHOLD = -0.30
 MARKET_PANIC = -0.10
-CRYPTO_TOP_BY_VOLUME = 30
+CRYPTO_TOP_BY_VOLUME = 100
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 
 
