@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from app.mcp_server.tooling import analysis_screen_core
 from app.mcp_server.tooling.analysis_crypto_score import (
     BEARISH_NORMAL,
     BEARISH_STRONG,
@@ -42,6 +43,49 @@ def build_tools() -> dict[str, object]:
     mcp = DummyMCP()
     register_all_tools(mcp)
     return mcp.tools
+
+
+@pytest.fixture(autouse=True)
+def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
+    async def mock_fetch_all_market_codes(
+        fiat: str | None = "KRW",
+        include_details: bool = False,
+    ):
+        if include_details:
+            return []
+        if fiat is None:
+            return ["KRW-BTC", "KRW-ETH"]
+        return ["KRW-BTC", "KRW-ETH"]
+
+    async def mock_market_cap_cache_get():
+        return {
+            "data": {},
+            "cached": True,
+            "age_seconds": 0.0,
+            "stale": False,
+            "error": None,
+        }
+
+    async def mock_fetch_ohlcv_for_indicators(
+        symbol: str, market_type: str, count: int
+    ):
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_all_market_codes",
+        mock_fetch_all_market_codes,
+    )
+    monkeypatch.setattr(
+        analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+        "get",
+        mock_market_cap_cache_get,
+    )
+    monkeypatch.setattr(
+        analysis_screen_core,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv_for_indicators,
+    )
 
 
 class TestCandleCoefficient:
@@ -402,7 +446,7 @@ class TestScreenStocksCryptoScore:
         ]
 
     @pytest.mark.asyncio
-    async def test_crypto_screen_returns_score_field(
+    async def test_crypto_screen_removes_score_field(
         self, mock_upbit_coins, monkeypatch
     ):
         async def mock_fetch_top_traded_coins(fiat):
@@ -424,8 +468,6 @@ class TestScreenStocksCryptoScore:
         monkeypatch.setattr(
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
-        from app.mcp_server.tooling import analysis_screen_core
-
         monkeypatch.setattr(
             analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
@@ -446,9 +488,8 @@ class TestScreenStocksCryptoScore:
 
         assert result["returned_count"] > 0
         for item in result["results"]:
-            assert "score" in item
-            assert item["score"] is not None
-            assert 0.0 <= item["score"] <= 100.0
+            assert "score" not in item
+            assert "rsi_bucket" in item
 
 
 class TestRsiSortingNoneValues:
@@ -570,7 +611,7 @@ class TestRecommendStocksCryptoScore:
         ]
 
     @pytest.mark.asyncio
-    async def test_crypto_recommend_returns_numeric_score(
+    async def test_crypto_recommend_omits_score_field(
         self, mock_upbit_coins, monkeypatch
     ):
         from app.mcp_server.tooling import (
@@ -623,9 +664,9 @@ class TestRecommendStocksCryptoScore:
 
         assert result["recommendations"]
         for rec in result["recommendations"]:
-            assert rec["score"] is not None
-            assert isinstance(rec["score"], (int, float))
-            assert 0.0 <= rec["score"] <= 100.0
+            assert "score" not in rec
+            assert isinstance(rec["quantity"], float)
+            assert rec["quantity"] > 0
 
     @pytest.mark.asyncio
     async def test_crypto_recommend_ohlcv_calls_limited_to_30(

@@ -37,13 +37,13 @@ from app.mcp_server.tooling.shared import (
 CRYPTO_PREFILTER_LIMIT = 30
 
 
-def _build_crypto_composite_reason(item: dict[str, Any]) -> str:
-    score = _to_float(item.get("score"), default=0.0)
+def _build_crypto_rsi_reason(item: dict[str, Any]) -> str:
     rsi = item.get("rsi_14")
     candle_type = item.get("candle_type", "")
     volume_ratio = item.get("volume_ratio")
+    rsi_bucket = item.get("rsi_bucket")
 
-    parts = [f"Composite Score {score:.1f}"]
+    parts: list[str] = []
 
     if rsi is not None:
         if rsi < 30:
@@ -58,12 +58,17 @@ def _build_crypto_composite_reason(item: dict[str, Any]) -> str:
             rsi_label = "중립"
         parts.append(f"RSI {rsi:.1f}({rsi_label})")
 
+    if rsi_bucket is not None:
+        parts.append(f"RSI bucket {rsi_bucket}")
+
     if candle_type and candle_type != "flat":
         parts.append(f"캔들 {candle_type}")
 
     if volume_ratio is not None and volume_ratio > 1.0:
         parts.append(f"거래량 {volume_ratio:.1f}배")
 
+    if not parts:
+        return "RSI 기반 정렬"
     return " | ".join(parts)
 
 
@@ -270,6 +275,18 @@ def _normalize_candidate(item: dict[str, Any], market: str) -> dict[str, Any]:
         or item.get("original_market")
         or item.get("market", "")
     )
+    is_crypto_market = market == "crypto"
+    market_cap = (
+        _to_optional_float(item.get("market_cap"))
+        if is_crypto_market
+        else _to_float(item.get("market_cap") or 0)
+    )
+    volume_24h = _to_optional_float(
+        item.get("volume_24h") or item.get("acc_trade_volume_24h") or item.get("volume")
+    )
+    parsed_rsi_bucket = _to_int(item.get("rsi_bucket"))
+    rsi_bucket = parsed_rsi_bucket if parsed_rsi_bucket is not None else 999
+
     return {
         "symbol": symbol,
         "name": item.get("name")
@@ -281,14 +298,23 @@ def _normalize_candidate(item: dict[str, Any], market: str) -> dict[str, Any]:
         ),
         "change_rate": _to_float(item.get("change_rate") or 0),
         "volume": _to_int(item.get("volume") or 0),
-        "market_cap": _to_float(item.get("market_cap") or 0),
+        "market_cap": market_cap,
         "trade_amount_24h": _to_float(
             item.get("trade_amount_24h") or item.get("acc_trade_price_24h") or 0
         ),
+        "volume_24h": volume_24h,
+        "volume_ratio": _to_optional_float(item.get("volume_ratio")),
+        "candle_type": item.get("candle_type"),
+        "adx": _to_optional_float(item.get("adx")),
+        "plus_di": _to_optional_float(item.get("plus_di")),
+        "minus_di": _to_optional_float(item.get("minus_di")),
         "per": _to_optional_float(item.get("per")),
         "pbr": _to_optional_float(item.get("pbr")),
         "dividend_yield": _to_optional_float(item.get("dividend_yield")),
         "rsi_14": _to_optional_float(item.get("rsi") or item.get("rsi_14")),
+        "rsi_bucket": rsi_bucket,
+        "market_warning": item.get("market_warning"),
+        "market_cap_rank": _to_int(item.get("market_cap_rank")),
         "market": market,
     }
 
@@ -441,38 +467,24 @@ async def recommend_stocks_impl(
         screen_category = sectors[0] if sectors else None
 
         if normalized_market == "crypto":
-            requested_sort_by = str(sort_by or "").strip().lower()
             if screen_category is not None:
                 warnings.append(
                     "crypto market does not support sectors/category filter; ignored."
                 )
             screen_asset_type = None
             screen_category = None
-            if max_per is not None:
+            if validated_strategy != "oversold":
                 warnings.append(
-                    "crypto market does not support max_per filter; ignored."
+                    f"crypto market에서 strategy='{validated_strategy}'는 무시됩니다. "
+                    "RSI ascending 정렬 고정."
                 )
-                max_per = None
-            if max_pbr is not None:
-                warnings.append(
-                    "crypto market does not support max_pbr filter; ignored."
-                )
-                max_pbr = None
-            if min_dividend_yield is not None:
-                warnings.append(
-                    "crypto market does not support min_dividend_yield filter; ignored."
-                )
-                min_dividend_yield = None
-            if requested_sort_by == "dividend_yield":
-                warnings.append(
-                    "crypto market does not support dividend_yield sorting; fallback to trade_amount."
-                )
-            elif requested_sort_by and requested_sort_by != "trade_amount":
-                warnings.append(
-                    "crypto market enforces sort_by='trade_amount'; "
-                    f"requested sort_by='{requested_sort_by}' ignored."
-                )
-            sort_by = "trade_amount"
+            sort_by = "rsi"
+            sort_order = "asc"
+            min_market_cap = None
+            max_per = None
+            max_pbr = None
+            min_dividend_yield = None
+            max_rsi = None
 
         if normalized_market == "us" and max_pbr is not None:
             warnings.append(
@@ -554,10 +566,6 @@ async def recommend_stocks_impl(
                 warnings.append(f"US 후보 수집 실패: {top_error}")
                 raw_candidates = []
         else:
-            warnings.append(
-                "crypto market uses RSI-based equal-weight allocation; "
-                "strategy scoring weights are ignored."
-            )
             screen_result = await screen_crypto_fn(
                 market="crypto",
                 asset_type=screen_asset_type,
@@ -566,10 +574,10 @@ async def recommend_stocks_impl(
                 max_per=None,
                 min_dividend_yield=None,
                 max_rsi=None,
-                sort_by=sort_by,
-                sort_order="desc",
+                sort_by="rsi",
+                sort_order="asc",
                 limit=CRYPTO_PREFILTER_LIMIT,
-                enrich_rsi=False,
+                enrich_rsi=True,
             )
             screen_error_raw = screen_result.get("error")
             if screen_error_raw is not None:
@@ -594,6 +602,10 @@ async def recommend_stocks_impl(
                     ],
                     "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
                 }
+
+            screen_warnings = screen_result.get("warnings")
+            if isinstance(screen_warnings, list):
+                warnings.extend(str(w) for w in screen_warnings if w)
 
             crypto_candidates = [
                 _normalize_candidate(c, "crypto")
@@ -639,57 +651,59 @@ async def recommend_stocks_impl(
                 if c.get("symbol", "").upper() not in crypto_exclude_set
             ]
 
-            crypto_candidates = await _enrich_crypto_composite_metrics(
-                crypto_candidates, warnings
-            )
+            eligible_candidates = [
+                item
+                for item in crypto_candidates
+                if _to_float(item.get("price"), default=0.0) > 0
+            ]
+            diagnostics["post_filter_candidates"] = len(eligible_candidates)
+            diagnostics["strict_candidates"] = len(eligible_candidates)
 
-            from app.mcp_server.tooling.analysis_crypto_score import (
-                calculate_crypto_composite_score,
-            )
+            picks = eligible_candidates[:max_positions]
+            if not picks:
+                warnings.append("스크리닝 결과가 없어 추천 가능한 종목이 없습니다.")
+                return {
+                    "recommendations": [],
+                    "total_amount": 0,
+                    "remaining_budget": round(budget, 2),
+                    "strategy": validated_strategy,
+                    "strategy_description": get_strategy_description(
+                        validated_strategy
+                    ),
+                    "candidates_screened": diagnostics["raw_candidates"],
+                    "diagnostics": diagnostics,
+                    "fallback_applied": False,
+                    "warnings": warnings,
+                    "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+                }
 
-            for c in crypto_candidates:
-                if c.get("score") is None:
-                    c["score"] = calculate_crypto_composite_score(
-                        rsi=c.get("rsi_14"),
-                        volume_24h=c.get("volume_24h"),
-                        avg_volume_20d=None,
-                        candle_coef=0.5,
-                        adx=c.get("adx"),
-                        plus_di=c.get("plus_di"),
-                        minus_di=c.get("minus_di"),
-                    )
-
-            crypto_candidates.sort(
-                key=lambda x: _to_float(x.get("score"), default=0.0),
-                reverse=True,
-            )
-
-            if max_rsi is not None:
-                crypto_candidates = [
-                    c
-                    for c in crypto_candidates
-                    if c.get("rsi_14") is not None and c["rsi_14"] <= max_rsi
-                ]
-
-            allocated, remaining_budget = _allocate_budget_equal(
-                crypto_candidates, budget, max_positions
-            )
+            per_coin_budget = budget / len(picks)
 
             recommendations = []
-            for item in allocated:
-                reason = _build_crypto_composite_reason(item)
+            for item in picks:
+                price = _to_float(item.get("price"), default=0.0)
+                if price <= 0:
+                    continue
+                quantity = per_coin_budget / price
+                reason = _build_crypto_rsi_reason(item)
                 recommendations.append(
                     {
                         "symbol": item.get("symbol"),
                         "name": item.get("name"),
-                        "price": item.get("price"),
-                        "quantity": item.get("quantity"),
-                        "amount": item.get("amount"),
-                        "score": _to_float(item.get("score"), default=0.0),
+                        "price": price,
+                        "quantity": round(quantity, 12),
+                        "budget": round(per_coin_budget, 2),
+                        "amount": round(per_coin_budget, 2),
                         "reason": reason,
                         "rsi_14": item.get("rsi_14"),
+                        "rsi": item.get("rsi_14"),
+                        "rsi_bucket": item.get("rsi_bucket"),
                         "per": None,
                         "change_rate": item.get("change_rate"),
+                        "trade_amount_24h": item.get("trade_amount_24h"),
+                        "market_warning": item.get("market_warning"),
+                        "market_cap": item.get("market_cap"),
+                        "market_cap_rank": item.get("market_cap_rank"),
                         "volume_24h": item.get("volume_24h"),
                         "volume_ratio": item.get("volume_ratio"),
                         "candle_type": item.get("candle_type"),
@@ -700,8 +714,7 @@ async def recommend_stocks_impl(
                 )
 
             total_amount = sum(r.get("amount", 0) for r in recommendations)
-            diagnostics["post_filter_candidates"] = len(crypto_candidates)
-            diagnostics["strict_candidates"] = len(crypto_candidates)
+            remaining_budget = round(max(0.0, budget - total_amount), 2)
 
             return {
                 "recommendations": recommendations,

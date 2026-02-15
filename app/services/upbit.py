@@ -396,22 +396,36 @@ async def fetch_fundamental_info(market: str = "KRW-BTC") -> dict:
     return {k: v for k, v in fundamental_data.items() if v is not None}
 
 
-async def fetch_all_market_codes(fiat: str | None = "KRW") -> list[str]:
+async def fetch_all_market_codes(
+    fiat: str | None = "KRW",
+    include_details: bool = False,
+) -> list[str] | list[dict[str, Any]]:
     """
     업비트에서 거래 가능한 모든 마켓 코드를 조회합니다.
     :param fiat: 조회할 화폐 시장 (예: "KRW", "USDT"). None이면 전체 시장 반환
-    :return: 마켓 코드 리스트 (예: ["KRW-BTC", "KRW-ETH", ...])
+    :param include_details: True면 상세 정보(dict) 리스트를 반환
+    :return: 마켓 코드 리스트 또는 상세 정보 리스트
     """
     url = f"{UPBIT_REST}/market/all"
-    params = {"isDetails": "false"}
+    params = {"isDetails": "true" if include_details else "false"}
     all_markets = await _request_json(url, params)
 
     if fiat is None:
+        if include_details:
+            return all_markets
         return [m["market"] for m in all_markets]
 
     fiat_prefix = str(fiat).upper()
+    filtered = [m for m in all_markets if m["market"].startswith(fiat_prefix)]
+    if include_details:
+        return filtered
     # 지정된 fiat 시장의 마켓 코드만 필터링하여 반환
-    return [m["market"] for m in all_markets if m["market"].startswith(fiat_prefix)]
+    return [m["market"] for m in filtered]
+
+
+async def fetch_all_market_details(fiat: str | None = "KRW") -> list[dict[str, Any]]:
+    markets = await fetch_all_market_codes(fiat=fiat, include_details=True)
+    return [m for m in markets if isinstance(m, dict)]
 
 
 async def fetch_top_traded_coins(fiat: str = "KRW") -> list[dict]:

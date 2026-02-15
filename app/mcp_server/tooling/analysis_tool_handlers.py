@@ -439,6 +439,7 @@ async def screen_stocks_impl(
     limit: int = 20,
 ) -> dict[str, Any]:
     sort_by_specified = sort_by is not None
+    strategy_applied = False
 
     strategy_presets: dict[str, dict[str, Any]] = {
         "oversold": {"max_rsi": 30.0, "sort_by": "volume", "sort_order": "desc"},
@@ -451,6 +452,7 @@ async def screen_stocks_impl(
             valid = ", ".join(sorted(strategy_presets.keys()))
             raise ValueError(f"screen strategy must be one of: {valid}")
         preset = strategy_presets[strategy_key]
+        strategy_applied = True
         sort_by = preset.get("sort_by", sort_by)
         sort_order = preset.get("sort_order", sort_order)
         if max_rsi is None and "max_rsi" in preset:
@@ -459,13 +461,15 @@ async def screen_stocks_impl(
     normalized_market = _normalize_screen_market(market)
     normalized_asset_type = _normalize_asset_type(asset_type)
     normalized_sort_by = _normalize_sort_by(sort_by)
-    if (
-        normalized_market == "crypto"
-        and not sort_by_specified
-        and normalized_sort_by == "volume"
-    ):
-        normalized_sort_by = "trade_amount"
     normalized_sort_order = _normalize_sort_order(sort_order)
+
+    if normalized_market == "crypto" and not sort_by_specified:
+        if strategy_applied:
+            if normalized_sort_by == "volume":
+                normalized_sort_by = "trade_amount"
+        else:
+            normalized_sort_by = "rsi"
+            normalized_sort_order = "asc"
 
     if limit < 1:
         raise ValueError("limit must be at least 1")
