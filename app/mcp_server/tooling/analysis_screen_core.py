@@ -10,6 +10,10 @@ from typing import Any
 import yfinance as yf
 
 from app.core.async_rate_limiter import RateLimitExceededError
+from app.mcp_server.tooling.analysis_crypto_score import (
+    calculate_crypto_composite_score,
+    calculate_crypto_metrics_from_ohlcv,
+)
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_rsi,
     _fetch_ohlcv_for_indicators,
@@ -90,6 +94,9 @@ def _validate_screen_filters(
             raise ValueError(
                 "Crypto market does not support sorting by 'dividend_yield'"
             )
+    else:
+        if sort_by == "rsi":
+            raise ValueError("RSI sorting is only supported for crypto market")
 
     if market in ("kr", "kospi", "kosdaq") and asset_type == "etn":
         raise ValueError(
@@ -162,15 +169,18 @@ def _sort_and_limit(
         "market_cap": "market_cap",
         "change_rate": "change_rate",
         "dividend_yield": "dividend_yield",
+        "rsi": "rsi",  # crypto only
+        "score": "score",
     }
     field = sort_field_map.get(sort_by, "volume")
     reverse = sort_order == "desc"
 
     def sort_value(item: dict[str, Any]) -> float:
         value = item.get(field)
-        # Crypto candidates do not always have market cap; use 24h trade amount fallback.
         if field == "market_cap" and (value is None or value == 0):
             value = item.get("trade_amount_24h")
+        if field in {"rsi", "score"} and value is None:
+            return -999.0 if reverse else 999.0
         return float(value or 0)
 
     results.sort(key=sort_value, reverse=reverse)
@@ -218,6 +228,7 @@ def _build_screen_response(
     filters_applied: dict[str, Any],
     market: str,
     rsi_enrichment: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the final screening response."""
     diagnostics = _empty_rsi_enrichment_diagnostics()
@@ -236,7 +247,7 @@ def _build_screen_response(
             }
         )
 
-    return {
+    response: dict[str, Any] = {
         "results": results,
         "total_count": total_count,
         "returned_count": len(results),
@@ -245,6 +256,11 @@ def _build_screen_response(
         "meta": {"rsi_enrichment": diagnostics},
         "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
     }
+
+    if warnings:
+        response["warnings"] = warnings
+
+    return response
 
 
 async def _screen_kr(
@@ -584,9 +600,9 @@ async def _screen_us(
         if min_dividend_yield_input is not None:
             filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
         if min_dividend_yield_normalized is not None:
-            filters_applied[
-                "min_dividend_yield_normalized"
-            ] = min_dividend_yield_normalized
+            filters_applied["min_dividend_yield_normalized"] = (
+                min_dividend_yield_normalized
+            )
 
     try:
         from yfinance.screener import EquityQuery
@@ -776,7 +792,8 @@ async def _screen_crypto(
         min_dividend_yield_normalized,
     ) = _normalize_dividend_yield_threshold(min_dividend_yield)
 
-    filters_applied = {
+    warnings: list[str] = []
+    filters_applied: dict[str, Any] = {
         "market": market,
         "asset_type": asset_type,
         "category": category,
@@ -797,35 +814,46 @@ async def _screen_crypto(
         if "volume" not in item:
             item["volume"] = item.get("acc_trade_volume_24h", 0)
 
-        # Upbit ticker does not provide market cap; keep it explicit and expose 24h trade amount.
         item["trade_amount_24h"] = item.get("trade_amount_24h") or item.get(
             "acc_trade_price_24h", 0
         )
         if "market_cap" not in item:
             item["market_cap"] = None
 
-    min_trade_amount_24h = min_market_cap
-    filtered_non_rsi = candidates
-    if min_trade_amount_24h is not None:
-        filtered_non_rsi = [
-            item
-            for item in filtered_non_rsi
-            if (item.get("trade_amount_24h") or 0) >= min_trade_amount_24h
-        ]
+        item["rsi"] = item.get("rsi")
+        item["volume_24h"] = float(
+            item.get("acc_trade_volume_24h") or item.get("volume") or 0.0
+        )
+        item["volume_ratio"] = item.get("volume_ratio")
+        item["candle_type"] = item.get("candle_type") or "flat"
+        item["adx"] = item.get("adx")
+        item["plus_di"] = item.get("plus_di")
+        item["minus_di"] = item.get("minus_di")
+        item["score"] = calculate_crypto_composite_score(
+            rsi=item.get("rsi"),
+            volume_24h=item["volume_24h"],
+            avg_volume_20d=None,
+            candle_coef=0.5,
+            adx=item.get("adx"),
+            plus_di=item.get("plus_di"),
+            minus_di=item.get("minus_di"),
+        )
+
+    if min_market_cap is not None:
+        warnings.append(
+            "min_market_cap filter is not supported for crypto market; ignored"
+        )
 
     sorted_candidates = _sort_and_limit(
-        filtered_non_rsi,
-        sort_by,
+        candidates,
+        "volume" if sort_by in {"rsi", "score"} else sort_by,
         sort_order,
-        len(filtered_non_rsi),
+        len(candidates),
     )
 
     rsi_enrichment = _empty_rsi_enrichment_diagnostics()
-    rsi_subset_limit = (
-        min(len(sorted_candidates), limit)
-        if max_rsi is None
-        else min(len(sorted_candidates), limit * 3, 150)
-    )
+    rsi_subset_limit = min(max(limit * 3, 30), 60)
+    rsi_subset_limit = min(rsi_subset_limit, len(sorted_candidates))
     rsi_subset = sorted_candidates[:rsi_subset_limit]
 
     if enrich_rsi and rsi_subset:
@@ -865,42 +893,39 @@ async def _screen_crypto(
                         "[RSI-Crypto] Got %d candles for %s", candle_count, symbol
                     )
 
-                    if df is None or df.empty or "close" not in df.columns:
+                    if df is None or df.empty:
                         logger.warning(
-                            "[RSI-Crypto] Missing OHLCV close data for %s (columns=%s)",
-                            symbol,
-                            list(df.columns) if df is not None else [],
-                        )
-                        statuses[index] = "error"
-                        errors[index] = "Missing OHLCV close data"
-                        return item_copy
-
-                    if candle_count < 14:
-                        logger.warning(
-                            "[RSI-Crypto] Insufficient candles (%d) for %s",
-                            candle_count,
+                            "[RSI-Crypto] Missing OHLCV data for %s",
                             symbol,
                         )
                         statuses[index] = "error"
-                        errors[index] = f"Insufficient candles ({candle_count})"
+                        errors[index] = "Missing OHLCV data"
                         return item_copy
 
-                    logger.debug("[RSI-Crypto] Calculating RSI for %s", symbol)
-                    rsi_result = _calculate_rsi(df["close"])
-                    rsi_value = rsi_result.get("14") if rsi_result else None
-                    if rsi_value is None:
+                    metrics = calculate_crypto_metrics_from_ohlcv(df)
+                    item_copy["rsi"] = metrics.get("rsi")
+                    item_copy["score"] = metrics.get("score")
+                    item_copy["volume_24h"] = metrics.get("volume_24h")
+                    item_copy["volume_ratio"] = metrics.get("volume_ratio")
+                    item_copy["candle_type"] = metrics.get("candle_type")
+                    item_copy["adx"] = metrics.get("adx")
+                    item_copy["plus_di"] = metrics.get("plus_di")
+                    item_copy["minus_di"] = metrics.get("minus_di")
+
+                    if metrics.get("rsi") is None:
                         logger.warning(
                             "[RSI-Crypto] RSI calculation returned None for %s", symbol
                         )
                         statuses[index] = "error"
                         errors[index] = "RSI calculation returned None"
-                        return item_copy
-
-                    item_copy["rsi"] = rsi_value
-                    statuses[index] = "success"
-                    logger.info(
-                        "[RSI-Crypto] ✅ Success: %s RSI=%.2f", symbol, rsi_value
-                    )
+                    else:
+                        statuses[index] = "success"
+                        logger.info(
+                            "[RSI-Crypto] ✅ Success: %s RSI=%.2f Score=%.2f",
+                            symbol,
+                            metrics.get("rsi", 0),
+                            metrics.get("score", 0),
+                        )
                 except Exception as exc:
                     logger.error(
                         "[RSI-Crypto] ❌ Failed for %s: %s: %s",
@@ -992,12 +1017,14 @@ async def _screen_crypto(
     if min_dividend_yield_normalized is not None:
         filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
-    if min_trade_amount_24h is not None:
-        filters_applied["min_market_cap_interpreted_as"] = "trade_amount_24h"
+    if sort_by in {"rsi", "score"} and enrich_rsi:
+        working_set = _sort_and_limit(rsi_subset, sort_by, sort_order, len(rsi_subset))
+    else:
+        working_set = rsi_subset if enrich_rsi else sorted_candidates
 
     if max_rsi is not None:
         filtered = _apply_basic_filters(
-            rsi_subset,
+            working_set,
             min_market_cap=None,
             max_per=None,
             max_pbr=None,
@@ -1005,7 +1032,7 @@ async def _screen_crypto(
             max_rsi=max_rsi,
         )
     else:
-        filtered = sorted_candidates
+        filtered = working_set
 
     results = filtered[:limit]
     return _build_screen_response(
@@ -1014,6 +1041,7 @@ async def _screen_crypto(
         filters_applied,
         market,
         rsi_enrichment=rsi_enrichment,
+        warnings=warnings if warnings else None,
     )
 
 

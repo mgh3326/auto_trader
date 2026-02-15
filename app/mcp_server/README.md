@@ -23,7 +23,7 @@ Parameters:
 - `category`: Category filter - ETF categories for KR, sector for US (default: None)
 - `sort_by`: Sort criteria - "volume", "market_cap", "change_rate", "dividend_yield" (default: "volume")
 - `sort_order`: Sort order - "asc" or "desc" (default: "desc")
-- `min_market_cap`: Minimum market cap (억원 for KR, USD for US, KRW 24h volume for crypto)
+- `min_market_cap`: Minimum market cap (억원 for KR, USD for US; not supported for crypto)
 - `max_per`: Maximum P/E ratio filter (not applicable to crypto)
 - `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
 - `max_rsi`: Maximum RSI filter 0-100 (not applicable to sorting by dividend_yield in crypto)
@@ -41,17 +41,64 @@ Market-specific behavior:
   - Sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
 
 - **Crypto market**: Uses Upbit `fetch_top_traded_coins`
-  - `market_cap` uses `acc_trade_price_24h` (24h trading volume in KRW)
+  - `trade_amount_24h` uses `acc_trade_price_24h` (24h traded value in KRW)
+  - `market_cap` is not available and returned as `null`
   - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
-  - RSI calculated using OHLCV fetch for subset (max limit*3 or 150)
+  - `min_market_cap` filter is not supported; warning added and filter ignored
+  - RSI/composite enrichment uses OHLCV fetch for subset `min(max(limit*3, 30), 60)`
+  - Composite score calculated using dedicated crypto formula (see below)
+  - Each result includes: `score`, `rsi`, `volume_24h`, `volume_ratio`, `candle_type`, `adx`, `plus_di`, `minus_di`
 
-Advanced filters (PER/dividend/RSI) apply to subset:
-- **Note**: `min_market_cap` is NOT an advanced filter - it uses data already available from KRX/yfinance, so it doesn't trigger external API calls
-- Advanced filters (PER, dividend yield, RSI) require external data fetch for KR market
-- Limit: `min(len(candidates), limit*3, 150)`
-- Parallel fetch with `asyncio.Semaphore(10)`
-- Timeout: 30 seconds
-- Individual failures don't stop overall operation
+#### Crypto Composite Score Formula
+
+Crypto market uses a dedicated composite score formula instead of strategy-weighted scoring:
+
+```
+Total Score = (100 - RSI) * 0.4 + (Vol_Score * Candle_Coef) * 0.3 + Trend_Score * 0.3
+```
+
+**Components:**
+- **RSI Score** (40%): `100 - RSI` - Lower RSI (oversold) gives higher score
+- **Volume Score** (30%): `min(vol_ratio * 33.3, 100)` where `vol_ratio = today_volume / avg_volume_20d`
+- **Trend Score** (30%): Based on ADX/DI indicators
+  - `plus_di > minus_di` → 90 (uptrend)
+  - `adx < 35` → 60 (weak trend)
+  - `35 <= adx <= 50` → 30 (moderate trend)
+  - `adx > 50` → 10 (strong trend, possibly exhausted)
+
+**Candle Coefficient** (applied to volume score):
+- Uses completed candle (index -2, fallback to -1)
+- `total_range == 0` → coef=0.5, type=flat
+- Bullish (close > open) → coef=1.0, type=bullish
+- Lower shadow > body*2 → coef=0.8, type=hammer
+- Body > range*0.7 and bearish → coef=0.0, type=bearish_strong
+- Other bearish → coef=0.5, type=bearish_normal
+
+**Default values for missing data:**
+- RSI missing → rsi_score = 50
+- ADX/DI missing → trend_score = 30 (conservative)
+- Volume missing → vol_score = 0
+- Final score is clamped to 0-100
+
+**Crypto recommend_stocks behavior:**
+- Top 30 candidates pre-filtered by 24h volume
+- Enriched with composite metrics (RSI, ADX/DI, volume ratio, candle type)
+- Sorted by composite score (descending)
+- Equal-weight budget allocation
+- `score` field is always numeric (0-100)
+- Timeout/429 errors return partial results with warnings instead of failing
+
+Advanced filters subset behavior (KR/US):
+- **Note**: `min_market_cap` is NOT an advanced filter for KR/US - it uses already available KRX/yfinance fields and does not trigger extra fetches.
+- Advanced filters (PER, dividend yield, RSI) require external enrichment in KR market.
+- KR/US RSI enrichment subset limit: `min(len(candidates), limit*3, 150)`.
+- Parallel fetch with `asyncio.Semaphore(10)`.
+- Timeout: 30 seconds.
+- Individual failures don't stop overall operation.
+
+Crypto enrichment behavior:
+- Uses a dedicated crypto composite enrichment subset: `min(max(limit*3, 30), 60)`.
+- `min_market_cap` is not applied as a filter in crypto; it is returned as a warning only.
 
 Response format:
 ```json
@@ -127,11 +174,12 @@ Scoring weight factors:
 Behavior:
 - Invalid `market` values raise `ValueError` (no silent fallback)
 - Strategy-specific `screen_params` are applied per market and unsupported filters are ignored with warnings
-- KR/Crypto screens candidates using internal screeners (max 100 candidates)
+- KR screens candidates using internal screener (max 100 candidates)
+- Crypto prefilters top 30 candidates by 24h traded value, then enriches with RSI/composite metrics
 - US uses `get_top_stocks(market="us", ranking_type="volume")` for candidate collection (max 50 candidates)
 - Dividend threshold input is normalized as percent when `>= 1` (e.g., `1.0 -> 0.01`, `3.0 -> 0.03`)
 - Excludes user holdings from all accounts (internal `account=None` query)
-- Applies strategy-weighted composite scoring (0-100)
+- Applies strategy-weighted composite scoring for KR/US (0-100); crypto uses dedicated composite score
 - Sorts by score and allocates budget with integer quantities
 - Remaining budget is added to top recommendation if possible
 
@@ -177,6 +225,37 @@ Response format:
   "fallback_applied": false,
   "warnings": [],
   "timestamp": "2026-02-13T02:11:52.950534+00:00"
+}
+```
+
+Crypto recommendation example (`market="crypto"`):
+```json
+{
+  "recommendations": [
+    {
+      "symbol": "KRW-BTC",
+      "name": "비트코인",
+      "price": 142000000.0,
+      "quantity": 1,
+      "amount": 142000000.0,
+      "score": 78.4,
+      "reason": "Composite Score 78.4 | RSI 39.2(저평가) | 캔들 bullish | 거래량 1.3배",
+      "rsi_14": 39.2,
+      "per": null,
+      "change_rate": 1.8,
+      "volume_24h": 12543.21,
+      "volume_ratio": 1.32,
+      "candle_type": "bullish",
+      "adx": 27.41,
+      "plus_di": 31.52,
+      "minus_di": 18.07
+    }
+  ],
+  "total_amount": 142000000.0,
+  "remaining_budget": 8000000.0,
+  "strategy": "balanced",
+  "warnings": [],
+  "timestamp": "2026-02-15T00:00:00+00:00"
 }
 ```
 

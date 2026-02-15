@@ -34,6 +34,200 @@ from app.mcp_server.tooling.shared import (
     to_optional_float as _to_optional_float,
 )
 
+CRYPTO_PREFILTER_LIMIT = 30
+
+
+def _build_crypto_composite_reason(item: dict[str, Any]) -> str:
+    score = _to_float(item.get("score"), default=0.0)
+    rsi = item.get("rsi_14")
+    candle_type = item.get("candle_type", "")
+    volume_ratio = item.get("volume_ratio")
+
+    parts = [f"Composite Score {score:.1f}"]
+
+    if rsi is not None:
+        if rsi < 30:
+            rsi_label = "과매도"
+        elif rsi < 40:
+            rsi_label = "저평가"
+        elif rsi > 70:
+            rsi_label = "과매수"
+        elif rsi > 60:
+            rsi_label = "고평가"
+        else:
+            rsi_label = "중립"
+        parts.append(f"RSI {rsi:.1f}({rsi_label})")
+
+    if candle_type and candle_type != "flat":
+        parts.append(f"캔들 {candle_type}")
+
+    if volume_ratio is not None and volume_ratio > 1.0:
+        parts.append(f"거래량 {volume_ratio:.1f}배")
+
+    return " | ".join(parts)
+
+
+async def _enrich_crypto_composite_metrics(
+    candidates: list[dict[str, Any]],
+    warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    from app.core.async_rate_limiter import RateLimitExceededError
+    from app.mcp_server.tooling.analysis_crypto_score import (
+        calculate_crypto_metrics_from_ohlcv,
+    )
+    from app.mcp_server.tooling.market_data_indicators import (
+        _fetch_ohlcv_for_indicators,
+    )
+
+    if not candidates:
+        return candidates
+
+    semaphore = asyncio.Semaphore(5)
+    results = list(candidates)
+    enrich_warnings: list[str] = []
+    failed_count = 0
+    rate_limited_count = 0
+
+    async def fetch_metrics(item: dict[str, Any], index: int) -> None:
+        nonlocal failed_count, rate_limited_count
+        async with semaphore:
+            symbol = (
+                item.get("symbol") or item.get("original_market") or item.get("market")
+            )
+            if not symbol:
+                failed_count += 1
+                return
+            try:
+                df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=50)
+                if df is not None and not df.empty:
+                    metrics = calculate_crypto_metrics_from_ohlcv(df)
+                    results[index]["rsi_14"] = metrics.get("rsi")
+                    results[index]["rsi"] = metrics.get("rsi")
+                    results[index]["score"] = metrics.get("score")
+                    results[index]["volume_24h"] = metrics.get("volume_24h")
+                    results[index]["volume_ratio"] = metrics.get("volume_ratio")
+                    results[index]["candle_type"] = metrics.get("candle_type")
+                    results[index]["adx"] = metrics.get("adx")
+                    results[index]["plus_di"] = metrics.get("plus_di")
+                    results[index]["minus_di"] = metrics.get("minus_di")
+                else:
+                    failed_count += 1
+            except RateLimitExceededError as exc:
+                rate_limited_count += 1
+                logger.debug(
+                    "Crypto metrics rate-limited symbol=%s error=%s", symbol, exc
+                )
+            except Exception as exc:
+                failed_count += 1
+                logger.debug(
+                    "Crypto metrics fetch failed symbol=%s error=%s", symbol, exc
+                )
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(
+                *[fetch_metrics(item, i) for i, item in enumerate(candidates)],
+                return_exceptions=True,
+            ),
+            timeout=30.0,
+        )
+    except TimeoutError:
+        enrich_warnings.append(
+            "Crypto metrics enrichment timed out after 30 seconds; partial results returned"
+        )
+        logger.warning("Crypto composite metrics enrichment timed out")
+    except Exception as exc:
+        enrich_warnings.append(f"Crypto metrics enrichment failed: {exc}")
+        logger.warning("Crypto composite metrics enrichment failed: %s", exc)
+
+    if rate_limited_count > 0:
+        enrich_warnings.append(
+            f"Crypto metrics enrichment hit rate limits for {rate_limited_count} symbols; partial results returned"
+        )
+    if failed_count > 0:
+        enrich_warnings.append(
+            f"Crypto metrics enrichment failed for {failed_count} symbols; partial results returned"
+        )
+
+    if warnings is not None:
+        warnings.extend(enrich_warnings)
+
+    return results
+
+
+def _allocate_budget_equal(
+    candidates: list[dict[str, Any]],
+    budget: float,
+    max_positions: int,
+) -> tuple[list[dict[str, Any]], float]:
+    if not candidates or budget <= 0:
+        return [], round(budget, 2)
+
+    deduped_candidates: list[dict[str, Any]] = []
+    seen_symbols: set[str] = set()
+    for item in candidates:
+        symbol = str(item.get("symbol", "")).strip().upper()
+        price = _to_float(item.get("price"), default=0.0)
+        if not symbol or symbol in seen_symbols:
+            continue
+        if price <= 0:
+            continue
+        seen_symbols.add(symbol)
+        deduped_candidates.append(item)
+
+    top_candidates = deduped_candidates[:max_positions]
+    if not top_candidates:
+        return [], round(budget, 2)
+
+    equal_ratio = 1.0 / len(top_candidates)
+    target_per_position = budget * equal_ratio
+
+    allocated: list[dict[str, Any]] = []
+    remaining = float(budget)
+
+    for item in top_candidates:
+        price = item.get("price", 0)
+        target_amount = target_per_position
+        quantity = int(target_amount / price) if price > 0 else 0
+        if quantity <= 0:
+            continue
+
+        amount = price * quantity
+        if amount > remaining:
+            quantity = int(remaining / price)
+            if quantity <= 0:
+                continue
+            amount = price * quantity
+
+        remaining -= amount
+        allocated.append(
+            {
+                **item,
+                "quantity": quantity,
+                "amount": round(amount, 2),
+            }
+        )
+
+    if allocated and remaining > 0:
+        sorted_allocated = sorted(
+            allocated,
+            key=lambda x: _to_float(x.get("rsi_14") or 999, default=999),
+        )
+        for rec in sorted_allocated:
+            price = _to_float(rec.get("price"), default=0.0)
+            if price <= 0 or remaining < price:
+                continue
+            extra_qty = int(remaining / price)
+            if extra_qty <= 0:
+                continue
+            extra_amount = price * extra_qty
+            rec["quantity"] += extra_qty
+            rec["amount"] = round(rec.get("amount", 0) + extra_amount, 2)
+            remaining -= extra_amount
+            break
+
+    return allocated, round(remaining, 2)
+
 
 def _normalize_recommend_market(market: str | None) -> str:
     if market is None:
@@ -354,17 +548,22 @@ async def recommend_stocks_impl(
                 warnings.append(f"US 후보 수집 실패: {top_error}")
                 raw_candidates = []
         else:
+            warnings.append(
+                "crypto market uses RSI-based equal-weight allocation; "
+                "strategy scoring weights are ignored."
+            )
             screen_result = await screen_crypto_fn(
                 market="crypto",
                 asset_type=screen_asset_type,
                 category=screen_category,
-                min_market_cap=min_market_cap,
-                max_per=max_per,
-                min_dividend_yield=min_dividend_yield,
-                max_rsi=max_rsi,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                limit=candidate_limit,
+                min_market_cap=None,
+                max_per=None,
+                min_dividend_yield=None,
+                max_rsi=None,
+                sort_by="volume",
+                sort_order="desc",
+                limit=CRYPTO_PREFILTER_LIMIT,
+                enrich_rsi=False,
             )
             screen_error_raw = screen_result.get("error")
             if screen_error_raw is not None:
@@ -389,7 +588,127 @@ async def recommend_stocks_impl(
                     ],
                     "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
                 }
-            raw_candidates = screen_result.get("results", [])
+
+            crypto_candidates = [
+                _normalize_candidate(c, "crypto")
+                for c in screen_result.get("results", [])
+            ]
+            diagnostics["raw_candidates"] = len(crypto_candidates)
+
+            crypto_exclude_set: set[str] = set()
+            if exclude_symbols:
+                crypto_exclude_set.update(
+                    str(s).strip().upper()
+                    for s in exclude_symbols
+                    if s and str(s).strip()
+                )
+
+            if exclude_held:
+                try:
+                    (
+                        held_positions,
+                        held_errors,
+                        _,
+                        _,
+                    ) = await _collect_portfolio_positions(
+                        account=None,
+                        market="crypto",
+                        include_current_price=False,
+                        user_id=_MCP_USER_ID,
+                    )
+                    for pos in held_positions:
+                        sym = pos.get("symbol", "")
+                        if sym:
+                            crypto_exclude_set.add(str(sym).upper())
+                    if held_errors:
+                        warnings.append(
+                            f"보유 종목 조회 중 일부 오류: {len(held_errors)}건"
+                        )
+                except Exception as exc:
+                    warnings.append(f"보유 종목 조회 실패: {exc}")
+
+            crypto_candidates = [
+                c
+                for c in crypto_candidates
+                if c.get("symbol", "").upper() not in crypto_exclude_set
+            ]
+
+            crypto_candidates = await _enrich_crypto_composite_metrics(
+                crypto_candidates, warnings
+            )
+
+            from app.mcp_server.tooling.analysis_crypto_score import (
+                calculate_crypto_composite_score,
+            )
+
+            for c in crypto_candidates:
+                if c.get("score") is None:
+                    c["score"] = calculate_crypto_composite_score(
+                        rsi=c.get("rsi_14"),
+                        volume_24h=c.get("volume_24h"),
+                        avg_volume_20d=None,
+                        candle_coef=0.5,
+                        adx=c.get("adx"),
+                        plus_di=c.get("plus_di"),
+                        minus_di=c.get("minus_di"),
+                    )
+
+            crypto_candidates.sort(
+                key=lambda x: _to_float(x.get("score"), default=0.0),
+                reverse=True,
+            )
+
+            if max_rsi is not None:
+                crypto_candidates = [
+                    c
+                    for c in crypto_candidates
+                    if c.get("rsi_14") is not None and c["rsi_14"] <= max_rsi
+                ]
+
+            allocated, remaining_budget = _allocate_budget_equal(
+                crypto_candidates, budget, max_positions
+            )
+
+            recommendations = []
+            for item in allocated:
+                reason = _build_crypto_composite_reason(item)
+                recommendations.append(
+                    {
+                        "symbol": item.get("symbol"),
+                        "name": item.get("name"),
+                        "price": item.get("price"),
+                        "quantity": item.get("quantity"),
+                        "amount": item.get("amount"),
+                        "score": _to_float(item.get("score"), default=0.0),
+                        "reason": reason,
+                        "rsi_14": item.get("rsi_14"),
+                        "per": None,
+                        "change_rate": item.get("change_rate"),
+                        "volume_24h": item.get("volume_24h"),
+                        "volume_ratio": item.get("volume_ratio"),
+                        "candle_type": item.get("candle_type"),
+                        "adx": item.get("adx"),
+                        "plus_di": item.get("plus_di"),
+                        "minus_di": item.get("minus_di"),
+                    }
+                )
+
+            total_amount = sum(r.get("amount", 0) for r in recommendations)
+            diagnostics["post_filter_candidates"] = len(crypto_candidates)
+            diagnostics["strict_candidates"] = len(crypto_candidates)
+
+            return {
+                "recommendations": recommendations,
+                "total_amount": round(total_amount, 2),
+                "remaining_budget": remaining_budget,
+                "strategy": validated_strategy,
+                "strategy_description": get_strategy_description(validated_strategy),
+                "candidates_screened": diagnostics["raw_candidates"],
+                "diagnostics": diagnostics,
+                "fallback_applied": False,
+                "warnings": warnings,
+                "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+            }
         logger.info(
             "recommend_stocks screening finished market=%s raw_candidates=%d",
             normalized_market,

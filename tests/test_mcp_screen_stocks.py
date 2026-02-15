@@ -601,6 +601,146 @@ class TestScreenStocksCrypto:
                 limit=20,
             )
 
+    @pytest.mark.asyncio
+    async def test_kr_sort_by_rsi_raises_error(self, mock_krx_stocks, monkeypatch):
+        """Test KR market raises ValueError for sort_by='rsi'."""
+
+        async def mock_fetch_stock_all_cached(market):
+            return mock_krx_stocks
+
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        tools = build_tools()
+
+        with pytest.raises(
+            ValueError, match="RSI sorting is only supported for crypto"
+        ):
+            await tools["screen_stocks"](
+                market="kr",
+                asset_type="stock",
+                category=None,
+                min_market_cap=None,
+                max_per=None,
+                min_dividend_yield=None,
+                max_rsi=None,
+                sort_by="rsi",
+                sort_order="asc",
+                limit=20,
+            )
+
+    @pytest.mark.asyncio
+    async def test_us_sort_by_rsi_raises_error(self, monkeypatch):
+        """Test US market raises ValueError for sort_by='rsi'."""
+
+        import yfinance as yf
+
+        def mock_yfinance_screen_func(query, size, sortField, sortAsc):
+            return {"quotes": []}
+
+        monkeypatch.setattr(yf, "screen", mock_yfinance_screen_func)
+
+        tools = build_tools()
+
+        with pytest.raises(
+            ValueError, match="RSI sorting is only supported for crypto"
+        ):
+            await tools["screen_stocks"](
+                market="us",
+                asset_type=None,
+                category=None,
+                min_market_cap=None,
+                max_per=None,
+                min_dividend_yield=None,
+                max_rsi=None,
+                sort_by="rsi",
+                sort_order="asc",
+                limit=20,
+            )
+
+    @pytest.mark.asyncio
+    async def test_crypto_enriches_metrics_without_explicit_rsi_filters(
+        self, mock_upbit_coins, monkeypatch
+    ):
+        async def mock_fetch_top_traded_coins(fiat):
+            return mock_upbit_coins
+
+        rsi_fetch_called = False
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            nonlocal rsi_fetch_called
+            rsi_fetch_called = True
+            raise RuntimeError("expected fetch for enrichment")
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert rsi_fetch_called
+        assert result["meta"]["rsi_enrichment"]["attempted"] > 0
+        assert all("score" in item for item in result["results"])
+
+    @pytest.mark.asyncio
+    async def test_crypto_sort_by_rsi_fetches_rsi(self, mock_upbit_coins, monkeypatch):
+        """Test crypto market fetches RSI when sort_by='rsi'."""
+
+        async def mock_fetch_top_traded_coins(fiat):
+            return mock_upbit_coins
+
+        import pandas as pd
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            return pd.DataFrame({"close": [100.0 + i for i in range(50)]})
+
+        def mock_calculate_rsi(close):
+            return {"14": 45.0}
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+        monkeypatch.setattr(analysis_screen_core, "_calculate_rsi", mock_calculate_rsi)
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="rsi",
+            sort_order="asc",
+            limit=20,
+        )
+
+        assert result["meta"]["rsi_enrichment"]["attempted"] > 0
+
 
 class TestScreenStocksRsiLogging:
     """Test RSI enrichment logging and symbol selection behavior."""
@@ -706,8 +846,8 @@ class TestScreenStocksRsiLogging:
             max_per=None,
             min_dividend_yield=None,
             max_rsi=None,
-            sort_by="volume",
-            sort_order="desc",
+            sort_by="rsi",
+            sort_order="asc",
             limit=5,
         )
 
@@ -809,7 +949,7 @@ class TestScreenStocksRsiLogging:
             max_per=None,
             min_dividend_yield=None,
             max_rsi=None,
-            sort_by="volume",
+            sort_by="rsi",
             sort_order="desc",
             limit=5,
         )
@@ -879,7 +1019,7 @@ class TestScreenStocksRsiLogging:
 
     @pytest.mark.asyncio
     async def test_crypto_rsi_rate_limited_diagnostic_counts(self, monkeypatch):
-        """Crypto RSI enrichment should surface rate-limited diagnostics."""
+        """Crypto RSI enrichment should surface rate-limited diagnostics when enrich_rsi=True."""
 
         async def mock_fetch_top_traded_coins(fiat):
             return [
@@ -911,7 +1051,7 @@ class TestScreenStocksRsiLogging:
             min_market_cap=None,
             max_per=None,
             min_dividend_yield=None,
-            max_rsi=None,
+            max_rsi=70,
             sort_by="volume",
             sort_order="desc",
             limit=5,
@@ -959,7 +1099,7 @@ class TestScreenStocksRsiLogging:
             max_per=None,
             min_dividend_yield=None,
             max_rsi=None,
-            sort_by="volume",
+            sort_by="rsi",
             sort_order="desc",
             limit=5,
         )
@@ -1031,7 +1171,7 @@ class TestScreenStocksFilters:
 
     @pytest.mark.asyncio
     async def test_crypto_min_market_cap(self, mock_upbit_coins, monkeypatch):
-        """Test crypto market with minimum market cap filter."""
+        """Test crypto market with minimum market cap filter - not supported, warning added."""
 
         async def mock_fetch_top_traded_coins(fiat):
             return mock_upbit_coins
@@ -1052,13 +1192,17 @@ class TestScreenStocksFilters:
             max_per=None,
             min_dividend_yield=None,
             max_rsi=None,
-            sort_by="market_cap",
+            sort_by="volume",
             sort_order="desc",
             limit=20,
         )
 
         assert result is not None
         assert result["filters_applied"]["min_market_cap"] == 300000000000
+        assert "warnings" in result
+        assert any(
+            "min_market_cap" in w and "not supported" in w for w in result["warnings"]
+        )
 
     @pytest.mark.asyncio
     async def test_kr_min_market_cap_only_no_naver_queries(

@@ -740,6 +740,74 @@ class TestRecommendStocksIntegration:
         assert isinstance(result["warnings"], list)
 
     @pytest.mark.asyncio
+    async def test_crypto_recommend_includes_auxiliary_metrics_fields(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_empty_holdings(monkeypatch)
+
+        async def mock_fetch_top_traded_coins(
+            fiat: str = "KRW",
+        ) -> list[dict[str, Any]]:
+            assert fiat == "KRW"
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_price_24h": 1_000_000_000_000,
+                    "volume": 10_000,
+                }
+            ]
+
+        async def mock_enrich_crypto_composite_metrics(
+            candidates: list[dict[str, Any]],
+            warnings: list[str] | None = None,
+        ) -> list[dict[str, Any]]:
+            enriched = []
+            for candidate in candidates:
+                item = dict(candidate)
+                item["rsi_14"] = 42.5
+                item["rsi"] = 42.5
+                item["score"] = 77.3
+                item["volume_24h"] = 12_345.67
+                item["volume_ratio"] = 1.23
+                item["candle_type"] = "bullish"
+                item["adx"] = 27.4
+                item["plus_di"] = 31.5
+                item["minus_di"] = 18.1
+                enriched.append(item)
+            return enriched
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+        monkeypatch.setattr(
+            analysis_recommend,
+            "_enrich_crypto_composite_metrics",
+            mock_enrich_crypto_composite_metrics,
+        )
+
+        result = await recommend_stocks(
+            budget=200_000_000,
+            market="crypto",
+            strategy="balanced",
+            max_positions=1,
+        )
+
+        assert result["recommendations"]
+        rec = result["recommendations"][0]
+        assert isinstance(rec["score"], (int, float))
+        assert isinstance(rec["volume_24h"], (int, float))
+        assert isinstance(rec["volume_ratio"], (int, float))
+        assert isinstance(rec["candle_type"], str)
+        assert isinstance(rec["adx"], (int, float))
+        assert isinstance(rec["plus_di"], (int, float))
+        assert isinstance(rec["minus_di"], (int, float))
+
+    @pytest.mark.asyncio
     async def test_crypto_unsupported_strategy_filters_add_warnings(
         self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
     ):
@@ -1340,7 +1408,7 @@ class TestScreenCryptoBehavior:
         assert first["market_cap"] is None
 
     @pytest.mark.asyncio
-    async def test_screen_crypto_min_market_cap_uses_trade_amount(
+    async def test_screen_crypto_min_market_cap_not_filtered(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         async def mock_fetch_top_traded_coins(
@@ -1385,11 +1453,10 @@ class TestScreenCryptoBehavior:
         )
 
         symbols = [item["symbol"] for item in result["results"]]
-        assert symbols == ["KRW-BBB"]
-        assert (
-            result["filters_applied"]["min_market_cap_interpreted_as"]
-            == "trade_amount_24h"
-        )
+        assert "KRW-AAA" in symbols
+        assert "KRW-BBB" in symbols
+        assert "warnings" in result
+        assert any("min_market_cap" in w for w in result["warnings"])
 
 
 class TestScreenUsBehavior:

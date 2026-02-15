@@ -422,7 +422,7 @@ async def screen_stocks_impl(
     category: str | None = None,
     strategy: str | None = None,
     sort_by: Literal[
-        "volume", "market_cap", "change_rate", "dividend_yield"
+        "volume", "market_cap", "change_rate", "dividend_yield", "rsi"
     ] = "volume",
     sort_order: Literal["asc", "desc"] = "desc",
     min_market_cap: float | None = None,
@@ -448,10 +448,10 @@ async def screen_stocks_impl(
         if max_rsi is None and "max_rsi" in preset:
             max_rsi = preset["max_rsi"]
 
-    market = _normalize_screen_market(market)
-    asset_type = _normalize_asset_type(asset_type)
-    sort_by = _normalize_sort_by(sort_by)
-    sort_order = _normalize_sort_order(sort_order)
+    normalized_market = _normalize_screen_market(market)
+    normalized_asset_type = _normalize_asset_type(asset_type)
+    normalized_sort_by = _normalize_sort_by(sort_by)
+    normalized_sort_order = _normalize_sort_order(sort_order)
 
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -459,59 +459,62 @@ async def screen_stocks_impl(
         limit = 50
 
     _validate_screen_filters(
-        market=market,
-        asset_type=asset_type,
+        market=normalized_market,
+        asset_type=normalized_asset_type,
         min_market_cap=min_market_cap,
         max_per=max_per,
         min_dividend_yield=min_dividend_yield,
         max_rsi=max_rsi,
-        sort_by=sort_by,
+        sort_by=normalized_sort_by,
     )
 
-    if market in ("kr", "kospi", "kosdaq"):
+    if normalized_market in ("kr", "kospi", "kosdaq"):
         return await _screen_kr(
-            market=market,
-            asset_type=asset_type,
+            market=normalized_market,
+            asset_type=normalized_asset_type,
             category=category,
             min_market_cap=min_market_cap,
             max_per=max_per,
             max_pbr=max_pbr,
             min_dividend_yield=min_dividend_yield,
             max_rsi=max_rsi,
-            sort_by=sort_by,
-            sort_order=sort_order,
+            sort_by=normalized_sort_by,
+            sort_order=normalized_sort_order,
             limit=limit,
         )
-    if market == "us":
+    if normalized_market == "us":
         return await _screen_us(
-            market=market,
-            asset_type=asset_type,
+            market=normalized_market,
+            asset_type=normalized_asset_type,
             category=category,
             min_market_cap=min_market_cap,
             max_per=max_per,
             min_dividend_yield=min_dividend_yield,
             max_rsi=max_rsi,
-            sort_by=sort_by,
-            sort_order=sort_order,
+            sort_by=normalized_sort_by,
+            sort_order=normalized_sort_order,
             limit=limit,
         )
-    if market == "crypto":
+    if normalized_market == "crypto":
+        # Intentional for this scope: keep crypto enrichment call policy unchanged.
+        # 429/distributed rate-limit optimization is handled as a follow-up task.
         return await _screen_crypto(
-            market=market,
-            asset_type=asset_type,
+            market=normalized_market,
+            asset_type=normalized_asset_type,
             category=category,
             min_market_cap=min_market_cap,
             max_per=max_per,
             min_dividend_yield=min_dividend_yield,
             max_rsi=max_rsi,
-            sort_by=sort_by,
-            sort_order=sort_order,
+            sort_by=normalized_sort_by,
+            sort_order=normalized_sort_order,
             limit=limit,
+            enrich_rsi=True,
         )
 
     return _error_payload(
         source="screen_stocks",
-        message=f"Unsupported market: {market}",
+        message=f"Unsupported market: {normalized_market}",
     )
 
 
