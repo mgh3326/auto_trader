@@ -14,6 +14,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_optional_float as _to_optional_float,
 )
+from app.services import upbit_ohlcv_cache as upbit_ohlcv_cache_service
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
@@ -86,7 +87,24 @@ async def _fetch_ohlcv_for_indicators(
     symbol: str, market_type: str, count: int = 250
 ) -> pd.DataFrame:
     if market_type == "crypto":
-        return await _fetch_ohlcv_crypto_paginated(symbol, count=count, period="day")
+        cached = await upbit_ohlcv_cache_service.get_closed_daily_candles(
+            symbol, count=count
+        )
+        if cached is not None:
+            return cached
+
+        fallback = await _fetch_ohlcv_crypto_paginated(
+            symbol, count=count, period="day"
+        )
+        if fallback.empty or "date" not in fallback.columns:
+            return fallback
+
+        target_closed_date = upbit_ohlcv_cache_service.get_target_closed_date_kst()
+        return (
+            fallback[fallback["date"] <= target_closed_date]
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
     if market_type == "equity_kr":
         capped_count = min(count, 250)
         kis = KISClient()
@@ -675,21 +693,21 @@ def _compute_dca_price_levels(
         support_prices = [s["price"] for s in supports]
         end_price = min(support_prices) if support_prices else current_price * 0.98
         remaining = splits - 1
-        used_supports: set[float] = set()
+        aggressive_used_supports: set[float] = set()
 
         if len(support_prices) >= remaining:
             for i in range(1, splits):
                 price = first_price + ((end_price - first_price) / (splits - 1)) * i
                 near_support = None
                 for supp in support_prices:
-                    if supp in used_supports:
+                    if supp in aggressive_used_supports:
                         continue
                     if abs(price - supp) / price < 0.02 and supp < price:
                         near_support = supp
                         break
                 if near_support is not None:
                     price = near_support
-                    used_supports.add(near_support)
+                    aggressive_used_supports.add(near_support)
                 source = "support" if near_support else "interpolated"
                 levels.append({"price": price, "source": source})
         else:

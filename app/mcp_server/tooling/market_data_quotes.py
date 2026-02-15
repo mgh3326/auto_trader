@@ -454,9 +454,19 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             if df.empty:
                 raise ValueError(f"No data available for symbol '{symbol}'")
 
-            current_price = (
+            close_fallback_price = (
                 float(df["close"].iloc[-1]) if "close" in df.columns else None
             )
+            current_price = close_fallback_price
+            if market_type == "crypto":
+                try:
+                    prices = await upbit_service.fetch_multiple_current_prices([symbol])
+                    ticker_price = prices.get(symbol)
+                    if ticker_price is not None:
+                        current_price = float(ticker_price)
+                except Exception:
+                    current_price = close_fallback_price
+
             indicator_results = _compute_indicators(df, normalized_indicators)
 
             return {
