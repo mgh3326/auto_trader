@@ -527,7 +527,6 @@ class TestScreenStocksCrypto:
             max_per=None,
             min_dividend_yield=None,
             max_rsi=None,
-            sort_by="volume",
             sort_order="desc",
             limit=20,
         )
@@ -536,8 +535,96 @@ class TestScreenStocksCrypto:
         assert result["market"] == "crypto"
         assert len(result["results"]) > 0
         # Verify sort_by and sort_order are always recorded
-        assert result["filters_applied"]["sort_by"] == "volume"
+        assert result["filters_applied"]["sort_by"] == "trade_amount"
         assert result["filters_applied"]["sort_order"] == "desc"
+        assert "trade_amount_24h" in result["results"][0]
+        assert "volume" not in result["results"][0]
+
+    @pytest.mark.asyncio
+    async def test_crypto_sort_by_volume_raises_error(
+        self, mock_upbit_coins, monkeypatch
+    ):
+        async def mock_fetch_top_traded_coins(fiat):
+            return mock_upbit_coins
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match=".*does not support sorting by.*volume.*"):
+            await tools["screen_stocks"](
+                market="crypto",
+                asset_type=None,
+                category=None,
+                min_market_cap=None,
+                max_per=None,
+                min_dividend_yield=None,
+                max_rsi=None,
+                sort_by="volume",
+                sort_order="desc",
+                limit=20,
+            )
+
+    @pytest.mark.asyncio
+    async def test_crypto_trade_amount_sorting_uses_24h_trade_value(self, monkeypatch):
+        async def mock_fetch_top_traded_coins(fiat):
+            assert fiat == "KRW"
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_volume_24h": 9_999_999,
+                    "acc_trade_price_24h": 1_000,
+                },
+                {
+                    "market": "KRW-ETH",
+                    "korean_name": "이더리움",
+                    "trade_price": 5_000_000,
+                    "signed_change_rate": 0.02,
+                    "acc_trade_volume_24h": 1,
+                    "acc_trade_price_24h": 10_000,
+                },
+                {
+                    "market": "KRW-SOL",
+                    "korean_name": "솔라나",
+                    "trade_price": 200_000,
+                    "signed_change_rate": 0.03,
+                    "acc_trade_volume_24h": 100,
+                    "acc_trade_price_24h": 5_000,
+                },
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        tools = build_tools()
+
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="trade_amount",
+            sort_order="desc",
+            limit=3,
+        )
+
+        symbols = [item["symbol"] for item in result["results"]]
+        assert symbols == ["KRW-ETH", "KRW-SOL", "KRW-BTC"]
+        assert all("trade_amount_24h" in item for item in result["results"])
+        assert all("volume" not in item for item in result["results"])
 
     @pytest.mark.asyncio
     async def test_crypto_per_filter_raises_error(self, mock_upbit_coins, monkeypatch):
@@ -563,7 +650,7 @@ class TestScreenStocksCrypto:
                 max_per=20.0,
                 min_dividend_yield=None,
                 max_rsi=None,
-                sort_by="volume",
+                sort_by="trade_amount",
                 sort_order="desc",
                 limit=20,
             )
@@ -596,7 +683,7 @@ class TestScreenStocksCrypto:
                 max_per=None,
                 min_dividend_yield=0.03,
                 max_rsi=None,
-                sort_by="volume",
+                sort_by="trade_amount",
                 sort_order="desc",
                 limit=20,
             )
@@ -660,6 +747,35 @@ class TestScreenStocksCrypto:
             )
 
     @pytest.mark.asyncio
+    async def test_kr_sort_by_trade_amount_raises_error(
+        self, mock_krx_stocks, monkeypatch
+    ):
+        async def mock_fetch_stock_all_cached(market):
+            return mock_krx_stocks
+
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+
+        tools = build_tools()
+
+        with pytest.raises(
+            ValueError, match=".*trade_amount.*only supported for crypto.*"
+        ):
+            await tools["screen_stocks"](
+                market="kr",
+                asset_type="stock",
+                category=None,
+                min_market_cap=None,
+                max_per=None,
+                min_dividend_yield=None,
+                max_rsi=None,
+                sort_by="trade_amount",
+                sort_order="desc",
+                limit=20,
+            )
+
+    @pytest.mark.asyncio
     async def test_crypto_enriches_metrics_without_explicit_rsi_filters(
         self, mock_upbit_coins, monkeypatch
     ):
@@ -691,7 +807,7 @@ class TestScreenStocksCrypto:
             max_per=None,
             min_dividend_yield=None,
             max_rsi=None,
-            sort_by="volume",
+            sort_by="trade_amount",
             sort_order="desc",
             limit=20,
         )
@@ -1052,7 +1168,7 @@ class TestScreenStocksRsiLogging:
             max_per=None,
             min_dividend_yield=None,
             max_rsi=70,
-            sort_by="volume",
+            sort_by="trade_amount",
             sort_order="desc",
             limit=5,
         )
@@ -1192,7 +1308,7 @@ class TestScreenStocksFilters:
             max_per=None,
             min_dividend_yield=None,
             max_rsi=None,
-            sort_by="volume",
+            sort_by="trade_amount",
             sort_order="desc",
             limit=20,
         )
@@ -1863,4 +1979,37 @@ class TestScreenStocksPhase2Spec:
 
         assert result["market"] == "kospi"
         assert result["filters_applied"]["sort_by"] == "change_rate"
+        assert result["filters_applied"]["sort_order"] == "desc"
+
+    @pytest.mark.asyncio
+    async def test_crypto_high_volume_strategy_defaults_to_trade_amount(
+        self, mock_upbit_coins, monkeypatch
+    ):
+        """Crypto high_volume preset should resolve to trade_amount sorting by default."""
+
+        async def mock_fetch_top_traded_coins(fiat):
+            return mock_upbit_coins
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            strategy="high_volume",
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_order="asc",
+            limit=20,
+        )
+
+        assert result["market"] == "crypto"
+        assert result["filters_applied"]["sort_by"] == "trade_amount"
         assert result["filters_applied"]["sort_order"] == "desc"

@@ -422,8 +422,14 @@ async def screen_stocks_impl(
     category: str | None = None,
     strategy: str | None = None,
     sort_by: Literal[
-        "volume", "market_cap", "change_rate", "dividend_yield", "rsi"
-    ] = "volume",
+        "volume",
+        "trade_amount",
+        "market_cap",
+        "change_rate",
+        "dividend_yield",
+        "rsi",
+    ]
+    | None = None,
     sort_order: Literal["asc", "desc"] = "desc",
     min_market_cap: float | None = None,
     max_per: float | None = None,
@@ -432,6 +438,8 @@ async def screen_stocks_impl(
     max_rsi: float | None = None,
     limit: int = 20,
 ) -> dict[str, Any]:
+    sort_by_specified = sort_by is not None
+
     strategy_presets: dict[str, dict[str, Any]] = {
         "oversold": {"max_rsi": 30.0, "sort_by": "volume", "sort_order": "desc"},
         "momentum": {"sort_by": "change_rate", "sort_order": "desc"},
@@ -451,6 +459,12 @@ async def screen_stocks_impl(
     normalized_market = _normalize_screen_market(market)
     normalized_asset_type = _normalize_asset_type(asset_type)
     normalized_sort_by = _normalize_sort_by(sort_by)
+    if (
+        normalized_market == "crypto"
+        and not sort_by_specified
+        and normalized_sort_by == "volume"
+    ):
+        normalized_sort_by = "trade_amount"
     normalized_sort_order = _normalize_sort_order(sort_order)
 
     if limit < 1:

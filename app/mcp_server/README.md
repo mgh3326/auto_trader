@@ -21,7 +21,7 @@ Parameters:
 - `market`: Market to screen - "kr", "us", "crypto" (default: "kr")
 - `asset_type`: Asset type - "stock", "etf", "etn" (only applicable to KR, default: None)
 - `category`: Category filter - ETF categories for KR, sector for US (default: None)
-- `sort_by`: Sort criteria - "volume", "market_cap", "change_rate", "dividend_yield" (default: "volume")
+- `sort_by`: Sort criteria - "volume", "trade_amount", "market_cap", "change_rate", "dividend_yield" (default: crypto="trade_amount", KR/US="volume")
 - `sort_order`: Sort order - "asc" or "desc" (default: "desc")
 - `min_market_cap`: Minimum market cap (억원 for KR, USD for US; not supported for crypto)
 - `max_per`: Maximum P/E ratio filter (not applicable to crypto)
@@ -41,7 +41,10 @@ Market-specific behavior:
   - Sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
 
 - **Crypto market**: Uses Upbit `fetch_top_traded_coins`
+  - `sort_by="trade_amount"` uses `acc_trade_price_24h` (24h traded value in KRW)
+  - `sort_by="volume"` is not supported for crypto and returns an error
   - `trade_amount_24h` uses `acc_trade_price_24h` (24h traded value in KRW)
+  - Crypto response payload does not include `volume`; use `trade_amount_24h`
   - `market_cap` is not available and returned as `null`
   - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
   - `min_market_cap` filter is not supported; warning added and filter ignored
@@ -81,7 +84,7 @@ Total Score = (100 - RSI) * 0.4 + (Vol_Score * Candle_Coef) * 0.3 + Trend_Score 
 - Final score is clamped to 0-100
 
 **Crypto recommend_stocks behavior:**
-- Top 30 candidates pre-filtered by 24h volume
+- Top 30 candidates pre-filtered by 24h traded value (`trade_amount`)
 - Enriched with composite metrics (RSI, ADX/DI, volume ratio, candle type)
 - Sorted by composite score (descending)
 - Equal-weight budget allocation

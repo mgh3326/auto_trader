@@ -441,6 +441,7 @@ async def recommend_stocks_impl(
         screen_category = sectors[0] if sectors else None
 
         if normalized_market == "crypto":
+            requested_sort_by = str(sort_by or "").strip().lower()
             if screen_category is not None:
                 warnings.append(
                     "crypto market does not support sectors/category filter; ignored."
@@ -462,11 +463,16 @@ async def recommend_stocks_impl(
                     "crypto market does not support min_dividend_yield filter; ignored."
                 )
                 min_dividend_yield = None
-            if sort_by == "dividend_yield":
+            if requested_sort_by == "dividend_yield":
                 warnings.append(
-                    "crypto market does not support dividend_yield sorting; fallback to volume."
+                    "crypto market does not support dividend_yield sorting; fallback to trade_amount."
                 )
-                sort_by = "volume"
+            elif requested_sort_by and requested_sort_by != "trade_amount":
+                warnings.append(
+                    "crypto market enforces sort_by='trade_amount'; "
+                    f"requested sort_by='{requested_sort_by}' ignored."
+                )
+            sort_by = "trade_amount"
 
         if normalized_market == "us" and max_pbr is not None:
             warnings.append(
@@ -560,7 +566,7 @@ async def recommend_stocks_impl(
                 max_per=None,
                 min_dividend_yield=None,
                 max_rsi=None,
-                sort_by="volume",
+                sort_by=sort_by,
                 sort_order="desc",
                 limit=CRYPTO_PREFILTER_LIMIT,
                 enrich_rsi=False,

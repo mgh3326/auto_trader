@@ -139,7 +139,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         asset_type: str | None = None,
         category: str | None = None,
         strategy: str | None = None,
-        sort_by: str = "volume",
+        sort_by: str | None = None,
         sort_order: str = "desc",
         min_market_cap: float | None = None,
         max_per: float | None = None,

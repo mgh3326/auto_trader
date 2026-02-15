@@ -90,6 +90,10 @@ def _validate_screen_filters(
             raise ValueError(
                 "Crypto market does not support 'min_dividend_yield' filter (no dividends)"
             )
+        if sort_by == "volume":
+            raise ValueError(
+                "Crypto market does not support sorting by 'volume'; use 'trade_amount'"
+            )
         if sort_by == "dividend_yield":
             raise ValueError(
                 "Crypto market does not support sorting by 'dividend_yield'"
@@ -97,6 +101,10 @@ def _validate_screen_filters(
     else:
         if sort_by == "rsi":
             raise ValueError("RSI sorting is only supported for crypto market")
+        if sort_by == "trade_amount":
+            raise ValueError(
+                "'trade_amount' sorting is only supported for crypto market"
+            )
 
     if market in ("kr", "kospi", "kosdaq") and asset_type == "etn":
         raise ValueError(
@@ -166,6 +174,7 @@ def _sort_and_limit(
 
     sort_field_map = {
         "volume": "volume",
+        "trade_amount": "trade_amount_24h",
         "market_cap": "market_cap",
         "change_rate": "change_rate",
         "dividend_yield": "dividend_yield",
@@ -811,19 +820,16 @@ async def _screen_crypto(
         if "change_rate" not in item:
             item["change_rate"] = item.get("signed_change_rate", 0)
 
-        if "volume" not in item:
-            item["volume"] = item.get("acc_trade_volume_24h", 0)
-
+        volume_24h = item.get("acc_trade_volume_24h") or item.get("volume") or 0.0
         item["trade_amount_24h"] = item.get("trade_amount_24h") or item.get(
             "acc_trade_price_24h", 0
         )
+        item.pop("volume", None)
         if "market_cap" not in item:
             item["market_cap"] = None
 
         item["rsi"] = item.get("rsi")
-        item["volume_24h"] = float(
-            item.get("acc_trade_volume_24h") or item.get("volume") or 0.0
-        )
+        item["volume_24h"] = float(volume_24h)
         item["volume_ratio"] = item.get("volume_ratio")
         item["candle_type"] = item.get("candle_type") or "flat"
         item["adx"] = item.get("adx")
@@ -846,7 +852,7 @@ async def _screen_crypto(
 
     sorted_candidates = _sort_and_limit(
         candidates,
-        "volume" if sort_by in {"rsi", "score"} else sort_by,
+        "trade_amount" if sort_by in {"rsi", "score"} else sort_by,
         sort_order,
         len(candidates),
     )

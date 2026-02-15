@@ -740,6 +740,48 @@ class TestRecommendStocksIntegration:
         assert isinstance(result["warnings"], list)
 
     @pytest.mark.asyncio
+    async def test_crypto_non_trade_amount_sort_adds_warning(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_empty_holdings(monkeypatch)
+
+        async def mock_fetch_top_traded_coins(
+            fiat: str = "KRW",
+        ) -> list[dict[str, Any]]:
+            assert fiat == "KRW"
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_price_24h": 1_000_000_000_000,
+                }
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        result = await recommend_stocks(
+            budget=10_000_000,
+            market="crypto",
+            strategy="momentum",
+            max_positions=1,
+        )
+
+        assert result["recommendations"]
+        assert any(
+            "enforces sort_by='trade_amount'" in warning
+            for warning in result["warnings"]
+        )
+        assert any(
+            "requested sort_by='volume'" in warning for warning in result["warnings"]
+        )
+
+    @pytest.mark.asyncio
     async def test_crypto_recommend_includes_auxiliary_metrics_fields(
         self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
     ):
@@ -1396,7 +1438,7 @@ class TestScreenCryptoBehavior:
             max_per=None,
             min_dividend_yield=None,
             max_rsi=None,
-            sort_by="volume",
+            sort_by="trade_amount",
             sort_order="desc",
             limit=5,
             enrich_rsi=False,
@@ -1405,6 +1447,7 @@ class TestScreenCryptoBehavior:
         assert result["results"]
         first = result["results"][0]
         assert first["trade_amount_24h"] == 1_000_000_000_000
+        assert "volume" not in first
         assert first["market_cap"] is None
 
     @pytest.mark.asyncio
@@ -1446,7 +1489,7 @@ class TestScreenCryptoBehavior:
             max_per=None,
             min_dividend_yield=None,
             max_rsi=None,
-            sort_by="volume",
+            sort_by="trade_amount",
             sort_order="desc",
             limit=5,
             enrich_rsi=False,
