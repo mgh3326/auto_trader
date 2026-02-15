@@ -4497,19 +4497,15 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
     assert result["total_accounts"] == 1
-    assert result["total_positions"] == 2
-    assert result["filtered_count"] == 0
+    assert result["total_positions"] == 1
+    assert result["filtered_count"] == 1
     assert result["filter_reason"] == "equity_kr < 5000, equity_us < 10, crypto < 5000"
 
     positions_by_symbol = {
         position["symbol"]: position for position in result["accounts"][0]["positions"]
     }
     assert positions_by_symbol["KRW-BTC"]["current_price"] == 62000000.0
-    assert positions_by_symbol["KRW-DOGE"]["current_price"] is None
-    assert (
-        positions_by_symbol["KRW-DOGE"]["price_error"]
-        == "price missing in batch ticker response"
-    )
+    assert "KRW-DOGE" not in positions_by_symbol
 
     assert len(result["errors"]) == 1
     error = result["errors"][0]
@@ -4611,9 +4607,9 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
-    assert result["filtered_count"] == 2
+    assert result["filtered_count"] == 3
     assert result["filter_reason"] == "equity_kr < 5000, equity_us < 10, crypto < 5000"
-    assert result["total_positions"] == 2
+    assert result["total_positions"] == 1
     assert result["filters"]["minimum_value"] == {
         "equity_kr": 5000.0,
         "equity_us": 10.0,
@@ -4624,12 +4620,7 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
         position["symbol"]: position for position in result["accounts"][0]["positions"]
     }
     assert "KRW-BTC" in positions_by_symbol
-    assert "KRW-PCI" in positions_by_symbol
-    assert positions_by_symbol["KRW-PCI"]["current_price"] is None
-    assert (
-        positions_by_symbol["KRW-PCI"]["price_error"]
-        == "price missing in batch ticker response"
-    )
+    assert "KRW-PCI" not in positions_by_symbol
 
     assert len(result["errors"]) == 1
     assert result["errors"][0]["symbol"] == "KRW-PCI"
@@ -4703,8 +4694,8 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
     result = await tools["get_holdings"](account="upbit", market="crypto")
 
     assert result["total_accounts"] == 1
-    assert result["total_positions"] == 2
-    assert result["filtered_count"] == 0
+    assert result["total_positions"] == 1
+    assert result["filtered_count"] == 1
     assert result["filter_reason"] == "equity_kr < 5000, equity_us < 10, crypto < 5000"
 
     positions_by_symbol = {
@@ -4712,9 +4703,7 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
     }
     assert positions_by_symbol["KRW-BTC"]["symbol"] == "KRW-BTC"
     assert positions_by_symbol["KRW-BTC"]["current_price"] == 62000000.0
-    assert positions_by_symbol["KRW-PCI"]["current_price"] is None
-    # PCI was filtered before batch fetch, so no price_error
-    assert "price_error" not in positions_by_symbol["KRW-PCI"]
+    assert "KRW-PCI" not in positions_by_symbol
 
     assert result["errors"] == []
     quote_mock.assert_awaited_once()
