@@ -156,7 +156,7 @@ class UnifiedWebSocketMonitor:
         kis_connected: bool | str = (
             bool(self.kis_ws and self.kis_ws.is_connected) if kis_enabled else "n/a"
         )
-        logger.info(
+        logger.debug(
             "Unified WebSocket health: upbit_connected=%s kis_connected=%s openclaw_enabled=%s",
             upbit_connected,
             kis_connected,
