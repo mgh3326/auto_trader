@@ -116,7 +116,7 @@ class OpenClawClient:
         payload = {
             "message": message,
             "name": "auto-trader:fill",
-            "sessionKey": session_key,
+            # "sessionKey": session_key,
             "wakeMode": "now",
         }
 
