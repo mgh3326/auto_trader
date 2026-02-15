@@ -436,7 +436,6 @@ async def screen_stocks_impl(
     max_pbr: float | None = None,
     min_dividend_yield: float | None = None,
     max_rsi: float | None = None,
-    top_n: int | None = 30,
     limit: int = 20,
 ) -> dict[str, Any]:
     sort_by_specified = sort_by is not None
@@ -527,7 +526,6 @@ async def screen_stocks_impl(
             max_rsi=max_rsi,
             sort_by=normalized_sort_by,
             sort_order=normalized_sort_order,
-            top_n=top_n,
             limit=limit,
             enrich_rsi=True,
         )

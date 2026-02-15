@@ -32,8 +32,7 @@ logger = logging.getLogger(__name__)
 
 DROP_THRESHOLD = -0.30
 MARKET_PANIC = -0.10
-CRYPTO_TOP_BY_VOLUME = 30
-CRYPTO_TOP_BY_VOLUME_MAX = 200
+CRYPTO_TOP_BY_VOLUME = 100
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 
 
@@ -1098,7 +1097,6 @@ async def _screen_crypto(
     sort_by: str,
     sort_order: str,
     limit: int,
-    top_n: int | None = 30,
     enrich_rsi: bool = True,
 ) -> dict[str, Any]:
     (
@@ -1113,15 +1111,9 @@ async def _screen_crypto(
         "category": category,
     }
 
-    normalized_top_n = _to_optional_int(top_n)
-    if normalized_top_n is None:
-        normalized_top_n = CRYPTO_TOP_BY_VOLUME
-    normalized_top_n = max(1, min(normalized_top_n, CRYPTO_TOP_BY_VOLUME_MAX))
-    filters_applied["top_n"] = normalized_top_n
-
     all_candidates = await upbit_service.fetch_top_traded_coins(fiat="KRW")
     total_markets = len(all_candidates)
-    top_candidates = all_candidates[:normalized_top_n]
+    top_candidates = all_candidates[:CRYPTO_TOP_BY_VOLUME]
     top_by_volume = len(top_candidates)
 
     btc_change_24h = 0.0
@@ -1361,7 +1353,6 @@ async def _screen_crypto(
     meta_fields = {
         "total_markets": total_markets,
         "top_by_volume": top_by_volume,
-        "top_n": normalized_top_n,
         "filtered_by_warning": filtered_by_warning,
         "filtered_by_crash": filtered_by_crash,
         "rsi_enriched": int(rsi_enrichment.get("succeeded", 0) or 0),
@@ -1370,7 +1361,7 @@ async def _screen_crypto(
         "coingecko_age_seconds": coingecko_payload.get("age_seconds"),
     }
 
-    response = _build_screen_response(
+    return _build_screen_response(
         results,
         len(filtered),
         filters_applied,
@@ -1379,8 +1370,6 @@ async def _screen_crypto(
         warnings=warnings if warnings else None,
         meta_fields=meta_fields,
     )
-    response["top_n"] = normalized_top_n
-    return response
 
 
 __all__ = [
