@@ -43,6 +43,14 @@
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
 
+	# Block common scanner probes before they reach the application
+	@blocked_probes {
+		path /.git /.git/* /.env /.env.* /env /env.* /wp-config.php /phpinfo.php /info.php /test.php /.s3cfg /s3cfg /.aws /.aws/* /aws-credentials /aws.json /aws/config /aws/credentials /aws-config.js /debug /debug/* /_debugbar /_debugbar/* /admin/.env /backend/.env
+	}
+	handle @blocked_probes {
+		respond "Not Found" 404
+	}
+
 	# Serve favicon.ico
 	handle /favicon.ico {
 		root * /srv
