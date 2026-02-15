@@ -9,7 +9,9 @@ from typing import Any
 import sentry_sdk
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.httpx import HttpxIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
 from app.core.config import settings
 
@@ -75,6 +77,8 @@ def init_sentry(
     service_name: str,
     enable_fastapi: bool = False,
     enable_celery: bool = False,
+    enable_sqlalchemy: bool = False,
+    enable_httpx: bool = False,
 ) -> bool:
     """Initialize Sentry once per process."""
     global _initialized
@@ -98,6 +102,10 @@ def init_sentry(
         integrations.append(FastApiIntegration())
     if enable_celery:
         integrations.append(CeleryIntegration())
+    if enable_sqlalchemy:
+        integrations.append(SqlalchemyIntegration())
+    if enable_httpx:
+        integrations.append(HttpxIntegration())
 
     try:
         sentry_sdk.init(
@@ -116,7 +124,9 @@ def init_sentry(
         sentry_sdk.set_tag("runtime", "python")
         sentry_sdk.set_tag("app", "auto-trader")
         _initialized = True
-        logger.info("Sentry initialized: service=%s environment=%s", service_name, environment)
+        logger.info(
+            "Sentry initialized: service=%s environment=%s", service_name, environment
+        )
         return True
     except Exception:
         logger.exception("Failed to initialize Sentry for service=%s", service_name)

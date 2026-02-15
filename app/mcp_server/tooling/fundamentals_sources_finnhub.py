@@ -274,4 +274,3 @@ __all__ = [
     "_fetch_news_finnhub",
     "_get_finnhub_client",
 ]
-

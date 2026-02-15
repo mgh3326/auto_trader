@@ -1,11 +1,14 @@
 import asyncio
 import datetime
 import logging
+import random
+from typing import Any
 
 import httpx
 import pandas as pd
 from pandas import DataFrame
 
+from app.core.async_rate_limiter import RateLimitExceededError, get_limiter
 from app.core.config import settings
 from app.core.symbol import to_kis_symbol
 from app.services.redis_token_manager import redis_token_manager
@@ -115,6 +118,16 @@ DOMESTIC_DAILY_ORDER_TR = "TTTC8001R"  # 실전투자 국내주식 체결조회
 DOMESTIC_DAILY_ORDER_TR_MOCK = "VTTC8001R"  # 모의투자 국내주식 체결조회
 
 
+def _safe_parse_retry_after(value: str | None) -> float:
+    """Safely parse Retry-After header, returning 0 on failure."""
+    if not value:
+        return 0.0
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def _log_kis_api_failure(
     api_name: str,
     endpoint: str,
@@ -153,6 +166,7 @@ class KISClient:
         }
         # Redis 기반 토큰 관리 사용
         self._token_manager = redis_token_manager
+        self._unmapped_rate_limit_keys_logged: set[str] = set()
 
     async def _fetch_token(self) -> tuple[str, int]:
         """KIS API에서 새 토큰 발급"""
@@ -193,6 +207,191 @@ class KISClient:
         )
         logging.info(f"토큰 설정 완료: {settings.kis_access_token[:10]}...")
 
+    async def _request_with_rate_limit(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        timeout: float = 5.0,
+        api_name: str = "unknown",
+        tr_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Make an HTTP request with rate limiting and 429 retry logic.
+
+        This method wraps httpx requests with:
+        1. Sliding-window rate limiting (acquired before request)
+        2. 429 response handling with exponential backoff
+        3. KIS-specific rate limit heuristics (msg_cd/msg1)
+
+        Args:
+            method: HTTP method ("GET" or "POST")
+            url: Full URL to request
+            headers: Request headers (including authorization)
+            params: Query parameters for GET requests
+            json_body: JSON body for POST requests
+            timeout: Request timeout in seconds
+            api_name: Human-readable API name for logging
+            tr_id: KIS TR_ID for per-API rate limiting
+
+        Returns:
+            Parsed JSON response
+
+        Raises:
+            RuntimeError: On KIS API errors after retries exhausted
+            httpx.HTTPStatusError: On HTTP errors after retries exhausted
+        """
+        # Extract path from URL for per-API rate limiting
+        from urllib.parse import urlparse
+
+        parsed_url = urlparse(url)
+        api_path = parsed_url.path or "/unknown"
+
+        # Build API key for per-API rate limiting: "TR_ID|/path"
+        api_key = f"{tr_id or 'unknown'}|{api_path}"
+
+        # Get rate limit for this specific API
+        rate, period = self._get_rate_limit_for_api(api_key)
+
+        limiter = await get_limiter("kis", api_key, rate=rate, period=period)
+        max_retries = settings.api_rate_limit_retry_429_max
+        base_delay = settings.api_rate_limit_retry_429_base_delay
+
+        last_error: Exception | None = None
+
+        for attempt in range(max_retries + 1):
+            await limiter.acquire(
+                blocking_callback=lambda w: logging.warning(
+                    "[%s] Rate limit wait: %.3fs (api=%s)",
+                    "kis",
+                    w,
+                    api_name,
+                )
+            )
+
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    if method.upper() == "GET":
+                        response = await client.get(url, headers=headers, params=params)
+                    else:
+                        response = await client.post(
+                            url, headers=headers, json=json_body
+                        )
+
+                if response.status_code == 429:
+                    retry_after = _safe_parse_retry_after(
+                        response.headers.get("Retry-After")
+                    )
+                    wait_time = (
+                        retry_after
+                        if retry_after > 0
+                        else base_delay * (2**attempt) + random.uniform(0, 0.1)
+                    )
+                    logging.warning(
+                        "[%s] 429 received for %s, attempt %d/%d, waiting %.3fs",
+                        "kis",
+                        api_name,
+                        attempt + 1,
+                        max_retries + 1,
+                        wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+
+                response.raise_for_status()
+                data = response.json()
+
+                rt_cd = data.get("rt_cd")
+                msg_cd = str(data.get("msg_cd", ""))
+                msg1 = str(data.get("msg1", ""))
+
+                if rt_cd != "0":
+                    rate_limit_heuristics = [
+                        "RATE",
+                        "LIMIT",
+                        "요청제한",
+                        "초과",
+                    ]
+                    is_rate_limit = any(
+                        h in msg_cd.upper() or h in msg1.upper()
+                        for h in rate_limit_heuristics
+                    )
+
+                    if is_rate_limit and attempt < max_retries:
+                        wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                        logging.warning(
+                            "[%s] Rate limit heuristic triggered for %s: %s %s, attempt %d/%d, waiting %.3fs",
+                            "kis",
+                            api_name,
+                            msg_cd,
+                            msg1,
+                            attempt + 1,
+                            max_retries + 1,
+                            wait_time,
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue
+
+                return data
+
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                if e.response.status_code == 429 and attempt < max_retries:
+                    wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                    logging.warning(
+                        "[%s] HTTP 429 for %s, attempt %d/%d, waiting %.3fs",
+                        "kis",
+                        api_name,
+                        attempt + 1,
+                        max_retries + 1,
+                        wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                raise
+            except httpx.RequestError as e:
+                last_error = e
+                if attempt < max_retries:
+                    wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                    logging.warning(
+                        "[%s] Request error for %s: %s, attempt %d/%d, retrying in %.3fs",
+                        "kis",
+                        api_name,
+                        e,
+                        attempt + 1,
+                        max_retries + 1,
+                        wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                raise
+
+        raise RateLimitExceededError(
+            f"KIS rate limit retries exhausted for {api_name}: {last_error}"
+        )
+
+    def _get_rate_limit_for_api(self, api_key: str) -> tuple[int, float]:
+        """Get rate limit for a specific API key, falling back to defaults."""
+        api_limits = settings.kis_api_rate_limits
+        if api_key in api_limits:
+            limit_config = api_limits[api_key]
+            rate = int(limit_config.get("rate", settings.kis_rate_limit_rate))
+            period = float(limit_config.get("period", settings.kis_rate_limit_period))
+            return rate, period
+
+        if api_key not in self._unmapped_rate_limit_keys_logged:
+            logging.warning(
+                "[kis] Unmapped API rate limit for %s, using defaults (%s/%ss)",
+                api_key,
+                settings.kis_rate_limit_rate,
+                settings.kis_rate_limit_period,
+            )
+            self._unmapped_rate_limit_keys_logged.add(api_key)
+        return settings.kis_rate_limit_rate, settings.kis_rate_limit_period
+
     async def volume_rank(self, market: str = "J", limit: int = 30) -> list[dict]:
         await self._ensure_token()
         hdr = self._hdr_base | {
@@ -214,17 +413,15 @@ class KISClient:
             "FID_INPUT_DATE_1": "",
         }
 
-        async with httpx.AsyncClient() as cli:
-            r = await cli.get(
-                f"{BASE}{VOL_URL}",
-                headers=hdr,
-                params=params,
-                timeout=5,
-            )
-        try:
-            js = r.json()
-        except Exception:
-            raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{VOL_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="volume_rank",
+            tr_id=VOL_TR,
+        )
         if js["rt_cd"] == "0":
             results = js["output"][:limit]
             # Safe debug sample without float conversion that could fail
@@ -254,27 +451,25 @@ class KISClient:
             "authorization": f"Bearer {settings.kis_access_token}",
             "tr_id": MARKET_CAP_RANK_TR,
         }
-        async with httpx.AsyncClient() as cli:
-            r = await cli.get(
-                f"{BASE}{MARKET_CAP_RANK_URL}",
-                headers=hdr,
-                params={
-                    "FID_COND_MRKT_DIV_CODE": market,
-                    "FID_COND_SCR_DIV_CODE": "20174",
-                    "FID_INPUT_ISCD": "0000",
-                    "FID_DIV_CLS_CODE": "0",
-                    "FID_TRGT_CLS_CODE": "0",
-                    "FID_TRGT_EXLS_CLS_CODE": "0",
-                    "FID_INPUT_PRICE_1": "",
-                    "FID_INPUT_PRICE_2": "",
-                    "FID_VOL_CNT": "",
-                },
-                timeout=5,
-            )
-        try:
-            js = r.json()
-        except Exception:
-            raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{MARKET_CAP_RANK_URL}",
+            headers=hdr,
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_COND_SCR_DIV_CODE": "20174",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_TRGT_CLS_CODE": "0",
+                "FID_TRGT_EXLS_CLS_CODE": "0",
+                "FID_INPUT_PRICE_1": "",
+                "FID_INPUT_PRICE_2": "",
+                "FID_VOL_CNT": "",
+            },
+            timeout=5,
+            api_name="market_cap_rank",
+            tr_id=MARKET_CAP_RANK_TR,
+        )
         if js["rt_cd"] == "0":
             return js["output"][:limit]
         if js["msg_cd"] == "EGW00123":
@@ -309,32 +504,30 @@ class KISClient:
             f"FID_RANK_SORT_CLS_CODE={rank_sort_cls_code}"
         )
 
-        async with httpx.AsyncClient() as cli:
-            r = await cli.get(
-                f"{BASE}{FLUCTUATION_RANK_URL}",
-                headers=hdr,
-                params={
-                    "FID_COND_MRKT_DIV_CODE": market,
-                    "FID_COND_SCR_DIV_CODE": "20170",
-                    "FID_INPUT_ISCD": "0000",
-                    "FID_DIV_CLS_CODE": "0",
-                    "FID_RANK_SORT_CLS_CODE": rank_sort_cls_code,
-                    "FID_INPUT_CNT_1": "0",
-                    "FID_PRC_CLS_CODE": prc_cls_code,
-                    "FID_INPUT_PRICE_1": "",
-                    "FID_INPUT_PRICE_2": "",
-                    "FID_VOL_CNT": "",
-                    "FID_TRGT_CLS_CODE": "0",
-                    "FID_TRGT_EXLS_CLS_CODE": "0",
-                    "FID_RSFL_RATE1": "",
-                    "FID_RSFL_RATE2": "",
-                },
-                timeout=5,
-            )
-        try:
-            js = r.json()
-        except Exception:
-            raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{FLUCTUATION_RANK_URL}",
+            headers=hdr,
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_COND_SCR_DIV_CODE": "20170",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_RANK_SORT_CLS_CODE": rank_sort_cls_code,
+                "FID_INPUT_CNT_1": "0",
+                "FID_PRC_CLS_CODE": prc_cls_code,
+                "FID_INPUT_PRICE_1": "",
+                "FID_INPUT_PRICE_2": "",
+                "FID_VOL_CNT": "",
+                "FID_TRGT_CLS_CODE": "0",
+                "FID_TRGT_EXLS_CLS_CODE": "0",
+                "FID_RSFL_RATE1": "",
+                "FID_RSFL_RATE2": "",
+            },
+            timeout=5,
+            api_name="fluctuation_rank",
+            tr_id=FLUCTUATION_RANK_TR,
+        )
 
         if js["rt_cd"] == "0":
             results = js["output"]
@@ -366,24 +559,22 @@ class KISClient:
             "authorization": f"Bearer {settings.kis_access_token}",
             "tr_id": FOREIGN_BUYING_RANK_TR,
         }
-        async with httpx.AsyncClient() as cli:
-            r = await cli.get(
-                f"{BASE}{FOREIGN_BUYING_RANK_URL}",
-                headers=hdr,
-                params={
-                    "FID_COND_MRKT_DIV_CODE": "V",
-                    "FID_COND_SCR_DIV_CODE": "16449",
-                    "FID_INPUT_ISCD": "0000",
-                    "FID_DIV_CLS_CODE": "0",
-                    "FID_RANK_SORT_CLS_CODE": "0",
-                    "FID_ETC_CLS_CODE": "1",
-                },
-                timeout=5,
-            )
-        try:
-            js = r.json()
-        except Exception:
-            raise RuntimeError(f"KIS API non-JSON response (status={r.status_code})")
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{FOREIGN_BUYING_RANK_URL}",
+            headers=hdr,
+            params={
+                "FID_COND_MRKT_DIV_CODE": "V",
+                "FID_COND_SCR_DIV_CODE": "16449",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_RANK_SORT_CLS_CODE": "0",
+                "FID_ETC_CLS_CODE": "1",
+            },
+            timeout=5,
+            api_name="foreign_buying_rank",
+            tr_id=FOREIGN_BUYING_RANK_TR,
+        )
         if js["rt_cd"] == "0":
             return js["output"][:limit]
         if js["msg_cd"] == "EGW00123":
@@ -418,9 +609,15 @@ class KISClient:
             "FID_INPUT_ISCD": code.zfill(6),  # 000000 형태도 OK
         }
 
-        async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(f"{BASE}{PRICE_URL}", headers=hdr, params=params)
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{PRICE_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="inquire_price",
+            tr_id=PRICE_TR,
+        )
         if js["rt_cd"] != "0":
             if js.get("msg_cd") in [
                 "EGW00123",
@@ -477,9 +674,15 @@ class KISClient:
             "FID_INPUT_ISCD": code.zfill(6),
         }
 
-        async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(f"{BASE}{ORDERBOOK_URL}", headers=hdr, params=params)
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{ORDERBOOK_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="inquire_orderbook",
+            tr_id=ORDERBOOK_TR,
+        )
         if js["rt_cd"] != "0":
             if js.get("msg_cd") in [
                 "EGW00123",
@@ -511,9 +714,15 @@ class KISClient:
             "FID_INPUT_ISCD": code.zfill(6),  # 000000 형태도 OK
         }
 
-        async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(f"{BASE}{PRICE_URL}", headers=hdr, params=params)
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{PRICE_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="fetch_fundamental_info",
+            tr_id=PRICE_TR,
+        )
         if js["rt_cd"] != "0":
             if js.get("msg_cd") in [
                 "EGW00123",
@@ -581,11 +790,15 @@ class KISClient:
                 "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
             }
 
-            async with httpx.AsyncClient(timeout=5) as cli:
-                r = await cli.get(
-                    f"{BASE}{DAILY_ITEMCHARTPRICE_URL}", headers=hdr, params=params
-                )
-            js = r.json()
+            js = await self._request_with_rate_limit(
+                "GET",
+                f"{BASE}{DAILY_ITEMCHARTPRICE_URL}",
+                headers=hdr,
+                params=params,
+                timeout=5,
+                api_name="inquire_daily_itemchartprice",
+                tr_id=DAILY_ITEMCHARTPRICE_TR,
+            )
 
             if js.get("rt_cd") != "0":
                 if js.get("msg_cd") in [
@@ -694,10 +907,15 @@ class KISClient:
             "FID_ETC_CLS_CODE": "",
         }
 
-        async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(f"{BASE}{MINUTE_CHART_URL}", headers=hdr, params=params)
-
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{MINUTE_CHART_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="inquire_minute_chart",
+            tr_id=MINUTE_CHART_TR,
+        )
 
         # 디버깅을 위한 로깅 추가
         logging.info(f"KIS 분봉 API 응답: {js}")
@@ -1010,14 +1228,19 @@ class KISClient:
                 f"{ctx_key_nk}: '{ctx_area_nk[:20] if ctx_area_nk else 'empty'}...')"
             )
 
-            async with httpx.AsyncClient(timeout=5) as cli:
-                r = await cli.get(
-                    f"{BASE}{url}",
-                    headers=hdr,
-                    params=params,
-                )
-
-            js = r.json()
+            js = await self._request_with_rate_limit(
+                "GET",
+                f"{BASE}{url}",
+                headers=hdr,
+                params=params,
+                timeout=5,
+                api_name=(
+                    "fetch_my_stocks_overseas"
+                    if is_overseas
+                    else "fetch_my_stocks_domestic"
+                ),
+                tr_id=tr_id,
+            )
 
             if js.get("rt_cd") != "0":
                 if js.get("msg_cd") in [
@@ -1134,10 +1357,15 @@ class KISClient:
 
         logging.info("국내 현금 잔고 조회 (inquire-balance)")
 
-        async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(f"{BASE}{BALANCE_URL}", headers=hdr, params=params)
-
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{BALANCE_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="inquire_domestic_cash_balance",
+            tr_id=tr_id,
+        )
         if js.get("rt_cd") != "0":
             msg_cd = js.get("msg_cd", "")
             msg1 = js.get("msg1", "")
@@ -1237,12 +1465,15 @@ class KISClient:
 
         logging.info("해외증거금 통화별 조회")
 
-        async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(
-                f"{BASE}{OVERSEAS_MARGIN_URL}", headers=hdr, params=params
-            )
-
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{OVERSEAS_MARGIN_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="inquire_overseas_margin",
+            tr_id=tr_id,
+        )
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
                 await self._token_manager.clear_token()
@@ -1350,12 +1581,15 @@ class KISClient:
 
         logging.info("통합증거금 조회 (CMA_EVLU_AMT_ICLD_YN=%s)", cma_evlu_amt_icld_yn)
 
-        async with httpx.AsyncClient(timeout=5) as cli:
-            r = await cli.get(
-                f"{BASE}{INTEGRATED_MARGIN_URL}", headers=hdr, params=params
-            )
-
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{INTEGRATED_MARGIN_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="inquire_integrated_margin",
+            tr_id=tr_id,
+        )
         if js.get("rt_cd") != "0":
             msg_cd = js.get("msg_cd", "")
             msg1 = js.get("msg1", "")
@@ -1609,21 +1843,15 @@ class KISClient:
                 f"해외주식 일봉 조회 요청 (반복 {iteration + 1}/{max_iterations}) - symbol: {symbol}, exchange: {excd}, bymd: {bymd}"
             )
 
-            async with httpx.AsyncClient(timeout=10) as cli:
-                r = await cli.get(
-                    f"{BASE}{OVERSEAS_DAILY_CHART_URL}", headers=hdr, params=params
-                )
-
-            # 디버깅: 응답 내용 확인
-            if r.status_code != 200:
-                logging.error(f"HTTP 오류: {r.status_code}, 내용: {r.text[:200]}")
-                raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
-
-            try:
-                js = r.json()
-            except Exception:
-                logging.error(f"JSON 파싱 실패. 응답 내용: {r.text[:200]}")
-                raise
+            js = await self._request_with_rate_limit(
+                "GET",
+                f"{BASE}{OVERSEAS_DAILY_CHART_URL}",
+                headers=hdr,
+                params=params,
+                timeout=10,
+                api_name="inquire_overseas_daily_price",
+                tr_id=OVERSEAS_DAILY_CHART_TR,
+            )
 
             if js.get("rt_cd") != "0":
                 if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
@@ -1634,7 +1862,9 @@ class KISClient:
 
             chunk = js.get("output2") or js.get("output") or []
             if not chunk:
-                logging.info(f"더 이상 과거 데이터가 없음. 현재까지 수집: {len(rows)}개")
+                logging.info(
+                    f"더 이상 과거 데이터가 없음. 현재까지 수집: {len(rows)}개"
+                )
                 break
 
             rows.extend(chunk)
@@ -1768,10 +1998,15 @@ class KISClient:
             body.get("OVRS_ORD_UNPR"),
         )
 
-        async with httpx.AsyncClient(timeout=10) as cli:
-            r = await cli.post(f"{BASE}{OVERSEAS_ORDER_URL}", headers=hdr, json=body)
-
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "POST",
+            f"{BASE}{OVERSEAS_ORDER_URL}",
+            headers=hdr,
+            json_body=body,
+            timeout=10,
+            api_name="order_overseas_stock",
+            tr_id=tr_id,
+        )
 
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
@@ -1930,12 +2165,15 @@ class KISClient:
                 f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK200: '{ctx_area_nk200[:20] if ctx_area_nk200 else 'empty'}...')"
             )
 
-            async with httpx.AsyncClient(timeout=10) as cli:
-                r = await cli.get(
-                    f"{BASE}{OVERSEAS_ORDER_INQUIRY_URL}", headers=hdr, params=params
-                )
-
-            js = r.json()
+            js = await self._request_with_rate_limit(
+                "GET",
+                f"{BASE}{OVERSEAS_ORDER_INQUIRY_URL}",
+                headers=hdr,
+                params=params,
+                timeout=10,
+                api_name="inquire_overseas_orders",
+                tr_id=tr_id,
+            )
 
             if js.get("rt_cd") != "0":
                 if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
@@ -2048,12 +2286,15 @@ class KISClient:
 
         logging.info(f"해외주식 주문 취소 - symbol: {symbol}, 주문번호: {order_number}")
 
-        async with httpx.AsyncClient(timeout=10) as cli:
-            r = await cli.post(
-                f"{BASE}{OVERSEAS_ORDER_CANCEL_URL}", headers=hdr, json=body
-            )
-
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "POST",
+            f"{BASE}{OVERSEAS_ORDER_CANCEL_URL}",
+            headers=hdr,
+            json_body=body,
+            timeout=10,
+            api_name="cancel_overseas_order",
+            tr_id=tr_id,
+        )
 
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
@@ -2152,12 +2393,15 @@ class KISClient:
                 f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK100: '{ctx_area_nk100[:20] if ctx_area_nk100 else 'empty'}...')"
             )
 
-            async with httpx.AsyncClient(timeout=10) as cli:
-                r = await cli.get(
-                    f"{BASE}{KOREA_ORDER_INQUIRY_URL}", headers=hdr, params=params
-                )
-
-            js = r.json()
+            js = await self._request_with_rate_limit(
+                "GET",
+                f"{BASE}{KOREA_ORDER_INQUIRY_URL}",
+                headers=hdr,
+                params=params,
+                timeout=10,
+                api_name="inquire_korea_orders",
+                tr_id=tr_id,
+            )
 
             if js.get("rt_cd") != "0":
                 if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
@@ -2281,10 +2525,15 @@ class KISClient:
             f"수량: {quantity}주, 가격: {price if price > 0 else '시장가'}"
         )
 
-        async with httpx.AsyncClient(timeout=10) as cli:
-            r = await cli.post(f"{BASE}{KOREA_ORDER_URL}", headers=hdr, json=body)
-
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "POST",
+            f"{BASE}{KOREA_ORDER_URL}",
+            headers=hdr,
+            json_body=body,
+            timeout=10,
+            api_name="order_korea_stock",
+            tr_id=tr_id,
+        )
 
         if js.get("rt_cd") != "0":
             msg_cd = js.get("msg_cd", "")
@@ -2417,12 +2666,15 @@ class KISClient:
             f"국내주식 주문 취소 - stock_code: {stock_code}, 주문번호: {order_number}"
         )
 
-        async with httpx.AsyncClient(timeout=10) as cli:
-            r = await cli.post(
-                f"{BASE}{KOREA_ORDER_CANCEL_URL}", headers=hdr, json=body
-            )
-
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "POST",
+            f"{BASE}{KOREA_ORDER_CANCEL_URL}",
+            headers=hdr,
+            json_body=body,
+            timeout=10,
+            api_name="cancel_korea_order",
+            tr_id=tr_id,
+        )
 
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
@@ -2544,12 +2796,15 @@ class KISClient:
                 f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK100: '{ctx_area_nk100[:20] if ctx_area_nk100 else 'empty'}...')"
             )
 
-            async with httpx.AsyncClient(timeout=10) as cli:
-                r = await cli.get(
-                    f"{BASE}{DOMESTIC_DAILY_ORDER_URL}", headers=hdr, params=params
-                )
-
-            js = r.json()
+            js = await self._request_with_rate_limit(
+                "GET",
+                f"{BASE}{DOMESTIC_DAILY_ORDER_URL}",
+                headers=hdr,
+                params=params,
+                timeout=10,
+                api_name="inquire_daily_order_domestic",
+                tr_id=tr_id,
+            )
 
             if js.get("rt_cd") != "0":
                 if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
@@ -2689,12 +2944,15 @@ class KISClient:
                 f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK200: '{ctx_area_nk200[:20] if ctx_area_nk200 else 'empty'}...')"
             )
 
-            async with httpx.AsyncClient(timeout=10) as cli:
-                r = await cli.get(
-                    f"{BASE}{OVERSEAS_DAILY_ORDER_URL}", headers=hdr, params=params
-                )
-
-            js = r.json()
+            js = await self._request_with_rate_limit(
+                "GET",
+                f"{BASE}{OVERSEAS_DAILY_ORDER_URL}",
+                headers=hdr,
+                params=params,
+                timeout=10,
+                api_name="inquire_daily_order_overseas",
+                tr_id=tr_id,
+            )
 
             if js.get("rt_cd") != "0":
                 if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
@@ -2796,12 +3054,15 @@ class KISClient:
             f"국내주식 주문 정정 - stock_code: {stock_code}, 주문번호: {order_number}"
         )
 
-        async with httpx.AsyncClient(timeout=10) as cli:
-            r = await cli.post(
-                f"{BASE}{KOREA_ORDER_CANCEL_URL}", headers=hdr, json=body
-            )
-
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "POST",
+            f"{BASE}{KOREA_ORDER_CANCEL_URL}",
+            headers=hdr,
+            json_body=body,
+            timeout=10,
+            api_name="modify_korea_order",
+            tr_id=tr_id,
+        )
 
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
@@ -2892,12 +3153,15 @@ class KISClient:
             f"해외주식 주문 정정 - symbol: {symbol}, 거래소: {exchange_code}, 주문번호: {order_number}"
         )
 
-        async with httpx.AsyncClient(timeout=10) as cli:
-            r = await cli.post(
-                f"{BASE}{OVERSEAS_ORDER_CANCEL_URL}", headers=hdr, json=body
-            )
-
-        js = r.json()
+        js = await self._request_with_rate_limit(
+            "POST",
+            f"{BASE}{OVERSEAS_ORDER_CANCEL_URL}",
+            headers=hdr,
+            json_body=body,
+            timeout=10,
+            api_name="modify_overseas_order",
+            tr_id=tr_id,
+        )
 
         if js.get("rt_cd") != "0":
             if js.get("msg_cd") in ["EGW00123", "EGW00121"]:

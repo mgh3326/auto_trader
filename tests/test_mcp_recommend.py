@@ -69,10 +69,15 @@ def _mock_kr_sources(
     ) -> dict[str, dict[str, Any]]:
         return valuations or {}
 
-    monkeypatch.setattr(analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+    monkeypatch.setattr(
+        analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
     )
-    monkeypatch.setattr(analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
-    monkeypatch.setattr(analysis_screen_core, "fetch_valuation_all_cached",
+    monkeypatch.setattr(
+        analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+    )
+    monkeypatch.setattr(
+        analysis_screen_core,
+        "fetch_valuation_all_cached",
         mock_fetch_valuation_all_cached,
     )
 
@@ -87,7 +92,9 @@ def _mock_empty_holdings(monkeypatch: pytest.MonkeyPatch) -> None:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
         return [], [], market, account
 
-    monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions",
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "_collect_portfolio_positions",
         mock_collect_portfolio_positions,
     )
 
@@ -426,7 +433,9 @@ class TestRecommendStocksIntegration:
             captured["account"] = account
             return [{"symbol": "555555"}], [], market, account
 
-        monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions",
+        monkeypatch.setattr(
+            portfolio_holdings,
+            "_collect_portfolio_positions",
             mock_collect_portfolio_positions,
         )
 
@@ -480,7 +489,9 @@ class TestRecommendStocksIntegration:
         ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
             return [{"symbol": "777001"}], [], market, account
 
-        monkeypatch.setattr(portfolio_holdings, "_collect_portfolio_positions",
+        monkeypatch.setattr(
+            portfolio_holdings,
+            "_collect_portfolio_positions",
             mock_collect_portfolio_positions,
         )
 
@@ -526,7 +537,9 @@ class TestRecommendStocksIntegration:
                 },
             ], "yfinance"
 
-        monkeypatch.setattr(analysis_tool_handlers, "_get_us_rankings",
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "_get_us_rankings",
             mock_get_us_rankings,
         )
 
@@ -614,7 +627,9 @@ class TestRecommendStocksIntegration:
                 "indicators": {"rsi": {"14": 37.5}},
             }
 
-        monkeypatch.setattr(portfolio_holdings, "_get_indicators_impl", mock_get_indicators_impl)
+        monkeypatch.setattr(
+            portfolio_holdings, "_get_indicators_impl", mock_get_indicators_impl
+        )
 
         result = await recommend_stocks(
             budget=1_000_000,
@@ -658,7 +673,9 @@ class TestRecommendStocksIntegration:
                 "indicators": {"rsi": {"14": 28.0}},
             }
 
-        monkeypatch.setattr(portfolio_holdings, "_get_indicators_impl", mock_get_indicators_impl)
+        monkeypatch.setattr(
+            portfolio_holdings, "_get_indicators_impl", mock_get_indicators_impl
+        )
 
         result = await recommend_stocks(
             budget=300_000,
@@ -1078,7 +1095,9 @@ class TestRecommendStocksIntegration:
         async def mock_fetch_stock_all_cached(market: str) -> list[dict[str, Any]]:
             raise RuntimeError()
 
-        monkeypatch.setattr(analysis_screen_core, "fetch_stock_all_cached",
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "fetch_stock_all_cached",
             mock_fetch_stock_all_cached,
         )
         _mock_empty_holdings(monkeypatch)

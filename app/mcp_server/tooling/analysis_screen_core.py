@@ -9,6 +9,7 @@ from typing import Any
 
 import yfinance as yf
 
+from app.core.async_rate_limiter import RateLimitExceededError
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_rsi,
     _fetch_ohlcv_for_indicators,
@@ -176,19 +177,72 @@ def _sort_and_limit(
     return results[:limit]
 
 
+def _empty_rsi_enrichment_diagnostics() -> dict[str, Any]:
+    return {
+        "attempted": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "rate_limited": 0,
+        "timeout": 0,
+        "error_samples": [],
+    }
+
+
+def _finalize_rsi_enrichment_diagnostics(
+    diagnostics: dict[str, Any],
+    statuses: list[str],
+    errors: list[str | None],
+) -> dict[str, Any]:
+    diagnostics["succeeded"] = sum(1 for status in statuses if status == "success")
+    diagnostics["failed"] = sum(1 for status in statuses if status == "error")
+    diagnostics["rate_limited"] = sum(
+        1 for status in statuses if status == "rate_limited"
+    )
+    diagnostics["timeout"] = sum(1 for status in statuses if status == "timeout")
+
+    samples: list[str] = []
+    for error in errors:
+        if not error:
+            continue
+        samples.append(str(error)[:100])
+        if len(samples) >= 3:
+            break
+
+    diagnostics["error_samples"] = samples
+    return diagnostics
+
+
 def _build_screen_response(
     results: list[dict[str, Any]],
     total_count: int,
     filters_applied: dict[str, Any],
     market: str,
+    rsi_enrichment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the final screening response."""
+    diagnostics = _empty_rsi_enrichment_diagnostics()
+    if rsi_enrichment:
+        diagnostics.update(
+            {
+                "attempted": int(rsi_enrichment.get("attempted", 0) or 0),
+                "succeeded": int(rsi_enrichment.get("succeeded", 0) or 0),
+                "failed": int(rsi_enrichment.get("failed", 0) or 0),
+                "rate_limited": int(rsi_enrichment.get("rate_limited", 0) or 0),
+                "timeout": int(rsi_enrichment.get("timeout", 0) or 0),
+                "error_samples": [
+                    str(message)[:100]
+                    for message in (rsi_enrichment.get("error_samples") or [])[:3]
+                ],
+            }
+        )
+
     return {
         "results": results,
         "total_count": total_count,
         "returned_count": len(results),
         "filters_applied": filters_applied,
         "market": market,
+        "meta": {"rsi_enrichment": diagnostics},
         "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
     }
 
@@ -208,9 +262,10 @@ async def _screen_kr(
     enrich_rsi: bool = True,
 ) -> dict[str, Any]:
     """Screen Korean market stocks/ETFs."""
-    min_dividend_yield_input, min_dividend_yield_normalized = (
-        _normalize_dividend_yield_threshold(min_dividend_yield)
-    )
+    (
+        min_dividend_yield_input,
+        min_dividend_yield_normalized,
+    ) = _normalize_dividend_yield_threshold(min_dividend_yield)
 
     filters_applied = {
         "market": market,
@@ -291,13 +346,36 @@ async def _screen_kr(
         "max_rsi": max_rsi,
     }
 
-    always_enrich_rsi = True
-    if enrich_rsi and (max_rsi is not None or always_enrich_rsi):
-        subset_limit = min(len(candidates), limit * 3, 150)
-        subset = candidates[:subset_limit]
+    filtered_non_rsi = _apply_basic_filters(
+        candidates,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        max_pbr=max_pbr,
+        min_dividend_yield=min_dividend_yield_normalized,
+        max_rsi=None,
+    )
+    sorted_candidates = _sort_and_limit(
+        filtered_non_rsi,
+        sort_by,
+        sort_order,
+        len(filtered_non_rsi),
+    )
+
+    rsi_enrichment = _empty_rsi_enrichment_diagnostics()
+    rsi_subset_limit = (
+        min(len(sorted_candidates), limit)
+        if max_rsi is None
+        else min(len(sorted_candidates), limit * 3, 150)
+    )
+    rsi_subset = sorted_candidates[:rsi_subset_limit]
+
+    if enrich_rsi and rsi_subset:
+        rsi_enrichment["attempted"] = len(rsi_subset)
+        statuses = ["pending" for _ in rsi_subset]
+        errors: list[str | None] = [None for _ in rsi_subset]
         semaphore = asyncio.Semaphore(10)
 
-        async def calculate_rsi_for_stock(item: dict[str, Any]):
+        async def calculate_rsi_for_stock(item: dict[str, Any], index: int):
             async with semaphore:
                 item_copy = item.copy()
                 symbol = item.get("short_code") or item.get("code")
@@ -308,6 +386,8 @@ async def _screen_kr(
                         "[RSI-KR] No valid symbol found in item keys=%s",
                         sorted(item.keys()),
                     )
+                    statuses[index] = "error"
+                    errors[index] = "No valid symbol found"
                     return item_copy
 
                 if item_copy.get("rsi") is not None:
@@ -315,20 +395,25 @@ async def _screen_kr(
                         "[RSI-KR] RSI already exists for %s, skipping recalculation",
                         symbol,
                     )
+                    statuses[index] = "success"
                     return item_copy
 
                 try:
                     logger.debug("[RSI-KR] Fetching OHLCV data for %s", symbol)
-                    df = await _fetch_ohlcv_for_indicators(symbol, "equity_kr", count=50)
+                    df = await _fetch_ohlcv_for_indicators(
+                        symbol, "equity_kr", count=50
+                    )
                     candle_count = len(df) if df is not None else 0
                     logger.info("[RSI-KR] Got %d candles for %s", candle_count, symbol)
 
-                    if df.empty or "close" not in df.columns:
+                    if df is None or df.empty or "close" not in df.columns:
                         logger.warning(
                             "[RSI-KR] Missing OHLCV close data for %s (columns=%s)",
                             symbol,
                             list(df.columns) if df is not None else [],
                         )
+                        statuses[index] = "error"
+                        errors[index] = "Missing OHLCV close data"
                         return item_copy
 
                     if candle_count < 14:
@@ -337,6 +422,8 @@ async def _screen_kr(
                             candle_count,
                             symbol,
                         )
+                        statuses[index] = "error"
+                        errors[index] = f"Insufficient candles ({candle_count})"
                         return item_copy
 
                     logger.debug("[RSI-KR] Calculating RSI for %s", symbol)
@@ -346,9 +433,12 @@ async def _screen_kr(
                         logger.warning(
                             "[RSI-KR] RSI calculation returned None for %s", symbol
                         )
+                        statuses[index] = "error"
+                        errors[index] = "RSI calculation returned None"
                         return item_copy
 
                     item_copy["rsi"] = rsi_value
+                    statuses[index] = "success"
                     logger.info("[RSI-KR] ✅ Success: %s RSI=%.2f", symbol, rsi_value)
                 except Exception as exc:
                     logger.error(
@@ -357,37 +447,73 @@ async def _screen_kr(
                         type(exc).__name__,
                         exc,
                     )
+                    statuses[index] = (
+                        "rate_limited"
+                        if isinstance(exc, RateLimitExceededError)
+                        else "error"
+                    )
+                    errors[index] = f"{type(exc).__name__}: {exc}"
 
                 return item_copy
 
         try:
             subset_results = await asyncio.wait_for(
                 asyncio.gather(
-                    *[calculate_rsi_for_stock(item) for item in subset],
+                    *[
+                        calculate_rsi_for_stock(item, i)
+                        for i, item in enumerate(rsi_subset)
+                    ],
                     return_exceptions=True,
                 ),
                 timeout=30.0,
             )
             for i, result in enumerate(subset_results):
                 if isinstance(result, Exception):
-                    symbol = subset[i].get("short_code") or subset[i].get("code")
+                    symbol = rsi_subset[i].get("short_code") or rsi_subset[i].get(
+                        "code"
+                    )
                     logger.error(
                         "[RSI-KR] gather returned exception for %s: %s: %s",
                         symbol or "UNKNOWN",
                         type(result).__name__,
                         result,
                     )
+                    statuses[i] = (
+                        "rate_limited"
+                        if isinstance(result, RateLimitExceededError)
+                        else "error"
+                    )
+                    errors[i] = f"{type(result).__name__}: {result}"
                     continue
                 if result.get("rsi") is not None:
-                    candidates[i]["rsi"] = result["rsi"]
+                    rsi_subset[i]["rsi"] = result["rsi"]
+                    if statuses[i] == "pending":
+                        statuses[i] = "success"
+                elif statuses[i] == "pending":
+                    statuses[i] = "error"
+                    errors[i] = "RSI calculation returned None"
         except TimeoutError:
             logger.warning("[RSI-KR] RSI enrichment timed out after 30 seconds")
+            for i, status in enumerate(statuses):
+                if status == "pending":
+                    statuses[i] = "timeout"
+                    errors[i] = "Timed out after 30 seconds"
         except Exception as exc:
             logger.error(
                 "[RSI-KR] RSI enrichment batch failed: %s: %s",
                 type(exc).__name__,
                 exc,
             )
+            for i, status in enumerate(statuses):
+                if status == "pending":
+                    statuses[i] = (
+                        "rate_limited"
+                        if isinstance(exc, RateLimitExceededError)
+                        else "error"
+                    )
+                    errors[i] = f"{type(exc).__name__}: {exc}"
+        finally:
+            _finalize_rsi_enrichment_diagnostics(rsi_enrichment, statuses, errors)
 
     filters_applied.update(advanced_filters_applied)
     filters_applied["sort_by"] = sort_by
@@ -397,16 +523,26 @@ async def _screen_kr(
     if min_dividend_yield_normalized is not None:
         filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
-    filtered = _apply_basic_filters(
-        candidates,
-        min_market_cap=min_market_cap,
-        max_per=max_per,
-        max_pbr=max_pbr,
-        min_dividend_yield=min_dividend_yield_normalized,
-        max_rsi=max_rsi,
+    if max_rsi is not None:
+        filtered = _apply_basic_filters(
+            rsi_subset,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=max_rsi,
+        )
+    else:
+        filtered = sorted_candidates
+
+    results = filtered[:limit]
+    return _build_screen_response(
+        results,
+        len(filtered),
+        filters_applied,
+        market,
+        rsi_enrichment=rsi_enrichment,
     )
-    results = _sort_and_limit(filtered, sort_by, sort_order, limit)
-    return _build_screen_response(results, len(filtered), filters_applied, market)
 
 
 async def _screen_us(
@@ -423,9 +559,10 @@ async def _screen_us(
     enrich_rsi: bool = True,
 ) -> dict[str, Any]:
     """Screen US market stocks using yfinance screener."""
-    min_dividend_yield_input, min_dividend_yield_normalized = (
-        _normalize_dividend_yield_threshold(min_dividend_yield)
-    )
+    (
+        min_dividend_yield_input,
+        min_dividend_yield_normalized,
+    ) = _normalize_dividend_yield_threshold(min_dividend_yield)
 
     filters_applied = {
         "market": market,
@@ -447,9 +584,9 @@ async def _screen_us(
         if min_dividend_yield_input is not None:
             filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
         if min_dividend_yield_normalized is not None:
-            filters_applied["min_dividend_yield_normalized"] = (
-                min_dividend_yield_normalized
-            )
+            filters_applied[
+                "min_dividend_yield_normalized"
+            ] = min_dividend_yield_normalized
 
     try:
         from yfinance.screener import EquityQuery
@@ -496,7 +633,9 @@ async def _screen_us(
             _complete_filters_applied()
             return _build_screen_response([], 0, filters_applied, market)
 
-        quotes = screen_result.get("quotes", []) if isinstance(screen_result, dict) else []
+        quotes = (
+            screen_result.get("quotes", []) if isinstance(screen_result, dict) else []
+        )
         if not quotes:
             _complete_filters_applied()
             return _build_screen_response([], 0, filters_applied, market)
@@ -512,15 +651,21 @@ async def _screen_us(
         for quote in quotes:
             mapped = {
                 "code": quote.get("symbol"),
-                "name": _first_value(quote, "shortName", "longName", "shortname", "longname"),
-                "close": _first_value(quote, "regularMarketPrice", "lastPrice", "lastprice"),
+                "name": _first_value(
+                    quote, "shortName", "longName", "shortname", "longname"
+                ),
+                "close": _first_value(
+                    quote, "regularMarketPrice", "lastPrice", "lastprice"
+                ),
                 "change_rate": _first_value(
                     quote,
                     "regularMarketChangePercent",
                     "percentchange",
                 )
                 or 0,
-                "volume": _first_value(quote, "regularMarketVolume", "dayVolume", "dayvolume")
+                "volume": _first_value(
+                    quote, "regularMarketVolume", "dayVolume", "dayvolume"
+                )
                 or 0,
                 "market_cap": _first_value(
                     quote, "marketCap", "intradayMarketCap", "intradaymarketcap"
@@ -626,9 +771,10 @@ async def _screen_crypto(
     enrich_rsi: bool = True,
 ) -> dict[str, Any]:
     """Screen crypto market coins using Upbit."""
-    min_dividend_yield_input, min_dividend_yield_normalized = (
-        _normalize_dividend_yield_threshold(min_dividend_yield)
-    )
+    (
+        min_dividend_yield_input,
+        min_dividend_yield_normalized,
+    ) = _normalize_dividend_yield_threshold(min_dividend_yield)
 
     filters_applied = {
         "market": market,
@@ -658,13 +804,37 @@ async def _screen_crypto(
         if "market_cap" not in item:
             item["market_cap"] = None
 
-    always_enrich_rsi = True
-    if enrich_rsi and (max_rsi is not None or always_enrich_rsi):
-        subset_limit = min(len(candidates), limit * 3, 150)
-        subset = candidates[:subset_limit]
+    min_trade_amount_24h = min_market_cap
+    filtered_non_rsi = candidates
+    if min_trade_amount_24h is not None:
+        filtered_non_rsi = [
+            item
+            for item in filtered_non_rsi
+            if (item.get("trade_amount_24h") or 0) >= min_trade_amount_24h
+        ]
+
+    sorted_candidates = _sort_and_limit(
+        filtered_non_rsi,
+        sort_by,
+        sort_order,
+        len(filtered_non_rsi),
+    )
+
+    rsi_enrichment = _empty_rsi_enrichment_diagnostics()
+    rsi_subset_limit = (
+        min(len(sorted_candidates), limit)
+        if max_rsi is None
+        else min(len(sorted_candidates), limit * 3, 150)
+    )
+    rsi_subset = sorted_candidates[:rsi_subset_limit]
+
+    if enrich_rsi and rsi_subset:
+        rsi_enrichment["attempted"] = len(rsi_subset)
+        statuses = ["pending" for _ in rsi_subset]
+        errors: list[str | None] = [None for _ in rsi_subset]
         semaphore = asyncio.Semaphore(10)
 
-        async def calculate_rsi_for_coin(item: dict[str, Any]):
+        async def calculate_rsi_for_coin(item: dict[str, Any], index: int):
             async with semaphore:
                 item_copy = item.copy()
                 symbol = (
@@ -679,6 +849,12 @@ async def _screen_crypto(
                         "[RSI-Crypto] No valid symbol found in item keys=%s",
                         sorted(item.keys()),
                     )
+                    statuses[index] = "error"
+                    errors[index] = "No valid symbol found"
+                    return item_copy
+
+                if item_copy.get("rsi") is not None:
+                    statuses[index] = "success"
                     return item_copy
 
                 try:
@@ -689,12 +865,14 @@ async def _screen_crypto(
                         "[RSI-Crypto] Got %d candles for %s", candle_count, symbol
                     )
 
-                    if df.empty or "close" not in df.columns:
+                    if df is None or df.empty or "close" not in df.columns:
                         logger.warning(
                             "[RSI-Crypto] Missing OHLCV close data for %s (columns=%s)",
                             symbol,
                             list(df.columns) if df is not None else [],
                         )
+                        statuses[index] = "error"
+                        errors[index] = "Missing OHLCV close data"
                         return item_copy
 
                     if candle_count < 14:
@@ -703,6 +881,8 @@ async def _screen_crypto(
                             candle_count,
                             symbol,
                         )
+                        statuses[index] = "error"
+                        errors[index] = f"Insufficient candles ({candle_count})"
                         return item_copy
 
                     logger.debug("[RSI-Crypto] Calculating RSI for %s", symbol)
@@ -712,10 +892,15 @@ async def _screen_crypto(
                         logger.warning(
                             "[RSI-Crypto] RSI calculation returned None for %s", symbol
                         )
+                        statuses[index] = "error"
+                        errors[index] = "RSI calculation returned None"
                         return item_copy
 
                     item_copy["rsi"] = rsi_value
-                    logger.info("[RSI-Crypto] ✅ Success: %s RSI=%.2f", symbol, rsi_value)
+                    statuses[index] = "success"
+                    logger.info(
+                        "[RSI-Crypto] ✅ Success: %s RSI=%.2f", symbol, rsi_value
+                    )
                 except Exception as exc:
                     logger.error(
                         "[RSI-Crypto] ❌ Failed for %s: %s: %s",
@@ -723,23 +908,32 @@ async def _screen_crypto(
                         type(exc).__name__,
                         exc,
                     )
+                    statuses[index] = (
+                        "rate_limited"
+                        if isinstance(exc, RateLimitExceededError)
+                        else "error"
+                    )
+                    errors[index] = f"{type(exc).__name__}: {exc}"
 
                 return item_copy
 
         try:
-            subset = await asyncio.wait_for(
+            subset_results = await asyncio.wait_for(
                 asyncio.gather(
-                    *[calculate_rsi_for_coin(item) for item in subset],
+                    *[
+                        calculate_rsi_for_coin(item, i)
+                        for i, item in enumerate(rsi_subset)
+                    ],
                     return_exceptions=True,
                 ),
                 timeout=30.0,
             )
-            for i, coin in enumerate(subset[: len(candidates)]):
+            for i, coin in enumerate(subset_results):
                 if isinstance(coin, Exception):
                     symbol = (
-                        candidates[i].get("original_market")
-                        or candidates[i].get("symbol")
-                        or candidates[i].get("market")
+                        rsi_subset[i].get("original_market")
+                        or rsi_subset[i].get("symbol")
+                        or rsi_subset[i].get("market")
                     )
                     logger.error(
                         "[RSI-Crypto] gather returned exception for %s: %s: %s",
@@ -747,16 +941,41 @@ async def _screen_crypto(
                         type(coin).__name__,
                         coin,
                     )
+                    statuses[i] = (
+                        "rate_limited"
+                        if isinstance(coin, RateLimitExceededError)
+                        else "error"
+                    )
+                    errors[i] = f"{type(coin).__name__}: {coin}"
                     continue
-                candidates[i].update(coin)
+                rsi_subset[i].update(coin)
+                if coin.get("rsi") is not None and statuses[i] == "pending":
+                    statuses[i] = "success"
+                elif coin.get("rsi") is None and statuses[i] == "pending":
+                    statuses[i] = "error"
+                    errors[i] = "RSI calculation returned None"
         except TimeoutError:
             logger.warning("[RSI-Crypto] RSI enrichment timed out after 30 seconds")
+            for i, status in enumerate(statuses):
+                if status == "pending":
+                    statuses[i] = "timeout"
+                    errors[i] = "Timed out after 30 seconds"
         except Exception as exc:
             logger.error(
                 "[RSI-Crypto] RSI enrichment batch failed: %s: %s",
                 type(exc).__name__,
                 exc,
             )
+            for i, status in enumerate(statuses):
+                if status == "pending":
+                    statuses[i] = (
+                        "rate_limited"
+                        if isinstance(exc, RateLimitExceededError)
+                        else "error"
+                    )
+                    errors[i] = f"{type(exc).__name__}: {exc}"
+        finally:
+            _finalize_rsi_enrichment_diagnostics(rsi_enrichment, statuses, errors)
 
     filters_applied.update(
         {
@@ -773,26 +992,29 @@ async def _screen_crypto(
     if min_dividend_yield_normalized is not None:
         filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
-    min_trade_amount_24h = min_market_cap
     if min_trade_amount_24h is not None:
         filters_applied["min_market_cap_interpreted_as"] = "trade_amount_24h"
 
-    filtered = _apply_basic_filters(
-        candidates,
-        min_market_cap=None,
-        max_per=None,
-        max_pbr=None,
-        min_dividend_yield=None,
-        max_rsi=max_rsi,
+    if max_rsi is not None:
+        filtered = _apply_basic_filters(
+            rsi_subset,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=max_rsi,
+        )
+    else:
+        filtered = sorted_candidates
+
+    results = filtered[:limit]
+    return _build_screen_response(
+        results,
+        len(filtered),
+        filters_applied,
+        market,
+        rsi_enrichment=rsi_enrichment,
     )
-    if min_trade_amount_24h is not None:
-        filtered = [
-            item
-            for item in filtered
-            if (item.get("trade_amount_24h") or 0) >= min_trade_amount_24h
-        ]
-    results = _sort_and_limit(filtered, sort_by, sort_order, limit)
-    return _build_screen_response(results, len(filtered), filters_applied, market)
 
 
 __all__ = [

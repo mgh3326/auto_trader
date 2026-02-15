@@ -268,7 +268,11 @@ async def cancel_order_impl(
                     open_orders = await kis.inquire_korea_orders()
                     for order in open_orders:
                         if (
-                            str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
+                            str(
+                                _get_kis_field(
+                                    order, "odno", "ODNO", "ord_no", "ORD_NO"
+                                )
+                            )
                             == order_id
                         ):
                             symbol = str(_get_kis_field(order, "pdno", "PDNO"))
@@ -306,10 +310,16 @@ async def cancel_order_impl(
                             default="02",
                         )
                         price = int(
-                            float(_get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0) or 0)
+                            float(
+                                _get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0)
+                                or 0
+                            )
                         )
                         quantity = int(
-                            float(_get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0)
+                            float(
+                                _get_kis_field(order, "ord_qty", "ORD_QTY", default=0)
+                                or 0
+                            )
                         )
                         break
 
@@ -366,7 +376,10 @@ async def cancel_order_impl(
                 for order in open_orders:
                     if str(_get_kis_field(order, "odno", "ODNO")) == order_id:
                         quantity = int(
-                            float(_get_kis_field(order, "nccs_qty", "NCCS_QTY", default=0) or 0)
+                            float(
+                                _get_kis_field(order, "nccs_qty", "NCCS_QTY", default=0)
+                                or 0
+                            )
                         )
                         break
 
@@ -467,7 +480,9 @@ async def modify_order_impl(
             original_price = float(original_order.get("price", 0) or 0)
             original_quantity = float(original_order.get("remaining_volume", 0) or 0)
             final_price = new_price if new_price is not None else original_price
-            final_quantity = new_quantity if new_quantity is not None else original_quantity
+            final_quantity = (
+                new_quantity if new_quantity is not None else original_quantity
+            )
 
             result = await upbit_service.cancel_and_reorder(
                 order_id, final_price, final_quantity
@@ -524,7 +539,10 @@ async def modify_order_impl(
             open_orders = await kis.inquire_korea_orders()
             target_order = None
             for order in open_orders:
-                if str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO")) == order_id:
+                if (
+                    str(_get_kis_field(order, "odno", "ODNO", "ord_no", "ORD_NO"))
+                    == order_id
+                ):
                     target_order = order
                     break
 
@@ -540,17 +558,27 @@ async def modify_order_impl(
                 }
 
             original_price = int(
-                float(_get_kis_field(target_order, "ord_unpr", "ORD_UNPR", default=0) or 0)
+                float(
+                    _get_kis_field(target_order, "ord_unpr", "ORD_UNPR", default=0) or 0
+                )
             )
             original_quantity = int(
-                float(_get_kis_field(target_order, "ord_qty", "ORD_QTY", default=0) or 0)
+                float(
+                    _get_kis_field(target_order, "ord_qty", "ORD_QTY", default=0) or 0
+                )
             )
-            side_code = _get_kis_field(target_order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
+            side_code = _get_kis_field(
+                target_order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD"
+            )
             side = "buy" if side_code == "02" else "sell"
 
-            final_price_raw = int(new_price) if new_price is not None else original_price
+            final_price_raw = (
+                int(new_price) if new_price is not None else original_price
+            )
             final_price = int(adjust_tick_size_kr(float(final_price_raw), side))
-            final_quantity = int(new_quantity) if new_quantity is not None else original_quantity
+            final_quantity = (
+                int(new_quantity) if new_quantity is not None else original_quantity
+            )
 
             result = await kis.modify_korea_order(
                 order_id, normalized_symbol, final_quantity, final_price
@@ -637,15 +665,21 @@ async def modify_order_impl(
                 }
 
             original_price = float(
-                _get_kis_field(target_order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0) or 0
+                _get_kis_field(target_order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0)
+                or 0
             )
             original_quantity = int(
-                float(_get_kis_field(target_order, "ft_ord_qty", "FT_ORD_QTY", default=0) or 0)
+                float(
+                    _get_kis_field(target_order, "ft_ord_qty", "FT_ORD_QTY", default=0)
+                    or 0
+                )
             )
 
             exchange_code = target_exchange or preferred_exchange
             final_price = float(new_price) if new_price is not None else original_price
-            final_quantity = int(new_quantity) if new_quantity is not None else original_quantity
+            final_quantity = (
+                int(new_quantity) if new_quantity is not None else original_quantity
+            )
 
             result = await kis.modify_overseas_order(
                 order_id,

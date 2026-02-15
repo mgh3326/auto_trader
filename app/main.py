@@ -53,7 +53,12 @@ def configure_logging() -> None:
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
     configure_logging()
-    init_sentry(service_name="auto-trader-api", enable_fastapi=True)
+    init_sentry(
+        service_name="auto-trader-api",
+        enable_fastapi=True,
+        enable_sqlalchemy=True,
+        enable_httpx=True,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

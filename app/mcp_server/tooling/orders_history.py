@@ -113,7 +113,9 @@ async def get_order_history_impl(
 
             if m_type == "crypto":
                 if status in ("all", "pending"):
-                    open_ops = await upbit_service.fetch_open_orders(market=normalized_symbol)
+                    open_ops = await upbit_service.fetch_open_orders(
+                        market=normalized_symbol
+                    )
                     fetched.extend([_normalize_upbit_order(o) for o in open_ops])
 
                 if status in ("all", "filled", "cancelled") and normalized_symbol:
@@ -127,10 +129,14 @@ async def get_order_history_impl(
             elif m_type == "equity_kr":
                 kis = KISClient()
                 if status in ("all", "pending"):
-                    logger.debug("Fetching KR pending orders, symbol=%s", normalized_symbol)
+                    logger.debug(
+                        "Fetching KR pending orders, symbol=%s", normalized_symbol
+                    )
                     open_ops = await kis.inquire_korea_orders()
                     if open_ops:
-                        logger.debug("Raw API response keys: %s", list(open_ops[0].keys()))
+                        logger.debug(
+                            "Raw API response keys: %s", list(open_ops[0].keys())
+                        )
                     for o in open_ops:
                         o_sym = str(_get_kis_field(o, "pdno", "PDNO"))
                         if normalized_symbol and o_sym != normalized_symbol:

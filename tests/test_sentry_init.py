@@ -63,7 +63,9 @@ def test_init_sentry_with_fastapi_and_celery(monkeypatch):
     assert kwargs["profiles_sample_rate"] == 1.0
     assert kwargs["send_default_pii"] is True
 
-    integration_names = {type(integration).__name__ for integration in kwargs["integrations"]}
+    integration_names = {
+        type(integration).__name__ for integration in kwargs["integrations"]
+    }
     assert "LoggingIntegration" in integration_names
     assert "FastApiIntegration" in integration_names
     assert "CeleryIntegration" in integration_names
@@ -71,6 +73,73 @@ def test_init_sentry_with_fastapi_and_celery(monkeypatch):
     mock_set_tag.assert_any_call("service", "auto-trader-api")
     mock_set_tag.assert_any_call("runtime", "python")
     mock_set_tag.assert_any_call("app", "auto-trader")
+
+
+@pytest.mark.unit
+def test_init_sentry_with_sqlalchemy_and_httpx(monkeypatch):
+    monkeypatch.setattr(
+        sentry_module.settings,
+        "SENTRY_DSN",
+        "https://public@example.ingest.sentry.io/1",
+    )
+
+    mock_init = Mock()
+    mock_set_tag = Mock()
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", mock_init)
+    monkeypatch.setattr(sentry_module.sentry_sdk, "set_tag", mock_set_tag)
+
+    result = sentry_module.init_sentry(
+        "auto-trader-api",
+        enable_sqlalchemy=True,
+        enable_httpx=True,
+    )
+
+    assert result is True
+    mock_init.assert_called_once()
+    kwargs = mock_init.call_args.kwargs
+
+    integration_names = {
+        type(integration).__name__ for integration in kwargs["integrations"]
+    }
+    assert "LoggingIntegration" in integration_names
+    assert "SqlalchemyIntegration" in integration_names
+    assert "HttpxIntegration" in integration_names
+    assert "FastApiIntegration" not in integration_names
+    assert "CeleryIntegration" not in integration_names
+
+
+@pytest.mark.unit
+def test_init_sentry_all_integrations(monkeypatch):
+    monkeypatch.setattr(
+        sentry_module.settings,
+        "SENTRY_DSN",
+        "https://public@example.ingest.sentry.io/1",
+    )
+
+    mock_init = Mock()
+    mock_set_tag = Mock()
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", mock_init)
+    monkeypatch.setattr(sentry_module.sentry_sdk, "set_tag", mock_set_tag)
+
+    result = sentry_module.init_sentry(
+        "auto-trader-api",
+        enable_fastapi=True,
+        enable_celery=True,
+        enable_sqlalchemy=True,
+        enable_httpx=True,
+    )
+
+    assert result is True
+    kwargs = mock_init.call_args.kwargs
+
+    integration_names = {
+        type(integration).__name__ for integration in kwargs["integrations"]
+    }
+    assert "LoggingIntegration" in integration_names
+    assert "FastApiIntegration" in integration_names
+    assert "CeleryIntegration" in integration_names
+    assert "SqlalchemyIntegration" in integration_names
+    assert "HttpxIntegration" in integration_names
 
 
 @pytest.mark.unit
@@ -120,7 +189,9 @@ def test_capture_exception_adds_masked_context(monkeypatch):
     context_manager.__exit__ = Mock(return_value=False)
 
     monkeypatch.setattr(sentry_module, "_initialized", True)
-    monkeypatch.setattr(sentry_module.sentry_sdk, "push_scope", Mock(return_value=context_manager))
+    monkeypatch.setattr(
+        sentry_module.sentry_sdk, "push_scope", Mock(return_value=context_manager)
+    )
     mock_capture = Mock()
     monkeypatch.setattr(sentry_module.sentry_sdk, "capture_exception", mock_capture)
 

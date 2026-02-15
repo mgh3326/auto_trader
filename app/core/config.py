@@ -1,6 +1,7 @@
+import json
 import os
 import random
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,6 +21,24 @@ class Settings(BaseSettings):
     kis_ws_max_reconnect_attempts: int = 10  # 최대 재연결 시도 횟수
     kis_ws_ping_interval: int = 30  # Ping 전송 간격 (초)
     kis_ws_ping_timeout: int = 10  # Ping 응답 대기 시간 (초)
+
+    # KIS Rate Limiting (HTTP API)
+    kis_rate_limit_rate: int = 19  # 초당 최대 요청 수 (안전 마진으로 20-1)
+    kis_rate_limit_period: float = 1.0  # 윈도우 기간 (초)
+
+    # KIS Per-API Rate Limits (JSON map: "TR_ID|/path" -> {"rate": int, "period": float})
+    kis_api_rate_limits: dict[str, dict[str, int | float]] = {}
+
+    # Upbit Rate Limiting (HTTP API)
+    upbit_rate_limit_rate: int = 10  # 초당 최대 요청 수
+    upbit_rate_limit_period: float = 1.0  # 윈도우 기간 (초)
+
+    # Upbit Per-API Rate Limits (JSON map: "METHOD /path" -> {"rate": int, "period": float})
+    upbit_api_rate_limits: dict[str, dict[str, int | float]] = {}
+
+    # API Rate Limit Retry Settings (429 handling)
+    api_rate_limit_retry_429_max: int = 2  # 429 에러 시 최대 재시도 횟수
+    api_rate_limit_retry_429_base_delay: float = 0.2  # 지수 백오프 기본 대기 시간 (초)
     # Telegram
     telegram_token: str
     telegram_chat_id: str = ""
@@ -37,6 +56,24 @@ class Settings(BaseSettings):
         if not self.telegram_chat_id:
             return []
         return [self.telegram_chat_id.strip()]
+
+    @field_validator("kis_api_rate_limits", "upbit_api_rate_limits", mode="before")
+    @classmethod
+    def parse_api_rate_limits(cls, v: Any) -> dict[str, dict[str, int | float]]:
+        """Parse JSON string or dict for API rate limits."""
+        if isinstance(v, str):
+            if not v:
+                return {}
+            try:
+                parsed = json.loads(v)
+                if not isinstance(parsed, dict):
+                    raise ValueError("API rate limits must be a JSON object")
+                return parsed
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON for API rate limits: {e}") from e
+        if isinstance(v, dict):
+            return v
+        return {}
 
     @field_validator("google_api_keys", mode="before")
     @classmethod

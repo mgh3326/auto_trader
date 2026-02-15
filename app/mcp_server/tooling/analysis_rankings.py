@@ -102,7 +102,9 @@ async def get_crypto_rankings_impl(
     else:
         sorted_coins = coins
 
-    rankings = [map_crypto_row(coin, i) for i, coin in enumerate(sorted_coins[:limit], 1)]
+    rankings = [
+        map_crypto_row(coin, i) for i, coin in enumerate(sorted_coins[:limit], 1)
+    ]
     return rankings, "upbit"
 
 

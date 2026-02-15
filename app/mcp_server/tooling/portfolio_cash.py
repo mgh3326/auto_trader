@@ -43,7 +43,9 @@ def select_usd_row_for_us_order(
     if not usd_rows:
         return None
 
-    us_row = next((row for row in usd_rows if is_us_nation_name(row.get("natn_name"))), None)
+    us_row = next(
+        (row for row in usd_rows if is_us_nation_name(row.get("natn_name"))), None
+    )
     if us_row is not None:
         return us_row
 
@@ -76,7 +78,11 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
         except Exception as exc:
             errors.append({"source": "upbit", "market": "crypto", "error": str(exc)})
 
-    if account_filter is None or account_filter in ("kis", "kis_domestic", "kis_overseas"):
+    if account_filter is None or account_filter in (
+        "kis",
+        "kis_domestic",
+        "kis_overseas",
+    ):
         kis = KISClient()
 
         if account_filter is None or account_filter in ("kis", "kis_domestic"):
@@ -113,7 +119,8 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
                     )
 
                 balance = to_float(
-                    usd_margin.get("frcr_dncl_amt1") or usd_margin.get("frcr_dncl_amt_2"),
+                    usd_margin.get("frcr_dncl_amt1")
+                    or usd_margin.get("frcr_dncl_amt_2"),
                     default=0.0,
                 )
                 orderable = extract_usd_orderable_from_row(usd_margin)

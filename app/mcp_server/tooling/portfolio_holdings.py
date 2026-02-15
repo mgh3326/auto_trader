@@ -335,7 +335,9 @@ async def _fetch_price_map_for_positions(
         for offset in range(0, len(valid_symbols), _UPBIT_TICKER_BATCH_SIZE):
             batch_symbols = valid_symbols[offset : offset + _UPBIT_TICKER_BATCH_SIZE]
             try:
-                prices = await upbit_service.fetch_multiple_current_prices(batch_symbols)
+                prices = await upbit_service.fetch_multiple_current_prices(
+                    batch_symbols
+                )
                 for symbol in batch_symbols:
                     price = prices.get(symbol)
                     if price is not None:
@@ -451,7 +453,9 @@ async def _collect_portfolio_positions(
         tasks.append(_collect_kis_positions(market_filter))
     if market_filter in (None, "crypto"):
         tasks.append(_collect_upbit_positions(market_filter))
-    tasks.append(_collect_manual_positions(user_id=user_id, market_filter=market_filter))
+    tasks.append(
+        _collect_manual_positions(user_id=user_id, market_filter=market_filter)
+    )
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     positions: list[dict[str, Any]] = []
@@ -881,4 +885,10 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
     async def get_cash_balance(account: str | None = None) -> dict[str, Any]:
         return await _get_cash_balance_impl(account=account)
 
-__all__ = ["PORTFOLIO_TOOL_NAMES", "_register_portfolio_tools_impl", "_collect_portfolio_positions", "_get_indicators_impl"]
+
+__all__ = [
+    "PORTFOLIO_TOOL_NAMES",
+    "_register_portfolio_tools_impl",
+    "_collect_portfolio_positions",
+    "_get_indicators_impl",
+]

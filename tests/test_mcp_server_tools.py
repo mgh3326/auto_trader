@@ -2097,7 +2097,9 @@ class TestCalculateOBV:
         )
         obv = (volume * direction).cumsum()
         expected_signal = obv.ewm(span=10, adjust=False).mean().iloc[-1]
-        assert result["signal"] == pytest.approx(round(float(expected_signal), 2), abs=0.01)
+        assert result["signal"] == pytest.approx(
+            round(float(expected_signal), 2), abs=0.01
+        )
 
 
 @pytest.mark.unit
@@ -2193,7 +2195,9 @@ class TestOBVRegression:
         assert abs(result["signal"] - expected_signal) < 0.01
 
     def test_divergence_uses_lookback_plus_one_index(self):
-        close = pd.Series([100.0, 110.0, 90.0, 91.0, 92.0, 93.0, 94.0, 95.0, 96.0, 97.0, 98.0, 95.0])
+        close = pd.Series(
+            [100.0, 110.0, 90.0, 91.0, 92.0, 93.0, 94.0, 95.0, 96.0, 97.0, 98.0, 95.0]
+        )
         volume = pd.Series([1000.0] * len(close))
 
         result = market_data_indicators._calculate_obv(close, volume, signal_period=5)
