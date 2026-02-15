@@ -110,29 +110,18 @@ async def test_get_my_coins_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_buy_orders_triggers_taskiq(monkeypatch):
-    """매수 작업이 TaskIQ 태스크를 enqueue 하는지 확인."""
+async def test_execute_buy_orders_calls_task(monkeypatch):
     from app.routers import upbit_trading
 
-    class DummyResult:
-        def __init__(self):
-            self.task_id = "task-123"
+    dummy_result = {"executed": 1, "skipped": 0}
 
-    class DummyTask:
-        def __init__(self):
-            self.called = False
-
-        async def kiq(self, *args, **kwargs):
-            del args, kwargs
-            self.called = True
-            return DummyResult()
-
-    dummy_task = DummyTask()
+    async def mock_execute():
+        return dummy_result
 
     monkeypatch.setattr(
         upbit_trading,
         "execute_buy_orders_task",
-        dummy_task,
+        mock_execute,
     )
     monkeypatch.setattr(
         upbit_trading,
@@ -143,5 +132,5 @@ async def test_execute_buy_orders_triggers_taskiq(monkeypatch):
     response = await upbit_trading.execute_buy_orders()
 
     assert response["success"] is True
-    assert response["task_id"] == "task-123"
-    assert dummy_task.called is True
+    assert response["executed"] == 1
+    assert response["skipped"] == 0

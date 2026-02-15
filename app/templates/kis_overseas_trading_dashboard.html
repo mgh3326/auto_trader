@@ -182,23 +182,11 @@
                                 <button id="analyze-btn" class="btn btn-primary btn-action" onclick="analyzeStocks()">
                                     <i class="bi bi-search"></i> 전체 종목 AI 분석
                                 </button>
-                                <div id="analyze-progress" class="progress mt-2" style="height: 20px; display: none;">
-                                    <div id="analyze-progress-bar"
-                                        class="progress-bar progress-bar-striped progress-bar-animated"
-                                        role="progressbar" style="width: 0%">0%</div>
-                                </div>
-                                <small id="analyze-status" class="text-muted d-block mt-1"></small>
                             </div>
                             <div class="col-md-3">
                                 <button id="buy-btn" class="btn btn-success btn-action" onclick="executeBuyOrders()">
                                     <i class="bi bi-cart-plus"></i> 자동 매수 주문
                                 </button>
-                                <div id="buy-progress" class="progress mt-2" style="height: 20px; display: none;">
-                                    <div id="buy-progress-bar"
-                                        class="progress-bar progress-bar-striped progress-bar-animated bg-success"
-                                        role="progressbar" style="width: 0%">0%</div>
-                                </div>
-                                <small id="buy-status" class="text-muted d-block mt-1"></small>
                                 <div id="total-estimated-cost" class="mt-2 small text-success" style="display: none;">
                                     <i class="bi bi-calculator"></i>
                                     <span id="estimated-cost-text"></span>
@@ -208,33 +196,12 @@
                                 <button id="sell-btn" class="btn btn-danger btn-action" onclick="executeSellOrders()">
                                     <i class="bi bi-cart-dash"></i> 자동 매도 주문
                                 </button>
-                                <div id="sell-progress" class="progress mt-2" style="height: 20px; display: none;">
-                                    <div id="sell-progress-bar"
-                                        class="progress-bar progress-bar-striped progress-bar-animated bg-danger"
-                                        role="progressbar" style="width: 0%">0%</div>
-                                </div>
-                                <small id="sell-status" class="text-muted d-block mt-1"></small>
                             </div>
                             <div class="col-md-3">
                                 <button id="per-stock-automation-btn" class="btn btn-warning text-dark btn-action"
                                     onclick="runPerStockAutomation()">
                                     <i class="bi bi-collection-play"></i> 종목별 분석→매수→매도
                                 </button>
-                            </div>
-                        </div>
-
-                        <!-- 종목별 자동 실행 진행상황 -->
-                        <div id="per-stock-automation-progress" class="mt-3 p-3 bg-light rounded border"
-                            style="display: none;">
-                            <h6 class="border-bottom pb-2 mb-2">종목별 자동 실행 진행상황</h6>
-                            <div class="progress mb-2" style="height: 20px;">
-                                <div id="per-stock-progress-bar"
-                                    class="progress-bar progress-bar-striped progress-bar-animated bg-warning text-dark"
-                                    role="progressbar" style="width: 0%">0%</div>
-                            </div>
-                            <div id="per-stock-automation-status" class="small fw-bold mb-2 text-primary"></div>
-                            <div id="per-stock-automation-log" class="small text-muted"
-                                style="max-height: 150px; overflow-y: auto; font-family: monospace; background: #fff; padding: 10px; border: 1px solid #ddd;">
                             </div>
                         </div>
                     </div>
@@ -396,58 +363,9 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // 전역 변수 및 상수
-        const STORAGE_KEYS = {
-            ANALYZE: 'kis_overseas_analyze_task_id',
-            BUY: 'kis_overseas_buy_task_id',
-            SELL: 'kis_overseas_sell_task_id',
-            STOCK_AUTOMATION: 'kis_overseas_stock_automation_task_id'
-        };
-
-        let analyzeTaskId = localStorage.getItem(STORAGE_KEYS.ANALYZE);
-        let buyTaskId = localStorage.getItem(STORAGE_KEYS.BUY);
-        let sellTaskId = localStorage.getItem(STORAGE_KEYS.SELL);
-        let stockAutomationTaskId = localStorage.getItem(STORAGE_KEYS.STOCK_AUTOMATION);
-
-        let analyzeCheckInterval = null;
-        let buyCheckInterval = null;
-        let sellCheckInterval = null;
-        let stockAutomationInterval = null;
-
-        let analyzePendingCount = 0;
-        let buyPendingCount = 0;
-        let sellPendingCount = 0;
-        let stockAutomationPendingCount = 0;
-
-        let perStockAutomationRunning = false;
-
         // 초기화
         document.addEventListener('DOMContentLoaded', () => {
             loadMyStocks();
-
-            if (analyzeTaskId) {
-                document.getElementById('analyze-btn').disabled = true;
-                document.getElementById('analyze-progress').style.display = 'block';
-                analyzeCheckInterval = setInterval(checkAnalyzeProgress, 1000);
-            }
-            if (buyTaskId) {
-                document.getElementById('buy-btn').disabled = true;
-                document.getElementById('buy-progress').style.display = 'block';
-                buyCheckInterval = setInterval(checkBuyProgress, 1000);
-            }
-            if (sellTaskId) {
-                document.getElementById('sell-btn').disabled = true;
-                document.getElementById('sell-progress').style.display = 'block';
-                sellCheckInterval = setInterval(checkSellProgress, 1000);
-            }
-            if (stockAutomationTaskId) {
-                perStockAutomationRunning = true;
-                const progressWrapper = document.getElementById('per-stock-automation-progress');
-                progressWrapper.style.display = 'block';
-                document.getElementById('per-stock-automation-btn').disabled = true;
-                document.getElementById('per-stock-automation-btn').innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 실행 중...';
-                stockAutomationInterval = setInterval(checkStockAutomationProgress, 2000);
-            }
         });
 
         async function csrfFetch(url, options = {}) {
@@ -682,454 +600,120 @@
                 return;
             }
 
+            const analyzeBtn = document.getElementById('analyze-btn');
+            const originalContent = analyzeBtn.innerHTML;
+            analyzeBtn.disabled = true;
+            analyzeBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 요청 중...';
+
             try {
-                const analyzeBtn = document.getElementById('analyze-btn');
-                const analyzeProgress = document.getElementById('analyze-progress');
-                const analyzeProgressBar = document.getElementById('analyze-progress-bar');
-                const analyzeStatus = document.getElementById('analyze-status');
-
-                analyzeBtn.disabled = true;
-                analyzeProgress.style.display = 'block';
-                analyzeProgressBar.style.width = '0%';
-                analyzeProgressBar.textContent = '0%';
-                analyzeStatus.textContent = '분석 요청 중...';
-
                 const response = await csrfFetch('/kis-overseas-trading/api/analyze-stocks', {
                     method: 'POST'
                 });
                 const data = await response.json();
 
-                if (data.success && data.task_id) {
-                    analyzeTaskId = data.task_id;
-                    localStorage.setItem(STORAGE_KEYS.ANALYZE, data.task_id);
-                    showAlert('✅ ' + data.message, 'success');
-                    analyzeCheckInterval = setInterval(checkAnalyzeProgress, 1000);
-                } else {
-                    showAlert('❌ 분석 요청 실패', 'danger');
-                    analyzeBtn.disabled = false;
-                    analyzeProgress.style.display = 'none';
+                if (!response.ok || !data.success) {
+                    throw new Error(data.detail || data.error || data.message || '분석 요청 실패');
                 }
+
+                showAlert('✅ ' + (data.message || '분석이 완료되었습니다.'), 'success');
+                await loadMyStocks();
             } catch (error) {
                 showAlert('분석 요청 중 오류 발생: ' + error.message, 'danger');
-                document.getElementById('analyze-btn').disabled = false;
-                document.getElementById('analyze-progress').style.display = 'none';
+            } finally {
+                analyzeBtn.disabled = false;
+                analyzeBtn.innerHTML = originalContent;
             }
         }
 
-        async function checkAnalyzeProgress() {
-            if (!analyzeTaskId) return;
-
-            try {
-                const response = await fetch(`/kis-overseas-trading/api/analyze-task/${analyzeTaskId}`);
-                const data = await response.json();
-
-                const analyzeProgressBar = document.getElementById('analyze-progress-bar');
-                const analyzeStatus = document.getElementById('analyze-status');
-
-                if (data.state === 'PENDING') {
-                    analyzePendingCount++;
-                    if (analyzeStatus) {
-                        if (analyzePendingCount > 5) {
-                            analyzeStatus.innerHTML = '대기 시간이 길어지고 있습니다. <a href="#" onclick="localStorage.removeItem(STORAGE_KEYS.ANALYZE); location.reload(); return false;">상태 초기화</a>';
-                        } else {
-                            analyzeStatus.textContent = '작업 대기 중... (서버 응답 대기)';
-                        }
-                    }
-                    return;
-                }
-                analyzePendingCount = 0;
-
-                if (data.state === 'PROGRESS' && data.progress) {
-                    const percentage = data.progress.percentage || 0;
-                    analyzeProgressBar.style.width = percentage + '%';
-                    analyzeProgressBar.textContent = percentage + '%';
-                    analyzeStatus.textContent = data.progress.status || '분석 진행 중...';
-                } else if (data.state === 'SUCCESS') {
-                    clearInterval(analyzeCheckInterval);
-                    analyzeTaskId = null;
-                    localStorage.removeItem(STORAGE_KEYS.ANALYZE);
-
-                    analyzeProgressBar.style.width = '100%';
-                    analyzeProgressBar.textContent = '100%';
-                    analyzeStatus.textContent = '완료!';
-
-                    if (data.result) {
-                        const message = data.result.message || `${data.result.analyzed_count}/${data.result.total_count}개 종목 분석 완료`;
-                        showAlert('✅ ' + message, 'success');
-                    }
-
-                    setTimeout(() => {
-                        document.getElementById('analyze-btn').disabled = false;
-                        document.getElementById('analyze-progress').style.display = 'none';
-                        loadMyStocks();
-                    }, 2000);
-                } else if (data.state === 'FAILURE') {
-                    clearInterval(analyzeCheckInterval);
-                    analyzeTaskId = null;
-                    localStorage.removeItem(STORAGE_KEYS.ANALYZE);
-                    showAlert('❌ 분석 실패: ' + (data.result?.error || '알 수 없는 오류'), 'danger');
-                    document.getElementById('analyze-btn').disabled = false;
-                    document.getElementById('analyze-progress').style.display = 'none';
-                }
-            } catch (error) {
-                console.error('Progress check error:', error);
-            }
-        }
-
-        // 자동 매수 주문 (Placeholder logic)
+        // 자동 매수 주문
         async function executeBuyOrders() {
             if (!confirm('보유 종목에 대한 자동 매수 주문을 실행하시겠습니까?')) {
                 return;
             }
-            triggerTask('buy', '/kis-overseas-trading/api/buy-orders', STORAGE_KEYS.BUY);
+
+            const buyBtn = document.getElementById('buy-btn');
+            const originalContent = buyBtn.innerHTML;
+            buyBtn.disabled = true;
+            buyBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 요청 중...';
+
+            try {
+                const response = await csrfFetch('/kis-overseas-trading/api/buy-orders', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    throw new Error(data.detail || data.error || data.message || '매수 주문 요청 실패');
+                }
+
+                showAlert('✅ ' + (data.message || '자동 매수 주문이 완료되었습니다.'), 'success');
+                await loadMyStocks();
+            } catch (error) {
+                showAlert('요청 중 오류 발생: ' + error.message, 'danger');
+            } finally {
+                buyBtn.disabled = false;
+                buyBtn.innerHTML = originalContent;
+            }
         }
 
-        // 자동 매도 주문 (Placeholder logic)
+        // 자동 매도 주문
         async function executeSellOrders() {
             if (!confirm('보유 종목에 대한 자동 매도 주문을 실행하시겠습니까?')) {
                 return;
             }
-            triggerTask('sell', '/kis-overseas-trading/api/sell-orders', STORAGE_KEYS.SELL);
-        }
 
-        async function triggerTask(type, url, storageKey) {
+            const sellBtn = document.getElementById('sell-btn');
+            const originalContent = sellBtn.innerHTML;
+            sellBtn.disabled = true;
+            sellBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 요청 중...';
+
             try {
-                const btn = document.getElementById(`${type}-btn`);
-                const progress = document.getElementById(`${type}-progress`);
-                const progressBar = document.getElementById(`${type}-progress-bar`);
-                const status = document.getElementById(`${type}-status`);
-
-                btn.disabled = true;
-                progress.style.display = 'block';
-                progressBar.style.width = '0%';
-                progressBar.textContent = '0%';
-                status.textContent = '요청 중...';
-
-                const response = await csrfFetch(url, { method: 'POST' });
+                const response = await csrfFetch('/kis-overseas-trading/api/sell-orders', {
+                    method: 'POST'
+                });
                 const data = await response.json();
 
-                if (data.success && data.task_id) {
-                    if (type === 'buy') buyTaskId = data.task_id;
-                    if (type === 'sell') sellTaskId = data.task_id;
-
-                    localStorage.setItem(storageKey, data.task_id);
-                    showAlert('✅ ' + data.message, 'success');
-
-                    if (type === 'buy') buyCheckInterval = setInterval(checkBuyProgress, 1000);
-                    if (type === 'sell') sellCheckInterval = setInterval(checkSellProgress, 1000);
-                } else {
-                    showAlert('❌ 요청 실패', 'danger');
-                    btn.disabled = false;
-                    progress.style.display = 'none';
+                if (!response.ok || !data.success) {
+                    throw new Error(data.detail || data.error || data.message || '매도 주문 요청 실패');
                 }
+
+                showAlert('✅ ' + (data.message || '자동 매도 주문이 완료되었습니다.'), 'success');
+                await loadMyStocks();
             } catch (error) {
                 showAlert('요청 중 오류 발생: ' + error.message, 'danger');
-                document.getElementById(`${type}-btn`).disabled = false;
-                document.getElementById(`${type}-progress`).style.display = 'none';
+            } finally {
+                sellBtn.disabled = false;
+                sellBtn.innerHTML = originalContent;
             }
-        }
-
-        async function checkBuyProgress() {
-            if (!buyTaskId) return;
-            try {
-                const response = await fetch(`/kis-overseas-trading/api/analyze-task/${buyTaskId}`);
-                const data = await response.json();
-
-                const progressBar = document.getElementById('buy-progress-bar');
-                const status = document.getElementById('buy-status');
-
-                if (data.state === 'PENDING') {
-                    buyPendingCount++;
-                    if (status) {
-                        if (buyPendingCount > 5) {
-                            status.innerHTML = '대기 시간이 길어지고 있습니다. <a href="#" onclick="localStorage.removeItem(STORAGE_KEYS.BUY); location.reload(); return false;">상태 초기화</a>';
-                        } else {
-                            status.textContent = '작업 대기 중... (서버 응답 대기)';
-                        }
-                    }
-                    return;
-                }
-                buyPendingCount = 0;
-
-                if (data.state === 'PROGRESS' && data.progress) {
-                    const percentage = data.progress.percentage || 0;
-                    progressBar.style.width = percentage + '%';
-                    progressBar.textContent = percentage + '%';
-                    status.textContent = data.progress.status || '진행 중...';
-                } else if (data.state === 'SUCCESS') {
-                    clearInterval(buyCheckInterval);
-                    buyTaskId = null;
-                    localStorage.removeItem(STORAGE_KEYS.BUY);
-
-                    progressBar.style.width = '100%';
-                    progressBar.textContent = '100%';
-                    status.textContent = '완료!';
-                    showAlert('✅ 매수 작업 완료', 'success');
-
-                    setTimeout(() => {
-                        document.getElementById('buy-btn').disabled = false;
-                        document.getElementById('buy-progress').style.display = 'none';
-                        loadMyStocks();
-                    }, 2000);
-                } else if (data.state === 'FAILURE') {
-                    clearInterval(buyCheckInterval);
-                    buyTaskId = null;
-                    localStorage.removeItem(STORAGE_KEYS.BUY);
-                    showAlert('❌ 매수 실패: ' + (data.result?.error || '오류'), 'danger');
-                    document.getElementById('buy-btn').disabled = false;
-                    document.getElementById('buy-progress').style.display = 'none';
-                }
-            } catch (e) { console.error(e); }
-        }
-
-        async function checkSellProgress() {
-            if (!sellTaskId) return;
-            try {
-                const response = await fetch(`/kis-overseas-trading/api/analyze-task/${sellTaskId}`);
-                const data = await response.json();
-
-                const progressBar = document.getElementById('sell-progress-bar');
-                const status = document.getElementById('sell-status');
-
-                if (data.state === 'PENDING') {
-                    sellPendingCount++;
-                    if (status) {
-                        if (sellPendingCount > 5) {
-                            status.innerHTML = '대기 시간이 길어지고 있습니다. <a href="#" onclick="localStorage.removeItem(STORAGE_KEYS.SELL); location.reload(); return false;">상태 초기화</a>';
-                        } else {
-                            status.textContent = '작업 대기 중... (서버 응답 대기)';
-                        }
-                    }
-                    return;
-                }
-                sellPendingCount = 0;
-
-                if (data.state === 'PROGRESS' && data.progress) {
-                    const percentage = data.progress.percentage || 0;
-                    progressBar.style.width = percentage + '%';
-                    progressBar.textContent = percentage + '%';
-                    status.textContent = data.progress.status || '진행 중...';
-                } else if (data.state === 'SUCCESS') {
-                    clearInterval(sellCheckInterval);
-                    sellTaskId = null;
-                    localStorage.removeItem(STORAGE_KEYS.SELL);
-
-                    progressBar.style.width = '100%';
-                    progressBar.textContent = '100%';
-                    status.textContent = '완료!';
-                    showAlert('✅ 매도 작업 완료', 'success');
-
-                    setTimeout(() => {
-                        document.getElementById('sell-btn').disabled = false;
-                        document.getElementById('sell-progress').style.display = 'none';
-                        loadMyStocks();
-                    }, 2000);
-                } else if (data.state === 'FAILURE') {
-                    clearInterval(sellCheckInterval);
-                    sellTaskId = null;
-                    localStorage.removeItem(STORAGE_KEYS.SELL);
-                    showAlert('❌ 매도 실패: ' + (data.result?.error || '오류'), 'danger');
-                    document.getElementById('sell-btn').disabled = false;
-                    document.getElementById('sell-progress').style.display = 'none';
-                }
-            } catch (e) { console.error(e); }
-        }
-
-        async function checkGenericProgress(taskId, type, intervalId, storageKey) {
-            if (!taskId) return;
-            try {
-                const response = await fetch(`/kis-overseas-trading/api/analyze-task/${taskId}`);
-                const data = await response.json();
-
-                const progressBar = document.getElementById(`${type}-progress-bar`);
-                const status = document.getElementById(`${type}-status`);
-
-                if (data.state === 'PENDING') return;
-
-                if (data.state === 'PROGRESS' && data.progress) {
-                    const percentage = data.progress.percentage || 0;
-                    progressBar.style.width = percentage + '%';
-                    progressBar.textContent = percentage + '%';
-                    status.textContent = data.progress.status || '진행 중...';
-                } else if (data.state === 'SUCCESS') {
-                    clearInterval(intervalId);
-                    if (type === 'buy') buyTaskId = null;
-                    if (type === 'sell') sellTaskId = null;
-                    localStorage.removeItem(storageKey);
-
-                    progressBar.style.width = '100%';
-                    progressBar.textContent = '100%';
-                    status.textContent = '완료!';
-                    showAlert('✅ 작업 완료', 'success');
-
-                    setTimeout(() => {
-                        document.getElementById(`${type}-btn`).disabled = false;
-                        document.getElementById(`${type}-progress`).style.display = 'none';
-                        loadMyStocks();
-                    }, 2000);
-                } else if (data.state === 'FAILURE') {
-                    clearInterval(intervalId);
-                    if (type === 'buy') buyTaskId = null;
-                    if (type === 'sell') sellTaskId = null;
-                    localStorage.removeItem(storageKey);
-                    showAlert('❌ 실패: ' + (data.result?.error || '오류'), 'danger');
-                    document.getElementById(`${type}-btn`).disabled = false;
-                    document.getElementById(`${type}-progress`).style.display = 'none';
-                }
-            } catch (e) { console.error(e); }
         }
 
         // 종목별 자동 실행
         async function runPerStockAutomation() {
-            if (perStockAutomationRunning || stockAutomationTaskId) {
-                showAlert('이미 종목별 자동 실행이 진행 중입니다.', 'warning');
-                return;
-            }
             if (!confirm('보유 중인 각 종목에 대해 분석 → 매수 → 매도 요청을 백그라운드에서 실행할까요?')) {
                 return;
             }
 
-            perStockAutomationRunning = true;
             const button = document.getElementById('per-stock-automation-btn');
-            const progressWrapper = document.getElementById('per-stock-automation-progress');
-            const progressBar = document.getElementById('per-stock-progress-bar');
-            const statusEl = document.getElementById('per-stock-automation-status');
-            const logEl = document.getElementById('per-stock-automation-log');
-
-            progressWrapper.style.display = 'block';
-            progressBar.style.width = '0%';
-            progressBar.textContent = '0%';
-            statusEl.textContent = '요청을 준비 중입니다...';
-            logEl.innerHTML = '';
-
+            const originalContent = button.innerHTML;
             button.disabled = true;
-            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 실행 중...';
+            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 요청 중...';
 
             try {
                 const response = await csrfFetch('/kis-overseas-trading/api/automation/per-stock', { method: 'POST' });
                 const data = await response.json();
 
-                if (data.success && data.task_id) {
-                    stockAutomationTaskId = data.task_id;
-                    localStorage.setItem(STORAGE_KEYS.STOCK_AUTOMATION, data.task_id);
-                    statusEl.textContent = '종목별 자동 실행이 시작되었습니다.';
-                    stockAutomationInterval = setInterval(checkStockAutomationProgress, 2000);
-                    showAlert(data.message, 'success');
-                } else {
-                    showAlert('❌ 시작 실패', 'danger');
-                    resetPerStockAutomationUI();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.detail || data.error || data.message || '종목별 자동 실행 요청 실패');
                 }
+
+                showAlert('✅ ' + (data.message || '종목별 자동 실행이 완료되었습니다.'), 'success');
+                await loadMyStocks();
             } catch (error) {
                 showAlert('❌ 오류 발생: ' + error.message, 'danger');
-                resetPerStockAutomationUI();
+            } finally {
+                button.disabled = false;
+                button.innerHTML = originalContent;
             }
-        }
-
-        async function checkStockAutomationProgress() {
-            if (!stockAutomationTaskId) return;
-            try {
-                const response = await fetch(`/kis-overseas-trading/api/analyze-task/${stockAutomationTaskId}`);
-                const data = await response.json();
-
-                const progressBar = document.getElementById('per-stock-progress-bar');
-                const statusEl = document.getElementById('per-stock-automation-status');
-                const logEl = document.getElementById('per-stock-automation-log');
-
-                if (data.state === 'PENDING') {
-                    stockAutomationPendingCount++;
-                    if (statusEl) {
-                        if (stockAutomationPendingCount > 5) {
-                            statusEl.innerHTML = '작업 대기 시간이 길어지고 있습니다. <a href="#" onclick="resetPerStockAutomationUI(); return false;">상태 초기화</a>';
-                        } else {
-                            statusEl.textContent = '작업 대기 중... (서버 응답 대기)';
-                        }
-                    }
-                    return;
-                }
-
-                stockAutomationPendingCount = 0;
-
-                if (data.state === 'PROGRESS' && data.progress) {
-                    const percentage = data.progress.percentage || 0;
-                    const status = data.progress.status || '진행 중...';
-                    const current = data.progress.current || 0;
-                    const total = data.progress.total || 0;
-
-                    progressBar.style.width = percentage + '%';
-                    progressBar.textContent = percentage + '%';
-                    statusEl.textContent = `${status} (${current}/${total})`;
-
-                    // 로그에 현재 상태 추가
-                    const timestamp = new Date().toLocaleTimeString();
-                    const logEntry = `[${timestamp}] ${status}\n`;
-                    if (!logEl.textContent.includes(status)) {
-                        logEl.textContent += logEntry;
-                        logEl.scrollTop = logEl.scrollHeight;
-                    }
-                    return;
-                }
-
-                if (data.state === 'SUCCESS') {
-                    clearInterval(stockAutomationInterval);
-                    stockAutomationTaskId = null;
-                    localStorage.removeItem(STORAGE_KEYS.STOCK_AUTOMATION);
-
-                    progressBar.style.width = '100%';
-                    progressBar.textContent = '100%';
-
-                    const resultMessage = data.result?.message || '종목별 자동 실행 완료';
-                    statusEl.textContent = resultMessage;
-
-                    // 최종 결과 로그
-                    const timestamp = new Date().toLocaleTimeString();
-                    logEl.textContent += `[${timestamp}] ✅ ${resultMessage}\n`;
-                    logEl.scrollTop = logEl.scrollHeight;
-
-                    showAlert('✅ ' + resultMessage, 'success');
-
-                    setTimeout(() => {
-                        resetPerStockAutomationUI();
-                        loadMyStocks();
-                    }, 3000);
-                } else if (data.state === 'FAILURE') {
-                    clearInterval(stockAutomationInterval);
-                    stockAutomationTaskId = null;
-                    localStorage.removeItem(STORAGE_KEYS.STOCK_AUTOMATION);
-
-                    const errorMsg = data.error || data.result?.error || '알 수 없는 오류';
-                    statusEl.textContent = '❌ 실패: ' + errorMsg;
-
-                    const timestamp = new Date().toLocaleTimeString();
-                    logEl.textContent += `[${timestamp}] ❌ 실패: ${errorMsg}\n`;
-                    logEl.scrollTop = logEl.scrollHeight;
-
-                    showAlert('❌ 종목별 자동 실행 실패: ' + errorMsg, 'danger');
-
-                    setTimeout(() => {
-                        resetPerStockAutomationUI();
-                    }, 3000);
-                }
-            } catch (e) {
-                console.error('checkStockAutomationProgress error:', e);
-            }
-        }
-
-        function resetPerStockAutomationUI() {
-            perStockAutomationRunning = false;
-            stockAutomationPendingCount = 0;
-
-            if (stockAutomationInterval) clearInterval(stockAutomationInterval);
-            stockAutomationInterval = null;
-
-            stockAutomationTaskId = null;
-            localStorage.removeItem(STORAGE_KEYS.STOCK_AUTOMATION);
-
-            const button = document.getElementById('per-stock-automation-btn');
-            const progressWrapper = document.getElementById('per-stock-automation-progress');
-
-            button.disabled = false;
-            button.innerHTML = '<i class="bi bi-collection-play"></i> 종목별 분석→매수→매도';
-            progressWrapper.style.display = 'none';
         }
 
         function attachStockActionHandlers() {
@@ -1186,11 +770,12 @@
                 const response = await csrfFetch(`/kis-overseas-trading/api/${action}/${symbol}`, { method: 'POST' });
                 const data = await response.json();
 
-                if (data.success) {
-                    showAlert(`✅ ${name} ${action} 요청 완료. (Task ID: ${data.task_id})`, 'success');
-                } else {
-                    showAlert(`❌ ${name} ${action} 요청 실패: ${data.message || 'Unknown error'}`, 'danger');
+                if (!response.ok || !data.success) {
+                    throw new Error(data.detail || data.error || data.message || '요청 실패');
                 }
+
+                showAlert(`✅ ${name} ${action} 완료: ${data.message || '완료'}`, 'success');
+                setTimeout(loadMyStocks, 2000);
             } catch (error) {
                 showAlert(`❌ 요청 중 오류 발생: ${error.message}`, 'danger');
             }
