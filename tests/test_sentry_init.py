@@ -182,6 +182,45 @@ def test_before_send_masks_sensitive_fields():
 
 
 @pytest.mark.unit
+def test_before_send_drops_healthz_uvicorn_access_log():
+    event = {
+        "logger": "uvicorn.access",
+        "logentry": {
+            "formatted": '127.0.0.1:52778 - "GET /healthz HTTP/1.1" 200',
+        },
+    }
+
+    dropped = sentry_module._before_send(event, {})
+
+    assert dropped is None
+
+
+@pytest.mark.unit
+def test_before_send_log_drops_healthz_uvicorn_access_log():
+    sentry_log = {
+        "body": '127.0.0.1:52778 - "GET /healthz HTTP/1.1" 200',
+        "attributes": {"logger.name": "uvicorn.access"},
+    }
+
+    dropped = sentry_module._before_send_log(sentry_log, {})
+
+    assert dropped is None
+
+
+@pytest.mark.unit
+def test_before_send_log_keeps_non_healthz_uvicorn_access_log():
+    sentry_log = {
+        "body": '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 200',
+        "attributes": {"logger.name": "uvicorn.access"},
+    }
+
+    kept = sentry_module._before_send_log(sentry_log, {})
+
+    assert kept is not None
+    assert kept["body"] == '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 200'
+
+
+@pytest.mark.unit
 def test_capture_exception_adds_masked_context(monkeypatch):
     scope_mock = Mock()
     context_manager = Mock()

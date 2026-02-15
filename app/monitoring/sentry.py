@@ -33,6 +33,66 @@ _SENSITIVE_KEYWORDS = (
 )
 
 
+def _is_healthcheck_access_log(logger_name: str | None, message: str | None) -> bool:
+    if logger_name != "uvicorn.access" or not message:
+        return False
+    return "/healthz" in message and '" 200' in message
+
+
+def _extract_log_context(
+    payload: dict[str, Any], hint: dict[str, Any]
+) -> tuple[str | None, str | None]:
+    logger_name: str | None = None
+    message: str | None = None
+
+    log_record = hint.get("log_record")
+    if log_record is not None:
+        record_name = getattr(log_record, "name", None)
+        if isinstance(record_name, str):
+            logger_name = record_name
+        get_message = getattr(log_record, "getMessage", None)
+        if callable(get_message):
+            maybe_message = get_message()
+            if isinstance(maybe_message, str):
+                message = maybe_message
+
+    payload_logger = payload.get("logger")
+    if logger_name is None and isinstance(payload_logger, str):
+        logger_name = payload_logger
+
+    payload_logentry = payload.get("logentry")
+    if isinstance(payload_logentry, dict):
+        formatted = payload_logentry.get("formatted")
+        template = payload_logentry.get("message")
+        if isinstance(formatted, str):
+            message = formatted
+        elif message is None and isinstance(template, str):
+            message = template
+
+    payload_message = payload.get("message")
+    if message is None and isinstance(payload_message, str):
+        message = payload_message
+
+    return logger_name, message
+
+
+def _extract_sentry_log_context(
+    sentry_log: dict[str, Any], hint: dict[str, Any]
+) -> tuple[str | None, str | None]:
+    logger_name: str | None = None
+    attributes = sentry_log.get("attributes")
+    if isinstance(attributes, dict):
+        attr_logger = attributes.get("logger.name")
+        if isinstance(attr_logger, str):
+            logger_name = attr_logger
+
+    body = sentry_log.get("body")
+    message = body if isinstance(body, str) else None
+
+    context_logger, context_message = _extract_log_context({}, hint)
+    return logger_name or context_logger, message or context_message
+
+
 def _is_sensitive_key(key: str) -> bool:
     key_lower = key.lower()
     return any(keyword in key_lower for keyword in _SENSITIVE_KEYWORDS)
@@ -61,8 +121,12 @@ def _sanitize_in_place(value: Any, parent_key: str | None = None) -> Any:
     return value
 
 
-def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any]:
-    del hint
+def _before_send(
+    event: dict[str, Any], hint: dict[str, Any]
+) -> dict[str, Any] | None:
+    logger_name, message = _extract_log_context(event, hint)
+    if _is_healthcheck_access_log(logger_name, message):
+        return None
     return _sanitize_in_place(event)
 
 
@@ -70,7 +134,21 @@ def _before_breadcrumb(
     crumb: dict[str, Any], hint: dict[str, Any]
 ) -> dict[str, Any] | None:
     del hint
+    category = crumb.get("category")
+    message = crumb.get("message")
+    if isinstance(category, str) and isinstance(message, str):
+        if _is_healthcheck_access_log(category, message):
+            return None
     return _sanitize_in_place(crumb)
+
+
+def _before_send_log(
+    sentry_log: dict[str, Any], hint: dict[str, Any]
+) -> dict[str, Any] | None:
+    logger_name, message = _extract_sentry_log_context(sentry_log, hint)
+    if _is_healthcheck_access_log(logger_name, message):
+        return None
+    return _sanitize_in_place(sentry_log)
 
 
 def init_sentry(
@@ -118,6 +196,7 @@ def init_sentry(
             integrations=integrations,
             before_send=_before_send,
             before_breadcrumb=_before_breadcrumb,
+            before_send_log=_before_send_log,
             enable_logs=True,
         )
         sentry_sdk.set_tag("service", service_name)

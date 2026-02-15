@@ -5,8 +5,8 @@ Unified WebSocket Monitor
 Upbit/KIS 체결 WebSocket을 통합하여 OpenClaw Gateway로 체결 알림을 전송합니다.
 """
 
-import asyncio
 import argparse
+import asyncio
 import logging
 import signal
 import sys
@@ -148,8 +148,14 @@ class UnifiedWebSocketMonitor:
 
         self._next_health_log_at = now + self._health_log_interval_seconds
 
-        upbit_connected = bool(self.upbit_ws and self.upbit_ws.is_connected)
-        kis_connected = bool(self.kis_ws and self.kis_ws.is_connected)
+        upbit_enabled = self.mode in {"upbit", "both"}
+        kis_enabled = self.mode in {"kis", "both"}
+        upbit_connected: bool | str = (
+            bool(self.upbit_ws and self.upbit_ws.is_connected) if upbit_enabled else "n/a"
+        )
+        kis_connected: bool | str = (
+            bool(self.kis_ws and self.kis_ws.is_connected) if kis_enabled else "n/a"
+        )
         logger.info(
             "Unified WebSocket health: upbit_connected=%s kis_connected=%s openclaw_enabled=%s",
             upbit_connected,

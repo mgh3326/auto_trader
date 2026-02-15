@@ -293,16 +293,31 @@ class KISExecutionWebSocket:
 
             except Exception as e:
                 self.current_attempt += 1
-                logger.error(
-                    f"KIS WebSocket connection failed (attempt {self.current_attempt}/{self.max_reconnect_attempts}): {e}"
-                )
-                await self._close_websocket_best_effort()
-
-                if (
+                recoverable_ack_failure = (
                     isinstance(e, KISSubscriptionAckError)
                     and e.msg_cd in RECOVERABLE_APPROVAL_MSG_CODES
                     and self.is_running
-                ):
+                )
+                if recoverable_ack_failure:
+                    logger.warning(
+                        "KIS WebSocket recoverable ACK failure "
+                        "(attempt %s/%s): tr_id=%s msg_cd=%s msg1=%s",
+                        self.current_attempt,
+                        self.max_reconnect_attempts,
+                        e.tr_id,
+                        e.msg_cd,
+                        e.msg1,
+                    )
+                else:
+                    logger.error(
+                        "KIS WebSocket connection failed (attempt %s/%s): %s",
+                        self.current_attempt,
+                        self.max_reconnect_attempts,
+                        e,
+                    )
+                await self._close_websocket_best_effort()
+
+                if recoverable_ack_failure:
                     if self._last_reissue_msg_code == e.msg_cd:
                         # 동일한 ACK 오류가 연속으로 반복되면 최소 1초 대기 후 재발급합니다.
                         await asyncio.sleep(1)
