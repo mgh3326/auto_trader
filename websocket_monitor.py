@@ -26,6 +26,7 @@ from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)
 VALID_MONITOR_MODES = {"upbit", "kis", "both"}
+MIN_FILL_NOTIFY_AMOUNT = 50_000
 
 
 class UnifiedWebSocketMonitor:
@@ -105,6 +106,13 @@ class UnifiedWebSocketMonitor:
             logger.debug("OpenClaw disabled, skipping fill notification")
             return
 
+        if order.account == "upbit" and order.filled_amount < MIN_FILL_NOTIFY_AMOUNT:
+            logger.debug(
+                f"Fill below minimum notify amount ({order.filled_amount:,.0f} < "
+                f"{MIN_FILL_NOTIFY_AMOUNT:,.0f}), skipping: {order.symbol}"
+            )
+            return
+
         try:
             request_id = await self.openclaw_client.send_fill_notification(order)
             if request_id:
@@ -151,7 +159,9 @@ class UnifiedWebSocketMonitor:
         upbit_enabled = self.mode in {"upbit", "both"}
         kis_enabled = self.mode in {"kis", "both"}
         upbit_connected: bool | str = (
-            bool(self.upbit_ws and self.upbit_ws.is_connected) if upbit_enabled else "n/a"
+            bool(self.upbit_ws and self.upbit_ws.is_connected)
+            if upbit_enabled
+            else "n/a"
         )
         kis_connected: bool | str = (
             bool(self.kis_ws and self.kis_ws.is_connected) if kis_enabled else "n/a"
