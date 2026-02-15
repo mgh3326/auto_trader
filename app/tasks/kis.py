@@ -4,7 +4,6 @@ import logging
 
 from app.analysis.service_analyzers import KISAnalyzer
 from app.core.symbol import to_db_symbol
-from app.core.taskiq_broker import broker
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.kis import KISClient
 from app.services.kis_trading_service import (
@@ -199,7 +198,6 @@ async def _analyze_domestic_stock_async(code: str) -> dict[str, object]:
         await analyzer.close()
 
 
-@broker.task(task_name="kis.run_analysis_for_my_domestic_stocks")
 async def run_analysis_for_my_domestic_stocks() -> dict:
     """보유 국내 주식 AI 분석 실행"""
 
@@ -268,7 +266,6 @@ async def run_analysis_for_my_domestic_stocks() -> dict:
     return await _run()
 
 
-@broker.task(task_name="kis.execute_domestic_buy_orders")
 async def execute_domestic_buy_orders() -> dict:
     """국내 주식 자동 매수 주문 실행"""
 
@@ -333,7 +330,6 @@ async def execute_domestic_buy_orders() -> dict:
     return await _run()
 
 
-@broker.task(task_name="kis.execute_domestic_sell_orders")
 async def execute_domestic_sell_orders() -> dict:
     """국내 주식 자동 매도 주문 실행"""
 
@@ -463,7 +459,6 @@ async def _cancel_domestic_pending_orders(
     return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
 
 
-@broker.task(task_name="kis.run_per_domestic_stock_automation")
 async def run_per_domestic_stock_automation() -> dict:
     """국내 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
 
@@ -824,13 +819,11 @@ async def run_per_domestic_stock_automation() -> dict:
     return await _run()
 
 
-@broker.task(task_name="kis.analyze_domestic_stock_task")
 async def analyze_domestic_stock_task(symbol: str) -> dict:
     """단일 국내 주식 분석 실행"""
     return await _analyze_domestic_stock_async(symbol)
 
 
-@broker.task(task_name="kis.execute_domestic_buy_order_task")
 async def execute_domestic_buy_order_task(symbol: str) -> dict:
     """단일 국내 주식 매수 주문 실행"""
 
@@ -860,7 +853,6 @@ async def execute_domestic_buy_order_task(symbol: str) -> dict:
     return await _run()
 
 
-@broker.task(task_name="kis.execute_domestic_sell_order_task")
 async def execute_domestic_sell_order_task(symbol: str) -> dict:
     """단일 국내 주식 매도 주문 실행"""
 
@@ -887,13 +879,11 @@ async def execute_domestic_sell_order_task(symbol: str) -> dict:
     return await _run()
 
 
-@broker.task(task_name="kis.analyze_overseas_stock_task")
 async def analyze_overseas_stock_task(symbol: str) -> dict:
     """단일 해외 주식 분석 실행"""
     return await _analyze_overseas_stock_async(symbol)
 
 
-@broker.task(task_name="kis.execute_overseas_buy_order_task")
 async def execute_overseas_buy_order_task(symbol: str) -> dict:
     """단일 해외 주식 매수 주문 실행"""
 
@@ -937,7 +927,6 @@ async def execute_overseas_buy_order_task(symbol: str) -> dict:
     return await _run()
 
 
-@broker.task(task_name="kis.execute_overseas_sell_order_task")
 async def execute_overseas_sell_order_task(symbol: str) -> dict:
     """단일 해외 주식 매도 주문 실행"""
 
@@ -1086,7 +1075,6 @@ async def _analyze_overseas_stock_async(symbol: str) -> dict[str, object]:
         await analyzer.close()
 
 
-@broker.task(task_name="kis.run_analysis_for_my_overseas_stocks")
 async def run_analysis_for_my_overseas_stocks() -> dict:
     """보유 해외 주식 AI 분석 실행"""
 
@@ -1163,7 +1151,6 @@ async def run_analysis_for_my_overseas_stocks() -> dict:
     return await _run()
 
 
-@broker.task(task_name="kis.execute_overseas_buy_orders")
 async def execute_overseas_buy_orders() -> dict:
     """해외 주식 자동 매수 주문 실행"""
 
@@ -1252,7 +1239,6 @@ async def execute_overseas_buy_orders() -> dict:
     return await _run()
 
 
-@broker.task(task_name="kis.execute_overseas_sell_orders")
 async def execute_overseas_sell_orders() -> dict:
     """해외 주식 자동 매도 주문 실행"""
 
@@ -1419,7 +1405,6 @@ async def _cancel_overseas_pending_orders(
     return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
 
 
-@broker.task(task_name="kis.run_per_overseas_stock_automation")
 async def run_per_overseas_stock_automation() -> dict:
     """해외 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
 

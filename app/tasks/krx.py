@@ -1,13 +1,11 @@
 import logging
 
 from app.core.db import AsyncSessionLocal
-from app.core.taskiq_broker import broker
 from app.services.krx import Kospi200Service, KRXMarketDataService
 
 logger = logging.getLogger(__name__)
 
 
-@broker.task(task_name="krx.update_kospi200_constituents")
 async def update_kospi200_constituents_task() -> dict:
     krx_service = KRXMarketDataService()
 
@@ -42,7 +40,6 @@ async def update_kospi200_constituents_task() -> dict:
         return {"status": "failed", "error": str(exc), "count": 0}
 
 
-@broker.task(task_name="krx.sync_kospi200_to_stock_info")
 async def sync_kospi200_to_stock_info_task() -> dict:
     from app.services.stock_info_service import StockInfoService
 
