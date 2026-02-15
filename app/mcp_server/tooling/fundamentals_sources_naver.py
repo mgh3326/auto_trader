@@ -18,6 +18,7 @@ import yfinance as yf
 
 from app.core.config import settings
 from app.mcp_server.tooling.shared import normalize_value as _normalize_value
+from app.monitoring.tracing_spans import traced_to_thread
 from app.services import naver_finance
 from app.services import upbit as upbit_service
 from app.services.analyst_normalizer import (
@@ -83,7 +84,12 @@ async def _fetch_news_finnhub(symbol: str, market: str, limit: int) -> dict[str,
             )
         return news[:limit] if news else []
 
-    news_items = await asyncio.to_thread(fetch_sync)
+    news_items = await traced_to_thread(
+        fetch_sync,
+        op="http.client.finnhub",
+        name="finnhub.company_news",
+        data={"symbol": symbol.upper(), "market": market, "limit": limit},
+    )
 
     result_items = []
     for item in news_items:
@@ -118,7 +124,12 @@ async def _fetch_company_profile_finnhub(symbol: str) -> dict[str, Any]:
     def fetch_sync() -> dict[str, Any]:
         return client.company_profile2(symbol=symbol.upper())
 
-    profile = await asyncio.to_thread(fetch_sync)
+    profile = await traced_to_thread(
+        fetch_sync,
+        op="http.client.finnhub",
+        name="finnhub.company_profile2",
+        data={"symbol": symbol.upper()},
+    )
     if not profile:
         raise ValueError(f"Company profile not found for symbol '{symbol}'")
 
@@ -216,7 +227,12 @@ async def _fetch_financials_finnhub(
     def fetch_sync() -> dict[str, Any]:
         return client.financials_reported(symbol=symbol.upper(), freq=freq)
 
-    result = await asyncio.to_thread(fetch_sync)
+    result = await traced_to_thread(
+        fetch_sync,
+        op="http.client.finnhub",
+        name="finnhub.financials_reported",
+        data={"symbol": symbol.upper(), "statement": statement, "freq": freq},
+    )
 
     if not result or not result.get("data"):
         raise ValueError(f"Financial data not found for symbol '{symbol}'")
@@ -262,7 +278,12 @@ async def _fetch_insider_transactions_finnhub(
     def fetch_sync() -> dict[str, Any]:
         return client.stock_insider_transactions(symbol=symbol.upper())
 
-    result = await asyncio.to_thread(fetch_sync)
+    result = await traced_to_thread(
+        fetch_sync,
+        op="http.client.finnhub",
+        name="finnhub.stock_insider_transactions",
+        data={"symbol": symbol.upper(), "limit": limit},
+    )
 
     if not result or not result.get("data"):
         return {
@@ -328,7 +349,12 @@ async def _fetch_earnings_calendar_finnhub(
             to=to_date,
         )
 
-    result = await asyncio.to_thread(fetch_sync)
+    result = await traced_to_thread(
+        fetch_sync,
+        op="http.client.finnhub",
+        name="finnhub.earnings_calendar",
+        data={"symbol": symbol.upper() if symbol else "", "from": from_date, "to": to_date},
+    )
 
     if not result or not result.get("earningsCalendar"):
         return {
@@ -621,8 +647,12 @@ async def _fetch_sector_peers_us(
         peer_tickers = [t.upper() for t in manual_peers if t.upper() != upper_symbol]
         peer_tickers = peer_tickers[:limit]
     else:
-        peer_tickers: list[str] = await asyncio.to_thread(
-            client.company_peers, upper_symbol
+        peer_tickers: list[str] = await traced_to_thread(
+            client.company_peers,
+            upper_symbol,
+            op="http.client.finnhub",
+            name="finnhub.company_peers",
+            data={"symbol": upper_symbol},
         )
         peer_tickers = [t for t in peer_tickers if t.upper() != upper_symbol]
         peer_tickers = peer_tickers[: limit + 5]
@@ -631,8 +661,11 @@ async def _fetch_sector_peers_us(
 
     async def _fetch_yf_info(ticker: str) -> tuple[str, dict[str, Any] | None]:
         try:
-            info: dict[str, Any] = await asyncio.to_thread(
-                lambda t=ticker: yf.Ticker(t).info
+            info: dict[str, Any] = await traced_to_thread(
+                lambda t=ticker: yf.Ticker(t).info,
+                op="http.client.yfinance",
+                name="yfinance.ticker.info",
+                data={"symbol": ticker},
             )
             return (ticker, info)
         except Exception:

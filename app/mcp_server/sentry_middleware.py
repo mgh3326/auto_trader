@@ -10,6 +10,11 @@ from fastmcp.server.middleware.middleware import Middleware, MiddlewareContext
 from fastmcp.tools.tool import ToolResult
 from mcp.types import CallToolResult
 
+try:
+    from sentry_sdk.integrations.mcp import MCPIntegration
+except ImportError:  # pragma: no cover - dependent on sentry-sdk version
+    MCPIntegration = None
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -18,6 +23,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ACTION_PRIORITY = ("action", "side", "order_type")
+
+
+def _has_native_mcp_integration() -> bool:
+    """Return True when sentry-sdk MCPIntegration is active on the current client."""
+    if MCPIntegration is None:
+        return False
+    try:
+        client = sentry_sdk.get_client()
+        return client.get_integration(MCPIntegration) is not None
+    except Exception:
+        return False
 
 
 def _extract_action(arguments: dict[str, Any] | None) -> str | None:
@@ -62,6 +78,10 @@ class McpSentryTracingMiddleware(Middleware):
         context: MiddlewareContext[Any],
         call_next: Callable[[MiddlewareContext[Any]], Awaitable[ToolResultType]],
     ) -> ToolResultType:
+        # MCPIntegration already creates MCP spans (op=mcp.server); avoid duplicates.
+        if _has_native_mcp_integration():
+            return await call_next(context)
+
         message = context.message
         tool_name = getattr(message, "name", "unknown")
         arguments = getattr(message, "arguments", None)

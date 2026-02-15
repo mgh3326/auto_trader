@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 from typing import Any
 
@@ -12,6 +11,7 @@ except ImportError:
     finnhub = None
 
 from app.core.config import settings
+from app.monitoring.tracing_spans import traced_to_thread
 
 
 def _get_finnhub_client() -> Any:
@@ -39,7 +39,12 @@ async def _fetch_news_finnhub(symbol: str, market: str, limit: int) -> dict[str,
             )
         return news[:limit] if news else []
 
-    news_items = await asyncio.to_thread(fetch_sync)
+    news_items = await traced_to_thread(
+        fetch_sync,
+        op="http.client.finnhub",
+        name="finnhub.company_news",
+        data={"symbol": symbol.upper(), "market": market, "limit": limit},
+    )
 
     result_items = []
     for item in news_items:
@@ -74,7 +79,12 @@ async def _fetch_company_profile_finnhub(symbol: str) -> dict[str, Any]:
     def fetch_sync() -> dict[str, Any]:
         return client.company_profile2(symbol=symbol.upper())
 
-    profile = await asyncio.to_thread(fetch_sync)
+    profile = await traced_to_thread(
+        fetch_sync,
+        op="http.client.finnhub",
+        name="finnhub.company_profile2",
+        data={"symbol": symbol.upper()},
+    )
     if not profile:
         raise ValueError(f"Company profile not found for symbol '{symbol}'")
 
@@ -116,7 +126,12 @@ async def _fetch_financials_finnhub(
     def fetch_sync() -> dict[str, Any]:
         return client.financials_reported(symbol=symbol.upper(), freq=freq)
 
-    result = await asyncio.to_thread(fetch_sync)
+    result = await traced_to_thread(
+        fetch_sync,
+        op="http.client.finnhub",
+        name="finnhub.financials_reported",
+        data={"symbol": symbol.upper(), "statement": statement, "freq": freq},
+    )
 
     if not result or not result.get("data"):
         raise ValueError(f"Financial data not found for symbol '{symbol}'")
@@ -162,7 +177,12 @@ async def _fetch_insider_transactions_finnhub(
     def fetch_sync() -> dict[str, Any]:
         return client.stock_insider_transactions(symbol=symbol.upper())
 
-    result = await asyncio.to_thread(fetch_sync)
+    result = await traced_to_thread(
+        fetch_sync,
+        op="http.client.finnhub",
+        name="finnhub.stock_insider_transactions",
+        data={"symbol": symbol.upper(), "limit": limit},
+    )
 
     if not result or not result.get("data"):
         return {
@@ -228,7 +248,12 @@ async def _fetch_earnings_calendar_finnhub(
             to=to_date,
         )
 
-    result = await asyncio.to_thread(fetch_sync)
+    result = await traced_to_thread(
+        fetch_sync,
+        op="http.client.finnhub",
+        name="finnhub.earnings_calendar",
+        data={"symbol": symbol.upper() if symbol else "", "from": from_date, "to": to_date},
+    )
 
     if not result or not result.get("earningsCalendar"):
         return {

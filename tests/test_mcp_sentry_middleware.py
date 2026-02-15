@@ -128,6 +128,13 @@ class TestMcpSentryTracingMiddleware:
         span.set_status = Mock()
         return span
 
+    @staticmethod
+    def _make_client(with_mcp_integration: bool):
+        client = Mock()
+        integration = object() if with_mcp_integration else None
+        client.get_integration = Mock(return_value=integration)
+        return client
+
     @pytest.mark.asyncio
     async def test_on_call_tool_sets_transaction_name(
         self, middleware, mock_context, monkeypatch
@@ -345,3 +352,39 @@ class TestMcpSentryTracingMiddleware:
             name="mcp.place_order", op="mcp.request", source="custom"
         )
         mock_transaction.set_status.assert_called_once_with("ok")
+
+    @pytest.mark.asyncio
+    async def test_on_call_tool_skips_manual_spans_with_native_integration(
+        self, middleware, mock_context, monkeypatch
+    ):
+        call_next_result = CallToolResult(content=[], isError=False)
+        call_next = AsyncMock(return_value=call_next_result)
+
+        mock_start_span = Mock()
+        mock_start_transaction = Mock()
+        mock_get_current_scope = Mock()
+
+        monkeypatch.setattr(
+            "app.mcp_server.sentry_middleware.sentry_sdk.get_client",
+            Mock(return_value=self._make_client(with_mcp_integration=True)),
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.sentry_middleware.sentry_sdk.start_span",
+            mock_start_span,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.sentry_middleware.sentry_sdk.start_transaction",
+            mock_start_transaction,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.sentry_middleware.sentry_sdk.get_current_scope",
+            mock_get_current_scope,
+        )
+
+        result = await middleware.on_call_tool(mock_context, call_next)
+
+        assert result is call_next_result
+        call_next.assert_awaited_once()
+        mock_start_span.assert_not_called()
+        mock_start_transaction.assert_not_called()
+        mock_get_current_scope.assert_not_called()

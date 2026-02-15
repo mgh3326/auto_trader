@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.manual_holdings import ManualHolding, MarketType
+from app.monitoring.tracing_spans import sentry_span
 from app.services.broker_account_service import BrokerAccountService
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.stock_alias_service import StockAliasService
@@ -212,11 +213,16 @@ class ScreenshotHoldingsService:
             broker_account_id = broker_account.id
 
         # 기존 보유 종목 조회 (diff 계산용)
-        existing_holdings = await self.db.execute(
-            select(ManualHolding).where(
-                ManualHolding.broker_account_id == broker_account_id
+        with sentry_span(
+            op="db.batch",
+            name="manual_holdings.read_existing",
+            data={"broker_account_id": broker_account_id, "dry_run": dry_run},
+        ):
+            existing_holdings = await self.db.execute(
+                select(ManualHolding).where(
+                    ManualHolding.broker_account_id == broker_account_id
+                )
             )
-        )
         old_map = {
             (h.ticker, h.market_type.value): h
             for h in existing_holdings.scalars().all()
@@ -231,181 +237,190 @@ class ScreenshotHoldingsService:
 
         manual_holdings_service = ManualHoldingsService(self.db)
 
-        for holding_data in holdings_data:
-            stock_name = holding_data.get("stock_name", "").strip()
-            symbol = holding_data.get("symbol", "").strip().upper()
-            market_section_raw = holding_data.get("market_section", "")
-            market_section = (
-                market_section_raw.lower().strip() if market_section_raw else ""
-            )
-            action = holding_data.get("action", "upsert").lower()
-
-            if market_section not in ("kr", "us", "crypto"):
-                warnings.append(
-                    f"Skipping holding: invalid or missing market_section '{market_section_raw}' "
-                    f"(must be kr|us|crypto)"
+        with sentry_span(
+            op="db.batch",
+            name="manual_holdings.apply_changes",
+            data={
+                "broker_account_id": broker_account_id,
+                "dry_run": dry_run,
+                "holdings_count": len(holdings_data),
+            },
+        ):
+            for holding_data in holdings_data:
+                stock_name = holding_data.get("stock_name", "").strip()
+                symbol = holding_data.get("symbol", "").strip().upper()
+                market_section_raw = holding_data.get("market_section", "")
+                market_section = (
+                    market_section_raw.lower().strip() if market_section_raw else ""
                 )
-                continue
+                action = holding_data.get("action", "upsert").lower()
 
-            if not stock_name and not symbol:
-                warnings.append(
-                    "Skipping holding: both stock_name and symbol are empty"
-                )
-                continue
+                if market_section not in ("kr", "us", "crypto"):
+                    warnings.append(
+                        f"Skipping holding: invalid or missing market_section '{market_section_raw}' "
+                        f"(must be kr|us|crypto)"
+                    )
+                    continue
 
-            if market_section == "kr":
-                market_type = MarketType.KR
-            elif market_section == "crypto":
-                market_type = MarketType.CRYPTO
-            else:
-                market_type = MarketType.US
+                if not stock_name and not symbol:
+                    warnings.append(
+                        "Skipping holding: both stock_name and symbol are empty"
+                    )
+                    continue
 
-            if action == "remove":
+                if market_section == "kr":
+                    market_type = MarketType.KR
+                elif market_section == "crypto":
+                    market_type = MarketType.CRYPTO
+                else:
+                    market_type = MarketType.US
+
+                if action == "remove":
+                    if symbol:
+                        ticker = symbol
+                    else:
+                        ticker, _, _ = await self._resolve_symbol(
+                            stock_name, market_section, broker
+                        )
+
+                    existing = old_map.get((ticker, market_type.value))
+                    if existing:
+                        if not dry_run:
+                            await manual_holdings_service.delete_holding(existing.id)
+                            removed_count += 1
+                        diff.append(
+                            {
+                                "action": "removed",
+                                "ticker": ticker,
+                                "market_type": market_type.value,
+                            }
+                        )
+                    else:
+                        warnings.append(
+                            f"Cannot remove: {symbol or stock_name} not found in holdings"
+                        )
+                    continue
+
+                quantity = float(holding_data.get("quantity", 0))
+                eval_amount = float(holding_data.get("eval_amount", 0))
+                profit_loss = float(holding_data.get("profit_loss", 0))
+                profit_rate = float(holding_data.get("profit_rate", 0))
+                input_avg_buy_price = float(holding_data.get("avg_buy_price", 0) or 0)
+
                 if symbol:
                     ticker = symbol
+                    resolution_method = "direct"
                 else:
-                    ticker, _, _ = await self._resolve_symbol(
+                    ticker, _, resolution_method = await self._resolve_symbol(
                         stock_name, market_section, broker
                     )
 
-                existing = old_map.get((ticker, market_type.value))
-                if existing:
-                    if not dry_run:
-                        await manual_holdings_service.delete_holding(existing.id)
-                        removed_count += 1
-                    diff.append(
-                        {
-                            "action": "removed",
-                            "ticker": ticker,
-                            "market_type": market_type.value,
-                        }
-                    )
+                if input_avg_buy_price > 0:
+                    avg_buy_price = input_avg_buy_price
                 else:
-                    warnings.append(
-                        f"Cannot remove: {symbol or stock_name} not found in holdings"
+                    avg_buy_price = await self._calculate_avg_buy_price(
+                        eval_amount, profit_loss, quantity
                     )
-                continue
 
-            quantity = float(holding_data.get("quantity", 0))
-            eval_amount = float(holding_data.get("eval_amount", 0))
-            profit_loss = float(holding_data.get("profit_loss", 0))
-            profit_rate = float(holding_data.get("profit_rate", 0))
-            input_avg_buy_price = float(holding_data.get("avg_buy_price", 0) or 0)
+                display_name = stock_name if stock_name else symbol
 
-            if symbol:
-                ticker = symbol
-                resolution_method = "direct"
-            else:
-                ticker, _, resolution_method = await self._resolve_symbol(
-                    stock_name, market_section, broker
+                processed_holdings.append(
+                    {
+                        "stock_name": display_name,
+                        "resolved_ticker": ticker,
+                        "market_type": market_type.value,
+                        "quantity": quantity,
+                        "avg_buy_price": round(avg_buy_price, 2),
+                        "eval_amount": eval_amount,
+                        "profit_loss": profit_loss,
+                        "profit_rate": profit_rate,
+                        "resolution_method": resolution_method,
+                        "action": "upsert",
+                    }
                 )
 
-            if input_avg_buy_price > 0:
-                avg_buy_price = input_avg_buy_price
-            else:
-                avg_buy_price = await self._calculate_avg_buy_price(
-                    eval_amount, profit_loss, quantity
-                )
+                if not dry_run:
+                    existing = old_map.get((ticker, market_type.value))
 
-            display_name = stock_name if stock_name else symbol
+                    if existing:
+                        old_qty = float(existing.quantity)
+                        old_avg = float(existing.avg_price)
 
-            processed_holdings.append(
-                {
-                    "stock_name": display_name,
-                    "resolved_ticker": ticker,
-                    "market_type": market_type.value,
-                    "quantity": quantity,
-                    "avg_buy_price": round(avg_buy_price, 2),
-                    "eval_amount": eval_amount,
-                    "profit_loss": profit_loss,
-                    "profit_rate": profit_rate,
-                    "resolution_method": resolution_method,
-                    "action": "upsert",
-                }
-            )
-
-            if not dry_run:
-                existing = old_map.get((ticker, market_type.value))
-
-                if existing:
-                    old_qty = float(existing.quantity)
-                    old_avg = float(existing.avg_price)
-
-                    if (
-                        abs(old_qty - quantity) > 0.0001
-                        or abs(old_avg - avg_buy_price) > 0.01
-                    ):
-                        await manual_holdings_service.update_holding(
-                            existing.id,
+                        if (
+                            abs(old_qty - quantity) > 0.0001
+                            or abs(old_avg - avg_buy_price) > 0.01
+                        ):
+                            await manual_holdings_service.update_holding(
+                                existing.id,
+                                quantity=self._to_decimal(quantity),
+                                avg_price=self._to_decimal(avg_buy_price),
+                            )
+                            updated_count += 1
+                            diff.append(
+                                {
+                                    "action": "updated",
+                                    "ticker": ticker,
+                                    "market_type": market_type.value,
+                                    "old_quantity": old_qty,
+                                    "new_quantity": quantity,
+                                    "old_avg_price": old_avg,
+                                    "new_avg_price": avg_buy_price,
+                                }
+                            )
+                        else:
+                            unchanged_count += 1
+                    else:
+                        await manual_holdings_service.create_holding(
+                            broker_account_id=broker_account_id,
+                            ticker=ticker,
+                            market_type=market_type,
                             quantity=self._to_decimal(quantity),
                             avg_price=self._to_decimal(avg_buy_price),
+                            display_name=display_name,
                         )
-                        updated_count += 1
+                        added_count += 1
                         diff.append(
                             {
-                                "action": "updated",
+                                "action": "added",
                                 "ticker": ticker,
                                 "market_type": market_type.value,
-                                "old_quantity": old_qty,
-                                "new_quantity": quantity,
-                                "old_avg_price": old_avg,
-                                "new_avg_price": avg_buy_price,
+                                "quantity": quantity,
+                                "avg_buy_price": avg_buy_price,
                             }
                         )
-                    else:
-                        unchanged_count += 1
                 else:
-                    await manual_holdings_service.create_holding(
-                        broker_account_id=broker_account_id,
-                        ticker=ticker,
-                        market_type=market_type,
-                        quantity=self._to_decimal(quantity),
-                        avg_price=self._to_decimal(avg_buy_price),
-                        display_name=display_name,
-                    )
-                    added_count += 1
-                    diff.append(
-                        {
-                            "action": "added",
-                            "ticker": ticker,
-                            "market_type": market_type.value,
-                            "quantity": quantity,
-                            "avg_buy_price": avg_buy_price,
-                        }
-                    )
-            else:
-                existing = old_map.get((ticker, market_type.value))
-                if existing:
-                    old_qty = float(existing.quantity)
-                    old_avg = float(existing.avg_price)
+                    existing = old_map.get((ticker, market_type.value))
+                    if existing:
+                        old_qty = float(existing.quantity)
+                        old_avg = float(existing.avg_price)
 
-                    if (
-                        abs(old_qty - quantity) > 0.0001
-                        or abs(old_avg - avg_buy_price) > 0.01
-                    ):
+                        if (
+                            abs(old_qty - quantity) > 0.0001
+                            or abs(old_avg - avg_buy_price) > 0.01
+                        ):
+                            diff.append(
+                                {
+                                    "action": "updated",
+                                    "ticker": ticker,
+                                    "market_type": market_type.value,
+                                    "old_quantity": old_qty,
+                                    "new_quantity": quantity,
+                                    "old_avg_price": old_avg,
+                                    "new_avg_price": avg_buy_price,
+                                }
+                            )
+                        else:
+                            unchanged_count += 1
+                    else:
                         diff.append(
                             {
-                                "action": "updated",
+                                "action": "added",
                                 "ticker": ticker,
                                 "market_type": market_type.value,
-                                "old_quantity": old_qty,
-                                "new_quantity": quantity,
-                                "old_avg_price": old_avg,
-                                "new_avg_price": avg_buy_price,
+                                "quantity": quantity,
+                                "avg_buy_price": avg_buy_price,
                             }
                         )
-                    else:
-                        unchanged_count += 1
-                else:
-                    diff.append(
-                        {
-                            "action": "added",
-                            "ticker": ticker,
-                            "market_type": market_type.value,
-                            "quantity": quantity,
-                            "avg_buy_price": avg_buy_price,
-                        }
-                    )
 
         # 응답 구성
         result: dict[str, Any] = {

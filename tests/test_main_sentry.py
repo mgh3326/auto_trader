@@ -38,6 +38,8 @@ def test_create_app_initializes_sentry(monkeypatch):
     init_mock.assert_called_once_with(
         service_name="auto-trader-api",
         enable_fastapi=True,
+        enable_sqlalchemy=True,
+        enable_httpx=True,
     )
 
 

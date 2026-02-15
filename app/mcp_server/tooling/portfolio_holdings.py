@@ -88,6 +88,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     value_for_minimum_filter as _value_for_minimum_filter,
 )
+from app.monitoring.tracing_spans import traced_await
 from app.services import upbit as upbit_service
 from app.services.dca_service import DcaService
 from app.services.kis import KISClient
@@ -257,9 +258,14 @@ async def _collect_manual_positions(
         manual_market = _instrument_to_manual_market_type(market_filter)
         async with AsyncSessionLocal() as db:
             service = ManualHoldingsService(db)
-            holdings = await service.get_holdings_by_user(
-                user_id=user_id,
-                market_type=manual_market,
+            holdings = await traced_await(
+                service.get_holdings_by_user(
+                    user_id=user_id,
+                    market_type=manual_market,
+                ),
+                op="db.service",
+                name="manual_holdings.get_holdings_by_user",
+                data={"user_id": user_id, "market_filter": market_filter},
             )
 
         for holding in holdings:
@@ -795,12 +801,23 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
             async with AsyncSessionLocal() as db:
                 service = ScreenshotHoldingsService(db)
                 user_id = _env_int("MCP_USER_ID", 1)
-                result = await service.resolve_and_update(
-                    user_id=user_id,
-                    holdings_data=holdings,
-                    broker=broker,
-                    account_name=account_name,
-                    dry_run=dry_run,
+                result = await traced_await(
+                    service.resolve_and_update(
+                        user_id=user_id,
+                        holdings_data=holdings,
+                        broker=broker,
+                        account_name=account_name,
+                        dry_run=dry_run,
+                    ),
+                    op="db.service",
+                    name="screenshot_holdings.resolve_and_update",
+                    data={
+                        "user_id": user_id,
+                        "broker": broker,
+                        "account_name": account_name,
+                        "dry_run": dry_run,
+                        "holdings_count": len(holdings),
+                    },
                 )
                 return result
         except Exception as exc:

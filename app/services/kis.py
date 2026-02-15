@@ -11,6 +11,7 @@ from pandas import DataFrame
 from app.core.async_rate_limiter import RateLimitExceededError, get_limiter
 from app.core.config import settings
 from app.core.symbol import to_kis_symbol
+from app.monitoring.tracing_spans import sentry_span
 from app.services.redis_token_manager import redis_token_manager
 
 BASE = "https://openapi.koreainvestment.com:9443"
@@ -273,13 +274,27 @@ class KISClient:
             )
 
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    if method.upper() == "GET":
-                        response = await client.get(url, headers=headers, params=params)
-                    else:
-                        response = await client.post(
-                            url, headers=headers, json=json_body
-                        )
+                with sentry_span(
+                    op="http.client.kis",
+                    name=f"{method.upper()} {api_name}",
+                    data={
+                        "provider": "kis",
+                        "api_name": api_name,
+                        "tr_id": tr_id,
+                        "attempt": attempt + 1,
+                        "max_attempts": max_retries + 1,
+                        "path": api_path,
+                        "method": method.upper(),
+                    },
+                ) as span:
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        if method.upper() == "GET":
+                            response = await client.get(url, headers=headers, params=params)
+                        else:
+                            response = await client.post(
+                                url, headers=headers, json=json_body
+                            )
+                    span.set_data("http.status_code", response.status_code)
 
                 if response.status_code == 429:
                     retry_after = _safe_parse_retry_after(
