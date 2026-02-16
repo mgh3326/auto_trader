@@ -50,7 +50,9 @@ def _normalize_market_type_to_external(market_type: str) -> str:
 
 async def _get_current_price_for_order(symbol: str, market_type: str) -> float | None:
     if market_type == "crypto":
-        prices = await upbit_service.fetch_multiple_current_prices([symbol])
+        prices = await upbit_service.fetch_multiple_current_prices(
+            [symbol], use_cache=False
+        )
         return prices.get(symbol)
     if market_type == "equity_kr":
         quote = await _fetch_quote_equity_kr(symbol)

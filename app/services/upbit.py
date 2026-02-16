@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+import time
 import uuid
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -16,7 +17,21 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 UPBIT_REST = "https://api.upbit.com/v1"
+UPBIT_CANDLES_RATE_LIMIT_KEY = "GET /v1/candles/*"
 _unmapped_rate_limit_keys_logged: set[str] = set()
+_ticker_price_cache: dict[str, tuple[float, float]] = {}
+_ticker_inflight_symbol_tasks: dict[str, asyncio.Task[dict[str, float]]] = {}
+_ticker_cache_lock: asyncio.Lock | None = None
+_ticker_cache_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_ticker_cache_lock() -> asyncio.Lock:
+    global _ticker_cache_lock, _ticker_cache_lock_loop
+    loop = asyncio.get_running_loop()
+    if _ticker_cache_lock is None or _ticker_cache_lock_loop is not loop:
+        _ticker_cache_lock = asyncio.Lock()
+        _ticker_cache_lock_loop = loop
+    return _ticker_cache_lock
 
 
 def _safe_parse_retry_after(value: str | None) -> float:
@@ -29,8 +44,18 @@ def _safe_parse_retry_after(value: str | None) -> float:
         return 0.0
 
 
+def _get_upbit_get_api_key(api_path: str) -> str:
+    normalized_path = str(api_path or "/unknown")
+    if normalized_path.startswith("/v1/candles/"):
+        return UPBIT_CANDLES_RATE_LIMIT_KEY
+    return f"GET {normalized_path}"
+
+
 def _get_upbit_rate_limit(api_key: str) -> tuple[int, float]:
     """Get rate limit for a specific Upbit API key, falling back to defaults."""
+    if api_key == UPBIT_CANDLES_RATE_LIMIT_KEY:
+        return 10, 1.0
+
     api_limits = settings.upbit_api_rate_limits
     if api_key in api_limits:
         limit_config = api_limits[api_key]
@@ -54,7 +79,7 @@ async def _request_json(url: str, params: dict | None = None) -> list[dict]:
 
     parsed_url = urlparse(url)
     api_path = parsed_url.path or "/unknown"
-    api_key = f"GET {api_path}"
+    api_key = _get_upbit_get_api_key(api_path)
 
     # Get rate limit for this specific API
     rate, period = _get_upbit_rate_limit(api_key)
@@ -530,7 +555,10 @@ async def fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
     return await _request_json(url)
 
 
-async def fetch_multiple_current_prices(market_codes: list[str]) -> dict[str, float]:
+async def fetch_multiple_current_prices(
+    market_codes: list[str],
+    use_cache: bool = True,
+) -> dict[str, float]:
     """
     여러 마켓의 현재가만 간단히 조회하여 딕셔너리로 반환합니다.
 
@@ -538,15 +566,154 @@ async def fetch_multiple_current_prices(market_codes: list[str]) -> dict[str, fl
     ----------
     market_codes : list[str]
         조회할 마켓 코드 리스트 (예: ["KRW-BTC", "KRW-ETH"])
+    use_cache : bool, default=True
+        True이면 짧은 TTL의 프로세스 로컬 캐시를 사용하고,
+        False이면 항상 Upbit에서 현재가를 새로 조회합니다.
 
     Returns
     -------
     dict[str, float]
         마켓별 현재가 딕셔너리 (예: {"KRW-BTC": 95000000, "KRW-ETH": 4400000})
     """
+    return await fetch_multiple_current_prices_cached(
+        market_codes,
+        use_cache=use_cache,
+    )
+
+
+def _normalize_market_codes(market_codes: list[str]) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+
+    for market_code in market_codes:
+        code = str(market_code)
+        if code in seen:
+            continue
+        seen.add(code)
+        normalized.append(code)
+
+    return normalized
+
+
+async def _fetch_multiple_current_prices_raw(
+    market_codes: list[str],
+) -> dict[str, float]:
     tickers_data = await fetch_multiple_tickers(market_codes)
 
-    return {item["market"]: item["trade_price"] for item in tickers_data}
+    prices: dict[str, float] = {}
+    for item in tickers_data:
+        market = item.get("market")
+        trade_price = item.get("trade_price")
+        if not isinstance(market, str) or trade_price is None:
+            continue
+        prices[market] = float(trade_price)
+
+    return prices
+
+
+async def _fetch_and_cache_missing_tickers(
+    market_codes: list[str],
+    ttl_seconds: float,
+) -> dict[str, float]:
+    try:
+        fresh_prices = await _fetch_multiple_current_prices_raw(market_codes)
+        expires_at = time.monotonic() + max(float(ttl_seconds), 0.0)
+        if fresh_prices:
+            lock = _get_ticker_cache_lock()
+            async with lock:
+                for market_code, price in fresh_prices.items():
+                    _ticker_price_cache[market_code] = (price, expires_at)
+        return fresh_prices
+    finally:
+        lock = _get_ticker_cache_lock()
+        async with lock:
+            current_task = asyncio.current_task()
+            for market_code in market_codes:
+                if _ticker_inflight_symbol_tasks.get(market_code) is current_task:
+                    _ticker_inflight_symbol_tasks.pop(market_code, None)
+
+
+async def fetch_multiple_current_prices_cached(
+    market_codes: list[str],
+    ttl_seconds: float = 2.0,
+    use_cache: bool = True,
+) -> dict[str, float]:
+    normalized_codes = _normalize_market_codes(market_codes)
+    if not normalized_codes:
+        return {}
+
+    if not use_cache:
+        return await _fetch_multiple_current_prices_raw(normalized_codes)
+
+    lock = _get_ticker_cache_lock()
+    now = time.monotonic()
+    cached_prices: dict[str, float] = {}
+    missing_codes: list[str] = []
+    inflight_tasks_by_code: dict[str, asyncio.Task[dict[str, float]]] = {}
+    tasks_to_await: list[asyncio.Task[dict[str, float]]] = []
+    seen_tasks: set[asyncio.Task[dict[str, float]]] = set()
+
+    async with lock:
+        for market_code in normalized_codes:
+            cached_entry = _ticker_price_cache.get(market_code)
+            if cached_entry is None:
+                missing_codes.append(market_code)
+                continue
+
+            price, expires_at = cached_entry
+            if expires_at > now:
+                cached_prices[market_code] = price
+            else:
+                _ticker_price_cache.pop(market_code, None)
+                missing_codes.append(market_code)
+
+        if missing_codes:
+            codes_to_fetch: list[str] = []
+            for market_code in missing_codes:
+                inflight_task = _ticker_inflight_symbol_tasks.get(market_code)
+                if inflight_task is not None:
+                    inflight_tasks_by_code[market_code] = inflight_task
+                    if inflight_task not in seen_tasks:
+                        seen_tasks.add(inflight_task)
+                        tasks_to_await.append(inflight_task)
+                    continue
+                codes_to_fetch.append(market_code)
+
+            if codes_to_fetch:
+                new_task = asyncio.create_task(
+                    _fetch_and_cache_missing_tickers(
+                        codes_to_fetch,
+                        ttl_seconds,
+                    )
+                )
+                seen_tasks.add(new_task)
+                tasks_to_await.append(new_task)
+                for market_code in codes_to_fetch:
+                    _ticker_inflight_symbol_tasks[market_code] = new_task
+                    inflight_tasks_by_code[market_code] = new_task
+
+    fresh_prices: dict[str, float] = {}
+    if missing_codes and tasks_to_await:
+        task_results = await asyncio.gather(*tasks_to_await, return_exceptions=False)
+        merged_results: dict[asyncio.Task[dict[str, float]], dict[str, float]] = dict(
+            zip(tasks_to_await, task_results, strict=False)
+        )
+        for market_code in missing_codes:
+            task = inflight_tasks_by_code.get(market_code)
+            if task is None:
+                continue
+            result_for_task = merged_results.get(task, {})
+            if market_code in result_for_task:
+                fresh_prices[market_code] = result_for_task[market_code]
+
+    result: dict[str, float] = {}
+    for market_code in normalized_codes:
+        if market_code in fresh_prices:
+            result[market_code] = fresh_prices[market_code]
+        elif market_code in cached_prices:
+            result[market_code] = cached_prices[market_code]
+
+    return result
 
 
 async def _request_with_auth(

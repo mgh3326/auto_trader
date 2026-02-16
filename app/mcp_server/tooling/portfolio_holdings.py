@@ -9,6 +9,7 @@ from app.core.db import AsyncSessionLocal
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tooling.fundamentals_handlers import _get_support_resistance_impl
 from app.mcp_server.tooling.market_data_indicators import (
+    _compute_crypto_realtime_rsi_from_frame,
     _compute_indicators,
     _fetch_ohlcv_for_indicators,
 )
@@ -557,6 +558,13 @@ async def _get_indicators_impl(
                 current_price = close_fallback_price
 
         indicator_results = _compute_indicators(df, indicators)
+
+        if market_type == "crypto" and any(
+            str(ind).strip().lower() == "rsi" for ind in indicators
+        ):
+            realtime_rsi = _compute_crypto_realtime_rsi_from_frame(df, current_price)
+            if realtime_rsi is not None:
+                indicator_results.setdefault("rsi", {})["14"] = realtime_rsi
 
         return {
             "symbol": symbol,

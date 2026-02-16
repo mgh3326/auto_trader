@@ -252,7 +252,7 @@ def _build_dca_plan_rows(
     summary = {
         "symbol": normalized_symbol,
         "current_price": current_price,
-        "rsi_14": rsi_value,
+        "rsi": rsi_value,
         "strategy": strategy,
         "total_amount": total_amount,
         "avg_target_price": round(avg_target_price, 2),

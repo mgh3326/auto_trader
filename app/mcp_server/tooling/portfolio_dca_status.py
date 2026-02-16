@@ -29,7 +29,7 @@ def _format_dca_plan(plan: DcaPlan) -> dict[str, Any]:
         else None,
         "splits": plan.splits,
         "strategy": plan.strategy,
-        "rsi_14": float(plan.rsi_14) if plan.rsi_14 is not None else None,
+        "rsi": float(plan.rsi_14) if plan.rsi_14 is not None else None,
         "created_at": plan.created_at.isoformat() if plan.created_at else None,
         "updated_at": plan.updated_at.isoformat() if plan.updated_at else None,
         "completed_at": plan.completed_at.isoformat() if plan.completed_at else None,

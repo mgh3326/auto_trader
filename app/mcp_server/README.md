@@ -205,7 +205,7 @@ Response format:
       "amount": 800000.0,
       "score": 75.5,
       "reason": "[balanced] RSI 45.0 (저평가 구간) | PER 12.0 (적정)",
-      "rsi_14": 45.0,
+      "rsi": 45.0,
       "per": 12.0,
       "change_rate": 2.5
     }
@@ -250,7 +250,7 @@ Crypto recommendation example (`market="crypto"`):
       "amount": 142000000.0,
       "score": 78.4,
       "reason": "Composite Score 78.4 | RSI 39.2(저평가) | 캔들 bullish | 거래량 1.3배",
-      "rsi_14": 39.2,
+      "rsi": 39.2,
       "per": null,
       "change_rate": 1.8,
       "volume_24h": 12543.21,

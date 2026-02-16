@@ -12,6 +12,7 @@ from app.mcp_server.scoring import (
     calc_momentum_score,
     calc_rsi_score,
     calc_valuation_score,
+    generate_reason,
 )
 from app.mcp_server.strategies import (
     VALID_STRATEGIES,
@@ -162,7 +163,7 @@ class TestScoringFunctions:
     def test_calc_composite_score_range(self):
         score = calc_composite_score(
             {
-                "rsi_14": 42,
+                "rsi": 42,
                 "per": 12,
                 "pbr": 1.2,
                 "change_rate": 2.1,
@@ -176,7 +177,7 @@ class TestScoringFunctions:
         high_liquidity = calc_composite_score(
             {
                 "market": "crypto",
-                "rsi_14": 50,
+                "rsi": 50,
                 "change_rate": 1.0,
                 "volume": 1_000_000,
                 "trade_amount_24h": 150_000_000_000,
@@ -185,13 +186,38 @@ class TestScoringFunctions:
         low_liquidity = calc_composite_score(
             {
                 "market": "crypto",
-                "rsi_14": 50,
+                "rsi": 50,
                 "change_rate": 1.0,
                 "volume": 1_000_000,
                 "trade_amount_24h": 500_000_000,
             }
         )
         assert high_liquidity > low_liquidity
+
+    def test_calc_composite_score_uses_rsi_field_only(self):
+        score_with_legacy_only = calc_composite_score({"rsi_14": 10})
+        score_without_rsi = calc_composite_score({})
+        assert score_with_legacy_only == score_without_rsi
+
+    def test_generate_reason_ignores_legacy_rsi_14_field(self):
+        reason = generate_reason({"rsi_14": 22.0}, strategy="balanced")
+        assert "RSI" not in reason
+
+
+class TestCryptoReasonBuilder:
+    def test_build_crypto_rsi_reason_rsi_only(self):
+        reason = analysis_recommend._build_crypto_rsi_reason(
+            {
+                "rsi": 33.2,
+                "rsi_bucket": 30,
+                "candle_type": "bullish",
+                "volume_ratio": 1.4,
+            }
+        )
+
+        assert "RSI 33.2" in reason
+        assert "캔들 bullish" in reason
+        assert "거래량 1.4배" in reason
 
 
 class TestStrategyValidation:
@@ -719,7 +745,8 @@ class TestRecommendStocksIntegration:
         )
 
         assert result["recommendations"]
-        assert all(rec["rsi_14"] is not None for rec in result["recommendations"])
+        assert all(rec.get("rsi") is not None for rec in result["recommendations"])
+        assert all("rsi_14" not in rec for rec in result["recommendations"])
 
     @pytest.mark.asyncio
     async def test_reason_includes_rich_context(
@@ -927,6 +954,8 @@ class TestRecommendStocksIntegration:
         assert result["recommendations"]
         rec = result["recommendations"][0]
         assert "score" not in rec
+        assert rec.get("rsi") is not None
+        assert "rsi_14" not in rec
         assert isinstance(rec["rsi_bucket"], int)
         assert isinstance(rec["market_cap"], (int, float))
         assert isinstance(rec["market_cap_rank"], int)

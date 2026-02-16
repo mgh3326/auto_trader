@@ -1400,6 +1400,44 @@ async def test_get_indicators_crypto_uses_ticker_price(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_indicators_crypto_rsi_uses_existing_ohlcv_and_ticker(monkeypatch):
+    tools = build_tools()
+    rows = 40
+    close = pd.Series([100.0 + i for i in range(rows)])
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=rows, freq="D").date,
+            "open": close - 1,
+            "high": close + 1,
+            "low": close - 2,
+            "close": close,
+            "volume": pd.Series([1000.0 + i for i in range(rows)]),
+            "value": pd.Series([1000000.0 + i for i in range(rows)]),
+        }
+    )
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 50.0}),
+    )
+
+    result = await tools["get_indicators"]("KRW-BTC", indicators=["rsi"])
+    expected_rsi = market_data_indicators._compute_crypto_realtime_rsi_from_frame(
+        df,
+        50.0,
+    )
+
+    assert "error" not in result
+    assert result["indicators"]["rsi"]["14"] == expected_rsi
+
+
+@pytest.mark.asyncio
 async def test_get_indicators_crypto_ticker_failure_falls_back_to_close(monkeypatch):
     tools = build_tools()
     rows = 40
@@ -1429,6 +1467,47 @@ async def test_get_indicators_crypto_ticker_failure_falls_back_to_close(monkeypa
     assert "error" not in result
     assert result["price"] == float(df["close"].iloc[-1])
     ticker_mock.assert_awaited_once_with(["KRW-BTC"])
+
+
+@pytest.mark.asyncio
+async def test_portfolio_indicators_crypto_rsi_uses_existing_ohlcv_and_ticker(
+    monkeypatch,
+):
+    rows = 40
+    close = pd.Series([100.0 + i for i in range(rows)])
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=rows, freq="D").date,
+            "open": close - 1,
+            "high": close + 1,
+            "low": close - 2,
+            "close": close,
+            "volume": pd.Series([1000.0 + i for i in range(rows)]),
+            "value": pd.Series([1000000.0 + i for i in range(rows)]),
+        }
+    )
+
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 65.0}),
+    )
+
+    result = await portfolio_holdings._get_indicators_impl(
+        "KRW-BTC", indicators=["rsi"], market="crypto"
+    )
+    expected_rsi = market_data_indicators._compute_crypto_realtime_rsi_from_frame(
+        df,
+        65.0,
+    )
+
+    assert "error" not in result
+    assert result["indicators"]["rsi"]["14"] == expected_rsi
 
 
 @pytest.mark.asyncio
@@ -1496,6 +1575,124 @@ async def test_fetch_ohlcv_for_indicators_crypto_uses_upbit_service_boundary(
         period="day",
         end_date=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_compute_crypto_realtime_rsi_map_uses_single_batch_ticker_call(
+    monkeypatch,
+):
+    btc_close = pd.Series([100.0 + i for i in range(40)])
+    eth_close = pd.Series([200.0 + i for i in range(40)])
+    dfs = {
+        "KRW-BTC": pd.DataFrame({"close": btc_close}),
+        "KRW-ETH": pd.DataFrame({"close": eth_close}),
+    }
+
+    async def fake_fetch_ohlcv(symbol: str, market_type: str, count: int = 250):
+        assert market_type == "crypto"
+        assert count == 200
+        return dfs[symbol]
+
+    monkeypatch.setattr(
+        market_data_indicators,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(side_effect=fake_fetch_ohlcv),
+    )
+    ticker_mock = AsyncMock(return_value={"KRW-BTC": 150.0, "KRW-ETH": 260.0})
+    monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", ticker_mock)
+
+    result = await market_data_indicators.compute_crypto_realtime_rsi_map(
+        ["KRW-BTC", "KRW-ETH"]
+    )
+
+    assert set(result.keys()) == {"KRW-BTC", "KRW-ETH"}
+    ticker_mock.assert_awaited_once_with(["KRW-BTC", "KRW-ETH"], use_cache=True)
+
+
+@pytest.mark.asyncio
+async def test_compute_crypto_realtime_rsi_map_uses_ticker_override_on_last_close(
+    monkeypatch,
+):
+    close = pd.Series([100.0 + i for i in range(40)])
+    df = pd.DataFrame({"close": close})
+
+    monkeypatch.setattr(
+        market_data_indicators,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 50.0}),
+    )
+
+    result = await market_data_indicators.compute_crypto_realtime_rsi_map(["KRW-BTC"])
+
+    expected_close = df["close"].copy()
+    expected_close.iloc[-1] = 50.0
+    expected_rsi = market_data_indicators._calculate_rsi(expected_close).get("14")
+    assert result["KRW-BTC"] == expected_rsi
+
+
+@pytest.mark.asyncio
+async def test_compute_crypto_realtime_rsi_map_allows_under_200_but_min_15(monkeypatch):
+    close = pd.Series(
+        [
+            50.0,
+            51.0,
+            52.0,
+            51.0,
+            53.0,
+            52.0,
+            54.0,
+            53.0,
+            55.0,
+            54.0,
+            56.0,
+            55.0,
+            57.0,
+            56.0,
+            58.0,
+        ]
+    )
+    df = pd.DataFrame({"close": close})
+
+    monkeypatch.setattr(
+        market_data_indicators,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={}),
+    )
+
+    result = await market_data_indicators.compute_crypto_realtime_rsi_map(["KRW-NEW"])
+    assert result["KRW-NEW"] is not None
+
+
+@pytest.mark.asyncio
+async def test_compute_crypto_realtime_rsi_map_returns_none_when_less_than_15_valid(
+    monkeypatch,
+):
+    close = pd.Series([np.nan] * 6 + [100.0 + i for i in range(14)])
+    df = pd.DataFrame({"close": close})
+
+    monkeypatch.setattr(
+        market_data_indicators,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-NEW": 200.0}),
+    )
+
+    result = await market_data_indicators.compute_crypto_realtime_rsi_map(["KRW-NEW"])
+    assert result["KRW-NEW"] is None
 
 
 @pytest.mark.unit
@@ -5415,7 +5612,7 @@ async def test_place_order_upbit_buy_limit_dry_run(monkeypatch):
     tools = build_tools()
 
     class DummyUpbit:
-        async def fetch_multiple_current_prices(self, symbols):
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
             return {"KRW-BTC": 50000000.0}
 
         async def fetch_my_coins(self):
@@ -5464,7 +5661,7 @@ async def test_place_order_upbit_buy_market_dry_run(monkeypatch):
     tools = build_tools()
 
     class DummyUpbit:
-        async def fetch_multiple_current_prices(self, symbols):
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
             return {"KRW-BTC": 50000000.0}
 
         async def fetch_my_coins(self):
@@ -5507,7 +5704,7 @@ async def test_place_order_sell_limit_price_below_minimum(monkeypatch):
     tools = build_tools()
 
     class DummyUpbit:
-        async def fetch_multiple_current_prices(self, symbols):
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
             return {"KRW-BTC": 50000000.0}
 
         async def fetch_my_coins(self):
@@ -5544,7 +5741,7 @@ async def test_place_order_market_buy_calculates_quantity(monkeypatch):
     tools = build_tools()
 
     class DummyUpbit:
-        async def fetch_multiple_current_prices(self, symbols):
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
             return {"KRW-BTC": 50000000.0}
 
         async def fetch_my_coins(self):
@@ -5573,7 +5770,7 @@ async def test_place_order_market_sell_uses_full_quantity(monkeypatch):
     tools = build_tools()
 
     class DummyUpbit:
-        async def fetch_multiple_current_prices(self, symbols):
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
             return {"KRW-BTC": 50000000.0}
 
         async def fetch_my_coins(self):
@@ -5612,7 +5809,7 @@ async def test_place_order_insufficient_balance_upbit(monkeypatch):
     tools = build_tools()
 
     class DummyUpbit:
-        async def fetch_multiple_current_prices(self, symbols):
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
             return {"KRW-BTC": 50000000.0}
 
         async def fetch_my_coins(self):
@@ -6240,7 +6437,8 @@ class TestCreateDcaPlan:
         summary = result["summary"]
         assert summary["symbol"] == "KRW-BTC"
         assert summary["current_price"] == 100000000.0
-        assert summary["rsi_14"] == 25.0
+        assert summary["rsi"] == 25.0
+        assert "rsi_14" not in summary
         assert summary["strategy"] == "support"
         assert summary["total_amount"] == 200000.0
         assert summary["weight_mode"] == "front_heavy"  # RSI < 30
@@ -6705,6 +6903,8 @@ class TestGetDcaStatus:
         assert p["plan_id"] == 1
         assert p["symbol"] == "KRW-BTC"
         assert p["status"] == "active"
+        assert "rsi" in p
+        assert "rsi_14" not in p
         # Progress summary present and counts as expected
         assert "progress" in p
         assert p["progress"]["total_steps"] == 3
@@ -7094,6 +7294,22 @@ class TestPlaceOrderHighAmount:
         mcp = DummyMCP()
         register_all_tools(mcp)
         return mcp.tools
+
+    @pytest.mark.asyncio
+    async def test_get_current_price_for_order_crypto_bypasses_ticker_cache(
+        self, monkeypatch
+    ):
+        ticker_mock = AsyncMock(return_value={"KRW-BTC": 50000000.0})
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_current_prices",
+            ticker_mock,
+        )
+
+        price = await order_execution._get_current_price_for_order("KRW-BTC", "crypto")
+
+        assert price == 50000000.0
+        ticker_mock.assert_awaited_once_with(["KRW-BTC"], use_cache=False)
 
     @pytest.mark.asyncio
     async def test_place_order_high_amount_kr_equity(self, monkeypatch):

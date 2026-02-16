@@ -12,12 +12,11 @@ import httpx
 import yfinance as yf
 
 from app.core.async_rate_limiter import RateLimitExceededError
-from app.mcp_server.tooling.analysis_crypto_score import (
-    calculate_crypto_metrics_from_ohlcv,
-)
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_rsi,
     _fetch_ohlcv_for_indicators,
+    _normalize_crypto_symbol,
+    compute_crypto_realtime_rsi_map,
 )
 from app.mcp_server.tooling.shared import error_payload as _error_payload
 from app.services import upbit as upbit_service
@@ -980,106 +979,78 @@ async def _enrich_crypto_rsi_subset(
     rsi_enrichment["attempted"] = len(candidates)
     statuses = ["pending" for _ in candidates]
     errors: list[str | None] = [None for _ in candidates]
-    semaphore = asyncio.Semaphore(10)
 
-    async def calculate_rsi_for_coin(item: dict[str, Any], index: int) -> None:
-        async with semaphore:
-            symbol = (
-                item.get("original_market") or item.get("symbol") or item.get("market")
-            )
+    symbols_by_index: list[str | None] = [None for _ in candidates]
+    batch_symbols: list[str] = []
+    seen_symbols: set[str] = set()
 
-            if not symbol:
-                statuses[index] = "error"
-                errors[index] = "No valid symbol found"
-                return
+    for index, item in enumerate(candidates):
+        symbol = item.get("original_market") or item.get("symbol") or item.get("market")
+        normalized_symbol = _normalize_crypto_symbol(str(symbol or ""))
+        if not normalized_symbol:
+            statuses[index] = "error"
+            errors[index] = "No valid symbol found"
+            continue
 
-            if item.get("rsi") is not None:
-                statuses[index] = "success"
-                return
+        symbols_by_index[index] = normalized_symbol
+        if item.get("rsi") is not None:
+            statuses[index] = "success"
+            continue
 
-            try:
-                df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=50)
-                if df is None or df.empty:
-                    statuses[index] = "error"
-                    errors[index] = "Missing OHLCV data"
-                    return
-
-                metrics = calculate_crypto_metrics_from_ohlcv(df)
-                item["rsi"] = metrics.get("rsi")
-                item["volume_24h"] = metrics.get("volume_24h")
-                item["volume_ratio"] = metrics.get("volume_ratio")
-                item["candle_type"] = metrics.get("candle_type")
-                item["adx"] = metrics.get("adx")
-                item["plus_di"] = metrics.get("plus_di")
-                item["minus_di"] = metrics.get("minus_di")
-                item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
-
-                if item.get("rsi") is None:
-                    statuses[index] = "error"
-                    errors[index] = "RSI calculation returned None"
-                else:
-                    statuses[index] = "success"
-            except Exception as exc:
-                logger.error(
-                    "[RSI-Crypto] ❌ Failed for %s: %s: %s",
-                    symbol or "UNKNOWN",
-                    type(exc).__name__,
-                    exc,
-                )
-                statuses[index] = (
-                    "rate_limited"
-                    if isinstance(exc, RateLimitExceededError)
-                    else "error"
-                )
-                errors[index] = f"{type(exc).__name__}: {exc}"
+        if normalized_symbol not in seen_symbols:
+            seen_symbols.add(normalized_symbol)
+            batch_symbols.append(normalized_symbol)
 
     try:
-        gathered = await asyncio.wait_for(
-            asyncio.gather(
-                *[calculate_rsi_for_coin(item, i) for i, item in enumerate(candidates)],
-                return_exceptions=True,
-            ),
-            timeout=30.0,
+        rsi_map = (
+            await asyncio.wait_for(
+                compute_crypto_realtime_rsi_map(batch_symbols),
+                timeout=30.0,
+            )
+            if batch_symbols
+            else {}
         )
-        for i, result in enumerate(gathered):
-            if isinstance(result, Exception) and statuses[i] == "pending":
-                symbol = (
-                    candidates[i].get("original_market")
-                    or candidates[i].get("symbol")
-                    or candidates[i].get("market")
-                )
-                logger.error(
-                    "[RSI-Crypto] gather returned exception for %s: %s: %s",
-                    symbol or "UNKNOWN",
-                    type(result).__name__,
-                    result,
-                )
-                statuses[i] = (
-                    "rate_limited"
-                    if isinstance(result, RateLimitExceededError)
-                    else "error"
-                )
-                errors[i] = f"{type(result).__name__}: {result}"
+
+        for index, item in enumerate(candidates):
+            if statuses[index] != "pending":
+                continue
+
+            normalized_symbol = symbols_by_index[index]
+            if normalized_symbol is None:
+                statuses[index] = "error"
+                errors[index] = "No valid symbol found"
+                continue
+
+            rsi_value = _to_optional_float(rsi_map.get(normalized_symbol))
+            item["rsi"] = rsi_value
+            item["rsi_bucket"] = _compute_rsi_bucket(rsi_value)
+
+            if rsi_value is None:
+                statuses[index] = "error"
+                errors[index] = "RSI calculation returned None"
+            else:
+                statuses[index] = "success"
+
     except TimeoutError:
         logger.warning("[RSI-Crypto] RSI enrichment timed out after 30 seconds")
-        for i, status in enumerate(statuses):
+        for index, status in enumerate(statuses):
             if status == "pending":
-                statuses[i] = "timeout"
-                errors[i] = "Timed out after 30 seconds"
+                statuses[index] = "timeout"
+                errors[index] = "Timed out after 30 seconds"
     except Exception as exc:
         logger.error(
             "[RSI-Crypto] RSI enrichment batch failed: %s: %s",
             type(exc).__name__,
             exc,
         )
-        for i, status in enumerate(statuses):
+        for index, status in enumerate(statuses):
             if status == "pending":
-                statuses[i] = (
+                statuses[index] = (
                     "rate_limited"
                     if isinstance(exc, RateLimitExceededError)
                     else "error"
                 )
-                errors[i] = f"{type(exc).__name__}: {exc}"
+                errors[index] = f"{type(exc).__name__}: {exc}"
     finally:
         _finalize_rsi_enrichment_diagnostics(rsi_enrichment, statuses, errors)
 

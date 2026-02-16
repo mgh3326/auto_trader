@@ -38,7 +38,7 @@ CRYPTO_PREFILTER_LIMIT = 30
 
 
 def _build_crypto_rsi_reason(item: dict[str, Any]) -> str:
-    rsi = item.get("rsi_14")
+    rsi = item.get("rsi")
     candle_type = item.get("candle_type", "")
     volume_ratio = item.get("volume_ratio")
     rsi_bucket = item.get("rsi_bucket")
@@ -106,7 +106,6 @@ async def _enrich_crypto_composite_metrics(
                 df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=50)
                 if df is not None and not df.empty:
                     metrics = calculate_crypto_metrics_from_ohlcv(df)
-                    results[index]["rsi_14"] = metrics.get("rsi")
                     results[index]["rsi"] = metrics.get("rsi")
                     results[index]["score"] = metrics.get("score")
                     results[index]["volume_24h"] = metrics.get("volume_24h")
@@ -216,7 +215,7 @@ def _allocate_budget_equal(
     if allocated and remaining > 0:
         sorted_allocated = sorted(
             allocated,
-            key=lambda x: _to_float(x.get("rsi_14") or 999, default=999),
+            key=lambda x: _to_float(x.get("rsi") or 999, default=999),
         )
         for rec in sorted_allocated:
             price = _to_float(rec.get("price"), default=0.0)
@@ -311,7 +310,7 @@ def _normalize_candidate(item: dict[str, Any], market: str) -> dict[str, Any]:
         "per": _to_optional_float(item.get("per")),
         "pbr": _to_optional_float(item.get("pbr")),
         "dividend_yield": _to_optional_float(item.get("dividend_yield")),
-        "rsi_14": _to_optional_float(item.get("rsi") or item.get("rsi_14")),
+        "rsi": _to_optional_float(item.get("rsi")),
         "rsi_bucket": rsi_bucket,
         "market_warning": item.get("market_warning"),
         "market_cap_rank": _to_int(item.get("market_cap_rank")),
@@ -695,8 +694,7 @@ async def recommend_stocks_impl(
                         "budget": round(per_coin_budget, 2),
                         "amount": round(per_coin_budget, 2),
                         "reason": reason,
-                        "rsi_14": item.get("rsi_14"),
-                        "rsi": item.get("rsi_14"),
+                        "rsi": item.get("rsi"),
                         "rsi_bucket": item.get("rsi_bucket"),
                         "per": None,
                         "change_rate": item.get("change_rate"),
@@ -933,7 +931,7 @@ async def recommend_stocks_impl(
                 warnings.append(f"Fallback 스크리닝 실패: {fallback_error}")
 
         rsi_missing_candidates = [
-            c for c in deduped_candidates[:20] if c.get("rsi_14") is None
+            c for c in deduped_candidates[:20] if c.get("rsi") is None
         ]
         if rsi_missing_candidates:
             logger.debug(
@@ -961,9 +959,9 @@ async def recommend_stocks_impl(
                             )
                             return candidate
                         rsi_data = indicators.get("indicators", {}).get("rsi", {})
-                        rsi_value = rsi_data.get("14") or rsi_data.get("rsi_14")
+                        rsi_value = rsi_data.get("14")
                         if rsi_value is not None:
-                            candidate["rsi_14"] = _to_optional_float(rsi_value)
+                            candidate["rsi"] = _to_optional_float(rsi_value)
                     except Exception as exc:
                         logger.debug(
                             "recommend_stocks RSI fetch exception symbol=%s error=%s",
@@ -1043,7 +1041,7 @@ async def recommend_stocks_impl(
                     "amount": item.get("amount"),
                     "score": item.get("score"),
                     "reason": reason,
-                    "rsi_14": item.get("rsi_14"),
+                    "rsi": item.get("rsi"),
                     "per": item.get("per"),
                     "change_rate": item.get("change_rate"),
                 }

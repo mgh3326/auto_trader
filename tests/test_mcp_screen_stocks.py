@@ -1,6 +1,7 @@
 """Tests for screen_stocks MCP tool."""
 
 import logging
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -829,12 +830,12 @@ class TestScreenStocksCrypto:
         async def mock_fetch_top_traded_coins(fiat):
             return mock_upbit_coins
 
-        rsi_fetch_called = False
-
-        async def mock_fetch_ohlcv(symbol, market_type, count):
-            nonlocal rsi_fetch_called
-            rsi_fetch_called = True
-            raise RuntimeError("expected fetch for enrichment")
+        realtime_rsi_mock = AsyncMock(
+            return_value={
+                "KRW-BTC": None,
+                "KRW-ETH": None,
+            }
+        )
 
         monkeypatch.setattr(
             upbit_service,
@@ -842,7 +843,9 @@ class TestScreenStocksCrypto:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            analysis_screen_core,
+            "compute_crypto_realtime_rsi_map",
+            realtime_rsi_mock,
         )
 
         tools = build_tools()
@@ -859,24 +862,23 @@ class TestScreenStocksCrypto:
             limit=20,
         )
 
-        assert rsi_fetch_called
+        realtime_rsi_mock.assert_awaited_once_with(["KRW-BTC", "KRW-ETH"])
         assert result["meta"]["rsi_enrichment"]["attempted"] > 0
         assert all("score" not in item for item in result["results"])
 
     @pytest.mark.asyncio
-    async def test_crypto_sort_by_rsi_fetches_rsi(self, mock_upbit_coins, monkeypatch):
-        """Test crypto market fetches RSI when sort_by='rsi'."""
-
+    async def test_screen_crypto_uses_batch_realtime_rsi_engine(
+        self, mock_upbit_coins, monkeypatch
+    ):
         async def mock_fetch_top_traded_coins(fiat):
             return mock_upbit_coins
 
-        import pandas as pd
-
-        async def mock_fetch_ohlcv(symbol, market_type, count):
-            return pd.DataFrame({"close": [100.0 + i for i in range(50)]})
-
-        def mock_calculate_rsi(close):
-            return {"14": 45.0}
+        realtime_rsi_mock = AsyncMock(
+            return_value={
+                "KRW-BTC": 41.0,
+                "KRW-ETH": 29.0,
+            }
+        )
 
         monkeypatch.setattr(
             upbit_service,
@@ -884,9 +886,10 @@ class TestScreenStocksCrypto:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            analysis_screen_core,
+            "compute_crypto_realtime_rsi_map",
+            realtime_rsi_mock,
         )
-        monkeypatch.setattr(analysis_screen_core, "_calculate_rsi", mock_calculate_rsi)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -902,7 +905,11 @@ class TestScreenStocksCrypto:
             limit=20,
         )
 
-        assert result["meta"]["rsi_enrichment"]["attempted"] > 0
+        realtime_rsi_mock.assert_awaited_once_with(["KRW-BTC", "KRW-ETH"])
+        assert result["meta"]["rsi_enrichment"]["attempted"] == 2
+        assert result["meta"]["rsi_enrichment"]["succeeded"] == 2
+        assert all("rsi" in item for item in result["results"])
+        assert all("rsi_14" not in item for item in result["results"])
 
     @pytest.mark.asyncio
     async def test_crypto_sort_by_rsi_desc_forces_asc_with_warning(
@@ -911,10 +918,22 @@ class TestScreenStocksCrypto:
         async def mock_fetch_top_traded_coins(fiat):
             return mock_upbit_coins
 
+        realtime_rsi_mock = AsyncMock(
+            return_value={
+                "KRW-BTC": 55.0,
+                "KRW-ETH": 31.0,
+            }
+        )
+
         monkeypatch.setattr(
             upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "compute_crypto_realtime_rsi_map",
+            realtime_rsi_mock,
         )
 
         tools = build_tools()
@@ -1322,8 +1341,6 @@ class TestScreenStocksRsiLogging:
 
     @pytest.mark.asyncio
     async def test_crypto_rsi_falls_back_to_market_field(self, monkeypatch, caplog):
-        """Crypto RSI enrichment should fall back to item['market'] when code is missing."""
-
         async def mock_fetch_top_traded_coins(fiat):
             return [
                 {
@@ -1334,17 +1351,15 @@ class TestScreenStocksRsiLogging:
                 }
             ]
 
-        called_symbols: list[str] = []
-
-        async def mock_fetch_ohlcv(symbol, market_type, count):
-            called_symbols.append(symbol)
-            raise RuntimeError("should not be called")
+        realtime_rsi_mock = AsyncMock(return_value={})
 
         monkeypatch.setattr(
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            analysis_screen_core,
+            "compute_crypto_realtime_rsi_map",
+            realtime_rsi_mock,
         )
 
         caplog.set_level(logging.ERROR)
@@ -1363,10 +1378,9 @@ class TestScreenStocksRsiLogging:
         )
 
         assert result["returned_count"] == 1
-        assert called_symbols == ["crypto"]
-        assert any(
-            "[RSI-Crypto] ❌ Failed for crypto" in r.message for r in caplog.records
-        )
+        diagnostics = result["meta"]["rsi_enrichment"]
+        assert diagnostics["attempted"] == 1
+        assert diagnostics["failed"] == 1
 
     @pytest.mark.asyncio
     async def test_kr_rsi_ohlcv_exception_logs_error(self, monkeypatch, caplog):
@@ -1440,14 +1454,16 @@ class TestScreenStocksRsiLogging:
                 }
             ]
 
-        async def mock_fetch_ohlcv(symbol, market_type, count):
+        async def mock_compute_realtime_rsi_map(symbols):
             raise RuntimeError("boom-crypto")
 
         monkeypatch.setattr(
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            analysis_screen_core,
+            "compute_crypto_realtime_rsi_map",
+            mock_compute_realtime_rsi_map,
         )
 
         caplog.set_level(logging.ERROR)
@@ -1468,7 +1484,8 @@ class TestScreenStocksRsiLogging:
         assert result["returned_count"] == 1
         assert result["results"][0].get("rsi") is None
         assert any(
-            "[RSI-Crypto] ❌ Failed" in record.message for record in caplog.records
+            "[RSI-Crypto] RSI enrichment batch failed" in record.message
+            for record in caplog.records
         )
         assert any("RuntimeError" in record.message for record in caplog.records)
 
@@ -1544,14 +1561,16 @@ class TestScreenStocksRsiLogging:
                 }
             ]
 
-        async def mock_fetch_ohlcv(symbol, market_type, count):
+        async def mock_compute_realtime_rsi_map(symbols):
             raise RateLimitExceededError("Upbit rate limit retries exhausted")
 
         monkeypatch.setattr(
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            analysis_screen_core,
+            "compute_crypto_realtime_rsi_map",
+            mock_compute_realtime_rsi_map,
         )
 
         tools = build_tools()

@@ -110,13 +110,9 @@ class OpenClawClient:
         request_id = str(uuid4())
         message = format_fill_message(normalized_order)
 
-        order_id = normalized_order.order_id or request_id
-        session_key = f"auto-trader:fill:{normalized_order.account}:{order_id}"
-
         payload = {
             "message": message,
             "name": "auto-trader:fill",
-            # "sessionKey": session_key,
             "wakeMode": "now",
         }
 

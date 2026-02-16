@@ -277,7 +277,7 @@ def calc_composite_score(
 
     Args:
         item: Stock data dictionary with keys:
-            - rsi, rsi_14: RSI value (0-100)
+            - rsi: RSI value (0-100)
             - per, pbr: Valuation metrics
             - change_rate: Price change percentage
             - volume: Trading volume
@@ -293,7 +293,7 @@ def calc_composite_score(
     """
     # Extract values from item, handling multiple possible keys
     market = str(item.get("market", "")).strip().lower()
-    rsi = item.get("rsi") or item.get("rsi_14")
+    rsi = item.get("rsi")
     per = item.get("per")
     pbr = item.get("pbr")
     change_rate = item.get("change_rate")
@@ -350,7 +350,7 @@ def generate_reason(
 
     Args:
         stock: Stock data dictionary with keys:
-            - rsi, rsi_14: RSI value (0-100)
+            - rsi: RSI value (0-100)
             - per: P/E ratio
             - change_rate: Price change percentage
             - volume: Trading volume
@@ -364,13 +364,11 @@ def generate_reason(
     """
     parts: list[str] = []
 
-    def get_float(key: str, alt_key: str | None = None) -> float | None:
+    def get_float(key: str) -> float | None:
         val = stock.get(key)
-        if val is None and alt_key:
-            val = stock.get(alt_key)
         return _safe_float(val)
 
-    rsi = get_float("rsi", "rsi_14")
+    rsi = get_float("rsi")
     if rsi is not None:
         if rsi <= 30:
             parts.append(f"RSI {rsi:.1f} (과매도)")
