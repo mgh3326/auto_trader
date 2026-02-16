@@ -675,21 +675,21 @@ def _compute_dca_price_levels(
         support_prices = [s["price"] for s in supports]
         end_price = min(support_prices) if support_prices else current_price * 0.98
         remaining = splits - 1
-        used_supports: set[float] = set()
+        aggressive_used_supports: set[float] = set()
 
         if len(support_prices) >= remaining:
             for i in range(1, splits):
                 price = first_price + ((end_price - first_price) / (splits - 1)) * i
                 near_support = None
                 for supp in support_prices:
-                    if supp in used_supports:
+                    if supp in aggressive_used_supports:
                         continue
                     if abs(price - supp) / price < 0.02 and supp < price:
                         near_support = supp
                         break
                 if near_support is not None:
                     price = near_support
-                    used_supports.add(near_support)
+                    aggressive_used_supports.add(near_support)
                 source = "support" if near_support else "interpolated"
                 levels.append({"price": price, "source": source})
         else:

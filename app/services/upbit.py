@@ -174,19 +174,41 @@ async def fetch_ohlcv(
     period: str = "day",
     end_date: datetime | None = None,
 ) -> pd.DataFrame:
-    """최근 *days*개 OHLCV DataFrame 반환 (Upbit)
+    """최근 *days*개 OHLCV DataFrame 반환 (Upbit)."""
+    normalized_period = str(period or "").strip().lower()
 
-    Parameters
-    ----------
-    market : str, default "KRW-BTC"
-        업비트 마켓코드 (예: "KRW-BTC", "USDT-ETH")
-    days : int, default 100
-        가져올 캔들 수 (최대 200)
-    period : str, default "day"
-        캔들 주기 ("day", "week", "month")
-    end_date : datetime | None, default None
-        조회 기준 시간 (None이면 현재 시간)
-    """
+    if (
+        normalized_period in {"day", "week", "month"}
+        and settings.upbit_ohlcv_cache_enabled
+    ):
+        from app.services import upbit_ohlcv_cache as upbit_ohlcv_cache_service
+
+        cached = await upbit_ohlcv_cache_service.get_closed_candles(
+            market,
+            count=days,
+            period=normalized_period,
+            raw_fetcher=_fetch_ohlcv_raw,
+        )
+        if cached is not None:
+            return cached
+
+    raw = await _fetch_ohlcv_raw(
+        market=market,
+        days=days,
+        period=normalized_period,
+        end_date=end_date,
+    )
+    if normalized_period in {"day", "week", "month"}:
+        return _filter_closed_buckets(raw, normalized_period)
+    return raw
+
+
+async def _fetch_ohlcv_raw(
+    market: str = "KRW-BTC",
+    days: int = 100,
+    period: str = "day",
+    end_date: datetime | None = None,
+) -> pd.DataFrame:
     if days > 200:
         raise ValueError("Upbit API는 최대 200개까지 요청 가능합니다.")
 
@@ -235,6 +257,32 @@ async def fetch_ohlcv(
         .reset_index(drop=True)
     )
     return df
+
+
+def _filter_closed_buckets(
+    df: pd.DataFrame,
+    period: str,
+    now: datetime | None = None,
+) -> pd.DataFrame:
+    if df.empty or "date" not in df.columns:
+        return df
+
+    normalized_period = str(period or "").strip().lower()
+    if normalized_period not in {"day", "week", "month"}:
+        return df
+
+    from app.services import upbit_ohlcv_cache as upbit_ohlcv_cache_service
+
+    last_closed_bucket = upbit_ohlcv_cache_service.get_last_closed_bucket_kst(
+        normalized_period,
+        now,
+    )
+    bucket_dates = pd.to_datetime(df["date"], errors="coerce").dt.date
+    return (
+        df.loc[bucket_dates <= last_closed_bucket]
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
 
 
 async def fetch_price(market: str = "KRW-BTC") -> pd.DataFrame:
