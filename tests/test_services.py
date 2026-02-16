@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from app.services import stock_info_service
+from app.services import upbit as upbit_service_module
 from app.services.upbit import fetch_ohlcv, fetch_price
 
 
@@ -75,6 +76,35 @@ class TestUpbitService:
         assert "close" in result.columns
         assert "volume" in result.columns
         assert "value" in result.columns
+
+    @pytest.mark.asyncio
+    @patch("app.services.upbit._request_json")
+    async def test_fetch_ohlcv_raw_keeps_current_upbit_mapping(self, mock_request):
+        mock_request.return_value = [
+            {
+                "candle_date_time_kst": "2023-12-01T00:00:00",
+                "opening_price": 45000000,
+                "high_price": 46000000,
+                "low_price": 44000000,
+                "trade_price": 45500000,
+                "candle_acc_trade_volume": 100.0,
+                "candle_acc_trade_price": 4550000000.0,
+            }
+        ]
+
+        df = await upbit_service_module._fetch_ohlcv_raw(
+            "KRW-BTC", days=2, period="day", end_date=None
+        )
+
+        assert list(df.columns) == [
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "value",
+        ]
 
 
 class TestKISService:
