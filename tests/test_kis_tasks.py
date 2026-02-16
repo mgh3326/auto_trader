@@ -8,7 +8,7 @@ def test_run_per_domestic_stock_automation_executes_all_steps(monkeypatch):
     """분석 -> 매수 -> 매도 모든 단계가 실행되고 결과에 포함되는지 확인."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from app.tasks import kis as kis_tasks
+    from app.jobs import kis_trading as kis_tasks
 
     class DummyAnalyzer:
         async def analyze_stock_json(self, name):
@@ -127,8 +127,8 @@ def test_run_per_domestic_stock_automation_with_real_trading_service(monkeypatch
     """실제 trading service 함수를 사용해서 전체 플로우 테스트 (삼성전자우 시나리오)."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
+    from app.jobs import kis_trading as kis_tasks
     from app.models.analysis import StockAnalysisResult
-    from app.tasks import kis as kis_tasks
 
     class DummyAnalyzer:
         async def analyze_stock_json(self, name):
@@ -267,7 +267,7 @@ def test_run_per_domestic_stock_automation_handles_buy_exception(monkeypatch):
     """매수 단계에서 예외 발생 시에도 매도 단계가 실행되어야 함."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from app.tasks import kis as kis_tasks
+    from app.jobs import kis_trading as kis_tasks
 
     class DummyAnalyzer:
         async def analyze_stock_json(self, name):
@@ -358,7 +358,7 @@ def test_run_per_domestic_stock_automation_handles_sell_exception(monkeypatch):
     """매도 단계에서 예외 발생 시 결과에 에러가 포함되어야 함."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from app.tasks import kis as kis_tasks
+    from app.jobs import kis_trading as kis_tasks
 
     class DummyAnalyzer:
         async def analyze_stock_json(self, name):
@@ -439,7 +439,7 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
     """매수 이후 잔고를 다시 불러와 최신 수량으로 매도하는지 확인."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from app.tasks import kis as kis_tasks
+    from app.jobs import kis_trading as kis_tasks
 
     class DummyAnalyzer:
         async def analyze_stock_json(self, *_):
@@ -538,7 +538,7 @@ def test_run_per_domestic_stock_automation_refreshes_holdings(monkeypatch):
 
 def test_execute_overseas_buy_order_fetches_price_for_new_symbol(monkeypatch):
     """보유하지 않은 해외 주식 매수 시 현재가를 조회해 주문 파라미터에 전달한다."""
-    from app.tasks import kis as kis_tasks
+    from app.jobs import kis_trading as kis_tasks
 
     class DummyKIS:
         async def fetch_my_overseas_stocks(self):
@@ -590,7 +590,7 @@ class TestOverseasStockTelegramNotifications:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from app.analysis import service_analyzers
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, symbol):
@@ -691,7 +691,7 @@ class TestOverseasStockTelegramNotifications:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from app.analysis import service_analyzers
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, symbol):
@@ -802,7 +802,7 @@ class TestOverseasStockTelegramNotifications:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from app.analysis import service_analyzers
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, symbol):
@@ -909,7 +909,7 @@ class TestOverseasStockTelegramNotifications:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from app.analysis import service_analyzers
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, symbol):
@@ -1017,7 +1017,7 @@ class TestOverseasStockTelegramNotifications:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from app.analysis import service_analyzers
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, symbol):
@@ -1151,7 +1151,7 @@ class TestDomesticStockPendingOrderCancel:
         """국내주식 자동화 시 미체결 주문이 취소되어야 함."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -1281,7 +1281,7 @@ class TestOrderableQuantityUsage:
         """매도 시 hldg_qty가 아닌 ord_psbl_qty를 사용해야 함."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -1370,7 +1370,7 @@ class TestOrderableQuantityUsage:
         """매수 후 잔고 재조회 시에도 ord_psbl_qty를 사용해야 함."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -1476,7 +1476,7 @@ class TestOrderableQuantityUsage:
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -1596,7 +1596,7 @@ class TestOverseasManualHoldings:
         import pandas as pd
 
         from app.analysis import service_analyzers
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         analyzed_symbols = []
         buy_calls = []
@@ -1726,7 +1726,7 @@ class TestOverseasManualHoldings:
         import pandas as pd
 
         from app.analysis import service_analyzers
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         sell_calls = []
         toss_recommendations = []
@@ -1837,7 +1837,7 @@ class TestOverseasManualHoldings:
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from app.analysis import service_analyzers
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         analyzed_symbols = []
 

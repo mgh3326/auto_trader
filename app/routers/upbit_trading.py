@@ -17,12 +17,7 @@ from app.analysis.service_analyzers import UpbitAnalyzer
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.templates import templates
-from app.services import upbit
-from app.services.stock_info_service import (
-    StockAnalysisService,
-)
-from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
-from app.tasks.analyze import (
+from app.jobs.analyze import (
     execute_buy_order_for_coin_task,
     execute_buy_orders_task,
     execute_sell_order_for_coin_task,
@@ -31,6 +26,11 @@ from app.tasks.analyze import (
     run_analysis_for_my_coins,
     run_per_coin_automation_task,
 )
+from app.services import upbit
+from app.services.stock_info_service import (
+    StockAnalysisService,
+)
+from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
 from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)

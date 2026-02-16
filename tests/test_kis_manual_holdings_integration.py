@@ -31,7 +31,7 @@ class TestManualHoldingsIntegration:
         """수동 잔고가 KIS 잔고와 병합되어 처리되는지 확인"""
         from decimal import Decimal
 
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -135,7 +135,7 @@ class TestManualHoldingsIntegration:
         """KIS와 수동 잔고에 동일 종목이 있으면 수동 잔고는 스킵"""
         from decimal import Decimal
 
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -226,7 +226,7 @@ class TestManualHoldingsIntegration:
         """수동 잔고 종목의 현재가가 API로 조회되는지 확인"""
         from decimal import Decimal
 
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -305,7 +305,7 @@ class TestManualHoldingsIntegration:
         """Decimal 타입의 수량/가격이 올바르게 변환되는지 확인"""
         from decimal import Decimal
 
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -397,7 +397,7 @@ class TestManualHoldingsIntegration:
         """수동 잔고에 ord_psbl_qty 필드가 올바르게 설정되고, 매도는 스킵되는지 확인"""
         from decimal import Decimal
 
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -491,7 +491,7 @@ class TestManualHoldingsIntegration:
         """
         from decimal import Decimal
 
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
@@ -591,8 +591,8 @@ class TestTossRecommendationNotification:
     @pytest.mark.asyncio
     async def test_send_toss_price_recommendation_with_buy_decision(self, monkeypatch):
         """매수 결정 시 가격 제안 알림 발송"""
+        from app.jobs.kis_trading import _send_toss_recommendation_async
         from app.models.analysis import StockAnalysisResult
-        from app.tasks.kis import _send_toss_recommendation_async
 
         notification_sent = []
 
@@ -630,7 +630,7 @@ class TestTossRecommendationNotification:
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("app.tasks.kis.get_trade_notifier", return_value=MockNotifier()),
+            patch("app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()),
             patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
             patch(
                 "app.services.stock_info_service.StockAnalysisService",
@@ -657,8 +657,8 @@ class TestTossRecommendationNotification:
     @pytest.mark.asyncio
     async def test_send_toss_price_recommendation_with_sell_decision(self, monkeypatch):
         """매도 결정 시에도 가격 제안 알림 발송"""
+        from app.jobs.kis_trading import _send_toss_recommendation_async
         from app.models.analysis import StockAnalysisResult
-        from app.tasks.kis import _send_toss_recommendation_async
 
         notification_sent = []
 
@@ -695,7 +695,7 @@ class TestTossRecommendationNotification:
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("app.tasks.kis.get_trade_notifier", return_value=MockNotifier()),
+            patch("app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()),
             patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
             patch(
                 "app.services.stock_info_service.StockAnalysisService",
@@ -719,8 +719,8 @@ class TestTossRecommendationNotification:
     @pytest.mark.asyncio
     async def test_send_toss_price_recommendation_with_hold_decision(self, monkeypatch):
         """hold 결정 시에도 가격 제안 알림 발송 (AI 결정과 무관하게 항상 발송)"""
+        from app.jobs.kis_trading import _send_toss_recommendation_async
         from app.models.analysis import StockAnalysisResult
-        from app.tasks.kis import _send_toss_recommendation_async
 
         notification_sent = []
 
@@ -756,7 +756,7 @@ class TestTossRecommendationNotification:
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("app.tasks.kis.get_trade_notifier", return_value=MockNotifier()),
+            patch("app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()),
             patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
             patch(
                 "app.services.stock_info_service.StockAnalysisService",
@@ -782,8 +782,8 @@ class TestTossRecommendationNotification:
         self, monkeypatch
     ):
         """DB에 JSON 문자열로 저장된 근거를 리스트로 파싱해 전달"""
+        from app.jobs.kis_trading import _send_toss_recommendation_async
         from app.models.analysis import StockAnalysisResult
-        from app.tasks.kis import _send_toss_recommendation_async
 
         notification_sent = []
 
@@ -821,7 +821,7 @@ class TestTossRecommendationNotification:
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("app.tasks.kis.get_trade_notifier", return_value=MockNotifier()),
+            patch("app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()),
             patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
             patch(
                 "app.services.stock_info_service.StockAnalysisService",
