@@ -29,7 +29,7 @@ services:
       dockerfile: Dockerfile.api
     container_name: auto_trader_worker
     command: >
-      bash -lc "uv run taskiq worker app.core.taskiq_broker:broker app.tasks.daily_scan_tasks"
+      bash -lc "uv run taskiq worker app.core.taskiq_broker:broker app.tasks"
     env_file:
       - .env
     restart: unless-stopped
@@ -45,7 +45,7 @@ services:
       dockerfile: Dockerfile.api
     container_name: auto_trader_scheduler
     command: >
-      bash -lc "uv run taskiq scheduler app.core.scheduler:sched app.tasks.daily_scan_tasks"
+      bash -lc "uv run taskiq scheduler app.core.scheduler:sched app.tasks"
     env_file:
       - .env
     restart: unless-stopped
