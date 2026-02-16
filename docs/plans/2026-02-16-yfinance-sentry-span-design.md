@@ -60,7 +60,6 @@
     - `url`
     - `http.request.method`
     - `http.response.status_code` (응답 시)
-    - `endpoint.path`
 
 ## 4.2 yfinance 호출 지점 Session 주입
 
@@ -129,7 +128,7 @@ yfinance API가 제공하는 `session` 파라미터를 통해 공통 계측 sess
 - 2단계: 나머지 yfinance 호출부 전면 적용
 - 검증 쿼리(예시):
   - `op:http.client transaction:"tools/call screen_stocks"`
-  - `span.description:"POST /v1/finance/screener"` (환경에 맞는 필드명으로 조회)
+  - `span.description:"GET /v1/finance/screener"` (환경에 맞는 필드명으로 조회)
 
 ## 9. 비목표
 

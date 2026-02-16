@@ -6,6 +6,13 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - MCP tracing uses `sentry_sdk.integrations.mcp.MCPIntegration` when enabled.
 - Recommended trace filter:
   - `service:auto-trader-mcp op:mcp.server`
+- yfinance outbound HTTP is custom-instrumented via `SentryTracingCurlSession` and injected with `session=` at yfinance entrypoints.
+- yfinance child span format:
+  - `op:http.client`
+  - span name/description: `METHOD /path` (query string excluded)
+- Example trace filters for yfinance spans:
+  - `service:auto-trader-mcp op:http.client transaction:"tools/call screen_stocks"`
+  - `service:auto-trader-api op:http.client span.description:"GET /v1/finance/screener"`
 - `profile` flamegraph and `trace` spans are different datasets, so some frames may appear only in profiling.
 - It is normal to see only high-level spans when a tool does not execute DB/HTTP operations.
 

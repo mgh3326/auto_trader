@@ -5,6 +5,7 @@ import pandas as pd
 import yfinance as yf
 
 from app.core.symbol import to_yahoo_symbol
+from app.monitoring import build_yfinance_tracing_session
 
 
 def _flatten_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -51,6 +52,7 @@ async def fetch_ohlcv(
     # 주봉/월봉은 더 넓은 기간 필요
     multiplier = {"day": 2, "week": 10, "month": 40}.get(period, 2)
     start = end - timedelta(days=days * multiplier)
+    session = build_yfinance_tracing_session()
 
     df = yf.download(
         yahoo_ticker,
@@ -59,6 +61,7 @@ async def fetch_ohlcv(
         interval=period_map[period],
         progress=False,
         auto_adjust=False,
+        session=session,
     )
     df = _flatten_cols(df).reset_index(names="date")
     df = (
@@ -75,7 +78,8 @@ async def fetch_ohlcv(
 async def fetch_price(ticker: str) -> pd.DataFrame:
     """미국 장중 현재가(15분 지연) 1행 DF – yfinance fast_info"""
     yahoo_ticker = to_yahoo_symbol(ticker)  # DB형식 . -> Yahoo형식 -
-    info = yf.Ticker(yahoo_ticker).fast_info
+    session = build_yfinance_tracing_session()
+    info = yf.Ticker(yahoo_ticker, session=session).fast_info
     row = {
         "code": ticker,  # DB 형식 유지
         "date": datetime.now(UTC).date(),
@@ -96,7 +100,8 @@ async def fetch_fundamental_info(ticker: str) -> dict:
     주요 펀더멘털 지표를 가져와 딕셔너리로 반환합니다.
     """
     yahoo_ticker = to_yahoo_symbol(ticker)  # DB형식 . -> Yahoo형식 -
-    info = yf.Ticker(yahoo_ticker).info
+    session = build_yfinance_tracing_session()
+    info = yf.Ticker(yahoo_ticker, session=session).info
 
     fundamental_data = {
         "PER": info.get("trailingPE"),

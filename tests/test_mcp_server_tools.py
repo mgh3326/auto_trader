@@ -119,8 +119,12 @@ def _patch_httpx_async_client(
 
 
 def _patch_yf_ticker(monkeypatch: pytest.MonkeyPatch, ticker_factory: object) -> None:
-    monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", ticker_factory)
-    monkeypatch.setattr(fundamentals_sources_indices.yf, "Ticker", ticker_factory)
+    def wrapped_ticker(symbol, session=None):
+        assert session is not None
+        return ticker_factory(symbol)
+
+    monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", wrapped_ticker)
+    monkeypatch.setattr(fundamentals_sources_indices.yf, "Ticker", wrapped_ticker)
 
 
 def _single_row_df() -> pd.DataFrame:
@@ -968,6 +972,7 @@ async def test_get_quote_korean_etf_with_explicit_market(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_quote_us_equity(monkeypatch):
     tools = build_tools()
+    captured: dict[str, object] = {}
 
     # Mock yfinance Ticker
     class MockFastInfo:
@@ -981,7 +986,12 @@ async def test_get_quote_us_equity(monkeypatch):
     class MockTicker:
         fast_info = MockFastInfo()
 
-    monkeypatch.setattr("yfinance.Ticker", lambda symbol: MockTicker())
+    def ticker_factory(symbol, session=None):
+        captured["symbol"] = symbol
+        captured["session"] = session
+        return MockTicker()
+
+    monkeypatch.setattr("yfinance.Ticker", ticker_factory)
 
     result = await tools["get_quote"]("AAPL")
 
@@ -993,13 +1003,16 @@ async def test_get_quote_us_equity(monkeypatch):
     assert result["high"] == 210.0
     assert result["low"] == 199.0
     assert result["volume"] == 50000000
+    assert captured["symbol"] == "AAPL"
+    assert captured["session"] is not None
 
 
 @pytest.mark.asyncio
 async def test_get_quote_us_equity_returns_error_payload(monkeypatch):
     tools = build_tools()
 
-    def raise_error(symbol):
+    def raise_error(symbol, session=None):
+        assert session is not None
         raise RuntimeError("yahoo down")
 
     monkeypatch.setattr("yfinance.Ticker", raise_error)
@@ -2037,6 +2050,7 @@ class TestSymbolNotFound:
     @pytest.mark.asyncio
     async def test_get_quote_us_equity_not_found(self, monkeypatch):
         tools = build_tools()
+        captured: dict[str, object] = {}
 
         # Mock yfinance Ticker with None values (invalid symbol)
         class MockFastInfo:
@@ -2050,13 +2064,55 @@ class TestSymbolNotFound:
         class MockTicker:
             fast_info = MockFastInfo()
 
-        monkeypatch.setattr("yfinance.Ticker", lambda symbol: MockTicker())
+        def ticker_factory(symbol, session=None):
+            captured["symbol"] = symbol
+            captured["session"] = session
+            return MockTicker()
+
+        monkeypatch.setattr("yfinance.Ticker", ticker_factory)
 
         result = await tools["get_quote"]("INVALID")
 
         assert "error" in result
         assert "not found" in result["error"].lower()
         assert result["source"] == "yahoo"
+        assert captured["symbol"] == "INVALID"
+        assert captured["session"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_dividends_uses_session_and_keeps_payload(monkeypatch):
+    tools = build_tools()
+    captured: dict[str, object] = {}
+
+    class MockTicker:
+        info = {
+            "dividendYield": 0.01234,
+            "dividendRate": 1.11,
+            "exDividendDate": 1704067200,
+        }
+        dividends = pd.Series(
+            [1.0, 1.2],
+            index=pd.to_datetime(["2024-01-01", "2024-04-01"]),
+        )
+
+    def ticker_factory(symbol, session=None):
+        captured["symbol"] = symbol
+        captured["session"] = session
+        return MockTicker()
+
+    monkeypatch.setattr("yfinance.Ticker", ticker_factory)
+
+    result = await tools["get_dividends"]("aapl")
+
+    assert result["success"] is True
+    assert result["symbol"] == "AAPL"
+    assert result["dividend_yield"] == 0.0123
+    assert result["dividend_rate"] == 1.11
+    assert result["ex_dividend_date"] == "2024-01-01"
+    assert result["last_dividend"] == {"date": "2024-04-01", "amount": 1.2}
+    assert captured["symbol"] == "AAPL"
+    assert captured["session"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -3736,7 +3792,11 @@ class TestGetMarketIndex:
         class MockTicker:
             fast_info = info
 
-        monkeypatch.setattr("yfinance.Ticker", lambda symbol: MockTicker())
+        def ticker_factory(symbol, session=None):
+            assert session is not None
+            return MockTicker()
+
+        monkeypatch.setattr("yfinance.Ticker", ticker_factory)
 
     def _patch_yf_download(self, monkeypatch, rows=3):
         """Patch yf.download for US index history."""
@@ -3752,7 +3812,11 @@ class TestGetMarketIndex:
             }
         ).set_index("Date")
 
-        monkeypatch.setattr("yfinance.download", lambda *a, **kw: df)
+        def download_factory(*args, **kwargs):
+            assert kwargs.get("session") is not None
+            return df
+
+        monkeypatch.setattr("yfinance.download", download_factory)
 
     async def test_single_kr_index(self, monkeypatch):
         """Test fetching a single Korean index (KOSPI)."""
@@ -4230,7 +4294,8 @@ class TestGetSectorPeers:
         }
 
         class MockTicker:
-            def __init__(self, ticker):
+            def __init__(self, ticker, session=None):
+                assert session is not None
                 self._ticker = ticker
 
             @property
@@ -7768,7 +7833,8 @@ class TestGetInvestmentOpinions:
         self, monkeypatch
     ):
         class MockTicker:
-            def __init__(self, symbol: str):
+            def __init__(self, symbol: str, session=None):
+                assert session is not None
                 self.symbol = symbol
                 self.analyst_price_targets = {
                     "mean": "N/A",

@@ -8,6 +8,7 @@ from typing import Any
 
 import yfinance as yf
 
+from app.monitoring import build_yfinance_tracing_session
 from app.services import upbit as upbit_service
 
 
@@ -23,6 +24,7 @@ async def get_us_rankings_impl(
     }
 
     screener_id = screener_ids.get(ranking_type)
+    session = build_yfinance_tracing_session()
 
     def fetch_sync():
         if ranking_type == "market_cap":
@@ -36,9 +38,13 @@ async def get_us_rankings_impl(
                 ],
             )
             return yf.screen(
-                query, size=limit, sortField="intradaymarketcap", sortAsc=False
+                query,
+                size=limit,
+                sortField="intradaymarketcap",
+                sortAsc=False,
+                session=session,
             )
-        return yf.screen(screener_id)
+        return yf.screen(screener_id, session=session)
 
     results = await asyncio.to_thread(fetch_sync)
 

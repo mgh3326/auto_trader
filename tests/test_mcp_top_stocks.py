@@ -421,7 +421,11 @@ class TestMCPTopStocks:
             }
         )
 
-        monkeypatch.setattr(yf, "screen", lambda sid: mock_df)
+        def mock_screen(*args, **kwargs):
+            assert kwargs.get("session") is not None
+            return mock_df
+
+        monkeypatch.setattr(yf, "screen", mock_screen)
 
         result = await tools["get_top_stocks"](
             market="us", ranking_type="volume", limit=2
@@ -449,7 +453,12 @@ class TestMCPTopStocks:
 
         mock_query = MagicMock()
         monkeypatch.setattr(yf, "EquityQuery", lambda *args, **kw: mock_query)
-        monkeypatch.setattr(yf, "screen", lambda *args, **kw: mock_df)
+
+        def mock_screen(*args, **kwargs):
+            assert kwargs.get("session") is not None
+            return mock_df
+
+        monkeypatch.setattr(yf, "screen", mock_screen)
 
         result = await tools["get_top_stocks"](
             market="us", ranking_type="market_cap", limit=2
@@ -464,6 +473,7 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         def mock_screen_raises(*args, **kw):
+            assert kw.get("session") is not None
             raise RuntimeError("yfinance API error")
 
         monkeypatch.setattr(yf, "screen", mock_screen_raises)
@@ -506,6 +516,7 @@ class TestMCPTopStocks:
 
         assert len(screen_call_params) == 1
         call_kwargs = screen_call_params[0]["kwargs"]
+        assert call_kwargs["session"] is not None
         assert call_kwargs["size"] == 10
         assert call_kwargs["sortField"] == "intradaymarketcap"
         assert call_kwargs["sortAsc"] is False
@@ -918,7 +929,11 @@ class TestMCPRegressionTests:
             }
         )
 
-        monkeypatch.setattr(yf, "screen", lambda sid: mock_df)
+        def mock_screen(*args, **kwargs):
+            assert kwargs.get("session") is not None
+            return mock_df
+
+        monkeypatch.setattr(yf, "screen", mock_screen)
 
         result = await tools["get_top_stocks"](
             market="us", ranking_type="losers", limit=5

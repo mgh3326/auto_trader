@@ -19,6 +19,7 @@ from app.mcp_server.tooling.market_data_indicators import (
     compute_crypto_realtime_rsi_map,
 )
 from app.mcp_server.tooling.shared import error_payload as _error_payload
+from app.monitoring import build_yfinance_tracing_session
 from app.services import upbit as upbit_service
 from app.services.krx import (
     classify_etf_category,
@@ -831,6 +832,7 @@ async def _screen_us(
         }
         sort_field = sort_field_map.get(sort_by, "dayvolume")
         fetch_size = min(limit * 3, 150) if max_rsi is not None else limit
+        session = build_yfinance_tracing_session()
 
         screen_result = await asyncio.to_thread(
             lambda: yf.screen(
@@ -838,6 +840,7 @@ async def _screen_us(
                 size=fetch_size,
                 sortField=sort_field,
                 sortAsc=(sort_order == "asc"),
+                session=session,
             )
         )
 

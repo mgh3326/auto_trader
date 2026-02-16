@@ -10,6 +10,8 @@ import httpx
 import pandas as pd
 import yfinance as yf
 
+from app.monitoring import build_yfinance_tracing_session
+
 _INDEX_META: dict[str, dict[str, str]] = {
     "KOSPI": {"name": "코스피", "source": "naver", "naver_code": "KOSPI"},
     "KOSDAQ": {"name": "코스닥", "source": "naver", "naver_code": "KOSDAQ"},
@@ -118,7 +120,8 @@ async def _fetch_index_us_current(
     yf_ticker: str, name: str, symbol: str
 ) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    ticker_obj = yf.Ticker(yf_ticker)
+    session = build_yfinance_tracing_session()
+    ticker_obj = yf.Ticker(yf_ticker, session=session)
     info = await loop.run_in_executor(None, lambda: ticker_obj.fast_info)
 
     current = getattr(info, "last_price", None)
@@ -148,6 +151,7 @@ async def _fetch_index_us_history(
     yf_ticker: str, count: int, period: str
 ) -> list[dict[str, Any]]:
     loop = asyncio.get_running_loop()
+    session = build_yfinance_tracing_session()
     period_map = {"day": "1d", "week": "1wk", "month": "1mo"}
     interval = period_map.get(period, "1d")
 
@@ -163,6 +167,7 @@ async def _fetch_index_us_history(
             interval=interval,
             progress=False,
             auto_adjust=False,
+            session=session,
         )
         if raw_df is None or not isinstance(raw_df, pd.DataFrame):
             return pd.DataFrame()

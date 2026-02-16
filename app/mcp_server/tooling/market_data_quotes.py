@@ -31,6 +31,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
+from app.monitoring import build_yfinance_tracing_session
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
@@ -188,7 +189,8 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
     from app.core.symbol import to_yahoo_symbol
 
     yahoo_ticker = to_yahoo_symbol(symbol)
-    info = yf.Ticker(yahoo_ticker).fast_info
+    session = build_yfinance_tracing_session()
+    info = yf.Ticker(yahoo_ticker, session=session).fast_info
 
     price = getattr(info, "last_price", None)
     if price is None:
@@ -471,7 +473,9 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             indicator_results = _compute_indicators(df, normalized_indicators)
 
             if market_type == "crypto" and "rsi" in normalized_indicators:
-                realtime_rsi = _compute_crypto_realtime_rsi_from_frame(df, current_price)
+                realtime_rsi = _compute_crypto_realtime_rsi_from_frame(
+                    df, current_price
+                )
                 if realtime_rsi is not None:
                     indicator_results.setdefault("rsi", {})["14"] = realtime_rsi
 
