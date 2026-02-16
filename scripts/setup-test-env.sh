@@ -44,6 +44,10 @@ while IFS= read -r line; do
             "DATABASE_URL")
                 echo "DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/test_db" >> "$OUTPUT_TARGET"
                 ;;
+            "SECRET_KEY")
+                # 테스트 환경에서도 Settings 보안 검증을 통과하는 강한 키를 사용한다.
+                echo "SECRET_KEY=CiTest_StrongKey_20260216_Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9" >> "$OUTPUT_TARGET"
+                ;;
             "REDIS_URL")
                 echo "REDIS_URL=redis://localhost:6379/0" >> "$OUTPUT_TARGET"
                 ;;
