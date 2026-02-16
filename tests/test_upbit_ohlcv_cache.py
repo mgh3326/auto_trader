@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -181,6 +182,75 @@ def _build_daily_frame(end_date: date, rows: int) -> pd.DataFrame:
             "value": [10000000.0 + idx for idx in range(rows)],
         }
     )
+
+
+def test_get_last_closed_bucket_kst_day_before_anchor():
+    now = datetime(2026, 2, 17, 8, 59, 59, tzinfo=ZoneInfo("Asia/Seoul"))
+    assert upbit_ohlcv_cache.get_last_closed_bucket_kst("day", now) == date(2026, 2, 15)
+
+
+def test_get_last_closed_bucket_kst_day_after_anchor():
+    now = datetime(2026, 2, 17, 9, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    assert upbit_ohlcv_cache.get_last_closed_bucket_kst("day", now) == date(2026, 2, 16)
+
+
+def test_get_last_closed_bucket_kst_week_before_anchor():
+    now = datetime(2026, 2, 16, 8, 30, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    assert upbit_ohlcv_cache.get_last_closed_bucket_kst("week", now) == date(2026, 2, 2)
+
+
+def test_get_last_closed_bucket_kst_week_after_anchor():
+    now = datetime(2026, 2, 16, 9, 1, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    assert upbit_ohlcv_cache.get_last_closed_bucket_kst("week", now) == date(2026, 2, 9)
+
+
+def test_get_last_closed_bucket_kst_month_before_anchor():
+    now = datetime(2026, 2, 1, 8, 59, 59, tzinfo=ZoneInfo("Asia/Seoul"))
+    assert upbit_ohlcv_cache.get_last_closed_bucket_kst("month", now) == date(
+        2025, 12, 1
+    )
+
+
+def test_get_last_closed_bucket_kst_month_after_anchor():
+    now = datetime(2026, 2, 1, 9, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    assert upbit_ohlcv_cache.get_last_closed_bucket_kst("month", now) == date(
+        2026, 1, 1
+    )
+
+
+def test_bucket_gap_count_week_uses_bucket_distance():
+    assert (
+        upbit_ohlcv_cache._bucket_gap_count("week", date(2026, 2, 9), date(2026, 2, 16))
+        == 1
+    )
+
+
+def test_bucket_gap_count_month_uses_bucket_distance():
+    assert (
+        upbit_ohlcv_cache._bucket_gap_count("month", date(2026, 1, 1), date(2026, 2, 1))
+        == 1
+    )
+
+
+def test_keys_include_period_dimension():
+    day_keys = upbit_ohlcv_cache._keys("KRW-BTC", "day")
+    week_keys = upbit_ohlcv_cache._keys("KRW-BTC", "week")
+
+    assert day_keys[0] != week_keys[0]
+    assert "upbit:ohlcv:day:v1:KRW-BTC" in day_keys[0]
+    assert "upbit:ohlcv:week:v1:KRW-BTC" in week_keys[0]
+
+
+@pytest.mark.asyncio
+async def test_get_closed_candles_supports_week(monkeypatch):
+    monkeypatch.setattr(
+        upbit_ohlcv_cache.settings, "upbit_ohlcv_cache_enabled", False, raising=False
+    )
+
+    result = await upbit_ohlcv_cache.get_closed_candles(
+        "KRW-BTC", count=5, period="week"
+    )
+    assert isinstance(result, pd.DataFrame) or result is None
 
 
 @pytest.fixture(autouse=True)

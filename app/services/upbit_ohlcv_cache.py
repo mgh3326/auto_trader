@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta, timezone
 
 import pandas as pd
@@ -14,14 +15,38 @@ logger = logging.getLogger(__name__)
 
 _KST = timezone(timedelta(hours=9))
 _EMPTY_COLUMNS = ["date", "open", "high", "low", "close", "volume", "value"]
+_SUPPORTED_PERIODS = {"day", "week", "month"}
 
 _REDIS_CLIENT: redis.Redis | None = None
 _FALLBACK_COUNT = 0
 
 
 def get_target_closed_date_kst(now: datetime | None = None) -> date:
+    return get_last_closed_bucket_kst("day", now)
+
+
+def get_last_closed_bucket_kst(period: str, now: datetime | None = None) -> date:
+    normalized_period = _normalize_period(period)
+
     base_now = now or datetime.now(UTC)
-    return base_now.astimezone(_KST).date() - timedelta(days=1)
+    if base_now.tzinfo is None:
+        base_now = base_now.replace(tzinfo=UTC)
+
+    kst_now = base_now.astimezone(_KST)
+    anchor_date = kst_now.date()
+    if kst_now.time() < time(9, 0):
+        anchor_date -= timedelta(days=1)
+
+    if normalized_period == "day":
+        return anchor_date - timedelta(days=1)
+
+    if normalized_period == "week":
+        current_week_start = anchor_date - timedelta(days=anchor_date.weekday())
+        return current_week_start - timedelta(days=7)
+
+    current_month_start = anchor_date.replace(day=1)
+    previous_month_last_day = current_month_start - timedelta(days=1)
+    return previous_month_last_day.replace(day=1)
 
 
 def _epoch_day(value: date) -> int:
@@ -30,13 +55,36 @@ def _epoch_day(value: date) -> int:
     )
 
 
-def _base_key(market: str) -> str:
-    return f"upbit:ohlcv:day:v1:{market}"
+def _base_key(market: str, period: str = "day") -> str:
+    normalized_period = str(period or "day").strip().lower()
+    return f"upbit:ohlcv:{normalized_period}:v1:{market}"
 
 
-def _keys(market: str) -> tuple[str, str, str, str]:
-    base = _base_key(market)
+def _keys(market: str, period: str = "day") -> tuple[str, str, str, str]:
+    base = _base_key(market, period)
     return f"{base}:dates", f"{base}:rows", f"{base}:meta", f"{base}:lock"
+
+
+def _normalize_period(period: str) -> str:
+    normalized = str(period or "").strip().lower()
+    if normalized not in _SUPPORTED_PERIODS:
+        raise ValueError(f"period must be one of {sorted(_SUPPORTED_PERIODS)}")
+    return normalized
+
+
+def _bucket_gap_count(period: str, earlier: date, later: date) -> int:
+    normalized_period = _normalize_period(period)
+    if later <= earlier:
+        return 0
+
+    if normalized_period == "day":
+        return (later - earlier).days
+
+    if normalized_period == "week":
+        return max((later - earlier).days // 7, 0)
+
+    month_gap = (later.year - earlier.year) * 12 + (later.month - earlier.month)
+    return max(month_gap, 0)
 
 
 def _normalize_bool(value: str | bool | None) -> bool:
@@ -311,6 +359,11 @@ async def _refresh_meta(
 async def _backfill_until_satisfied(
     redis_client: redis.Redis,
     market: str,
+    period: str,
+    raw_fetcher: Callable[
+        [str, int, str, datetime | None],
+        Awaitable[pd.DataFrame],
+    ],
     requested_count: int,
     target_closed_date: date,
     dates_key: str,
@@ -330,13 +383,17 @@ async def _backfill_until_satisfied(
         if latest_cached_date is None:
             batch_size = min(max(requested_count, 1), 200)
         else:
-            missing_latest_days = (target_closed_date - latest_cached_date).days
-            batch_size = min(max(missing_latest_days, 1), 200)
+            missing_latest_buckets = _bucket_gap_count(
+                period,
+                latest_cached_date,
+                target_closed_date,
+            )
+            batch_size = min(max(missing_latest_buckets, 1), 200)
 
-        fetched = await upbit_service.fetch_ohlcv(
+        fetched = await raw_fetcher(
             market=market,
             days=batch_size,
-            period="day",
+            period=period,
             end_date=datetime.combine(target_closed_date, time(23, 59, 59)),
         )
         if fetched.empty or "date" not in fetched.columns:
@@ -414,10 +471,10 @@ async def _backfill_until_satisfied(
         remaining = requested_count - cached_count
         batch_size = min(max(remaining, 1), 200)
 
-        fetched = await upbit_service.fetch_ohlcv(
+        fetched = await raw_fetcher(
             market=market,
             days=batch_size,
-            period="day",
+            period=period,
             end_date=datetime.combine(batch_end_date, time(23, 59, 59)),
         )
         if fetched.empty or "date" not in fetched.columns:
@@ -480,7 +537,17 @@ async def _backfill_until_satisfied(
     )
 
 
-async def get_closed_daily_candles(market: str, count: int) -> pd.DataFrame | None:
+async def get_closed_candles(
+    market: str,
+    count: int,
+    period: str,
+    raw_fetcher: Callable[
+        [str, int, str, datetime | None],
+        Awaitable[pd.DataFrame],
+    ]
+    | None = None,
+) -> pd.DataFrame | None:
+    normalized_period = _normalize_period(period)
     if not settings.upbit_ohlcv_cache_enabled:
         return None
 
@@ -494,11 +561,17 @@ async def get_closed_daily_candles(market: str, count: int) -> pd.DataFrame | No
 
     max_days = max(int(settings.upbit_ohlcv_cache_max_days), 1)
     requested_count = min(requested_count, max_days)
+    fetcher = raw_fetcher or upbit_service.fetch_ohlcv
 
     try:
         redis_client = await _get_redis_client()
-        dates_key, rows_key, meta_key, lock_key = _keys(normalized_market)
-        target_closed_date = get_target_closed_date_kst()
+        dates_key, rows_key, meta_key, lock_key = _keys(
+            normalized_market, normalized_period
+        )
+        if normalized_period == "day":
+            target_closed_date = get_target_closed_date_kst()
+        else:
+            target_closed_date = get_last_closed_bucket_kst(normalized_period)
 
         trimmed_count = await _enforce_retention_limit(
             redis_client,
@@ -508,8 +581,9 @@ async def get_closed_daily_candles(market: str, count: int) -> pd.DataFrame | No
         )
         if trimmed_count > 0:
             logger.info(
-                "upbit_ohlcv_cache trimmed market=%s removed=%d",
+                "upbit_ohlcv_cache trimmed market=%s period=%s removed=%d",
                 normalized_market,
+                normalized_period,
                 trimmed_count,
             )
 
@@ -545,16 +619,18 @@ async def get_closed_daily_candles(market: str, count: int) -> pd.DataFrame | No
                 oldest_confirmed,
             )
             logger.info(
-                "upbit_ohlcv_cache hit market=%s cached=%d requested=%d",
+                "upbit_ohlcv_cache hit market=%s period=%s cached=%d requested=%d",
                 normalized_market,
+                normalized_period,
                 len(cached),
                 requested_count,
             )
             return cached.tail(requested_count).reset_index(drop=True)
 
         logger.info(
-            "upbit_ohlcv_cache miss market=%s cached=%d requested=%d",
+            "upbit_ohlcv_cache miss market=%s period=%s cached=%d requested=%d",
             normalized_market,
+            normalized_period,
             len(cached),
             requested_count,
         )
@@ -606,6 +682,8 @@ async def get_closed_daily_candles(market: str, count: int) -> pd.DataFrame | No
             await _backfill_until_satisfied(
                 redis_client,
                 normalized_market,
+                normalized_period,
+                fetcher,
                 requested_count,
                 target_closed_date,
                 dates_key,
@@ -629,16 +707,36 @@ async def get_closed_daily_candles(market: str, count: int) -> pd.DataFrame | No
         global _FALLBACK_COUNT
         _FALLBACK_COUNT += 1
         logger.warning(
-            "upbit_ohlcv_cache fallback market=%s fallback_count=%d error=%s",
+            "upbit_ohlcv_cache fallback market=%s period=%s fallback_count=%d error=%s",
             normalized_market,
+            normalized_period,
             _FALLBACK_COUNT,
             exc,
         )
         return None
 
 
+async def get_closed_daily_candles(
+    market: str,
+    count: int,
+    raw_fetcher: Callable[
+        [str, int, str, datetime | None],
+        Awaitable[pd.DataFrame],
+    ]
+    | None = None,
+) -> pd.DataFrame | None:
+    return await get_closed_candles(
+        market=market,
+        count=count,
+        period="day",
+        raw_fetcher=raw_fetcher,
+    )
+
+
 __all__ = [
     "close_ohlcv_cache_redis",
+    "get_closed_candles",
     "get_closed_daily_candles",
+    "get_last_closed_bucket_kst",
     "get_target_closed_date_kst",
 ]
