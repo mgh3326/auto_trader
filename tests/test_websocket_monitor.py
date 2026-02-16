@@ -206,6 +206,57 @@ class TestUnifiedWebSocketMonitor:
         monitor.openclaw_client.send_fill_notification.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_send_fill_notification_skips_upbit_below_minimum(
+        self, mock_settings: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from websocket_monitor import MIN_FILL_NOTIFY_AMOUNT, UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor()
+        send_mock = AsyncMock(return_value="req-123")
+        monitor.openclaw_client.send_fill_notification = send_mock
+
+        caplog.set_level("DEBUG")
+
+        await monitor._send_fill_notification(
+            FillOrder(
+                symbol="KRW-BTC",
+                side="bid",
+                filled_price=49_999,
+                filled_qty=1,
+                filled_amount=MIN_FILL_NOTIFY_AMOUNT - 1,
+                filled_at="2024-01-01T00:00:00Z",
+                account="upbit",
+            )
+        )
+
+        send_mock.assert_not_awaited()
+        assert "Fill below minimum notify amount" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_send_fill_notification_does_not_filter_kis_low_amount(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor()
+        send_mock = AsyncMock(return_value="req-123")
+        monitor.openclaw_client.send_fill_notification = send_mock
+
+        await monitor._send_fill_notification(
+            FillOrder(
+                symbol="AAPL",
+                side="bid",
+                filled_price=35,
+                filled_qty=1,
+                filled_amount=35,
+                filled_at="2024-01-01T00:00:00Z",
+                account="kis",
+            )
+        )
+
+        send_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_send_fill_notification_continues_on_failure(
         self, mock_settings: None
     ) -> None:
