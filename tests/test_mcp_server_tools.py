@@ -1467,12 +1467,12 @@ async def test_portfolio_indicators_crypto_ticker_failure_falls_back_to_close(
 
 
 @pytest.mark.asyncio
-async def test_fetch_ohlcv_for_indicators_crypto_fallback_filters_unclosed(monkeypatch):
-    today = date(2026, 2, 15)
-    yesterday = date(2026, 2, 14)
-    df = pd.DataFrame(
+async def test_fetch_ohlcv_for_indicators_crypto_uses_upbit_service_boundary(
+    monkeypatch,
+):
+    service_df = pd.DataFrame(
         {
-            "date": [yesterday, today],
+            "date": [date(2026, 2, 13), date(2026, 2, 14)],
             "open": [100.0, 101.0],
             "high": [110.0, 111.0],
             "low": [90.0, 91.0],
@@ -1481,31 +1481,20 @@ async def test_fetch_ohlcv_for_indicators_crypto_fallback_filters_unclosed(monke
             "value": [100000.0, 100100.0],
         }
     )
+    service_mock = AsyncMock(return_value=service_df)
 
-    monkeypatch.setattr(
-        market_data_indicators.upbit_ohlcv_cache_service,
-        "get_closed_daily_candles",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        market_data_indicators,
-        "_fetch_ohlcv_crypto_paginated",
-        AsyncMock(return_value=df),
-    )
-    monkeypatch.setattr(
-        market_data_indicators.upbit_ohlcv_cache_service,
-        "get_target_closed_date_kst",
-        lambda now=None: yesterday,
-    )
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", service_mock)
 
     result = await market_data_indicators._fetch_ohlcv_for_indicators(
         "KRW-BTC", "crypto", count=2
     )
 
-    assert len(result) == 1
-    assert result["date"].iloc[-1] == yesterday
-    market_data_indicators._fetch_ohlcv_crypto_paginated.assert_awaited_once_with(
-        "KRW-BTC", count=2, period="day"
+    assert len(result) == 2
+    service_mock.assert_awaited_once_with(
+        market="KRW-BTC",
+        days=2,
+        period="day",
+        end_date=None,
     )
 
 

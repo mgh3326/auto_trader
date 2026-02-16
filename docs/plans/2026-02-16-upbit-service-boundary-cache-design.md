@@ -65,8 +65,8 @@
 
 `meta` 필드:
 
-- `last_closed_bucket`
-- `oldest_bucket`
+- `last_closed_date`
+- `oldest_date`
 - `oldest_confirmed`
 - `last_sync_ts`
 
@@ -94,7 +94,7 @@
 
 1. 입력 검증(`days <= 200`, `period` 유효성)
 2. `period in {"day","week","month"}` + 캐시 활성:
-   - 캐시 서비스 호출(`get_closed_candles(period, market, count, raw_fetcher)`)
+   - 캐시 서비스 호출(`get_closed_candles(market, count, period, raw_fetcher)`)
 3. 캐시 결과가 `None`이면 raw fallback
 4. raw 결과도 마지막에 `<= last_closed_bucket` 필터 적용
 5. 오름차순 정렬/중복 제거 후 반환
@@ -102,6 +102,7 @@
 ## 5.3 백필 로직
 
 - Stage A (forward fill): latest cached bucket가 `last_closed_bucket`에 도달할 때까지 최신 누락분 보강
+  - 누락량 계산은 period-aware bucket 간격(day/week/month)으로 수행
 - Stage B (backward fill): 요청 count 부족분만 과거 방향 보강
 - `oldest_confirmed`는 Stage B 중단 조건에만 사용
 - 미확정 진행봉은 저장/반환에서 제외
@@ -151,4 +152,3 @@
 - 분봉/티커 캐시
 - 장기 운영 지표 대시보드 구축
 - 키 스키마 하위호환 마이그레이션
-
