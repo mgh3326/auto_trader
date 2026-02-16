@@ -39,6 +39,7 @@ from app.mcp_server.tooling.analysis_screening import (
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
+from app.monitoring import build_yfinance_tracing_session
 from app.services.kis import KISClient
 
 logger = logging.getLogger(__name__)
@@ -562,7 +563,8 @@ async def get_dividends_impl(symbol: str) -> dict[str, Any]:
     if not symbol:
         raise ValueError("symbol is required")
 
-    ticker = yf.Ticker(symbol.upper())
+    session = build_yfinance_tracing_session()
+    ticker = yf.Ticker(symbol.upper(), session=session)
 
     def fetch_sync() -> dict[str, Any]:
         try:

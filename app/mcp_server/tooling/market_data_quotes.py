@@ -31,6 +31,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
+from app.monitoring import build_yfinance_tracing_session
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
@@ -188,7 +189,8 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
     from app.core.symbol import to_yahoo_symbol
 
     yahoo_ticker = to_yahoo_symbol(symbol)
-    info = yf.Ticker(yahoo_ticker).fast_info
+    session = build_yfinance_tracing_session()
+    info = yf.Ticker(yahoo_ticker, session=session).fast_info
 
     price = getattr(info, "last_price", None)
     if price is None:

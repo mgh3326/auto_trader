@@ -18,6 +18,7 @@ import yfinance as yf
 
 from app.core.config import settings
 from app.mcp_server.tooling.shared import normalize_value as _normalize_value
+from app.monitoring import build_yfinance_tracing_session
 from app.services import naver_finance
 from app.services import upbit as upbit_service
 from app.services.analyst_normalizer import (
@@ -145,7 +146,8 @@ async def _fetch_financials_yfinance(
     symbol: str, statement: str, freq: str
 ) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    ticker = yf.Ticker(symbol)
+    session = build_yfinance_tracing_session()
+    ticker = yf.Ticker(symbol, session=session)
 
     def fetch_sync() -> dict[str, Any]:
         statement_map = {
@@ -426,7 +428,8 @@ async def _fetch_investment_opinions_yfinance(
     symbol: str, limit: int
 ) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    ticker = yf.Ticker(symbol)
+    session = build_yfinance_tracing_session()
+    ticker = yf.Ticker(symbol, session=session)
 
     def _collect() -> tuple[dict | None, Any, dict | None]:
         targets = None
@@ -524,7 +527,8 @@ async def _fetch_valuation_naver(symbol: str) -> dict[str, Any]:
 
 async def _fetch_valuation_yfinance(symbol: str) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    ticker = yf.Ticker(symbol)
+    session = build_yfinance_tracing_session()
+    ticker = yf.Ticker(symbol, session=session)
     info: dict[str, Any] = await loop.run_in_executor(None, lambda: ticker.info)
 
     current_price = info.get("currentPrice")
@@ -631,9 +635,12 @@ async def _fetch_sector_peers_us(
 
     async def _fetch_yf_info(ticker: str) -> tuple[str, dict[str, Any] | None]:
         try:
-            info: dict[str, Any] = await asyncio.to_thread(
-                lambda t=ticker: yf.Ticker(t).info
-            )
+            session = build_yfinance_tracing_session()
+
+            def _fetch_info(symbol: str = ticker, yf_session=session) -> dict[str, Any]:
+                return yf.Ticker(symbol, session=yf_session).info
+
+            info: dict[str, Any] = await asyncio.to_thread(_fetch_info)
             return (ticker, info)
         except Exception:
             return (ticker, None)

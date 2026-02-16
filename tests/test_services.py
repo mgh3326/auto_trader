@@ -411,8 +411,14 @@ class TestYahooService:
 
     @pytest.mark.asyncio
     @patch("app.services.yahoo.yf.download")
-    async def test_fetch_ohlcv(self, mock_download):
+    async def test_fetch_ohlcv(self, mock_download, monkeypatch):
         """Test fetching OHLCV data from Yahoo Finance."""
+        tracing_session = object()
+        monkeypatch.setattr(
+            "app.services.yahoo.build_yfinance_tracing_session",
+            lambda: tracing_session,
+        )
+
         # Mock yfinance download response
         mock_df = pd.DataFrame(
             {
@@ -435,11 +441,18 @@ class TestYahooService:
         assert "date" in result.columns
         assert "open" in result.columns
         assert "close" in result.columns
+        assert mock_download.call_args.kwargs["session"] is tracing_session
 
     @pytest.mark.asyncio
     @patch("app.services.yahoo.yf.Ticker")
-    async def test_fetch_price(self, mock_ticker_class):
+    async def test_fetch_price(self, mock_ticker_class, monkeypatch):
         """Test fetching current price from Yahoo Finance."""
+        tracing_session = object()
+        monkeypatch.setattr(
+            "app.services.yahoo.build_yfinance_tracing_session",
+            lambda: tracing_session,
+        )
+
         # Mock Ticker instance
         mock_ticker = MagicMock()
         mock_ticker.fast_info.open = 150.0
@@ -460,6 +473,39 @@ class TestYahooService:
         # 'code'는 index로 설정되므로 columns에는 없음
         assert "date" in result.columns
         assert "close" in result.columns
+        assert mock_ticker_class.call_args.kwargs["session"] is tracing_session
+
+    @pytest.mark.asyncio
+    @patch("app.services.yahoo.yf.Ticker")
+    async def test_fetch_fundamental_info(self, mock_ticker_class, monkeypatch):
+        tracing_session = object()
+        monkeypatch.setattr(
+            "app.services.yahoo.build_yfinance_tracing_session",
+            lambda: tracing_session,
+        )
+
+        mock_ticker = MagicMock()
+        mock_ticker.info = {
+            "trailingPE": 12.3,
+            "priceToBook": 1.8,
+            "trailingEps": 5.6,
+            "bookValue": 20.1,
+            "trailingAnnualDividendYield": 0.012,
+        }
+        mock_ticker_class.return_value = mock_ticker
+
+        from app.services.yahoo import fetch_fundamental_info
+
+        result = await fetch_fundamental_info("AAPL")
+
+        assert result == {
+            "PER": 12.3,
+            "PBR": 1.8,
+            "EPS": 5.6,
+            "BPS": 20.1,
+            "Dividend Yield": 0.012,
+        }
+        assert mock_ticker_class.call_args.kwargs["session"] is tracing_session
 
 
 class TestStockInfoServiceGuard:

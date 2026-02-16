@@ -294,7 +294,8 @@ class TestScreenStocksKRRegression:
 def mock_yfinance_screen():
     """Mock yfinance.screen function."""
 
-    def mock_screen_func(query, size, sortField, sortAsc):
+    def mock_screen_func(query, size, sortField, sortAsc, session=None):
+        assert session is not None
         return {
             "quotes": [
                 {
@@ -771,7 +772,7 @@ class TestScreenStocksCrypto:
 
         import yfinance as yf
 
-        def mock_yfinance_screen_func(query, size, sortField, sortAsc):
+        def mock_yfinance_screen_func(query, size, sortField, sortAsc, session=None):
             return {"quotes": []}
 
         monkeypatch.setattr(yf, "screen", mock_yfinance_screen_func)
@@ -1821,7 +1822,8 @@ class TestScreenStocksSorting:
 
         import yfinance as yf
 
-        def mock_yfinance_screen_func(query, size, sortField, sortAsc):
+        def mock_yfinance_screen_func(query, size, sortField, sortAsc, session=None):
+            assert session is not None
             return {
                 "quotes": [
                     {
@@ -2215,7 +2217,8 @@ class TestScreenStocksPhase2Spec:
     async def test_us_early_return_filters_applied_complete(self, monkeypatch):
         """Test US market early-return includes all filters_applied fields."""
 
-        def mock_screen_none(query, size, sortField, sortAsc):
+        def mock_screen_none(query, size, sortField, sortAsc, session=None):
+            assert session is not None
             return None
 
         import yfinance as yf
