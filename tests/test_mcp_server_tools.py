@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -1364,6 +1365,148 @@ async def test_get_indicators_obv_returns_error_when_volume_column_missing(monke
     assert "error" in result
     assert "Missing required columns" in result["error"]
     assert "volume" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_indicators_crypto_uses_ticker_price(monkeypatch):
+    tools = build_tools()
+    rows = 40
+    close = pd.Series([100.0 + i for i in range(rows)])
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=rows, freq="D").date,
+            "open": close - 1,
+            "high": close + 1,
+            "low": close - 2,
+            "close": close,
+            "volume": pd.Series([1000.0 + i for i in range(rows)]),
+            "value": pd.Series([1000000.0 + i for i in range(rows)]),
+        }
+    )
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+    ticker_mock = AsyncMock(return_value={"KRW-BTC": 123456789.0})
+    monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", ticker_mock)
+
+    result = await tools["get_indicators"]("KRW-BTC", indicators=["rsi"])
+
+    assert "error" not in result
+    assert result["price"] == 123456789.0
+    ticker_mock.assert_awaited_once_with(["KRW-BTC"])
+
+
+@pytest.mark.asyncio
+async def test_get_indicators_crypto_ticker_failure_falls_back_to_close(monkeypatch):
+    tools = build_tools()
+    rows = 40
+    close = pd.Series([100.0 + i for i in range(rows)])
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=rows, freq="D").date,
+            "open": close - 1,
+            "high": close + 1,
+            "low": close - 2,
+            "close": close,
+            "volume": pd.Series([1000.0 + i for i in range(rows)]),
+            "value": pd.Series([1000000.0 + i for i in range(rows)]),
+        }
+    )
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+    ticker_mock = AsyncMock(side_effect=RuntimeError("ticker unavailable"))
+    monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", ticker_mock)
+
+    result = await tools["get_indicators"]("KRW-BTC", indicators=["rsi"])
+
+    assert "error" not in result
+    assert result["price"] == float(df["close"].iloc[-1])
+    ticker_mock.assert_awaited_once_with(["KRW-BTC"])
+
+
+@pytest.mark.asyncio
+async def test_portfolio_indicators_crypto_ticker_failure_falls_back_to_close(
+    monkeypatch,
+):
+    rows = 40
+    close = pd.Series([100.0 + i for i in range(rows)])
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=rows, freq="D").date,
+            "open": close - 1,
+            "high": close + 1,
+            "low": close - 2,
+            "close": close,
+            "volume": pd.Series([1000.0 + i for i in range(rows)]),
+            "value": pd.Series([1000000.0 + i for i in range(rows)]),
+        }
+    )
+
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=df),
+    )
+    ticker_mock = AsyncMock(side_effect=RuntimeError("ticker unavailable"))
+    monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", ticker_mock)
+
+    result = await portfolio_holdings._get_indicators_impl(
+        "KRW-BTC", indicators=["rsi"], market="crypto"
+    )
+
+    assert "error" not in result
+    assert result["price"] == float(df["close"].iloc[-1])
+    ticker_mock.assert_awaited_once_with(["KRW-BTC"])
+
+
+@pytest.mark.asyncio
+async def test_fetch_ohlcv_for_indicators_crypto_fallback_filters_unclosed(monkeypatch):
+    today = date(2026, 2, 15)
+    yesterday = date(2026, 2, 14)
+    df = pd.DataFrame(
+        {
+            "date": [yesterday, today],
+            "open": [100.0, 101.0],
+            "high": [110.0, 111.0],
+            "low": [90.0, 91.0],
+            "close": [105.0, 106.0],
+            "volume": [1000.0, 1001.0],
+            "value": [100000.0, 100100.0],
+        }
+    )
+
+    monkeypatch.setattr(
+        market_data_indicators.upbit_ohlcv_cache_service,
+        "get_closed_daily_candles",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        market_data_indicators,
+        "_fetch_ohlcv_crypto_paginated",
+        AsyncMock(return_value=df),
+    )
+    monkeypatch.setattr(
+        market_data_indicators.upbit_ohlcv_cache_service,
+        "get_target_closed_date_kst",
+        lambda now=None: yesterday,
+    )
+
+    result = await market_data_indicators._fetch_ohlcv_for_indicators(
+        "KRW-BTC", "crypto", count=2
+    )
+
+    assert len(result) == 1
+    assert result["date"].iloc[-1] == yesterday
+    market_data_indicators._fetch_ohlcv_crypto_paginated.assert_awaited_once_with(
+        "KRW-BTC", count=2, period="day"
+    )
 
 
 @pytest.mark.unit
