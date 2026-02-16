@@ -507,3 +507,45 @@ async def test_notify_sell_order_disabled(trade_notifier):
     )
 
     assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_openclaw_message_success(trade_notifier):
+    """Test successful OpenClaw message forwarding."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier.notify_openclaw_message("scan message")
+
+        assert result is True
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert call_args.kwargs["json"]["text"] == "scan message"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_openclaw_message_disabled(trade_notifier):
+    """Test OpenClaw forwarding when notifications are disabled."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=False,
+    )
+
+    result = await trade_notifier.notify_openclaw_message("scan message")
+
+    assert result is False

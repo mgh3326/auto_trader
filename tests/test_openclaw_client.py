@@ -164,14 +164,24 @@ async def test_send_fill_notification_success(
     mock_client_instance.__aexit__.return_value = None
     mock_httpx_client_cls.return_value = mock_client_instance
 
+    mock_notifier = MagicMock()
+    mock_notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "app.services.openclaw_client.get_trade_notifier",
+        lambda: mock_notifier,
+    )
+
     result = await OpenClawClient().send_fill_notification(order)
 
     assert result is not None
     mock_cli.post.assert_awaited_once()
     called_json = mock_cli.post.call_args.kwargs["json"]
     assert called_json["name"] == "auto-trader:fill"
-    assert "auto-trader:fill:upbit:order-123" in called_json["sessionKey"]
+    assert called_json["wakeMode"] == "now"
     assert "🟢 체결 알림" in called_json["message"]
+    mock_notifier.notify_openclaw_message.assert_awaited_once_with(
+        called_json["message"]
+    )
 
 
 @pytest.mark.asyncio
@@ -288,6 +298,13 @@ async def test_send_scan_alert_success(
     mock_client_instance.__aexit__.return_value = None
     mock_httpx_client_cls.return_value = mock_client_instance
 
+    mock_notifier = MagicMock()
+    mock_notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "app.services.openclaw_client.get_trade_notifier",
+        lambda: mock_notifier,
+    )
+
     result = await OpenClawClient().send_scan_alert("scan message")
 
     assert result is not None
@@ -297,6 +314,7 @@ async def test_send_scan_alert_success(
     assert called_json["wakeMode"] == "now"
     assert called_json["sessionKey"].startswith("auto-trader:scan:")
     assert called_json["message"] == "scan message"
+    mock_notifier.notify_openclaw_message.assert_awaited_once_with("scan message")
 
 
 @pytest.mark.asyncio

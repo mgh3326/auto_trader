@@ -914,6 +914,30 @@ class TradeNotifier:
             logger.error(f"Failed to send Toss price recommendation: {e}")
             return False
 
+    async def notify_openclaw_message(
+        self,
+        message: str,
+        parse_mode: str = "Markdown",
+    ) -> bool:
+        """
+        Forward an OpenClaw outbound message to Telegram.
+
+        Args:
+            message: Original message payload sent to OpenClaw
+            parse_mode: Telegram parse mode ("Markdown" or "HTML")
+
+        Returns:
+            True if notification sent successfully
+        """
+        if not self._enabled:
+            return False
+
+        try:
+            return await self._send_to_telegram(message, parse_mode=parse_mode)
+        except Exception as e:
+            logger.error(f"Failed to forward OpenClaw message: {e}")
+            return False
+
     async def test_connection(self) -> bool:
         """
         Test Telegram connection by sending a test message.

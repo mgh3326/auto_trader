@@ -11,6 +11,7 @@ from tenacity import (
 )
 
 from app.core.config import settings
+from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.fill_notification import (
     FillOrderLike,
     coerce_fill_order,
@@ -32,6 +33,22 @@ class OpenClawClient:
         self._webhook_url = webhook_url or settings.OPENCLAW_WEBHOOK_URL
         self._token = token if token is not None else settings.OPENCLAW_TOKEN
         self._callback_url = callback_url or settings.OPENCLAW_CALLBACK_URL
+
+    async def _forward_to_telegram(self, message: str, alert_type: str) -> None:
+        try:
+            notifier = get_trade_notifier()
+            sent = await notifier.notify_openclaw_message(message)
+            if sent:
+                logger.debug(
+                    "OpenClaw %s alert mirrored to Telegram",
+                    alert_type,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to mirror OpenClaw %s alert to Telegram: %s",
+                alert_type,
+                exc,
+            )
 
     async def request_analysis(
         self,
@@ -142,6 +159,7 @@ class OpenClawClient:
                         normalized_order.symbol,
                         normalized_order.account,
                     )
+                    await self._forward_to_telegram(message, alert_type="fill")
                     return request_id
 
         except RetryError as e:
@@ -189,6 +207,7 @@ class OpenClawClient:
                         )
                         res.raise_for_status()
                     logger.info("OpenClaw scan alert sent: request_id=%s", request_id)
+                    await self._forward_to_telegram(message, alert_type="scan")
                     return request_id
 
         except RetryError as e:
