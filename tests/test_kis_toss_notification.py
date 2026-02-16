@@ -55,16 +55,16 @@ class TestDomesticStockTossNotification:
         """
         국내 주식 분석 시 buy 결정이고 토스 잔고가 있으면 알림을 보내야 함
         """
+        from app.jobs import kis_trading as kis_tasks
         from app.models.manual_holdings import MarketType
-        from app.tasks import kis as kis_tasks
 
         # Mock analyzer result
         mock_stock_analysis_result.decision = "buy"
 
         with (
-            patch("app.tasks.kis.KISClient") as MockKIS,
-            patch("app.tasks.kis.KISAnalyzer") as MockAnalyzer,
-            patch("app.tasks.kis.get_trade_notifier") as mock_get_notifier,
+            patch("app.jobs.kis_trading.KISClient") as MockKIS,
+            patch("app.jobs.kis_trading.KISAnalyzer") as MockAnalyzer,
+            patch("app.jobs.kis_trading.get_trade_notifier") as mock_get_notifier,
             patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
             patch(
                 "app.services.toss_notification_service.send_toss_notification_if_needed"
@@ -122,15 +122,15 @@ class TestDomesticStockTossNotification:
         """
         국내 주식 분석 시 sell 결정이고 토스 잔고가 있으면 알림을 보내야 함
         """
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         # Mock analyzer result
         mock_stock_analysis_result.decision = "sell"
 
         with (
-            patch("app.tasks.kis.KISClient") as MockKIS,
-            patch("app.tasks.kis.KISAnalyzer") as MockAnalyzer,
-            patch("app.tasks.kis.get_trade_notifier") as mock_get_notifier,
+            patch("app.jobs.kis_trading.KISClient") as MockKIS,
+            patch("app.jobs.kis_trading.KISAnalyzer") as MockAnalyzer,
+            patch("app.jobs.kis_trading.get_trade_notifier") as mock_get_notifier,
             patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
             patch(
                 "app.services.toss_notification_service.send_toss_notification_if_needed"
@@ -185,15 +185,15 @@ class TestDomesticStockTossNotification:
         """
         국내 주식 분석 시 hold 결정이면 토스 알림을 보내지 않아야 함
         """
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         # Mock analyzer result
         mock_stock_analysis_result.decision = "hold"
 
         with (
-            patch("app.tasks.kis.KISClient") as MockKIS,
-            patch("app.tasks.kis.KISAnalyzer") as MockAnalyzer,
-            patch("app.tasks.kis.get_trade_notifier") as mock_get_notifier,
+            patch("app.jobs.kis_trading.KISClient") as MockKIS,
+            patch("app.jobs.kis_trading.KISAnalyzer") as MockAnalyzer,
+            patch("app.jobs.kis_trading.get_trade_notifier") as mock_get_notifier,
             patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
             patch(
                 "app.services.toss_notification_service.send_toss_notification_if_needed"
@@ -244,8 +244,8 @@ class TestOverseasStockTossNotification:
         """
         해외 주식 분석 시 buy 결정이고 토스 잔고가 있으면 알림을 보내야 함
         """
+        from app.jobs import kis_trading as kis_tasks
         from app.models.manual_holdings import MarketType
-        from app.tasks import kis as kis_tasks
 
         # Mock analyzer result
         mock_stock_analysis_result.decision = "buy"
@@ -253,7 +253,7 @@ class TestOverseasStockTossNotification:
         with (
             patch("app.analysis.service_analyzers.YahooAnalyzer") as MockAnalyzer,
             patch("app.services.yahoo.fetch_price") as mock_fetch_price,
-            patch("app.tasks.kis.get_trade_notifier") as mock_get_notifier,
+            patch("app.jobs.kis_trading.get_trade_notifier") as mock_get_notifier,
             patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
             patch(
                 "app.services.toss_notification_service.send_toss_notification_if_needed"
@@ -309,7 +309,7 @@ class TestOverseasStockTossNotification:
         """
         해외 주식 분석 시 sell 결정이고 토스 잔고가 있으면 알림을 보내야 함
         """
-        from app.tasks import kis as kis_tasks
+        from app.jobs import kis_trading as kis_tasks
 
         # Mock analyzer result
         mock_stock_analysis_result.decision = "sell"
@@ -317,7 +317,7 @@ class TestOverseasStockTossNotification:
         with (
             patch("app.analysis.service_analyzers.YahooAnalyzer") as MockAnalyzer,
             patch("app.services.yahoo.fetch_price") as mock_fetch_price,
-            patch("app.tasks.kis.get_trade_notifier") as mock_get_notifier,
+            patch("app.jobs.kis_trading.get_trade_notifier") as mock_get_notifier,
             patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
             patch(
                 "app.services.toss_notification_service.send_toss_notification_if_needed"
@@ -374,9 +374,9 @@ class TestTossNotificationIntegration:
         """
         국내 주식 단일 분석 시 토스 알림이 전송되는지 확인
         """
+        from app.jobs import kis_trading as kis_tasks
         from app.models.analysis import StockAnalysisResult
         from app.models.manual_holdings import MarketType
-        from app.tasks import kis as kis_tasks
 
         # Create result with all required fields
         result = StockAnalysisResult(
@@ -396,9 +396,9 @@ class TestTossNotificationIntegration:
         )
 
         with (
-            patch("app.tasks.kis.KISClient") as MockKIS,
-            patch("app.tasks.kis.KISAnalyzer") as MockAnalyzer,
-            patch("app.tasks.kis.get_trade_notifier") as mock_notifier,
+            patch("app.jobs.kis_trading.KISClient") as MockKIS,
+            patch("app.jobs.kis_trading.KISAnalyzer") as MockAnalyzer,
+            patch("app.jobs.kis_trading.get_trade_notifier") as mock_notifier,
             patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
             patch(
                 "app.services.toss_notification_service.send_toss_notification_if_needed"

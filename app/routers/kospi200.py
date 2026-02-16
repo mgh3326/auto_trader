@@ -5,11 +5,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
-from app.models.kospi200 import Kospi200Constituent
-from app.tasks.krx import (
+from app.jobs.kospi200 import (
     sync_kospi200_to_stock_info_task,
     update_kospi200_constituents_task,
 )
+from app.models.kospi200 import Kospi200Constituent
 
 router = APIRouter(prefix="/kospi200", tags=["KOSPI200"])
 

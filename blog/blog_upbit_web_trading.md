@@ -635,7 +635,7 @@ document.getElementById('coins-list').addEventListener('click', (e) => {
 ```python
 # tests/test_celery_tasks.py
 import pytest
-from app.tasks.analyze import run_per_coin_automation
+from app.jobs.analyze import run_per_coin_automation
 
 @pytest.mark.asyncio
 async def test_per_coin_automation_empty_coins():

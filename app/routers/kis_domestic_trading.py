@@ -13,11 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.templates import templates
-from app.models.trading import User
-from app.routers.dependencies import get_authenticated_user
-from app.services.kis import KISClient
-from app.services.merged_portfolio_service import MergedPortfolioService
-from app.tasks.kis import (
+from app.jobs.kis_trading import (
     analyze_domestic_stock_task,
     execute_domestic_buy_order_task,
     execute_domestic_buy_orders,
@@ -26,6 +22,10 @@ from app.tasks.kis import (
     run_analysis_for_my_domestic_stocks,
     run_per_domestic_stock_automation,
 )
+from app.models.trading import User
+from app.routers.dependencies import get_authenticated_user
+from app.services.kis import KISClient
+from app.services.merged_portfolio_service import MergedPortfolioService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/kis-domestic-trading", tags=["KIS Domestic Trading"])

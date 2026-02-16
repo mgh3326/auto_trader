@@ -1047,7 +1047,7 @@ async def test_no_settings_skip_buy():
 @pytest.mark.asyncio
 async def test_celery_analyze_task():
     """Celery 분석 태스크 테스트"""
-    from app.tasks.kis import analyze_domestic_stock_task
+    from app.jobs.kis_trading import analyze_domestic_stock_task
 
     result = analyze_domestic_stock_task.delay("삼성전자")
 

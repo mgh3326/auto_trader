@@ -1,4 +1,4 @@
-"""Tests for TaskIQ tasks defined in app.tasks.analyze."""
+"""Tests for TaskIQ tasks defined in app.jobs.analyze."""
 
 import asyncio
 
@@ -7,7 +7,7 @@ import pytest
 
 def _patch_upbit_analyzer(monkeypatch, *, tradable: bool):
     """Patch UpbitAnalyzer to simplify task execution."""
-    from app.tasks import analyze
+    from app.jobs import analyze
 
     created = []
 
@@ -34,7 +34,7 @@ def _patch_upbit_analyzer(monkeypatch, *, tradable: bool):
 
 def test_run_analysis_for_my_coins_no_tradable(monkeypatch):
     """거래 가능한 코인이 없을 때 완료 상태로 즉시 반환하는지 확인."""
-    from app.tasks import analyze
+    from app.jobs import analyze
 
     async def fake_prime():
         return None
@@ -73,7 +73,7 @@ def test_run_analysis_for_my_coins_no_tradable(monkeypatch):
 
 def test_execute_buy_orders_task_no_tradable(monkeypatch):
     """매수 태스크가 거래 가능한 코인이 없으면 즉시 종료하는지 확인."""
-    from app.tasks import analyze
+    from app.jobs import analyze
 
     async def fake_prime():
         return None
@@ -113,7 +113,7 @@ def test_execute_buy_orders_task_no_tradable(monkeypatch):
 @pytest.mark.asyncio
 async def test_execute_buy_order_notifies_on_insufficient_balance(monkeypatch):
     """잔고 부족으로 매수 실패 시 텔레그램 알림을 보내는지 확인."""
-    from app.tasks import analyze
+    from app.jobs import analyze
 
     async def fake_prime():
         return None
@@ -212,7 +212,7 @@ async def test_execute_buy_order_notifies_on_insufficient_balance(monkeypatch):
 
 def test_run_per_coin_automation_no_tradable(monkeypatch):
     """코인 자동 실행 태스크가 거래 가능한 코인이 없을 때 바로 완료된다."""
-    from app.tasks import analyze
+    from app.jobs import analyze
 
     async def fake_fetch():
         return ([], [])
@@ -234,7 +234,7 @@ def test_run_per_coin_automation_no_tradable(monkeypatch):
 
 def test_run_per_coin_automation_success(monkeypatch):
     """코인 자동 실행 태스크가 각 단계를 순서대로 호출하는지 확인."""
-    from app.tasks import analyze
+    from app.jobs import analyze
 
     async def fake_fetch():
         return (

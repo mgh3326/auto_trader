@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.templates import templates
+from app.jobs.analyze import run_analysis_for_stock
 from app.models.analysis import StockAnalysisResult, StockInfo
-from app.tasks.analyze import run_analysis_for_stock
 
 router = APIRouter(prefix="/stock-latest", tags=["Stock Latest Analysis"])
 
