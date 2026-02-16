@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 from typing import Any, Literal
 
@@ -114,6 +115,90 @@ async def _fetch_ohlcv_for_volume_profile(
     return await yahoo_service.fetch_ohlcv(
         ticker=symbol, days=period_days, period="day"
     )
+
+
+def _normalize_crypto_symbol(symbol: str) -> str:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return ""
+    if "-" not in normalized:
+        return f"KRW-{normalized}"
+    return normalized
+
+
+def _apply_realtime_price_to_last_close(
+    close: pd.Series,
+    realtime_price: float | None,
+) -> pd.Series:
+    if realtime_price is None or close.empty:
+        return close
+    adjusted = close.copy()
+    adjusted.iloc[-1] = float(realtime_price)
+    return adjusted
+
+
+def _compute_crypto_realtime_rsi_from_frame(
+    frame: pd.DataFrame,
+    realtime_price: float | None,
+    period: int = DEFAULT_RSI_PERIOD,
+) -> float | None:
+    if frame.empty or "close" not in frame.columns:
+        return None
+
+    close = pd.to_numeric(frame["close"], errors="coerce").dropna()
+    if len(close) < period + 1:
+        return None
+
+    close = close.astype(float)
+    realtime_close = _apply_realtime_price_to_last_close(close, realtime_price)
+    rsi_value = _calculate_rsi(realtime_close, period).get(str(period))
+    return _to_optional_float(rsi_value)
+
+
+async def compute_crypto_realtime_rsi_map(
+    symbols: list[str],
+    count: int = 200,
+    use_ticker_cache: bool = True,
+) -> dict[str, float | None]:
+    normalized_symbols: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        normalized = _normalize_crypto_symbol(symbol)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_symbols.append(normalized)
+
+    if not normalized_symbols:
+        return {}
+
+    ticker_prices: dict[str, float] = {}
+    try:
+        ticker_prices = await upbit_service.fetch_multiple_current_prices(
+            normalized_symbols,
+            use_cache=use_ticker_cache,
+        )
+    except Exception:
+        ticker_prices = {}
+
+    async def _compute_symbol_rsi(symbol: str) -> tuple[str, float | None]:
+        try:
+            df = await _fetch_ohlcv_for_indicators(symbol, "crypto", count=count)
+        except Exception:
+            return symbol, None
+
+        rsi_value = _compute_crypto_realtime_rsi_from_frame(
+            df,
+            _to_optional_float(ticker_prices.get(symbol)),
+            period=DEFAULT_RSI_PERIOD,
+        )
+        return symbol, rsi_value
+
+    results = await asyncio.gather(
+        *[_compute_symbol_rsi(symbol) for symbol in normalized_symbols],
+        return_exceptions=False,
+    )
+    return dict(results)
 
 
 def _calculate_sma(
@@ -870,6 +955,10 @@ __all__ = [
     "_fetch_ohlcv_crypto_paginated",
     "_fetch_ohlcv_for_indicators",
     "_fetch_ohlcv_for_volume_profile",
+    "_normalize_crypto_symbol",
+    "_apply_realtime_price_to_last_close",
+    "_compute_crypto_realtime_rsi_from_frame",
+    "compute_crypto_realtime_rsi_map",
     "_calculate_sma",
     "_calculate_ema",
     "_calculate_rsi",

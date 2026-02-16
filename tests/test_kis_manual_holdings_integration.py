@@ -630,7 +630,9 @@ class TestTossRecommendationNotification:
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()),
+            patch(
+                "app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()
+            ),
             patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
             patch(
                 "app.services.stock_info_service.StockAnalysisService",
@@ -695,7 +697,9 @@ class TestTossRecommendationNotification:
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()),
+            patch(
+                "app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()
+            ),
             patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
             patch(
                 "app.services.stock_info_service.StockAnalysisService",
@@ -756,7 +760,9 @@ class TestTossRecommendationNotification:
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()),
+            patch(
+                "app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()
+            ),
             patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
             patch(
                 "app.services.stock_info_service.StockAnalysisService",
@@ -821,7 +827,9 @@ class TestTossRecommendationNotification:
         mock_db_session.__aexit__ = AsyncMock(return_value=None)
 
         with (
-            patch("app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()),
+            patch(
+                "app.jobs.kis_trading.get_trade_notifier", return_value=MockNotifier()
+            ),
             patch("app.core.db.AsyncSessionLocal", return_value=mock_db_session),
             patch(
                 "app.services.stock_info_service.StockAnalysisService",

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
+    _compute_crypto_realtime_rsi_from_frame,
     _compute_indicators,
     _fetch_ohlcv_for_indicators,
 )
@@ -468,6 +469,11 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                     current_price = close_fallback_price
 
             indicator_results = _compute_indicators(df, normalized_indicators)
+
+            if market_type == "crypto" and "rsi" in normalized_indicators:
+                realtime_rsi = _compute_crypto_realtime_rsi_from_frame(df, current_price)
+                if realtime_rsi is not None:
+                    indicator_results.setdefault("rsi", {})["14"] = realtime_rsi
 
             return {
                 "symbol": symbol,
