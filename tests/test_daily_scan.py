@@ -655,3 +655,122 @@ async def test_run_strategy_scan_records_deduped_cooldowns_on_batch_success(
         call("BTC", "overbought"),
         call("ETH", "oversold"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_crash_detection_sends_single_batched_alert(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scanner, _openclaw, _redis, daily_scan = scanner_env
+
+    monkeypatch.setattr(
+        daily_scan,
+        "now_kst",
+        lambda: datetime(2026, 2, 16, 9, 30, tzinfo=timezone(timedelta(hours=9))),
+        raising=False,
+    )
+
+    async def fake_check_price_crash(
+        send_immediately: bool = True,
+        pending_cooldowns: list[tuple[str, str]] | None = None,
+    ) -> list[str]:
+        assert not send_immediately
+        assert pending_cooldowns is not None
+        pending_cooldowns.extend(
+            [
+                ("BTC", "crash"),
+                ("XRP", "crash"),
+                ("BTC", "crash"),
+            ]
+        )
+        return [
+            "비트코인(BTC) 24h +7.00% — 급등 감지",
+            "리플(XRP) 24h -8.00% — 급락 감지",
+        ]
+
+    monkeypatch.setattr(scanner, "check_price_crash", fake_check_price_crash)
+    send_mock = AsyncMock(return_value="scan-1")
+    record_mock = AsyncMock()
+    monkeypatch.setattr(scanner, "_send_alert", send_mock, raising=False)
+    monkeypatch.setattr(scanner, "_record_alert", record_mock, raising=False)
+
+    result = await scanner.run_crash_detection()
+
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args_list
+    first_await = send_mock.await_args_list[0]
+    assert first_await is not None
+    batched_message = first_await.args[0]
+    assert result == {
+        "alerts_sent": 1,
+        "details": [batched_message],
+    }
+    assert "크래시 감지 스캔 (09:30)" in batched_message
+    assert "변동성 경보" in batched_message
+    assert "- 비트코인(BTC) 24h +7.00% — 급등 감지" in batched_message
+    assert "- 리플(XRP) 24h -8.00% — 급락 감지" in batched_message
+    assert "🚨" not in batched_message
+    assert record_mock.await_args_list == [
+        call("BTC", "crash"),
+        call("XRP", "crash"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_crash_detection_does_not_send_when_no_alerts(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scanner, _openclaw, _redis, _daily_scan = scanner_env
+
+    monkeypatch.setattr(
+        scanner,
+        "check_price_crash",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    send_mock = AsyncMock(return_value="scan-1")
+    record_mock = AsyncMock()
+    monkeypatch.setattr(scanner, "_send_alert", send_mock, raising=False)
+    monkeypatch.setattr(scanner, "_record_alert", record_mock, raising=False)
+
+    result = await scanner.run_crash_detection()
+
+    assert result == {"alerts_sent": 0, "details": []}
+    send_mock.assert_not_awaited()
+    record_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_crash_detection_returns_zero_when_batched_send_fails(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scanner, _openclaw, _redis, _daily_scan = scanner_env
+
+    async def fake_check_price_crash(
+        send_immediately: bool = True,
+        pending_cooldowns: list[tuple[str, str]] | None = None,
+    ) -> list[str]:
+        assert not send_immediately
+        assert pending_cooldowns is not None
+        pending_cooldowns.extend(
+            [
+                ("BTC", "crash"),
+                ("BTC", "crash"),
+            ]
+        )
+        return ["비트코인(BTC) 24h +7.00% — 급등 감지"]
+
+    monkeypatch.setattr(scanner, "check_price_crash", fake_check_price_crash)
+    send_mock = AsyncMock(return_value=None)
+    record_mock = AsyncMock()
+    monkeypatch.setattr(scanner, "_send_alert", send_mock, raising=False)
+    monkeypatch.setattr(scanner, "_record_alert", record_mock, raising=False)
+
+    result = await scanner.run_crash_detection()
+
+    assert result == {"alerts_sent": 0, "details": []}
+    send_mock.assert_awaited_once()
+    record_mock.assert_not_awaited()

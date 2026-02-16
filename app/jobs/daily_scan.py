@@ -170,6 +170,20 @@ class DailyScanner:
         add_section("💭 시장 심리", sentiment_signals)
         return "\n".join(lines)
 
+    @staticmethod
+    def _build_crash_detection_batch_message(
+        *,
+        crash_signals: list[str],
+    ) -> str:
+        timestamp = now_kst().strftime("%H:%M")
+        lines: list[str] = [f"크래시 감지 스캔 ({timestamp})"]
+        if crash_signals:
+            lines.append("")
+            lines.append("변동성 경보")
+            for signal in crash_signals:
+                lines.append(f"- {signal}")
+        return "\n".join(lines)
+
     async def _get_btc_context(self) -> str:
         try:
             btc_df = await fetch_ohlcv("KRW-BTC", days=200)
@@ -296,7 +310,11 @@ class DailyScanner:
 
         return alerts
 
-    async def check_price_crash(self) -> list[str]:
+    async def check_price_crash(
+        self,
+        send_immediately: bool = True,
+        pending_cooldowns: list[tuple[str, str]] | None = None,
+    ) -> list[str]:
         alerts: list[str] = []
         top_coins = await fetch_top_traded_coins("KRW")
         my_coins = await fetch_my_coins()
@@ -331,10 +349,15 @@ class DailyScanner:
 
             name = self._coin_name(currency)
             direction = "급등" if change_rate > 0 else "급락"
-            message = f"🚨 {name}({currency}) 24h {change_rate:+.2%} — {direction} 감지"
-            request_id = await self._send_alert(message)
-            if request_id:
-                await self._record_alert(currency, "crash")
+            message = f"{name}({currency}) 24h {change_rate:+.2%} — {direction} 감지"
+            if send_immediately:
+                request_id = await self._send_alert(message)
+                if request_id:
+                    await self._record_alert(currency, "crash")
+                    alerts.append(message)
+            else:
+                if pending_cooldowns is not None:
+                    pending_cooldowns.append((currency, "crash"))
                 alerts.append(message)
 
         return alerts
@@ -526,8 +549,25 @@ class DailyScanner:
             return {"skipped": True, "reason": "disabled"}
 
         await upbit_pairs.prime_upbit_constants()
-        alerts = await self.check_price_crash()
-        return {"alerts_sent": len(alerts), "details": alerts}
+        pending_cooldowns: list[tuple[str, str]] = []
+        alerts = await self.check_price_crash(
+            send_immediately=False,
+            pending_cooldowns=pending_cooldowns,
+        )
+        if not alerts:
+            return {"alerts_sent": 0, "details": []}
+
+        batched_message = self._build_crash_detection_batch_message(
+            crash_signals=alerts
+        )
+        request_id = await self._send_alert(batched_message)
+        if not request_id:
+            return {"alerts_sent": 0, "details": []}
+
+        for symbol, alert_type in self._dedupe_pending_cooldowns(pending_cooldowns):
+            await self._record_alert(symbol, alert_type)
+
+        return {"alerts_sent": 1, "details": [batched_message]}
 
     async def close(self):
         if self._redis is not None:

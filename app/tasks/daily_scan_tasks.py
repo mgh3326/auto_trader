@@ -7,9 +7,7 @@ from app.jobs.daily_scan import DailyScanner
 @broker.task(
     task_name="scan.strategy",
     schedule=[
-        {"cron": "30 9 * * *", "cron_offset": "Asia/Seoul"},
-        {"cron": "0 15 * * *", "cron_offset": "Asia/Seoul"},
-        {"cron": "0 21 * * *", "cron_offset": "Asia/Seoul"},
+        {"cron": "30 * * * *", "cron_offset": "Asia/Seoul"},
     ],
 )
 async def run_strategy_scan_task() -> dict:
