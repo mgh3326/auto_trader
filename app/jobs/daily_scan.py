@@ -71,6 +71,43 @@ class DailyScanner:
         return f"daily_scan:cooldown:{symbol}:{alert_type}"
 
     @staticmethod
+    def _collect_krw_markets(
+        top_coins: list[dict],
+        my_coins: list[dict],
+        top_coin_limit: int | None = None,
+    ) -> tuple[list[str], list[str]]:
+        tradable_markets = {
+            str(item.get("market") or "")
+            for item in top_coins
+            if str(item.get("market") or "").startswith("KRW-")
+        }
+
+        candidate_top_coins = (
+            top_coins[: max(0, top_coin_limit)]
+            if top_coin_limit is not None
+            else top_coins
+        )
+        market_codes = {
+            str(item.get("market") or "")
+            for item in candidate_top_coins
+            if str(item.get("market") or "").startswith("KRW-")
+        }
+
+        skipped_markets: set[str] = set()
+        for coin in my_coins:
+            currency = str(coin.get("currency") or "").upper()
+            if not currency or currency == "KRW":
+                continue
+
+            market = f"KRW-{currency}"
+            if market in tradable_markets:
+                market_codes.add(market)
+            else:
+                skipped_markets.add(market)
+
+        return sorted(market_codes), sorted(skipped_markets)
+
+    @staticmethod
     def _coin_name(currency: str) -> str:
         try:
             name = upbit_pairs.COIN_TO_NAME_KR.get(currency, currency)
@@ -264,21 +301,20 @@ class DailyScanner:
         top_coins = await fetch_top_traded_coins("KRW")
         my_coins = await fetch_my_coins()
 
-        market_codes = {
-            str(item.get("market"))
-            for item in top_coins
-            if str(item.get("market") or "").startswith("KRW-")
-        }
-        market_codes.update(
-            f"KRW-{str(coin.get('currency')).upper()}"
-            for coin in my_coins
-            if str(coin.get("currency") or "").upper() != "KRW"
+        market_codes, skipped_markets = self._collect_krw_markets(
+            top_coins=top_coins,
+            my_coins=my_coins,
         )
+        if skipped_markets:
+            logger.info(
+                "Skipping non-tradable KRW holding markets in crash scan: %s",
+                ", ".join(skipped_markets),
+            )
 
         if not market_codes:
             return alerts
 
-        tickers = await fetch_multiple_tickers(sorted(market_codes))
+        tickers = await fetch_multiple_tickers(market_codes)
         for ticker in tickers:
             market = str(ticker.get("market") or "")
             if not market:
@@ -351,18 +387,18 @@ class DailyScanner:
         top_coins = await fetch_top_traded_coins("KRW")
         my_coins = await fetch_my_coins()
 
-        market_codes = {
-            str(item.get("market"))
-            for item in top_coins[: max(0, settings.DAILY_SCAN_TOP_COINS_COUNT)]
-            if str(item.get("market") or "").startswith("KRW-")
-        }
-        market_codes.update(
-            f"KRW-{str(coin.get('currency')).upper()}"
-            for coin in my_coins
-            if str(coin.get("currency") or "").upper() != "KRW"
+        market_codes, skipped_markets = self._collect_krw_markets(
+            top_coins=top_coins,
+            my_coins=my_coins,
+            top_coin_limit=max(0, settings.DAILY_SCAN_TOP_COINS_COUNT),
         )
+        if skipped_markets:
+            logger.info(
+                "Skipping non-tradable KRW holding markets in sma20 scan: %s",
+                ", ".join(skipped_markets),
+            )
 
-        for market in sorted(market_codes):
+        for market in market_codes:
             try:
                 df = await fetch_ohlcv(market, days=50)
             except Exception as exc:

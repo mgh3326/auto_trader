@@ -197,6 +197,64 @@ async def test_check_price_crash_threshold_applies(
 
 
 @pytest.mark.asyncio
+async def test_check_price_crash_filters_non_tradable_holding_markets(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scanner, _openclaw, _redis, daily_scan = scanner_env
+
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_top_traded_coins",
+        AsyncMock(
+            return_value=[
+                {"market": "KRW-BTC"},
+                {"market": "KRW-ETH"},
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_my_coins",
+        AsyncMock(return_value=[{"currency": "KRW"}, {"currency": "PCI"}]),
+    )
+    fetch_tickers = AsyncMock(return_value=[])
+    monkeypatch.setattr(daily_scan, "fetch_multiple_tickers", fetch_tickers)
+
+    await scanner.check_price_crash()
+
+    fetch_tickers.assert_awaited_once_with(["KRW-BTC", "KRW-ETH"])
+
+
+@pytest.mark.asyncio
+async def test_check_sma20_crossings_filters_non_tradable_holding_markets(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scanner, _openclaw, _redis, daily_scan = scanner_env
+
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_top_traded_coins",
+        AsyncMock(return_value=[{"market": "KRW-BTC"}]),
+    )
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_my_coins",
+        AsyncMock(return_value=[{"currency": "KRW"}, {"currency": "PCI"}]),
+    )
+    fetch_ohlcv_mock = AsyncMock(return_value=_make_ohlcv([100.0] * 20))
+    monkeypatch.setattr(daily_scan, "fetch_ohlcv", fetch_ohlcv_mock)
+
+    await scanner.check_sma20_crossings()
+
+    requested_markets = [
+        str(call_args.args[0]) for call_args in fetch_ohlcv_mock.await_args_list
+    ]
+    assert requested_markets == ["KRW-BTC"]
+
+
+@pytest.mark.asyncio
 async def test_check_fear_greed_extreme_only_alerts(
     scanner_env,
     monkeypatch: pytest.MonkeyPatch,
