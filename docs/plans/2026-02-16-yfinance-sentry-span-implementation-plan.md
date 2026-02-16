@@ -25,6 +25,7 @@ Add tests for:
 - status code data is recorded
 - invalid URL falls back to `"/unknown"`
 - wrapped request exceptions are re-raised
+- arbitrary kwargs (for example `timeout`, `headers`, `params`) are forwarded unchanged to `super().request(...)`
 
 ```python
 def test_tracing_session_uses_method_and_path(monkeypatch):
@@ -76,7 +77,6 @@ git commit -m "Add yfinance tracing session for Sentry spans"
 **Files:**
 - Modify: `app/services/yahoo.py`
 - Modify: `tests/test_services.py`
-- Modify: `tests/test_settings.py`
 
 **Step 1: Write the failing test**
 
@@ -119,7 +119,7 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add app/services/yahoo.py tests/test_services.py tests/test_settings.py
+git add app/services/yahoo.py tests/test_services.py
 git commit -m "Inject Sentry tracing session into yahoo service calls"
 ```
 
@@ -240,6 +240,10 @@ Expected: FAIL
 
 In both fundamentals source files:
 - build and pass tracing session to all yfinance entrypoints
+- explicitly handle `fundamentals_sources_naver.py` line-635 lambda pattern (`lambda t=ticker: yf.Ticker(t).info`):
+  - replace with a helper/closure that captures tracing session
+  - call `yf.Ticker(t, session=session).info` inside that helper/closure
+  - keep existing behavior and threading model unchanged (`asyncio.to_thread(...)`)
 - avoid widening function signatures; keep behavior local and non-breaking
 
 **Step 4: Run test to verify it passes**
@@ -281,7 +285,7 @@ Expected: PASS
 
 Run:
 - `make lint`
-- `uv run mypy app/monitoring app/services/yahoo.py app/mcp_server/tooling`
+- `make typecheck`
 
 Expected: PASS (or known pre-existing failures documented)
 
