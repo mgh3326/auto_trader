@@ -6,6 +6,7 @@ import pytest
 import sentry_sdk
 from curl_cffi.requests import Session
 
+import app.monitoring.yfinance_sentry as yfinance_sentry_module
 from app.monitoring.yfinance_sentry import SentryTracingCurlSession
 
 
@@ -171,3 +172,20 @@ def test_tracing_session_forwards_kwargs_to_parent_request(
         "params": params,
         "timeout": timeout,
     }
+
+
+def test_build_tracing_session_uses_chrome_impersonation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeSession:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(yfinance_sentry_module, "SentryTracingCurlSession", _FakeSession)
+
+    session = yfinance_sentry_module.build_yfinance_tracing_session()
+
+    assert isinstance(session, _FakeSession)
+    assert captured["kwargs"] == {"impersonate": "chrome"}

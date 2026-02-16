@@ -33,7 +33,7 @@ class SentryTracingCurlSession(Session):
 
 
 def build_yfinance_tracing_session() -> Session:
-    return SentryTracingCurlSession()
+    return SentryTracingCurlSession(impersonate="chrome")
 
 
 __all__ = ["SentryTracingCurlSession", "build_yfinance_tracing_session"]
