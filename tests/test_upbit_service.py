@@ -171,7 +171,10 @@ async def test_fetch_multiple_current_prices_inflight_dedupe_for_overlapping_bat
     async def fake_fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
         requested_batches.append(list(market_codes))
         await asyncio.sleep(0.05)
-        return [{"market": market_code, "trade_price": 123.0} for market_code in market_codes]
+        return [
+            {"market": market_code, "trade_price": 123.0}
+            for market_code in market_codes
+        ]
 
     monkeypatch.setattr(upbit, "fetch_multiple_tickers", fake_fetch_multiple_tickers)
 

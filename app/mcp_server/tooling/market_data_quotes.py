@@ -471,7 +471,9 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             indicator_results = _compute_indicators(df, normalized_indicators)
 
             if market_type == "crypto" and "rsi" in normalized_indicators:
-                realtime_rsi = _compute_crypto_realtime_rsi_from_frame(df, current_price)
+                realtime_rsi = _compute_crypto_realtime_rsi_from_frame(
+                    df, current_price
+                )
                 if realtime_rsi is not None:
                     indicator_results.setdefault("rsi", {})["14"] = realtime_rsi
 
