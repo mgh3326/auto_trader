@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, call
 
 import pandas as pd
 import pytest
@@ -350,3 +351,249 @@ async def test_run_methods_skip_when_disabled(
 
     assert strategy_result == {"skipped": True, "reason": "disabled"}
     assert crash_result == {"skipped": True, "reason": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_run_strategy_scan_sends_single_batched_alert(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scanner, _openclaw, _redis, daily_scan = scanner_env
+
+    monkeypatch.setattr(
+        daily_scan,
+        "now_kst",
+        lambda: datetime(2026, 2, 16, 9, 30, tzinfo=timezone(timedelta(hours=9))),
+        raising=False,
+    )
+
+    monkeypatch.setattr(
+        scanner,
+        "_get_btc_context",
+        AsyncMock(return_value="BTC_CTX"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_overbought_holdings",
+        AsyncMock(return_value=["overbought message"]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_oversold_top30",
+        AsyncMock(return_value=["oversold message"]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_fear_greed",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_sma20_crossings",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    send_mock = AsyncMock(return_value="scan-1")
+    monkeypatch.setattr(scanner, "_send_alert", send_mock, raising=False)
+
+    result = await scanner.run_strategy_scan()
+
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args_list
+    first_await = send_mock.await_args_list[0]
+    assert first_await is not None
+    batched_message = first_await.args[0]
+    assert result == {
+        "alerts_sent": 1,
+        "details": [batched_message],
+    }
+    assert "크립토 스캔 (09:30)" in batched_message
+    assert "매수 신호" in batched_message
+    assert "매도 신호" in batched_message
+    assert "overbought message" in batched_message
+    assert "oversold message" in batched_message
+
+
+@pytest.mark.asyncio
+async def test_run_strategy_scan_does_not_send_when_no_alerts(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scanner, _openclaw, _redis, _daily_scan = scanner_env
+
+    monkeypatch.setattr(
+        scanner,
+        "_get_btc_context",
+        AsyncMock(return_value="BTC_CTX"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_overbought_holdings",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_oversold_top30",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_fear_greed",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_sma20_crossings",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    send_mock = AsyncMock(return_value="scan-1")
+    monkeypatch.setattr(scanner, "_send_alert", send_mock, raising=False)
+
+    result = await scanner.run_strategy_scan()
+
+    assert result == {"alerts_sent": 0, "details": []}
+    send_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_strategy_scan_returns_zero_when_batched_send_fails(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scanner, _openclaw, _redis, _daily_scan = scanner_env
+
+    monkeypatch.setattr(
+        scanner,
+        "_get_btc_context",
+        AsyncMock(return_value="BTC_CTX"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_overbought_holdings",
+        AsyncMock(return_value=["overbought message"]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_oversold_top30",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_fear_greed",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_sma20_crossings",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+
+    send_mock = AsyncMock(return_value=None)
+    record_mock = AsyncMock()
+    monkeypatch.setattr(scanner, "_send_alert", send_mock, raising=False)
+    monkeypatch.setattr(scanner, "_record_alert", record_mock, raising=False)
+
+    result = await scanner.run_strategy_scan()
+
+    assert result == {"alerts_sent": 0, "details": []}
+    send_mock.assert_awaited_once()
+    record_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_strategy_scan_records_deduped_cooldowns_on_batch_success(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scanner, _openclaw, _redis, _daily_scan = scanner_env
+
+    monkeypatch.setattr(
+        scanner,
+        "_get_btc_context",
+        AsyncMock(return_value="BTC_CTX"),
+        raising=False,
+    )
+
+    async def fake_overbought(
+        btc_ctx: str,
+        send_immediately: bool = True,
+        pending_cooldowns: list[tuple[str, str]] | None = None,
+    ) -> list[str]:
+        _ = btc_ctx
+        assert not send_immediately
+        assert pending_cooldowns is not None
+        pending_cooldowns.extend(
+            [
+                ("BTC", "overbought"),
+                ("BTC", "overbought"),
+            ]
+        )
+        return ["overbought message"]
+
+    async def fake_oversold(
+        btc_ctx: str,
+        send_immediately: bool = True,
+        pending_cooldowns: list[tuple[str, str]] | None = None,
+    ) -> list[str]:
+        _ = btc_ctx
+        assert not send_immediately
+        assert pending_cooldowns is not None
+        pending_cooldowns.extend(
+            [
+                ("ETH", "oversold"),
+                ("BTC", "overbought"),
+            ]
+        )
+        return ["oversold message"]
+
+    monkeypatch.setattr(scanner, "check_overbought_holdings", fake_overbought)
+    monkeypatch.setattr(scanner, "check_oversold_top30", fake_oversold)
+    monkeypatch.setattr(
+        scanner,
+        "check_fear_greed",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        scanner,
+        "check_sma20_crossings",
+        AsyncMock(return_value=[]),
+        raising=False,
+    )
+
+    send_mock = AsyncMock(return_value="scan-1")
+    record_mock = AsyncMock()
+    monkeypatch.setattr(scanner, "_send_alert", send_mock, raising=False)
+    monkeypatch.setattr(scanner, "_record_alert", record_mock, raising=False)
+
+    result = await scanner.run_strategy_scan()
+
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args_list
+    first_await = send_mock.await_args_list[0]
+    assert first_await is not None
+    batched_message = first_await.args[0]
+    assert result == {
+        "alerts_sent": 1,
+        "details": [batched_message],
+    }
+    assert "overbought message" in batched_message
+    assert "oversold message" in batched_message
+    assert record_mock.await_args_list == [
+        call("BTC", "overbought"),
+        call("ETH", "oversold"),
+    ]

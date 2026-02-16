@@ -5,6 +5,7 @@ import logging
 import redis.asyncio as redis
 
 from app.core.config import settings
+from app.core.timezone import now_kst
 from app.mcp_server.tooling.analysis_tool_handlers import get_fear_greed_index_impl
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi, _calculate_sma
 from app.services.openclaw_client import OpenClawClient
@@ -92,6 +93,46 @@ class DailyScanner:
         key = self._cooldown_key(symbol, alert_type)
         await redis_client.set(key, "1", ex=ttl_seconds)
 
+    @staticmethod
+    def _dedupe_pending_cooldowns(
+        pending_cooldowns: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        deduped: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for pending in pending_cooldowns:
+            if pending in seen:
+                continue
+            seen.add(pending)
+            deduped.append(pending)
+        return deduped
+
+    @staticmethod
+    def _build_strategy_scan_batch_message(
+        *,
+        btc_ctx: str,
+        buy_signals: list[str],
+        sell_signals: list[str],
+        sentiment_signals: list[str],
+    ) -> str:
+        timestamp = now_kst().strftime("%H:%M")
+        lines: list[str] = [
+            f"🔎 크립토 스캔 ({timestamp})",
+            btc_ctx,
+        ]
+
+        def add_section(title: str, items: list[str]) -> None:
+            if not items:
+                return
+            lines.append("")
+            lines.append(title)
+            for item in items:
+                lines.append(f"- {item}")
+
+        add_section("📈 매수 신호", buy_signals)
+        add_section("📉 매도 신호", sell_signals)
+        add_section("💭 시장 심리", sentiment_signals)
+        return "\n".join(lines)
+
     async def _get_btc_context(self) -> str:
         try:
             btc_df = await fetch_ohlcv("KRW-BTC", days=200)
@@ -126,7 +167,12 @@ class DailyScanner:
             logger.warning("Failed to build BTC context: %s", exc)
             return "📌 BTC 컨텍스트: 조회 실패"
 
-    async def check_overbought_holdings(self, btc_ctx: str) -> list[str]:
+    async def check_overbought_holdings(
+        self,
+        btc_ctx: str,
+        send_immediately: bool = True,
+        pending_cooldowns: list[tuple[str, str]] | None = None,
+    ) -> list[str]:
         alerts: list[str] = []
         my_coins = await fetch_my_coins()
         for coin in my_coins:
@@ -152,15 +198,26 @@ class DailyScanner:
                 continue
 
             name = self._coin_name(currency)
-            message = f"⚠️ {name}({currency}) RSI {rsi:.1f} — 과매수 구간\n{btc_ctx}"
-            request_id = await self._send_alert(message)
-            if request_id:
-                await self._record_alert(currency, "overbought")
-                alerts.append(message)
+            base_message = f"⚠️ {name}({currency}) RSI {rsi:.1f} — 과매수 구간"
+            if send_immediately:
+                message = f"{base_message}\n{btc_ctx}"
+                request_id = await self._send_alert(message)
+                if request_id:
+                    await self._record_alert(currency, "overbought")
+                    alerts.append(message)
+            else:
+                if pending_cooldowns is not None:
+                    pending_cooldowns.append((currency, "overbought"))
+                alerts.append(base_message)
 
         return alerts
 
-    async def check_oversold_top30(self, btc_ctx: str) -> list[str]:
+    async def check_oversold_top30(
+        self,
+        btc_ctx: str,
+        send_immediately: bool = True,
+        pending_cooldowns: list[tuple[str, str]] | None = None,
+    ) -> list[str]:
         alerts: list[str] = []
         top_coins = await fetch_top_traded_coins("KRW")
         top_count = max(0, settings.DAILY_SCAN_TOP_COINS_COUNT)
@@ -188,11 +245,17 @@ class DailyScanner:
                 continue
 
             name = self._coin_name(currency)
-            message = f"📉 {name}({currency}) RSI {rsi:.1f} — 과매도 구간\n{btc_ctx}"
-            request_id = await self._send_alert(message)
-            if request_id:
-                await self._record_alert(currency, "oversold")
-                alerts.append(message)
+            base_message = f"📉 {name}({currency}) RSI {rsi:.1f} — 과매도 구간"
+            if send_immediately:
+                message = f"{base_message}\n{btc_ctx}"
+                request_id = await self._send_alert(message)
+                if request_id:
+                    await self._record_alert(currency, "oversold")
+                    alerts.append(message)
+            else:
+                if pending_cooldowns is not None:
+                    pending_cooldowns.append((currency, "oversold"))
+                alerts.append(base_message)
 
         return alerts
 
@@ -240,7 +303,11 @@ class DailyScanner:
 
         return alerts
 
-    async def check_fear_greed(self) -> list[str]:
+    async def check_fear_greed(
+        self,
+        send_immediately: bool = True,
+        pending_cooldowns: list[tuple[str, str]] | None = None,
+    ) -> list[str]:
         alerts: list[str] = []
         result = await get_fear_greed_index_impl(days=1)
         if not result.get("success"):
@@ -263,14 +330,23 @@ class DailyScanner:
 
         classification = str(current.get("classification") or "Unknown")
         message = f"😱 Fear & Greed {int(value)} ({classification}) — 극단 구간"
-        request_id = await self._send_alert(message)
-        if request_id:
-            await self._record_alert(symbol, "fng")
+        if send_immediately:
+            request_id = await self._send_alert(message)
+            if request_id:
+                await self._record_alert(symbol, "fng")
+                alerts.append(message)
+        else:
+            if pending_cooldowns is not None:
+                pending_cooldowns.append((symbol, "fng"))
             alerts.append(message)
 
         return alerts
 
-    async def check_sma20_crossings(self) -> list[str]:
+    async def check_sma20_crossings(
+        self,
+        send_immediately: bool = True,
+        pending_cooldowns: list[tuple[str, str]] | None = None,
+    ) -> list[str]:
         alerts: list[str] = []
         top_coins = await fetch_top_traded_coins("KRW")
         my_coins = await fetch_my_coins()
@@ -337,9 +413,14 @@ class DailyScanner:
                 f"{emoji} {name}({currency}) SMA20 {crossing_label} — "
                 f"종가 {curr_close:,.0f} / SMA20 {curr_sma20:,.0f}"
             )
-            request_id = await self._send_alert(message)
-            if request_id:
-                await self._record_alert(symbol, "sma_cross")
+            if send_immediately:
+                request_id = await self._send_alert(message)
+                if request_id:
+                    await self._record_alert(symbol, "sma_cross")
+                    alerts.append(message)
+            else:
+                if pending_cooldowns is not None:
+                    pending_cooldowns.append((symbol, "sma_cross"))
                 alerts.append(message)
 
         return alerts
@@ -357,12 +438,52 @@ class DailyScanner:
 
         await upbit_pairs.prime_upbit_constants()
         btc_ctx = await self._get_btc_context()
-        alerts: list[str] = []
-        alerts += await self.check_overbought_holdings(btc_ctx)
-        alerts += await self.check_oversold_top30(btc_ctx)
-        alerts += await self.check_fear_greed()
-        alerts += await self.check_sma20_crossings()
-        return {"alerts_sent": len(alerts), "details": alerts}
+        pending_cooldowns: list[tuple[str, str]] = []
+
+        overbought_alerts = await self.check_overbought_holdings(
+            btc_ctx,
+            send_immediately=False,
+            pending_cooldowns=pending_cooldowns,
+        )
+        oversold_alerts = await self.check_oversold_top30(
+            btc_ctx,
+            send_immediately=False,
+            pending_cooldowns=pending_cooldowns,
+        )
+        fng_alerts = await self.check_fear_greed(
+            send_immediately=False,
+            pending_cooldowns=pending_cooldowns,
+        )
+        sma_alerts = await self.check_sma20_crossings(
+            send_immediately=False,
+            pending_cooldowns=pending_cooldowns,
+        )
+
+        buy_signals = [*oversold_alerts]
+        sell_signals = [*overbought_alerts]
+        for sma_alert in sma_alerts:
+            if "골든크로스" in sma_alert:
+                buy_signals.append(sma_alert)
+            elif "데드크로스" in sma_alert:
+                sell_signals.append(sma_alert)
+
+        if not buy_signals and not sell_signals and not fng_alerts:
+            return {"alerts_sent": 0, "details": []}
+
+        batched_message = self._build_strategy_scan_batch_message(
+            btc_ctx=btc_ctx,
+            buy_signals=buy_signals,
+            sell_signals=sell_signals,
+            sentiment_signals=fng_alerts,
+        )
+        request_id = await self._send_alert(batched_message)
+        if not request_id:
+            return {"alerts_sent": 0, "details": []}
+
+        for symbol, alert_type in self._dedupe_pending_cooldowns(pending_cooldowns):
+            await self._record_alert(symbol, alert_type)
+
+        return {"alerts_sent": 1, "details": [batched_message]}
 
     async def run_crash_detection(self) -> dict:
         if not settings.DAILY_SCAN_ENABLED:
