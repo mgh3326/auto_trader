@@ -58,10 +58,10 @@ dev: ## Start development server
 	uv run uvicorn app.main:api --reload --host 0.0.0.0 --port 8000
 
 taskiq-worker: ## Start TaskIQ worker
-	uv run taskiq worker app.core.taskiq_broker:broker app.tasks.daily_scan_tasks
+	uv run taskiq worker app.core.taskiq_broker:broker app.tasks
 
 taskiq-scheduler: ## Start TaskIQ scheduler
-	uv run taskiq scheduler app.core.scheduler:sched app.tasks.daily_scan_tasks
+	uv run taskiq scheduler app.core.scheduler:sched app.tasks
 
 docker-build: ## Build Docker image
 	docker build -t auto-trader .
