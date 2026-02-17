@@ -117,6 +117,54 @@ class DailyScanner:
         except Exception:
             return currency
 
+    @staticmethod
+    def _build_rank_by_market(top_coins: list[dict]) -> dict[str, int]:
+        rank_by_market: dict[str, int] = {}
+        for rank, item in enumerate(top_coins, start=1):
+            market = str(item.get("market") or "")
+            if not market.startswith("KRW-"):
+                continue
+            # Keep the first rank when duplicates are present.
+            rank_by_market.setdefault(market, rank)
+        return rank_by_market
+
+    @staticmethod
+    def _collect_holding_markets(
+        my_coins: list[dict],
+        tradable_markets: set[str],
+    ) -> tuple[set[str], list[str]]:
+        holding_markets: set[str] = set()
+        skipped_markets: set[str] = set()
+        for coin in my_coins:
+            currency = str(coin.get("currency") or "").upper()
+            if not currency or currency == "KRW":
+                continue
+            market = f"KRW-{currency}"
+            if market in tradable_markets:
+                holding_markets.add(market)
+            else:
+                skipped_markets.add(market)
+        return holding_markets, sorted(skipped_markets)
+
+    @staticmethod
+    def _crash_threshold_for_rank(rank: int | None) -> float:
+        if rank is None:
+            return settings.DAILY_SCAN_CRASH_TOP100_THRESHOLD
+        if rank <= 10:
+            return settings.DAILY_SCAN_CRASH_TOP10_THRESHOLD
+        if rank <= 30:
+            return settings.DAILY_SCAN_CRASH_TOP30_THRESHOLD
+        if rank <= 50:
+            return settings.DAILY_SCAN_CRASH_TOP50_THRESHOLD
+        return settings.DAILY_SCAN_CRASH_TOP100_THRESHOLD
+
+    @staticmethod
+    def _crash_threshold_for_candidate(rank: int | None, is_holding: bool) -> float:
+        rank_threshold = DailyScanner._crash_threshold_for_rank(rank)
+        if is_holding:
+            return min(rank_threshold, settings.DAILY_SCAN_CRASH_HOLDING_THRESHOLD)
+        return rank_threshold
+
     async def _should_alert(self, symbol: str, alert_type: str) -> bool:
         redis_client = await self._get_redis()
         key = self._cooldown_key(symbol, alert_type)
@@ -319,9 +367,11 @@ class DailyScanner:
         top_coins = await fetch_top_traded_coins("KRW")
         my_coins = await fetch_my_coins()
 
-        market_codes, skipped_markets = self._collect_krw_markets(
-            top_coins=top_coins,
+        rank_by_market = self._build_rank_by_market(top_coins)
+        tradable_markets = set(rank_by_market.keys())
+        holding_markets, skipped_markets = self._collect_holding_markets(
             my_coins=my_coins,
+            tradable_markets=tradable_markets,
         )
         if skipped_markets:
             logger.info(
@@ -329,27 +379,86 @@ class DailyScanner:
                 ", ".join(skipped_markets),
             )
 
+        rank_limit = max(0, settings.DAILY_SCAN_CRASH_TOP_RANK_LIMIT)
+        ranked_markets = {
+            market for market, rank in rank_by_market.items() if rank <= rank_limit
+        }
+        market_codes = sorted(ranked_markets | holding_markets)
+
         if not market_codes:
             return alerts
 
+        logger.info(
+            "Crash scan universe: rank_limit=%d ranked=%d holdings=%d merged=%d",
+            rank_limit,
+            len(ranked_markets),
+            len(holding_markets),
+            len(market_codes),
+        )
+
         tickers = await fetch_multiple_tickers(market_codes)
+        near_miss_ratio = min(max(settings.DAILY_SCAN_CRASH_NEAR_MISS_RATIO, 0.0), 1.0)
+        near_miss_count = 0
+        below_threshold_count = 0
+        cooldown_skip_count = 0
+        out_of_universe_count = 0
+        missing_change_rate_count = 0
+
         for ticker in tickers:
             market = str(ticker.get("market") or "")
             if not market:
                 continue
             change_rate = self._to_float(ticker.get("signed_change_rate"))
             if change_rate is None:
+                missing_change_rate_count += 1
                 continue
-            if abs(change_rate) < settings.DAILY_SCAN_CRASH_THRESHOLD:
+
+            rank = rank_by_market.get(market)
+            is_holding = market in holding_markets
+            if rank is None and not is_holding:
+                out_of_universe_count += 1
+                continue
+
+            threshold = self._crash_threshold_for_candidate(rank, is_holding)
+            abs_change_rate = abs(change_rate)
+            if abs_change_rate < threshold:
+                below_threshold_count += 1
+                if abs_change_rate >= threshold * near_miss_ratio:
+                    near_miss_count += 1
+                    logger.info(
+                        "Crash scan near-miss market=%s rank=%s holding=%s change=%+.2f%% threshold=%.2f%%",
+                        market,
+                        rank if rank is not None else "-",
+                        is_holding,
+                        change_rate * 100,
+                        threshold * 100,
+                    )
                 continue
 
             currency = self._currency_from_market(market)
             if not await self._should_alert(currency, "crash"):
+                cooldown_skip_count += 1
+                logger.info(
+                    "Crash scan cooldown-skip market=%s rank=%s holding=%s change=%+.2f%% threshold=%.2f%%",
+                    market,
+                    rank if rank is not None else "-",
+                    is_holding,
+                    change_rate * 100,
+                    threshold * 100,
+                )
                 continue
 
             name = self._coin_name(currency)
             direction = "급등" if change_rate > 0 else "급락"
             message = f"{name}({currency}) 24h {change_rate:+.2%} — {direction} 감지"
+            logger.info(
+                "Crash alert accepted market=%s rank=%s holding=%s change=%+.2f%% threshold=%.2f%%",
+                market,
+                rank if rank is not None else "-",
+                is_holding,
+                change_rate * 100,
+                threshold * 100,
+            )
             if send_immediately:
                 request_id = await self._send_alert(message)
                 if request_id:
@@ -359,6 +468,22 @@ class DailyScanner:
                 if pending_cooldowns is not None:
                     pending_cooldowns.append((currency, "crash"))
                 alerts.append(message)
+
+        logger.info(
+            (
+                "Crash scan summary: requested=%d ticker_rows=%d alerts=%d "
+                "near_miss=%d below_threshold=%d cooldown_skip=%d "
+                "missing_change_rate=%d out_of_universe=%d"
+            ),
+            len(market_codes),
+            len(tickers),
+            len(alerts),
+            near_miss_count,
+            below_threshold_count,
+            cooldown_skip_count,
+            missing_change_rate_count,
+            out_of_universe_count,
+        )
 
         return alerts
 

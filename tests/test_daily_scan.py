@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, call
 
@@ -82,6 +83,27 @@ def scanner_env(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(
         daily_scan.settings, "DAILY_SCAN_CRASH_THRESHOLD", 0.05, raising=False
+    )
+    monkeypatch.setattr(
+        daily_scan.settings, "DAILY_SCAN_CRASH_HOLDING_THRESHOLD", 0.04, raising=False
+    )
+    monkeypatch.setattr(
+        daily_scan.settings, "DAILY_SCAN_CRASH_TOP10_THRESHOLD", 0.06, raising=False
+    )
+    monkeypatch.setattr(
+        daily_scan.settings, "DAILY_SCAN_CRASH_TOP30_THRESHOLD", 0.08, raising=False
+    )
+    monkeypatch.setattr(
+        daily_scan.settings, "DAILY_SCAN_CRASH_TOP50_THRESHOLD", 0.10, raising=False
+    )
+    monkeypatch.setattr(
+        daily_scan.settings, "DAILY_SCAN_CRASH_TOP100_THRESHOLD", 0.12, raising=False
+    )
+    monkeypatch.setattr(
+        daily_scan.settings, "DAILY_SCAN_CRASH_TOP_RANK_LIMIT", 100, raising=False
+    )
+    monkeypatch.setattr(
+        daily_scan.settings, "DAILY_SCAN_CRASH_NEAR_MISS_RATIO", 0.8, raising=False
     )
     monkeypatch.setattr(
         daily_scan.settings, "DAILY_SCAN_RSI_OVERBOUGHT", 70.0, raising=False
@@ -167,6 +189,7 @@ async def test_check_price_crash_threshold_applies(
             return_value=[
                 {"market": "KRW-BTC"},
                 {"market": "KRW-ETH"},
+                {"market": "KRW-XRP"},
             ]
         ),
     )
@@ -224,6 +247,82 @@ async def test_check_price_crash_filters_non_tradable_holding_markets(
     await scanner.check_price_crash()
 
     fetch_tickers.assert_awaited_once_with(["KRW-BTC", "KRW-ETH"])
+
+
+@pytest.mark.asyncio
+async def test_check_price_crash_applies_rank_tiers_and_holding_override(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    scanner, openclaw, _redis, daily_scan = scanner_env
+
+    top_coins = [{"market": f"KRW-C{i:03d}"} for i in range(1, 121)]
+    fetch_tickers = AsyncMock(
+        return_value=[
+            {"market": "KRW-C050", "signed_change_rate": 0.10},
+            {"market": "KRW-C051", "signed_change_rate": 0.11},
+            {"market": "KRW-C115", "signed_change_rate": 0.05},
+        ]
+    )
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_top_traded_coins",
+        AsyncMock(return_value=top_coins),
+    )
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_my_coins",
+        AsyncMock(return_value=[{"currency": "C115"}]),
+    )
+    monkeypatch.setattr(daily_scan, "fetch_multiple_tickers", fetch_tickers)
+
+    alerts = await scanner.check_price_crash()
+
+    assert len(alerts) == 2
+    assert len(openclaw.messages) == 2
+    assert any("C050(C050) 24h +10.00% — 급등 감지" in msg for msg in openclaw.messages)
+    assert any("C115(C115) 24h +5.00% — 급등 감지" in msg for msg in openclaw.messages)
+    assert all("C051(C051)" not in msg for msg in openclaw.messages)
+
+    requested_markets = list(fetch_tickers.await_args.args[0])
+    assert "KRW-C101" not in requested_markets
+    assert "KRW-C115" in requested_markets
+    assert len(requested_markets) == 101
+
+
+@pytest.mark.asyncio
+async def test_check_price_crash_logs_near_miss_for_tuning(
+    scanner_env,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    scanner, openclaw, _redis, daily_scan = scanner_env
+
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_top_traded_coins",
+        AsyncMock(return_value=[{"market": "KRW-BTC"}]),
+    )
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_my_coins",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        daily_scan,
+        "fetch_multiple_tickers",
+        AsyncMock(return_value=[{"market": "KRW-BTC", "signed_change_rate": 0.055}]),
+    )
+
+    caplog.set_level(logging.INFO)
+    alerts = await scanner.check_price_crash()
+
+    assert alerts == []
+    assert openclaw.messages == []
+    assert any(
+        "Crash scan near-miss market=KRW-BTC" in record.message
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
