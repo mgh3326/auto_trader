@@ -171,10 +171,6 @@ async def fetch_krw_orderable_balance() -> float:
     return float(summary["orderable"])
 
 
-async def fetch_krw_balance() -> float:
-    return await fetch_krw_orderable_balance()
-
-
 async def check_krw_balance_sufficient(required_amount: float) -> tuple[bool, float]:
     """KRW 잔고가 충분한지 확인
 
