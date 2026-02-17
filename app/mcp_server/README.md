@@ -299,6 +299,28 @@ Error response format (unexpected internal failure):
 }
 ```
 
+### `get_cash_balance` spec
+Parameters:
+- `account`: optional account filter (`upbit`, `kis`, `kis_domestic`, `kis_overseas`)
+
+Broker-specific contract:
+- **Upbit (`account="upbit"`)**
+  - `balance`: total KRW (`balance + locked`)
+  - `orderable`: orderable KRW (`balance`)
+  - `formatted`: formatted total KRW string (e.g. `"700,000 KRW"`)
+- **KIS domestic (`account="kis_domestic"`)**
+  - `balance`: `dnca_tot_amt`
+  - `orderable`: `stck_cash_ord_psbl_amt`
+- **KIS overseas (`account="kis_overseas"`)**
+  - `balance`: USD cash balance (`frcr_dncl_amt1` fallback `frcr_dncl_amt_2`)
+  - `orderable`: USD orderable cash (`frcr_gnrl_ord_psbl_amt`)
+
+Response shape:
+- `accounts`: per-account cash entries
+- `summary.total_krw`: sum of KRW `balance` fields
+- `summary.total_usd`: sum of USD `balance` fields
+- `errors`: per-source partial failures in non-strict mode
+
 ### `get_holdings` spec
 Parameters:
 - `account`: optional account filter (`kis`, `upbit`, `toss`, `samsung_pension`, `isa`)
