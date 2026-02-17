@@ -63,7 +63,9 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
 
     if account_filter is None or account_filter in ("upbit",):
         try:
-            krw_balance = await upbit_service.fetch_krw_balance()
+            summary = await upbit_service.fetch_krw_cash_summary()
+            krw_balance = float(summary.get("balance", 0.0))
+            krw_orderable = float(summary.get("orderable", 0.0))
             accounts.append(
                 {
                     "account": "upbit",
@@ -71,6 +73,7 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
                     "broker": "upbit",
                     "currency": "KRW",
                     "balance": krw_balance,
+                    "orderable": krw_orderable,
                     "formatted": f"{int(krw_balance):,} KRW",
                 }
             )
