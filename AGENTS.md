@@ -1,81 +1,99 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-02-16 17:29 KST
-**Commit:** 41b7513
+**Generated:** 2026-02-17 12:32 KST
+**Commit:** 6b23e7b
 **Branch:** main
 
 ## OVERVIEW
-Auto Trader is a Python 3.13+ service stack for market data, AI-assisted analysis, and order workflows.
-Primary runtimes are FastAPI (`app/main.py`), TaskIQ worker/scheduler, MCP server (`app/mcp_server/main.py`), and websocket monitor processes.
+Auto Trader is a Python 3.13+ multi-runtime system for market data ingestion, AI analysis, and trade execution.
+Primary processes are FastAPI (`app/main.py`), TaskIQ worker/scheduler, MCP server (`app/mcp_server/main.py`), and websocket monitor processes.
 
 ## STRUCTURE
 ```text
 auto_trader/
-├── app/                      # runtime code (api, services, jobs/tasks, mcp tools)
+├── app/                      # runtime code (api, auth, services, jobs/tasks, mcp, monitoring)
 ├── tests/                    # pytest suites and fixtures
-├── scripts/                  # deployment, migration, ops utilities
+├── scripts/                  # deploy, migration, health, environment utilities
 ├── alembic/                  # migration env + revision history
-├── data/                     # static symbols and loader constants
-├── blog/                     # internal articles and image generation utilities
-└── docker-compose*.yml       # local/prod stack definitions
+├── data/                     # loader modules + static market reference assets
+├── blog/                     # internal docs plus supplemental script/test assets
+├── docs/                     # plans and operational notes
+└── docker-compose*.yml       # local/prod/migration stack definitions
 ```
 
 ## WHERE TO LOOK
 | Task | Location | Notes |
 |------|----------|-------|
-| API lifecycle and router wiring | `app/main.py` | App creation, router includes, exception handling |
-| HTTP endpoints | `app/routers/` and `app/auth/` | Domain routers and auth/admin/web auth routers |
-| Domain/business logic | `app/services/` | Upbit/KIS/Yahoo + holdings/trading service logic |
-| Scheduled jobs and worker tasks | `app/jobs/`, `app/tasks/`, `app/core/taskiq_broker.py` | TaskIQ broker/scheduler integration |
-| MCP tool behavior | `app/mcp_server/tooling/` and `app/mcp_server/README.md` | Public tool contract and market-specific behavior |
-| Tests and fixtures | `tests/` and `tests/conftest.py` | Strict markers and fixture bootstrap |
-| CI/build/deploy flows | `Makefile`, `.github/workflows/`, `.circleci/config.yml`, `scripts/` | Commands, job ordering, deployment modes |
+| API lifecycle and router wiring | `app/main.py` | App creation, router includes, middleware, exception handling |
+| Background execution | `app/core/taskiq_broker.py`, `app/core/scheduler.py`, `app/tasks/` | Broker/scheduler wiring and scheduled task declarations |
+| Domain business logic | `app/services/` | Provider clients and trading/holdings/orchestration services |
+| MCP server behavior | `app/mcp_server/` and `app/mcp_server/tooling/` | Process bootstrap + tool registration and handlers |
+| Monitoring and notifications | `app/monitoring/` | Sentry integration and Telegram trade notifications |
+| ORM + API DTO boundaries | `app/models/`, `app/schemas/` | SQLAlchemy models vs Pydantic transport schemas |
+| Test contracts and fixtures | `tests/` and `tests/conftest.py` | Strict markers/config and shared fixture bootstrap |
+| Deployment and migration flow | `scripts/`, `docker-compose.prod.yml`, `docker-compose.migration.yml` | Operator-facing deploy/migrate/health workflows |
 
 ## CODE MAP
 | Symbol | Type | Location | Refs | Role |
 |--------|------|----------|------|------|
-| `create_app` | Function | `app/main.py` | API runtime target (`app.main:api`) | Builds FastAPI app and middleware/router stack |
-| `router` | APIRouter vars | `app/routers/*.py` + `app/auth/*.py` | 21 router modules | HTTP surface area |
-| `broker` | TaskIQ broker | `app/core/taskiq_broker.py` | Worker/scheduler commands | Background task transport and startup hooks |
-| `sched` | TaskIQ scheduler | `app/core/scheduler.py` | `make taskiq-scheduler` | Periodic task scheduling |
-| `@broker.task(...)` | Scheduled task defs | `app/tasks/daily_scan_tasks.py` | 2 scheduled entries | Strategy and crash-detection schedules |
-| `main` | Function | `app/mcp_server/main.py` | Module entrypoint | MCP process bootstrap and mode binding |
+| `create_app` | Function | `app/main.py` | API runtime target (`app.main:api`) | FastAPI app bootstrap and lifecycle wiring |
+| `broker` | Variable | `app/core/taskiq_broker.py` | API + scheduler + tasks | TaskIQ broker and worker middleware |
+| `sched` | Variable | `app/core/scheduler.py` | `make taskiq-scheduler` | Periodic schedule execution |
+| `register_all_tools` | Function | `app/mcp_server/tooling/registry.py` | MCP bootstrap + tests | MCP tool registration orchestrator |
+| `get_trade_notifier` | Function | `app/monitoring/trade_notifier.py` | API + worker + services/jobs | Singleton notifier lifecycle and delivery |
+| `KISClient` | Class | `app/services/kis.py` | services/jobs/routers/mcp | KIS integration backbone |
 
 ## CONVENTIONS
-- Source of truth for toolchain: `pyproject.toml` + `Makefile` + CI workflows.
-- Runtime version is Python 3.13+ (`pyproject.toml`, CI); do not assume older doc values.
-- Formatting/lint/type stack is Ruff + Pyright, not Black/isort/mypy.
-- Tests use strict pytest markers/config with `--cov-fail-under=50`.
-- Dependency and command execution uses `uv` (`uv sync`, `uv run ...`).
+- Toolchain source of truth is `pyproject.toml`, `Makefile`, and CI workflows.
+- Runtime baseline is Python 3.13+; dependency and command execution use `uv`.
+- Formatting/lint/type checks are Ruff + Pyright.
+- Test suite uses strict pytest markers/config (`slow`, `integration`, `unit`) with `--cov-fail-under=50`.
+- Keep task declarations in `app/tasks/`; job orchestration stays in `app/jobs/`.
+- Keep MCP behavior changes synchronized with `app/mcp_server/README.md` and tests.
 
 ## ANTI-PATTERNS (THIS PROJECT)
-- Do not keep default secrets in production env (`env.example`: explicit prohibition).
-- Do not hardcode secrets or credentials (`blog/blog_8_authentication.md`, `blog/blog_9_kis_trading.md`).
-- Do not store passwords in plaintext (`blog/blog_8_authentication.md`: explicit prohibition).
-- Do not add new usage of deprecated tick-size helper (`app/mcp_server/tick_size.py`: use `get_tick_size_kr()`).
+- Do not hardcode credentials/secrets in code or scripts.
+- Do not keep default/example secrets in production environments.
+- Do not add new usage of deprecated tick-size helper (`app/mcp_server/tick_size.py:_get_tick_size`).
+- Do not add `@broker.task(...)` directly in `app/jobs/`.
+- Do not embed heavy business logic directly in router handlers.
 
 ## UNIQUE STYLES
-- Multi-runtime repo: API, TaskIQ worker/scheduler, MCP server, websocket monitors.
-- Root contains many executable diagnostics (`debug_*.py`, `manage_users.py`, monitor scripts).
-- MCP tooling is organized by capability with registration modules per domain.
-- Production compose uses host networking for service-to-service communication.
+- Multi-runtime repository: API, worker/scheduler, MCP process, and websocket monitors all coexist.
+- Root includes many operator/debug utilities (`debug_*.py`, monitor scripts, management CLIs).
+- Production compose is host-network oriented and includes a migration profile workflow.
+- `data/stocks_info/` mixes Python loaders with static `.h` reference files.
 
 ## COMMANDS
 ```bash
+# setup and local runtime
 make install-dev
 make dev
 make taskiq-worker
 make taskiq-scheduler
 uv run python -m app.mcp_server.main
 python websocket_monitor.py --mode both
+
+# quality and tests
 make test
+make test-unit
 make test-integration
 make lint
 make security
+
+# migration and deploy operations
 uv run alembic upgrade head
+bash scripts/migration-check.sh
+bash scripts/migrate.sh
+bash scripts/deploy.sh --manual-migrate --health-check
+docker compose -f docker-compose.prod.yml --profile migration up migration
+bash scripts/healthcheck.sh
+python manage_users.py list
 ```
 
 ## NOTES
-- Historical docs and older guidance may conflict with current config values; prefer executable config files.
-- `app/services/kis.py` is very large; use targeted searches/offset reads instead of full-file scans.
-- For MCP behavior changes, update both code and `app/mcp_server/README.md` to keep tool contracts aligned.
+- Some docs still contain older Celery phrasing; runtime execution is TaskIQ-based.
+- Deployment and migration scripts include interactive/safety checks; do not assume non-interactive behavior.
+- `tests/` is canonical pytest discovery root; root/blog `test_*.py` files are supplemental scripts.
+- For very large files (`app/services/kis.py`, large `tests/test_mcp_*.py`), prefer targeted reads/searches.
+- Child AGENTS files under `app/` and `data/` provide tighter local rules and override where needed.
