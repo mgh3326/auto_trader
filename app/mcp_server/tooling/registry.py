@@ -9,6 +9,9 @@ from app.mcp_server.tooling.fundamentals_registration import register_fundamenta
 from app.mcp_server.tooling.market_data_registration import register_market_data_tools
 from app.mcp_server.tooling.orders_registration import register_order_tools
 from app.mcp_server.tooling.portfolio_registration import register_portfolio_tools
+from app.mcp_server.tooling.watch_alerts_registration import (
+    register_watch_alert_tools,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -20,6 +23,7 @@ def register_all_tools(mcp: FastMCP) -> None:
     register_order_tools(mcp)
     register_fundamentals_tools(mcp)
     register_analysis_tools(mcp)
+    register_watch_alert_tools(mcp)
 
 
 __all__ = ["register_all_tools"]

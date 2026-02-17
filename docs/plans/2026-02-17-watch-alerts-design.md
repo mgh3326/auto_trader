@@ -13,7 +13,7 @@
 
 - Redis hash 기반 사용자 지정 조건 알림을 도입한다.
 - cron(TaskIQ) 주기 스캔으로 조건 충족을 평가한다.
-- 알림은 OpenClaw + Telegram 미러링 경로(`send_scan_alert`)를 사용한다.
+- 알림은 OpenClaw + Telegram 미러링 경로(`send_watch_alert`, 내부 `_send_market_alert` 공유)를 사용한다.
 - 조건 충족 알림 발송 성공 시 해당 조건을 자동 삭제한다.
 
 ## 2. 확정 요구사항
@@ -68,9 +68,8 @@
 
 ## 4.3 알림 채널
 
-- watch 스캐너는 `/Users/robin/PycharmProjects/auto_trader/app/services/openclaw_client.py`의 `send_scan_alert()` 경로를 사용한다.
-- 이 경로는 OpenClaw 전송 성공 시 Telegram으로 미러링된다.
-- 네이밍은 하위 호환을 위해 `send_scan_alert`를 유지하고, 필요 시 내부 공통 메서드(`send_market_alert`)로 확장한다.
+- watch 스캐너는 `/Users/robin/PycharmProjects/auto_trader/app/services/openclaw_client.py`의 `send_watch_alert()`를 사용한다.
+- `send_watch_alert()`와 `send_scan_alert()`는 내부 공통 경로(`_send_market_alert`)를 공유하며, OpenClaw 전송 성공 시 Telegram으로 미러링된다.
 
 ## 5. 데이터 모델 및 계약
 
@@ -214,4 +213,3 @@
 - 조건 충족 후 자동 재등록/복구 로직
 - 사용자별 멀티테넌트 watch 분리
 - watch 메시지 분할 발송
-

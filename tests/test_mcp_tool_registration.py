@@ -1,6 +1,10 @@
 import pytest
 
 from app.mcp_server import AVAILABLE_TOOL_NAMES, register_all_tools
+from app.mcp_server.tooling import (
+    WATCH_ALERT_TOOL_NAMES,
+    register_watch_alert_tools,
+)
 from app.mcp_server.tooling.analysis_registration import (
     ANALYSIS_TOOL_NAMES,
     register_analysis_tools,
@@ -76,6 +80,16 @@ def test_domain_registration_is_incremental_and_recoverable() -> None:
         | ANALYSIS_TOOL_NAMES
     )
 
+    register_watch_alert_tools(mcp)
+    assert set(mcp.tools) == (
+        MARKET_DATA_TOOL_NAMES
+        | PORTFOLIO_TOOL_NAMES
+        | ORDER_TOOL_NAMES
+        | FUNDAMENTALS_TOOL_NAMES
+        | ANALYSIS_TOOL_NAMES
+        | WATCH_ALERT_TOOL_NAMES
+    )
+
     assert set(mcp.tools) == set(AVAILABLE_TOOL_NAMES)
 
 
@@ -87,6 +101,7 @@ def test_domain_registration_is_incremental_and_recoverable() -> None:
         register_order_tools,
         register_fundamentals_tools,
         register_analysis_tools,
+        register_watch_alert_tools,
     ],
 )
 def test_domain_registration_is_idempotent(registrar: object) -> None:

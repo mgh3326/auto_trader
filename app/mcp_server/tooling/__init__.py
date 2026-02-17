@@ -15,5 +15,13 @@ This package contains the refactored MCP tools split by domain:
 """
 
 from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling.watch_alerts_registration import (
+    WATCH_ALERT_TOOL_NAMES,
+    register_watch_alert_tools,
+)
 
-__all__ = ["register_all_tools"]
+__all__ = [
+    "WATCH_ALERT_TOOL_NAMES",
+    "register_all_tools",
+    "register_watch_alert_tools",
+]
