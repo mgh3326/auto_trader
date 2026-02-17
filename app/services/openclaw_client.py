@@ -177,16 +177,16 @@ class OpenClawClient:
             )
             return None
 
-    async def send_scan_alert(self, message: str) -> str | None:
+    async def _send_market_alert(self, message: str, category: str) -> str | None:
         if not settings.OPENCLAW_ENABLED:
-            logger.debug("OpenClaw disabled, skipping scan alert")
+            logger.debug("OpenClaw disabled, skipping %s alert", category)
             return None
 
         request_id = str(uuid4())
         payload = {
             "message": message,
-            "name": "auto-trader:scan",
-            "sessionKey": f"auto-trader:scan:{request_id}",
+            "name": f"auto-trader:{category}",
+            "sessionKey": f"auto-trader:{category}:{request_id}",
             "wakeMode": "now",
         }
 
@@ -206,24 +206,36 @@ class OpenClawClient:
                             self._webhook_url, json=payload, headers=headers
                         )
                         res.raise_for_status()
-                    logger.info("OpenClaw scan alert sent: request_id=%s", request_id)
-                    await self._forward_to_telegram(message, alert_type="scan")
+                    logger.info(
+                        "OpenClaw %s alert sent: request_id=%s",
+                        category,
+                        request_id,
+                    )
+                    await self._forward_to_telegram(message, alert_type=category)
                     return request_id
 
         except RetryError as e:
             logger.error(
-                "OpenClaw scan alert failed after retries: request_id=%s error=%s",
+                "OpenClaw %s alert failed after retries: request_id=%s error=%s",
+                category,
                 request_id,
                 e,
             )
             return None
         except Exception as e:
             logger.error(
-                "OpenClaw scan alert error: request_id=%s error=%s",
+                "OpenClaw %s alert error: request_id=%s error=%s",
+                category,
                 request_id,
                 e,
             )
             return None
+
+    async def send_scan_alert(self, message: str) -> str | None:
+        return await self._send_market_alert(message, category="scan")
+
+    async def send_watch_alert(self, message: str) -> str | None:
+        return await self._send_market_alert(message, category="watch")
 
 
 def _build_openclaw_message(

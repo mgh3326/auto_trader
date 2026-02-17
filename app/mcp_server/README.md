@@ -27,8 +27,63 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None)`
 - `modify_order(order_id, symbol, new_price=None, new_quantity=None)`
 - `cancel_order(order_id)`
+- `manage_watch_alerts(action, market=None, symbol=None, metric=None, operator=None, threshold=None)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
+
+### `manage_watch_alerts` spec
+Parameters:
+- `action`: Required action - `"add"`, `"remove"`, `"list"`
+- `market`: Market - `"crypto"`, `"kr"`, `"us"` (required for `add`/`remove`, optional for `list`)
+- `symbol`: Asset symbol/ticker (required for `add`/`remove`)
+- `metric`: Condition metric - `"price"` or `"rsi"` (required for `add`/`remove`)
+- `operator`: Condition operator - `"above"` or `"below"` (required for `add`/`remove`)
+- `threshold`: Numeric threshold value (required for `add`/`remove`)
+
+Behavior:
+- `action="add"`: Creates a watch condition in Redis; repeated same condition is idempotent.
+- `action="remove"`: Removes one matching watch condition.
+- `action="list"`: Returns all watches, optionally filtered by market.
+- Triggered watches are removed only after successful outbound alert delivery by the scheduler path.
+
+Response examples:
+```json
+{
+  "success": true,
+  "action": "add",
+  "market": "crypto",
+  "symbol": "BTC",
+  "condition_type": "price_below",
+  "threshold": 90000000.0,
+  "created": true,
+  "already_exists": false
+}
+```
+
+```json
+{
+  "success": true,
+  "action": "list",
+  "watches": {
+    "crypto": [
+      {
+        "symbol": "BTC",
+        "condition_type": "price_below",
+        "threshold": 90000000.0,
+        "created_at": "2026-02-17T13:40:00+09:00"
+      }
+    ]
+  }
+}
+```
+
+Error examples:
+```json
+{
+  "success": false,
+  "error": "Unknown action: foo"
+}
+```
 
 ### `screen_stocks` spec
 Parameters:

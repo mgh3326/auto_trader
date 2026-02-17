@@ -42,4 +42,5 @@ AVAILABLE_TOOL_NAMES = [
     "modify_order",
     "screen_stocks",
     "recommend_stocks",
+    "manage_watch_alerts",
 ]
