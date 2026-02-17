@@ -231,6 +231,28 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_cash_balance_with_account_filter_upbit_success(monkeypatch):
+    tools = build_tools()
+
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_krw_cash_summary",
+        AsyncMock(return_value={"balance": 700000.0, "orderable": 500000.0}),
+    )
+
+    result = await tools["get_cash_balance"](account="upbit")
+
+    assert len(result["accounts"]) == 1
+    upbit_account = result["accounts"][0]
+    assert upbit_account["account"] == "upbit"
+    assert upbit_account["balance"] == 700000.0
+    assert upbit_account["orderable"] == 500000.0
+    assert result["summary"]["total_krw"] == upbit_account["balance"]
+    assert result["summary"]["total_usd"] == 0.0
+    assert len(result["errors"]) == 0
+
+
+@pytest.mark.asyncio
 async def test_get_cash_balance_partial_failure(monkeypatch):
     tools = build_tools()
 

@@ -122,18 +122,23 @@ class TestUpbitService:
 
         assert summary["balance"] == 700000.0
         assert summary["orderable"] == 500000.0
+        assert summary["balance"] == summary["orderable"] + 200000.0
 
     @pytest.mark.asyncio
     async def test_fetch_krw_orderable_balance_reads_summary(self, monkeypatch):
+        mock_summary = AsyncMock(
+            return_value={"balance": 700000.0, "orderable": 500000.0}
+        )
         monkeypatch.setattr(
             upbit_service_module,
             "fetch_krw_cash_summary",
-            AsyncMock(return_value={"balance": 700000.0, "orderable": 500000.0}),
+            mock_summary,
         )
 
         result = await upbit_service_module.fetch_krw_orderable_balance()
 
         assert result == 500000.0
+        mock_summary.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_fetch_krw_cash_summary_returns_zero_without_krw(self, monkeypatch):
