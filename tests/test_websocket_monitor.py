@@ -279,3 +279,43 @@ class TestUnifiedWebSocketMonitor:
         )
 
         send_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_main_configures_and_shuts_down_trade_notifier(
+        self, mock_settings: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import websocket_monitor
+
+        monitor = MagicMock()
+        monitor.start = AsyncMock(return_value=None)
+        monitor.stop = AsyncMock(return_value=None)
+
+        notifier = MagicMock()
+        notifier.configure = MagicMock()
+        notifier.shutdown = AsyncMock(return_value=None)
+
+        monkeypatch.setattr(settings, "telegram_token", "telegram-token")
+        monkeypatch.setattr(settings, "telegram_chat_id", "123456")
+        monkeypatch.setattr(websocket_monitor, "init_sentry", lambda **_: None)
+        monkeypatch.setattr(
+            websocket_monitor,
+            "UnifiedWebSocketMonitor",
+            lambda mode="both": monitor,
+        )
+        monkeypatch.setattr(
+            websocket_monitor,
+            "get_trade_notifier",
+            lambda: notifier,
+            raising=False,
+        )
+
+        await websocket_monitor.main(mode="both")
+
+        notifier.configure.assert_called_once_with(
+            bot_token="telegram-token",
+            chat_ids=["123456"],
+            enabled=True,
+        )
+        notifier.shutdown.assert_awaited_once()
+        monitor.start.assert_awaited_once()
+        monitor.stop.assert_awaited_once()

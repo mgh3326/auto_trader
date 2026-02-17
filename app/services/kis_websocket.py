@@ -121,6 +121,33 @@ _SIDE_MAP = {
     "매수": "bid",
 }
 
+OVERSEAS_FILL_FIELDS = {
+    "side": 4,
+    "symbol": 7,
+    "filled_qty": 8,
+    "filled_price": 9,
+    "filled_at": 10,
+    "fill_yn": 12,
+}
+
+OVERSEAS_SIDE_MAP = {
+    "01": "ask",
+    "1": "ask",
+    "S": "ask",
+    "02": "bid",
+    "2": "bid",
+    "B": "bid",
+}
+
+DOMESTIC_FILL_FIELDS = {
+    "symbol": 0,
+    "side": 1,
+    "order_id": 2,
+    "filled_price": 3,
+    "filled_qty": 4,
+    "filled_at": 5,
+}
+
 
 class KISSubscriptionAckError(RuntimeError):
     """Structured ACK failure for KIS subscription."""
@@ -529,9 +556,12 @@ class KISExecutionWebSocket:
     def _is_execution_event(self, data: dict[str, Any]) -> bool:
         if data.get("type") in {"error", "ack"}:
             return False
+        tr_code = str(data.get("tr_code", ""))
+        if tr_code in OVERSEAS_EXECUTION_TR_CODES:
+            return str(data.get("fill_yn", "")).strip() == "2"
         if data.get("execution_type") == 1:
             return True
-        return str(data.get("tr_code", "")) in EXECUTION_TR_CODES
+        return tr_code in EXECUTION_TR_CODES
 
     def _parse_message(self, message: str | bytes) -> dict | None:
         """
@@ -729,6 +759,16 @@ class KISExecutionWebSocket:
         if not fields:
             return {}
 
+        if market == "us":
+            parsed_overseas = self._parse_overseas_execution(fields)
+            if parsed_overseas is not None:
+                return parsed_overseas
+
+        if market == "kr":
+            parsed_domestic = self._parse_domestic_execution(fields)
+            if parsed_domestic is not None:
+                return parsed_domestic
+
         kv: dict[str, str] = {}
         for token in fields:
             if "=" in token:
@@ -818,6 +858,66 @@ class KISExecutionWebSocket:
             "filled_price": filled_price,
             "filled_qty": filled_qty,
             "filled_amount": filled_amount,
+            "filled_at": filled_at,
+        }
+
+    def _parse_overseas_execution(self, fields: list[str]) -> dict[str, Any] | None:
+        if len(fields) <= max(OVERSEAS_FILL_FIELDS.values()):
+            return None
+
+        symbol = fields[OVERSEAS_FILL_FIELDS["symbol"]].strip()
+        if not symbol:
+            return None
+
+        side_token = fields[OVERSEAS_FILL_FIELDS["side"]].strip().upper()
+        side = OVERSEAS_SIDE_MAP.get(side_token, "unknown")
+
+        filled_qty = self._to_float(fields[OVERSEAS_FILL_FIELDS["filled_qty"]])
+        filled_price = self._to_float(fields[OVERSEAS_FILL_FIELDS["filled_price"]])
+        if filled_qty <= 0 or filled_price <= 0:
+            return None
+
+        order_id = fields[2].strip() if len(fields) > 2 else ""
+        if not order_id:
+            order_id = None
+
+        filled_at = self._extract_timestamp(fields[OVERSEAS_FILL_FIELDS["filled_at"]])
+        fill_yn = fields[OVERSEAS_FILL_FIELDS["fill_yn"]].strip()
+
+        return {
+            "symbol": symbol,
+            "side": side,
+            "order_id": order_id,
+            "filled_price": filled_price,
+            "filled_qty": filled_qty,
+            "filled_amount": filled_price * filled_qty,
+            "filled_at": filled_at,
+            "fill_yn": fill_yn,
+        }
+
+    def _parse_domestic_execution(self, fields: list[str]) -> dict[str, Any] | None:
+        if len(fields) <= max(DOMESTIC_FILL_FIELDS.values()):
+            return None
+
+        symbol = fields[DOMESTIC_FILL_FIELDS["symbol"]].strip()
+        side_token = fields[DOMESTIC_FILL_FIELDS["side"]].strip().upper()
+        order_id = fields[DOMESTIC_FILL_FIELDS["order_id"]].strip() or None
+        filled_price = self._to_float(fields[DOMESTIC_FILL_FIELDS["filled_price"]])
+        filled_qty = self._to_float(fields[DOMESTIC_FILL_FIELDS["filled_qty"]])
+
+        if not symbol or filled_price <= 0 or filled_qty <= 0:
+            return None
+
+        side = _SIDE_MAP.get(side_token, "unknown")
+        filled_at = self._extract_timestamp(fields[DOMESTIC_FILL_FIELDS["filled_at"]])
+
+        return {
+            "symbol": symbol,
+            "side": side,
+            "order_id": order_id,
+            "filled_price": filled_price,
+            "filled_qty": filled_qty,
+            "filled_amount": filled_price * filled_qty,
             "filled_at": filled_at,
         }
 
