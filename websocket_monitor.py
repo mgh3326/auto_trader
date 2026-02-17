@@ -14,6 +14,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.monitoring.sentry import capture_exception, init_sentry
+from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.fill_notification import (
     FillOrder,
     normalize_kis_fill,
@@ -279,6 +280,17 @@ async def main(mode: str = "both") -> None:
     }[mode]
     init_sentry(service_name=service_name)
 
+    if settings.telegram_token and settings.telegram_chat_id:
+        try:
+            trade_notifier = get_trade_notifier()
+            trade_notifier.configure(
+                bot_token=settings.telegram_token,
+                chat_ids=settings.telegram_chat_ids,
+                enabled=True,
+            )
+        except Exception as e:
+            logger.warning("Failed to configure trade notifier: %s", e, exc_info=True)
+
     monitor = UnifiedWebSocketMonitor(mode=mode)
 
     try:
@@ -291,6 +303,11 @@ async def main(mode: str = "both") -> None:
         sys.exit(1)
     finally:
         await monitor.stop()
+        try:
+            trade_notifier = get_trade_notifier()
+            await trade_notifier.shutdown()
+        except Exception as e:
+            logger.warning("Failed to shutdown trade notifier: %s", e, exc_info=True)
         logger.info("Unified WebSocket Monitor exited gracefully")
 
 

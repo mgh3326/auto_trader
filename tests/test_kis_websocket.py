@@ -512,7 +512,63 @@ class TestKISWebSocketClient:
         assert result["order_id"] == "A123456789"
         assert result["filled_price"] == 70000
         assert result["filled_qty"] == 10
-        assert "filled_at" in result
+        assert result["filled_amount"] == 700000
+        assert "T09:30:01" in result["filled_at"]
+
+    @pytest.mark.asyncio
+    async def test_parse_message_extracts_overseas_fill_fields_by_index(
+        self, execution_callback
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        message = (
+            "0|H0GSCNI0|1|"
+            "mgh3326^6762259301^0030145286^0000000000^02^0^00^AMZN^3^201.5^093001^N^2"
+        )
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["tr_code"] == "H0GSCNI0"
+        assert result["market"] == "us"
+        assert result["symbol"] == "AMZN"
+        assert result["side"] == "bid"
+        assert result["filled_qty"] == 3
+        assert result["filled_price"] == 201.5
+        assert result["filled_amount"] == 604.5
+        assert result["fill_yn"] == "2"
+        assert "T09:30:01" in result["filled_at"]
+
+    def test_is_execution_event_rejects_overseas_when_fill_yn_not_two(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        assert (
+            client._is_execution_event(
+                {
+                    "tr_code": OVERSEAS_EXECUTION_TR_REAL,
+                    "execution_type": 1,
+                    "fill_yn": "1",
+                }
+            )
+            is False
+        )
+
+    def test_is_execution_event_accepts_overseas_when_fill_yn_two(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        assert (
+            client._is_execution_event(
+                {
+                    "tr_code": OVERSEAS_EXECUTION_TR_REAL,
+                    "execution_type": 1,
+                    "fill_yn": "2",
+                }
+            )
+            is True
+        )
 
     @pytest.mark.asyncio
     async def test_parse_message_json_response(self, execution_callback):
