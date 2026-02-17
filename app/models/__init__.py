@@ -1,12 +1,6 @@
 # app/models/__init__.py
 from .analysis import StockAnalysisResult, StockInfo
 from .base import Base
-from .dca_plan import (
-    DcaPlan,
-    DcaPlanStatus,
-    DcaPlanStep,
-    DcaStepStatus,
-)
 from .manual_holdings import (
     BrokerAccount,
     BrokerType,
@@ -43,11 +37,6 @@ __all__ = [
     "BrokerAccount",
     "StockAlias",
     "ManualHolding",
-    # DCA Models
-    "DcaPlan",
-    "DcaPlanStatus",
-    "DcaPlanStep",
-    "DcaStepStatus",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",
 ]

@@ -76,7 +76,6 @@ async def publish_execution_event(event: dict[str, Any]) -> None:
     Args:
         event: 체결 이벤트 데이터
             필수 필드: type, market, symbol, side, order_id, filled_price, filled_qty, exec_time, timestamp
-            옵션 필드: dca_next_step (plan_id, step_number, target_price, target_quantity)
 
     Raises:
         Exception: Redis 발행 실패 시

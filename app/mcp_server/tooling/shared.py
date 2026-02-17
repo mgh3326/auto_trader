@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 MCP_USER_ID = _env_int("MCP_USER_ID", 1)
-MCP_DCA_USER_ID = _env_int("MCP_DCA_USER_ID", MCP_USER_ID)
 DEFAULT_ACCOUNT_KEYS = {"default", "default_account", "기본계좌", "기본_계좌"}
 INSTRUMENT_TO_MARKET = {
     "equity_kr": "kr",
@@ -755,7 +754,6 @@ def build_recommendation_for_equity(
 __all__ = [
     # Constants
     "MCP_USER_ID",
-    "MCP_DCA_USER_ID",
     "DEFAULT_ACCOUNT_KEYS",
     "INSTRUMENT_TO_MARKET",
     "ACCOUNT_FILTER_ALIASES",

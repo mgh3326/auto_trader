@@ -159,46 +159,6 @@ class TestExecutionEventChannelRouting:
 
 
 @pytest.mark.unit
-class TestExecutionEventWithDCA:
-    """Tests for execution events with DCA next step"""
-
-    @pytest.mark.asyncio
-    async def test_publish_event_with_dca_next_step(self):
-        """DCA 다음 단계 포함 이벤트 발행 테스트"""
-        event = {
-            "type": "execution",
-            "market": "kr",
-            "symbol": "005930",
-            "order_id": "ORDER-123",
-            "dca_next_step": {
-                "plan_id": 1,
-                "step_number": 2,
-                "target_price": Decimal("49000.00"),
-                "target_quantity": Decimal("0.002"),
-            },
-        }
-
-        mock_redis = AsyncMock()
-        mock_redis.publish = AsyncMock()
-
-        with patch(
-            "app.services.execution_event._get_redis_client", return_value=mock_redis
-        ):
-            await publish_execution_event(event)
-
-            call_args = mock_redis.publish.call_args[0]
-            serialized_message = call_args[1]
-
-            import json
-
-            parsed = json.loads(serialized_message)
-            assert "dca_next_step" in parsed
-            assert parsed["dca_next_step"]["plan_id"] == 1
-            assert parsed["dca_next_step"]["step_number"] == 2
-            assert parsed["dca_next_step"]["target_price"] == 49000.0
-
-
-@pytest.mark.unit
 class TestExecutionEventErrorHandling:
     """Tests for error handling"""
 

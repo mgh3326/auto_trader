@@ -698,97 +698,6 @@ def _compute_rsi_weights(rsi_value: float | None, splits: int) -> list[float]:
     return [1.0 / splits] * splits
 
 
-def _compute_dca_price_levels(
-    strategy: str,
-    splits: int,
-    current_price: float,
-    supports: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    support_prices = sorted(
-        [_to_float(level.get("price")) for level in supports if level.get("price")],
-        reverse=True,
-    )
-
-    if strategy == "support":
-        if len(support_prices) >= splits:
-            return [
-                {"price": price, "source": "support"}
-                for price in support_prices[:splits]
-            ]
-        if len(support_prices) > 0:
-            support_levels: list[dict[str, Any]] = []
-            start_price = current_price * 0.995
-            end_price = min(support_prices)
-            step = (end_price - start_price) / (splits - 1)
-            used_supports: set[float] = set()
-            for i in range(splits):
-                price = start_price + step * i
-                near_support = None
-                for supp in support_prices:
-                    if supp in used_supports:
-                        continue
-                    if abs(price - supp) / price < 0.02:
-                        near_support = supp
-                        break
-                if near_support is not None:
-                    price = near_support
-                    used_supports.add(near_support)
-                support_levels.append({"price": price, "source": "support"})
-            return support_levels
-        return [
-            {"price": current_price * (1.0 - 0.02 * (i + 1)), "source": "synthetic"}
-            for i in range(splits)
-        ]
-
-    if strategy == "equal":
-        min_price = min(support_prices) if support_prices else current_price * 0.90
-        start_price = current_price * 0.995
-        step = (min_price - start_price) / (splits - 1)
-        return [
-            {"price": start_price + step * i, "source": "equal_spaced"}
-            for i in range(splits)
-        ]
-
-    if strategy == "aggressive":
-        first_price = current_price * 0.995
-        levels: list[dict[str, Any]] = [
-            {"price": first_price, "source": "aggressive_first"}
-        ]
-        if splits <= 1:
-            return levels
-
-        support_prices = [s["price"] for s in supports]
-        end_price = min(support_prices) if support_prices else current_price * 0.98
-        remaining = splits - 1
-        aggressive_used_supports: set[float] = set()
-
-        if len(support_prices) >= remaining:
-            for i in range(1, splits):
-                price = first_price + ((end_price - first_price) / (splits - 1)) * i
-                near_support = None
-                for supp in support_prices:
-                    if supp in aggressive_used_supports:
-                        continue
-                    if abs(price - supp) / price < 0.02 and supp < price:
-                        near_support = supp
-                        break
-                if near_support is not None:
-                    price = near_support
-                    aggressive_used_supports.add(near_support)
-                source = "support" if near_support else "interpolated"
-                levels.append({"price": price, "source": source})
-        else:
-            step = (end_price - first_price) / remaining
-            for i in range(1, splits):
-                price = first_price + step * i
-                levels.append({"price": price, "source": "interpolated"})
-        return levels
-
-    raise ValueError(
-        f"Invalid strategy: {strategy}. Must be 'support', 'equal', or 'aggressive'"
-    )
-
-
 def _normalize_number(value: float, decimals: int = 6) -> float | int:
     rounded = round(float(value), decimals)
     if abs(rounded - round(rounded)) < 10 ** (-decimals):
@@ -975,7 +884,6 @@ __all__ = [
     "_cluster_price_levels",
     "_split_support_resistance_levels",
     "_compute_rsi_weights",
-    "_compute_dca_price_levels",
     "_normalize_number",
     "_calculate_volume_profile",
 ]

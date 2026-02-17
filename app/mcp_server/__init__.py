@@ -29,8 +29,6 @@ AVAILABLE_TOOL_NAMES = [
     "cancel_order",
     "simulate_avg_cost",
     "update_manual_holdings",
-    "create_dca_plan",
-    "get_dca_status",
     "analyze_stock",
     "analyze_portfolio",
     "get_disclosures",
