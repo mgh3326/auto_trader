@@ -1059,6 +1059,52 @@ class TestKISOverseasDailyPrice:
         assert mock_client.get.call_count == 2
         client._token_manager.clear_token.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_inquire_overseas_daily_price_uses_end_date_as_bymd(
+        self, mock_settings, mock_client_class
+    ):
+        from datetime import date
+
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output2": [
+                {
+                    "xymd": "20260115",
+                    "open": "190.0",
+                    "high": "191.0",
+                    "low": "189.0",
+                    "clos": "190.5",
+                    "tvol": "100",
+                }
+            ],
+        }
+        mock_client.get.return_value = mock_response
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        client._token_manager = AsyncMock()
+
+        end_date = date(2026, 1, 15)
+        result = await client.inquire_overseas_daily_price(
+            symbol="AAPL", n=1, end_date=end_date
+        )
+
+        assert len(result) == 1
+        params = mock_client.get.call_args.kwargs["params"]
+        assert params["BYMD"] == "20260115"
+
 
 class TestKISRequestWithRateLimit:
     @pytest.mark.asyncio

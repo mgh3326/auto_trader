@@ -15,9 +15,10 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_optional_float as _to_optional_float,
 )
+from app.services import kis_ohlcv_cache
 from app.services import upbit as upbit_service
-from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
+from data.stocks_info import get_exchange_by_symbol
 
 IndicatorType = Literal[
     "sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot", "adx", "stoch_rsi", "obv"
@@ -95,8 +96,35 @@ async def _fetch_ohlcv_for_indicators(
             code=symbol, market="J", n=capped_count, period="D"
         )
     capped_count = min(count, 250)
-    return await yahoo_service.fetch_ohlcv(
-        ticker=symbol, days=capped_count, period="day"
+    kis = KISClient()
+    exchange_code = get_exchange_by_symbol(symbol.upper()) or "NASD"
+
+    async def _raw_fetcher(
+        *, symbol: str, exchange_code: str, n: int, end_date: datetime.date | None
+    ) -> pd.DataFrame:
+        return await kis.inquire_overseas_daily_price(
+            symbol=symbol,
+            exchange_code=exchange_code,
+            n=n,
+            period="D",
+            end_date=end_date,
+        )
+
+    cached = await kis_ohlcv_cache.get_closed_daily_candles(
+        symbol=symbol,
+        exchange_code=exchange_code,
+        count=capped_count,
+        instrument_type="equity_us",
+        raw_fetcher=_raw_fetcher,
+    )
+    if cached is not None:
+        return cached
+
+    return await kis.inquire_overseas_daily_price(
+        symbol=symbol,
+        exchange_code=exchange_code,
+        n=capped_count,
+        period="D",
     )
 
 
@@ -112,8 +140,35 @@ async def _fetch_ohlcv_for_volume_profile(
         return await kis.inquire_daily_itemchartprice(
             code=symbol, market="J", n=period_days, period="D"
         )
-    return await yahoo_service.fetch_ohlcv(
-        ticker=symbol, days=period_days, period="day"
+    kis = KISClient()
+    exchange_code = get_exchange_by_symbol(symbol.upper()) or "NASD"
+
+    async def _raw_fetcher(
+        *, symbol: str, exchange_code: str, n: int, end_date: datetime.date | None
+    ) -> pd.DataFrame:
+        return await kis.inquire_overseas_daily_price(
+            symbol=symbol,
+            exchange_code=exchange_code,
+            n=n,
+            period="D",
+            end_date=end_date,
+        )
+
+    cached = await kis_ohlcv_cache.get_closed_daily_candles(
+        symbol=symbol,
+        exchange_code=exchange_code,
+        count=period_days,
+        instrument_type="equity_us",
+        raw_fetcher=_raw_fetcher,
+    )
+    if cached is not None:
+        return cached
+
+    return await kis.inquire_overseas_daily_price(
+        symbol=symbol,
+        exchange_code=exchange_code,
+        n=period_days,
+        period="D",
     )
 
 

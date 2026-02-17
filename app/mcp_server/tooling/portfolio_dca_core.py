@@ -180,7 +180,7 @@ def _validate_create_dca_input(
             )
 
     market_type, normalized_symbol = resolve_market_type(symbol, market)
-    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
     return market_type, normalized_symbol, source_map[market_type]
 
 

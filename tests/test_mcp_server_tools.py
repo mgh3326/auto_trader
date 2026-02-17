@@ -35,7 +35,6 @@ from app.mcp_server.tooling.registry import register_all_tools
 from app.models.dca_plan import DcaPlan, DcaPlanStatus, DcaPlanStep, DcaStepStatus
 from app.services import naver_finance
 from app.services import upbit as upbit_service
-from app.services import yahoo as yahoo_service
 from app.services.dca_service import DcaService
 
 # from app.mcp_server.tick_size import adjust_tick_size_kr  # TODO: Remove if not needed
@@ -1226,14 +1225,17 @@ async def test_get_ohlcv_korean_etf_with_explicit_market(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_ohlcv_us_equity_returns_error_payload(monkeypatch):
     tools = build_tools()
-    mock_fetch = AsyncMock(side_effect=RuntimeError("yahoo timeout"))
-    monkeypatch.setattr(yahoo_service, "fetch_ohlcv", mock_fetch)
+    monkeypatch.setattr(
+        market_data_quotes.kis_ohlcv_cache,
+        "get_closed_daily_candles",
+        AsyncMock(side_effect=RuntimeError("kis timeout")),
+    )
 
     result = await tools["get_ohlcv"]("AAPL", count=5)
 
     assert result == {
-        "error": "yahoo timeout",
-        "source": "yahoo",
+        "error": "kis timeout",
+        "source": "kis",
         "symbol": "AAPL",
         "instrument_type": "equity_us",
     }
@@ -1243,18 +1245,83 @@ async def test_get_ohlcv_us_equity_returns_error_payload(monkeypatch):
 async def test_get_ohlcv_us_equity(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
-    mock_fetch = AsyncMock(return_value=df)
-    monkeypatch.setattr(yahoo_service, "fetch_ohlcv", mock_fetch)
+    cache_mock = AsyncMock(return_value=df)
+    monkeypatch.setattr(
+        market_data_quotes.kis_ohlcv_cache,
+        "get_closed_daily_candles",
+        cache_mock,
+    )
 
     result = await tools["get_ohlcv"]("AAPL", count=5)
 
-    mock_fetch.assert_awaited_once_with(
-        ticker="AAPL", days=5, period="day", end_date=None
-    )
+    cache_mock.assert_awaited_once()
+    assert cache_mock.call_args is not None
+    call_kwargs = cache_mock.call_args.kwargs
+    assert call_kwargs["symbol"] == "AAPL"
+    assert call_kwargs["count"] == 5
     assert result["instrument_type"] == "equity_us"
-    assert result["source"] == "yahoo"
+    assert result["source"] == "kis"
     assert result["count"] == 5
     assert len(result["rows"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_equity_caps_count_to_200(monkeypatch):
+    tools = build_tools()
+    df = _single_row_df()
+    cache_mock = AsyncMock(return_value=df)
+    monkeypatch.setattr(
+        market_data_quotes.kis_ohlcv_cache,
+        "get_closed_daily_candles",
+        cache_mock,
+    )
+
+    result = await tools["get_ohlcv"]("AAPL", count=999)
+
+    cache_mock.assert_awaited_once()
+    assert cache_mock.call_args is not None
+    assert cache_mock.call_args.kwargs["count"] == 200
+    assert result["count"] == 200
+    assert result["source"] == "kis"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_equity_day_with_end_date_bypasses_cache(monkeypatch):
+    tools = build_tools()
+    df = _single_row_df()
+    cache_mock = AsyncMock(side_effect=AssertionError("cache should be bypassed"))
+    monkeypatch.setattr(
+        market_data_quotes.kis_ohlcv_cache,
+        "get_closed_daily_candles",
+        cache_mock,
+    )
+    called: dict[str, object] = {}
+
+    class DummyKISClient:
+        async def inquire_overseas_daily_price(
+            self,
+            symbol: str,
+            exchange_code: str = "NASD",
+            n: int = 200,
+            period: str = "D",
+            end_date: date | None = None,
+        ):
+            called["symbol"] = symbol
+            called["exchange_code"] = exchange_code
+            called["n"] = n
+            called["period"] = period
+            called["end_date"] = end_date
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+    result = await tools["get_ohlcv"]("AAPL", count=5, period="day", end_date="2026-01-15")
+
+    cache_mock.assert_not_awaited()
+    assert called["symbol"] == "AAPL"
+    assert called["period"] == "D"
+    assert called["end_date"] == date(2026, 1, 15)
+    assert result["source"] == "kis"
 
 
 @pytest.mark.asyncio
@@ -1374,7 +1441,7 @@ async def test_get_indicators_obv_returns_error_when_volume_column_missing(monke
 
     result = await tools["get_indicators"]("AAPL", indicators=["obv"])
 
-    assert result["source"] == "yahoo"
+    assert result["source"] == "kis"
     assert "error" in result
     assert "Missing required columns" in result["error"]
     assert "volume" in result["error"]
@@ -5669,6 +5736,41 @@ async def test_get_support_resistance_clusters_levels(monkeypatch):
         expected = round((r["price"] - 100.0) / 100.0 * 100, 2)
         assert r["distance_pct"] == expected
         assert r["distance_pct"] > 0  # resistances are above current price
+
+
+@pytest.mark.asyncio
+async def test_get_support_resistance_us_error_payload_source_is_kis(monkeypatch):
+    tools = build_tools()
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(side_effect=RuntimeError("fetch failed")),
+    )
+
+    result = await tools["get_support_resistance"]("AAPL", market="us")
+
+    assert result["source"] == "kis"
+    assert result["instrument_type"] == "equity_us"
+    assert result["symbol"] == "AAPL"
+    assert "fetch failed" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_correlation_us_metadata_source_is_kis(monkeypatch):
+    tools = build_tools()
+    frame = pd.DataFrame({"close": [100.0, 101.0, 102.0, 103.0]})
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_ohlcv_for_indicators",
+        AsyncMock(return_value=frame),
+    )
+
+    result = await tools["get_correlation"](["AAPL", "MSFT"], period=30)
+
+    assert result["success"] is True
+    assert result["metadata"]["sources"]["AAPL"] == "kis"
+    assert result["metadata"]["sources"]["MSFT"] == "kis"
 
 
 @pytest.mark.asyncio

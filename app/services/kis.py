@@ -1820,6 +1820,7 @@ class KISClient:
         exchange_code: str = "NASD",
         n: int = 200,
         period: str = "D",  # D/W/M
+        end_date: datetime.date | None = None,
     ) -> pd.DataFrame:
         """
         해외주식 일봉/주봉/월봉 조회 (국내주식처럼 충분한 데이터 확보)
@@ -1847,6 +1848,8 @@ class KISClient:
         rows: list[dict] = []
         max_iterations = 5  # 최대 5번 반복 (충분한 데이터 확보)
         iteration = 0
+        anchor_end_date = end_date
+        end_date_ymd = anchor_end_date.strftime("%Y%m%d") if anchor_end_date else None
 
         # 국내주식처럼 충분한 데이터를 확보할 때까지 반복 조회
         while len(rows) < n and iteration < max_iterations:
@@ -1861,7 +1864,7 @@ class KISClient:
                 except Exception:
                     bymd = ""
             else:
-                bymd = ""  # 첫 요청은 최신 데이터부터
+                bymd = end_date_ymd or ""
 
             params = {
                 "AUTH": "",
@@ -1894,6 +1897,10 @@ class KISClient:
                 raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
 
             chunk = js.get("output2") or js.get("output") or []
+            if end_date_ymd:
+                chunk = [
+                    row for row in chunk if str(row.get("xymd", "")) <= end_date_ymd
+                ]
             if not chunk:
                 logging.info(
                     f"더 이상 과거 데이터가 없음. 현재까지 수집: {len(rows)}개"
@@ -1935,9 +1942,11 @@ class KISClient:
             .assign(date=lambda d: pd.to_datetime(d["date"], format="%Y%m%d"))
             .drop_duplicates(subset=["date"], keep="first")
             .sort_values("date")
-            .tail(n)
             .reset_index(drop=True)
         )
+        if anchor_end_date is not None:
+            df = df[df["date"] <= pd.Timestamp(anchor_end_date)].reset_index(drop=True)
+        df = df.tail(n).reset_index(drop=True)
         logging.info(f"해외주식 일봉 조회 완료: {len(df)}개 데이터 반환")
         return df
 

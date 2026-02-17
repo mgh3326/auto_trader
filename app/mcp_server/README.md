@@ -53,6 +53,11 @@ Market-specific behavior:
 - **US market**: Uses yfinance screener with EquityQuery
   - Maps: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio.lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
   - Sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
+  - `get_ohlcv`/`get_indicators`/`get_support_resistance`/`get_correlation` use KIS overseas daily price data
+  - US `get_ohlcv` max `count` is capped at 200
+  - US daily OHLCV Redis cache (`KIS_OHLCV_CACHE_*`) is used only when `period="day"` and `end_date` is not provided
+  - US daily cache as-of is based on ET 16:00 close, with weekend rollback to the last trading day
+  - `get_quote` for US remains Yahoo (`yfinance`)
 
 - **Crypto market**: Uses Upbit `fetch_top_traded_coins`
   - `sort_by="trade_amount"` uses `acc_trade_price_24h` (24h traded value in KRW)

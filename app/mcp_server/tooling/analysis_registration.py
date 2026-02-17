@@ -82,7 +82,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         name="get_correlation",
         description=(
             "Calculate Pearson correlation matrix between multiple assets. "
-            "Supports Korean stocks (KIS), US stocks (yfinance), and crypto (Upbit). "
+            "Supports Korean stocks (KIS), US stocks (KIS), and crypto (Upbit). "
             "Uses daily closing prices over specified period."
         ),
     )
