@@ -422,6 +422,14 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         if not symbol:
             raise ValueError("symbol is required")
 
+        normalized_symbol = _normalize_symbol_input(symbol, market)
+        market_missing = market is None or not str(market).strip()
+        if market_missing and normalized_symbol.isalpha():
+            raise ValueError(
+                "market is required for plain alphabetic symbols. Use market='us' "
+                "for US equities, or provide KRW-/USDT- prefixed symbol for crypto."
+            )
+
         if not indicators:
             raise ValueError("indicators list is required and cannot be empty")
 
@@ -446,7 +454,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                 )
             normalized_indicators.append(ind_lower)  # type: ignore[arg-type]
 
-        market_type, symbol = _resolve_market_type(symbol, market)
+        market_type, symbol = _resolve_market_type(normalized_symbol, market)
 
         source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
         source = source_map[market_type]

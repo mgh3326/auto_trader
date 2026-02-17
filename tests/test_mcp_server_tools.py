@@ -1375,6 +1375,38 @@ async def test_get_indicators_supports_new_indicators(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_indicators_plain_alpha_symbol_requires_market(monkeypatch):
+    tools = build_tools()
+    fetch_mock = AsyncMock()
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", fetch_mock)
+
+    with pytest.raises(ValueError) as exc_info:
+        await tools["get_indicators"]("ETC", indicators=["rsi"])
+
+    assert str(exc_info.value) == (
+        "market is required for plain alphabetic symbols. Use market='us' "
+        "for US equities, or provide KRW-/USDT- prefixed symbol for crypto."
+    )
+    fetch_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_indicators_plain_alpha_symbol_rejects_empty_market(monkeypatch):
+    tools = build_tools()
+    fetch_mock = AsyncMock()
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", fetch_mock)
+
+    with pytest.raises(ValueError) as exc_info:
+        await tools["get_indicators"]("ETC", indicators=["rsi"], market="")
+
+    assert str(exc_info.value) == (
+        "market is required for plain alphabetic symbols. Use market='us' "
+        "for US equities, or provide KRW-/USDT- prefixed symbol for crypto."
+    )
+    fetch_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_get_indicators_rejects_invalid_indicator_with_new_valid_options():
     tools = build_tools()
 
@@ -1407,7 +1439,7 @@ async def test_get_indicators_obv_returns_error_when_volume_column_missing(monke
         AsyncMock(return_value=df_no_volume),
     )
 
-    result = await tools["get_indicators"]("AAPL", indicators=["obv"])
+    result = await tools["get_indicators"]("AAPL", indicators=["obv"], market="us")
 
     assert result["source"] == "yahoo"
     assert "error" in result

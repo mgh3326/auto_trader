@@ -22,6 +22,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
 - `get_position(symbol, market=None)`
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None)`
+- `get_indicators(symbol, indicators, market=None)`
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50)`
 - `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None)`
@@ -30,6 +31,25 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `manage_watch_alerts(action, market=None, symbol=None, metric=None, operator=None, threshold=None)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
+
+### `get_indicators` spec
+Parameters:
+- `symbol`: Asset symbol/ticker
+- `indicators`: Indicator list (e.g. `rsi`, `sma`, `obv`)
+- `market`: Optional explicit market (`crypto`, `kr`, `us`)
+
+Symbol/market contract:
+- `market` is required when `symbol` is a plain alphabetic token (for example `AAPL`, `ETC`).
+- If omitted for plain alphabetic symbols, `get_indicators` raises:
+  - `"market is required for plain alphabetic symbols. Use market='us' for US equities, or provide KRW-/USDT- prefixed symbol for crypto."`
+- Crypto symbols continue to support prefix-based routing (`KRW-` / `USDT-`) and can omit `market`.
+- This requirement is specific to `get_indicators`; other tools keep their existing routing behavior.
+
+Examples:
+- Allowed: `symbol="AAPL", market="us"`
+- Allowed: `symbol="KRW-ETC", market="crypto"`
+- Allowed: `symbol="KRW-ETC"` (market omitted)
+- Rejected: `symbol="ETC"` (market omitted)
 
 ### `manage_watch_alerts` spec
 Parameters:
