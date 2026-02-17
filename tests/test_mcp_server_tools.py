@@ -148,10 +148,6 @@ def _single_row_df() -> pd.DataFrame:
 async def test_get_cash_balance_all_accounts(monkeypatch):
     tools = build_tools()
 
-    class MockUpbitService:
-        async def fetch_krw_balance(self):
-            return 500000.0
-
     class MockKISClient:
         async def inquire_domestic_cash_balance(self):
             return {
@@ -171,21 +167,22 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
 
     monkeypatch.setattr(
         upbit_service,
-        "fetch_krw_balance",
-        MockUpbitService().fetch_krw_balance,
+        "fetch_krw_cash_summary",
+        AsyncMock(return_value={"balance": 700000.0, "orderable": 500000.0}),
     )
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"]()
 
     assert len(result["accounts"]) == 3
-    assert result["summary"]["total_krw"] == 1500000.0
+    assert result["summary"]["total_krw"] == 1700000.0
     assert result["summary"]["total_usd"] == 500.0
     assert len(result["errors"]) == 0
 
     upbit_account = next(acc for acc in result["accounts"] if acc["account"] == "upbit")
-    assert upbit_account["balance"] == 500000.0
-    assert upbit_account["formatted"] == "500,000 KRW"
+    assert upbit_account["balance"] == 700000.0
+    assert upbit_account["orderable"] == 500000.0
+    assert upbit_account["formatted"] == "700,000 KRW"
 
     kis_overseas_account = next(
         acc for acc in result["accounts"] if acc["account"] == "kis_overseas"
@@ -219,7 +216,7 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
     monkeypatch.setattr(
         upbit_service,
-        "fetch_krw_balance",
+        "fetch_krw_cash_summary",
         AsyncMock(side_effect=RuntimeError("Upbit API error")),
     )
 
@@ -238,7 +235,7 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
     tools = build_tools()
 
     class MockUpbitService:
-        async def fetch_krw_balance(self):
+        async def fetch_krw_cash_summary(self):
             raise RuntimeError("Upbit API error")
 
     class MockKISClient:
@@ -260,8 +257,8 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
 
     monkeypatch.setattr(
         upbit_service,
-        "fetch_krw_balance",
-        MockUpbitService().fetch_krw_balance,
+        "fetch_krw_cash_summary",
+        MockUpbitService().fetch_krw_cash_summary,
     )
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 

@@ -106,6 +106,49 @@ class TestUpbitService:
             "value",
         ]
 
+    @pytest.mark.asyncio
+    async def test_fetch_krw_cash_summary_includes_locked(self, monkeypatch):
+        monkeypatch.setattr(
+            upbit_service_module,
+            "fetch_my_coins",
+            AsyncMock(
+                return_value=[
+                    {"currency": "KRW", "balance": "500000.0", "locked": "200000.0"}
+                ]
+            ),
+        )
+
+        summary = await upbit_service_module.fetch_krw_cash_summary()
+
+        assert summary["balance"] == 700000.0
+        assert summary["orderable"] == 500000.0
+
+    @pytest.mark.asyncio
+    async def test_fetch_krw_orderable_balance_reads_summary(self, monkeypatch):
+        monkeypatch.setattr(
+            upbit_service_module,
+            "fetch_krw_cash_summary",
+            AsyncMock(return_value={"balance": 700000.0, "orderable": 500000.0}),
+        )
+
+        result = await upbit_service_module.fetch_krw_orderable_balance()
+
+        assert result == 500000.0
+
+    @pytest.mark.asyncio
+    async def test_fetch_krw_cash_summary_returns_zero_without_krw(self, monkeypatch):
+        monkeypatch.setattr(
+            upbit_service_module,
+            "fetch_my_coins",
+            AsyncMock(
+                return_value=[{"currency": "BTC", "balance": "0.1", "locked": "0"}]
+            ),
+        )
+
+        summary = await upbit_service_module.fetch_krw_cash_summary()
+
+        assert summary == {"balance": 0.0, "orderable": 0.0}
+
 
 class TestKISService:
     """Test KIS service functionality."""

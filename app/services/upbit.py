@@ -154,24 +154,25 @@ async def fetch_my_coins() -> list[dict]:
     return await _request_with_auth("GET", f"{UPBIT_REST}/accounts")
 
 
-async def fetch_krw_balance() -> float:
-    """KRW 잔고 조회 (원화 잔고만 반환)
-
-    Returns
-    -------
-    float
-        KRW 잔고 (원)
-    """
+async def fetch_krw_cash_summary() -> dict[str, float]:
     accounts = await fetch_my_coins()
 
     for account in accounts:
         if account.get("currency") == "KRW":
-            balance = float(account.get("balance", 0))
-            # 사용 가능한 잔고만 반환 (locked 제외)
-            return balance
+            orderable = float(account.get("balance", 0) or 0)
+            locked = float(account.get("locked", 0) or 0)
+            return {"balance": orderable + locked, "orderable": orderable}
 
-    # KRW 계정이 없으면 0 반환
-    return 0.0
+    return {"balance": 0.0, "orderable": 0.0}
+
+
+async def fetch_krw_orderable_balance() -> float:
+    summary = await fetch_krw_cash_summary()
+    return float(summary["orderable"])
+
+
+async def fetch_krw_balance() -> float:
+    return await fetch_krw_orderable_balance()
 
 
 async def check_krw_balance_sufficient(required_amount: float) -> tuple[bool, float]:
@@ -187,7 +188,7 @@ async def check_krw_balance_sufficient(required_amount: float) -> tuple[bool, fl
     tuple[bool, float]
         (충분 여부, 현재 KRW 잔고)
     """
-    current_balance = await fetch_krw_balance()
+    current_balance = await fetch_krw_orderable_balance()
     is_sufficient = current_balance >= required_amount
 
     return is_sufficient, current_balance
