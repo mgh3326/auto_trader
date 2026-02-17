@@ -263,7 +263,7 @@ async def get_correlation_impl(
     if period > 365:
         raise ValueError("period must be between 30 and 365 days")
 
-    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
     errors: list[str] = []
     price_data: dict[str, list[float]] = {}
     market_types: dict[str, str] = {}

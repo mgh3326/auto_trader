@@ -32,11 +32,12 @@ from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
 from app.monitoring import build_yfinance_tracing_session
+from app.services import kis_ohlcv_cache
 from app.services import upbit as upbit_service
-from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
 from data.coins_info import get_or_refresh_maps
 from data.stocks_info import (
+    get_exchange_by_symbol,
     get_kosdaq_name_to_code,
     get_kospi_name_to_code,
     get_us_stocks_data,
@@ -275,15 +276,53 @@ async def _fetch_ohlcv_equity_kr(
 async def _fetch_ohlcv_equity_us(
     symbol: str, count: int, period: str, end_date: datetime.datetime | None
 ) -> dict[str, Any]:
-    """Fetch US equity OHLCV from Yahoo Finance."""
-    capped_count = min(count, 100)
-    df = await yahoo_service.fetch_ohlcv(
-        ticker=symbol, days=capped_count, period=period, end_date=end_date
-    )
+    capped_count = min(count, 200)
+    kis = KISClient()
+    exchange_code = get_exchange_by_symbol(symbol.upper()) or "NASD"
+
+    if period == "day" and end_date is None:
+
+        async def _raw_fetcher(
+            *, symbol: str, exchange_code: str, n: int, end_date: datetime.date | None
+        ):
+            return await kis.inquire_overseas_daily_price(
+                symbol=symbol,
+                exchange_code=exchange_code,
+                n=n,
+                period="D",
+                end_date=end_date,
+            )
+
+        cached = await kis_ohlcv_cache.get_closed_daily_candles(
+            symbol=symbol,
+            exchange_code=exchange_code,
+            count=capped_count,
+            instrument_type="equity_us",
+            raw_fetcher=_raw_fetcher,
+        )
+        if cached is not None:
+            df = cached
+        else:
+            df = await kis.inquire_overseas_daily_price(
+                symbol=symbol,
+                exchange_code=exchange_code,
+                n=capped_count,
+                period="D",
+            )
+    else:
+        kis_period_map = {"day": "D", "week": "W", "month": "M"}
+        df = await kis.inquire_overseas_daily_price(
+            symbol=symbol,
+            exchange_code=exchange_code,
+            n=capped_count,
+            period=kis_period_map.get(period, "D"),
+            end_date=end_date.date() if end_date else None,
+        )
+
     return {
         "symbol": symbol,
         "instrument_type": "equity_us",
-        "source": "yahoo",
+        "source": "kis",
         "period": period,
         "count": capped_count,
         "rows": _normalize_rows(df),
@@ -389,7 +428,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
 
         market_type, symbol = _resolve_market_type(symbol, market)
 
-        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
         source = source_map[market_type]
 
         try:
@@ -448,7 +487,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
 
         market_type, symbol = _resolve_market_type(symbol, market)
 
-        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
         source = source_map[market_type]
 
         try:

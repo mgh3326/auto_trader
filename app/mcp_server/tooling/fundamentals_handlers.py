@@ -112,7 +112,7 @@ async def _get_support_resistance_impl(
         raise ValueError("symbol is required")
 
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
-    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
     source = source_map[market_type]
 
     try:

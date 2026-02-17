@@ -536,7 +536,7 @@ async def _get_indicators_impl(
         raise ValueError("indicators list is required and cannot be empty")
 
     market_type, symbol = _resolve_market_type(symbol, market)
-    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+    source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
     source = source_map[market_type]
 
     try:
