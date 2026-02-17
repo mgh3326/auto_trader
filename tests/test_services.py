@@ -418,6 +418,11 @@ class TestYahooService:
             "app.services.yahoo.build_yfinance_tracing_session",
             lambda: tracing_session,
         )
+        monkeypatch.setattr(
+            "app.services.yahoo.settings.yahoo_ohlcv_cache_enabled",
+            False,
+            raising=False,
+        )
 
         # Mock yfinance download response
         mock_df = pd.DataFrame(

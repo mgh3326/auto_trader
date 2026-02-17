@@ -299,7 +299,7 @@ async def test_get_closed_candles_returns_none_when_lock_contention_and_cache_st
 
 **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_yahoo_ohlcv_cache.py -k "lock_contention or fallback" -v`  
+Run: `uv run pytest --no-cov tests/test_yahoo_ohlcv_cache.py -k "lock_contention or fallback" -v`  
 Expected: FAIL
 
 **Step 3: Write minimal implementation**
@@ -322,7 +322,7 @@ except Exception as exc:
 
 **Step 4: Run test to verify it passes**
 
-Run: `uv run pytest tests/test_yahoo_ohlcv_cache.py -k "lock_contention or fallback" -v`  
+Run: `uv run pytest --no-cov tests/test_yahoo_ohlcv_cache.py -k "lock_contention or fallback" -v`  
 Expected: PASS
 
 **Step 5: Commit**
@@ -349,10 +349,10 @@ git commit -m "fix: harden yahoo cache lock contention and fallback path"
 
 **Step 2: Run focused quality gates**
 
-Run: `uv run pytest tests/test_yahoo_ohlcv_cache.py tests/test_yahoo_service_cache.py -v`  
+Run: `uv run pytest --no-cov tests/test_yahoo_ohlcv_cache.py tests/test_yahoo_service_cache.py -v`  
 Expected: PASS
 
-Run: `uv run pytest tests/test_services.py -k "TestYahooService and fetch_ohlcv" -v`  
+Run: `uv run pytest --no-cov tests/test_services.py -k "TestYahooService and fetch_ohlcv" -v`  
 Expected: PASS
 
 Run: `uv run ruff check app/services/yahoo.py app/services/yahoo_ohlcv_cache.py tests/test_yahoo_ohlcv_cache.py tests/test_yahoo_service_cache.py`  

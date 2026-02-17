@@ -23,6 +23,11 @@ class TestSettings:
         assert hasattr(settings, "opendart_api_key")
         assert hasattr(settings, "DATABASE_URL")
 
+    def test_yahoo_cache_settings_attributes_exist(self):
+        assert hasattr(settings, "yahoo_ohlcv_cache_enabled")
+        assert hasattr(settings, "yahoo_ohlcv_cache_max_days")
+        assert hasattr(settings, "yahoo_ohlcv_cache_lock_ttl_seconds")
+
 
 class TestConfigLoading:
     """Test configuration loading."""

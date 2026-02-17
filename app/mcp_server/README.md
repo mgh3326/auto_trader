@@ -53,6 +53,8 @@ Market-specific behavior:
 - **US market**: Uses yfinance screener with EquityQuery
   - Maps: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio.lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
   - Sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
+  - Yahoo OHLCV (`day/week/month`) requests use Redis closed-candle cache at the service boundary
+  - Closed-bucket cutoff uses NYSE session close via `exchange_calendars` (`XNYS`), including DST/holidays/early close
 
 - **Crypto market**: Uses Upbit `fetch_top_traded_coins`
   - `sort_by="trade_amount"` uses `acc_trade_price_24h` (24h traded value in KRW)
