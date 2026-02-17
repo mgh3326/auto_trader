@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pandas as pd
 import yfinance as yf
 
+from app.core.config import settings
 from app.core.symbol import to_yahoo_symbol
 from app.monitoring import build_yfinance_tracing_session
 
@@ -17,25 +18,58 @@ def _flatten_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _bucket_key(period: str, bucket_date) -> tuple[int, int, int]:
+    normalized_period = str(period or "").strip().lower()
+    if normalized_period == "day":
+        return (bucket_date.year, bucket_date.month, bucket_date.day)
+    if normalized_period == "week":
+        iso = bucket_date.isocalendar()
+        return (iso.year, iso.week, 0)
+    if normalized_period == "month":
+        return (bucket_date.year, bucket_date.month, 0)
+    raise ValueError("period must be one of ['day', 'week', 'month']")
+
+
 async def fetch_ohlcv(
     ticker: str,
     days: int = 100,
     period: str = "day",
     end_date: datetime | None = None,
 ) -> pd.DataFrame:
-    """최근 days개 OHLCV DataFrame 반환 (Yahoo Finance)
+    normalized_period = str(period or "").strip().lower()
 
-    Parameters
-    ----------
-    ticker : str
-        종목 심볼 (DB 형식)
-    days : int, default 100
-        가져올 캔들 수
-    period : str, default "day"
-        캔들 주기 ("day", "week", "month")
-    end_date : datetime | None, default None
-        조회 기준 시간 (None이면 현재 시간)
-    """
+    if (
+        normalized_period in {"day", "week", "month"}
+        and settings.yahoo_ohlcv_cache_enabled
+    ):
+        from app.services import yahoo_ohlcv_cache as yahoo_ohlcv_cache_service
+
+        cached = await yahoo_ohlcv_cache_service.get_closed_candles(
+            ticker,
+            count=days,
+            period=normalized_period,
+            raw_fetcher=_fetch_ohlcv_raw,
+        )
+        if cached is not None:
+            return cached
+
+    raw = await _fetch_ohlcv_raw(
+        ticker=ticker,
+        days=days,
+        period=normalized_period,
+        end_date=end_date,
+    )
+    if normalized_period in {"day", "week", "month"}:
+        return _filter_closed_buckets_nyse(raw, normalized_period)
+    return raw
+
+
+async def _fetch_ohlcv_raw(
+    ticker: str,
+    days: int = 100,
+    period: str = "day",
+    end_date: datetime | None = None,
+) -> pd.DataFrame:
     period_map = {
         "day": "1d",
         "week": "1wk",
@@ -73,6 +107,35 @@ async def fetch_ohlcv(
     if df.empty:
         raise ValueError(f"{ticker} OHLCV not found")
     return df
+
+
+def _filter_closed_buckets_nyse(
+    df: pd.DataFrame,
+    period: str,
+    now: datetime | None = None,
+) -> pd.DataFrame:
+    if df.empty or "date" not in df.columns:
+        return df
+
+    normalized_period = str(period or "").strip().lower()
+    if normalized_period not in {"day", "week", "month"}:
+        return df
+
+    from app.services import yahoo_ohlcv_cache as yahoo_ohlcv_cache_service
+
+    last_closed_bucket = yahoo_ohlcv_cache_service.get_last_closed_bucket_nyse(
+        normalized_period,
+        now,
+    )
+    parsed_dates = pd.to_datetime(df["date"], errors="coerce")
+    valid_mask = parsed_dates.notna()
+    bucket_keys = parsed_dates.loc[valid_mask].dt.date.map(
+        lambda bucket_date: _bucket_key(normalized_period, bucket_date)
+    )
+    target_key = _bucket_key(normalized_period, last_closed_bucket)
+    keep_mask = pd.Series(False, index=df.index)
+    keep_mask.loc[valid_mask] = bucket_keys <= target_key
+    return df.loc[keep_mask].sort_values("date").reset_index(drop=True)
 
 
 async def fetch_price(ticker: str) -> pd.DataFrame:
