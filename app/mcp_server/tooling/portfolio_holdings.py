@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.env_utils import _env_int
-from app.mcp_server.tooling.fundamentals_handlers import _get_support_resistance_impl
 from app.mcp_server.tooling.market_data_indicators import (
     _compute_crypto_realtime_rsi_from_frame,
     _compute_indicators,
@@ -17,18 +16,11 @@ from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_equity_kr,
     _fetch_quote_equity_us,
 )
-from app.mcp_server.tooling.orders_history import (
-    _place_order_impl,
+from app.mcp_server.tooling.portfolio_avg_cost import (
+    simulate_avg_cost_impl,
 )
 from app.mcp_server.tooling.portfolio_cash import (
     get_cash_balance_impl as _get_cash_balance_impl,
-)
-from app.mcp_server.tooling.portfolio_dca_core import (
-    create_dca_plan_impl,
-    simulate_avg_cost_impl,
-)
-from app.mcp_server.tooling.portfolio_dca_status import (
-    get_dca_status_impl as _get_dca_status_impl,
 )
 from app.mcp_server.tooling.shared import (
     DEFAULT_MINIMUM_VALUES as _DEFAULT_MINIMUM_VALUES,
@@ -36,7 +28,6 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     INSTRUMENT_TO_MARKET as _INSTRUMENT_TO_MARKET,
 )
-from app.mcp_server.tooling.shared import MCP_DCA_USER_ID as _MCP_DCA_USER_ID
 from app.mcp_server.tooling.shared import MCP_USER_ID as _MCP_USER_ID
 from app.mcp_server.tooling.shared import (
     UPBIT_TICKER_BATCH_SIZE as _UPBIT_TICKER_BATCH_SIZE,
@@ -90,7 +81,6 @@ from app.mcp_server.tooling.shared import (
     value_for_minimum_filter as _value_for_minimum_filter,
 )
 from app.services import upbit as upbit_service
-from app.services.dca_service import DcaService
 from app.services.kis import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
@@ -105,8 +95,6 @@ PORTFOLIO_TOOL_NAMES: set[str] = {
     "get_cash_balance",
     "simulate_avg_cost",
     "update_manual_holdings",
-    "create_dca_plan",
-    "get_dca_status",
 }
 
 
@@ -831,68 +819,6 @@ def _register_portfolio_tools_impl(mcp: FastMCP) -> None:
                 "broker": broker,
                 "account_name": account_name,
             }
-
-    @mcp.tool(
-        name="create_dca_plan",
-        description=(
-            "Create a Dollar Cost Averaging (DCA) buying plan based on "
-            "technical analysis. Uses support/resistance levels and RSI to "
-            "determine optimal buying points. dry_run=True by default for safety. "
-            "When dry_run=False, executes orders sequentially."
-        ),
-    )
-    async def create_dca_plan(
-        symbol: str,
-        total_amount: float,
-        splits: int = 3,
-        strategy: str = "support",
-        dry_run: bool = True,
-        market: str | None = None,
-        execute_steps: list[int] | None = None,
-    ) -> dict[str, Any]:
-        return await create_dca_plan_impl(
-            symbol=symbol,
-            total_amount=total_amount,
-            splits=splits,
-            strategy=strategy,
-            dry_run=dry_run,
-            market=market,
-            execute_steps=execute_steps,
-            resolve_market_type=_resolve_market_type,
-            sr_impl=_get_support_resistance_impl,
-            indicators_impl=_get_indicators_impl,
-            place_order_impl=_place_order_impl,
-            dca_service_factory=lambda db: DcaService(db),
-            session_factory=AsyncSessionLocal,
-            logger_obj=logger,
-            mcp_dca_user_id=_MCP_DCA_USER_ID,
-        )
-
-    @mcp.tool(
-        name="get_dca_status",
-        description=(
-            "Get status of DCA (Dollar Cost Averaging) plans. "
-            "Supports filtering by: plan_id (exact match), "
-            "symbol + status (for symbol's plans), or just status. "
-            "Response always includes total_plans count."
-        ),
-    )
-    async def get_dca_status(
-        plan_id: int | None = None,
-        symbol: str | None = None,
-        status: str = "active",
-        limit: int = 10,
-    ) -> dict[str, Any]:
-        return await _get_dca_status_impl(
-            plan_id=plan_id,
-            symbol=symbol,
-            status=status,
-            limit=limit,
-            session_factory=AsyncSessionLocal,
-            dca_service_factory=lambda db: DcaService(db),
-            logger_obj=logger,
-            mcp_dca_user_id=_MCP_DCA_USER_ID,
-        )
 
     @mcp.tool(
         name="get_cash_balance",

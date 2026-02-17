@@ -13,7 +13,7 @@
 | Screening/recommend tools | `app/mcp_server/tooling/analysis_screening.py`, `app/mcp_server/tooling/analysis_recommend.py` | Candidate filtering and scoring flow |
 | Fundamental data pipelines | `app/mcp_server/tooling/fundamentals_handlers.py`, `app/mcp_server/tooling/fundamentals_sources_*.py` | KR/US/crypto enrichment sources |
 | Order tools | `app/mcp_server/tooling/order_execution.py`, `app/mcp_server/tooling/orders_*.py` | Place/modify/cancel/history contracts |
-| Portfolio tools | `app/mcp_server/tooling/portfolio_holdings.py`, `app/mcp_server/tooling/portfolio_cash.py`, `app/mcp_server/tooling/portfolio_dca_*.py` | Holdings and DCA tool behavior |
+| Portfolio tools | `app/mcp_server/tooling/portfolio_holdings.py`, `app/mcp_server/tooling/portfolio_cash.py`, `app/mcp_server/tooling/portfolio_avg_cost.py` | Holdings, cash, and average-cost simulation behavior |
 | API contract reference | `app/mcp_server/README.md` | User-facing tool parameters and market-specific rules |
 
 ## CONVENTIONS

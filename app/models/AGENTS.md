@@ -13,7 +13,6 @@
 | Manual holdings entities | `app/models/manual_holdings.py` | Broker/manual holdings and alias entities |
 | Symbol trade settings | `app/models/symbol_trade_settings.py` | Per-symbol trading configuration model |
 | News entities | `app/models/news.py` | News article persistence model |
-| DCA entities | `app/models/dca_plan.py` | DCA planning/status entities |
 | KOSPI200 entities | `app/models/kospi200.py` | KOSPI200 constituent persistence model |
 | Public model exports | `app/models/__init__.py` | Curated model and enum export boundary |
 | API schema counterparts | `app/schemas/` | DTO layer consuming model semantics |

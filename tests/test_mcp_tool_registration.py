@@ -49,6 +49,20 @@ def test_register_all_tools_registers_all_available_tools() -> None:
     assert set(mcp.tools) == set(AVAILABLE_TOOL_NAMES)
 
 
+def test_removed_dca_tools_are_not_registered() -> None:
+    mcp = DummyMCP()
+
+    register_all_tools(mcp)
+
+    assert "create_dca_plan" not in mcp.tools
+    assert "get_dca_status" not in mcp.tools
+
+
+def test_available_tool_names_exclude_removed_dca_tools() -> None:
+    assert "create_dca_plan" not in AVAILABLE_TOOL_NAMES
+    assert "get_dca_status" not in AVAILABLE_TOOL_NAMES
+
+
 def test_domain_registration_is_incremental_and_recoverable() -> None:
     mcp = DummyMCP()
 

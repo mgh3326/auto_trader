@@ -12,7 +12,6 @@
 | KIS holdings normalization | `app/services/kis_holdings_service.py` | Account positions and symbol normalization boundaries |
 | Portfolio merge logic | `app/services/merged_portfolio_service.py` | Multi-source holdings consolidation |
 | KR fundamentals/news enrichment | `app/services/naver_finance.py` | Valuation/news/sentiment enrichment |
-| DCA workflow | `app/services/dca_service.py` | Position averaging logic and status flow |
 | Order history and execution events | `app/services/order_service.py`, `app/services/execution_event.py` | Order lifecycle and event payload handling |
 | Notification fanout | `app/services/fill_notification.py`, `app/services/toss_notification_service.py` | Fill and external notifier integrations |
 | Websocket service clients | `app/services/kis_websocket.py`, `app/services/upbit_websocket.py` | Stream-specific adapter logic |
