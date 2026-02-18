@@ -48,6 +48,18 @@ class TestUpbitService:
 
     @pytest.mark.asyncio
     @patch("app.services.upbit._request_json")
+    async def test_fetch_ohlcv_4h_uses_minutes_240(self, mock_request):
+        mock_request.return_value = []
+
+        await upbit_service_module.fetch_ohlcv("KRW-BTC", days=300, period="4h")
+
+        called_url = mock_request.await_args.args[0]
+        called_params = mock_request.await_args.args[1]
+        assert called_url.endswith("/candles/minutes/240")
+        assert called_params["count"] == 200
+
+    @pytest.mark.asyncio
+    @patch("app.services.upbit._request_json")
     async def test_fetch_price(self, mock_request):
         """Test fetching current price."""
         # Mock response

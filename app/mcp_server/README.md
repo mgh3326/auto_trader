@@ -22,6 +22,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
 - `get_position(symbol, market=None)`
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None)`
+  - period: `day`, `week`, `month`, `4h` (crypto only)
 - `get_indicators(symbol, indicators, market=None)`
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50)`
