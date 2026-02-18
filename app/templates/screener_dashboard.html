@@ -290,6 +290,8 @@
     };
 
     const filterForm = document.getElementById("filter-form");
+    const marketSelect = document.getElementById("market");
+    const sortBySelect = document.getElementById("sort-by");
     const searchButton = document.getElementById("search-button");
     const refreshButton = document.getElementById("refresh-button");
     const resultsBody = document.getElementById("results-body");
@@ -397,8 +399,8 @@
 
     function buildFilterPayload() {
         const payload = {
-            market: document.getElementById("market").value,
-            sort_by: document.getElementById("sort-by").value,
+            market: marketSelect.value,
+            sort_by: sortBySelect.value,
             sort_order: document.getElementById("sort-order").value,
             limit: Number(document.getElementById("limit").value || 20),
         };
@@ -409,6 +411,32 @@
         }
 
         return payload;
+    }
+
+    function syncSortByOptionsForMarket() {
+        const market = String(marketSelect.value || "us").toLowerCase();
+        const options = Array.from(sortBySelect.options);
+        let firstAvailable = null;
+
+        options.forEach((option) => {
+            const supportedMarkets = String(option.dataset.markets || "")
+                .split(/\s+/)
+                .map((value) => value.trim().toLowerCase())
+                .filter(Boolean);
+            const isAllowed =
+                supportedMarkets.length === 0 || supportedMarkets.includes(market);
+
+            option.hidden = !isAllowed;
+            option.disabled = !isAllowed;
+            if (isAllowed && firstAvailable === null) {
+                firstAvailable = option.value;
+            }
+        });
+
+        const selectedOption = sortBySelect.selectedOptions[0];
+        if (!selectedOption || selectedOption.disabled) {
+            sortBySelect.value = firstAvailable || "";
+        }
     }
 
     function rowToPresentation(row, market) {
@@ -792,6 +820,9 @@
         event.preventDefault();
         void fetchScreening();
     });
+    marketSelect.addEventListener("change", () => {
+        syncSortByOptionsForMarket();
+    });
 
     refreshButton.addEventListener("click", () => {
         void fetchScreening({refresh: true});
@@ -833,6 +864,7 @@
         void submitOrder(event);
     });
 
+    syncSortByOptionsForMarket();
     void fetchScreening();
 
     if (state.activeJobId) {

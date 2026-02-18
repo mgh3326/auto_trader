@@ -390,7 +390,7 @@ def test_capture_exception_adds_masked_context(monkeypatch):
 
     monkeypatch.setattr(sentry_module, "_initialized", True)
     monkeypatch.setattr(
-        sentry_module.sentry_sdk, "push_scope", Mock(return_value=context_manager)
+        sentry_module.sentry_sdk, "new_scope", Mock(return_value=context_manager)
     )
     mock_capture = Mock()
     monkeypatch.setattr(sentry_module.sentry_sdk, "capture_exception", mock_capture)
@@ -398,6 +398,7 @@ def test_capture_exception_adds_masked_context(monkeypatch):
     exc = RuntimeError("boom")
     sentry_module.capture_exception(exc, token="abc", normal_key="value")
 
+    sentry_module.sentry_sdk.new_scope.assert_called_once_with()
     scope_mock.set_extra.assert_any_call("token", "[Filtered]")
     scope_mock.set_extra.assert_any_call("normal_key", "value")
     mock_capture.assert_called_once_with(exc)

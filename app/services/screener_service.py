@@ -107,6 +107,13 @@ class ScreenerService:
             data, ensure_ascii=True, separators=(",", ":"), sort_keys=True
         )
 
+    @staticmethod
+    def _normalize_sort_by(market: ScreenMarket, sort_by: str | None) -> str | None:
+        normalized = (sort_by or "").strip().lower() or None
+        if market == "crypto" and normalized == "volume":
+            return "trade_amount"
+        return normalized
+
     def _screening_cache_key(self, filters: dict[str, Any]) -> str:
         serialized = self._compact_json(filters)
         digest = sha256(serialized.encode("utf-8")).hexdigest()
@@ -249,12 +256,13 @@ class ScreenerService:
         limit: int = 20,
     ) -> dict[str, Any]:
         normalized_market = self._normalize_market(market)
+        normalized_sort_by = self._normalize_sort_by(normalized_market, sort_by)
         filters = {
             "market": normalized_market,
             "asset_type": asset_type,
             "category": category,
             "strategy": strategy,
-            "sort_by": sort_by,
+            "sort_by": normalized_sort_by,
             "sort_order": sort_order,
             "min_market_cap": min_market_cap,
             "max_per": max_per,
@@ -289,12 +297,13 @@ class ScreenerService:
         limit: int = 20,
     ) -> dict[str, Any]:
         normalized_market = self._normalize_market(market)
+        normalized_sort_by = self._normalize_sort_by(normalized_market, sort_by)
         filters = {
             "market": normalized_market,
             "asset_type": asset_type,
             "category": category,
             "strategy": strategy,
-            "sort_by": sort_by,
+            "sort_by": normalized_sort_by,
             "sort_order": sort_order,
             "min_market_cap": min_market_cap,
             "max_per": max_per,

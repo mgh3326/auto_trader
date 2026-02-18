@@ -63,6 +63,38 @@ async def test_list_screening_uses_5m_cache(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_list_screening_coerces_crypto_volume_sort_to_trade_amount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.screener_service import ScreenerService
+
+    fake_redis = _FakeRedis()
+    mock_screen = AsyncMock(
+        return_value={
+            "results": [],
+            "total_count": 0,
+            "returned_count": 0,
+            "market": "crypto",
+        }
+    )
+    monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
+
+    service = ScreenerService(redis_client=fake_redis)
+    result = await service.list_screening(
+        market="crypto",
+        sort_by="volume",
+        sort_order="desc",
+        limit=20,
+    )
+
+    assert result["cache_hit"] is False
+    call_kwargs = mock_screen.await_args.kwargs
+    assert call_kwargs["market"] == "crypto"
+    assert call_kwargs["sort_by"] == "trade_amount"
+    assert call_kwargs["sort_order"] == "desc"
+
+
+@pytest.mark.asyncio
 async def test_refresh_screening_invalidates_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

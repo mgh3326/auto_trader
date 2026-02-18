@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -117,20 +117,25 @@ async def screener_list(
     limit: int = Query(default=20, ge=1, le=50),
     service: ScreenerService = Depends(get_screener_service),
 ):
-    return await service.list_screening(
-        market=market,
-        asset_type=asset_type,
-        category=category,
-        strategy=strategy,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        min_market_cap=min_market_cap,
-        max_per=max_per,
-        max_pbr=max_pbr,
-        min_dividend_yield=min_dividend_yield,
-        max_rsi=max_rsi,
-        limit=limit,
-    )
+    try:
+        return await service.list_screening(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+            strategy=strategy,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=max_pbr,
+            min_dividend_yield=min_dividend_yield,
+            max_rsi=max_rsi,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
 
 @router.post("/api/screener/refresh")
@@ -138,7 +143,12 @@ async def screener_refresh(
     payload: ScreenerFilterRequest,
     service: ScreenerService = Depends(get_screener_service),
 ):
-    return await service.refresh_screening(**payload.model_dump())
+    try:
+        return await service.refresh_screening(**payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
 
 @router.post("/api/screener/report")

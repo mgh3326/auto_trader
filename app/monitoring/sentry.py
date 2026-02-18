@@ -304,7 +304,8 @@ def capture_exception(exc: BaseException, **context: Any) -> None:
         return
 
     try:
-        with sentry_sdk.push_scope() as scope:
+        scope_factory = getattr(sentry_sdk, "new_scope", sentry_sdk.push_scope)
+        with scope_factory() as scope:
             for key, value in context.items():
                 scope.set_extra(str(key), _sanitize_in_place(value, str(key)))
             sentry_sdk.capture_exception(exc)

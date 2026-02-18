@@ -16,10 +16,11 @@
             <div>
                 <label for="sort-by" class="form-label form-label-sm mb-1">Sort By</label>
                 <select class="form-select form-select-sm" id="sort-by" name="sort_by">
-                    <option value="volume" selected>volume</option>
-                    <option value="trade_amount">trade_amount</option>
-                    <option value="market_cap">market_cap</option>
-                    <option value="change_rate">change_rate</option>
+                    <option value="volume" data-markets="kr us" selected>volume</option>
+                    <option value="trade_amount" data-markets="crypto">trade_amount</option>
+                    <option value="market_cap" data-markets="kr us crypto">market_cap</option>
+                    <option value="change_rate" data-markets="kr us crypto">change_rate</option>
+                    <option value="rsi" data-markets="crypto">rsi</option>
                 </select>
             </div>
             <div>
