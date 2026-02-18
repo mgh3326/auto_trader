@@ -29,6 +29,7 @@ from app.routers import (
     openclaw_callback,
     orderbook,
     portfolio,
+    screener,
     stock_latest,
     symbol_settings,
     test,
@@ -120,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(web_auth_router)
     app.include_router(admin_router)
     app.include_router(dashboard.router)
+    app.include_router(screener.router)
     app.include_router(health.router)
     app.include_router(analysis_json.router)
     app.include_router(news_analysis.router)
