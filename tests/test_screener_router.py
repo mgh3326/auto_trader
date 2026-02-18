@@ -147,30 +147,6 @@ def test_list_endpoint_returns_400_for_validation_error() -> None:
     )
 
 
-def test_list_endpoint_returns_400_for_validation_error() -> None:
-    app = FastAPI()
-    fake_service = _FakeScreenerService()
-    fake_service.list_screening = AsyncMock(
-        side_effect=ValueError(
-            "Crypto market does not support sorting by 'volume'; use 'trade_amount'"
-        )
-    )
-    app.include_router(screener.router)
-    app.dependency_overrides[screener.get_screener_service] = lambda: fake_service
-
-    with TestClient(app, raise_server_exceptions=False) as test_client:
-        response = test_client.get(
-            "/api/screener/list",
-            params={"market": "crypto", "sort_by": "volume"},
-        )
-
-    assert response.status_code == 400
-    assert (
-        response.json()["detail"]
-        == "Crypto market does not support sorting by 'volume'; use 'trade_amount'"
-    )
-
-
 def test_refresh_endpoint_calls_service(
     client: tuple[TestClient, _FakeScreenerService],
 ) -> None:
