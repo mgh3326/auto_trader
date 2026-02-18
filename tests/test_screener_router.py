@@ -60,6 +60,14 @@ def test_screener_dashboard_page(
     response = test_client.get("/screener")
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
+    body = response.text
+    assert 'id="screener-main-page"' in body
+    assert 'id="filter-form"' in body
+    assert 'id="results-table"' in body
+    assert 'id="report-panel"' in body
+    assert 'id="order-form"' in body
+    assert "pollingEnabled" in body
+    assert "nextErrorBackoffDelay" in body
 
 
 def test_screener_report_page(client: tuple[TestClient, _FakeScreenerService]) -> None:
@@ -67,6 +75,13 @@ def test_screener_report_page(client: tuple[TestClient, _FakeScreenerService]) -
     response = test_client.get("/screener/report/job-1")
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")
+    body = response.text
+    assert 'id="screener-detail-page"' in body
+    assert 'id="detail-status-panel"' in body
+    assert 'id="detail-order-form"' in body
+    assert "job-1" in body
+    assert "pollingEnabled" in body
+    assert "nextErrorBackoffDelay" in body
 
 
 def test_list_endpoint_calls_service(

@@ -165,6 +165,29 @@
 - 기존 Bootstrap 스타일을 그대로 따르지 않고, `.pen` 토큰을 CSS 변수로 우선 매핑한다.
 - 모바일(`b4bGx`)은 테이블 축약 카드 패턴을 기본으로 한다.
 
+### 9.1 Jinja 섹션/파셜 매핑 (2026-02-18 업데이트)
+
+- `app/templates/screener_dashboard.html`
+  - includes `app/templates/screener/_filters.html`
+  - includes `app/templates/screener/_table.html`
+  - includes `app/templates/screener/_report_panel.html` (`report_mode=dashboard`)
+  - includes `app/templates/screener/_order_panel.html` (`order_mode=dashboard`)
+- `app/templates/screener_report_detail.html`
+  - includes `app/templates/screener/_report_panel.html` (`report_mode=detail`)
+  - includes `app/templates/screener/_order_panel.html` (`order_mode=detail`)
+
+공통 DOM hook 계약:
+
+- Dashboard: `#filter-form`, `#results-table`, `#report-panel`, `#order-form`
+- Detail: `#detail-status-panel`, `#detail-report-panel`, `#detail-order-form`
+
+상태/오류/버튼 스타일 규칙:
+
+- 상태 배지 클래스: `.badge-status.queued|running|completed|failed`
+- 오류 메시지: `.error-text`
+- 성공 메시지: `.success-text`
+- 비동기 처리 중 버튼/폼 잠금: submit/request 버튼 `disabled=true`, 완료 후 복구
+
 ## 10. 테스트 전략
 
 - API 단위 테스트

@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screener Report Detail</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg-page: #f5f3ef;
+            --bg-dark: #1a1a1a;
+            --accent: #c05a3c;
+            --success: #4a7c59;
+            --error: #b54a4a;
+            --border-light: #d1ccc4;
+            --text-primary: #242220;
+            --text-secondary: #4f4a44;
+        }
+
+        body {
+            background: radial-gradient(circle at top right, #f9f7f3 0%, var(--bg-page) 45%, #ece8df 100%);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        .shell {
+            max-width: 980px;
+            margin: 1.6rem auto;
+            border: 1px solid var(--border-light);
+            background: #fff;
+            border-radius: 1rem;
+            box-shadow: 0 18px 40px rgba(24, 19, 16, 0.08);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(120deg, var(--bg-dark) 0%, #2f2b28 50%, #45352e 100%);
+            color: #f3ede5;
+            padding: 1.2rem 1.4rem;
+        }
+
+        .header h1 {
+            font-size: 1.2rem;
+            margin: 0;
+        }
+
+        .header p {
+            color: #d9cec1;
+            margin: 0.4rem 0 0;
+            font-size: 0.9rem;
+        }
+
+        .content {
+            display: grid;
+            gap: 0.9rem;
+            padding: 1rem;
+        }
+
+        .panel {
+            border: 1px solid var(--border-light);
+            border-radius: 0.75rem;
+            background: #fcfbf8;
+            padding: 0.9rem;
+        }
+
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.6rem;
+        }
+
+        .badge-status {
+            border-radius: 999px;
+            padding: 0.22rem 0.6rem;
+            font-size: 0.78rem;
+            border: 1px solid rgba(36, 34, 32, 0.2);
+            color: var(--text-primary);
+            background: rgba(36, 34, 32, 0.08);
+            text-transform: lowercase;
+        }
+
+        .badge-status.queued {
+            color: #7a6332;
+            border-color: rgba(122, 99, 50, 0.35);
+            background: rgba(122, 99, 50, 0.08);
+        }
+
+        .badge-status.running {
+            color: #1d5f7a;
+            border-color: rgba(29, 95, 122, 0.35);
+            background: rgba(29, 95, 122, 0.08);
+        }
+
+        .badge-status.completed {
+            color: var(--success);
+            border-color: rgba(74, 124, 89, 0.35);
+            background: rgba(74, 124, 89, 0.08);
+        }
+
+        .badge-status.failed {
+            color: var(--error);
+            border-color: rgba(181, 74, 74, 0.35);
+            background: rgba(181, 74, 74, 0.08);
+        }
+
+        .mono {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+
+        .subtle {
+            color: var(--text-secondary);
+            font-size: 0.84rem;
+            margin: 0;
+        }
+
+        .report-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.55rem;
+            font-size: 0.84rem;
+        }
+
+        .report-grid dt {
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        .report-grid dd {
+            margin: 0;
+            font-weight: 600;
+        }
+
+        .list-compact {
+            margin: 0;
+            padding-left: 1rem;
+            font-size: 0.84rem;
+        }
+
+        .ranges-table {
+            font-size: 0.82rem;
+            margin: 0;
+        }
+
+        .error-text {
+            color: var(--error);
+            font-size: 0.84rem;
+            margin: 0;
+        }
+
+        .success-text {
+            color: var(--success);
+            font-size: 0.84rem;
+            margin: 0;
+        }
+
+        @media (max-width: 720px) {
+            .shell {
+                margin: 0;
+                border-radius: 0;
+                min-height: 100vh;
+            }
+
+            .report-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+<main class="shell" id="screener-detail-page">
+    <header class="header">
+        <h1>Screener Report Detail</h1>
+        <p>Job-centric report view for callback-driven OpenClaw analysis.</p>
+    </header>
+
+    <section class="content">
+        {% set report_mode = "detail" %}
+        {% include "screener/_report_panel.html" %}
+        {% set order_mode = "detail" %}
+        {% include "screener/_order_panel.html" %}
+    </section>
+</main>
+
+<script>
+    const defaultPollIntervalMs = Number("{{ poll_interval_seconds }}") * 1000;
+    const queuedPollIntervalMs = Number("{{ queued_poll_interval_seconds | default(poll_interval_seconds) }}") * 1000;
+    const runningPollIntervalMs = Number("{{ running_poll_interval_seconds | default(poll_interval_seconds) }}") * 1000;
+    const maxErrorBackoffMs = Number("{{ poll_backoff_max_seconds | default(20) }}") * 1000;
+    const pollTimeoutMs = Number("{{ poll_timeout_seconds }}") * 1000;
+    const terminalStatuses = new Set(["completed", "failed"]);
+
+    const state = {
+        jobId: String("{{ initial_job_id }}"),
+        pollTimer: null,
+        pollStartedAt: Date.now(),
+        pollingEnabled: true,
+        pollGeneration: 0,
+        errorBackoffMs: queuedPollIntervalMs || defaultPollIntervalMs,
+        orderSubmitInFlight: false,
+    };
+
+    const statusBadge = document.getElementById("detail-status-badge");
+    const errorText = document.getElementById("detail-error");
+    const reportText = document.getElementById("detail-report-text");
+    const symbolField = document.getElementById("detail-symbol");
+    const decisionField = document.getElementById("detail-decision");
+    const confidenceField = document.getElementById("detail-confidence");
+    const modelField = document.getElementById("detail-model");
+    const reasonsList = document.getElementById("detail-reasons");
+    const rangesBody = document.getElementById("detail-ranges-body");
+
+    const orderMarket = document.getElementById("detail-order-market");
+    const orderSymbol = document.getElementById("detail-order-symbol");
+    const orderSubmit = document.getElementById("detail-order-submit");
+    const orderResult = document.getElementById("detail-order-result");
+
+    function setButtonBusy(button, busy, busyText) {
+        if (!button.dataset.originalText) {
+            button.dataset.originalText = button.textContent.trim();
+        }
+        button.disabled = busy;
+        button.textContent = busy ? busyText : button.dataset.originalText;
+    }
+
+    function setOrderFormBusy(busy) {
+        const form = document.getElementById("detail-order-form");
+        Array.from(form.elements).forEach((element) => {
+            element.disabled = busy;
+        });
+    }
+
+    function toMarket(instrumentType) {
+        const mapping = {
+            equity_kr: "kr",
+            equity_us: "us",
+            crypto: "crypto",
+        };
+        return mapping[String(instrumentType || "").toLowerCase()] || "us";
+    }
+
+    function formatNumber(value, digits = 2) {
+        if (value === null || value === undefined || value === "") {
+            return "-";
+        }
+        const numeric = Number(value);
+        if (Number.isNaN(numeric)) {
+            return "-";
+        }
+        return numeric.toLocaleString(undefined, {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: digits,
+        });
+    }
+
+    function applyStatus(status) {
+        const normalized = String(status || "queued").toLowerCase();
+        statusBadge.className = `badge-status ${normalized}`;
+        statusBadge.textContent = normalized;
+    }
+
+    function getPollingDelayForStatus(status) {
+        const normalized = String(status || "queued").toLowerCase();
+        if (normalized === "running") {
+            return runningPollIntervalMs || defaultPollIntervalMs;
+        }
+        return queuedPollIntervalMs || defaultPollIntervalMs;
+    }
+
+    function nextErrorBackoffDelay() {
+        const jitterRange = Math.max(200, Math.floor(state.errorBackoffMs * 0.25));
+        const jitter = Math.floor(Math.random() * jitterRange);
+        const delay = Math.min(state.errorBackoffMs + jitter, maxErrorBackoffMs);
+        state.errorBackoffMs = Math.min(state.errorBackoffMs * 2, maxErrorBackoffMs);
+        return delay;
+    }
+
+    function renderReportPayload(payload) {
+        applyStatus(payload.status);
+
+        if (payload.error) {
+            errorText.hidden = false;
+            errorText.textContent = String(payload.error);
+        } else {
+            errorText.hidden = true;
+            errorText.textContent = "";
+        }
+
+        const report = payload.report;
+        if (!report) {
+            reportText.textContent =
+                payload.status === "running"
+                    ? "Report is running. Waiting for callback payload..."
+                    : "Waiting for report payload...";
+            symbolField.textContent = "-";
+            decisionField.textContent = "-";
+            confidenceField.textContent = "-";
+            modelField.textContent = "-";
+            reasonsList.innerHTML = "";
+            rangesBody.innerHTML = "";
+            return;
+        }
+
+        reportText.textContent = report.detailed_text || "Report payload received.";
+        symbolField.textContent = String(report.symbol || "-");
+        decisionField.textContent = String(report.decision || "-");
+        confidenceField.textContent = report.confidence === undefined
+            ? "-"
+            : `${report.confidence}%`;
+        modelField.textContent = String(report.model_name || "-");
+
+        reasonsList.innerHTML = "";
+        const reasons = Array.isArray(report.reasons) ? report.reasons : [];
+        if (reasons.length === 0) {
+            const li = document.createElement("li");
+            li.textContent = "No reasons provided.";
+            reasonsList.appendChild(li);
+        } else {
+            reasons.forEach((reason) => {
+                const li = document.createElement("li");
+                li.textContent = String(reason);
+                reasonsList.appendChild(li);
+            });
+        }
+
+        rangesBody.innerHTML = "";
+        const ranges = report.price_analysis || {};
+        const entries = [
+            ["appropriate_buy_range", ranges.appropriate_buy_range],
+            ["appropriate_sell_range", ranges.appropriate_sell_range],
+            ["buy_hope_range", ranges.buy_hope_range],
+            ["sell_target_range", ranges.sell_target_range],
+        ];
+
+        entries.forEach(([label, range]) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${label}</td>
+                <td>${formatNumber(range?.min, 4)}</td>
+                <td>${formatNumber(range?.max, 4)}</td>
+            `;
+            rangesBody.appendChild(tr);
+        });
+
+        orderMarket.value = toMarket(report.instrument_type);
+        orderSymbol.value = String(report.symbol || "").toUpperCase();
+    }
+
+    function stopPolling() {
+        if (state.pollTimer !== null) {
+            clearTimeout(state.pollTimer);
+            state.pollTimer = null;
+        }
+    }
+
+    function schedulePoll(status = "queued", generation = state.pollGeneration) {
+        if (!state.pollingEnabled || generation !== state.pollGeneration) {
+            return;
+        }
+        stopPolling();
+        const delay = getPollingDelayForStatus(status);
+        state.pollTimer = window.setTimeout(() => {
+            void pollReport(generation);
+        }, delay);
+    }
+
+    async function pollReport(generation = state.pollGeneration) {
+        if (!state.jobId || !state.pollingEnabled || generation !== state.pollGeneration) {
+            return;
+        }
+
+        if (Date.now() - state.pollStartedAt > pollTimeoutMs) {
+            applyStatus("failed");
+            errorText.hidden = false;
+            errorText.textContent = "poll_timeout";
+            state.pollingEnabled = false;
+            stopPolling();
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/screener/report/${encodeURIComponent(state.jobId)}`);
+            if (!response.ok) {
+                throw new Error(`status request failed with ${response.status}`);
+            }
+
+            const payload = await response.json();
+            if (!state.pollingEnabled || generation !== state.pollGeneration) {
+                return;
+            }
+            state.errorBackoffMs = queuedPollIntervalMs || defaultPollIntervalMs;
+            renderReportPayload(payload);
+
+            if (!terminalStatuses.has(String(payload.status || "").toLowerCase())) {
+                schedulePoll(payload.status, generation);
+            } else {
+                state.pollingEnabled = false;
+                stopPolling();
+            }
+        } catch (error) {
+            if (!state.pollingEnabled || generation !== state.pollGeneration) {
+                return;
+            }
+            errorText.hidden = false;
+            errorText.textContent = String(error?.message || error);
+            const backoffDelay = nextErrorBackoffDelay();
+            stopPolling();
+            state.pollTimer = window.setTimeout(() => {
+                void pollReport(generation);
+            }, backoffDelay);
+        }
+    }
+
+    function parseOptionalNumber(value) {
+        if (value === "" || value === null || value === undefined) {
+            return null;
+        }
+        const parsed = Number(value);
+        return Number.isNaN(parsed) ? null : parsed;
+    }
+
+    async function submitOrder(event) {
+        event.preventDefault();
+        if (state.orderSubmitInFlight) {
+            return;
+        }
+
+        state.orderSubmitInFlight = true;
+        setOrderFormBusy(true);
+        setButtonBusy(orderSubmit, true, "Submitting...");
+        orderResult.className = "subtle mt-2 mb-0";
+        orderResult.textContent = "Submitting order request...";
+
+        try {
+            const payload = {
+                market: orderMarket.value,
+                symbol: orderSymbol.value.trim().toUpperCase(),
+                side: document.getElementById("detail-order-side").value,
+                order_type: document.getElementById("detail-order-type").value,
+                quantity: parseOptionalNumber(document.getElementById("detail-order-quantity").value),
+                price: parseOptionalNumber(document.getElementById("detail-order-price").value),
+                amount: parseOptionalNumber(document.getElementById("detail-order-amount").value),
+                confirm: document.getElementById("detail-order-confirm").checked,
+                reason: document.getElementById("detail-order-reason").value.trim(),
+            };
+
+            const response = await fetch("/api/screener/order", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload),
+            });
+            const body = await response.json();
+
+            if (!response.ok) {
+                throw new Error(body?.detail || `order request failed with ${response.status}`);
+            }
+
+            orderResult.className = "success-text mt-2 mb-0";
+            orderResult.textContent = JSON.stringify(body);
+        } catch (error) {
+            orderResult.className = "error-text mt-2 mb-0";
+            orderResult.textContent = String(error?.message || error);
+        } finally {
+            setButtonBusy(orderSubmit, false, "Submitting...");
+            setOrderFormBusy(false);
+            state.orderSubmitInFlight = false;
+        }
+    }
+
+    document.getElementById("detail-refresh-button").addEventListener("click", () => {
+        state.pollingEnabled = true;
+        state.pollGeneration += 1;
+        state.pollStartedAt = Date.now();
+        void pollReport(state.pollGeneration);
+    });
+
+    document.getElementById("detail-stop-button").addEventListener("click", () => {
+        state.pollingEnabled = false;
+        state.pollGeneration += 1;
+        stopPolling();
+        reportText.textContent = "Polling stopped by user.";
+    });
+
+    document.getElementById("detail-order-form").addEventListener("submit", (event) => {
+        void submitOrder(event);
+    });
+
+    state.pollGeneration += 1;
+    void pollReport(state.pollGeneration);
+</script>
+</body>
+</html>

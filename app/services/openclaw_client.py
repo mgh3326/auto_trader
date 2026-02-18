@@ -1,3 +1,4 @@
+import json
 import logging
 from uuid import uuid4
 
@@ -30,6 +31,7 @@ class OpenClawClient:
     ) -> None:
         self._webhook_url = webhook_url or settings.OPENCLAW_WEBHOOK_URL
         self._token = token if token is not None else settings.OPENCLAW_TOKEN
+        self._callback_url = settings.OPENCLAW_CALLBACK_URL
 
     async def _forward_to_telegram(self, message: str, alert_type: str) -> None:
         try:

@@ -12,6 +12,7 @@
             --accent: #c05a3c;
             --success: #4a7c59;
             --error: #b54a4a;
+            --warn: #8d6e2f;
             --border-light: #d1ccc4;
             --text-primary: #242220;
             --text-secondary: #4f4a44;
@@ -24,8 +25,8 @@
         }
 
         .shell {
-            max-width: 1120px;
-            margin: 2rem auto;
+            max-width: 1240px;
+            margin: 1.6rem auto;
             border: 1px solid var(--border-light);
             background: #fff;
             border-radius: 1rem;
@@ -36,7 +37,7 @@
         .header {
             background: linear-gradient(120deg, var(--bg-dark) 0%, #2f2b28 50%, #45352e 100%);
             color: #f3ede5;
-            padding: 1.2rem 1.5rem;
+            padding: 1.2rem 1.4rem;
         }
 
         .header h1 {
@@ -51,155 +52,798 @@
             font-size: 0.9rem;
         }
 
-        .content {
-            padding: 1.4rem;
+        .page-grid {
             display: grid;
+            grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
             gap: 1rem;
+            padding: 1rem;
         }
 
-        .status-panel {
+        .panel {
             border: 1px solid var(--border-light);
             border-radius: 0.75rem;
-            padding: 0.9rem 1rem;
+            background: #fcfbf8;
+            padding: 0.9rem;
+        }
+
+        .panel h2 {
+            font-size: 1rem;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        .panel h3 {
+            font-size: 0.92rem;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        .subtle {
+            color: var(--text-secondary);
+            font-size: 0.84rem;
+        }
+
+        .controls {
+            display: grid;
+            gap: 0.8rem;
+        }
+
+        .controls-grid {
+            display: grid;
+            gap: 0.6rem;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+        }
+
+        .results-table-wrap {
+            overflow: auto;
+            border: 1px solid var(--border-light);
+            border-radius: 0.6rem;
+            background: #fff;
+            min-height: 280px;
+        }
+
+        .results-table {
+            margin: 0;
+            font-size: 0.86rem;
+        }
+
+        .results-table th,
+        .results-table td {
+            vertical-align: middle;
+            white-space: nowrap;
+        }
+
+        .results-table th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #f4f2ec;
+        }
+
+        .stack {
+            display: grid;
+            gap: 0.9rem;
+        }
+
+        .status-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            gap: 1rem;
-            background: #fcfbf8;
-        }
-
-        .status-label {
-            font-size: 0.8rem;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--text-secondary);
-            margin: 0;
+            gap: 0.6rem;
         }
 
         .status-value {
-            margin: 0.2rem 0 0;
-            font-weight: 600;
+            margin: 0;
+            font-size: 0.88rem;
+            color: var(--text-secondary);
         }
 
-        .badge-running {
-            color: var(--success);
-            border: 1px solid rgba(74, 124, 89, 0.35);
+        .badge-status {
             border-radius: 999px;
-            padding: 0.2rem 0.6rem;
+            padding: 0.22rem 0.6rem;
             font-size: 0.78rem;
+            border: 1px solid rgba(36, 34, 32, 0.2);
+            color: var(--text-primary);
+            background: rgba(36, 34, 32, 0.08);
+            text-transform: lowercase;
+        }
+
+        .badge-status.queued {
+            color: #7a6332;
+            border-color: rgba(122, 99, 50, 0.35);
+            background: rgba(122, 99, 50, 0.08);
+        }
+
+        .badge-status.running {
+            color: #1d5f7a;
+            border-color: rgba(29, 95, 122, 0.35);
+            background: rgba(29, 95, 122, 0.08);
+        }
+
+        .badge-status.completed {
+            color: var(--success);
+            border-color: rgba(74, 124, 89, 0.35);
             background: rgba(74, 124, 89, 0.08);
         }
 
-        .api-list {
-            border: 1px solid var(--border-light);
-            border-radius: 0.75rem;
-            overflow: hidden;
+        .badge-status.failed {
+            color: var(--error);
+            border-color: rgba(181, 74, 74, 0.35);
+            background: rgba(181, 74, 74, 0.08);
         }
 
-        .api-list table {
-            margin: 0;
+        .mono {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
         }
 
-        .api-list td,
-        .api-list th {
-            font-size: 0.88rem;
-            vertical-align: middle;
+        .report-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.55rem;
+            font-size: 0.84rem;
         }
 
-        .api-list .method {
-            font-weight: 700;
-            color: var(--accent);
-            width: 6rem;
-        }
-
-        .note {
-            font-size: 0.82rem;
+        .report-grid dt {
             color: var(--text-secondary);
             margin: 0;
         }
 
-        @media (max-width: 720px) {
+        .report-grid dd {
+            margin: 0;
+            font-weight: 600;
+        }
+
+        .list-compact {
+            margin: 0;
+            padding-left: 1rem;
+            font-size: 0.84rem;
+        }
+
+        .ranges-table {
+            font-size: 0.82rem;
+            margin: 0;
+        }
+
+        .error-text {
+            color: var(--error);
+            font-size: 0.84rem;
+            margin: 0;
+        }
+
+        .success-text {
+            color: var(--success);
+            font-size: 0.84rem;
+            margin: 0;
+        }
+
+        .muted-block {
+            color: var(--text-secondary);
+            font-size: 0.84rem;
+            margin: 0;
+        }
+
+        @media (max-width: 1100px) {
+            .page-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 760px) {
             .shell {
                 margin: 0;
                 border-radius: 0;
                 min-height: 100vh;
             }
 
-            .status-panel {
-                flex-direction: column;
-                align-items: flex-start;
+            .controls-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .report-grid {
+                grid-template-columns: 1fr;
             }
         }
     </style>
 </head>
 <body>
-<main class="shell">
+<main class="shell" id="screener-main-page">
     <header class="header">
-        <h1>OpenClaw Screener</h1>
-        <p>API-first screening and report workflow with callback-secured completion path.</p>
+        <h1>OpenClaw Screener Dashboard</h1>
+        <p>Run filters, generate symbol reports, and execute orders from one Jinja page.</p>
     </header>
 
-    <section class="content">
-        <article class="status-panel">
-            <div>
-                <p class="status-label">Initial Job</p>
-                <p class="status-value" id="job-id">{{ initial_job_id or "not-set" }}</p>
-            </div>
-            <div>
-                <p class="status-label">Polling Profile</p>
-                <p class="status-value">
-                    {{ poll_interval_seconds }}s interval / {{ poll_timeout_seconds }}s timeout
-                </p>
-            </div>
-            <span class="badge-running">ready</span>
-        </article>
+    <section class="page-grid">
+        <section class="controls" aria-label="screener controls">
+            {% include "screener/_filters.html" %}
+            {% include "screener/_table.html" %}
+        </section>
 
-        <article class="api-list">
-            <table class="table table-sm table-striped mb-0">
-                <thead>
-                <tr>
-                    <th>Method</th>
-                    <th>Path</th>
-                    <th>Purpose</th>
-                </tr>
-                </thead>
-                <tbody>
-                <tr>
-                    <td class="method">GET</td>
-                    <td>/api/screener/list</td>
-                    <td>Read cached screener candidates</td>
-                </tr>
-                <tr>
-                    <td class="method">POST</td>
-                    <td>/api/screener/refresh</td>
-                    <td>Invalidate filter cache and recompute</td>
-                </tr>
-                <tr>
-                    <td class="method">POST</td>
-                    <td>/api/screener/report</td>
-                    <td>Create or reuse OpenClaw report job</td>
-                </tr>
-                <tr>
-                    <td class="method">GET</td>
-                    <td>/api/screener/report/{job_id}</td>
-                    <td>Poll job status and report payload</td>
-                </tr>
-                <tr>
-                    <td class="method">POST</td>
-                    <td>/api/screener/callback</td>
-                    <td>Receive token-protected OpenClaw callback</td>
-                </tr>
-                <tr>
-                    <td class="method">POST</td>
-                    <td>/api/screener/order</td>
-                    <td>Place order with confirm-to-dry-run mapping</td>
-                </tr>
-                </tbody>
-            </table>
-        </article>
-
-        <p class="note">This template is API contract aware and intended for iteration-safe backend integration.</p>
+        <section class="stack">
+            {% set report_mode = "dashboard" %}
+            {% include "screener/_report_panel.html" %}
+            {% set order_mode = "dashboard" %}
+            {% include "screener/_order_panel.html" %}
+        </section>
     </section>
 </main>
+
+<script>
+    const defaultPollIntervalMs = Number("{{ poll_interval_seconds }}") * 1000;
+    const queuedPollIntervalMs = Number("{{ queued_poll_interval_seconds | default(poll_interval_seconds) }}") * 1000;
+    const runningPollIntervalMs = Number("{{ running_poll_interval_seconds | default(poll_interval_seconds) }}") * 1000;
+    const maxErrorBackoffMs = Number("{{ poll_backoff_max_seconds | default(20) }}") * 1000;
+    const pollTimeoutMs = Number("{{ poll_timeout_seconds }}") * 1000;
+    const terminalStatuses = new Set(["completed", "failed"]);
+
+    const state = {
+        selectedMarket: "us",
+        selectedSymbol: "",
+        selectedName: "",
+        activeJobId: "{{ initial_job_id or '' }}",
+        pollTimer: null,
+        pollStartedAt: null,
+        pollingEnabled: false,
+        pollGeneration: 0,
+        reportRequestInFlight: false,
+        orderSubmitInFlight: false,
+        errorBackoffMs: queuedPollIntervalMs || defaultPollIntervalMs,
+    };
+
+    const filterForm = document.getElementById("filter-form");
+    const searchButton = document.getElementById("search-button");
+    const refreshButton = document.getElementById("refresh-button");
+    const resultsBody = document.getElementById("results-body");
+    const resultStats = document.getElementById("result-stats");
+    const resultsMessage = document.getElementById("results-message");
+    const lastUpdated = document.getElementById("last-updated");
+
+    const reportStatusBadge = document.getElementById("report-status-badge");
+    const reportJobId = document.getElementById("report-job-id");
+    const selectedSymbol = document.getElementById("selected-symbol");
+    const reportError = document.getElementById("report-error");
+    const reportDetailText = document.getElementById("report-detail-text");
+    const reportDecision = document.getElementById("report-decision");
+    const reportConfidence = document.getElementById("report-confidence");
+    const reportReasons = document.getElementById("report-reasons");
+    const reportRangesBody = document.getElementById("report-ranges-body");
+    const generateReportButton = document.getElementById("generate-report-button");
+    const stopPollingButton = document.getElementById("stop-polling-button");
+
+    const orderForm = document.getElementById("order-form");
+    const orderMarket = document.getElementById("order-market");
+    const orderSymbol = document.getElementById("order-symbol");
+    const orderResult = document.getElementById("order-result");
+    const submitOrderButton = document.getElementById("submit-order-button");
+
+    function setButtonBusy(button, busy, busyText) {
+        if (!button.dataset.originalText) {
+            button.dataset.originalText = button.textContent.trim();
+        }
+
+        button.disabled = busy;
+        button.textContent = busy ? busyText : button.dataset.originalText;
+    }
+
+    function setOrderFormBusy(busy) {
+        Array.from(orderForm.elements).forEach((element) => {
+            element.disabled = busy;
+        });
+    }
+
+    function normalizeMarketFromInstrumentType(report, fallback) {
+        const mapping = {
+            equity_kr: "kr",
+            equity_us: "us",
+            crypto: "crypto",
+        };
+        return mapping[String(report.instrument_type || "").toLowerCase()] || fallback;
+    }
+
+    function formatNumber(value, digits = 2) {
+        if (value === null || value === undefined || value === "") {
+            return "-";
+        }
+        const numeric = Number(value);
+        if (Number.isNaN(numeric)) {
+            return "-";
+        }
+        return numeric.toLocaleString(undefined, {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: digits,
+        });
+    }
+
+    function statusToBadge(status) {
+        const normalized = String(status || "queued").toLowerCase();
+        reportStatusBadge.className = `badge-status ${normalized}`;
+        reportStatusBadge.textContent = normalized;
+    }
+
+    function getPollingDelayForStatus(status) {
+        const normalized = String(status || "queued").toLowerCase();
+        if (normalized === "running") {
+            return runningPollIntervalMs || defaultPollIntervalMs;
+        }
+        return queuedPollIntervalMs || defaultPollIntervalMs;
+    }
+
+    function nextErrorBackoffDelay() {
+        const jitterRange = Math.max(200, Math.floor(state.errorBackoffMs * 0.25));
+        const jitter = Math.floor(Math.random() * jitterRange);
+        const delay = Math.min(state.errorBackoffMs + jitter, maxErrorBackoffMs);
+        state.errorBackoffMs = Math.min(state.errorBackoffMs * 2, maxErrorBackoffMs);
+        return delay;
+    }
+
+    function clearReportArtifacts() {
+        reportError.hidden = true;
+        reportError.textContent = "";
+        reportDetailText.textContent = "No report loaded yet.";
+        reportDecision.textContent = "-";
+        reportConfidence.textContent = "-";
+        reportReasons.innerHTML = "";
+        reportRangesBody.innerHTML = "";
+    }
+
+    function applySelection(market, symbol, name) {
+        state.selectedMarket = market;
+        state.selectedSymbol = symbol;
+        state.selectedName = name || symbol;
+
+        selectedSymbol.textContent = `${state.selectedMarket.toUpperCase()} / ${state.selectedSymbol}`;
+        orderMarket.value = state.selectedMarket;
+        orderSymbol.value = state.selectedSymbol;
+    }
+
+    function buildFilterPayload() {
+        const payload = {
+            market: document.getElementById("market").value,
+            sort_by: document.getElementById("sort-by").value,
+            sort_order: document.getElementById("sort-order").value,
+            limit: Number(document.getElementById("limit").value || 20),
+        };
+
+        const maxRsiRaw = document.getElementById("max-rsi").value;
+        if (maxRsiRaw !== "") {
+            payload.max_rsi = Number(maxRsiRaw);
+        }
+
+        return payload;
+    }
+
+    function rowToPresentation(row, market) {
+        const symbol = String(row.symbol || row.code || row.ticker || "").toUpperCase();
+        const name = String(row.name || row.korean_name || row.company_name || symbol || "-");
+        const price = row.current_price ?? row.close ?? row.price ?? row.trade_price ?? null;
+        const changeRate = row.change_rate ?? row.fluctuation_rate ?? row.signed_change_rate ?? null;
+        const volume = row.volume ?? row.trade_amount_24h ?? row.acc_trade_price_24h ?? null;
+
+        return {
+            market,
+            symbol,
+            name,
+            price,
+            changeRate,
+            volume,
+        };
+    }
+
+    function renderRows(results, market) {
+        resultsBody.innerHTML = "";
+
+        if (!Array.isArray(results) || results.length === 0) {
+            resultsMessage.textContent = "No rows found for the current filters.";
+            resultStats.textContent = "0 rows";
+            return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        results.forEach((row) => {
+            const data = rowToPresentation(row, market);
+            const tr = document.createElement("tr");
+
+            const symbolCell = document.createElement("td");
+            symbolCell.className = "mono";
+            symbolCell.textContent = data.symbol || "-";
+            tr.appendChild(symbolCell);
+
+            const nameCell = document.createElement("td");
+            nameCell.textContent = data.name;
+            tr.appendChild(nameCell);
+
+            const priceCell = document.createElement("td");
+            priceCell.textContent = formatNumber(data.price, 4);
+            tr.appendChild(priceCell);
+
+            const changeCell = document.createElement("td");
+            changeCell.textContent = formatNumber(data.changeRate, 4);
+            tr.appendChild(changeCell);
+
+            const volumeCell = document.createElement("td");
+            volumeCell.textContent = formatNumber(data.volume, 2);
+            tr.appendChild(volumeCell);
+
+            const actionCell = document.createElement("td");
+            const reportButton = document.createElement("button");
+            reportButton.type = "button";
+            reportButton.className = "btn btn-sm btn-outline-dark report-row-button";
+            reportButton.dataset.market = data.market;
+            reportButton.dataset.symbol = data.symbol;
+            reportButton.dataset.name = data.name;
+            reportButton.textContent = "Report";
+            actionCell.appendChild(reportButton);
+            tr.appendChild(actionCell);
+
+            fragment.appendChild(tr);
+        });
+
+        resultsBody.appendChild(fragment);
+        resultStats.textContent = `${results.length} rows`;
+        resultsMessage.textContent = "Select a row and generate a report.";
+    }
+
+    async function fetchScreening({refresh = false} = {}) {
+        const payload = buildFilterPayload();
+        state.selectedMarket = payload.market;
+
+        setButtonBusy(searchButton, true, "Loading...");
+        if (refresh) {
+            setButtonBusy(refreshButton, true, "Refreshing...");
+        }
+
+        try {
+            let response;
+            if (refresh) {
+                response = await fetch("/api/screener/refresh", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify(payload),
+                });
+            } else {
+                const query = new URLSearchParams();
+                Object.entries(payload).forEach(([key, value]) => {
+                    if (value !== null && value !== undefined && value !== "") {
+                        query.set(key, String(value));
+                    }
+                });
+
+                response = await fetch(`/api/screener/list?${query.toString()}`);
+            }
+
+            if (!response.ok) {
+                throw new Error(`screening request failed with ${response.status}`);
+            }
+
+            const data = await response.json();
+            renderRows(data.results || [], payload.market);
+            lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        } catch (error) {
+            resultStats.textContent = "error";
+            resultsMessage.textContent = String(error?.message || error);
+        } finally {
+            setButtonBusy(searchButton, false, "Loading...");
+            if (refresh) {
+                setButtonBusy(refreshButton, false, "Refreshing...");
+            }
+        }
+    }
+
+    function stopPolling() {
+        if (state.pollTimer !== null) {
+            clearTimeout(state.pollTimer);
+            state.pollTimer = null;
+        }
+    }
+
+    function renderReport(reportResponse) {
+        statusToBadge(reportResponse.status);
+        reportJobId.textContent = reportResponse.job_id || state.activeJobId || "not-set";
+
+        if (reportResponse.error) {
+            reportError.hidden = false;
+            reportError.textContent = String(reportResponse.error);
+        } else {
+            reportError.hidden = true;
+            reportError.textContent = "";
+        }
+
+        const report = reportResponse.report;
+        if (!report) {
+            reportDetailText.textContent =
+                reportResponse.status === "running"
+                    ? "Report is running. Waiting for callback payload..."
+                    : "Waiting for report payload.";
+            reportDecision.textContent = "-";
+            reportConfidence.textContent = "-";
+            reportReasons.innerHTML = "";
+            reportRangesBody.innerHTML = "";
+            return;
+        }
+
+        reportDetailText.textContent = report.detailed_text || "Report payload received.";
+        reportDecision.textContent = String(report.decision || "-");
+        reportConfidence.textContent = report.confidence === undefined
+            ? "-"
+            : `${report.confidence}%`;
+
+        reportReasons.innerHTML = "";
+        const reasons = Array.isArray(report.reasons) ? report.reasons : [];
+        if (reasons.length === 0) {
+            const li = document.createElement("li");
+            li.textContent = "No reasons provided.";
+            reportReasons.appendChild(li);
+        } else {
+            reasons.forEach((reason) => {
+                const li = document.createElement("li");
+                li.textContent = String(reason);
+                reportReasons.appendChild(li);
+            });
+        }
+
+        reportRangesBody.innerHTML = "";
+        const ranges = report.price_analysis || {};
+        const rows = [
+            ["appropriate_buy_range", ranges.appropriate_buy_range],
+            ["appropriate_sell_range", ranges.appropriate_sell_range],
+            ["buy_hope_range", ranges.buy_hope_range],
+            ["sell_target_range", ranges.sell_target_range],
+        ];
+
+        rows.forEach(([label, range]) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${label}</td>
+                <td>${formatNumber(range?.min, 4)}</td>
+                <td>${formatNumber(range?.max, 4)}</td>
+            `;
+            reportRangesBody.appendChild(tr);
+        });
+
+        const market = normalizeMarketFromInstrumentType(report, state.selectedMarket);
+        const symbol = String(report.symbol || state.selectedSymbol || "").toUpperCase();
+        const name = String(report.name || state.selectedName || symbol || "");
+        if (symbol) {
+            applySelection(market, symbol, name);
+        }
+    }
+
+    function schedulePoll(jobId, status = "queued", generation = state.pollGeneration) {
+        if (!state.pollingEnabled) {
+            return;
+        }
+        if (!jobId || jobId !== state.activeJobId || generation !== state.pollGeneration) {
+            return;
+        }
+
+        stopPolling();
+        const delay = getPollingDelayForStatus(status);
+        state.pollTimer = window.setTimeout(() => {
+            void pollReportStatus(jobId, generation);
+        }, delay);
+    }
+
+    async function pollReportStatus(jobId, generation = state.pollGeneration) {
+        if (!state.pollingEnabled) {
+            return;
+        }
+        if (!jobId || jobId !== state.activeJobId || generation !== state.pollGeneration) {
+            return;
+        }
+
+        if (state.pollStartedAt !== null && Date.now() - state.pollStartedAt > pollTimeoutMs) {
+            statusToBadge("failed");
+            reportError.hidden = false;
+            reportError.textContent = "poll_timeout";
+            state.pollingEnabled = false;
+            stopPolling();
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/screener/report/${encodeURIComponent(jobId)}`);
+            if (!response.ok) {
+                throw new Error(`status request failed with ${response.status}`);
+            }
+            const payload = await response.json();
+            if (!state.pollingEnabled || generation !== state.pollGeneration || jobId !== state.activeJobId) {
+                return;
+            }
+            state.errorBackoffMs = queuedPollIntervalMs || defaultPollIntervalMs;
+            renderReport(payload);
+
+            if (terminalStatuses.has(String(payload.status || "").toLowerCase())) {
+                state.pollingEnabled = false;
+                stopPolling();
+                return;
+            }
+            schedulePoll(jobId, payload.status, generation);
+        } catch (error) {
+            if (!state.pollingEnabled || generation !== state.pollGeneration || jobId !== state.activeJobId) {
+                return;
+            }
+            reportError.hidden = false;
+            reportError.textContent = String(error?.message || error);
+            const backoffDelay = nextErrorBackoffDelay();
+            stopPolling();
+            state.pollTimer = window.setTimeout(() => {
+                void pollReportStatus(jobId, generation);
+            }, backoffDelay);
+        }
+    }
+
+    async function requestReport() {
+        if (state.reportRequestInFlight) {
+            return;
+        }
+        if (!state.selectedSymbol) {
+            reportError.hidden = false;
+            reportError.textContent = "Select a symbol first.";
+            return;
+        }
+
+        state.reportRequestInFlight = true;
+        state.pollGeneration += 1;
+        state.pollingEnabled = true;
+        const currentGeneration = state.pollGeneration;
+        setButtonBusy(generateReportButton, true, "Requesting...");
+        reportError.hidden = true;
+        reportError.textContent = "";
+        stopPolling();
+        clearReportArtifacts();
+
+        try {
+            const response = await fetch("/api/screener/report", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    market: state.selectedMarket,
+                    symbol: state.selectedSymbol,
+                    name: state.selectedName,
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`report request failed with ${response.status}`);
+            }
+
+            const payload = await response.json();
+            state.activeJobId = String(payload.job_id || "");
+            state.pollStartedAt = Date.now();
+
+            if (state.activeJobId) {
+                reportJobId.textContent = state.activeJobId;
+            }
+
+            renderReport(payload);
+
+            const status = String(payload.status || "").toLowerCase();
+            if (!terminalStatuses.has(status) && state.activeJobId) {
+                schedulePoll(state.activeJobId, status, currentGeneration);
+            } else {
+                state.pollingEnabled = false;
+            }
+        } catch (error) {
+            state.pollingEnabled = false;
+            reportError.hidden = false;
+            reportError.textContent = String(error?.message || error);
+        } finally {
+            setButtonBusy(generateReportButton, false, "Requesting...");
+            state.reportRequestInFlight = false;
+        }
+    }
+
+    function parseOptionalNumber(value) {
+        if (value === "" || value === null || value === undefined) {
+            return null;
+        }
+        const parsed = Number(value);
+        return Number.isNaN(parsed) ? null : parsed;
+    }
+
+    async function submitOrder(event) {
+        event.preventDefault();
+        if (state.orderSubmitInFlight) {
+            return;
+        }
+
+        state.orderSubmitInFlight = true;
+        setOrderFormBusy(true);
+        setButtonBusy(submitOrderButton, true, "Submitting...");
+        orderResult.className = "muted-block mt-2 mb-0";
+        orderResult.textContent = "Submitting order request...";
+
+        try {
+            const payload = {
+                market: orderMarket.value,
+                symbol: orderSymbol.value.trim().toUpperCase(),
+                side: document.getElementById("order-side").value,
+                order_type: document.getElementById("order-type").value,
+                quantity: parseOptionalNumber(document.getElementById("order-quantity").value),
+                price: parseOptionalNumber(document.getElementById("order-price").value),
+                amount: parseOptionalNumber(document.getElementById("order-amount").value),
+                confirm: document.getElementById("order-confirm").checked,
+                reason: document.getElementById("order-reason").value.trim(),
+            };
+
+            const response = await fetch("/api/screener/order", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload),
+            });
+
+            const body = await response.json();
+            if (!response.ok) {
+                throw new Error(body?.detail || `order request failed with ${response.status}`);
+            }
+
+            orderResult.className = "success-text mt-2 mb-0";
+            orderResult.textContent = JSON.stringify(body);
+        } catch (error) {
+            orderResult.className = "error-text mt-2 mb-0";
+            orderResult.textContent = String(error?.message || error);
+        } finally {
+            setButtonBusy(submitOrderButton, false, "Submitting...");
+            setOrderFormBusy(false);
+            state.orderSubmitInFlight = false;
+        }
+    }
+
+    filterForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void fetchScreening();
+    });
+
+    refreshButton.addEventListener("click", () => {
+        void fetchScreening({refresh: true});
+    });
+
+    generateReportButton.addEventListener("click", () => {
+        void requestReport();
+    });
+
+    stopPollingButton.addEventListener("click", () => {
+        state.pollingEnabled = false;
+        state.pollGeneration += 1;
+        stopPolling();
+        reportDetailText.textContent = "Polling stopped by user.";
+    });
+
+    resultsBody.addEventListener("click", (event) => {
+        if (state.reportRequestInFlight) {
+            return;
+        }
+
+        const button = event.target.closest(".report-row-button");
+        if (!button) {
+            return;
+        }
+
+        const market = String(button.dataset.market || "");
+        const symbol = String(button.dataset.symbol || "");
+        const name = String(button.dataset.name || symbol);
+        if (!market || !symbol) {
+            return;
+        }
+
+        applySelection(market, symbol, name);
+        void requestReport();
+    });
+
+    orderForm.addEventListener("submit", (event) => {
+        void submitOrder(event);
+    });
+
+    void fetchScreening();
+
+    if (state.activeJobId) {
+        statusToBadge("queued");
+        state.pollStartedAt = Date.now();
+        state.pollingEnabled = true;
+        state.pollGeneration += 1;
+        schedulePoll(state.activeJobId, "queued", state.pollGeneration);
+    } else {
+        statusToBadge("queued");
+    }
+</script>
 </body>
 </html>

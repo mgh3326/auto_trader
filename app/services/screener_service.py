@@ -8,6 +8,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 import redis.asyncio as redis
+from redis.exceptions import WatchError
 
 from app.core.config import settings
 from app.mcp_server.tooling.analysis_tool_handlers import screen_stocks_impl
@@ -29,6 +30,14 @@ class ScreenerService:
     SCREENING_CACHE_TTL_SECONDS = 300
     REPORT_CACHE_TTL_SECONDS = 3600
     REPORT_INFLIGHT_TTL_SECONDS = 120
+    REPORT_STATUSES = frozenset({"queued", "running", "completed", "failed"})
+    TERMINAL_REPORT_STATUSES = frozenset({"completed", "failed"})
+    REPORT_STATUS_ORDER = {
+        "queued": 0,
+        "running": 1,
+        "completed": 2,
+        "failed": 2,
+    }
 
     def __init__(
         self,
@@ -90,9 +99,7 @@ class ScreenerService:
         }
         if normalized in mapping:
             return mapping[normalized]
-        raise ValueError(
-            "instrument_type must be one of: equity_kr, equity_us, crypto"
-        )
+        raise ValueError("instrument_type must be one of: equity_kr, equity_us, crypto")
 
     @staticmethod
     def _compact_json(data: dict[str, Any]) -> str:
@@ -114,6 +121,103 @@ class ScreenerService:
             status_key=f"screener:report:status:{job_id}",
             job_key=f"screener:report:job:{job_id}",
         )
+
+    @classmethod
+    def _normalize_report_status(cls, status: str | None) -> str | None:
+        normalized = (status or "").strip().lower()
+        if normalized in cls.REPORT_STATUSES:
+            return normalized
+        return None
+
+    @classmethod
+    def _can_transition_report_status(
+        cls, current: str | None, next_status: str
+    ) -> bool:
+        normalized_next = cls._normalize_report_status(next_status)
+        if normalized_next is None:
+            raise ValueError(f"invalid report status: {next_status}")
+
+        normalized_current = cls._normalize_report_status(current)
+        if normalized_current is None:
+            return True
+        if normalized_current in cls.TERMINAL_REPORT_STATUSES:
+            return False
+        return (
+            cls.REPORT_STATUS_ORDER[normalized_next]
+            >= cls.REPORT_STATUS_ORDER[normalized_current]
+        )
+
+    async def _transition_report_status(
+        self,
+        status_key: str,
+        next_status: str,
+        *,
+        redis_client: redis.Redis | None = None,
+    ) -> str:
+        normalized_next = self._normalize_report_status(next_status)
+        if normalized_next is None:
+            raise ValueError(f"invalid report status: {next_status}")
+
+        if redis_client is None:
+            redis_client = await self._get_redis()
+
+        pipeline_factory = getattr(redis_client, "pipeline", None)
+        if not callable(pipeline_factory):
+            return await self._transition_report_status_non_atomic(
+                redis_client,
+                status_key,
+                normalized_next,
+            )
+
+        for _ in range(3):
+            pipeline = pipeline_factory(transaction=True)
+            try:
+                await pipeline.watch(status_key)
+                current_status = self._normalize_report_status(
+                    await pipeline.get(status_key)
+                )
+                if not self._can_transition_report_status(
+                    current_status, normalized_next
+                ):
+                    return current_status or normalized_next
+
+                pipeline.multi()
+                pipeline.setex(
+                    status_key,
+                    self.REPORT_CACHE_TTL_SECONDS,
+                    normalized_next,
+                )
+                await pipeline.execute()
+                return normalized_next
+            except WatchError:
+                continue
+            finally:
+                await pipeline.reset()
+
+        return await self._transition_report_status_non_atomic(
+            redis_client,
+            status_key,
+            normalized_next,
+        )
+
+    async def _transition_report_status_non_atomic(
+        self,
+        redis_client: redis.Redis,
+        status_key: str,
+        normalized_next: str,
+    ) -> str:
+        current_status = self._normalize_report_status(
+            await redis_client.get(status_key)
+        )
+        if not self._can_transition_report_status(current_status, normalized_next):
+            return current_status or normalized_next
+
+        await redis_client.setex(
+            status_key,
+            self.REPORT_CACHE_TTL_SECONDS,
+            normalized_next,
+        )
+        return normalized_next
 
     async def _load_cached_json(self, key: str) -> dict[str, Any] | None:
         redis_client = await self._get_redis()
@@ -227,34 +331,68 @@ class ScreenerService:
         inflight_job_id = await redis_client.get(inflight_key)
         if inflight_job_id:
             status_key = f"screener:report:status:{inflight_job_id}"
-            status = await redis_client.get(status_key)
+            status = self._normalize_report_status(await redis_client.get(status_key))
             return {
                 "job_id": inflight_job_id,
                 "status": status or "queued",
                 "is_reused": True,
             }
 
-        provisional_job_id = str(uuid4())
-        inflight_claimed = await redis_client.set(
-            inflight_key,
-            provisional_job_id,
-            ex=self.REPORT_INFLIGHT_TTL_SECONDS,
-            nx=True,
-        )
-        if not inflight_claimed:
+        provisional_job_id = ""
+        inflight_claimed = False
+        for _ in range(3):
+            provisional_job_id = str(uuid4())
+            inflight_claimed = await redis_client.set(
+                inflight_key,
+                provisional_job_id,
+                ex=self.REPORT_INFLIGHT_TTL_SECONDS,
+                nx=True,
+            )
+            if inflight_claimed:
+                break
+
             reused_job_id = await redis_client.get(inflight_key)
             if reused_job_id:
                 status_key = f"screener:report:status:{reused_job_id}"
-                status = await redis_client.get(status_key)
+                status = self._normalize_report_status(
+                    await redis_client.get(status_key)
+                )
                 return {
                     "job_id": reused_job_id,
                     "status": status or "queued",
                     "is_reused": True,
                 }
+
+        if not inflight_claimed:
+            failed_job_id = provisional_job_id or str(uuid4())
+            error_message = "inflight_job_unavailable"
+            keys = self._report_keys(
+                normalized_market, normalized_symbol, failed_job_id
+            )
+            await self._transition_report_status(
+                keys.status_key,
+                "failed",
+                redis_client=redis_client,
+            )
+            await self._store_json(
+                keys.job_key,
+                self.REPORT_CACHE_TTL_SECONDS,
+                {
+                    "job_id": failed_job_id,
+                    "market": normalized_market,
+                    "symbol": normalized_symbol,
+                    "result_key": keys.result_key,
+                    "status_key": keys.status_key,
+                    "inflight_key": keys.inflight_key,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                    "error": error_message,
+                },
+            )
             return {
-                "job_id": provisional_job_id,
-                "status": "queued",
-                "is_reused": True,
+                "job_id": failed_job_id,
+                "status": "failed",
+                "error": error_message,
+                "is_reused": False,
             }
 
         display_name = (name or normalized_symbol).strip() or normalized_symbol
@@ -282,8 +420,10 @@ class ScreenerService:
             keys = self._report_keys(
                 normalized_market, normalized_symbol, provisional_job_id
             )
-            await redis_client.setex(
-                keys.status_key, self.REPORT_CACHE_TTL_SECONDS, "failed"
+            await self._transition_report_status(
+                keys.status_key,
+                "failed",
+                redis_client=redis_client,
             )
             await self._store_json(
                 keys.job_key,
@@ -317,8 +457,10 @@ class ScreenerService:
             "updated_at": datetime.now(UTC).isoformat(),
         }
         await self._store_json(keys.job_key, self.REPORT_CACHE_TTL_SECONDS, metadata)
-        await redis_client.setex(
-            keys.status_key, self.REPORT_CACHE_TTL_SECONDS, "queued"
+        persisted_status = await self._transition_report_status(
+            keys.status_key,
+            "queued",
+            redis_client=redis_client,
         )
         await redis_client.set(
             keys.inflight_key,
@@ -326,24 +468,60 @@ class ScreenerService:
             ex=self.REPORT_INFLIGHT_TTL_SECONDS,
         )
 
-        return {"job_id": job_id, "status": "queued", "is_reused": False}
+        return {
+            "job_id": job_id,
+            "status": persisted_status,
+            "is_reused": False,
+        }
 
     async def get_report_status(self, job_id: str) -> dict[str, Any]:
         if not job_id:
             raise ValueError("job_id is required")
+
         redis_client = await self._get_redis()
         status_key = f"screener:report:status:{job_id}"
-        status = await redis_client.get(status_key)
-        response: dict[str, Any] = {"job_id": job_id, "status": status or "queued"}
+        status = self._normalize_report_status(await redis_client.get(status_key))
         metadata = await self._load_cached_json(f"screener:report:job:{job_id}")
+
+        if status is None and metadata is None:
+            return {
+                "job_id": job_id,
+                "status": "failed",
+                "error": "job_not_found",
+                "not_found": True,
+            }
+
+        inflight_key_value = metadata.get("inflight_key") if metadata else None
+        if isinstance(inflight_key_value, str) and inflight_key_value:
+            inflight_job_id = await redis_client.get(inflight_key_value)
+            if inflight_job_id == job_id and status in {None, "queued"}:
+                status = await self._transition_report_status(
+                    status_key,
+                    "running",
+                    redis_client=redis_client,
+                )
+
+        if status is None:
+            if metadata and isinstance(metadata.get("error"), str):
+                status = "failed"
+            else:
+                status = "queued"
+
+        response: dict[str, Any] = {"job_id": job_id, "status": status}
         if status == "completed":
             if metadata and isinstance(metadata.get("result_key"), str):
                 report = await self._load_cached_json(metadata["result_key"])
                 if report is not None:
                     response["report"] = report
         elif status == "failed":
-            if metadata and isinstance(metadata.get("error"), str):
+            if (
+                metadata
+                and isinstance(metadata.get("error"), str)
+                and metadata["error"]
+            ):
                 response["error"] = metadata["error"]
+            else:
+                response["error"] = "job_failed"
         return response
 
     async def process_callback(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -351,42 +529,154 @@ class ScreenerService:
         if not job_id:
             raise ValueError("request_id is required")
 
-        metadata = await self._load_cached_json(f"screener:report:job:{job_id}")
-        if metadata is None:
-            redis_client = await self._get_redis()
-            status_key = f"screener:report:status:{job_id}"
-            try:
-                market = self._market_from_instrument_type(payload.get("instrument_type"))
-                symbol = self._normalize_symbol(market, str(payload.get("symbol") or ""))
-            except ValueError as exc:
-                error_message = str(exc)
-                await redis_client.setex(
-                    status_key, self.REPORT_CACHE_TTL_SECONDS, "failed"
-                )
+        redis_client = await self._get_redis()
+        job_key = f"screener:report:job:{job_id}"
+        metadata = await self._load_cached_json(job_key)
+        default_status_key = f"screener:report:status:{job_id}"
+        status_key = (
+            str(metadata.get("status_key"))
+            if metadata and isinstance(metadata.get("status_key"), str)
+            else default_status_key
+        )
+        inflight_key = (
+            str(metadata.get("inflight_key"))
+            if metadata and isinstance(metadata.get("inflight_key"), str)
+            else ""
+        )
+        error_metadata_base = (
+            {
+                **metadata,
+                "job_id": job_id,
+                "status_key": status_key,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+            if metadata
+            else {
+                "job_id": job_id,
+                "status_key": status_key,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+
+        try:
+            callback_market = self._market_from_instrument_type(
+                payload.get("instrument_type")
+            )
+            callback_symbol = self._normalize_symbol(
+                callback_market, str(payload.get("symbol") or "")
+            )
+        except ValueError as exc:
+            error_message = str(exc)
+            persisted_status = await self._transition_report_status(
+                status_key,
+                "failed",
+                redis_client=redis_client,
+            )
+            if persisted_status == "failed":
                 await self._store_json(
-                    f"screener:report:job:{job_id}",
+                    job_key,
                     self.REPORT_CACHE_TTL_SECONDS,
                     {
-                        "job_id": job_id,
-                        "status_key": status_key,
-                        "updated_at": datetime.now(UTC).isoformat(),
+                        **error_metadata_base,
                         "error": error_message,
                     },
                 )
-                return {
-                    "status": "failed",
-                    "request_id": job_id,
-                    "job_id": job_id,
-                    "error": error_message,
-                }
-            keys = self._report_keys(market, symbol, job_id)
+                if inflight_key:
+                    await redis_client.delete(inflight_key)
+            return {
+                "status": "failed",
+                "request_id": job_id,
+                "job_id": job_id,
+                "error": error_message,
+            }
+
+        if metadata is None:
+            keys = self._report_keys(callback_market, callback_symbol, job_id)
             metadata = {
                 "job_id": job_id,
-                "market": market,
-                "symbol": symbol,
+                "market": callback_market,
+                "symbol": callback_symbol,
                 "result_key": keys.result_key,
                 "status_key": keys.status_key,
                 "inflight_key": keys.inflight_key,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        else:
+            expected_market = None
+            expected_symbol = None
+            if isinstance(metadata.get("market"), str):
+                try:
+                    expected_market = self._normalize_market(metadata["market"])
+                except ValueError:
+                    expected_market = None
+            if expected_market and isinstance(metadata.get("symbol"), str):
+                try:
+                    expected_symbol = self._normalize_symbol(
+                        expected_market, metadata["symbol"]
+                    )
+                except ValueError:
+                    expected_symbol = None
+
+            if expected_market and expected_symbol:
+                if (
+                    callback_market != expected_market
+                    or callback_symbol != expected_symbol
+                ):
+                    error_message = (
+                        "callback_payload_mismatch:"
+                        f" expected={expected_market}:{expected_symbol}"
+                        f" actual={callback_market}:{callback_symbol}"
+                    )
+                    persisted_status = await self._transition_report_status(
+                        status_key,
+                        "failed",
+                        redis_client=redis_client,
+                    )
+                    if persisted_status == "failed":
+                        await self._store_json(
+                            job_key,
+                            self.REPORT_CACHE_TTL_SECONDS,
+                            {
+                                **error_metadata_base,
+                                "market": expected_market,
+                                "symbol": expected_symbol,
+                                "error": error_message,
+                            },
+                        )
+                        if inflight_key:
+                            await redis_client.delete(inflight_key)
+                    return {
+                        "status": "failed",
+                        "request_id": job_id,
+                        "job_id": job_id,
+                        "error": error_message,
+                    }
+            else:
+                expected_market = callback_market
+                expected_symbol = callback_symbol
+
+            keys = self._report_keys(expected_market, expected_symbol, job_id)
+            metadata = {
+                **metadata,
+                "job_id": job_id,
+                "market": expected_market,
+                "symbol": expected_symbol,
+                "result_key": (
+                    metadata["result_key"]
+                    if isinstance(metadata.get("result_key"), str)
+                    else keys.result_key
+                ),
+                "status_key": (
+                    metadata["status_key"]
+                    if isinstance(metadata.get("status_key"), str)
+                    else keys.status_key
+                ),
+                "inflight_key": (
+                    metadata["inflight_key"]
+                    if isinstance(metadata.get("inflight_key"), str)
+                    else keys.inflight_key
+                ),
+                "updated_at": datetime.now(UTC).isoformat(),
             }
 
         result_key = str(metadata["result_key"])
@@ -397,11 +687,14 @@ class ScreenerService:
             "received_at": datetime.now(UTC).isoformat(),
         }
 
-        redis_client = await self._get_redis()
         await self._store_json(
             result_key, self.REPORT_CACHE_TTL_SECONDS, payload_with_timestamp
         )
-        await redis_client.setex(status_key, self.REPORT_CACHE_TTL_SECONDS, "completed")
+        await self._transition_report_status(
+            status_key,
+            "completed",
+            redis_client=redis_client,
+        )
         await self._store_json(
             f"screener:report:job:{job_id}",
             self.REPORT_CACHE_TTL_SECONDS,

@@ -77,6 +77,9 @@ async def screener_dashboard(request: Request):
             "request": request,
             "poll_interval_seconds": 3,
             "poll_timeout_seconds": 120,
+            "queued_poll_interval_seconds": 7,
+            "running_poll_interval_seconds": 3,
+            "poll_backoff_max_seconds": 20,
         },
     )
 
@@ -85,11 +88,14 @@ async def screener_dashboard(request: Request):
 async def screener_report_page(request: Request, job_id: str):
     return templates.TemplateResponse(
         request,
-        "screener_dashboard.html",
+        "screener_report_detail.html",
         {
             "request": request,
             "poll_interval_seconds": 3,
             "poll_timeout_seconds": 120,
+            "queued_poll_interval_seconds": 7,
+            "running_poll_interval_seconds": 3,
+            "poll_backoff_max_seconds": 20,
             "initial_job_id": job_id,
         },
     )
