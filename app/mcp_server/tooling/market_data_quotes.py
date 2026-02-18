@@ -356,8 +356,8 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_ohlcv",
         description=(
-            "Get OHLCV candles for a symbol. Supports day/week/month and "
-            "intraday periods (1h, 4h) for crypto. Date-based pagination via end_date."
+            "Get OHLCV candles for a symbol. Supports daily/weekly/monthly periods "
+            "plus 4h for crypto, 1h for US equity/crypto, and date-based pagination."
         ),
     )
     async def get_ohlcv(
@@ -375,9 +375,8 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             raise ValueError("count must be > 0")
 
         period = (period or "day").strip().lower()
-        valid_periods = {"day", "week", "month", "1h", "4h"}
-        if period not in valid_periods:
-            raise ValueError(f"period must be one of {sorted(valid_periods)}")
+        if period not in ("day", "week", "month", "4h", "1h"):
+            raise ValueError("period must be 'day', 'week', 'month', '4h', or '1h'")
 
         parsed_end_date: datetime.datetime | None = None
         if end_date:
@@ -390,8 +389,10 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
 
         market_type, symbol = _resolve_market_type(symbol, market)
 
-        if period in ("1h", "4h") and market_type != "crypto":
-            raise ValueError(f"Intraday period '{period}' is only supported for crypto")
+        if period == "4h" and market_type != "crypto":
+            raise ValueError("period '4h' is supported only for crypto")
+        if period == "1h" and market_type == "equity_kr":
+            raise ValueError("period '1h' is not supported for korean equity")
 
         source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
         source = source_map[market_type]
