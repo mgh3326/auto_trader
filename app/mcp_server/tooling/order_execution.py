@@ -408,6 +408,7 @@ async def _execute_order(
 async def _place_order_impl(
     symbol: str,
     side: Literal["buy", "sell"],
+    market: str | None = None,
     order_type: Literal["limit", "market"] = "limit",
     quantity: float | None = None,
     price: float | None = None,
@@ -442,7 +443,7 @@ async def _place_order_impl(
             "amount can only be used for buy orders. Use quantity for sell orders."
         )
 
-    market_type, normalized_symbol = _resolve_market_type(symbol, None)
+    market_type, normalized_symbol = _resolve_market_type(symbol, market)
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "kis"}
     source = source_map[market_type]
 

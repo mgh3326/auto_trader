@@ -174,6 +174,7 @@ class Settings(BaseSettings):
     OPENCLAW_TOKEN: str = ""
     OPENCLAW_CALLBACK_TOKEN: str = ""  # shared secret for inbound callback auth
     OPENCLAW_CALLBACK_URL: str = "http://localhost:8000/api/v1/openclaw/callback"
+    OPENCLAW_SCREENER_CALLBACK_URL: str = "http://localhost:8000/api/screener/callback"
     OPENCLAW_ENABLED: bool = False
 
     DAILY_SCAN_ENABLED: bool = False

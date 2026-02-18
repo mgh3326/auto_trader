@@ -43,6 +43,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     # Public API paths (explicit whitelist)
     PUBLIC_API_PATHS: ClassVar[list[str]] = [
         "/api/v1/openclaw/callback",
+        "/api/screener/callback",
     ]
 
     def __init__(self, app):

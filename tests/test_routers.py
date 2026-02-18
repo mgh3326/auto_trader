@@ -58,6 +58,7 @@ class TestRouterIntegration:
         assert any("/healthz" in route for route in routes)
         assert any("/dashboard" in route for route in routes)
         assert any("/analysis" in route for route in routes)
+        assert any("/screener" in route for route in routes)
 
 
 class TestUpbitTradingRouter:
