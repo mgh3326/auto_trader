@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import date
 from unittest.mock import AsyncMock
@@ -5612,6 +5613,345 @@ class TestGetCryptoProfile:
         assert "<" not in (result_first["description"] or "")
         assert result_second["symbol"] == "BTC"
         assert detail_calls["count"] == 1
+
+    async def test_get_crypto_profile_uses_redis_cached_coin_list(self, monkeypatch):
+        tools = build_tools()
+        self._reset_cache()
+
+        class FakeRedis:
+            async def get(self, key):
+                if key == "coingecko:coins:list:v1":
+                    return json.dumps({"etc": ["ethereum-classic"]})
+                return None
+
+        monkeypatch.setattr(
+            fundamentals_sources_coingecko,
+            "_get_redis_client",
+            AsyncMock(return_value=FakeRedis()),
+        )
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    raise AssertionError("coins/list should not be called on redis hit")
+                if "/coins/ethereum-classic" in url:
+                    return MockResponse(
+                        {
+                            "name": "Ethereum Classic",
+                            "symbol": "etc",
+                            "market_data": {},
+                        }
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+        result = await tools["get_crypto_profile"]("ETC")
+
+        assert result["symbol"] == "ETC"
+
+    async def test_get_crypto_profile_writes_coin_list_to_redis_on_miss(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+        self._reset_cache()
+
+        class FakeRedis:
+            def __init__(self):
+                self.setex_calls: list[tuple[str, int, str]] = []
+
+            async def get(self, key):
+                return None
+
+            async def setex(self, key, ttl, payload):
+                self.setex_calls.append((key, ttl, payload))
+
+        fake_redis = FakeRedis()
+        monkeypatch.setattr(
+            fundamentals_sources_coingecko,
+            "_get_redis_client",
+            AsyncMock(return_value=fake_redis),
+        )
+
+        list_calls = {"count": 0}
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    list_calls["count"] += 1
+                    return MockResponse(
+                        [
+                            {
+                                "id": "ethereum-classic",
+                                "symbol": "etc",
+                                "name": "Ethereum Classic",
+                            }
+                        ]
+                    )
+                if "/coins/ethereum-classic" in url:
+                    return MockResponse(
+                        {
+                            "name": "Ethereum Classic",
+                            "symbol": "etc",
+                            "market_data": {},
+                        }
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+        result = await tools["get_crypto_profile"]("ETC")
+
+        assert result["symbol"] == "ETC"
+        assert list_calls["count"] == 1
+        assert fake_redis.setex_calls[0][0] == "coingecko:coins:list:v1"
+        assert fake_redis.setex_calls[0][1] == 86400
+
+    async def test_get_crypto_profile_ignores_invalid_redis_payload_and_refetches(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+        self._reset_cache()
+
+        class FakeRedis:
+            def __init__(self):
+                self.setex_calls: list[tuple[str, int, str]] = []
+
+            async def get(self, key):
+                if key == "coingecko:coins:list:v1":
+                    return json.dumps({"etc": "ethereum-classic"})
+                return None
+
+            async def setex(self, key, ttl, payload):
+                self.setex_calls.append((key, ttl, payload))
+
+        fake_redis = FakeRedis()
+        monkeypatch.setattr(
+            fundamentals_sources_coingecko,
+            "_get_redis_client",
+            AsyncMock(return_value=fake_redis),
+        )
+
+        list_calls = {"count": 0}
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    list_calls["count"] += 1
+                    return MockResponse(
+                        [
+                            {
+                                "id": "ethereum-classic",
+                                "symbol": "etc",
+                                "name": "Ethereum Classic",
+                            }
+                        ]
+                    )
+                if "/coins/ethereum-classic" in url:
+                    return MockResponse(
+                        {
+                            "name": "Ethereum Classic",
+                            "symbol": "etc",
+                            "market_data": {},
+                        }
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+        result = await tools["get_crypto_profile"]("ETC")
+
+        assert result["symbol"] == "ETC"
+        assert list_calls["count"] == 1
+        assert fake_redis.setex_calls[0][0] == "coingecko:coins:list:v1"
+
+    async def test_get_crypto_profile_falls_back_when_redis_errors(self, monkeypatch):
+        tools = build_tools()
+        self._reset_cache()
+
+        class BrokenRedis:
+            async def get(self, key):
+                raise RuntimeError("redis unavailable")
+
+            async def setex(self, key, ttl, payload):
+                raise RuntimeError("redis unavailable")
+
+        monkeypatch.setattr(
+            fundamentals_sources_coingecko,
+            "_get_redis_client",
+            AsyncMock(return_value=BrokenRedis()),
+        )
+
+        list_calls = {"count": 0}
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    list_calls["count"] += 1
+                    return MockResponse(
+                        [
+                            {
+                                "id": "ethereum-classic",
+                                "symbol": "etc",
+                                "name": "Ethereum Classic",
+                            }
+                        ]
+                    )
+                if "/coins/ethereum-classic" in url:
+                    return MockResponse(
+                        {
+                            "name": "Ethereum Classic",
+                            "symbol": "etc",
+                            "market_data": {},
+                        }
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+        result = await tools["get_crypto_profile"]("ETC")
+
+        assert "error" not in result
+        assert result["name"] == "Ethereum Classic"
+        assert result["symbol"] == "ETC"
+        assert list_calls["count"] == 1
+
+    async def test_get_crypto_profile_does_not_cache_invalid_coin_list_response(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+        self._reset_cache()
+
+        class FakeRedis:
+            def __init__(self):
+                self.setex_calls: list[tuple[str, int, str]] = []
+
+            async def get(self, key):
+                return None
+
+            async def setex(self, key, ttl, payload):
+                self.setex_calls.append((key, ttl, payload))
+
+        fake_redis = FakeRedis()
+        monkeypatch.setattr(
+            fundamentals_sources_coingecko,
+            "_get_redis_client",
+            AsyncMock(return_value=fake_redis),
+        )
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    # Unexpected payload shape from upstream.
+                    return MockResponse({"unexpected": "format"})
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+        result = await tools["get_crypto_profile"]("ETC")
+
+        assert "error" in result
+        assert fake_redis.setex_calls == []
 
     async def test_get_crypto_profile_unknown_symbol_returns_error(self, monkeypatch):
         tools = build_tools()

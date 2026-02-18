@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import re
 import time
 from typing import Any
 
 import httpx
+import redis.asyncio as redis
 
+from app.core.config import settings
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
@@ -37,6 +41,8 @@ COINGECKO_COINS_LIST_URL = "https://api.coingecko.com/api/v3/coins/list"
 COINGECKO_COINS_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 COINGECKO_COIN_DETAIL_URL = "https://api.coingecko.com/api/v3/coins/{coin_id}"
 COINGECKO_CACHE_TTL_SECONDS = 300
+COINGECKO_LIST_REDIS_KEY = "coingecko:coins:list:v1"
+COINGECKO_LIST_REDIS_TTL_SECONDS = 86400
 COINGECKO_SYMBOL_ID_OVERRIDES = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
@@ -52,8 +58,11 @@ COINGECKO_SYMBOL_ID_OVERRIDES = {
 
 _COINGECKO_LIST_CACHE: dict[str, Any] = {"expires_at": 0.0, "symbol_to_ids": {}}
 _COINGECKO_PROFILE_CACHE: dict[str, dict[str, Any]] = {}
+_COINGECKO_REDIS_CLIENT: redis.Redis | None = None
 _COINGECKO_LIST_LOCK = asyncio.Lock()
 _COINGECKO_PROFILE_LOCK = asyncio.Lock()
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_crypto_base_symbol(symbol: str) -> str:
@@ -80,6 +89,91 @@ def _to_optional_money(value: Any) -> int | None:
     if numeric is None:
         return None
     return int(round(numeric))
+
+
+async def _get_redis_client() -> redis.Redis:
+    global _COINGECKO_REDIS_CLIENT
+
+    if _COINGECKO_REDIS_CLIENT is None:
+        _COINGECKO_REDIS_CLIENT = redis.from_url(
+            settings.get_redis_url(),
+            max_connections=settings.redis_max_connections,
+            socket_timeout=settings.redis_socket_timeout,
+            socket_connect_timeout=settings.redis_socket_connect_timeout,
+            decode_responses=True,
+        )
+
+    return _COINGECKO_REDIS_CLIENT
+
+
+def _validate_symbol_to_ids(payload: Any) -> dict[str, list[str]] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    symbol_to_ids: dict[str, list[str]] = {}
+    for symbol, coin_ids in payload.items():
+        if not isinstance(symbol, str):
+            return None
+
+        normalized_symbol = symbol.strip().lower()
+        if not normalized_symbol:
+            return None
+
+        if not isinstance(coin_ids, list) or not coin_ids:
+            return None
+
+        normalized_ids: list[str] = []
+        for coin_id in coin_ids:
+            if not isinstance(coin_id, str):
+                return None
+
+            normalized_coin_id = coin_id.strip()
+            if not normalized_coin_id:
+                return None
+
+            normalized_ids.append(normalized_coin_id)
+
+        symbol_to_ids[normalized_symbol] = normalized_ids
+
+    if not symbol_to_ids:
+        return None
+
+    return symbol_to_ids
+
+
+async def _read_symbol_to_ids_from_redis() -> dict[str, list[str]] | None:
+    try:
+        redis_client = await _get_redis_client()
+        payload = await redis_client.get(COINGECKO_LIST_REDIS_KEY)
+    except Exception as exc:
+        logger.warning("coingecko_list_cache_redis_error stage=read error=%s", exc)
+        return None
+
+    if not payload:
+        return None
+
+    try:
+        deserialized = json.loads(payload)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+    return _validate_symbol_to_ids(deserialized)
+
+
+async def _write_symbol_to_ids_to_redis(symbol_to_ids: dict[str, list[str]]) -> None:
+    if not symbol_to_ids:
+        return
+
+    try:
+        redis_client = await _get_redis_client()
+        payload = json.dumps(symbol_to_ids, separators=(",", ":"))
+        await redis_client.setex(
+            COINGECKO_LIST_REDIS_KEY,
+            COINGECKO_LIST_REDIS_TTL_SECONDS,
+            payload,
+        )
+    except Exception as exc:
+        logger.warning("coingecko_list_cache_redis_error stage=write error=%s", exc)
 
 
 def _clean_description_one_line(value: Any) -> str | None:
@@ -161,6 +255,12 @@ async def _get_coingecko_symbol_to_ids() -> dict[str, list[str]]:
             if isinstance(cached, dict):
                 return cached
 
+        redis_cached = await _read_symbol_to_ids_from_redis()
+        if redis_cached is not None:
+            _COINGECKO_LIST_CACHE["symbol_to_ids"] = redis_cached
+            _COINGECKO_LIST_CACHE["expires_at"] = now + COINGECKO_CACHE_TTL_SECONDS
+            return redis_cached
+
         async with httpx.AsyncClient(timeout=15) as cli:
             response = await cli.get(
                 COINGECKO_COINS_LIST_URL,
@@ -180,8 +280,12 @@ async def _get_coingecko_symbol_to_ids() -> dict[str, list[str]]:
                     continue
                 symbol_to_ids.setdefault(coin_symbol, []).append(coin_id)
 
+        if not symbol_to_ids:
+            raise ValueError("Unexpected CoinGecko coins/list response format")
+
         _COINGECKO_LIST_CACHE["symbol_to_ids"] = symbol_to_ids
         _COINGECKO_LIST_CACHE["expires_at"] = now + COINGECKO_CACHE_TTL_SECONDS
+        await _write_symbol_to_ids_to_redis(symbol_to_ids)
         return symbol_to_ids
 
 
