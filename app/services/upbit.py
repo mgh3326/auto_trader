@@ -18,6 +18,19 @@ logger = logging.getLogger(__name__)
 
 UPBIT_REST = "https://api.upbit.com/v1"
 UPBIT_CANDLES_RATE_LIMIT_KEY = "GET /v1/candles/*"
+_INTERVAL_TO_ENDPOINT = {
+    "day": "days",
+    "week": "weeks",
+    "month": "months",
+    "1m": "minutes/1",
+    "3m": "minutes/3",
+    "5m": "minutes/5",
+    "10m": "minutes/10",
+    "15m": "minutes/15",
+    "30m": "minutes/30",
+    "1h": "minutes/60",
+    "4h": "minutes/240",
+}
 _unmapped_rate_limit_keys_logged: set[str] = set()
 _ticker_price_cache: dict[str, tuple[float, float]] = {}
 _ticker_inflight_symbol_tasks: dict[str, asyncio.Task[dict[str, float]]] = {}
@@ -190,6 +203,16 @@ async def check_krw_balance_sufficient(required_amount: float) -> tuple[bool, fl
     return is_sufficient, current_balance
 
 
+def _normalize_upbit_interval(period: str) -> str:
+    normalized = str(period or "").strip().lower()
+    aliases = {
+        "hour": "1h",
+        "60m": "1h",
+        "240m": "4h",
+    }
+    return aliases.get(normalized, normalized)
+
+
 async def fetch_ohlcv(
     market: str = "KRW-BTC",
     days: int = 100,
@@ -197,7 +220,8 @@ async def fetch_ohlcv(
     end_date: datetime | None = None,
 ) -> pd.DataFrame:
     """최근 *days*개 OHLCV DataFrame 반환 (Upbit)."""
-    normalized_period = str(period or "").strip().lower()
+    normalized_period = _normalize_upbit_interval(period)
+    request_count = min(max(int(days), 1), 200)
 
     if (
         normalized_period in {"day", "week", "month"}
@@ -207,7 +231,7 @@ async def fetch_ohlcv(
 
         cached = await upbit_ohlcv_cache_service.get_closed_candles(
             market,
-            count=days,
+            count=request_count,
             period=normalized_period,
             raw_fetcher=_fetch_ohlcv_raw,
         )
@@ -216,7 +240,7 @@ async def fetch_ohlcv(
 
     raw = await _fetch_ohlcv_raw(
         market=market,
-        days=days,
+        days=request_count,
         period=normalized_period,
         end_date=end_date,
     )
@@ -225,40 +249,49 @@ async def fetch_ohlcv(
     return raw
 
 
-async def _fetch_ohlcv_raw(
-    market: str = "KRW-BTC",
-    days: int = 100,
-    period: str = "day",
+async def _fetch_candles_raw(
+    market: str,
+    count: int,
+    interval: str,
     end_date: datetime | None = None,
 ) -> pd.DataFrame:
-    if days > 200:
-        raise ValueError("Upbit API는 최대 200개까지 요청 가능합니다.")
+    normalized_interval = _normalize_upbit_interval(interval)
+    endpoint = _INTERVAL_TO_ENDPOINT.get(normalized_interval)
+    if endpoint is None:
+        raise ValueError(f"period must be one of {list(_INTERVAL_TO_ENDPOINT.keys())}")
 
-    period_map = {
-        "day": "days",
-        "week": "weeks",
-        "month": "months",
-    }
-    if period not in period_map:
-        raise ValueError(f"period must be one of {list(period_map.keys())}")
-
-    url = f"{UPBIT_REST}/candles/{period_map[period]}"
+    request_count = min(max(int(count), 1), 200)
+    url = f"{UPBIT_REST}/candles/{endpoint}"
     params: dict[str, Any] = {
         "market": market,
-        "count": days,
+        "count": request_count,
     }
     if end_date is not None:
-        # Upbit API expects ISO 8601 format: 2023-01-01T00:00:00
         params["to"] = end_date.strftime("%Y-%m-%dT%H:%M:%S")
 
     rows = await _request_json(url, params)
+    is_minute_interval = endpoint.startswith("minutes/")
 
     if not rows:
+        if is_minute_interval:
+            return pd.DataFrame(
+                columns=[
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ]
+            )
         return pd.DataFrame(
             columns=["date", "open", "high", "low", "close", "volume", "value"]
         )
 
-    df = (
+    frame = (
         pd.DataFrame(rows)
         .rename(
             columns={
@@ -271,14 +304,56 @@ async def _fetch_ohlcv_raw(
                 "candle_acc_trade_price": "value",
             }
         )
-        .assign(
-            date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
+        .assign(datetime=lambda d: pd.to_datetime(d["datetime"]))
+    )
+
+    if is_minute_interval:
+        return (
+            frame.assign(
+                date=lambda d: d["datetime"].dt.date,
+                time=lambda d: d["datetime"].dt.time,
+            )
+            .loc[
+                :,
+                [
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ],
+            ]
+            .sort_values("datetime")
+            .reset_index(drop=True)
         )
+
+    return (
+        frame.assign(date=lambda d: d["datetime"].dt.date)
         .loc[:, ["date", "open", "high", "low", "close", "volume", "value"]]
         .sort_values("date")
         .reset_index(drop=True)
     )
-    return df
+
+
+async def _fetch_ohlcv_raw(
+    market: str = "KRW-BTC",
+    days: int = 100,
+    period: str = "day",
+    end_date: datetime | None = None,
+) -> pd.DataFrame:
+    if days > 200:
+        raise ValueError("Upbit API는 최대 200개까지 요청 가능합니다.")
+    normalized_period = _normalize_upbit_interval(period)
+    return await _fetch_candles_raw(
+        market=market,
+        count=days,
+        interval=normalized_period,
+        end_date=end_date,
+    )
 
 
 def _filter_closed_buckets(
@@ -369,51 +444,11 @@ async def fetch_minute_candles(
     if count > 200:
         raise ValueError("Upbit 분봉 API는 최대 200개까지 요청 가능합니다.")
 
-    url = f"{UPBIT_REST}/candles/minutes/{unit}"
-    params = {
-        "market": market,
-        "count": count,
-    }
-
-    rows = await _request_json(url, params)
-
-    df = (
-        pd.DataFrame(rows)
-        .rename(
-            columns={
-                "candle_date_time_kst": "datetime",
-                "opening_price": "open",
-                "high_price": "high",
-                "low_price": "low",
-                "trade_price": "close",
-                "candle_acc_trade_volume": "volume",
-                "candle_acc_trade_price": "value",
-            }
-        )
-        .assign(
-            datetime=lambda d: pd.to_datetime(d["datetime"]),
-            date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
-            time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
-        )
-        .loc[
-            :,
-            [
-                "datetime",
-                "date",
-                "time",
-                "open",
-                "high",
-                "low",
-                "close",
-                "volume",
-                "value",
-            ],
-        ]
-        .sort_values("datetime")
-        .reset_index(drop=True)
+    return await _fetch_candles_raw(
+        market=market,
+        count=count,
+        interval=f"{unit}m",
     )
-
-    return df
 
 
 async def fetch_hourly_candles(
