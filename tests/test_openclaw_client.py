@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 
 from app.core.config import settings
-from app.services.openclaw_client import _build_openclaw_message
+from app.services.openclaw_client import OpenClawClient, _build_openclaw_message
 
 
 def test_build_openclaw_message_includes_callback_and_schema() -> None:
@@ -122,7 +124,6 @@ async def test_request_analysis_posts_payload_and_returns_request_id(
     assert "USER_PROMPT:\nP" in called_json["message"]
     assert "POST http://example.test/api/v1/openclaw/callback" in called_json["message"]
     assert "Authorization: Bearer cb-token" in called_json["message"]
-from app.services.openclaw_client import OpenClawClient
 
 
 @pytest.mark.asyncio

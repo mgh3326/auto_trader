@@ -1,0 +1,119 @@
+{% if order_mode == "detail" %}
+<article class="panel" id="detail-order-panel">
+    <h2 class="h6">Order</h2>
+    <form id="detail-order-form" class="d-grid gap-2">
+        <input type="hidden" id="detail-order-market" value="us">
+
+        <div>
+            <label for="detail-order-symbol" class="form-label form-label-sm mb-1">Symbol</label>
+            <input type="text" class="form-control form-control-sm" id="detail-order-symbol" required>
+        </div>
+
+        <div class="row g-2">
+            <div class="col-6">
+                <label for="detail-order-side" class="form-label form-label-sm mb-1">Side</label>
+                <select class="form-select form-select-sm" id="detail-order-side">
+                    <option value="buy">buy</option>
+                    <option value="sell">sell</option>
+                </select>
+            </div>
+            <div class="col-6">
+                <label for="detail-order-type" class="form-label form-label-sm mb-1">Order Type</label>
+                <select class="form-select form-select-sm" id="detail-order-type">
+                    <option value="limit">limit</option>
+                    <option value="market">market</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="row g-2">
+            <div class="col-6">
+                <label for="detail-order-quantity" class="form-label form-label-sm mb-1">Quantity</label>
+                <input type="number" class="form-control form-control-sm" id="detail-order-quantity" step="0.0001" placeholder="optional">
+            </div>
+            <div class="col-6">
+                <label for="detail-order-price" class="form-label form-label-sm mb-1">Price</label>
+                <input type="number" class="form-control form-control-sm" id="detail-order-price" step="0.01" placeholder="optional">
+            </div>
+        </div>
+
+        <div>
+            <label for="detail-order-amount" class="form-label form-label-sm mb-1">Amount</label>
+            <input type="number" class="form-control form-control-sm" id="detail-order-amount" step="0.01" placeholder="optional">
+        </div>
+
+        <div>
+            <label for="detail-order-reason" class="form-label form-label-sm mb-1">Reason</label>
+            <input type="text" class="form-control form-control-sm" id="detail-order-reason" placeholder="optional note">
+        </div>
+
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="detail-order-confirm">
+            <label class="form-check-label subtle" for="detail-order-confirm">Execute real order (unchecked = dry run)</label>
+        </div>
+
+        <button class="btn btn-dark btn-sm" type="submit" id="detail-order-submit">Submit Order</button>
+    </form>
+
+    <p class="subtle mt-2 mb-0" id="detail-order-result" aria-live="polite">No order submitted.</p>
+</article>
+{% else %}
+<article class="panel" id="order-panel">
+    <h2 class="mb-2">Order Panel</h2>
+    <form id="order-form" class="d-grid gap-2">
+        <input type="hidden" id="order-market" value="us">
+
+        <div>
+            <label for="order-symbol" class="form-label form-label-sm mb-1">Symbol</label>
+            <input type="text" class="form-control form-control-sm" id="order-symbol" required>
+        </div>
+
+        <div class="row g-2">
+            <div class="col-6">
+                <label for="order-side" class="form-label form-label-sm mb-1">Side</label>
+                <select class="form-select form-select-sm" id="order-side">
+                    <option value="buy">buy</option>
+                    <option value="sell">sell</option>
+                </select>
+            </div>
+            <div class="col-6">
+                <label for="order-type" class="form-label form-label-sm mb-1">Order Type</label>
+                <select class="form-select form-select-sm" id="order-type">
+                    <option value="limit">limit</option>
+                    <option value="market">market</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="row g-2">
+            <div class="col-6">
+                <label for="order-quantity" class="form-label form-label-sm mb-1">Quantity</label>
+                <input type="number" class="form-control form-control-sm" id="order-quantity" step="0.0001" placeholder="optional">
+            </div>
+            <div class="col-6">
+                <label for="order-price" class="form-label form-label-sm mb-1">Price</label>
+                <input type="number" class="form-control form-control-sm" id="order-price" step="0.01" placeholder="optional">
+            </div>
+        </div>
+
+        <div>
+            <label for="order-amount" class="form-label form-label-sm mb-1">Amount</label>
+            <input type="number" class="form-control form-control-sm" id="order-amount" step="0.01" placeholder="optional">
+        </div>
+
+        <div>
+            <label for="order-reason" class="form-label form-label-sm mb-1">Reason</label>
+            <input type="text" class="form-control form-control-sm" id="order-reason" placeholder="optional note">
+        </div>
+
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="order-confirm">
+            <label class="form-check-label subtle" for="order-confirm">Execute real order (unchecked = dry run)</label>
+        </div>
+
+        <button class="btn btn-dark btn-sm" type="submit" id="submit-order-button">Submit Order</button>
+    </form>
+
+    <p class="muted-block mt-2 mb-0" id="order-result" aria-live="polite">No order submitted.</p>
+</article>
+{% endif %}

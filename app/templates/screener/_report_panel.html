@@ -1,0 +1,93 @@
+{% if report_mode == "detail" %}
+<article class="panel" id="detail-status-panel">
+    <div class="status-row mb-2">
+        <h2 class="h6 m-0">Report Status</h2>
+        <span class="badge-status queued" id="detail-status-badge">queued</span>
+    </div>
+
+    <p class="subtle mb-2">Job ID: <span class="mono" id="detail-job-id">{{ initial_job_id }}</span></p>
+
+    <div class="d-flex gap-2 mb-2">
+        <button class="btn btn-dark btn-sm" type="button" id="detail-refresh-button">Refresh Now</button>
+        <button class="btn btn-outline-dark btn-sm" type="button" id="detail-stop-button">Stop Polling</button>
+        <a class="btn btn-outline-secondary btn-sm" href="/screener">Back to Dashboard</a>
+    </div>
+
+    <p class="error-text mb-0" id="detail-error" hidden></p>
+</article>
+
+<article class="panel" id="detail-report-panel" aria-live="polite">
+    <h2 class="h6">Report</h2>
+    <p class="subtle mb-2" id="detail-report-text">Waiting for payload...</p>
+
+    <dl class="report-grid mb-2">
+        <dt>Symbol</dt>
+        <dd id="detail-symbol">-</dd>
+        <dt>Decision</dt>
+        <dd id="detail-decision">-</dd>
+        <dt>Confidence</dt>
+        <dd id="detail-confidence">-</dd>
+        <dt>Model</dt>
+        <dd id="detail-model">-</dd>
+    </dl>
+
+    <h3 class="h6">Reasons</h3>
+    <ul class="list-compact mb-2" id="detail-reasons"></ul>
+
+    <h3 class="h6">Price Analysis</h3>
+    <table class="table table-sm ranges-table">
+        <thead>
+        <tr>
+            <th>Range</th>
+            <th>Min</th>
+            <th>Max</th>
+        </tr>
+        </thead>
+        <tbody id="detail-ranges-body"></tbody>
+    </table>
+</article>
+{% else %}
+<article class="panel" id="report-panel" aria-live="polite">
+    <div class="status-row mb-2">
+        <h2>Report Panel</h2>
+        <span class="badge-status" id="report-status-badge">idle</span>
+    </div>
+
+    <p class="status-value mb-2">Job: <span class="mono" id="report-job-id">{{ initial_job_id or "not-set" }}</span></p>
+    <p class="status-value mb-2">Selected: <span id="selected-symbol">none</span></p>
+
+    <div class="d-flex gap-2 mb-3">
+        <button class="btn btn-dark btn-sm" type="button" id="generate-report-button">
+            Generate Report
+        </button>
+        <button class="btn btn-outline-dark btn-sm" type="button" id="stop-polling-button">
+            Stop Polling
+        </button>
+    </div>
+
+    <p class="error-text mb-2" id="report-error" hidden></p>
+    <p class="muted-block mb-2" id="report-detail-text">No report loaded yet.</p>
+
+    <dl class="report-grid mb-2">
+        <dt>Decision</dt>
+        <dd id="report-decision">-</dd>
+        <dt>Confidence</dt>
+        <dd id="report-confidence">-</dd>
+    </dl>
+
+    <h3 class="mb-1">Reasons</h3>
+    <ul class="list-compact mb-2" id="report-reasons"></ul>
+
+    <h3 class="mb-1">Price Analysis</h3>
+    <table class="table table-sm ranges-table" id="report-ranges-table">
+        <thead>
+        <tr>
+            <th>Range</th>
+            <th>Min</th>
+            <th>Max</th>
+        </tr>
+        </thead>
+        <tbody id="report-ranges-body"></tbody>
+    </table>
+</article>
+{% endif %}

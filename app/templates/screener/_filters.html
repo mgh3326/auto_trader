@@ -1,0 +1,51 @@
+<article class="panel" id="filters-panel">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <h2>Filters</h2>
+        <span class="subtle" id="last-updated">Not loaded</span>
+    </div>
+    <form id="filter-form" class="d-grid gap-2">
+        <div class="controls-grid">
+            <div>
+                <label for="market" class="form-label form-label-sm mb-1">Market</label>
+                <select class="form-select form-select-sm" id="market" name="market">
+                    <option value="kr">KR</option>
+                    <option value="us" selected>US</option>
+                    <option value="crypto">Crypto</option>
+                </select>
+            </div>
+            <div>
+                <label for="sort-by" class="form-label form-label-sm mb-1">Sort By</label>
+                <select class="form-select form-select-sm" id="sort-by" name="sort_by">
+                    <option value="volume" selected>volume</option>
+                    <option value="trade_amount">trade_amount</option>
+                    <option value="market_cap">market_cap</option>
+                    <option value="change_rate">change_rate</option>
+                </select>
+            </div>
+            <div>
+                <label for="sort-order" class="form-label form-label-sm mb-1">Order</label>
+                <select class="form-select form-select-sm" id="sort-order" name="sort_order">
+                    <option value="desc" selected>desc</option>
+                    <option value="asc">asc</option>
+                </select>
+            </div>
+            <div>
+                <label for="max-rsi" class="form-label form-label-sm mb-1">Max RSI</label>
+                <input type="number" class="form-control form-control-sm" id="max-rsi" name="max_rsi" step="0.1" placeholder="optional">
+            </div>
+            <div>
+                <label for="limit" class="form-label form-label-sm mb-1">Limit</label>
+                <input type="number" class="form-control form-control-sm" id="limit" name="limit" min="1" max="50" value="20">
+            </div>
+        </div>
+
+        <div class="d-flex gap-2">
+            <button class="btn btn-dark btn-sm" type="submit" id="search-button">
+                Search
+            </button>
+            <button class="btn btn-outline-dark btn-sm" type="button" id="refresh-button">
+                Refresh Cache
+            </button>
+        </div>
+    </form>
+</article>
