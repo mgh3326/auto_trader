@@ -114,6 +114,65 @@ class ScreenerService:
             return "trade_amount"
         return normalized
 
+    @staticmethod
+    def _normalize_min_volume(min_volume: float | None) -> float | None:
+        if min_volume is None:
+            return None
+        if min_volume < 0:
+            raise ValueError("min_volume must be >= 0")
+        return min_volume
+
+    @staticmethod
+    def _calculate_overfetch_limit(request_limit: int) -> int:
+        return min(50, max(request_limit * 3, request_limit))
+
+    @staticmethod
+    def _volume_metric_for_row(market: ScreenMarket, row: dict[str, Any]) -> float:
+        raw_value = (
+            row.get("trade_amount_24h") if market == "crypto" else row.get("volume")
+        )
+        try:
+            return float(raw_value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _apply_min_volume_filter(
+        cls,
+        result: dict[str, Any],
+        *,
+        market: ScreenMarket,
+        min_volume: float | None,
+        request_limit: int,
+    ) -> dict[str, Any]:
+        if min_volume is None:
+            return result
+
+        raw_results = result.get("results")
+        if not isinstance(raw_results, list):
+            raw_results = []
+
+        filtered_results = [
+            row
+            for row in raw_results
+            if isinstance(row, dict)
+            and cls._volume_metric_for_row(market, row) >= min_volume
+        ]
+        sliced_results = filtered_results[:request_limit]
+
+        filters_applied = result.get("filters_applied")
+        normalized_filters_applied = (
+            dict(filters_applied) if isinstance(filters_applied, dict) else {}
+        )
+        normalized_filters_applied["min_volume"] = min_volume
+
+        return {
+            **result,
+            "results": sliced_results,
+            "total_count": len(filtered_results),
+            "returned_count": len(sliced_results),
+            "filters_applied": normalized_filters_applied,
+        }
     def _screening_cache_key(self, filters: dict[str, Any]) -> str:
         serialized = self._compact_json(filters)
         digest = sha256(serialized.encode("utf-8")).hexdigest()
@@ -253,10 +312,13 @@ class ScreenerService:
         max_pbr: float | None = None,
         min_dividend_yield: float | None = None,
         max_rsi: float | None = None,
+        min_volume: float | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
         normalized_market = self._normalize_market(market)
         normalized_sort_by = self._normalize_sort_by(normalized_market, sort_by)
+        normalized_min_volume = self._normalize_min_volume(min_volume)
+        request_limit = limit
         filters = {
             "market": normalized_market,
             "asset_type": asset_type,
@@ -269,17 +331,35 @@ class ScreenerService:
             "max_pbr": max_pbr,
             "min_dividend_yield": min_dividend_yield,
             "max_rsi": max_rsi,
-            "limit": limit,
+            "min_volume": normalized_min_volume,
+            "limit": request_limit,
         }
         cache_key = self._screening_cache_key(filters)
         cached = await self._load_cached_json(cache_key)
         if cached:
             return {**cached, "cache_hit": True}
 
-        call_kwargs = {k: v for k, v in filters.items() if v is not None}
+        call_kwargs = {
+            key: value
+            for key, value in filters.items()
+            if value is not None and key != "min_volume"
+        }
+        if normalized_min_volume is not None:
+            call_kwargs["limit"] = self._calculate_overfetch_limit(request_limit)
+
         result = await screen_stocks_impl(**call_kwargs)
-        await self._store_json(cache_key, self.SCREENING_CACHE_TTL_SECONDS, result)
-        return {**result, "cache_hit": False}
+        filtered_result = self._apply_min_volume_filter(
+            result,
+            market=normalized_market,
+            min_volume=normalized_min_volume,
+            request_limit=request_limit,
+        )
+        await self._store_json(
+            cache_key,
+            self.SCREENING_CACHE_TTL_SECONDS,
+            filtered_result,
+        )
+        return {**filtered_result, "cache_hit": False}
 
     async def refresh_screening(
         self,
@@ -294,10 +374,12 @@ class ScreenerService:
         max_pbr: float | None = None,
         min_dividend_yield: float | None = None,
         max_rsi: float | None = None,
+        min_volume: float | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
         normalized_market = self._normalize_market(market)
         normalized_sort_by = self._normalize_sort_by(normalized_market, sort_by)
+        normalized_min_volume = self._normalize_min_volume(min_volume)
         filters = {
             "market": normalized_market,
             "asset_type": asset_type,
@@ -310,6 +392,7 @@ class ScreenerService:
             "max_pbr": max_pbr,
             "min_dividend_yield": min_dividend_yield,
             "max_rsi": max_rsi,
+            "min_volume": normalized_min_volume,
             "limit": limit,
         }
         cache_key = self._screening_cache_key(filters)

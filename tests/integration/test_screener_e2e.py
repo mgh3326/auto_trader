@@ -74,6 +74,39 @@ def screener_app_openclaw_failure(
         yield client
 
 
+@pytest.fixture
+def screener_app_screening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[tuple[TestClient, AsyncMock]]:
+    monkeypatch.setattr(settings, "OPENCLAW_CALLBACK_TOKEN", "callback-secret")
+
+    fake_redis = _FakeRedis()
+    openclaw = AsyncMock()
+    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    screen_mock = AsyncMock(
+        return_value={
+            "results": [
+                {"code": "AAPL", "volume": 500},
+                {"code": "MSFT", "volume": 1000},
+                {"code": "NVDA", "volume": 2500},
+                {"code": "TSLA", "volume": 1500},
+            ],
+            "total_count": 4,
+            "returned_count": 4,
+            "filters_applied": {"market": "us"},
+            "market": "us",
+        }
+    )
+    monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", screen_mock)
+
+    app = FastAPI()
+    app.include_router(screener.router)
+    app.dependency_overrides[screener.get_screener_service] = lambda: service
+
+    with TestClient(app) as client:
+        yield client, screen_mock
+
+
 @pytest.mark.integration
 def test_screener_report_lifecycle_e2e(
     screener_app_success: tuple[TestClient, AsyncMock],
@@ -155,3 +188,26 @@ def test_screener_report_failure_contains_error(
     status_body = status_res.json()
     assert status_body["status"] == "failed"
     assert "openclaw down" in status_body["error"]
+
+
+@pytest.mark.integration
+def test_screener_list_min_volume_e2e(
+    screener_app_screening: tuple[TestClient, AsyncMock],
+) -> None:
+    client, screen_mock = screener_app_screening
+
+    response = client.get(
+        "/api/screener/list",
+        params={"market": "us", "min_volume": 1000, "limit": 2},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["code"] for item in body["results"]] == ["MSFT", "NVDA"]
+    assert body["returned_count"] == 2
+    assert body["total_count"] == 3
+    assert body["filters_applied"]["min_volume"] == 1000.0
+
+    await_args = screen_mock.await_args
+    assert await_args is not None
+    assert await_args.kwargs["limit"] == 6

@@ -88,10 +88,136 @@ async def test_list_screening_coerces_crypto_volume_sort_to_trade_amount(
     )
 
     assert result["cache_hit"] is False
-    call_kwargs = mock_screen.await_args.kwargs
+    await_args = mock_screen.await_args
+    assert await_args is not None
+    call_kwargs = await_args.kwargs
     assert call_kwargs["market"] == "crypto"
     assert call_kwargs["sort_by"] == "trade_amount"
     assert call_kwargs["sort_order"] == "desc"
+
+
+@pytest.mark.asyncio
+async def test_list_screening_filters_us_by_min_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.screener_service import ScreenerService
+
+    fake_redis = _FakeRedis()
+    mock_screen = AsyncMock(
+        return_value={
+            "results": [
+                {"code": "AAPL", "volume": 500},
+                {"code": "MSFT", "volume": 1000},
+                {"code": "NVDA", "volume": 2500},
+                {"code": "TSLA", "volume": 1500},
+            ],
+            "total_count": 4,
+            "returned_count": 4,
+            "filters_applied": {"market": "us"},
+            "market": "us",
+        }
+    )
+    monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
+
+    service = ScreenerService(redis_client=fake_redis)
+    result = await service.list_screening(market="us", min_volume=1000, limit=2)
+
+    assert result["cache_hit"] is False
+    assert [item["code"] for item in result["results"]] == ["MSFT", "NVDA"]
+    assert result["returned_count"] == 2
+    assert result["total_count"] == 3
+    assert result["filters_applied"]["min_volume"] == 1000
+
+    await_args = mock_screen.await_args
+    assert await_args is not None
+    call_kwargs = await_args.kwargs
+    assert call_kwargs["limit"] == 6
+
+
+@pytest.mark.asyncio
+async def test_list_screening_filters_crypto_by_trade_amount_24h(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.screener_service import ScreenerService
+
+    fake_redis = _FakeRedis()
+    mock_screen = AsyncMock(
+        return_value={
+            "results": [
+                {"code": "KRW-BTC", "trade_amount_24h": 900},
+                {"code": "KRW-ETH", "trade_amount_24h": 1200},
+                {"code": "KRW-XRP"},
+                {"code": "KRW-SOL", "trade_amount_24h": 3000},
+            ],
+            "total_count": 4,
+            "returned_count": 4,
+            "filters_applied": {"market": "crypto"},
+            "market": "crypto",
+        }
+    )
+    monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
+
+    service = ScreenerService(redis_client=fake_redis)
+    result = await service.list_screening(market="crypto", min_volume=1000, limit=2)
+
+    assert result["cache_hit"] is False
+    assert [item["code"] for item in result["results"]] == ["KRW-ETH", "KRW-SOL"]
+    assert result["returned_count"] == 2
+    assert result["total_count"] == 2
+    assert result["filters_applied"]["min_volume"] == 1000
+
+    await_args = mock_screen.await_args
+    assert await_args is not None
+    call_kwargs = await_args.kwargs
+    assert call_kwargs["limit"] == 6
+
+
+@pytest.mark.asyncio
+async def test_list_screening_uses_separate_cache_keys_for_min_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.screener_service import ScreenerService
+
+    fake_redis = _FakeRedis()
+    mock_screen = AsyncMock(
+        return_value={
+            "results": [{"code": "AAPL", "volume": 1000}],
+            "total_count": 1,
+            "returned_count": 1,
+            "filters_applied": {"market": "us"},
+            "market": "us",
+        }
+    )
+    monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
+
+    service = ScreenerService(redis_client=fake_redis)
+
+    first = await service.list_screening(market="us", min_volume=1000, limit=1)
+    second = await service.list_screening(market="us", min_volume=2000, limit=1)
+    third = await service.list_screening(market="us", min_volume=1000, limit=1)
+
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is False
+    assert third["cache_hit"] is True
+    assert mock_screen.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_list_screening_rejects_negative_min_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.screener_service import ScreenerService
+
+    fake_redis = _FakeRedis()
+    mock_screen = AsyncMock(return_value={})
+    monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
+
+    service = ScreenerService(redis_client=fake_redis)
+
+    with pytest.raises(ValueError, match="min_volume must be >= 0"):
+        await service.list_screening(market="us", min_volume=-1, limit=20)
+
+    assert mock_screen.await_count == 0
 
 
 @pytest.mark.asyncio
@@ -104,13 +230,13 @@ async def test_refresh_screening_invalidates_cache(
     mock_screen = AsyncMock(
         side_effect=[
             {
-                "results": [{"code": "AAPL"}],
+                "results": [{"code": "AAPL", "volume": 1200}],
                 "total_count": 1,
                 "returned_count": 1,
                 "market": "us",
             },
             {
-                "results": [{"code": "MSFT"}],
+                "results": [{"code": "MSFT", "volume": 1500}],
                 "total_count": 1,
                 "returned_count": 1,
                 "market": "us",
@@ -121,12 +247,16 @@ async def test_refresh_screening_invalidates_cache(
 
     service = ScreenerService(redis_client=fake_redis)
 
-    first = await service.list_screening(market="us", limit=20)
-    refreshed = await service.refresh_screening(market="us", limit=20)
+    first = await service.list_screening(market="us", min_volume=1000, limit=5)
+    cached = await service.list_screening(market="us", min_volume=1000, limit=5)
+    refreshed = await service.refresh_screening(market="us", min_volume=1000, limit=5)
+    recached = await service.list_screening(market="us", min_volume=1000, limit=5)
 
     assert first["results"][0]["code"] == "AAPL"
+    assert cached["cache_hit"] is True
     assert refreshed["results"][0]["code"] == "MSFT"
     assert refreshed["cache_hit"] is False
+    assert recached["cache_hit"] is True
     assert mock_screen.await_count == 2
 
 

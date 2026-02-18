@@ -63,9 +63,14 @@ def test_screener_dashboard_page(
     body = response.text
     assert 'id="screener-main-page"' in body
     assert 'id="filter-form"' in body
+    assert 'id="min-volume"' in body
     assert 'id="results-table"' in body
+    assert 'id="results-cards"' in body
     assert 'id="report-panel"' in body
+    assert 'id="open-detail-link"' in body
     assert 'id="order-form"' in body
+    assert 'id="order-side-tabs"' in body
+    assert 'id="order-side"' in body
     assert "pollingEnabled" in body
     assert "nextErrorBackoffDelay" in body
 
@@ -79,6 +84,8 @@ def test_screener_report_page(client: tuple[TestClient, _FakeScreenerService]) -
     assert 'id="screener-detail-page"' in body
     assert 'id="detail-status-panel"' in body
     assert 'id="detail-order-form"' in body
+    assert 'id="detail-order-side-tabs"' in body
+    assert 'id="detail-order-side"' in body
     assert "job-1" in body
     assert "pollingEnabled" in body
     assert "nextErrorBackoffDelay" in body
@@ -91,12 +98,53 @@ def test_list_endpoint_calls_service(
 
     response = test_client.get(
         "/api/screener/list",
-        params={"market": "us", "max_rsi": 40, "limit": 10},
+        params={"market": "us", "max_rsi": 40, "min_volume": 1000, "limit": 10},
     )
 
     assert response.status_code == 200
     assert response.json()["market"] == "us"
     fake_service.list_screening.assert_awaited_once()
+    list_await_args = fake_service.list_screening.await_args
+    assert list_await_args is not None
+    assert list_await_args.kwargs == {
+        "market": "us",
+        "asset_type": None,
+        "category": None,
+        "strategy": None,
+        "sort_by": None,
+        "sort_order": "desc",
+        "min_market_cap": None,
+        "max_per": None,
+        "max_pbr": None,
+        "min_dividend_yield": None,
+        "max_rsi": 40.0,
+        "min_volume": 1000.0,
+        "limit": 10,
+    }
+
+
+def test_list_endpoint_returns_400_for_validation_error() -> None:
+    app = FastAPI()
+    fake_service = _FakeScreenerService()
+    fake_service.list_screening = AsyncMock(
+        side_effect=ValueError(
+            "Crypto market does not support sorting by 'volume'; use 'trade_amount'"
+        )
+    )
+    app.include_router(screener.router)
+    app.dependency_overrides[screener.get_screener_service] = lambda: fake_service
+
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        response = test_client.get(
+            "/api/screener/list",
+            params={"market": "crypto", "sort_by": "volume"},
+        )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "Crypto market does not support sorting by 'volume'; use 'trade_amount'"
+    )
 
 
 def test_list_endpoint_returns_400_for_validation_error() -> None:
@@ -130,12 +178,48 @@ def test_refresh_endpoint_calls_service(
 
     response = test_client.post(
         "/api/screener/refresh",
-        json={"market": "us", "max_rsi": 50, "limit": 5},
+        json={"market": "us", "max_rsi": 50, "min_volume": 2500, "limit": 5},
     )
 
     assert response.status_code == 200
     assert response.json()["results"][0]["code"] == "MSFT"
     fake_service.refresh_screening.assert_awaited_once()
+    refresh_await_args = fake_service.refresh_screening.await_args
+    assert refresh_await_args is not None
+    assert refresh_await_args.kwargs == {
+        "market": "us",
+        "asset_type": None,
+        "category": None,
+        "strategy": None,
+        "sort_by": None,
+        "sort_order": "desc",
+        "min_market_cap": None,
+        "max_per": None,
+        "max_pbr": None,
+        "min_dividend_yield": None,
+        "max_rsi": 50.0,
+        "min_volume": 2500.0,
+        "limit": 5,
+    }
+
+
+def test_list_endpoint_returns_400_for_negative_min_volume() -> None:
+    app = FastAPI()
+    fake_service = _FakeScreenerService()
+    fake_service.list_screening = AsyncMock(
+        side_effect=ValueError("min_volume must be >= 0")
+    )
+    app.include_router(screener.router)
+    app.dependency_overrides[screener.get_screener_service] = lambda: fake_service
+
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        response = test_client.get(
+            "/api/screener/list",
+            params={"market": "us", "min_volume": -1},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "min_volume must be >= 0"
 
 
 def test_report_request_endpoint(

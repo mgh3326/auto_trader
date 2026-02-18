@@ -35,6 +35,7 @@ class ScreenerFilterRequest(BaseModel):
     max_pbr: float | None = None
     min_dividend_yield: float | None = None
     max_rsi: float | None = None
+    min_volume: float | None = None
     limit: int = Field(default=20, ge=1, le=50)
 
 
@@ -114,6 +115,7 @@ async def screener_list(
     max_pbr: float | None = Query(default=None),
     min_dividend_yield: float | None = Query(default=None),
     max_rsi: float | None = Query(default=None),
+    min_volume: float | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=50),
     service: ScreenerService = Depends(get_screener_service),
 ):
@@ -130,6 +132,7 @@ async def screener_list(
             max_pbr=max_pbr,
             min_dividend_yield=min_dividend_yield,
             max_rsi=max_rsi,
+            min_volume=min_volume,
             limit=limit,
         )
     except ValueError as exc:

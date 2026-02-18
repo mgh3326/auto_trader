@@ -11,11 +11,12 @@
 
         <div class="row g-2">
             <div class="col-6">
-                <label for="detail-order-side" class="form-label form-label-sm mb-1">Side</label>
-                <select class="form-select form-select-sm" id="detail-order-side">
-                    <option value="buy">buy</option>
-                    <option value="sell">sell</option>
-                </select>
+                <label class="form-label form-label-sm mb-1" for="detail-order-side-tabs">Side</label>
+                <div class="btn-group btn-group-sm w-100" id="detail-order-side-tabs" role="tablist" aria-label="Detail order side">
+                    <button type="button" class="btn btn-outline-dark active" role="tab" aria-selected="true" data-side="buy">buy</button>
+                    <button type="button" class="btn btn-outline-dark" role="tab" aria-selected="false" data-side="sell">sell</button>
+                </div>
+                <input type="hidden" id="detail-order-side" value="buy">
             </div>
             <div class="col-6">
                 <label for="detail-order-type" class="form-label form-label-sm mb-1">Order Type</label>
@@ -70,11 +71,12 @@
 
         <div class="row g-2">
             <div class="col-6">
-                <label for="order-side" class="form-label form-label-sm mb-1">Side</label>
-                <select class="form-select form-select-sm" id="order-side">
-                    <option value="buy">buy</option>
-                    <option value="sell">sell</option>
-                </select>
+                <label class="form-label form-label-sm mb-1" for="order-side-tabs">Side</label>
+                <div class="btn-group btn-group-sm w-100" id="order-side-tabs" role="tablist" aria-label="Order side">
+                    <button type="button" class="btn btn-outline-dark active" role="tab" aria-selected="true" data-side="buy">buy</button>
+                    <button type="button" class="btn btn-outline-dark" role="tab" aria-selected="false" data-side="sell">sell</button>
+                </div>
+                <input type="hidden" id="order-side" value="buy">
             </div>
             <div class="col-6">
                 <label for="order-type" class="form-label form-label-sm mb-1">Order Type</label>

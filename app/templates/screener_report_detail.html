@@ -206,7 +206,6 @@
     const symbolField = document.getElementById("detail-symbol");
     const decisionField = document.getElementById("detail-decision");
     const confidenceField = document.getElementById("detail-confidence");
-    const modelField = document.getElementById("detail-model");
     const reasonsList = document.getElementById("detail-reasons");
     const rangesBody = document.getElementById("detail-ranges-body");
 
@@ -227,6 +226,42 @@
         const form = document.getElementById("detail-order-form");
         Array.from(form.elements).forEach((element) => {
             element.disabled = busy;
+        });
+    }
+
+    function setSideTabsValue(containerId, hiddenInputId, nextSide) {
+        const tabsContainer = document.getElementById(containerId);
+        const hiddenInput = document.getElementById(hiddenInputId);
+        if (!tabsContainer || !hiddenInput) {
+            return;
+        }
+
+        const normalizedSide = nextSide === "sell" ? "sell" : "buy";
+        hiddenInput.value = normalizedSide;
+
+        const tabs = tabsContainer.querySelectorAll("[data-side]");
+        tabs.forEach((tab) => {
+            const isActive = tab.dataset.side === normalizedSide;
+            tab.classList.toggle("active", isActive);
+            tab.setAttribute("aria-selected", isActive ? "true" : "false");
+        });
+    }
+
+    function initSideTabs(containerId, hiddenInputId) {
+        const tabsContainer = document.getElementById(containerId);
+        const hiddenInput = document.getElementById(hiddenInputId);
+        if (!tabsContainer || !hiddenInput) {
+            return;
+        }
+
+        setSideTabsValue(containerId, hiddenInputId, hiddenInput.value || "buy");
+
+        tabsContainer.addEventListener("click", (event) => {
+            const tab = event.target.closest("[data-side]");
+            if (!tab || !tabsContainer.contains(tab)) {
+                return;
+            }
+            setSideTabsValue(containerId, hiddenInputId, tab.dataset.side);
         });
     }
 
@@ -295,7 +330,6 @@
             symbolField.textContent = "-";
             decisionField.textContent = "-";
             confidenceField.textContent = "-";
-            modelField.textContent = "-";
             reasonsList.innerHTML = "";
             rangesBody.innerHTML = "";
             return;
@@ -307,7 +341,6 @@
         confidenceField.textContent = report.confidence === undefined
             ? "-"
             : `${report.confidence}%`;
-        modelField.textContent = String(report.model_name || "-");
 
         reasonsList.innerHTML = "";
         const reasons = Array.isArray(report.reasons) ? report.reasons : [];
@@ -484,6 +517,8 @@
     document.getElementById("detail-order-form").addEventListener("submit", (event) => {
         void submitOrder(event);
     });
+
+    initSideTabs("detail-order-side-tabs", "detail-order-side");
 
     state.pollGeneration += 1;
     void pollReport(state.pollGeneration);
