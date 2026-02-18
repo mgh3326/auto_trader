@@ -509,6 +509,38 @@ class TestYahooService:
         assert mock_download.call_args.kwargs["session"] is tracing_session
 
     @pytest.mark.asyncio
+    @patch("app.services.yahoo.yf.download")
+    async def test_fetch_ohlcv_period_1h_uses_60m_interval(
+        self, mock_download, monkeypatch
+    ):
+        tracing_session = object()
+        monkeypatch.setattr(
+            "app.services.yahoo.build_yfinance_tracing_session",
+            lambda: tracing_session,
+        )
+        monkeypatch.setattr(
+            "app.services.yahoo.settings.yahoo_ohlcv_cache_enabled",
+            False,
+            raising=False,
+        )
+        mock_download.return_value = pd.DataFrame(
+            {
+                "open": [100, 101],
+                "high": [105, 106],
+                "low": [95, 96],
+                "close": [103, 104],
+                "volume": [1000, 1100],
+            }
+        )
+
+        from app.services.yahoo import fetch_ohlcv
+
+        result = await fetch_ohlcv("AAPL", days=2, period="1h")
+
+        assert len(result) == 2
+        assert mock_download.call_args.kwargs["interval"] == "60m"
+
+    @pytest.mark.asyncio
     @patch("app.services.yahoo.yf.Ticker")
     async def test_fetch_price(self, mock_ticker_class, monkeypatch):
         """Test fetching current price from Yahoo Finance."""

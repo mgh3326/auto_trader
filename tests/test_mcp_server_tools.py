@@ -1157,6 +1157,48 @@ async def test_get_ohlcv_crypto_period_4h(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_ohlcv_us_equity_period_1h(monkeypatch):
+    tools = build_tools()
+    df = _single_row_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(yahoo_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("AAPL", count=150, period="1h")
+
+    mock_fetch.assert_awaited_once_with(
+        ticker="AAPL", days=100, period="1h", end_date=None
+    )
+    assert result["period"] == "1h"
+    assert result["instrument_type"] == "equity_us"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_crypto_period_1h(monkeypatch):
+    tools = build_tools()
+    df = _single_row_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", count=250, period="1h")
+
+    mock_fetch.assert_awaited_once_with(
+        market="KRW-BTC", days=200, period="1h", end_date=None
+    )
+    assert result["period"] == "1h"
+    assert result["instrument_type"] == "crypto"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_period_1h_market_kr_rejected():
+    tools = build_tools()
+
+    with pytest.raises(
+        ValueError, match="period '1h' is not supported for korean equity"
+    ):
+        await tools["get_ohlcv"]("005930", period="1h", market="kr")
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_with_end_date(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
@@ -1329,7 +1371,7 @@ async def test_get_ohlcv_raises_on_invalid_period():
 
     with pytest.raises(
         ValueError,
-        match="period must be 'day', 'week', 'month', or '4h'",
+        match="period must be 'day', 'week', 'month', '4h', or '1h'",
     ):
         await tools["get_ohlcv"]("AAPL", period="hour")
 

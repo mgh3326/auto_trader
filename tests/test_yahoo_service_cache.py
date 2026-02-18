@@ -60,6 +60,39 @@ async def test_fetch_ohlcv_uses_cache_for_day(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_ohlcv_1h_bypasses_cache(monkeypatch):
+    cache_mock = AsyncMock(return_value=None)
+    raw = pd.DataFrame(
+        [
+            {
+                "date": date(2026, 2, 16),
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100,
+                "volume": 1000,
+            }
+        ]
+    )
+    raw_mock = AsyncMock(return_value=raw)
+
+    monkeypatch.setattr(yahoo_cache, "get_closed_candles", cache_mock)
+    monkeypatch.setattr(yahoo, "_fetch_ohlcv_raw", raw_mock)
+    monkeypatch.setattr(
+        yahoo.settings,
+        "yahoo_ohlcv_cache_enabled",
+        True,
+        raising=False,
+    )
+
+    result = await yahoo.fetch_ohlcv("AAPL", days=1, period="1h")
+
+    assert len(result) == 1
+    cache_mock.assert_not_called()
+    raw_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_fetch_ohlcv_filters_unclosed_bucket_on_cache_none(monkeypatch):
     monkeypatch.setattr(
         yahoo_cache,

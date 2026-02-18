@@ -74,6 +74,7 @@ async def _fetch_ohlcv_raw(
         "day": "1d",
         "week": "1wk",
         "month": "1mo",
+        "1h": "60m",
     }
     if period not in period_map:
         raise ValueError(f"period must be one of {list(period_map.keys())}")
@@ -84,7 +85,7 @@ async def _fetch_ohlcv_raw(
     )
 
     # 주봉/월봉은 더 넓은 기간 필요
-    multiplier = {"day": 2, "week": 10, "month": 40}.get(period, 2)
+    multiplier = {"day": 2, "week": 10, "month": 40, "1h": 2}.get(period, 2)
     start = end - timedelta(days=days * multiplier)
     session = build_yfinance_tracing_session()
 
