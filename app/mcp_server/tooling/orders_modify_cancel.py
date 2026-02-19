@@ -173,6 +173,42 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_us_exchange_candidates(symbol: str | None) -> list[str]:
+    preferred_exchange = get_exchange_by_symbol(symbol) if symbol else None
+    preferred_exchange = preferred_exchange or "NASD"
+    candidates: list[str] = []
+    for exchange in [preferred_exchange, "NASD", "NYSE", "AMEX"]:
+        if exchange and exchange not in candidates:
+            candidates.append(exchange)
+    return candidates
+
+
+async def _find_us_open_order_by_id(
+    kis: KISClient,
+    order_id: str,
+    symbol: str | None,
+) -> tuple[dict[str, Any] | None, str | None, list[str]]:
+    exchange_candidates = _build_us_exchange_candidates(symbol)
+    for exchange in exchange_candidates:
+        try:
+            open_orders = await kis.inquire_overseas_orders(exchange)
+        except Exception as exc:
+            logger.warning(
+                "US open-order lookup failed: order_id=%s symbol=%s exchange=%s error=%s",
+                order_id,
+                symbol,
+                exchange,
+                exc,
+            )
+            continue
+
+        for order in open_orders:
+            if _extract_kis_order_number(order) == order_id:
+                return order, exchange, exchange_candidates
+
+    return None, None, exchange_candidates
+
+
 def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
     side_code = _get_kis_field(order, "sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD")
     side = "buy" if side_code == "02" else "sell"
@@ -346,47 +382,80 @@ async def cancel_order_impl(
                 }
 
         if market_type == "equity_us":
-            if not symbol:
-                try:
-                    kis = KISClient()
-                    open_orders = await kis.inquire_overseas_orders("NASD")
-                    for order in open_orders:
-                        if str(_get_kis_field(order, "odno", "ODNO")) == order_id:
-                            symbol = str(_get_kis_field(order, "pdno", "PDNO"))
-                            break
-                except Exception as exc:
+            try:
+                kis = KISClient()
+                (
+                    target_order,
+                    target_exchange,
+                    exchange_candidates,
+                ) = await _find_us_open_order_by_id(kis, order_id, symbol)
+                logger.debug(
+                    "US cancel lookup: order_id=%s symbol=%s checked_exchanges=%s",
+                    order_id,
+                    symbol,
+                    ", ".join(exchange_candidates),
+                )
+
+                if target_order is None:
                     return {
                         "success": False,
                         "order_id": order_id,
-                        "error": f"Failed to auto-retrieve order details: {exc}",
+                        "error": f"Order not found in open orders (checked: {','.join(exchange_candidates)})",
+                        "market": _normalize_market_type_to_external(market_type),
                     }
 
-            if not symbol:
-                return {
-                    "success": False,
-                    "order_id": order_id,
-                    "error": "symbol not found in order",
-                }
+                if not symbol:
+                    symbol = str(_get_kis_field(target_order, "pdno", "PDNO")) or None
 
-            try:
-                kis = KISClient()
-                quantity = 1
+                if not symbol:
+                    return {
+                        "success": False,
+                        "order_id": order_id,
+                        "error": "symbol not found in order",
+                        "market": _normalize_market_type_to_external(market_type),
+                    }
 
-                open_orders = await kis.inquire_overseas_orders("NASD")
-                for order in open_orders:
-                    if str(_get_kis_field(order, "odno", "ODNO")) == order_id:
-                        quantity = int(
-                            float(
-                                _get_kis_field(order, "nccs_qty", "NCCS_QTY", default=0)
-                                or 0
-                            )
+                remaining_quantity = int(
+                    float(
+                        _get_kis_field(target_order, "nccs_qty", "NCCS_QTY", default=0)
+                        or 0
+                    )
+                )
+                fallback_quantity = int(
+                    float(
+                        _get_kis_field(
+                            target_order, "ft_ord_qty", "FT_ORD_QTY", default=0
                         )
-                        break
+                        or 0
+                    )
+                )
+
+                quantity = (
+                    remaining_quantity if remaining_quantity > 0 else fallback_quantity
+                )
+                if quantity <= 0:
+                    return {
+                        "success": False,
+                        "order_id": order_id,
+                        "symbol": symbol,
+                        "error": "Unable to resolve cancel quantity from open order",
+                        "market": _normalize_market_type_to_external(market_type),
+                    }
+
+                exchange_code = target_exchange or exchange_candidates[0]
+                logger.info(
+                    "US cancel resolved: order_id=%s symbol=%s checked_exchanges=%s selected_exchange=%s resolved_quantity=%s",
+                    order_id,
+                    symbol,
+                    ", ".join(exchange_candidates),
+                    exchange_code,
+                    quantity,
+                )
 
                 result = await kis.cancel_overseas_order(
                     order_number=order_id,
                     symbol=symbol,
-                    exchange_code="NASD",
+                    exchange_code=exchange_code,
                     quantity=quantity,
                 )
                 return {
@@ -632,26 +701,17 @@ async def modify_order_impl(
     if market_type == "equity_us":
         try:
             kis = KISClient()
-            target_order = None
-            target_exchange = None
-            preferred_exchange = get_exchange_by_symbol(normalized_symbol) or "NASD"
-            exchange_candidates: list[str] = []
-            for exchange in [preferred_exchange, "NASD", "NYSE", "AMEX"]:
-                if exchange and exchange not in exchange_candidates:
-                    exchange_candidates.append(exchange)
-
-            for exchange in exchange_candidates:
-                try:
-                    open_orders = await kis.inquire_overseas_orders(exchange)
-                except Exception:
-                    continue
-                for order in open_orders:
-                    if str(_get_kis_field(order, "odno", "ODNO")) == order_id:
-                        target_order = order
-                        target_exchange = exchange
-                        break
-                if target_order:
-                    break
+            (
+                target_order,
+                target_exchange,
+                exchange_candidates,
+            ) = await _find_us_open_order_by_id(kis, order_id, normalized_symbol)
+            logger.debug(
+                "US modify lookup: order_id=%s symbol=%s checked_exchanges=%s",
+                order_id,
+                normalized_symbol,
+                ", ".join(exchange_candidates),
+            )
 
             if not target_order:
                 return {
@@ -660,7 +720,7 @@ async def modify_order_impl(
                     "order_id": order_id,
                     "symbol": normalized_symbol,
                     "market": _normalize_market_type_to_external(market_type),
-                    "error": f"Order not found in open orders (checked: {', '.join(exchange_candidates)})",
+                    "error": f"Order not found in open orders (checked: {','.join(exchange_candidates)})",
                     "dry_run": dry_run,
                 }
 
@@ -675,7 +735,14 @@ async def modify_order_impl(
                 )
             )
 
-            exchange_code = target_exchange or preferred_exchange
+            exchange_code = target_exchange or exchange_candidates[0]
+            logger.info(
+                "US modify resolved: order_id=%s symbol=%s checked_exchanges=%s selected_exchange=%s",
+                order_id,
+                normalized_symbol,
+                ", ".join(exchange_candidates),
+                exchange_code,
+            )
             final_price = float(new_price) if new_price is not None else original_price
             final_quantity = (
                 int(new_quantity) if new_quantity is not None else original_quantity

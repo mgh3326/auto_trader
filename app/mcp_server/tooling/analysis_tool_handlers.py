@@ -474,8 +474,8 @@ async def screen_stocks_impl(
 
     if limit < 1:
         raise ValueError("limit must be at least 1")
-    if limit > 50:
-        limit = 50
+    if limit > 100:
+        limit = 100
 
     _validate_screen_filters(
         market=normalized_market,
