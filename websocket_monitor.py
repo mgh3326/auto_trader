@@ -92,6 +92,8 @@ class UnifiedWebSocketMonitor:
         파서 결과를 베스트에포트 정규화하여 알림 전송합니다.
         """
         try:
+            if not self._is_valid_kis_fill_event(event):
+                return
             fill_order = normalize_kis_fill(event)
             await self._send_fill_notification(fill_order)
             logger.info(
@@ -100,6 +102,39 @@ class UnifiedWebSocketMonitor:
             )
         except Exception as e:
             logger.error(f"KIS fill processing error: {e}", exc_info=True)
+
+    def _is_valid_kis_fill_event(self, event: dict[str, Any]) -> bool:
+        market = str(event.get("market", "")).strip().lower()
+        if market != "kr":
+            return True
+
+        fill_yn = str(event.get("fill_yn") or event.get("cntg_yn") or "").strip()
+        if fill_yn != "2":
+            logger.debug(
+                "Skip KIS domestic notification due to fill_yn: symbol=%s fill_yn=%s",
+                event.get("symbol"),
+                fill_yn or "<missing>",
+            )
+            return False
+
+        filled_price = self._to_float(event.get("filled_price"))
+        filled_qty = self._to_float(event.get("filled_qty"))
+        if filled_price <= 0 or filled_qty <= 0:
+            logger.debug(
+                "Skip KIS domestic notification due to invalid fill values: symbol=%s price=%s qty=%s",
+                event.get("symbol"),
+                event.get("filled_price"),
+                event.get("filled_qty"),
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _to_float(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     async def _send_fill_notification(self, order: FillOrder) -> None:
         """OpenClaw로 체결 알림 전송 (fire-and-forget)"""

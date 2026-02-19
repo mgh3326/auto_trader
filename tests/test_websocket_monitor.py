@@ -79,6 +79,7 @@ class TestUnifiedWebSocketMonitor:
             {
                 "symbol": "005930",
                 "side": "sell",
+                "fill_yn": "2",
                 "filled_price": 70_000,
                 "filled_qty": 10,
                 "market": "kr",
@@ -90,6 +91,51 @@ class TestUnifiedWebSocketMonitor:
         assert isinstance(fill_order, FillOrder)
         assert fill_order.symbol == "005930"
         assert fill_order.side == "ask"
+
+    @pytest.mark.asyncio
+    async def test_on_kis_execution_skips_domestic_without_fill_yn(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor()
+        send_mock = AsyncMock(return_value="req-456")
+        monitor.openclaw_client.send_fill_notification = send_mock
+
+        await monitor._on_kis_execution(
+            {
+                "symbol": "035420",
+                "side": "bid",
+                "filled_price": 2,
+                "filled_qty": 1,
+                "market": "kr",
+            }
+        )
+
+        send_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_on_kis_execution_skips_domestic_non_fill_event(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor()
+        send_mock = AsyncMock(return_value="req-456")
+        monitor.openclaw_client.send_fill_notification = send_mock
+
+        await monitor._on_kis_execution(
+            {
+                "symbol": "035420",
+                "side": "bid",
+                "fill_yn": "1",
+                "filled_price": 1_135_000,
+                "filled_qty": 2,
+                "market": "kr",
+            }
+        )
+
+        send_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_start_stops_when_child_task_fails(self, mock_settings: None) -> None:

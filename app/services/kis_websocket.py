@@ -839,6 +839,11 @@ class KISExecutionWebSocket:
                 key, value = token.split("=", 1)
                 kv[key.strip().lower()] = value.strip()
 
+        # 국내 체결 payload가 전용 파서에서 해석되지 않고 key=value 구조도 아니면
+        # generic numeric fallback으로 오탐 가격/수량을 만들지 않도록 차단한다.
+        if market == "kr" and not kv:
+            return {}
+
         symbol = self._extract_symbol(fields, market)
 
         side_token = self._first_token(
@@ -1011,6 +1016,12 @@ class KISExecutionWebSocket:
             fields[DOMESTIC_OFFICIAL_FILL_FIELDS["filled_at"]]
         )
         fill_yn = fields[DOMESTIC_OFFICIAL_FILL_FIELDS["fill_yn"]].strip()
+        if not self._is_supported_timestamp_token(
+            fields[DOMESTIC_OFFICIAL_FILL_FIELDS["filled_at"]]
+        ):
+            return None
+        if fill_yn not in {"1", "2"}:
+            return None
 
         return {
             "symbol": symbol,
@@ -1152,6 +1163,20 @@ class KISExecutionWebSocket:
         minute = int(value[2:4])
         second = int(value[4:6])
         return hour < 24 and minute < 60 and second < 60
+
+    def _is_supported_timestamp_token(self, value: str | None) -> bool:
+        if not value:
+            return False
+        cleaned = value.strip()
+        if self._is_hhmmss(cleaned):
+            return True
+        if len(cleaned) == 14 and cleaned.isdigit():
+            try:
+                datetime.strptime(cleaned, "%Y%m%d%H%M%S")
+                return True
+            except ValueError:
+                return False
+        return False
 
     def _to_float(self, value: Any) -> float:
         if value is None:

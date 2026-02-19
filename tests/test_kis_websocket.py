@@ -666,8 +666,57 @@ class TestKISWebSocketClient:
         assert result is not None
         assert result["tr_code"] == "H0STCNI0"
         assert result["symbol"] == "035420"
-        assert result.get("fill_yn", "") == ""
+        assert "filled_price" not in result
+        assert "filled_qty" not in result
+        assert "filled_amount" not in result
+        assert "filled_at" not in result
         assert client._is_execution_event(result) is False
+
+    def test_parse_domestic_execution_by_official_index_rejects_invalid_filled_at(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        fields = [
+            "mgh3326",
+            "6762259301",
+            "0030145286",
+            "0000000000",
+            "02",
+            "0",
+            "00",
+            "00",
+            "012450",
+            "2",
+            "1135000",
+            "mgh3326",
+            "N",
+            "2",
+        ]
+        assert client._parse_domestic_execution_by_official_index(fields) is None
+
+    def test_parse_domestic_execution_by_official_index_rejects_invalid_fill_yn(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        fields = [
+            "mgh3326",
+            "6762259301",
+            "0030145286",
+            "0000000000",
+            "02",
+            "0",
+            "00",
+            "00",
+            "012450",
+            "2",
+            "1135000",
+            "093001",
+            "N",
+            "Y",
+        ]
+        assert client._parse_domestic_execution_by_official_index(fields) is None
 
     def test_is_execution_event_rejects_overseas_order_notice(
         self, execution_callback
