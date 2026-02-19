@@ -29,6 +29,12 @@ class TestSettings:
         assert hasattr(settings, "yahoo_ohlcv_cache_max_days")
         assert hasattr(settings, "yahoo_ohlcv_cache_lock_ttl_seconds")
 
+    def test_has_kis_ohlcv_cache_settings(self):
+        assert hasattr(settings, "kis_ohlcv_cache_enabled")
+        assert hasattr(settings, "kis_ohlcv_cache_max_days")
+        assert hasattr(settings, "kis_ohlcv_cache_max_hours")
+        assert hasattr(settings, "kis_ohlcv_cache_lock_ttl_seconds")
+
 
 class TestConfigLoading:
     """Test configuration loading."""

@@ -1354,13 +1354,90 @@ async def test_get_ohlcv_crypto_period_1h(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_ohlcv_period_1h_market_kr_rejected():
+async def test_get_ohlcv_kr_equity_period_1h(monkeypatch):
     tools = build_tools()
+    df = _single_row_df()
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
 
-    with pytest.raises(
-        ValueError, match="period '1h' is not supported for korean equity"
-    ):
-        await tools["get_ohlcv"]("005930", period="1h", market="kr")
+    class DummyKISClient:
+        async def inquire_time_dailychartprice(self, code, market, n, end_date=None):
+            del code, market, n, end_date
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    result = await tools["get_ohlcv"]("005930", market="kr", count=50, period="1h")
+
+    assert result["instrument_type"] == "equity_kr"
+    assert result["period"] == "1h"
+    assert result["source"] == "kis"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_equity_period_1h_backfills_multiple_days(monkeypatch):
+    tools = build_tools()
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
+    calls: list[date | None] = []
+
+    class DummyKISClient:
+        async def inquire_time_dailychartprice(self, code, market, n, end_date=None):
+            del code, market
+            calls.append(end_date)
+            requested_day = end_date or date(2026, 2, 19)
+            assert n >= 1
+            return pd.DataFrame(
+                [
+                    {
+                        "datetime": pd.Timestamp(f"{requested_day} 09:00:00"),
+                        "date": requested_day,
+                        "time": pd.Timestamp("2026-01-01 09:00:00").time(),
+                        "open": 100.0,
+                        "high": 101.0,
+                        "low": 99.0,
+                        "close": 100.5,
+                        "volume": 1000,
+                        "value": 100500.0,
+                    },
+                    {
+                        "datetime": pd.Timestamp(f"{requested_day} 10:00:00"),
+                        "date": requested_day,
+                        "time": pd.Timestamp("2026-01-01 10:00:00").time(),
+                        "open": 100.5,
+                        "high": 102.0,
+                        "low": 100.0,
+                        "close": 101.5,
+                        "volume": 1100,
+                        "value": 111650.0,
+                    },
+                ]
+            )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    result = await tools["get_ohlcv"]("005930", market="kr", count=4, period="1h")
+
+    assert len(calls) >= 2
+    assert len(result["rows"]) == 4
+    assert result["period"] == "1h"
+    assert result["instrument_type"] == "equity_kr"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_1h_mock_unsupported_returns_error_payload(monkeypatch):
+    tools = build_tools()
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
+
+    class DummyKISClient:
+        async def inquire_time_dailychartprice(self, code, market, n, end_date=None):
+            del code, market, n, end_date
+            raise RuntimeError(
+                "mock trading does not support inquire-time-dailychartprice"
+            )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    result = await tools["get_ohlcv"]("005930", market="kr", period="1h")
+
+    assert result["source"] == "kis"
+    assert result["instrument_type"] == "equity_kr"
+    assert "mock" in result["error"].lower()
 
 
 @pytest.mark.asyncio
@@ -1377,6 +1454,62 @@ async def test_get_ohlcv_with_end_date(monkeypatch):
     assert call_args.kwargs["end_date"].year == 2024
     assert call_args.kwargs["end_date"].month == 6
     assert call_args.kwargs["end_date"].day == 30
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_day_bypasses_cache_when_end_date_provided(monkeypatch):
+    tools = build_tools()
+    df = _single_row_df()
+    called = {"raw": 0}
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n, period, end_date):
+            del code, market, n
+            called["raw"] += 1
+            assert period == "D"
+            assert end_date == date(2024, 6, 30)
+            return df
+
+    cache_mock = AsyncMock(return_value=df)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(market_data_quotes.kis_ohlcv_cache, "get_candles", cache_mock)
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", True, raising=False)
+
+    result = await tools["get_ohlcv"](
+        "005930", market="kr", count=10, period="day", end_date="2024-06-30"
+    )
+
+    assert called["raw"] == 1
+    cache_mock.assert_not_awaited()
+    assert result["source"] == "kis"
+    assert result["period"] == "day"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_day_uses_cache_when_no_end_date(monkeypatch):
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n, period, end_date):
+            del code, market, n, period, end_date
+            raise AssertionError("raw fetch should not be called when cache hits")
+
+    cache_mock = AsyncMock(return_value=df)
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(market_data_quotes.kis_ohlcv_cache, "get_candles", cache_mock)
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", True, raising=False)
+
+    result = await tools["get_ohlcv"]("005930", market="kr", count=5, period="day")
+
+    cache_mock.assert_awaited_once()
+    await_args = cache_mock.await_args
+    assert await_args is not None
+    assert await_args.kwargs["symbol"] == "005930"
+    assert await_args.kwargs["count"] == 5
+    assert await_args.kwargs["period"] == "day"
+    assert result["instrument_type"] == "equity_kr"
+    assert result["source"] == "kis"
 
 
 @pytest.mark.asyncio

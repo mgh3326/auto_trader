@@ -1479,6 +1479,74 @@ class TestKISOverseasDailyPrice:
         client._token_manager.clear_token.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_kis_inquire_time_dailychartprice_parses_rows(monkeypatch):
+    from app.services.kis import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output2": [
+                {
+                    "stck_bsop_date": "20260219",
+                    "stck_cntg_hour": "100000",
+                    "stck_oprc": "70000",
+                    "stck_hgpr": "70200",
+                    "stck_lwpr": "69900",
+                    "stck_prpr": "70100",
+                    "cntg_vol": "100",
+                    "acml_tr_pbmn": "7010000",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        client,
+        "_request_with_rate_limit",
+        request_mock,
+    )
+
+    df = await client.inquire_time_dailychartprice("005930", market="UN", n=1)
+
+    assert len(df) == 1
+    assert {"datetime", "open", "high", "low", "close", "volume", "value"} <= set(
+        df.columns
+    )
+    request_mock.assert_awaited_once()
+    await_args = request_mock.await_args
+    assert await_args is not None
+    assert await_args.args[0] == "GET"
+    assert await_args.args[1].endswith("/inquire-time-dailychartprice")
+    assert await_args.kwargs["tr_id"] == "FHKST03010230"
+    assert await_args.kwargs["api_name"] == "inquire_time_dailychartprice"
+    assert "FID_INPUT_DATE_2" not in await_args.kwargs["params"]
+    assert "FID_INPUT_TIME_1" not in await_args.kwargs["params"]
+    assert "FID_INPUT_TIME_2" not in await_args.kwargs["params"]
+
+
+def test_aggregate_to_hourly_keeps_partial_bucket():
+    from app.services.kis import KISClient
+
+    df = pd.DataFrame(
+        {
+            "datetime": pd.to_datetime(["2026-02-19 10:10:00", "2026-02-19 10:20:00"]),
+            "open": [1, 2],
+            "high": [3, 4],
+            "low": [1, 2],
+            "close": [2, 3],
+            "volume": [10, 20],
+            "value": [100, 200],
+        }
+    )
+
+    out = KISClient._aggregate_intraday_to_hour(df)
+
+    assert len(out) == 1
+    assert out.iloc[0]["close"] == 3
+
+
 class TestKISRequestWithRateLimit:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

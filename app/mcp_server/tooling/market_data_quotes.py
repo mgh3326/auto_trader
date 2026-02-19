@@ -10,6 +10,9 @@ from __future__ import annotations
 import datetime
 from typing import TYPE_CHECKING, Any
 
+import pandas as pd
+
+from app.core.config import settings
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
     _compute_crypto_realtime_rsi_from_frame,
@@ -32,6 +35,7 @@ from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
 from app.monitoring import build_yfinance_tracing_session
+from app.services import kis_ohlcv_cache
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
@@ -252,16 +256,88 @@ async def _fetch_ohlcv_equity_kr(
 ) -> dict[str, Any]:
     """Fetch Korean equity OHLCV from KIS."""
     capped_count = min(count, 200)
-    # KIS uses D/W/M for period
-    kis_period_map = {"day": "D", "week": "W", "month": "M"}
     kis = KISClient()
-    df = await kis.inquire_daily_itemchartprice(
-        code=symbol,
-        market="UN",
-        n=capped_count,
-        period=kis_period_map.get(period, "D"),
-        end_date=end_date.date() if end_date else None,
-    )
+
+    if period == "day":
+
+        async def _raw_fetch_day(requested_count: int):
+            return await kis.inquire_daily_itemchartprice(
+                code=symbol,
+                market="UN",
+                n=requested_count,
+                period="D",
+                end_date=end_date.date() if end_date else None,
+            )
+
+        use_cache = end_date is None and settings.kis_ohlcv_cache_enabled
+        if use_cache:
+            df = await kis_ohlcv_cache.get_candles(
+                symbol=symbol,
+                count=capped_count,
+                period="day",
+                raw_fetcher=_raw_fetch_day,
+            )
+        else:
+            df = await _raw_fetch_day(capped_count)
+    elif period == "1h":
+
+        async def _raw_fetch_1h(requested_count: int):
+            aggregate_fn = getattr(KISClient, "_aggregate_intraday_to_hour", None)
+            target_count = max(int(requested_count), 1)
+            current_day = end_date.date() if end_date else datetime.date.today()
+            estimated_days = (target_count + 5) // 6
+            max_fetch_days = min(max(estimated_days + 3, 3), 120)
+
+            merged = pd.DataFrame()
+            for _ in range(max_fetch_days):
+                intraday = await kis.inquire_time_dailychartprice(
+                    code=symbol,
+                    market="UN",
+                    n=200,
+                    end_date=current_day,
+                )
+                if callable(aggregate_fn):
+                    hourly = aggregate_fn(intraday)
+                else:
+                    hourly = intraday
+
+                if not hourly.empty:
+                    merged = pd.concat([merged, hourly], ignore_index=True)
+                    if "datetime" in merged.columns:
+                        merged = (
+                            merged.drop_duplicates(subset=["datetime"], keep="last")
+                            .sort_values("datetime")
+                            .reset_index(drop=True)
+                        )
+                    else:
+                        merged = merged.drop_duplicates().reset_index(drop=True)
+                    if len(merged) >= target_count:
+                        break
+
+                current_day = current_day - datetime.timedelta(days=1)
+
+            return merged.tail(target_count).reset_index(drop=True)
+
+        use_cache = end_date is None and settings.kis_ohlcv_cache_enabled
+        if use_cache:
+            df = await kis_ohlcv_cache.get_candles(
+                symbol=symbol,
+                count=capped_count,
+                period="1h",
+                raw_fetcher=_raw_fetch_1h,
+            )
+        else:
+            df = await _raw_fetch_1h(capped_count)
+    else:
+        kis_period_map = {"week": "W", "month": "M"}
+        df = await kis.inquire_daily_itemchartprice(
+            code=symbol,
+            market="UN",
+            n=capped_count,
+            period=kis_period_map.get(period, "D"),
+            end_date=end_date.date() if end_date else None,
+        )
+
     return {
         "symbol": symbol,
         "instrument_type": "equity_kr",
@@ -357,7 +433,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         name="get_ohlcv",
         description=(
             "Get OHLCV candles for a symbol. Supports daily/weekly/monthly periods "
-            "plus 4h for crypto, 1h for US equity/crypto, and date-based pagination."
+            "plus 4h for crypto, 1h for KR/US equity/crypto, and date-based pagination."
         ),
     )
     async def get_ohlcv(
@@ -391,8 +467,6 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
 
         if period == "4h" and market_type != "crypto":
             raise ValueError("period '4h' is supported only for crypto")
-        if period == "1h" and market_type == "equity_kr":
-            raise ValueError("period '1h' is not supported for korean equity")
 
         source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
         source = source_map[market_type]

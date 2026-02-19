@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     yahoo_ohlcv_cache_enabled: bool = True
     yahoo_ohlcv_cache_max_days: int = 400
     yahoo_ohlcv_cache_lock_ttl_seconds: int = 10
+    kis_ohlcv_cache_enabled: bool = True
+    kis_ohlcv_cache_max_days: int = 400
+    kis_ohlcv_cache_max_hours: int = 400 * 24
+    kis_ohlcv_cache_lock_ttl_seconds: int = 10
 
     # API Rate Limit Retry Settings (429 handling)
     api_rate_limit_retry_429_max: int = 2  # 429 에러 시 최대 재시도 횟수

@@ -37,6 +37,10 @@ ORDERBOOK_TR = "FHKST01010200"  # 주식현재가호가상체결
 # 분봉 데이터 관련 URL 및 TR ID 추가
 MINUTE_CHART_URL = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
 MINUTE_CHART_TR = "FHKST03010200"  # 분봉 조회 TR ID
+TIME_DAILY_CHART_URL = (
+    "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
+)
+TIME_DAILY_CHART_TR = "FHKST03010230"  # 당일분봉 조회 TR ID
 
 # 주식잔고 조회 관련 URL 및 TR ID 추가
 BALANCE_URL = "/uapi/domestic-stock/v1/trading/inquire-balance"
@@ -972,6 +976,191 @@ class KISClient:
             .reset_index(drop=True)
         )
         return df
+
+    async def inquire_time_dailychartprice(
+        self,
+        code: str,
+        market: str = "UN",
+        n: int = 200,
+        end_date: datetime.date | None = None,
+    ) -> pd.DataFrame:
+        await self._ensure_token()
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": TIME_DAILY_CHART_TR,
+        }
+
+        base_date = end_date or datetime.date.today()
+        current_time = datetime.datetime.now().strftime("%H%M%S")
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_INPUT_ISCD": code.zfill(6),
+            "FID_INPUT_HOUR_1": current_time,
+            "FID_INPUT_DATE_1": base_date.strftime("%Y%m%d"),
+            "FID_PW_DATA_INCU_YN": "N",
+            "FID_ETC_CLS_CODE": "",
+        }
+
+        js = await self._request_with_rate_limit(
+            "GET",
+            f"{BASE}{TIME_DAILY_CHART_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="inquire_time_dailychartprice",
+            tr_id=TIME_DAILY_CHART_TR,
+        )
+
+        rows = js.get("output2") or js.get("output") or []
+        if not rows:
+            if js.get("rt_cd") != "0":
+                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
+            return pd.DataFrame(
+                columns=[
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ]
+            )
+
+        frame = (
+            pd.DataFrame(rows)
+            .rename(
+                columns={
+                    "stck_bsop_date": "date",
+                    "stck_cntg_hour": "time",
+                    "stck_oprc": "open",
+                    "stck_hgpr": "high",
+                    "stck_lwpr": "low",
+                    "stck_prpr": "close",
+                    "cntg_vol": "volume",
+                    "acml_tr_pbmn": "value",
+                }
+            )
+            .astype(
+                {
+                    "date": "str",
+                    "time": "str",
+                    "open": "float",
+                    "high": "float",
+                    "low": "float",
+                    "close": "float",
+                    "volume": "int",
+                    "value": "int",
+                },
+                errors="ignore",
+            )
+            .assign(
+                datetime=lambda d: pd.to_datetime(
+                    d["date"] + d["time"],
+                    format="%Y%m%d%H%M%S",
+                    errors="coerce",
+                )
+            )
+            .dropna(subset=["datetime"])
+            .assign(
+                date=lambda d: pd.to_datetime(d["datetime"]).dt.date,
+                time=lambda d: pd.to_datetime(d["datetime"]).dt.time,
+            )
+            .loc[
+                :,
+                [
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ],
+            ]
+            .drop_duplicates(subset=["datetime"], keep="first")
+            .sort_values("datetime")
+            .tail(max(int(n), 1))
+            .reset_index(drop=True)
+        )
+        return frame
+
+    @staticmethod
+    def _aggregate_intraday_to_hour(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty or "datetime" not in df.columns:
+            return pd.DataFrame(
+                columns=[
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ]
+            )
+
+        frame = df.copy()
+        frame["datetime"] = pd.to_datetime(frame["datetime"], errors="coerce")
+        frame = frame.dropna(subset=["datetime"]).sort_values("datetime")
+        if frame.empty:
+            return pd.DataFrame(
+                columns=[
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ]
+            )
+
+        grouped = (
+            frame.assign(hour_bucket=lambda d: d["datetime"].dt.floor("60min"))
+            .groupby("hour_bucket", as_index=False)
+            .agg(
+                open=("open", "first"),
+                high=("high", "max"),
+                low=("low", "min"),
+                close=("close", "last"),
+                volume=("volume", "sum"),
+                value=("value", "sum"),
+            )
+            .rename(columns={"hour_bucket": "datetime"})
+        )
+        grouped = grouped.assign(
+            date=lambda d: d["datetime"].dt.date,
+            time=lambda d: d["datetime"].dt.time,
+        )
+        return cast(
+            DataFrame,
+            grouped.loc[
+                :,
+                [
+                    "datetime",
+                    "date",
+                    "time",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "value",
+                ],
+            ]
+            .reset_index(drop=True)
+            .copy(),
+        )
 
     async def inquire_minute_chart(
         self,
