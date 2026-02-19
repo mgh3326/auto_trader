@@ -144,12 +144,22 @@ OVERSEAS_SIDE_MAP = {
     "B": "bid",
 }
 
-DOMESTIC_FILL_FIELDS = {
+DOMESTIC_OFFICIAL_FILL_FIELDS = {
+    "order_id": 2,
+    "side": 4,
+    "symbol": 8,
+    "filled_qty": 9,
+    "filled_price": 10,
+    "filled_at": 11,
+    "fill_yn": 13,
+}
+
+DOMESTIC_COMPACT_FILL_FIELDS = {
     "symbol": 0,
     "side": 1,
     "order_id": 2,
-    "filled_price": 3,
-    "filled_qty": 4,
+    "first_numeric": 3,
+    "second_numeric": 4,
     "filled_at": 5,
 }
 
@@ -571,6 +581,11 @@ class KISExecutionWebSocket:
                 and self._to_float(data.get("filled_qty")) > 0
                 and self._to_float(data.get("filled_price")) > 0
             )
+        if tr_code in DOMESTIC_EXECUTION_TR_CODES:
+            fill_yn = str(data.get("fill_yn") or data.get("cntg_yn") or "").strip()
+            if fill_yn:
+                return fill_yn == "2"
+            return data.get("execution_type") == 1
         if data.get("execution_type") == 1:
             return True
         return tr_code in EXECUTION_TR_CODES
@@ -957,20 +972,36 @@ class KISExecutionWebSocket:
         }
 
     def _parse_domestic_execution(self, fields: list[str]) -> dict[str, Any] | None:
-        if len(fields) <= max(DOMESTIC_FILL_FIELDS.values()):
+        parsed = self._parse_domestic_execution_by_official_index(fields)
+        if parsed is not None:
+            return parsed
+        return self._parse_domestic_execution_compact(fields)
+
+    def _parse_domestic_execution_by_official_index(
+        self, fields: list[str]
+    ) -> dict[str, Any] | None:
+        if len(fields) <= max(DOMESTIC_OFFICIAL_FILL_FIELDS.values()):
             return None
 
-        symbol = fields[DOMESTIC_FILL_FIELDS["symbol"]].strip()
-        side_token = fields[DOMESTIC_FILL_FIELDS["side"]].strip().upper()
-        order_id = fields[DOMESTIC_FILL_FIELDS["order_id"]].strip() or None
-        filled_price = self._to_float(fields[DOMESTIC_FILL_FIELDS["filled_price"]])
-        filled_qty = self._to_float(fields[DOMESTIC_FILL_FIELDS["filled_qty"]])
-
-        if not symbol or filled_price <= 0 or filled_qty <= 0:
+        symbol = fields[DOMESTIC_OFFICIAL_FILL_FIELDS["symbol"]].strip()
+        if not (symbol.isdigit() and len(symbol) == 6):
             return None
 
+        side_token = fields[DOMESTIC_OFFICIAL_FILL_FIELDS["side"]].strip().upper()
         side = _SIDE_MAP.get(side_token, "unknown")
-        filled_at = self._extract_timestamp(fields[DOMESTIC_FILL_FIELDS["filled_at"]])
+        order_id = fields[DOMESTIC_OFFICIAL_FILL_FIELDS["order_id"]].strip() or None
+
+        filled_qty = self._to_float(fields[DOMESTIC_OFFICIAL_FILL_FIELDS["filled_qty"]])
+        filled_price = self._to_float(
+            fields[DOMESTIC_OFFICIAL_FILL_FIELDS["filled_price"]]
+        )
+        if filled_qty <= 0 or filled_price <= 0:
+            return None
+
+        filled_at = self._extract_timestamp(
+            fields[DOMESTIC_OFFICIAL_FILL_FIELDS["filled_at"]]
+        )
+        fill_yn = fields[DOMESTIC_OFFICIAL_FILL_FIELDS["fill_yn"]].strip()
 
         return {
             "symbol": symbol,
@@ -980,6 +1011,59 @@ class KISExecutionWebSocket:
             "filled_qty": filled_qty,
             "filled_amount": filled_price * filled_qty,
             "filled_at": filled_at,
+            "fill_yn": fill_yn,
+        }
+
+    def _parse_domestic_execution_compact(
+        self, fields: list[str]
+    ) -> dict[str, Any] | None:
+        if len(fields) <= max(DOMESTIC_COMPACT_FILL_FIELDS.values()):
+            return None
+
+        symbol = fields[DOMESTIC_COMPACT_FILL_FIELDS["symbol"]].strip()
+        if not (symbol.isdigit() and len(symbol) == 6):
+            return None
+
+        side_token = fields[DOMESTIC_COMPACT_FILL_FIELDS["side"]].strip().upper()
+        side = _SIDE_MAP.get(side_token, "unknown")
+        order_id = fields[DOMESTIC_COMPACT_FILL_FIELDS["order_id"]].strip() or None
+
+        first_numeric = self._to_float(
+            fields[DOMESTIC_COMPACT_FILL_FIELDS["first_numeric"]]
+        )
+        second_numeric = self._to_float(
+            fields[DOMESTIC_COMPACT_FILL_FIELDS["second_numeric"]]
+        )
+        if first_numeric <= 0 or second_numeric <= 0:
+            return None
+
+        if first_numeric <= second_numeric:
+            filled_qty = first_numeric
+            filled_price = second_numeric
+        else:
+            filled_qty = second_numeric
+            filled_price = first_numeric
+
+        filled_at_token = self._find_hhmmss_token(
+            fields, exclude={symbol, order_id or ""}
+        )
+        if not filled_at_token and len(fields) > DOMESTIC_COMPACT_FILL_FIELDS["filled_at"]:
+            filled_at_token = fields[DOMESTIC_COMPACT_FILL_FIELDS["filled_at"]].strip()
+        filled_at = self._extract_timestamp(filled_at_token)
+
+        fill_yn = ""
+        if len(fields) > DOMESTIC_OFFICIAL_FILL_FIELDS["fill_yn"]:
+            fill_yn = fields[DOMESTIC_OFFICIAL_FILL_FIELDS["fill_yn"]].strip()
+
+        return {
+            "symbol": symbol,
+            "side": side,
+            "order_id": order_id,
+            "filled_price": filled_price,
+            "filled_qty": filled_qty,
+            "filled_amount": filled_price * filled_qty,
+            "filled_at": filled_at,
+            "fill_yn": fill_yn,
         }
 
     def _first_token(
@@ -1032,6 +1116,26 @@ class KISExecutionWebSocket:
             if len(cleaned) == 14:
                 return datetime.strptime(cleaned, "%Y%m%d%H%M%S").isoformat()
         return cleaned
+
+    def _find_hhmmss_token(
+        self, fields: list[str], *, exclude: set[str] | None = None
+    ) -> str | None:
+        excluded = {token.strip() for token in (exclude or set()) if token}
+        for token in fields:
+            stripped = token.strip()
+            if stripped in excluded:
+                continue
+            if self._is_hhmmss(stripped):
+                return stripped
+        return None
+
+    def _is_hhmmss(self, value: str) -> bool:
+        if len(value) != 6 or not value.isdigit():
+            return False
+        hour = int(value[:2])
+        minute = int(value[2:4])
+        second = int(value[4:6])
+        return hour < 24 and minute < 60 and second < 60
 
     def _to_float(self, value: Any) -> float:
         if value is None:
