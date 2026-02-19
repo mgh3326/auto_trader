@@ -11,7 +11,10 @@ from app.mcp_server.tooling.shared import (
     to_float,
 )
 from app.services import upbit as upbit_service
-from app.services.kis import KISClient
+from app.services.kis import (
+    KISClient,
+    extract_domestic_cash_summary_from_integrated_margin,
+)
 
 
 def is_us_nation_name(value: Any) -> bool:
@@ -90,9 +93,12 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
 
         if account_filter is None or account_filter in ("kis", "kis_domestic"):
             try:
-                domestic_data = await kis.inquire_domestic_cash_balance()
-                dncl_amt = float(domestic_data.get("dnca_tot_amt", 0) or 0)
-                orderable = float(domestic_data.get("stck_cash_ord_psbl_amt", 0) or 0)
+                margin_data = await kis.inquire_integrated_margin()
+                domestic_cash = extract_domestic_cash_summary_from_integrated_margin(
+                    margin_data
+                )
+                dncl_amt = float(domestic_cash.get("balance", 0) or 0)
+                orderable = float(domestic_cash.get("orderable", 0) or 0)
                 accounts.append(
                     {
                         "account": "kis_domestic",

@@ -393,8 +393,8 @@ Broker-specific contract:
   - `orderable`: orderable KRW (`balance`)
   - `formatted`: formatted total KRW string (e.g. `"700,000 KRW"`)
 - **KIS domestic (`account="kis_domestic"`)**
-  - `balance`: `dnca_tot_amt`
-  - `orderable`: `stck_cash_ord_psbl_amt`
+  - `balance`: `stck_cash_objt_amt` (`intgr-margin`)
+  - `orderable`: `stck_itgr_cash100_ord_psbl_amt` (`intgr-margin`)
 - **KIS overseas (`account="kis_overseas"`)**
   - `balance`: USD cash balance (`frcr_dncl_amt1` fallback `frcr_dncl_amt_2`)
   - `orderable`: USD orderable cash (`frcr_gnrl_ord_psbl_amt`)

@@ -166,10 +166,11 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
     tools = build_tools()
 
     class MockKISClient:
-        async def inquire_domestic_cash_balance(self):
+        async def inquire_integrated_margin(self):
             return {
                 "dnca_tot_amt": "1000000.0",
-                "stck_cash_ord_psbl_amt": "800000.0",
+                "stck_cash_objt_amt": "1000000.0",
+                "stck_itgr_cash100_ord_psbl_amt": "800000.0",
             }
 
         async def inquire_overseas_margin(self):
@@ -201,6 +202,12 @@ async def test_get_cash_balance_all_accounts(monkeypatch):
     assert upbit_account["orderable"] == 500000.0
     assert upbit_account["formatted"] == "700,000 KRW"
 
+    kis_domestic_account = next(
+        acc for acc in result["accounts"] if acc["account"] == "kis_domestic"
+    )
+    assert kis_domestic_account["balance"] == 1000000.0
+    assert kis_domestic_account["orderable"] == 800000.0
+
     kis_overseas_account = next(
         acc for acc in result["accounts"] if acc["account"] == "kis_overseas"
     )
@@ -214,10 +221,11 @@ async def test_get_cash_balance_with_account_filter(monkeypatch):
     tools = build_tools()
 
     class MockKISClient:
-        async def inquire_domestic_cash_balance(self):
+        async def inquire_integrated_margin(self):
             return {
                 "dnca_tot_amt": "1000000.0",
-                "stck_cash_ord_psbl_amt": "800000.0",
+                "stck_cash_objt_amt": "1000000.0",
+                "stck_itgr_cash100_ord_psbl_amt": "800000.0",
             }
 
         async def inquire_overseas_margin(self):
@@ -278,10 +286,11 @@ async def test_get_cash_balance_partial_failure(monkeypatch):
             raise RuntimeError("Upbit API error")
 
     class MockKISClient:
-        async def inquire_domestic_cash_balance(self):
+        async def inquire_integrated_margin(self):
             return {
                 "dnca_tot_amt": "1000000.0",
-                "stck_cash_ord_psbl_amt": "800000.0",
+                "stck_cash_objt_amt": "1000000.0",
+                "stck_itgr_cash100_ord_psbl_amt": "800000.0",
             }
 
         async def inquire_overseas_margin(self):
@@ -320,13 +329,76 @@ async def test_get_cash_balance_kis_domestic_fail_close(monkeypatch):
     tools = build_tools()
 
     class FailingKISClient:
-        async def inquire_domestic_cash_balance(self):
-            raise RuntimeError("domestic balance failed")
+        async def inquire_integrated_margin(self):
+            raise RuntimeError("integrated margin failed")
 
     _patch_runtime_attr(monkeypatch, "KISClient", FailingKISClient)
 
     with pytest.raises(RuntimeError, match="KIS domestic cash balance query failed"):
         await tools["get_cash_balance"](account="kis_domestic")
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_fail_close_when_domestic_fails(monkeypatch):
+    tools = build_tools()
+
+    class FailingDomesticKISClient:
+        async def inquire_integrated_margin(self):
+            raise RuntimeError("integrated margin failed")
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "500.0",
+                    "frcr_gnrl_ord_psbl_amt": "450.0",
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", FailingDomesticKISClient)
+
+    with pytest.raises(RuntimeError, match="KIS domestic cash balance query failed"):
+        await tools["get_cash_balance"](account="kis")
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_non_strict_skips_domestic_on_integrated_margin_error(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class PartialFailKISClient:
+        async def inquire_integrated_margin(self):
+            raise RuntimeError("integrated margin failed")
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "500.0",
+                    "frcr_gnrl_ord_psbl_amt": "450.0",
+                }
+            ]
+
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_krw_cash_summary",
+        AsyncMock(return_value={"balance": 700000.0, "orderable": 500000.0}),
+    )
+    _patch_runtime_attr(monkeypatch, "KISClient", PartialFailKISClient)
+
+    result = await tools["get_cash_balance"]()
+
+    account_names = {acc["account"] for acc in result["accounts"]}
+    assert "kis_domestic" not in account_names
+    assert "upbit" in account_names
+    assert "kis_overseas" in account_names
+    assert any(
+        err.get("source") == "kis" and err.get("market") == "kr"
+        for err in result["errors"]
+    )
 
 
 @pytest.mark.asyncio
@@ -436,10 +508,11 @@ async def test_place_order_with_amount_stock_market_buy(monkeypatch):
         async def order_korea_stock(self, stock_code, order_type, quantity, price):
             return {"odno": "12345", "ord_qty": quantity}
 
-        async def inquire_domestic_cash_balance(self):
+        async def inquire_integrated_margin(self):
             return {
                 "dnca_tot_amt": "5000000",
-                "stck_cash_ord_psbl_amt": "5000000",
+                "stck_cash_objt_amt": "5000000",
+                "stck_itgr_cash100_ord_psbl_amt": "5000000",
             }
 
     async def fetch_quote(symbol):
@@ -829,7 +902,9 @@ async def test_cancel_order_kis_overseas_falls_back_exchange(monkeypatch):
 
     mock_kis = MockKISClient()
     monkeypatch.setattr(orders_modify_cancel, "KISClient", lambda: mock_kis)
-    monkeypatch.setattr(orders_modify_cancel, "get_exchange_by_symbol", lambda _symbol: "NASD")
+    monkeypatch.setattr(
+        orders_modify_cancel, "get_exchange_by_symbol", lambda _symbol: "NASD"
+    )
 
     result = await tools["cancel_order"](order_id="67890", symbol="AAPL", market="us")
 
@@ -856,9 +931,13 @@ async def test_cancel_order_kis_overseas_fails_when_order_not_found(monkeypatch)
 
     mock_kis = MockKISClient()
     monkeypatch.setattr(orders_modify_cancel, "KISClient", lambda: mock_kis)
-    monkeypatch.setattr(orders_modify_cancel, "get_exchange_by_symbol", lambda _symbol: "NASD")
+    monkeypatch.setattr(
+        orders_modify_cancel, "get_exchange_by_symbol", lambda _symbol: "NASD"
+    )
 
-    result = await tools["cancel_order"](order_id="not-found", symbol="AAPL", market="us")
+    result = await tools["cancel_order"](
+        order_id="not-found", symbol="AAPL", market="us"
+    )
 
     assert result["success"] is False
     assert "checked: NASD,NYSE,AMEX" in result["error"]
@@ -6540,8 +6619,12 @@ async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
     tools = build_tools()
 
     class DummyKISClient:
-        async def inquire_domestic_cash_balance(self):
-            return {"dnca_tot_amt": "100000.0", "stck_cash_ord_psbl_amt": "100000.0"}
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "100000.0",
+                "stck_cash_objt_amt": "100000.0",
+                "stck_itgr_cash100_ord_psbl_amt": "100000.0",
+            }
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     _patch_runtime_attr(
@@ -6568,6 +6651,46 @@ async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
     assert "warning" in result
     assert "Insufficient" in result["warning"]
     assert "KIS domestic account" in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_insufficient_balance_kis_domestic_blocks_real_order(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "100000.0",
+                "stck_cash_objt_amt": "100000.0",
+                "stck_itgr_cash100_ord_psbl_amt": "100000.0",
+            }
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "estimated_value": 5000000.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=1,
+        price=5000000.0,
+        dry_run=False,
+    )
+
+    assert result["success"] is False
+    assert "dry_run" not in result
+    assert "Insufficient" in result["error"]
+    assert "KIS domestic account" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -6712,8 +6835,8 @@ async def test_place_order_balance_lookup_failure_returns_query_error(
     tools = build_tools()
 
     class FailingKISClient:
-        async def inquire_domestic_cash_balance(self):
-            raise RuntimeError("KIS balance lookup failed")
+        async def inquire_integrated_margin(self):
+            raise RuntimeError("KIS integrated margin lookup failed")
 
     async def fetch_quote(symbol):
         return {"price": 5000.0}
@@ -6732,7 +6855,7 @@ async def test_place_order_balance_lookup_failure_returns_query_error(
         )
 
     assert result["success"] is False
-    assert "KIS balance lookup failed" in result["error"]
+    assert "KIS integrated margin lookup failed" in result["error"]
     assert "Insufficient KRW balance: 0 KRW" not in result["error"]
     assert any("stage=balance_query" in record.message for record in caplog.records)
 
@@ -6884,10 +7007,11 @@ class TestPlaceOrderHighAmount:
         tools = build_tools()
 
         class MockKISClient:
-            async def inquire_domestic_cash_balance(self):
+            async def inquire_integrated_margin(self):
                 return {
-                    "stck_cash_ord_psbl_amt": "100000000.0",
                     "dnca_tot_amt": "100000000.0",
+                    "stck_cash_objt_amt": "100000000.0",
+                    "stck_itgr_cash100_ord_psbl_amt": "100000000.0",
                 }
 
         async def fetch_quote(symbol):
@@ -6992,10 +7116,11 @@ class TestPlaceOrderHighAmount:
         order_calls: list[dict[str, object]] = []
 
         class MockKISClient:
-            async def inquire_domestic_cash_balance(self):
+            async def inquire_integrated_margin(self):
                 return {
-                    "stck_cash_ord_psbl_amt": "100000000.0",
                     "dnca_tot_amt": "100000000.0",
+                    "stck_cash_objt_amt": "100000000.0",
+                    "stck_itgr_cash100_ord_psbl_amt": "100000000.0",
                 }
 
             async def order_korea_stock(self, stock_code, order_type, quantity, price):
@@ -7736,10 +7861,11 @@ async def test_place_order_kr_limit_keeps_valid_tick_without_adjustment_metadata
         async def order_korea_stock(self, stock_code, order_type, quantity, price):
             return {"odno": "12345", "ord_qty": quantity, "ord_unpr": price}
 
-        async def inquire_domestic_cash_balance(self):
+        async def inquire_integrated_margin(self):
             return {
                 "dnca_tot_amt": "50000000",
-                "stck_cash_ord_psbl_amt": "50000000",
+                "stck_cash_objt_amt": "50000000",
+                "stck_itgr_cash100_ord_psbl_amt": "50000000",
             }
 
     async def fetch_quote(symbol):
@@ -7784,10 +7910,11 @@ async def test_place_order_kr_limit_applies_tick_adjustment_and_metadata(
         async def order_korea_stock(self, stock_code, order_type, quantity, price):
             return {"odno": "67890", "ord_qty": quantity, "ord_unpr": price}
 
-        async def inquire_domestic_cash_balance(self):
+        async def inquire_integrated_margin(self):
             return {
                 "dnca_tot_amt": "50000000",
-                "stck_cash_ord_psbl_amt": "50000000",
+                "stck_cash_objt_amt": "50000000",
+                "stck_itgr_cash100_ord_psbl_amt": "50000000",
             }
 
     async def fetch_quote(symbol):
@@ -7827,27 +7954,34 @@ async def test_place_order_kr_limit_applies_tick_adjustment_and_metadata(
 
 
 # ----------------------------------------------------------------------
-# OPSQ2001 방지: 국내주식 주문이 통합증거금(inquire_integrated_margin)을 호출하지 않음 검증
+# KR integrated-margin precheck
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_place_order_kr_equity_does_not_call_integrated_margin(monkeypatch):
-    """국내주식 주문이 inquire_integrated_margin을 호출하지 않고 inquire_domestic_cash_balance만 사용."""
+async def test_place_order_kr_equity_calls_integrated_margin(monkeypatch):
+    """국내주식 주문은 통합증거금(inquire_integrated_margin)을 사용해 주문가능 현금을 조회한다."""
     tools = build_tools()
 
     integrated_margin_called = False
+    domestic_called = False
 
     class MockKISClient:
         async def inquire_integrated_margin(self):
             nonlocal integrated_margin_called
             integrated_margin_called = True
-            raise RuntimeError("OPSQ2001 should not be reached")
+            return {
+                "dnca_tot_amt": "50000000.0",
+                "stck_cash_objt_amt": "50000000.0",
+                "stck_itgr_cash100_ord_psbl_amt": "50000000.0",
+            }
 
         async def inquire_domestic_cash_balance(self):
+            nonlocal domestic_called
+            domestic_called = True
             return {
-                "stck_cash_ord_psbl_amt": "50000000.0",
-                "dnca_tot_amt": "50000000.0",
+                "stck_cash_ord_psbl_amt": "0.0",
+                "dnca_tot_amt": "0.0",
             }
 
     async def fetch_quote(symbol):
@@ -7866,23 +8000,20 @@ async def test_place_order_kr_equity_does_not_call_integrated_margin(monkeypatch
 
     assert result["success"] is True
     assert result["dry_run"] is True
-    assert integrated_margin_called is False
+    assert integrated_margin_called is True
+    assert domestic_called is False
 
 
 @pytest.mark.asyncio
-async def test_place_order_kr_equity_opsq2001_does_not_block_order(monkeypatch):
-    """inquire_integrated_margin이 OPSQ2001을 던져도 국내주식 주문은 성공해야 함 (호출되지 않으므로)."""
+async def test_place_order_kr_equity_balance_lookup_failure_returns_query_error(
+    monkeypatch, caplog
+):
+    """KR 주문 잔고 조회 실패는 잔고 조회 실패로 즉시 반환한다."""
     tools = build_tools()
 
     class MockKISClient:
         async def inquire_integrated_margin(self):
             raise RuntimeError("OPSQ2001 CMA_EVLU_AMT_ICLD_YN error")
-
-        async def inquire_domestic_cash_balance(self):
-            return {
-                "stck_cash_ord_psbl_amt": "30000000.0",
-                "dnca_tot_amt": "30000000.0",
-            }
 
     async def fetch_quote(symbol):
         return {"price": 60000.0}
@@ -7890,34 +8021,32 @@ async def test_place_order_kr_equity_opsq2001_does_not_block_order(monkeypatch):
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
     _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
 
-    result = await tools["place_order"](
-        symbol="005930",
-        side="buy",
-        order_type="market",
-        amount=500_000.0,
-        dry_run=True,
-    )
+    with caplog.at_level(logging.ERROR):
+        result = await tools["place_order"](
+            symbol="005930",
+            side="buy",
+            order_type="market",
+            amount=500_000.0,
+            dry_run=True,
+        )
 
-    assert result["success"] is True
-    assert result["dry_run"] is True
+    assert result["success"] is False
+    assert "OPSQ2001 CMA_EVLU_AMT_ICLD_YN error" in result["error"]
+    assert any("stage=balance_query" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_place_order_kr_equity_dry_run_false_opsq2001_unaffected(monkeypatch):
-    """dry_run=False에서도 inquire_integrated_margin OPSQ2001이 주문을 차단하지 않음."""
+async def test_place_order_kr_equity_balance_lookup_failure_blocks_real_order(
+    monkeypatch,
+):
+    """dry_run=False에서도 통합증거금 조회 실패는 주문 자체를 차단한다."""
     tools = build_tools()
 
     order_calls: list[dict[str, object]] = []
 
     class MockKISClient:
         async def inquire_integrated_margin(self):
-            raise RuntimeError("OPSQ2001 should not be called")
-
-        async def inquire_domestic_cash_balance(self):
-            return {
-                "stck_cash_ord_psbl_amt": "100000000.0",
-                "dnca_tot_amt": "100000000.0",
-            }
+            raise RuntimeError("OPSQ2001 CMA_EVLU_AMT_ICLD_YN error")
 
         async def order_korea_stock(self, stock_code, order_type, quantity, price):
             order_calls.append(
@@ -7945,9 +8074,10 @@ async def test_place_order_kr_equity_dry_run_false_opsq2001_unaffected(monkeypat
         dry_run=False,
     )
 
-    assert result["success"] is True
-    assert result["dry_run"] is False
-    assert len(order_calls) == 1
+    assert result["success"] is False
+    assert "dry_run" not in result
+    assert "OPSQ2001 CMA_EVLU_AMT_ICLD_YN error" in result["error"]
+    assert len(order_calls) == 0
 
 
 @pytest.mark.asyncio

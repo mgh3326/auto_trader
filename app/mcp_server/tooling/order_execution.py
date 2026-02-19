@@ -26,7 +26,10 @@ from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
 from app.services import upbit as upbit_service
-from app.services.kis import KISClient
+from app.services.kis import (
+    KISClient,
+    extract_domestic_cash_summary_from_integrated_margin,
+)
 from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
 
 
@@ -113,13 +116,12 @@ async def _get_balance_for_order(market_type: str) -> float:
         return 0.0
 
     if market_type == "equity_kr":
-        # 국내 주문은 통합증거금이 아니라 국내 현금 잔고만 사용한다.
         kis = KISClient()
-        balance_data = await kis.inquire_domestic_cash_balance()
-        orderable = balance_data.get("stck_cash_ord_psbl_amt")
-        if orderable is None:
-            orderable = balance_data.get("dnca_tot_amt")
-        return float(orderable or 0)
+        margin_data = await kis.inquire_integrated_margin()
+        domestic_cash = extract_domestic_cash_summary_from_integrated_margin(
+            margin_data
+        )
+        return float(domestic_cash.get("orderable") or 0)
 
     kis = KISClient()
     margin_data = await kis.inquire_overseas_margin()

@@ -286,6 +286,7 @@ class TestKISService:
         """inquire-balance(output2)에서 국내 현금 잔고를 파싱한다."""
         mock_client = AsyncMock()
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "0",
             "output2": [
@@ -326,6 +327,7 @@ class TestKISService:
         """stck_cash_ord_psbl_amt가 없으면 ord_psbl_cash를 fallback으로 사용한다."""
         mock_client = AsyncMock()
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "0",
             "output2": [
@@ -359,6 +361,7 @@ class TestKISService:
         """API 오류 응답은 RuntimeError로 전달한다."""
         mock_client = AsyncMock()
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "1",
             "msg_cd": "EGW99999",
@@ -743,9 +746,14 @@ class TestKISIntegratedMarginParams:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "0",
-            "output1": {"dnca_tot_amt": "1000000"},
+            "output1": {
+                "dnca_tot_amt": "1000000",
+                "stck_cash_objt_amt": "950000",
+                "stck_itgr_cash100_ord_psbl_amt": "900000",
+            },
         }
         mock_client.get.return_value = mock_response
 
@@ -761,6 +769,8 @@ class TestKISIntegratedMarginParams:
 
         assert "CMA_EVLU_AMT_ICLD_YN" in params
         assert params["CMA_EVLU_AMT_ICLD_YN"] == "N"
+        assert params["WCRC_FRCR_DVSN_CD"] == "01"
+        assert params["FWEX_CTRT_FRCR_DVSN_CD"] == "01"
         assert "CANO" in params
         assert "ACNT_PRDT_CD" in params
         assert headers["tr_id"] == INTEGRATED_MARGIN_TR
@@ -783,6 +793,7 @@ class TestKISIntegratedMarginParams:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         first_response = MagicMock()
+        first_response.status_code = 200
         first_response.json.return_value = {
             "rt_cd": "1",
             "msg_cd": "OPSQ2001",
@@ -790,9 +801,14 @@ class TestKISIntegratedMarginParams:
         }
 
         second_response = MagicMock()
+        second_response.status_code = 200
         second_response.json.return_value = {
             "rt_cd": "0",
-            "output1": {"dnca_tot_amt": "1000000"},
+            "output1": {
+                "dnca_tot_amt": "1000000",
+                "stck_cash_objt_amt": "850000",
+                "stck_itgr_cash100_ord_psbl_amt": "800000",
+            },
         }
 
         mock_client.get.side_effect = [first_response, second_response]
@@ -812,6 +828,65 @@ class TestKISIntegratedMarginParams:
         assert second_call_params["CMA_EVLU_AMT_ICLD_YN"] == "Y"
 
         assert result["dnca_tot_amt"] == 1000000.0
+        assert result["stck_cash_objt_amt"] == 850000.0
+        assert result["stck_itgr_cash100_ord_psbl_amt"] == 800000.0
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_inquire_integrated_margin_missing_domestic_fields_defaults_zero(
+        self, mock_settings, mock_client_class
+    ):
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output1": {
+                "dnca_tot_amt": "1000000",
+                "stck_cash_objt_amt": "",
+                "stck_itgr_cash100_ord_psbl_amt": None,
+            },
+        }
+        mock_client.get.return_value = mock_response
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        result = await client.inquire_integrated_margin()
+
+        assert result["stck_cash_objt_amt"] == 0.0
+        assert result["stck_itgr_cash100_ord_psbl_amt"] == 0.0
+
+    def test_extract_domestic_cash_summary_from_integrated_margin(self):
+        from app.services.kis import (
+            extract_domestic_cash_summary_from_integrated_margin,
+        )
+
+        summary = extract_domestic_cash_summary_from_integrated_margin(
+            {
+                "stck_cash_objt_amt": "777000",
+                "stck_itgr_cash100_ord_psbl_amt": "555000",
+                "raw": {
+                    "stck_cash_objt_amt": "777000",
+                    "stck_itgr_cash100_ord_psbl_amt": "555000",
+                },
+            }
+        )
+
+        assert summary["balance"] == 777000.0
+        assert summary["orderable"] == 555000.0
+        assert summary["raw"]["stck_cash_objt_amt"] == "777000"
 
 
 class TestKISFailureLogging:
@@ -837,6 +912,7 @@ class TestKISFailureLogging:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "1",
             "msg_cd": "TEST_ERROR",
@@ -885,6 +961,7 @@ class TestKISFailureLogging:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "1",
             "msg_cd": "OTHER_ERROR",
@@ -929,6 +1006,7 @@ class TestKISFailureLogging:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "1",
             "msg_cd": "OPSQ2001",
@@ -964,6 +1042,7 @@ class TestKISFailureLogging:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         first_response = MagicMock()
+        first_response.status_code = 200
         first_response.json.return_value = {
             "rt_cd": "1",
             "msg_cd": "OPSQ2001",
@@ -971,6 +1050,7 @@ class TestKISFailureLogging:
         }
 
         second_response = MagicMock()
+        second_response.status_code = 200
         second_response.json.return_value = {
             "rt_cd": "0",
             "output1": {"dnca_tot_amt": "500000"},

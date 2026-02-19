@@ -156,6 +156,27 @@ def _log_kis_api_failure(
         )
 
 
+def extract_domestic_cash_summary_from_integrated_margin(
+    margin_data: dict[str, Any],
+) -> dict[str, Any]:
+    def safe_float(val: object, default: float = 0.0) -> float:
+        if val in ("", None):
+            return default
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return default
+
+    raw = margin_data.get("raw")
+    raw_payload = raw if isinstance(raw, dict) else margin_data
+
+    return {
+        "balance": safe_float(margin_data.get("stck_cash_objt_amt")),
+        "orderable": safe_float(margin_data.get("stck_itgr_cash100_ord_psbl_amt")),
+        "raw": raw_payload,
+    }
+
+
 class KISClient:
     def __init__(self):
         self._hdr_base = {
@@ -1632,7 +1653,11 @@ class KISClient:
         return results
 
     async def inquire_integrated_margin(
-        self, is_mock: bool = False, cma_evlu_amt_icld_yn: str = "N"
+        self,
+        is_mock: bool = False,
+        cma_evlu_amt_icld_yn: str = "N",
+        wcrc_frcr_dvsn_cd: str = "01",
+        fwex_ctrt_frcr_dvsn_cd: str = "01",
     ) -> dict:
         """
         통합증거금 조회 (원화 + 외화 예수금)
@@ -1641,10 +1666,14 @@ class KISClient:
             is_mock: True면 모의투자, False면 실전투자
             cma_evlu_amt_icld_yn: CMA 평가금액 포함 여부 ("N": 미포함, "Y": 포함)
                                   기본값 "N", OPSQ2001 오류 시 "Y"로 자동 재시도
+            wcrc_frcr_dvsn_cd: 원화외화구분코드 (기본값 "01")
+            fwex_ctrt_frcr_dvsn_cd: 선도환계약외화구분코드 (기본값 "01")
 
         Returns:
             통합 증거금 정보
             - dnca_tot_amt: 원화 예수금
+            - stck_cash_objt_amt: 국내 주식 현금 대상 금액
+            - stck_itgr_cash100_ord_psbl_amt: 국내 주식 100% 통합 현금 주문가능금액
             - stck_cash_ord_psbl_amt: 원화 주문가능금액
             - usd_ord_psbl_amt: 달러 주문가능금액
             - usd_balance: 달러 예수금
@@ -1672,6 +1701,8 @@ class KISClient:
             "CANO": cano,
             "ACNT_PRDT_CD": acnt_prdt_cd,
             "CMA_EVLU_AMT_ICLD_YN": cma_evlu_amt_icld_yn,
+            "WCRC_FRCR_DVSN_CD": wcrc_frcr_dvsn_cd,
+            "FWEX_CTRT_FRCR_DVSN_CD": fwex_ctrt_frcr_dvsn_cd,
         }
 
         logging.info("통합증거금 조회 (CMA_EVLU_AMT_ICLD_YN=%s)", cma_evlu_amt_icld_yn)
@@ -1701,7 +1732,10 @@ class KISClient:
                 await self._token_manager.clear_token()
                 await self._ensure_token()
                 return await self.inquire_integrated_margin(
-                    is_mock, cma_evlu_amt_icld_yn
+                    is_mock=is_mock,
+                    cma_evlu_amt_icld_yn=cma_evlu_amt_icld_yn,
+                    wcrc_frcr_dvsn_cd=wcrc_frcr_dvsn_cd,
+                    fwex_ctrt_frcr_dvsn_cd=fwex_ctrt_frcr_dvsn_cd,
                 )
             # msg1 타입 안전 처리 (None 또는 비문자열 대응)
             msg1_text = str(msg1 or "")
@@ -1712,7 +1746,12 @@ class KISClient:
                 and cma_evlu_amt_icld_yn == "N"
             ):
                 logging.info("OPSQ2001 CMA_EVLU_AMT_ICLD_YN 오류 발생, Y로 재시도")
-                return await self.inquire_integrated_margin(is_mock, "Y")
+                return await self.inquire_integrated_margin(
+                    is_mock=is_mock,
+                    cma_evlu_amt_icld_yn="Y",
+                    wcrc_frcr_dvsn_cd=wcrc_frcr_dvsn_cd,
+                    fwex_ctrt_frcr_dvsn_cd=fwex_ctrt_frcr_dvsn_cd,
+                )
             raise RuntimeError(f"{msg_cd} {msg1_text}")
 
         output = js.get("output1") or js.get("output") or {}
@@ -1727,9 +1766,16 @@ class KISClient:
             except (ValueError, TypeError):
                 return default
 
-        dnca_tot_amt = safe_float(output.get("dnca_tot_amt"))
+        dnca_tot_amt = safe_float(
+            output.get("dnca_tot_amt") or output.get("stck_cash_objt_amt")
+        )
+        stck_cash_objt_amt = safe_float(output.get("stck_cash_objt_amt"))
+        stck_itgr_cash100_ord_psbl_amt = safe_float(
+            output.get("stck_itgr_cash100_ord_psbl_amt")
+        )
         stck_cash_ord_psbl_amt = safe_float(
             output.get("stck_cash_ord_psbl_amt")
+            or output.get("stck_itgr_cash100_ord_psbl_amt")
             or output.get("ord_psbl_cash")
             or output.get("dnca_tot_amt")
         )
@@ -1747,6 +1793,8 @@ class KISClient:
 
         return {
             "dnca_tot_amt": dnca_tot_amt,
+            "stck_cash_objt_amt": stck_cash_objt_amt,
+            "stck_itgr_cash100_ord_psbl_amt": stck_itgr_cash100_ord_psbl_amt,
             "stck_cash_ord_psbl_amt": stck_cash_ord_psbl_amt,
             "usd_ord_psbl_amt": usd_ord_psbl_amt,
             "usd_balance": usd_balance,
