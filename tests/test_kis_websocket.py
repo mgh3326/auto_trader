@@ -632,10 +632,7 @@ class TestKISWebSocketClient:
     ):
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
 
-        message = (
-            "0|H0STCNI0|1|"
-            "012450^02^0030145286^2^1135000^6762259301^093001"
-        )
+        message = "0|H0STCNI0|1|012450^02^0030145286^2^1135000^6762259301^093001"
         result = client._parse_message(message)
 
         assert result is not None
@@ -648,6 +645,29 @@ class TestKISWebSocketClient:
         assert result["filled_price"] == 1135000
         assert result["filled_amount"] == 2270000
         assert "T09:30:01" in result["filled_at"]
+
+    def test_parse_domestic_execution_compact_rejects_invalid_hhmmss(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        fields = ["035420", "02", "mgh3326", "2", "1", "mgh3326"]
+        assert client._parse_domestic_execution_compact(fields) is None
+
+    @pytest.mark.asyncio
+    async def test_parse_message_repro_payload_is_not_execution_event(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        message = "0|H0STCNI0|1|035420^02^mgh3326^2^1^mgh3326"
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["tr_code"] == "H0STCNI0"
+        assert result["symbol"] == "035420"
+        assert result.get("fill_yn", "") == ""
+        assert client._is_execution_event(result) is False
 
     def test_is_execution_event_rejects_overseas_order_notice(
         self, execution_callback
@@ -790,6 +810,39 @@ class TestKISWebSocketClient:
             )
             is True
         )
+
+    def test_is_execution_event_rejects_domestic_when_fill_yn_missing(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        assert (
+            client._is_execution_event(
+                {
+                    "tr_code": DOMESTIC_EXECUTION_TR_REAL,
+                    "execution_type": 1,
+                    "fill_yn": "",
+                }
+            )
+            is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_is_execution_event_accepts_official_domestic_payload(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        message = (
+            "0|H0STCNI0|1|"
+            "mgh3326^6762259301^0030145286^0000000000^02^0^00^00^012450^2^1135000^093001^N^2^Y^0000^2^홍길동^0^KRX^N^^00^00000000^한화에어로^1135000"
+        )
+
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["fill_yn"] == "2"
+        assert client._is_execution_event(result) is True
 
     @pytest.mark.asyncio
     async def test_parse_message_json_response(self, execution_callback):

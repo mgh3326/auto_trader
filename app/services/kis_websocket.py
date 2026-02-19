@@ -585,7 +585,16 @@ class KISExecutionWebSocket:
             fill_yn = str(data.get("fill_yn") or data.get("cntg_yn") or "").strip()
             if fill_yn:
                 return fill_yn == "2"
-            return data.get("execution_type") == 1
+            status = str(data.get("execution_status", "")).strip().lower()
+            if status:
+                return status in {"filled", "partial"}
+            logger.debug(
+                "Drop domestic execution event without fill_yn: tr_code=%s symbol=%s execution_type=%s",
+                tr_code,
+                data.get("symbol"),
+                data.get("execution_type"),
+            )
+            return False
         if data.get("execution_type") == 1:
             return True
         return tr_code in EXECUTION_TR_CODES
@@ -1047,8 +1056,15 @@ class KISExecutionWebSocket:
         filled_at_token = self._find_hhmmss_token(
             fields, exclude={symbol, order_id or ""}
         )
-        if not filled_at_token and len(fields) > DOMESTIC_COMPACT_FILL_FIELDS["filled_at"]:
-            filled_at_token = fields[DOMESTIC_COMPACT_FILL_FIELDS["filled_at"]].strip()
+        if (
+            not filled_at_token
+            and len(fields) > DOMESTIC_COMPACT_FILL_FIELDS["filled_at"]
+        ):
+            fallback_token = fields[DOMESTIC_COMPACT_FILL_FIELDS["filled_at"]].strip()
+            if self._is_hhmmss(fallback_token):
+                filled_at_token = fallback_token
+        if not filled_at_token:
+            return None
         filled_at = self._extract_timestamp(filled_at_token)
 
         fill_yn = ""
