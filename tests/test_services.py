@@ -196,6 +196,7 @@ class TestKISService:
 
         # Mock response - r.json()이 동기적으로 동작하도록 설정
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "0",
             "output": [
@@ -235,6 +236,7 @@ class TestKISService:
 
         # Mock response for empty holdings (end of pagination)
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "0",
             "output1": [],
@@ -389,6 +391,7 @@ class TestKISService:
         """해외증거금 조회에서 일반/통합 주문가능 필드를 파싱한다."""
         mock_client = AsyncMock()
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "0",
             "output": [
@@ -434,6 +437,7 @@ class TestKISService:
         """해외증거금 조회에서 빈 문자열/None을 0.0으로 안전하게 파싱한다."""
         mock_client = AsyncMock()
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "0",
             "output": [
@@ -1092,6 +1096,7 @@ class TestKISFailureLogging:
         mock_client_class.return_value.__aenter__.return_value = mock_client
 
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "rt_cd": "1",
             "msg_cd": "ORDER_ERROR",
