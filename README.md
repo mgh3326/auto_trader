@@ -63,6 +63,15 @@ uv run alembic upgrade head
 uv run uvicorn app.main:api --reload
 ```
 
+## Research Runbook
+
+- Freqtrade research pipeline runbook: `docs/runbooks/freqtrade-research-pipeline.md`
+- Summary ingestion command:
+
+```bash
+uv run python scripts/ingest_freqtrade_report.py --input /absolute/path/to/summary.json --runner mac
+```
+
 ### MCP 서버 실행
 
 ### Tools

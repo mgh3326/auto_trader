@@ -2,6 +2,7 @@
 Tests for configuration module.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 from app.core.config import Settings, settings
@@ -75,3 +76,7 @@ class TestConfigLoading:
         # Test get_next_key method
         next_key = settings.get_next_key()
         assert isinstance(next_key, str)
+
+
+def test_runbook_exists() -> None:
+    assert Path("docs/runbooks/freqtrade-research-pipeline.md").exists()

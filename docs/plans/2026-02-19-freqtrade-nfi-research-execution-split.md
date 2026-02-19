@@ -50,7 +50,7 @@ In `/Users/robin/PycharmProjects/auto_trader`:
 uv run ruff check app scripts tests
 uv run pyright app
 uv run pytest -q tests/test_research_backtest_parser.py tests/test_research_gate_service.py tests/test_research_ingestion_service.py
-uv run pytest -q tests/integration/test_research_schema_migration.py tests/integration/test_ingest_freqtrade_report.py
+uv run pytest -q tests/integration/test_ingest_freqtrade_report.py
 ```
 
 In `/Users/robin/PycharmProjects/auto_freqtrade`:
@@ -58,4 +58,3 @@ In `/Users/robin/PycharmProjects/auto_freqtrade`:
 ```bash
 pytest -q tests/test_repo_contract.py tests/test_sync_nfi_strategy.py tests/test_export_backtest_summary.py tests/test_run_bt_light.py
 ```
-

@@ -10,6 +10,12 @@ from .manual_holdings import (
 )
 from .news import NewsAnalysisResult, NewsArticle, Sentiment
 from .prompt import PromptResult
+from .research_backtest import (
+    ResearchBacktestPair,
+    ResearchBacktestRun,
+    ResearchPromotionCandidate,
+    ResearchSyncJob,
+)
 from .symbol_trade_settings import SymbolTradeSettings
 from .trading import Exchange, Instrument, User, UserChannel, UserRole, UserWatchItem
 
@@ -26,6 +32,10 @@ __all__ = [
     "UserChannel",
     "UserWatchItem",
     "PromptResult",
+    "ResearchBacktestRun",
+    "ResearchBacktestPair",
+    "ResearchPromotionCandidate",
+    "ResearchSyncJob",
     "StockInfo",
     "StockAnalysisResult",
     "SymbolTradeSettings",

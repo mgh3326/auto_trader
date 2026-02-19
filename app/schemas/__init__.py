@@ -24,6 +24,7 @@ from .manual_holdings import (
     StockAliasResponse,
     StockAliasSearchResult,
 )
+from .research_backtest import BacktestPairSummary, BacktestRunSummary
 
 __all__ = [
     # Broker Account
@@ -49,4 +50,6 @@ __all__ = [
     "SellOrderRequest",
     "OrderSimulationResponse",
     "ExpectedProfitResponse",
+    "BacktestRunSummary",
+    "BacktestPairSummary",
 ]
