@@ -2,6 +2,7 @@
 
 from app.services.fill_notification import (
     FillOrder,
+    coerce_fill_order,
     format_fill_message,
     normalize_kis_fill,
     normalize_upbit_fill,
@@ -90,6 +91,38 @@ class TestNormalizeKisFill:
         assert order.filled_amount == 391.0
         assert order.order_id == "US-ORDER-1234"
         assert order.account == "kis"
+
+    def test_normalize_kis_fill_propagates_execution_status_to_fill_status(
+        self,
+    ) -> None:
+        raw = {
+            "symbol": "AAPL",
+            "side": "02",
+            "filled_price": "195.5",
+            "filled_qty": "2",
+            "execution_status": "partial",
+        }
+
+        order = normalize_kis_fill(raw)
+
+        assert order.fill_status == "partial"
+
+    def test_coerce_fill_order_prefers_explicit_fill_status(self) -> None:
+        order = coerce_fill_order(
+            {
+                "symbol": "AAPL",
+                "side": "02",
+                "filled_price": 100,
+                "filled_qty": 1,
+                "filled_amount": 100,
+                "filled_at": "2026-02-14T09:30:00",
+                "account": "kis",
+                "fill_status": "partial",
+                "execution_status": "filled",
+            }
+        )
+
+        assert order.fill_status == "partial"
 
     def test_normalize_missing_fields_best_effort(self) -> None:
         order = normalize_kis_fill({})
@@ -183,3 +216,20 @@ class TestFormatFillMessage:
             "계좌: upbit"
         )
         assert message == expected
+
+    def test_format_partial_fill_displays_partial_status_text(self) -> None:
+        order = FillOrder(
+            symbol="AAPL",
+            side="bid",
+            filled_price=195.5,
+            filled_qty=2,
+            filled_amount=391,
+            filled_at="2026-02-14T09:30:00-05:00",
+            account="kis",
+            fill_status="partial",
+        )
+
+        message = format_fill_message(order)
+
+        assert "🟢 체결 알림" in message
+        assert "구분: 매수 부분체결" in message

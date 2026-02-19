@@ -24,6 +24,7 @@ class FillOrder:
     order_price: float | None = None
     order_id: str | None = None
     order_type: str | None = None
+    fill_status: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -60,6 +61,16 @@ def _safe_text_or_none(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_fill_status(value: Any) -> str | None:
+    text = _safe_text_or_none(value)
+    if text is None:
+        return None
+    normalized = text.lower()
+    if normalized in {"filled", "partial"}:
+        return normalized
+    return None
 
 
 def _normalize_side(value: str | None) -> str:
@@ -119,6 +130,9 @@ def coerce_fill_order(order: FillOrderLike) -> FillOrder:
         order_price=_safe_float_or_none(order.get("order_price")),
         order_id=_safe_text_or_none(order.get("order_id")),
         order_type=_safe_text_or_none(order.get("order_type")),
+        fill_status=_normalize_fill_status(
+            _pick_first(order, ["fill_status", "execution_status"])
+        ),
     )
 
 
@@ -155,6 +169,7 @@ def normalize_upbit_fill(raw: Mapping[str, Any]) -> FillOrder:
         order_price=_safe_float_or_none(_pick_first(raw, ["order_price", "price"])),
         order_id=_safe_text_or_none(_pick_first(raw, ["uuid", "order_id"])),
         order_type=_safe_text_or_none(_pick_first(raw, ["order_type", "ord_type"])),
+        fill_status="filled",
     )
 
 
@@ -197,6 +212,9 @@ def normalize_kis_fill(raw: Mapping[str, Any]) -> FillOrder:
             _pick_first(raw, ["order_id", "ord_no", "odno", "orgn_ord_no"])
         ),
         order_type=_safe_text_or_none(_pick_first(raw, ["order_type", "ord_dvsn"])),
+        fill_status=_normalize_fill_status(
+            _pick_first(raw, ["fill_status", "execution_status"])
+        ),
     )
 
 
@@ -235,6 +253,8 @@ def format_fill_message(order: FillOrderLike) -> str:
     normalized = coerce_fill_order(order)
     side_emoji = _format_side_emoji(normalized.side)
     side_text = _format_side_text(normalized.side)
+    is_partial = normalized.fill_status == "partial"
+    fill_label = "부분체결" if is_partial else "체결"
 
     price_diff = ""
     if normalized.order_price and normalized.order_price != 0:
@@ -246,7 +266,7 @@ def format_fill_message(order: FillOrderLike) -> str:
     message = (
         f"{side_emoji} 체결 알림\n\n"
         f"종목: {normalized.symbol}\n"
-        f"구분: {side_text} 체결\n"
+        f"구분: {side_text} {fill_label}\n"
         f"체결가: {_format_krw(normalized.filled_price)}{price_diff}\n"
         f"수량: {_format_quantity(normalized.filled_qty)}\n"
         f"금액: {_format_krw(normalized.filled_amount)}\n"

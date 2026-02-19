@@ -123,10 +123,15 @@ _SIDE_MAP = {
 
 OVERSEAS_FILL_FIELDS = {
     "side": 4,
+    "order_qty": 3,
+    "rctf_cls": 5,
+    "acpt_yn": 6,
     "symbol": 7,
     "filled_qty": 8,
     "filled_price": 9,
     "filled_at": 10,
+    "rfus_yn": 11,
+    "cntg_yn": 12,
     "fill_yn": 12,
 }
 
@@ -558,10 +563,45 @@ class KISExecutionWebSocket:
             return False
         tr_code = str(data.get("tr_code", ""))
         if tr_code in OVERSEAS_EXECUTION_TR_CODES:
-            return str(data.get("fill_yn", "")).strip() == "2"
+            status = str(data.get("execution_status", "")).strip().lower()
+            if status:
+                return status in {"filled", "partial"}
+            return (
+                str(data.get("fill_yn", "")).strip() == "2"
+                and self._to_float(data.get("filled_qty")) > 0
+                and self._to_float(data.get("filled_price")) > 0
+            )
         if data.get("execution_type") == 1:
             return True
         return tr_code in EXECUTION_TR_CODES
+
+    def _classify_overseas_execution_status(
+        self,
+        *,
+        rfus_yn: str,
+        rctf_cls: str,
+        acpt_yn: str,
+        cntg_yn: str,
+        filled_qty: float,
+        filled_price: float,
+        order_qty: float,
+    ) -> str:
+        if rfus_yn == "1":
+            return "rejected"
+        if rctf_cls == "2" or acpt_yn == "3":
+            return "canceled"
+        if cntg_yn != "2":
+            return "order_notice"
+        if (
+            filled_qty > 0
+            and filled_price > 0
+            and order_qty > 0
+            and filled_qty < order_qty
+        ):
+            return "partial"
+        if filled_qty > 0 and filled_price > 0:
+            return "filled"
+        return "invalid_fill"
 
     def _parse_message(self, message: str | bytes) -> dict | None:
         """
@@ -871,18 +911,33 @@ class KISExecutionWebSocket:
 
         side_token = fields[OVERSEAS_FILL_FIELDS["side"]].strip().upper()
         side = OVERSEAS_SIDE_MAP.get(side_token, "unknown")
+        order_qty = self._to_float(fields[OVERSEAS_FILL_FIELDS["order_qty"]])
+        rctf_cls = fields[OVERSEAS_FILL_FIELDS["rctf_cls"]].strip()
+        acpt_yn = fields[OVERSEAS_FILL_FIELDS["acpt_yn"]].strip()
+        rfus_yn = fields[OVERSEAS_FILL_FIELDS["rfus_yn"]].strip()
+        cntg_yn = fields[OVERSEAS_FILL_FIELDS["cntg_yn"]].strip()
 
         filled_qty = self._to_float(fields[OVERSEAS_FILL_FIELDS["filled_qty"]])
         filled_price = self._to_float(fields[OVERSEAS_FILL_FIELDS["filled_price"]])
-        if filled_qty <= 0 or filled_price <= 0:
-            return None
 
         order_id = fields[2].strip() if len(fields) > 2 else ""
         if not order_id:
             order_id = None
 
         filled_at = self._extract_timestamp(fields[OVERSEAS_FILL_FIELDS["filled_at"]])
-        fill_yn = fields[OVERSEAS_FILL_FIELDS["fill_yn"]].strip()
+        execution_status = self._classify_overseas_execution_status(
+            rfus_yn=rfus_yn,
+            rctf_cls=rctf_cls,
+            acpt_yn=acpt_yn,
+            cntg_yn=cntg_yn,
+            filled_qty=filled_qty,
+            filled_price=filled_price,
+            order_qty=order_qty,
+        )
+
+        filled_amount = (
+            filled_price * filled_qty if filled_price > 0 and filled_qty > 0 else 0
+        )
 
         return {
             "symbol": symbol,
@@ -890,9 +945,15 @@ class KISExecutionWebSocket:
             "order_id": order_id,
             "filled_price": filled_price,
             "filled_qty": filled_qty,
-            "filled_amount": filled_price * filled_qty,
+            "filled_amount": filled_amount,
             "filled_at": filled_at,
-            "fill_yn": fill_yn,
+            "order_qty": order_qty,
+            "rctf_cls": rctf_cls,
+            "acpt_yn": acpt_yn,
+            "rfus_yn": rfus_yn,
+            "cntg_yn": cntg_yn,
+            "fill_yn": cntg_yn,
+            "execution_status": execution_status,
         }
 
     def _parse_domestic_execution(self, fields: list[str]) -> dict[str, Any] | None:

@@ -34,6 +34,23 @@ from app.services.kis_websocket import (
 )
 
 
+def _build_overseas_message(
+    *,
+    order_qty: str = "0000000010",
+    filled_qty: str = "3",
+    filled_price: str = "201.5",
+    rctf_cls: str = "0",
+    acpt_yn: str = "00",
+    rfus_yn: str = "0",
+    cntg_yn: str = "2",
+) -> str:
+    payload = (
+        f"mgh3326^6762259301^0030145286^{order_qty}^02^{rctf_cls}^{acpt_yn}^"
+        f"AMZN^{filled_qty}^{filled_price}^093001^{rfus_yn}^{cntg_yn}"
+    )
+    return f"0|H0GSCNI0|1|{payload}"
+
+
 @pytest.mark.unit
 class TestKISWebSocketApprovalKey:
     """Tests for Approval Key issuance"""
@@ -521,10 +538,7 @@ class TestKISWebSocketClient:
     ):
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
 
-        message = (
-            "0|H0GSCNI0|1|"
-            "mgh3326^6762259301^0030145286^0000000000^02^0^00^AMZN^3^201.5^093001^N^2"
-        )
+        message = _build_overseas_message(rfus_yn="N")
         result = client._parse_message(message)
 
         assert result is not None
@@ -535,10 +549,60 @@ class TestKISWebSocketClient:
         assert result["filled_qty"] == 3
         assert result["filled_price"] == 201.5
         assert result["filled_amount"] == 604.5
-        assert result["fill_yn"] == "2"
+        assert result["rctf_cls"] == "0"
+        assert result["rfus_yn"] == "N"
+        assert result["cntg_yn"] == "2"
+        assert result["acpt_yn"] == "00"
+        assert result["order_qty"] == 10
+        assert result["execution_status"] == "partial"
         assert "T09:30:01" in result["filled_at"]
 
-    def test_is_execution_event_rejects_overseas_when_fill_yn_not_two(
+    @pytest.mark.asyncio
+    async def test_parse_message_marks_overseas_order_notice_when_cntg_yn_not_two(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        result = client._parse_message(_build_overseas_message(cntg_yn="1"))
+
+        assert result is not None
+        assert result["execution_status"] == "order_notice"
+
+    @pytest.mark.asyncio
+    async def test_parse_message_marks_overseas_canceled_when_rctf_cls_two(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        result = client._parse_message(_build_overseas_message(rctf_cls="2"))
+
+        assert result is not None
+        assert result["execution_status"] == "canceled"
+
+    @pytest.mark.asyncio
+    async def test_parse_message_marks_overseas_rejected_when_rfus_yn_one(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        result = client._parse_message(_build_overseas_message(rfus_yn="1"))
+
+        assert result is not None
+        assert result["execution_status"] == "rejected"
+
+    @pytest.mark.asyncio
+    async def test_parse_message_marks_overseas_filled_when_order_qty_missing(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        result = client._parse_message(_build_overseas_message(order_qty="0000000000"))
+
+        assert result is not None
+        assert result["order_qty"] == 0
+        assert result["execution_status"] == "filled"
+
+    def test_is_execution_event_rejects_overseas_order_notice(
         self, execution_callback
     ) -> None:
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
@@ -548,13 +612,77 @@ class TestKISWebSocketClient:
                 {
                     "tr_code": OVERSEAS_EXECUTION_TR_REAL,
                     "execution_type": 1,
-                    "fill_yn": "1",
+                    "execution_status": "order_notice",
                 }
             )
             is False
         )
 
-    def test_is_execution_event_accepts_overseas_when_fill_yn_two(
+    def test_is_execution_event_rejects_overseas_cancel_event(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        assert (
+            client._is_execution_event(
+                {
+                    "tr_code": OVERSEAS_EXECUTION_TR_REAL,
+                    "execution_type": 1,
+                    "execution_status": "canceled",
+                }
+            )
+            is False
+        )
+
+    def test_is_execution_event_rejects_overseas_rejected_event(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        assert (
+            client._is_execution_event(
+                {
+                    "tr_code": OVERSEAS_EXECUTION_TR_REAL,
+                    "execution_type": 1,
+                    "execution_status": "rejected",
+                }
+            )
+            is False
+        )
+
+    def test_is_execution_event_accepts_overseas_partial_event(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        assert (
+            client._is_execution_event(
+                {
+                    "tr_code": OVERSEAS_EXECUTION_TR_REAL,
+                    "execution_type": 1,
+                    "execution_status": "partial",
+                }
+            )
+            is True
+        )
+
+    def test_is_execution_event_accepts_overseas_filled_event(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        assert (
+            client._is_execution_event(
+                {
+                    "tr_code": OVERSEAS_EXECUTION_TR_REAL,
+                    "execution_type": 1,
+                    "execution_status": "filled",
+                }
+            )
+            is True
+        )
+
+    def test_is_execution_event_uses_legacy_fill_yn_safeguard_when_status_missing(
         self, execution_callback
     ) -> None:
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
@@ -565,9 +693,23 @@ class TestKISWebSocketClient:
                     "tr_code": OVERSEAS_EXECUTION_TR_REAL,
                     "execution_type": 1,
                     "fill_yn": "2",
+                    "filled_qty": 1,
+                    "filled_price": 120.5,
                 }
             )
             is True
+        )
+        assert (
+            client._is_execution_event(
+                {
+                    "tr_code": OVERSEAS_EXECUTION_TR_REAL,
+                    "execution_type": 1,
+                    "fill_yn": "2",
+                    "filled_qty": 0,
+                    "filled_price": 120.5,
+                }
+            )
+            is False
         )
 
     @pytest.mark.asyncio

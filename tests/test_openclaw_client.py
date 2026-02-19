@@ -252,6 +252,48 @@ async def test_send_fill_notification_success(
 
 @pytest.mark.asyncio
 @patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_fill_notification_partial_event_uses_partial_message_and_order_id_session(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
+    monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
+    monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "test-token")
+
+    from app.services.fill_notification import FillOrder
+
+    order = FillOrder(
+        symbol="AAPL",
+        side="bid",
+        filled_price=195.5,
+        filled_qty=2,
+        filled_amount=391,
+        filled_at="2026-02-14T09:30:00-05:00",
+        account="kis",
+        order_id="us-order-12345",
+        fill_status="partial",
+    )
+
+    mock_cli = AsyncMock()
+    mock_res = MagicMock(status_code=200)
+    mock_res.raise_for_status.return_value = None
+    mock_cli.post.return_value = mock_res
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    result = await OpenClawClient().send_fill_notification(order)
+
+    assert result is not None
+    called_json = mock_cli.post.call_args.kwargs["json"]
+    assert "구분: 매수 부분체결" in called_json["message"]
+    assert called_json["sessionKey"] == "auto-trader:fill:kis:us-order-12345"
+
+
+@pytest.mark.asyncio
+@patch("app.services.openclaw_client.httpx.AsyncClient")
 async def test_send_fill_notification_retries_on_failure_then_succeeds(
     mock_httpx_client_cls: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
