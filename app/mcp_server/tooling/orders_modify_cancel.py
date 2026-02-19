@@ -332,6 +332,7 @@ async def cancel_order_impl(
                 side_code = "02"
                 price = 0
                 quantity = 1
+                krx_fwdg_ord_orgno = None
 
                 open_orders = await kis.inquire_korea_orders()
                 for order in open_orders:
@@ -357,6 +358,14 @@ async def cancel_order_impl(
                                 or 0
                             )
                         )
+                        orgno_value = _get_kis_field(
+                            order,
+                            "ord_gno_brno",
+                            "ORD_GNO_BRNO",
+                            default="",
+                        )
+                        if orgno_value:
+                            krx_fwdg_ord_orgno = str(orgno_value).strip()
                         break
 
                 order_type_str = "buy" if side_code == "02" else "sell"
@@ -366,6 +375,7 @@ async def cancel_order_impl(
                     quantity=quantity,
                     price=price,
                     order_type=order_type_str,
+                    krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
                 )
                 return {
                     "success": True,
@@ -649,8 +659,23 @@ async def modify_order_impl(
                 int(new_quantity) if new_quantity is not None else original_quantity
             )
 
+            krx_fwdg_ord_orgno = _get_kis_field(
+                target_order,
+                "ord_gno_brno",
+                "ORD_GNO_BRNO",
+                default="",
+            )
+            if krx_fwdg_ord_orgno:
+                krx_fwdg_ord_orgno = str(krx_fwdg_ord_orgno).strip()
+            else:
+                krx_fwdg_ord_orgno = None
+
             result = await kis.modify_korea_order(
-                order_id, normalized_symbol, final_quantity, final_price
+                order_id,
+                normalized_symbol,
+                final_quantity,
+                final_price,
+                krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
             )
             changes = {
                 "price": {"from": original_price, "to": final_price}

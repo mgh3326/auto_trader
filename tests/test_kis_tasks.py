@@ -1183,6 +1183,7 @@ class TestDomesticStockPendingOrderCancel:
                         "sll_buy_dvsn_cd": "02",  # 매수
                         "ord_qty": "5",
                         "ord_unpr": "49000",
+                        "ord_gno_brno": "06010",
                     },
                     {
                         "pdno": "005930",
@@ -1190,11 +1191,19 @@ class TestDomesticStockPendingOrderCancel:
                         "sll_buy_dvsn_cd": "01",  # 매도
                         "ord_qty": "3",
                         "ord_unpr": "55000",
+                        "ord_gno_brno": "06020",
                     },
                 ]
 
             async def cancel_korea_order(
-                self, order_number, stock_code, quantity, price, order_type, is_mock
+                self,
+                order_number,
+                stock_code,
+                quantity,
+                price,
+                order_type,
+                is_mock,
+                krx_fwdg_ord_orgno=None,
             ):
                 cancelled_orders.append(
                     {
@@ -1202,6 +1211,7 @@ class TestDomesticStockPendingOrderCancel:
                         "stock_code": stock_code,
                         "quantity": quantity,
                         "order_type": order_type,
+                        "krx_fwdg_ord_orgno": krx_fwdg_ord_orgno,
                     }
                 )
                 return {"odno": order_number}
@@ -1266,8 +1276,10 @@ class TestDomesticStockPendingOrderCancel:
         sell_cancels = [o for o in cancelled_orders if o["order_number"] == "ORDER002"]
         assert len(buy_cancels) == 1, "Buy order should be cancelled"
         assert buy_cancels[0]["order_type"] == "buy"
+        assert buy_cancels[0]["krx_fwdg_ord_orgno"] == "06010"
         assert len(sell_cancels) == 1, "Sell order should be cancelled"
         assert sell_cancels[0]["order_type"] == "sell"
+        assert sell_cancels[0]["krx_fwdg_ord_orgno"] == "06020"
 
 
 class TestOrderableQuantityUsage:

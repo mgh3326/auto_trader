@@ -90,7 +90,7 @@ class WatchScanner:
             )
             return self._extract_close(frame)
         if market == "kr":
-            frame = await self._kis.inquire_price(symbol)
+            frame = await self._kis.inquire_price(symbol, market="UN")
             return self._extract_close(frame)
         if market == "us":
             frame = await yahoo_service.fetch_price(symbol)
@@ -108,7 +108,7 @@ class WatchScanner:
         elif market == "kr":
             frame = await self._kis.inquire_daily_itemchartprice(
                 code=symbol,
-                market="J",
+                market="UN",
                 n=250,
                 period="D",
             )

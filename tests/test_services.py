@@ -5,6 +5,7 @@ Tests for service modules.
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pandas as pd
 import pytest
 
@@ -1042,6 +1043,242 @@ class TestKISFailureLogging:
         assert "PDNO" in error_log
         assert "ORD_QTY" in error_log
         assert "ORD_UNPR" in error_log
+        assert "EXCG_ID_DVSN_CD" in error_log
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("order_type", "is_mock", "expected_tr_id"),
+        [
+            ("buy", False, "TTTC0012U"),
+            ("buy", True, "VTTC0012U"),
+            ("sell", False, "TTTC0011U"),
+            ("sell", True, "VTTC0011U"),
+        ],
+    )
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_order_korea_stock_uses_new_tr_and_sor(
+        self,
+        mock_settings,
+        mock_client_class,
+        order_type,
+        is_mock,
+        expected_tr_id,
+    ):
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "msg1": "ok",
+            "output": {"ODNO": "1", "ORD_TMD": "100000"},
+        }
+        mock_client.post.return_value = mock_response
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        result = await client.order_korea_stock(
+            stock_code="005930",
+            order_type=order_type,
+            quantity=3,
+            price=81000,
+            is_mock=is_mock,
+        )
+
+        assert result["odno"] == "1"
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        body = mock_client.post.call_args.kwargs["json"]
+
+        assert headers["tr_id"] == expected_tr_id
+        assert body["EXCG_ID_DVSN_CD"] == "SOR"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("is_mock", "expected_tr_id"),
+        [
+            (False, "TTTC0013U"),
+            (True, "VTTC0013U"),
+        ],
+    )
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_cancel_korea_order_uses_new_tr_sor_and_explicit_orgno(
+        self,
+        mock_settings,
+        mock_client_class,
+        is_mock,
+        expected_tr_id,
+    ):
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "msg1": "ok",
+            "output": {"ODNO": "2", "ORD_TMD": "100100"},
+        }
+        mock_client.post.return_value = mock_response
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        result = await client.cancel_korea_order(
+            order_number="10001",
+            stock_code="005930",
+            quantity=3,
+            price=81000,
+            order_type="buy",
+            krx_fwdg_ord_orgno="06010",
+            is_mock=is_mock,
+        )
+
+        assert result["odno"] == "2"
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        body = mock_client.post.call_args.kwargs["json"]
+
+        assert headers["tr_id"] == expected_tr_id
+        assert body["EXCG_ID_DVSN_CD"] == "SOR"
+        assert body["KRX_FWDG_ORD_ORGNO"] == "06010"
+        assert body["RVSE_CNCL_DVSN_CD"] == "02"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("is_mock", "expected_tr_id"),
+        [
+            (False, "TTTC0013U"),
+            (True, "VTTC0013U"),
+        ],
+    )
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_modify_korea_order_uses_new_tr_sor_and_resolved_orgno(
+        self,
+        mock_settings,
+        mock_client_class,
+        is_mock,
+        expected_tr_id,
+    ):
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "msg1": "ok",
+            "output": {"ODNO": "3", "ORD_TMD": "100200"},
+        }
+        mock_client.post.return_value = mock_response
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+        client.inquire_korea_orders = AsyncMock(
+            return_value=[
+                {
+                    "ord_no": "10002",
+                    "pdno": "005930",
+                    "ord_gno_brno": "06010",
+                }
+            ]
+        )
+
+        result = await client.modify_korea_order(
+            order_number="10002",
+            stock_code="005930",
+            quantity=4,
+            new_price=81500,
+            is_mock=is_mock,
+        )
+
+        assert result["odno"] == "3"
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        body = mock_client.post.call_args.kwargs["json"]
+
+        assert headers["tr_id"] == expected_tr_id
+        assert body["EXCG_ID_DVSN_CD"] == "SOR"
+        assert body["KRX_FWDG_ORD_ORGNO"] == "06010"
+        assert body["RVSE_CNCL_DVSN_CD"] == "01"
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.kis.settings")
+    async def test_cancel_korea_order_raises_when_orgno_resolution_fails(
+        self,
+        mock_settings,
+        mock_client_class,
+    ):
+        from app.services.kis import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+        client.inquire_korea_orders = AsyncMock(
+            return_value=[
+                {
+                    "ord_no": "other-order",
+                    "pdno": "005930",
+                    "ord_gno_brno": "06010",
+                }
+            ]
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="KRX_FWDG_ORD_ORGNO not found for order 10001",
+        ):
+            await client.cancel_korea_order(
+                order_number="10001",
+                stock_code="005930",
+                quantity=3,
+                price=81000,
+                order_type="buy",
+                is_mock=False,
+            )
+
+        mock_client.post.assert_not_called()
 
 
 class TestKISOverseasDailyPrice:
@@ -1218,3 +1455,134 @@ class TestKISRequestWithRateLimit:
         request_call = getattr(mock_client, expected_call)
         request_call.assert_awaited_once()
         assert request_call.await_args.kwargs["timeout"] == timeout_value
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.get_limiter")
+    @patch("app.services.kis.httpx.AsyncClient")
+    async def test_request_with_rate_limit_returns_json_body_on_http_500(
+        self,
+        mock_client_class,
+        mock_get_limiter,
+    ):
+        from app.services.kis import KISClient
+
+        mock_limiter = AsyncMock()
+        mock_get_limiter.return_value = mock_limiter
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.headers = {}
+        mock_response.json.return_value = {
+            "rt_cd": "1",
+            "msg_cd": "EGW00123",
+            "msg1": "token expired",
+        }
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+
+        client = KISClient()
+        result = await client._request_with_rate_limit(
+            "GET",
+            "https://example.com/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+            headers={"authorization": "Bearer token"},
+            params={"FID_INPUT_ISCD": "005930"},
+            timeout=5.0,
+            api_name="inquire_orderbook",
+            tr_id="FHKST01010200",
+        )
+
+        assert result["msg_cd"] == "EGW00123"
+        mock_response.raise_for_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("app.services.kis.get_limiter")
+    @patch("app.services.kis.httpx.AsyncClient")
+    async def test_request_with_rate_limit_raises_http_error_on_http_500_non_json(
+        self,
+        mock_client_class,
+        mock_get_limiter,
+    ):
+        from app.services.kis import KISClient
+
+        mock_limiter = AsyncMock()
+        mock_get_limiter.return_value = mock_limiter
+
+        request = httpx.Request("GET", "https://example.com/failing")
+        status_error = httpx.HTTPStatusError(
+            "Server Error",
+            request=request,
+            response=httpx.Response(500, request=request),
+        )
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.headers = {}
+        mock_response.json.side_effect = ValueError("invalid json")
+        mock_response.raise_for_status.side_effect = status_error
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+        mock_client_class.return_value.__aexit__.return_value = None
+
+        client = KISClient()
+        with pytest.raises(httpx.HTTPStatusError):
+            await client._request_with_rate_limit(
+                "GET",
+                "https://example.com/failing",
+                headers={"authorization": "Bearer token"},
+                params={"FID_INPUT_ISCD": "005930"},
+                timeout=5.0,
+                api_name="inquire_orderbook",
+                tr_id="FHKST01010200",
+            )
+
+
+class TestKISInquireOrderbook:
+    @pytest.mark.asyncio
+    async def test_inquire_orderbook_returns_output1_payload(self):
+        from app.services.kis import KISClient
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        client._request_with_rate_limit = AsyncMock(
+            return_value={
+                "rt_cd": "0",
+                "output1": {"askp1": "70100", "askp_rsqn1": "111"},
+            }
+        )
+
+        result = await client.inquire_orderbook("005930")
+        assert result == {"askp1": "70100", "askp_rsqn1": "111"}
+
+    @pytest.mark.asyncio
+    async def test_inquire_orderbook_fallbacks_to_output_payload(self):
+        from app.services.kis import KISClient
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        client._request_with_rate_limit = AsyncMock(
+            return_value={
+                "rt_cd": "0",
+                "output": {"askp1": "70100", "askp_rsqn1": "111"},
+            }
+        )
+
+        result = await client.inquire_orderbook("005930")
+        assert result == {"askp1": "70100", "askp_rsqn1": "111"}
+
+    @pytest.mark.asyncio
+    async def test_inquire_orderbook_raises_when_output_payload_missing(self):
+        from app.services.kis import KISClient
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        client._request_with_rate_limit = AsyncMock(
+            return_value={"rt_cd": "0", "msg_cd": "0", "msg1": "ok"}
+        )
+
+        with pytest.raises(RuntimeError, match="output1"):
+            await client.inquire_orderbook("005930")

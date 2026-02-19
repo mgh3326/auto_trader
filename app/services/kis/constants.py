@@ -30,10 +30,10 @@ DOMESTIC_BALANCE_TR = "TTTC8434R"  # 실전투자 주식잔고조회
 DOMESTIC_BALANCE_TR_MOCK = "VTTC8434R"  # 모의투자 주식잔고조회
 
 DOMESTIC_ORDER_URL = "/uapi/domestic-stock/v1/trading/order-cash"
-DOMESTIC_ORDER_BUY_TR = "TTTC0802U"  # 실전투자 국내주식 매수주문
-DOMESTIC_ORDER_BUY_TR_MOCK = "VTTC0802U"  # 모의투자 국내주식 매수주문
-DOMESTIC_ORDER_SELL_TR = "TTTC0801U"  # 실전투자 국내주식 매도주문
-DOMESTIC_ORDER_SELL_TR_MOCK = "VTTC0801U"  # 모의투자 국내주식 매도주문
+DOMESTIC_ORDER_BUY_TR = "TTTC0012U"  # 실전투자 국내주식 매수주문
+DOMESTIC_ORDER_BUY_TR_MOCK = "VTTC0012U"  # 모의투자 국내주식 매수주문
+DOMESTIC_ORDER_SELL_TR = "TTTC0011U"  # 실전투자 국내주식 매도주문
+DOMESTIC_ORDER_SELL_TR_MOCK = "VTTC0011U"  # 모의투자 국내주식 매도주문
 
 DOMESTIC_ORDER_INQUIRY_URL = "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
 DOMESTIC_ORDER_INQUIRY_TR = (
@@ -41,8 +41,8 @@ DOMESTIC_ORDER_INQUIRY_TR = (
 )
 
 DOMESTIC_ORDER_CANCEL_URL = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
-DOMESTIC_ORDER_CANCEL_TR = "TTTC0803U"  # 실전투자 국내주식 정정취소주문
-DOMESTIC_ORDER_CANCEL_TR_MOCK = "VTTC0803U"  # 모의투자 국내주식 정정취소주문
+DOMESTIC_ORDER_CANCEL_TR = "TTTC0013U"  # 실전투자 국내주식 정정취소주문
+DOMESTIC_ORDER_CANCEL_TR_MOCK = "VTTC0013U"  # 모의투자 국내주식 정정취소주문
 
 # ============================================================================
 # OVERSEAS STOCK CONSTANTS
@@ -140,7 +140,8 @@ OVERSEAS_CURRENCIES = {
 DOMESTIC_MARKET_CODES = {
     "K": "코스피",
     "Q": "코스닥",
-    "J": "통합",
+    "UN": "통합",
+    "J": "통합(랭킹 호환)",
 }
 
 # ============================================================================

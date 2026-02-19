@@ -35,6 +35,10 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
 
+### KR order routing
+- Domestic order tools (`place_order`, `modify_order`, `cancel_order` with `market="kr"`) use the new KIS TR IDs (`TTTC0012U/TTTC0011U/TTTC0013U`, mock: `VTTC0012U/VTTC0011U/VTTC0013U`).
+- Domestic order requests (`order-cash`, `order-rvsecncl`) route with `EXCG_ID_DVSN_CD="SOR"`.
+
 ### `get_indicators` spec
 Parameters:
 - `symbol`: Asset symbol/ticker

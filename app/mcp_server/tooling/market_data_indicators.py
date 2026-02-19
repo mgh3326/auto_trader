@@ -92,7 +92,7 @@ async def _fetch_ohlcv_for_indicators(
         capped_count = min(count, 250)
         kis = KISClient()
         return await kis.inquire_daily_itemchartprice(
-            code=symbol, market="J", n=capped_count, period="D"
+            code=symbol, market="UN", n=capped_count, period="D"
         )
     capped_count = min(count, 250)
     return await yahoo_service.fetch_ohlcv(
@@ -110,7 +110,7 @@ async def _fetch_ohlcv_for_volume_profile(
     if market_type == "equity_kr":
         kis = KISClient()
         return await kis.inquire_daily_itemchartprice(
-            code=symbol, market="J", n=period_days, period="D"
+            code=symbol, market="UN", n=period_days, period="D"
         )
     return await yahoo_service.fetch_ohlcv(
         ticker=symbol, days=period_days, period="day"

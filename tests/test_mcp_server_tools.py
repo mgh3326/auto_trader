@@ -728,6 +728,7 @@ async def test_cancel_order_upbit_uuid(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
     tools = build_tools()
+    received_orgnos: list[str | None] = []
 
     class MockKISClient:
         async def inquire_korea_orders(self):
@@ -738,13 +739,21 @@ async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
                     "pdno": "005930",
                     "ord_qty": "10",
                     "ord_unpr": "80000",
+                    "ord_gno_brno": "06010",
                     "ord_tmd": "2024-01-01",
                 }
             ]
 
         async def cancel_korea_order(
-            self, order_number, stock_code, quantity, price, order_type
+            self,
+            order_number,
+            stock_code,
+            quantity,
+            price,
+            order_type,
+            krx_fwdg_ord_orgno=None,
         ):
+            received_orgnos.append(krx_fwdg_ord_orgno)
             return {"ord_no": order_number, "ord_tmd": "2024-01-01 10:00:00"}
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
@@ -753,6 +762,7 @@ async def test_cancel_order_kis_domestic_auto_lookup(monkeypatch):
 
     assert result["success"] is True
     assert result["symbol"] == "005930"
+    assert received_orgnos == ["06010"]
 
 
 @pytest.mark.asyncio
@@ -1002,9 +1012,13 @@ async def test_get_quote_crypto_returns_error_payload(monkeypatch):
 async def test_get_quote_korean_equity(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
+    called: dict[str, object] = {}
 
     class DummyKISClient:
         async def inquire_daily_itemchartprice(self, code, market, n):
+            called["code"] = code
+            called["market"] = market
+            called["n"] = n
             return df
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
@@ -1015,6 +1029,9 @@ async def test_get_quote_korean_equity(monkeypatch):
     assert result["source"] == "kis"
     assert result["price"] == 105.0  # price = close
     assert result["open"] == 100.0
+    assert called["code"] == "005930"
+    assert called["market"] == "UN"
+    assert called["n"] == 1
 
 
 @pytest.mark.asyncio
@@ -1314,9 +1331,15 @@ async def test_get_ohlcv_serializes_timestamps(monkeypatch):
 async def test_get_ohlcv_korean_equity(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
+    called: dict[str, object] = {}
 
     class DummyKISClient:
         async def inquire_daily_itemchartprice(self, code, market, n, period, end_date):
+            called["code"] = code
+            called["market"] = market
+            called["n"] = n
+            called["period"] = period
+            called["end_date"] = end_date
             return df
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
@@ -1328,6 +1351,11 @@ async def test_get_ohlcv_korean_equity(monkeypatch):
     assert result["count"] == 10
     assert result["period"] == "day"
     assert len(result["rows"]) == 1
+    assert called["code"] == "005930"
+    assert called["market"] == "UN"
+    assert called["n"] == 10
+    assert called["period"] == "D"
+    assert called["end_date"] is None
 
 
 @pytest.mark.asyncio
@@ -1802,6 +1830,58 @@ async def test_fetch_ohlcv_for_indicators_crypto_uses_upbit_service_boundary(
         period="day",
         end_date=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_fetch_ohlcv_for_indicators_kr_uses_un_market(monkeypatch):
+    service_df = _single_row_df()
+    called: dict[str, object] = {}
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n, period):
+            called["code"] = code
+            called["market"] = market
+            called["n"] = n
+            called["period"] = period
+            return service_df
+
+    monkeypatch.setattr(market_data_indicators, "KISClient", DummyKISClient)
+
+    result = await market_data_indicators._fetch_ohlcv_for_indicators(
+        "005930", "equity_kr", count=300
+    )
+
+    assert len(result) == 1
+    assert called["code"] == "005930"
+    assert called["market"] == "UN"
+    assert called["n"] == 250
+    assert called["period"] == "D"
+
+
+@pytest.mark.asyncio
+async def test_fetch_ohlcv_for_volume_profile_kr_uses_un_market(monkeypatch):
+    service_df = _single_row_df()
+    called: dict[str, object] = {}
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n, period):
+            called["code"] = code
+            called["market"] = market
+            called["n"] = n
+            called["period"] = period
+            return service_df
+
+    monkeypatch.setattr(market_data_indicators, "KISClient", DummyKISClient)
+
+    result = await market_data_indicators._fetch_ohlcv_for_volume_profile(
+        "005930", "equity_kr", period_days=60
+    )
+
+    assert len(result) == 1
+    assert called["code"] == "005930"
+    assert called["market"] == "UN"
+    assert called["n"] == 60
+    assert called["period"] == "D"
 
 
 @pytest.mark.asyncio

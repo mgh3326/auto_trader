@@ -512,7 +512,7 @@ async def get_ohlcv(
 
         kis_client = KISClient()
         df = await kis_client.inquire_daily_itemchartprice(
-            code=ticker, market="J", n=days, period="D"
+            code=ticker, market="UN", n=days, period="D"
         )
 
         ohlcv_data = [
@@ -557,21 +557,25 @@ async def get_orderbook(
             )
 
         kis_client = KISClient()
-        orderbook_data = await kis_client.inquire_orderbook(code=ticker, market="J")
+        orderbook_data = await kis_client.inquire_orderbook(code=ticker, market="UN")
 
         ask_levels = []
         bid_levels = []
 
         for i in range(1, 11):
             ask_price = orderbook_data.get(f"askp{i}")
-            ask_qty = orderbook_data.get(f"askp{i}_rsqn")
+            ask_qty = orderbook_data.get(f"askp_rsqn{i}")
+            if ask_qty is None:
+                ask_qty = orderbook_data.get(f"askp{i}_rsqn")
             if ask_price:
                 ask_levels.append(
                     OrderbookLevel(price=float(ask_price), quantity=int(ask_qty or 0))
                 )
 
             bid_price = orderbook_data.get(f"bidp{i}")
-            bid_qty = orderbook_data.get(f"bidp{i}_rsqn")
+            bid_qty = orderbook_data.get(f"bidp_rsqn{i}")
+            if bid_qty is None:
+                bid_qty = orderbook_data.get(f"bidp{i}_rsqn")
             if bid_price:
                 bid_levels.append(
                     OrderbookLevel(price=float(bid_price), quantity=int(bid_qty or 0))

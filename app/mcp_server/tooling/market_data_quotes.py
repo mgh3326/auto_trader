@@ -163,8 +163,8 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
     kis = KISClient()
     df = await kis.inquire_daily_itemchartprice(
         code=symbol,
-        market="J",
-        n=1,  # J = 주식/ETF/ETN
+        market="UN",
+        n=1,
     )
     if df.empty:
         raise ValueError(f"Symbol '{symbol}' not found")
@@ -257,7 +257,7 @@ async def _fetch_ohlcv_equity_kr(
     kis = KISClient()
     df = await kis.inquire_daily_itemchartprice(
         code=symbol,
-        market="J",  # J = 주식/ETF/ETN
+        market="UN",
         n=capped_count,
         period=kis_period_map.get(period, "D"),
         end_date=end_date.date() if end_date else None,

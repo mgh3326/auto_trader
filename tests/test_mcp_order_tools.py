@@ -1024,6 +1024,7 @@ async def test_get_order_history_us_pending_uppercase_fields(monkeypatch):
 async def test_cancel_order_kr_uppercase_fields(monkeypatch):
     """Test that cancel_order handles uppercase field names for KR orders."""
     tools = build_tools()
+    received_orgnos: list[str | None] = []
 
     class FakeKIS:
         async def inquire_korea_orders(self):
@@ -1034,12 +1035,20 @@ async def test_cancel_order_kr_uppercase_fields(monkeypatch):
                     "SLL_BUY_DVSN_CD": "02",
                     "ORD_UNPR": "80000",
                     "ORD_QTY": "2",
+                    "ORD_GNO_BRNO": "06010",
                 }
             ]
 
         async def cancel_korea_order(
-            self, order_number, stock_code, quantity, price, order_type
+            self,
+            order_number,
+            stock_code,
+            quantity,
+            price,
+            order_type,
+            krx_fwdg_ord_orgno=None,
         ):
+            received_orgnos.append(krx_fwdg_ord_orgno)
             return {"odno": "KR-OD-UPPER", "ord_tmd": "093000"}
 
     _patch_kis_client(monkeypatch, lambda: FakeKIS())
@@ -1049,12 +1058,14 @@ async def test_cancel_order_kr_uppercase_fields(monkeypatch):
     assert result["success"] is True
     assert result["order_id"] == "KR-OD-UPPER"
     assert result["symbol"] == "005930"
+    assert received_orgnos == ["06010"]
 
 
 @pytest.mark.asyncio
 async def test_modify_order_kr_uppercase_fields(monkeypatch):
     """Test that modify_order handles uppercase field names for KR orders."""
     tools = build_tools()
+    received_orgnos: list[str | None] = []
 
     class FakeKIS:
         async def inquire_korea_orders(self):
@@ -1065,10 +1076,19 @@ async def test_modify_order_kr_uppercase_fields(monkeypatch):
                     "SLL_BUY_DVSN_CD": "02",
                     "ORD_UNPR": "80000",
                     "ORD_QTY": "2",
+                    "ORD_GNO_BRNO": "06010",
                 }
             ]
 
-        async def modify_korea_order(self, order_id, stock_code, quantity, price):
+        async def modify_korea_order(
+            self,
+            order_id,
+            stock_code,
+            quantity,
+            price,
+            krx_fwdg_ord_orgno=None,
+        ):
+            received_orgnos.append(krx_fwdg_ord_orgno)
             return {"odno": "KR-OD-UPPER"}
 
     _patch_kis_client(monkeypatch, lambda: FakeKIS())
@@ -1084,3 +1104,4 @@ async def test_modify_order_kr_uppercase_fields(monkeypatch):
     assert result["success"] is True
     assert result["order_id"] == "KR-OD-UPPER"
     assert result["status"] == "modified"
+    assert received_orgnos == ["06010"]

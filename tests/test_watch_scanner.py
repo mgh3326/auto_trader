@@ -168,7 +168,13 @@ async def test_get_price_and_rsi_use_market_specific_sources(
     assert us_rsi is not None
     assert crypto_rsi is not None
 
-    mock_kis.inquire_price.assert_awaited_once_with("005930")
+    mock_kis.inquire_price.assert_awaited_once_with("005930", market="UN")
+    mock_kis.inquire_daily_itemchartprice.assert_awaited_once_with(
+        code="005930",
+        market="UN",
+        n=250,
+        period="D",
+    )
     mock_us_price.assert_awaited_once_with("AMZN")
     mock_crypto_price.assert_awaited_once_with("KRW-BTC")
 
