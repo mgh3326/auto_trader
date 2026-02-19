@@ -538,6 +538,53 @@ class TestKISWebSocketClient:
         assert result["fill_yn"] == "2"
         assert "T09:30:01" in result["filled_at"]
 
+    @pytest.mark.asyncio
+    async def test_parse_message_extracts_domestic_fill_fields_by_official_index(
+        self, execution_callback
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        message = (
+            "0|H0STCNI0|1|"
+            "mgh3326^6762259301^0030145286^0000000000^02^0^00^00^012450^2^1135000^093001^N^2^Y^0000^2^홍길동^0^KRX^N^^00^00000000^한화에어로^1135000"
+        )
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["tr_code"] == "H0STCNI0"
+        assert result["market"] == "kr"
+        assert result["symbol"] == "012450"
+        assert result["side"] == "bid"
+        assert result["order_id"] == "0030145286"
+        assert result["filled_qty"] == 2
+        assert result["filled_price"] == 1135000
+        assert result["filled_amount"] == 2270000
+        assert result["fill_yn"] == "2"
+        assert "T09:30:01" in result["filled_at"]
+
+    @pytest.mark.asyncio
+    async def test_parse_message_extracts_domestic_fill_fields_when_qty_price_swapped(
+        self, execution_callback
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        message = (
+            "0|H0STCNI0|1|"
+            "012450^02^0030145286^2^1135000^6762259301^093001"
+        )
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["tr_code"] == "H0STCNI0"
+        assert result["market"] == "kr"
+        assert result["symbol"] == "012450"
+        assert result["side"] == "bid"
+        assert result["order_id"] == "0030145286"
+        assert result["filled_qty"] == 2
+        assert result["filled_price"] == 1135000
+        assert result["filled_amount"] == 2270000
+        assert "T09:30:01" in result["filled_at"]
+
     def test_is_execution_event_rejects_overseas_when_fill_yn_not_two(
         self, execution_callback
     ) -> None:
@@ -563,6 +610,38 @@ class TestKISWebSocketClient:
             client._is_execution_event(
                 {
                     "tr_code": OVERSEAS_EXECUTION_TR_REAL,
+                    "execution_type": 1,
+                    "fill_yn": "2",
+                }
+            )
+            is True
+        )
+
+    def test_is_execution_event_rejects_domestic_when_fill_yn_not_two(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        assert (
+            client._is_execution_event(
+                {
+                    "tr_code": DOMESTIC_EXECUTION_TR_REAL,
+                    "execution_type": 1,
+                    "fill_yn": "1",
+                }
+            )
+            is False
+        )
+
+    def test_is_execution_event_accepts_domestic_when_fill_yn_two(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        assert (
+            client._is_execution_event(
+                {
+                    "tr_code": DOMESTIC_EXECUTION_TR_REAL,
                     "execution_type": 1,
                     "fill_yn": "2",
                 }
