@@ -179,26 +179,24 @@ git -C /Users/robin/PycharmProjects/auto-freqtrade commit -m "feat: add normaliz
 - Create: `/Users/robin/PycharmProjects/auto_trader/alembic/versions/<timestamp>_add_research_backtest_tables.py`
 - Create: `/Users/robin/PycharmProjects/auto_trader/app/models/research_backtest.py`
 - Modify: `/Users/robin/PycharmProjects/auto_trader/app/models/__init__.py`
-- Test: `/Users/robin/PycharmProjects/auto_trader/tests/integration/test_research_schema_migration.py`
+- Test: N/A (DB-dependent migration integration test removed by request)
 
-**Step 1: Write the failing test**
+**Step 1: Define migration contract**
 
 ```python
-import pytest
-
-
-@pytest.mark.integration
-async def test_research_tables_exist(async_session):
-    result = await async_session.execute(
-        "select to_regclass('research.backtest_runs')"
-    )
-    assert result.scalar() == "research.backtest_runs"
+op.execute("CREATE SCHEMA IF NOT EXISTS research")
+op.create_table(
+    "backtest_runs",
+    sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
+    sa.Column("run_id", sa.String(length=128), nullable=False),
+    schema="research",
+)
 ```
 
-**Step 2: Run test to verify it fails**
+**Step 2: Run static checks**
 
-Run: `cd /Users/robin/PycharmProjects/auto_trader && uv run pytest --no-cov tests/integration/test_research_schema_migration.py::test_research_tables_exist -v`  
-Expected: FAIL with missing relation.
+Run: `cd /Users/robin/PycharmProjects/auto_trader && uv run ruff check alembic/versions/<timestamp>_add_research_backtest_tables.py app/models/research_backtest.py`  
+Expected: PASS.
 
 **Step 3: Write minimal implementation**
 
@@ -213,15 +211,15 @@ op.create_table(
 )
 ```
 
-**Step 4: Run test to verify it passes**
+**Step 4: Verify migration graph**
 
-Run: `cd /Users/robin/PycharmProjects/auto_trader && uv run alembic upgrade head && uv run pytest --no-cov tests/integration/test_research_schema_migration.py::test_research_tables_exist -v`  
-Expected: PASS.
+Run: `cd /Users/robin/PycharmProjects/auto_trader && uv run alembic heads`  
+Expected: includes your new revision as a valid head.
 
 **Step 5: Commit**
 
 ```bash
-git -C /Users/robin/PycharmProjects/auto_trader add alembic/versions app/models/research_backtest.py app/models/__init__.py tests/integration/test_research_schema_migration.py
+git -C /Users/robin/PycharmProjects/auto_trader add alembic/versions app/models/research_backtest.py app/models/__init__.py
 git -C /Users/robin/PycharmProjects/auto_trader commit -m "feat: add research schema backtest core tables"
 ```
 
@@ -471,7 +469,7 @@ Run in `/Users/robin/PycharmProjects/auto_trader`:
 uv run ruff check app scripts tests
 uv run pyright app
 uv run pytest -q tests/test_research_backtest_parser.py tests/test_research_gate_service.py tests/test_research_ingestion_service.py
-uv run pytest -q tests/integration/test_research_schema_migration.py tests/integration/test_ingest_freqtrade_report.py
+uv run pytest -q tests/integration/test_ingest_freqtrade_report.py
 ```
 
 Run in `/Users/robin/PycharmProjects/auto-freqtrade`:
@@ -479,4 +477,3 @@ Run in `/Users/robin/PycharmProjects/auto-freqtrade`:
 ```bash
 pytest -q tests/test_repo_contract.py tests/test_sync_nfi_strategy.py tests/test_export_backtest_summary.py tests/test_run_bt_light.py
 ```
-
