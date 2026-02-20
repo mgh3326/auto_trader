@@ -514,6 +514,43 @@ async def test_send_watch_alert_success(
 
 @pytest.mark.asyncio
 @patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_scan_alert_skips_telegram_when_mirror_disabled(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
+    monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
+    monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "test-token")
+
+    mock_cli = AsyncMock()
+    mock_res = MagicMock(status_code=200)
+    mock_res.raise_for_status.return_value = None
+    mock_cli.post.return_value = mock_res
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    mock_notifier = MagicMock()
+    mock_notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "app.services.openclaw_client.get_trade_notifier",
+        lambda: mock_notifier,
+    )
+
+    result = await OpenClawClient().send_scan_alert(
+        "scan message",
+        mirror_to_telegram=False,
+    )
+
+    assert result is not None
+    mock_cli.post.assert_awaited_once()
+    mock_notifier.notify_openclaw_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("app.services.openclaw_client.httpx.AsyncClient")
 async def test_send_scan_alert_returns_none_after_all_retries_fail(
     mock_httpx_client_cls: MagicMock,
     monkeypatch: pytest.MonkeyPatch,

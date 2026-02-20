@@ -185,7 +185,13 @@ class OpenClawClient:
             return request_id
         return None
 
-    async def _send_market_alert(self, message: str, category: str) -> str | None:
+    async def _send_market_alert(
+        self,
+        message: str,
+        category: str,
+        *,
+        mirror_to_telegram: bool = True,
+    ) -> str | None:
         if not settings.OPENCLAW_ENABLED:
             logger.debug("OpenClaw disabled, skipping %s alert", category)
             return None
@@ -238,14 +244,24 @@ class OpenClawClient:
                 e,
             )
         finally:
-            await self._forward_to_telegram(message, alert_type=category)
+            if mirror_to_telegram:
+                await self._forward_to_telegram(message, alert_type=category)
 
         if delivered_to_openclaw:
             return request_id
         return None
 
-    async def send_scan_alert(self, message: str) -> str | None:
-        return await self._send_market_alert(message, category="scan")
+    async def send_scan_alert(
+        self,
+        message: str,
+        *,
+        mirror_to_telegram: bool = True,
+    ) -> str | None:
+        return await self._send_market_alert(
+            message,
+            category="scan",
+            mirror_to_telegram=mirror_to_telegram,
+        )
 
     async def send_watch_alert(self, message: str) -> str | None:
         return await self._send_market_alert(message, category="watch")

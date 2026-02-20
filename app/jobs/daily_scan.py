@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 import redis.asyncio as redis
 
@@ -8,6 +9,7 @@ from app.core.config import settings
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.analysis_tool_handlers import get_fear_greed_index_impl
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi, _calculate_sma
+from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.openclaw_client import OpenClawClient
 from app.services.upbit import (
     fetch_multiple_tickers,
@@ -29,9 +31,14 @@ COOLDOWN_HOURS = {
 
 
 class DailyScanner:
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        alert_mode: Literal["both", "telegram_only", "openclaw_only"] = "both",
+    ):
         self._redis: redis.Redis | None = None
         self._openclaw = OpenClawClient()
+        self._alert_mode: Literal["both", "telegram_only", "openclaw_only"] = alert_mode
 
     async def _get_redis(self) -> redis.Redis:
         if self._redis is None:
@@ -610,11 +617,47 @@ class DailyScanner:
         return alerts
 
     async def _send_alert(self, message: str) -> str | None:
+        if self._alert_mode == "telegram_only":
+            telegram_sent = await self._send_telegram_alert(message)
+            return "telegram" if telegram_sent else None
+
+        if self._alert_mode == "openclaw_only":
+            return await self._send_openclaw_alert(message)
+
+        openclaw_request_id = await self._send_openclaw_alert(message)
+        telegram_sent = await self._send_telegram_alert(message)
+        if openclaw_request_id and telegram_sent:
+            return openclaw_request_id
+
+        logger.error(
+            "Failed to send scan alert in both mode: openclaw_success=%s telegram_success=%s",
+            bool(openclaw_request_id),
+            telegram_sent,
+        )
+        return None
+
+    async def _send_openclaw_alert(self, message: str) -> str | None:
         try:
-            return await self._openclaw.send_scan_alert(message)
+            request_id = await self._openclaw.send_scan_alert(
+                message,
+                mirror_to_telegram=False,
+            )
+            if not request_id:
+                logger.error("OpenClaw scan alert failed")
+            return request_id
         except Exception as exc:
-            logger.error("Failed to send scan alert: %s", exc)
+            logger.error("OpenClaw scan alert error: %s", exc)
             return None
+
+    async def _send_telegram_alert(self, message: str) -> bool:
+        try:
+            sent = await get_trade_notifier().notify_openclaw_message(message)
+            if not sent:
+                logger.error("Telegram scan alert failed")
+            return sent
+        except Exception as exc:
+            logger.error("Telegram scan alert error: %s", exc)
+            return False
 
     async def run_strategy_scan(self) -> dict:
         if not settings.DAILY_SCAN_ENABLED:

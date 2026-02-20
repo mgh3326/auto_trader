@@ -37,7 +37,13 @@ class _DummyOpenClawClient:
     def __init__(self) -> None:
         self.messages: list[str] = []
 
-    async def send_scan_alert(self, message: str) -> str | None:
+    async def send_scan_alert(
+        self,
+        message: str,
+        *,
+        mirror_to_telegram: bool = True,
+    ) -> str | None:
+        _ = mirror_to_telegram
         self.messages.append(message)
         return f"scan-{len(self.messages)}"
 
@@ -64,7 +70,7 @@ def scanner_env(monkeypatch: pytest.MonkeyPatch):
     openclaw = _DummyOpenClawClient()
     monkeypatch.setattr(daily_scan, "OpenClawClient", lambda: openclaw)
 
-    scanner = daily_scan.DailyScanner()
+    scanner = daily_scan.DailyScanner(alert_mode="openclaw_only")
     fake_redis = _FakeRedis()
     scanner._get_redis = AsyncMock(return_value=fake_redis)  # type: ignore[method-assign]
 
@@ -119,6 +125,131 @@ def scanner_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(daily_scan.settings, "DAILY_SCAN_ENABLED", True, raising=False)
 
     return scanner, openclaw, fake_redis, daily_scan
+
+
+@pytest.mark.asyncio
+async def test_send_alert_telegram_only_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.jobs import daily_scan
+
+    scanner = daily_scan.DailyScanner(alert_mode="telegram_only")
+    notifier = AsyncMock()
+    notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    monkeypatch.setattr(daily_scan, "get_trade_notifier", lambda: notifier)
+
+    request_id = await scanner._send_alert("telegram-only alert")
+
+    assert request_id == "telegram"
+    notifier.notify_openclaw_message.assert_awaited_once_with("telegram-only alert")
+
+
+@pytest.mark.asyncio
+async def test_send_alert_openclaw_only_skips_telegram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.jobs import daily_scan
+
+    scanner = daily_scan.DailyScanner(alert_mode="openclaw_only")
+    send_scan_alert_mock = AsyncMock(return_value="scan-1")
+    monkeypatch.setattr(
+        scanner._openclaw,
+        "send_scan_alert",
+        send_scan_alert_mock,
+    )
+    notifier = AsyncMock()
+    notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    monkeypatch.setattr(daily_scan, "get_trade_notifier", lambda: notifier)
+
+    request_id = await scanner._send_alert("openclaw-only alert")
+
+    assert request_id == "scan-1"
+    send_scan_alert_mock.assert_awaited_once_with(
+        "openclaw-only alert",
+        mirror_to_telegram=False,
+    )
+    notifier.notify_openclaw_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_alert_both_requires_both_channels_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.jobs import daily_scan
+
+    scanner = daily_scan.DailyScanner(alert_mode="both")
+    send_scan_alert_mock = AsyncMock(return_value="scan-1")
+    monkeypatch.setattr(
+        scanner._openclaw,
+        "send_scan_alert",
+        send_scan_alert_mock,
+    )
+    notifier = AsyncMock()
+    notifier.notify_openclaw_message = AsyncMock(return_value=False)
+    monkeypatch.setattr(daily_scan, "get_trade_notifier", lambda: notifier)
+
+    request_id = await scanner._send_alert("both alert")
+
+    assert request_id is None
+    send_scan_alert_mock.assert_awaited_once_with(
+        "both alert",
+        mirror_to_telegram=False,
+    )
+    notifier.notify_openclaw_message.assert_awaited_once_with("both alert")
+
+
+@pytest.mark.asyncio
+async def test_send_alert_both_success_when_both_channels_succeed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.jobs import daily_scan
+
+    scanner = daily_scan.DailyScanner()
+    send_scan_alert_mock = AsyncMock(return_value="scan-1")
+    monkeypatch.setattr(
+        scanner._openclaw,
+        "send_scan_alert",
+        send_scan_alert_mock,
+    )
+    notifier = AsyncMock()
+    notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    monkeypatch.setattr(daily_scan, "get_trade_notifier", lambda: notifier)
+
+    request_id = await scanner._send_alert("both alert")
+
+    assert request_id == "scan-1"
+    send_scan_alert_mock.assert_awaited_once_with(
+        "both alert",
+        mirror_to_telegram=False,
+    )
+    notifier.notify_openclaw_message.assert_awaited_once_with("both alert")
+
+
+@pytest.mark.asyncio
+async def test_send_alert_both_fails_when_openclaw_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.jobs import daily_scan
+
+    scanner = daily_scan.DailyScanner(alert_mode="both")
+    send_scan_alert_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        scanner._openclaw,
+        "send_scan_alert",
+        send_scan_alert_mock,
+    )
+    notifier = AsyncMock()
+    notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    monkeypatch.setattr(daily_scan, "get_trade_notifier", lambda: notifier)
+
+    request_id = await scanner._send_alert("both alert")
+
+    assert request_id is None
+    send_scan_alert_mock.assert_awaited_once_with(
+        "both alert",
+        mirror_to_telegram=False,
+    )
+    notifier.notify_openclaw_message.assert_awaited_once_with("both alert")
 
 
 @pytest.mark.asyncio

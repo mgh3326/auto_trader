@@ -11,7 +11,7 @@ from app.jobs.daily_scan import DailyScanner
     ],
 )
 async def run_strategy_scan_task() -> dict:
-    scanner = DailyScanner()
+    scanner = DailyScanner(alert_mode="telegram_only")
     try:
         return await scanner.run_strategy_scan()
     finally:
@@ -23,7 +23,7 @@ async def run_strategy_scan_task() -> dict:
     schedule=[{"cron": "0 * * * *", "cron_offset": "Asia/Seoul"}],
 )
 async def run_crash_detection_task() -> dict:
-    scanner = DailyScanner()
+    scanner = DailyScanner(alert_mode="telegram_only")
     try:
         return await scanner.run_crash_detection()
     finally:
