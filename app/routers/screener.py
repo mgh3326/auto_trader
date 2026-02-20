@@ -71,11 +71,13 @@ class ScreenerOrderRequest(BaseModel):
 
 @router.get("/screener", response_class=HTMLResponse)
 async def screener_dashboard(request: Request):
+    user = getattr(request.state, "user", None)
     return templates.TemplateResponse(
         request,
         "screener_dashboard.html",
         {
             "request": request,
+            "user": user,
             "poll_interval_seconds": 3,
             "poll_timeout_seconds": 120,
             "queued_poll_interval_seconds": 7,
@@ -87,11 +89,13 @@ async def screener_dashboard(request: Request):
 
 @router.get("/screener/report/{job_id}", response_class=HTMLResponse)
 async def screener_report_page(request: Request, job_id: str):
+    user = getattr(request.state, "user", None)
     return templates.TemplateResponse(
         request,
         "screener_report_detail.html",
         {
             "request": request,
+            "user": user,
             "poll_interval_seconds": 3,
             "poll_timeout_seconds": 120,
             "queued_poll_interval_seconds": 7,

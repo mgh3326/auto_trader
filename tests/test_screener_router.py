@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -53,6 +54,28 @@ def client() -> Generator[tuple[TestClient, _FakeScreenerService]]:
         yield test_client, fake_service
 
 
+@pytest.fixture
+def client_with_user() -> Generator[tuple[TestClient, _FakeScreenerService]]:
+    app = FastAPI()
+    fake_service = _FakeScreenerService()
+
+    @app.middleware("http")
+    async def _inject_user(request, call_next):
+        request.state.user = SimpleNamespace(
+            username="test-user",
+            role=SimpleNamespace(value="user"),
+        )
+        return await call_next(request)
+
+    _ = _inject_user
+
+    app.include_router(screener.router)
+    app.dependency_overrides[screener.get_screener_service] = lambda: fake_service
+
+    with TestClient(app) as test_client:
+        yield test_client, fake_service
+
+
 def test_screener_dashboard_page(
     client: tuple[TestClient, _FakeScreenerService],
 ) -> None:
@@ -90,6 +113,32 @@ def test_screener_report_page(client: tuple[TestClient, _FakeScreenerService]) -
     assert "job-1" in body
     assert "pollingEnabled" in body
     assert "nextErrorBackoffDelay" in body
+
+
+def test_screener_dashboard_page_renders_nav_with_user(
+    client_with_user: tuple[TestClient, _FakeScreenerService],
+) -> None:
+    test_client, _ = client_with_user
+    response = test_client.get("/screener")
+
+    assert response.status_code == 200
+    body = response.text
+    assert '<nav class="navbar' in body
+    assert 'href="/screener"' in body
+    assert 'href="/portfolio/"' in body
+
+
+def test_screener_report_page_renders_nav_with_user(
+    client_with_user: tuple[TestClient, _FakeScreenerService],
+) -> None:
+    test_client, _ = client_with_user
+    response = test_client.get("/screener/report/job-1")
+
+    assert response.status_code == 200
+    body = response.text
+    assert '<nav class="navbar' in body
+    assert 'href="/screener"' in body
+    assert 'href="/portfolio/"' in body
 
 
 def test_list_endpoint_calls_service(
