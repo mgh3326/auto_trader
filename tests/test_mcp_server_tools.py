@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -62,6 +63,32 @@ class DummySessionManager:
 
     async def __aexit__(self, exc_type, exc, tb):
         return None
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _DummyRouteDB:
+    def __init__(self, execute_results: list[object | None]):
+        self._execute_results = list(execute_results)
+        self.calls = 0
+
+    async def execute(self, query):
+        del query
+        if self.calls < len(self._execute_results):
+            value = self._execute_results[self.calls]
+        else:
+            value = None
+        self.calls += 1
+        return _ScalarResult(value)
+
+
+_KR_SYNC_HINT = "uv run python scripts/sync_kr_symbol_universe.py"
 
 
 def build_tools() -> dict[str, object]:
@@ -1492,6 +1519,104 @@ async def test_get_ohlcv_kr_equity_period_1h_backfill_uses_j_close_for_history(
 
 
 @pytest.mark.asyncio
+async def test_resolve_kr_intraday_route_universe_empty_has_sync_hint(monkeypatch):
+    route_db = _DummyRouteDB([None, None])
+    monkeypatch.setattr(
+        market_data_quotes,
+        "AsyncSessionLocal",
+        lambda: DummySessionManager(route_db),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        await market_data_quotes._resolve_kr_intraday_route("005930")
+
+    assert route_db.calls == 2
+    assert "kr_symbol_universe is empty" in str(exc_info.value)
+    assert _KR_SYNC_HINT in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_resolve_kr_intraday_route_unregistered_has_sync_hint(monkeypatch):
+    route_db = _DummyRouteDB([None, "005930"])
+    monkeypatch.setattr(
+        market_data_quotes,
+        "AsyncSessionLocal",
+        lambda: DummySessionManager(route_db),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        await market_data_quotes._resolve_kr_intraday_route("005930")
+
+    assert route_db.calls == 2
+    assert "is not registered in kr_symbol_universe" in str(exc_info.value)
+    assert _KR_SYNC_HINT in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_resolve_kr_intraday_route_inactive_has_sync_hint(monkeypatch):
+    route_db = _DummyRouteDB([SimpleNamespace(is_active=False, nxt_eligible=True)])
+    monkeypatch.setattr(
+        market_data_quotes,
+        "AsyncSessionLocal",
+        lambda: DummySessionManager(route_db),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        await market_data_quotes._resolve_kr_intraday_route("005930")
+
+    assert route_db.calls == 1
+    assert "is inactive in kr_symbol_universe" in str(exc_info.value)
+    assert _KR_SYNC_HINT in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("nxt_eligible", "expected_route"),
+    ((True, "UN"), (False, "J")),
+)
+async def test_resolve_kr_intraday_route_returns_expected_market(
+    monkeypatch,
+    nxt_eligible,
+    expected_route,
+):
+    route_db = _DummyRouteDB(
+        [SimpleNamespace(is_active=True, nxt_eligible=nxt_eligible)]
+    )
+    monkeypatch.setattr(
+        market_data_quotes,
+        "AsyncSessionLocal",
+        lambda: DummySessionManager(route_db),
+    )
+
+    route = await market_data_quotes._resolve_kr_intraday_route("005930")
+
+    assert route == expected_route
+    assert route_db.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_1h_universe_empty_returns_error_payload(monkeypatch):
+    tools = build_tools()
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_resolve_kr_intraday_route",
+        AsyncMock(
+            side_effect=ValueError(
+                f"kr_symbol_universe is empty. Sync required: {_KR_SYNC_HINT}"
+            )
+        ),
+    )
+
+    result = await tools["get_ohlcv"]("005930", market="kr", period="1h")
+
+    assert result["source"] == "kis"
+    assert result["instrument_type"] == "equity_kr"
+    assert "kr_symbol_universe is empty" in result["error"]
+    assert _KR_SYNC_HINT in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_kr_1h_unregistered_symbol_returns_error_payload(monkeypatch):
     tools = build_tools()
     monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
@@ -1500,7 +1625,8 @@ async def test_get_ohlcv_kr_1h_unregistered_symbol_returns_error_payload(monkeyp
         "_resolve_kr_intraday_route",
         AsyncMock(
             side_effect=ValueError(
-                "KR symbol '005930' is not registered in kr_symbol_universe"
+                "KR symbol '005930' is not registered in kr_symbol_universe. "
+                f"Sync required: {_KR_SYNC_HINT}"
             )
         ),
     )
@@ -1510,6 +1636,7 @@ async def test_get_ohlcv_kr_1h_unregistered_symbol_returns_error_payload(monkeyp
     assert result["source"] == "kis"
     assert result["instrument_type"] == "equity_kr"
     assert "not registered" in result["error"]
+    assert _KR_SYNC_HINT in result["error"]
 
 
 @pytest.mark.asyncio
@@ -1521,7 +1648,8 @@ async def test_get_ohlcv_kr_1h_inactive_symbol_returns_error_payload(monkeypatch
         "_resolve_kr_intraday_route",
         AsyncMock(
             side_effect=ValueError(
-                "KR symbol '005930' is inactive in kr_symbol_universe"
+                "KR symbol '005930' is inactive in kr_symbol_universe. "
+                f"Sync required: {_KR_SYNC_HINT}"
             )
         ),
     )
@@ -1531,6 +1659,7 @@ async def test_get_ohlcv_kr_1h_inactive_symbol_returns_error_payload(monkeypatch
     assert result["source"] == "kis"
     assert result["instrument_type"] == "equity_kr"
     assert "inactive" in result["error"]
+    assert _KR_SYNC_HINT in result["error"]
 
 
 @pytest.mark.asyncio

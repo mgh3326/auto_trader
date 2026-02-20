@@ -15,6 +15,9 @@ services:
         alembic current &&
         echo '🔄 Running migrations...' &&
         alembic upgrade head &&
+        echo '🔁 Syncing kr_symbol_universe...' &&
+        python scripts/sync_kr_symbol_universe.py &&
+        echo '✅ kr_symbol_universe sync completed' &&
         echo '✅ Migrations completed successfully'
       "
     profiles:

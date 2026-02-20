@@ -30,6 +30,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR `1h` returns an explicit error when symbol is missing/inactive in `kr_symbol_universe`
   - KR `1h` keeps `UN` empty-result behavior without `J` fallback
   - KR `1h` historical backfill uses route-specific cutoff (`J=153000`, `UN=200000`)
+  - KR `1h` prerequisite: run `make sync-kr-symbol-universe` (or `uv run python scripts/sync_kr_symbol_universe.py`) right after migrations
 - `get_indicators(symbol, indicators, market=None)`
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50)`

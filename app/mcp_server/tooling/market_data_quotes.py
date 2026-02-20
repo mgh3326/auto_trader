@@ -261,6 +261,11 @@ _KR_ROUTE_START = {
     "J": "090000",
     "UN": "080000",
 }
+_KR_UNIVERSE_SYNC_COMMAND = "uv run python scripts/sync_kr_symbol_universe.py"
+
+
+def _kr_universe_sync_hint() -> str:
+    return f"Sync required: {_KR_UNIVERSE_SYNC_COMMAND}"
 
 
 async def _resolve_kr_intraday_route(symbol: str) -> str:
@@ -272,12 +277,21 @@ async def _resolve_kr_intraday_route(symbol: str) -> str:
         result = await db.execute(query)
         universe = result.scalar_one_or_none()
     if universe is None:
+        async with AsyncSessionLocal() as db:
+            has_any_rows_result = await db.execute(
+                select(KRSymbolUniverse.symbol).limit(1)
+            )
+            has_any_rows = has_any_rows_result.scalar_one_or_none()
+        if has_any_rows is None:
+            raise ValueError(f"kr_symbol_universe is empty. {_kr_universe_sync_hint()}")
         raise ValueError(
-            f"KR symbol '{normalized_symbol}' is not registered in kr_symbol_universe"
+            f"KR symbol '{normalized_symbol}' is not registered in kr_symbol_universe. "
+            f"{_kr_universe_sync_hint()}"
         )
     if not universe.is_active:
         raise ValueError(
-            f"KR symbol '{normalized_symbol}' is inactive in kr_symbol_universe"
+            f"KR symbol '{normalized_symbol}' is inactive in kr_symbol_universe. "
+            f"{_kr_universe_sync_hint()}"
         )
     return "UN" if universe.nxt_eligible else "J"
 
