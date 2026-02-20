@@ -261,6 +261,7 @@ _KR_ROUTE_START = {
     "J": "090000",
     "UN": "080000",
 }
+_KR_INTRADAY_MAX_PAGE_CALLS_PER_DAY = 10
 _KR_UNIVERSE_SYNC_COMMAND = "uv run python scripts/sync_kr_symbol_universe.py"
 
 
@@ -322,6 +323,63 @@ def _filter_kr_intraday_session(
     return out.loc[(hhmmss >= start) & (hhmmss <= end)].reset_index(drop=True)
 
 
+async def _page_kr_intraday_day(
+    kis: KISClient,
+    symbol: str,
+    route_market: str,
+    target_day: datetime.date,
+    initial_end_time: str,
+    max_page_calls: int = _KR_INTRADAY_MAX_PAGE_CALLS_PER_DAY,
+) -> pd.DataFrame:
+    session_start = _KR_ROUTE_START[route_market]
+    page_limit = max(int(max_page_calls), 1)
+    end_time = initial_end_time
+    merged = pd.DataFrame()
+
+    for _ in range(page_limit):
+        intraday = await kis.inquire_time_dailychartprice(
+            code=symbol,
+            market=route_market,
+            n=200,
+            end_date=target_day,
+            end_time=end_time,
+        )
+        intraday = _filter_kr_intraday_session(intraday, route_market)
+        if intraday.empty:
+            break
+
+        merged = pd.concat([merged, intraday], ignore_index=True)
+        if "datetime" in merged.columns:
+            merged["datetime"] = pd.to_datetime(merged["datetime"], errors="coerce")
+            merged = merged.dropna(subset=["datetime"])
+            merged = (
+                merged.drop_duplicates(subset=["datetime"], keep="last")
+                .sort_values("datetime")
+                .reset_index(drop=True)
+            )
+        else:
+            merged = merged.drop_duplicates().reset_index(drop=True)
+
+        if "datetime" not in intraday.columns:
+            break
+
+        intraday_datetimes = pd.to_datetime(intraday["datetime"], errors="coerce")
+        intraday_datetimes = intraday_datetimes.dropna()
+        if intraday_datetimes.empty:
+            break
+
+        oldest = intraday_datetimes.min()
+        next_end_time = (oldest - datetime.timedelta(minutes=1)).strftime("%H%M%S")
+        if next_end_time < session_start:
+            break
+        if next_end_time == end_time:
+            break
+
+        end_time = next_end_time
+
+    return merged
+
+
 async def _fetch_ohlcv_equity_kr(
     symbol: str,
     count: int,
@@ -368,14 +426,14 @@ async def _fetch_ohlcv_equity_kr(
             merged = pd.DataFrame()
             for _ in range(max_fetch_days):
                 end_time = _resolve_kr_intraday_end_time(route_market, current_day)
-                intraday = await kis.inquire_time_dailychartprice(
-                    code=symbol,
-                    market=route_market,
-                    n=200,
-                    end_date=current_day,
-                    end_time=end_time,
+                intraday = await _page_kr_intraday_day(
+                    kis=kis,
+                    symbol=symbol,
+                    route_market=route_market,
+                    target_day=current_day,
+                    initial_end_time=end_time,
+                    max_page_calls=_KR_INTRADAY_MAX_PAGE_CALLS_PER_DAY,
                 )
-                intraday = _filter_kr_intraday_session(intraday, route_market)
                 if callable(aggregate_fn):
                     hourly = aggregate_fn(intraday)
                 else:

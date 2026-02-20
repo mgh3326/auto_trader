@@ -29,6 +29,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR `1h` resolves symbol route from `kr_symbol_universe` (`nxt_eligible=true` -> `UN`, else `J`)
   - KR `1h` returns an explicit error when symbol is missing/inactive in `kr_symbol_universe`
   - KR `1h` keeps `UN` empty-result behavior without `J` fallback
+  - KR `1h` expands intraday coverage with same-day `end_time` cursor pagination before moving to prior dates
+  - KR `1h` same-day pagination is capped at `10` internal API calls per trading day
   - KR `1h` historical backfill uses route-specific cutoff (`J=153000`, `UN=200000`)
   - KR `1h` prerequisite: run `make sync-kr-symbol-universe` (or `uv run python scripts/sync_kr_symbol_universe.py`) right after migrations
 - `get_indicators(symbol, indicators, market=None)`
