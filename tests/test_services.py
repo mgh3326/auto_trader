@@ -1521,6 +1521,7 @@ async def test_kis_inquire_time_dailychartprice_parses_rows(monkeypatch):
     assert await_args.args[1].endswith("/inquire-time-dailychartprice")
     assert await_args.kwargs["tr_id"] == "FHKST03010230"
     assert await_args.kwargs["api_name"] == "inquire_time_dailychartprice"
+    assert await_args.kwargs["params"]["FID_FAKE_TICK_INCU_YN"] == ""
     assert "FID_INPUT_DATE_2" not in await_args.kwargs["params"]
     assert "FID_INPUT_TIME_1" not in await_args.kwargs["params"]
     assert "FID_INPUT_TIME_2" not in await_args.kwargs["params"]

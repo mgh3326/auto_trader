@@ -1441,6 +1441,29 @@ async def test_get_ohlcv_kr_1h_mock_unsupported_returns_error_payload(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_get_ohlcv_kr_1h_opsq2001_field_missing_returns_error_payload(
+    monkeypatch,
+):
+    tools = build_tools()
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
+
+    class DummyKISClient:
+        async def inquire_time_dailychartprice(self, code, market, n, end_date=None):
+            del code, market, n, end_date
+            raise RuntimeError(
+                "OPSQ2001 ERROR INPUT FIELD NOT FOUND [FID_FAKE_TICK_INCU_YN]"
+            )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    result = await tools["get_ohlcv"]("005930", market="kr", period="1h")
+
+    assert result["source"] == "kis"
+    assert result["instrument_type"] == "equity_kr"
+    assert "OPSQ2001" in result["error"]
+    assert "FID_FAKE_TICK_INCU_YN" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_with_end_date(monkeypatch):
     tools = build_tools()
     df = _single_row_df()

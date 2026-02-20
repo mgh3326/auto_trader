@@ -66,6 +66,7 @@ def test_screener_dashboard_page(
     assert 'id="min-volume"' in body
     assert 'id="results-table"' in body
     assert 'id="results-cards"' in body
+    assert "<th>RSI</th>" in body
     assert 'id="report-panel"' in body
     assert 'id="open-detail-link"' in body
     assert 'id="order-form"' in body

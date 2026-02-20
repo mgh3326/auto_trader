@@ -567,6 +567,7 @@
         const price = row.current_price ?? row.close ?? row.price ?? row.trade_price ?? null;
         const changeRate = row.change_rate ?? row.fluctuation_rate ?? row.signed_change_rate ?? null;
         const volume = row.volume ?? row.trade_amount_24h ?? row.acc_trade_price_24h ?? null;
+        const rsi = row.rsi ?? row.rsi_14 ?? null;
 
         return {
             market,
@@ -575,6 +576,7 @@
             price,
             changeRate,
             volume,
+            rsi,
         };
     }
 
@@ -610,6 +612,10 @@
             const volumeCell = document.createElement("td");
             volumeCell.textContent = formatNumber(data.volume, 2);
             tr.appendChild(volumeCell);
+
+            const rsiCell = document.createElement("td");
+            rsiCell.textContent = formatNumber(data.rsi, 2);
+            tr.appendChild(rsiCell);
 
             const actionCell = document.createElement("td");
             const reportButton = document.createElement("button");
