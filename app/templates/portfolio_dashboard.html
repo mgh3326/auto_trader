@@ -571,9 +571,30 @@
             }
 
             statusMessage.textContent = `일부 소스 조회 경고: ${warnings.length}건`;
-            warningsList.innerHTML = warnings
-                .map((warning) => `<li>${escapeHtml(warning)}</li>`)
-                .join("");
+            const grouped = warnings.reduce((acc, warning) => {
+                const text = String(warning || "");
+                const delimiterIndex = text.indexOf(":");
+                const key = (delimiterIndex > 0 ? text.slice(0, delimiterIndex) : text).trim() || "기타";
+                acc[key] = (acc[key] || 0) + 1;
+                return acc;
+            }, {});
+
+            const summaryText = Object.entries(grouped)
+                .map(([cause, count]) => `${escapeHtml(cause)} ${count}건`)
+                .join(", ");
+            const detailLimit = 5;
+            const detailWarnings = warnings.slice(0, detailLimit);
+            const omittedCount = warnings.length - detailWarnings.length;
+
+            const entries = [
+                `<li><strong>원인 요약:</strong> ${summaryText}</li>`,
+                ...detailWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`),
+            ];
+            if (omittedCount > 0) {
+                entries.push(`<li>외 ${omittedCount}건 생략</li>`);
+            }
+
+            warningsList.innerHTML = entries.join("");
         }
 
         function renderPositions(positions) {

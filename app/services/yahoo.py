@@ -1,4 +1,5 @@
 # app/services/yahoo.py
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pandas as pd
@@ -139,8 +140,8 @@ def _filter_closed_buckets_nyse(
     return df.loc[keep_mask].sort_values("date").reset_index(drop=True)
 
 
-async def fetch_price(ticker: str) -> pd.DataFrame:
-    """미국 장중 현재가(15분 지연) 1행 DF – yfinance fast_info"""
+def _fetch_price_sync(ticker: str) -> pd.DataFrame:
+    """Blocking Yahoo fast_info call for single ticker."""
     yahoo_ticker = to_yahoo_symbol(ticker)  # DB형식 . -> Yahoo형식 -
     session = build_yfinance_tracing_session()
     info = yf.Ticker(yahoo_ticker, session=session).fast_info
@@ -156,6 +157,11 @@ async def fetch_price(ticker: str) -> pd.DataFrame:
         "value": 0,
     }
     return pd.DataFrame([row]).set_index("code")
+
+
+async def fetch_price(ticker: str) -> pd.DataFrame:
+    """미국 장중 현재가(15분 지연) 1행 DF – yfinance fast_info"""
+    return await asyncio.to_thread(_fetch_price_sync, ticker)
 
 
 async def fetch_fundamental_info(ticker: str) -> dict:

@@ -581,6 +581,26 @@ class TestYahooService:
         assert mock_ticker_class.call_args.kwargs["session"] is tracing_session
 
     @pytest.mark.asyncio
+    async def test_fetch_price_offloads_blocking_call_to_thread(self, monkeypatch):
+        from app.services import yahoo
+
+        expected = pd.DataFrame([{"close": 123.45}]).set_index(
+            pd.Index(["AAPL"], name="code")
+        )
+
+        async def fake_to_thread(func, *args, **kwargs):
+            assert func is yahoo._fetch_price_sync
+            assert args == ("AAPL",)
+            assert kwargs == {}
+            return expected
+
+        monkeypatch.setattr(yahoo.asyncio, "to_thread", fake_to_thread)
+
+        result = await yahoo.fetch_price("AAPL")
+
+        assert result is expected
+
+    @pytest.mark.asyncio
     @patch("app.services.yahoo.yf.Ticker")
     async def test_fetch_fundamental_info(self, mock_ticker_class, monkeypatch):
         tracing_session = object()
