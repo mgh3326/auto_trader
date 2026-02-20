@@ -2,6 +2,7 @@
 Tests for service modules.
 """
 
+from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1545,6 +1546,37 @@ async def test_kis_inquire_time_dailychartprice_parses_rows(monkeypatch):
     assert "FID_INPUT_DATE_2" not in await_args.kwargs["params"]
     assert "FID_INPUT_TIME_1" not in await_args.kwargs["params"]
     assert "FID_INPUT_TIME_2" not in await_args.kwargs["params"]
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_time_dailychartprice_uses_end_time_when_provided(
+    monkeypatch,
+):
+    from app.services.kis import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(return_value={"rt_cd": "0", "output2": []})
+    monkeypatch.setattr(
+        client,
+        "_request_with_rate_limit",
+        request_mock,
+    )
+
+    await client.inquire_time_dailychartprice(
+        "005930",
+        market="J",
+        n=1,
+        end_date=date(2026, 2, 19),
+        end_time="153000",
+    )
+
+    request_mock.assert_awaited_once()
+    await_args = request_mock.await_args
+    assert await_args is not None
+    assert await_args.kwargs["params"]["FID_COND_MRKT_DIV_CODE"] == "J"
+    assert await_args.kwargs["params"]["FID_INPUT_DATE_1"] == "20260219"
+    assert await_args.kwargs["params"]["FID_INPUT_HOUR_1"] == "153000"
 
 
 def test_aggregate_to_hourly_keeps_partial_bucket():

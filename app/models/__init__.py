@@ -1,6 +1,7 @@
 # app/models/__init__.py
 from .analysis import StockAnalysisResult, StockInfo
 from .base import Base
+from .kr_symbol_universe import KRSymbolUniverse
 from .manual_holdings import (
     BrokerAccount,
     BrokerType,
@@ -38,6 +39,7 @@ __all__ = [
     "ResearchSyncJob",
     "StockInfo",
     "StockAnalysisResult",
+    "KRSymbolUniverse",
     "SymbolTradeSettings",
     "NewsArticle",
     "NewsAnalysisResult",

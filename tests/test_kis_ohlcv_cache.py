@@ -139,8 +139,8 @@ class _FakeRedis:
 
 
 def _build_daily_frame(rows: int = 2) -> pd.DataFrame:
-    base = datetime(2026, 2, 19)
-    dates = [(base - timedelta(days=idx)).date() for idx in range(rows)]
+    base_date = datetime.now().date()
+    dates = [base_date - timedelta(days=idx) for idx in range(rows)]
     dates.sort()
     return pd.DataFrame(
         {
@@ -159,9 +159,14 @@ def _build_daily_frame(rows: int = 2) -> pd.DataFrame:
 def _reset_cache_state():
     kis_ohlcv_cache._REDIS_CLIENT = None
     kis_ohlcv_cache._FALLBACK_COUNT = 0
-    yield
-    kis_ohlcv_cache._REDIS_CLIENT = None
-    kis_ohlcv_cache._FALLBACK_COUNT = 0
+
+
+def test_keys_include_route_segment_for_same_symbol_period():
+    default_keys = kis_ohlcv_cache._keys("005930", "1h")
+    routed_keys = kis_ohlcv_cache._keys("005930", "1h", "j")
+
+    assert default_keys != routed_keys
+    assert ":J:" in routed_keys[0]
 
 
 @pytest.mark.asyncio

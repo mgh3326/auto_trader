@@ -981,6 +981,7 @@ class KISClient:
         market: str = "UN",
         n: int = 200,
         end_date: datetime.date | None = None,
+        end_time: str | None = None,
     ) -> pd.DataFrame:
         await self._ensure_token()
 
@@ -990,7 +991,7 @@ class KISClient:
         }
 
         base_date = end_date or datetime.date.today()
-        current_time = datetime.datetime.now().strftime("%H%M%S")
+        current_time = end_time or datetime.datetime.now().strftime("%H%M%S")
         params = {
             "FID_COND_MRKT_DIV_CODE": market,
             "FID_INPUT_ISCD": code.zfill(6),

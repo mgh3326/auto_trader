@@ -26,6 +26,10 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `4h`: crypto only
   - `1h`: KR/US equity + crypto
   - KR `1h` includes in-progress (partial) hourly candle
+  - KR `1h` resolves symbol route from `kr_symbol_universe` (`nxt_eligible=true` -> `UN`, else `J`)
+  - KR `1h` returns an explicit error when symbol is missing/inactive in `kr_symbol_universe`
+  - KR `1h` keeps `UN` empty-result behavior without `J` fallback
+  - KR `1h` historical backfill uses route-specific cutoff (`J=153000`, `UN=200000`)
 - `get_indicators(symbol, indicators, market=None)`
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50)`

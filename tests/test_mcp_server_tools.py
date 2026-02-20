@@ -1358,10 +1358,14 @@ async def test_get_ohlcv_kr_equity_period_1h(monkeypatch):
     tools = build_tools()
     df = _single_row_df()
     monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
+    route_mock = AsyncMock(return_value="UN")
+    monkeypatch.setattr(market_data_quotes, "_resolve_kr_intraday_route", route_mock)
 
     class DummyKISClient:
-        async def inquire_time_dailychartprice(self, code, market, n, end_date=None):
-            del code, market, n, end_date
+        async def inquire_time_dailychartprice(
+            self, code, market, n, end_date=None, end_time=None
+        ):
+            del code, market, n, end_date, end_time
             return df
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
@@ -1370,18 +1374,23 @@ async def test_get_ohlcv_kr_equity_period_1h(monkeypatch):
     assert result["instrument_type"] == "equity_kr"
     assert result["period"] == "1h"
     assert result["source"] == "kis"
+    route_mock.assert_awaited_once_with("005930")
 
 
 @pytest.mark.asyncio
 async def test_get_ohlcv_kr_equity_period_1h_backfills_multiple_days(monkeypatch):
     tools = build_tools()
     monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
-    calls: list[date | None] = []
+    route_mock = AsyncMock(return_value="UN")
+    monkeypatch.setattr(market_data_quotes, "_resolve_kr_intraday_route", route_mock)
+    calls: list[tuple[date | None, str | None, str]] = []
 
     class DummyKISClient:
-        async def inquire_time_dailychartprice(self, code, market, n, end_date=None):
-            del code, market
-            calls.append(end_date)
+        async def inquire_time_dailychartprice(
+            self, code, market, n, end_date=None, end_time=None
+        ):
+            del code
+            calls.append((end_date, end_time, market))
             requested_day = end_date or date(2026, 2, 19)
             assert n >= 1
             return pd.DataFrame(
@@ -1415,19 +1424,130 @@ async def test_get_ohlcv_kr_equity_period_1h_backfills_multiple_days(monkeypatch
     result = await tools["get_ohlcv"]("005930", market="kr", count=4, period="1h")
 
     assert len(calls) >= 2
+    assert calls[0][2] == "UN"
+    assert calls[1][1] == "200000"
+    assert len(result["rows"]) == 4
+    assert result["period"] == "1h"
+    assert result["instrument_type"] == "equity_kr"
+    route_mock.assert_awaited_once_with("005930")
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_equity_period_1h_backfill_uses_j_close_for_history(
+    monkeypatch,
+):
+    tools = build_tools()
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_resolve_kr_intraday_route",
+        AsyncMock(return_value="J"),
+    )
+    calls: list[tuple[date | None, str | None, str]] = []
+
+    class DummyKISClient:
+        async def inquire_time_dailychartprice(
+            self, code, market, n, end_date=None, end_time=None
+        ):
+            del code
+            calls.append((end_date, end_time, market))
+            requested_day = end_date or date(2026, 2, 19)
+            assert n >= 1
+            return pd.DataFrame(
+                [
+                    {
+                        "datetime": pd.Timestamp(f"{requested_day} 09:00:00"),
+                        "date": requested_day,
+                        "time": pd.Timestamp("2026-01-01 09:00:00").time(),
+                        "open": 100.0,
+                        "high": 101.0,
+                        "low": 99.0,
+                        "close": 100.5,
+                        "volume": 1000,
+                        "value": 100500.0,
+                    },
+                    {
+                        "datetime": pd.Timestamp(f"{requested_day} 10:00:00"),
+                        "date": requested_day,
+                        "time": pd.Timestamp("2026-01-01 10:00:00").time(),
+                        "open": 100.5,
+                        "high": 102.0,
+                        "low": 100.0,
+                        "close": 101.5,
+                        "volume": 1100,
+                        "value": 111650.0,
+                    },
+                ]
+            )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    result = await tools["get_ohlcv"]("005930", market="kr", count=4, period="1h")
+
+    assert len(calls) >= 2
+    assert calls[0][2] == "J"
+    assert calls[1][1] == "153000"
     assert len(result["rows"]) == 4
     assert result["period"] == "1h"
     assert result["instrument_type"] == "equity_kr"
 
 
 @pytest.mark.asyncio
+async def test_get_ohlcv_kr_1h_unregistered_symbol_returns_error_payload(monkeypatch):
+    tools = build_tools()
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_resolve_kr_intraday_route",
+        AsyncMock(
+            side_effect=ValueError(
+                "KR symbol '005930' is not registered in kr_symbol_universe"
+            )
+        ),
+    )
+
+    result = await tools["get_ohlcv"]("005930", market="kr", period="1h")
+
+    assert result["source"] == "kis"
+    assert result["instrument_type"] == "equity_kr"
+    assert "not registered" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_1h_inactive_symbol_returns_error_payload(monkeypatch):
+    tools = build_tools()
+    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_resolve_kr_intraday_route",
+        AsyncMock(
+            side_effect=ValueError(
+                "KR symbol '005930' is inactive in kr_symbol_universe"
+            )
+        ),
+    )
+
+    result = await tools["get_ohlcv"]("005930", market="kr", period="1h")
+
+    assert result["source"] == "kis"
+    assert result["instrument_type"] == "equity_kr"
+    assert "inactive" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_kr_1h_mock_unsupported_returns_error_payload(monkeypatch):
     tools = build_tools()
     monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_resolve_kr_intraday_route",
+        AsyncMock(return_value="UN"),
+    )
 
     class DummyKISClient:
-        async def inquire_time_dailychartprice(self, code, market, n, end_date=None):
-            del code, market, n, end_date
+        async def inquire_time_dailychartprice(
+            self, code, market, n, end_date=None, end_time=None
+        ):
+            del code, market, n, end_date, end_time
             raise RuntimeError(
                 "mock trading does not support inquire-time-dailychartprice"
             )
@@ -1446,10 +1566,17 @@ async def test_get_ohlcv_kr_1h_opsq2001_field_missing_returns_error_payload(
 ):
     tools = build_tools()
     monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
+    monkeypatch.setattr(
+        market_data_quotes,
+        "_resolve_kr_intraday_route",
+        AsyncMock(return_value="UN"),
+    )
 
     class DummyKISClient:
-        async def inquire_time_dailychartprice(self, code, market, n, end_date=None):
-            del code, market, n, end_date
+        async def inquire_time_dailychartprice(
+            self, code, market, n, end_date=None, end_time=None
+        ):
+            del code, market, n, end_date, end_time
             raise RuntimeError(
                 "OPSQ2001 ERROR INPUT FIELD NOT FOUND [FID_FAKE_TICK_INCU_YN]"
             )

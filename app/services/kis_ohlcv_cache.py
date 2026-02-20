@@ -37,13 +37,18 @@ def _normalize_period(period: str) -> str:
     return normalized
 
 
-def _base_key(symbol: str, period: str) -> str:
+def _base_key(symbol: str, period: str, route: str | None = None) -> str:
     normalized_symbol = str(symbol or "").strip().upper()
+    normalized_route = str(route or "").strip().upper()
+    if normalized_route:
+        return f"kis:ohlcv:{period}:v1:{normalized_symbol}:{normalized_route}"
     return f"kis:ohlcv:{period}:v1:{normalized_symbol}"
 
 
-def _keys(symbol: str, period: str) -> tuple[str, str, str, str]:
-    base = _base_key(symbol, period)
+def _keys(
+    symbol: str, period: str, route: str | None = None
+) -> tuple[str, str, str, str]:
+    base = _base_key(symbol, period, route)
     return f"{base}:dates", f"{base}:rows", f"{base}:meta", f"{base}:lock"
 
 
@@ -376,6 +381,7 @@ async def get_candles(
     count: int,
     period: str,
     raw_fetcher: Callable[[int], Awaitable[pd.DataFrame]],
+    route: str | None = None,
 ) -> pd.DataFrame:
     normalized_period = _normalize_period(period)
     requested_count = int(count)
@@ -399,7 +405,11 @@ async def get_candles(
 
     try:
         redis_client = await _get_redis_client()
-        dates_key, rows_key, _, lock_key = _keys(normalized_symbol, normalized_period)
+        dates_key, rows_key, _, lock_key = _keys(
+            normalized_symbol,
+            normalized_period,
+            route,
+        )
 
         await _enforce_retention_limit(
             redis_client, dates_key, rows_key, retention_limit

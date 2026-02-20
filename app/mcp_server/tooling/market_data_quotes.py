@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import datetime
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
+from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
     _compute_crypto_realtime_rsi_from_frame,
@@ -34,6 +37,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
+from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.monitoring import build_yfinance_tracing_session
 from app.services import kis_ohlcv_cache
 from app.services import upbit as upbit_service
@@ -248,6 +252,62 @@ async def _fetch_ohlcv_crypto(
     }
 
 
+_KST = ZoneInfo("Asia/Seoul")
+_KR_ROUTE_CLOSE = {
+    "J": "153000",
+    "UN": "200000",
+}
+_KR_ROUTE_START = {
+    "J": "090000",
+    "UN": "080000",
+}
+
+
+async def _resolve_kr_intraday_route(symbol: str) -> str:
+    normalized_symbol = str(symbol or "").strip().upper()
+    async with AsyncSessionLocal() as db:
+        query = select(KRSymbolUniverse).where(
+            KRSymbolUniverse.symbol == normalized_symbol
+        )
+        result = await db.execute(query)
+        universe = result.scalar_one_or_none()
+    if universe is None:
+        raise ValueError(
+            f"KR symbol '{normalized_symbol}' is not registered in kr_symbol_universe"
+        )
+    if not universe.is_active:
+        raise ValueError(
+            f"KR symbol '{normalized_symbol}' is inactive in kr_symbol_universe"
+        )
+    return "UN" if universe.nxt_eligible else "J"
+
+
+def _resolve_kr_intraday_end_time(route_market: str, target_day: datetime.date) -> str:
+    session_close = _KR_ROUTE_CLOSE[route_market]
+    now_kst = datetime.datetime.now(_KST)
+    if target_day < now_kst.date():
+        return session_close
+    now_hhmmss = now_kst.strftime("%H%M%S")
+    return min(now_hhmmss, session_close)
+
+
+def _filter_kr_intraday_session(
+    frame: pd.DataFrame,
+    route_market: str,
+) -> pd.DataFrame:
+    if frame.empty or "datetime" not in frame.columns:
+        return frame
+    out = frame.copy()
+    out["datetime"] = pd.to_datetime(out["datetime"], errors="coerce")
+    out = out.dropna(subset=["datetime"])
+    if out.empty:
+        return out
+    start = _KR_ROUTE_START[route_market]
+    end = _KR_ROUTE_CLOSE[route_market]
+    hhmmss = out["datetime"].dt.strftime("%H%M%S")
+    return out.loc[(hhmmss >= start) & (hhmmss <= end)].reset_index(drop=True)
+
+
 async def _fetch_ohlcv_equity_kr(
     symbol: str,
     count: int,
@@ -280,22 +340,28 @@ async def _fetch_ohlcv_equity_kr(
         else:
             df = await _raw_fetch_day(capped_count)
     elif period == "1h":
+        route_market = await _resolve_kr_intraday_route(symbol)
 
         async def _raw_fetch_1h(requested_count: int):
             aggregate_fn = getattr(KISClient, "_aggregate_intraday_to_hour", None)
             target_count = max(int(requested_count), 1)
-            current_day = end_date.date() if end_date else datetime.date.today()
+            current_day = (
+                end_date.date() if end_date else datetime.datetime.now(_KST).date()
+            )
             estimated_days = (target_count + 5) // 6
             max_fetch_days = min(max(estimated_days + 3, 3), 120)
 
             merged = pd.DataFrame()
             for _ in range(max_fetch_days):
+                end_time = _resolve_kr_intraday_end_time(route_market, current_day)
                 intraday = await kis.inquire_time_dailychartprice(
                     code=symbol,
-                    market="UN",
+                    market=route_market,
                     n=200,
                     end_date=current_day,
+                    end_time=end_time,
                 )
+                intraday = _filter_kr_intraday_session(intraday, route_market)
                 if callable(aggregate_fn):
                     hourly = aggregate_fn(intraday)
                 else:
@@ -325,6 +391,7 @@ async def _fetch_ohlcv_equity_kr(
                 count=capped_count,
                 period="1h",
                 raw_fetcher=_raw_fetch_1h,
+                route=route_market,
             )
         else:
             df = await _raw_fetch_1h(capped_count)
