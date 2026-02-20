@@ -130,6 +130,15 @@ run_migration() {
     fi
 
     echo "  ✅ kr_symbol_universe sync completed"
+
+    echo "  🔁 Syncing us_symbol_universe..."
+    if ! $PYTHON_CMD scripts/sync_us_symbol_universe.py; then
+        echo -e "${RED}❌ us_symbol_universe sync failed${NC}"
+        echo "Run manually: uv run python scripts/sync_us_symbol_universe.py"
+        exit 1
+    fi
+
+    echo "  ✅ us_symbol_universe sync completed"
     
     echo -e "${GREEN}✅ Migration completed successfully${NC}"
 }

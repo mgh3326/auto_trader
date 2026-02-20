@@ -375,7 +375,7 @@ async def test_modify_order_crypto_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_modify_order_us_falls_back_exchange(monkeypatch):
+async def test_modify_order_us_uses_resolved_exchange(monkeypatch):
     tools = build_tools()
 
     class FakeKIS:
@@ -410,10 +410,9 @@ async def test_modify_order_us_falls_back_exchange(monkeypatch):
     fake_kis = FakeKIS()
     _patch_kis_client(monkeypatch, lambda: fake_kis)
     monkeypatch.setattr(
-        orders_history, "get_exchange_by_symbol", lambda _symbol: "NASD"
-    )
-    monkeypatch.setattr(
-        order_execution, "get_exchange_by_symbol", lambda _symbol: "NASD"
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NYSE"),
     )
 
     result = await tools["modify_order"](
@@ -432,7 +431,7 @@ async def test_modify_order_us_falls_back_exchange(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_modify_order_us_falls_back_exchange_to_amex(monkeypatch):
+async def test_modify_order_us_uses_resolved_exchange_amex(monkeypatch):
     tools = build_tools()
 
     class FakeKIS:
@@ -467,10 +466,9 @@ async def test_modify_order_us_falls_back_exchange_to_amex(monkeypatch):
     fake_kis = FakeKIS()
     _patch_kis_client(monkeypatch, lambda: fake_kis)
     monkeypatch.setattr(
-        orders_history, "get_exchange_by_symbol", lambda _symbol: "NASD"
-    )
-    monkeypatch.setattr(
-        order_execution, "get_exchange_by_symbol", lambda _symbol: "NASD"
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="AMEX"),
     )
 
     result = await tools["modify_order"](
@@ -516,10 +514,9 @@ async def test_modify_order_us_fails_when_order_not_on_any_exchange(monkeypatch)
     fake_kis = FakeKIS()
     _patch_kis_client(monkeypatch, lambda: fake_kis)
     monkeypatch.setattr(
-        orders_history, "get_exchange_by_symbol", lambda _symbol: "NASD"
-    )
-    monkeypatch.setattr(
-        order_execution, "get_exchange_by_symbol", lambda _symbol: "NASD"
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
     )
 
     result = await tools["modify_order"](
@@ -533,7 +530,7 @@ async def test_modify_order_us_fails_when_order_not_on_any_exchange(monkeypatch)
     assert result["success"] is False
     assert result["status"] == "failed"
     assert result["error"].startswith("Order not found in open orders (checked: ")
-    assert fake_kis.inquired_exchanges == ["NASD", "NYSE", "AMEX"]
+    assert fake_kis.inquired_exchanges == ["NASD"]
 
 
 @pytest.mark.asyncio
@@ -572,14 +569,16 @@ async def test_cancel_order_us_falls_back_exchange_and_uses_found_exchange(monke
     fake_kis = FakeKIS()
     _patch_kis_client(monkeypatch, lambda: fake_kis)
     monkeypatch.setattr(
-        orders_modify_cancel, "get_exchange_by_symbol", lambda _: "NASD"
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NYSE"),
     )
 
     result = await tools["cancel_order"](order_id="US-CAN-1", symbol="CRM", market="us")
 
     assert result["success"] is True
     assert result["symbol"] == "CRM"
-    assert fake_kis.checked_exchanges[:2] == ["NASD", "NYSE"]
+    assert fake_kis.checked_exchanges == ["NYSE"]
     assert fake_kis.cancel_call is not None
     assert fake_kis.cancel_call["exchange_code"] == "NYSE"
     assert fake_kis.cancel_call["quantity"] == 5
@@ -623,7 +622,9 @@ async def test_cancel_order_us_auto_lookup_symbol_and_exchange_when_symbol_missi
     fake_kis = FakeKIS()
     _patch_kis_client(monkeypatch, lambda: fake_kis)
     monkeypatch.setattr(
-        orders_modify_cancel, "get_exchange_by_symbol", lambda _: "NASD"
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
     )
 
     result = await tools["cancel_order"](order_id="US-CAN-2", market="us")
@@ -656,7 +657,9 @@ async def test_cancel_order_us_returns_error_when_order_not_found_across_exchang
     fake_kis = FakeKIS()
     _patch_kis_client(monkeypatch, lambda: fake_kis)
     monkeypatch.setattr(
-        orders_modify_cancel, "get_exchange_by_symbol", lambda _: "NASD"
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
     )
 
     result = await tools["cancel_order"](
@@ -667,9 +670,9 @@ async def test_cancel_order_us_returns_error_when_order_not_found_across_exchang
     assert "Order not found in open orders" in result["error"]
     assert "checked:" in result["error"]
     assert "NASD" in result["error"]
-    assert "NYSE" in result["error"]
-    assert "AMEX" in result["error"]
-    assert fake_kis.checked_exchanges == ["NASD", "NYSE", "AMEX"]
+    assert "NYSE" not in result["error"]
+    assert "AMEX" not in result["error"]
+    assert fake_kis.checked_exchanges == ["NASD"]
 
 
 @pytest.mark.asyncio
@@ -695,7 +698,9 @@ async def test_cancel_order_us_uses_remaining_qty_then_fallback_qty(monkeypatch)
     fake_kis = FakeKIS()
     _patch_kis_client(monkeypatch, lambda: fake_kis)
     monkeypatch.setattr(
-        orders_modify_cancel, "get_exchange_by_symbol", lambda _: "NASD"
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
     )
 
     fake_kis.current_order = {
@@ -782,6 +787,11 @@ async def test_get_order_history_us_deduplicates_by_order_id(monkeypatch, caplog
             return []
 
     _patch_kis_client(monkeypatch, lambda: FakeKIS())
+    monkeypatch.setattr(
+        orders_history,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
+    )
 
     caplog.set_level("INFO")
     result = await tools["get_order_history"](

@@ -23,7 +23,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services import upbit as upbit_service
 from app.services.kis import KISClient
-from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
+from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 _calculate_date_range = _order_execution._calculate_date_range
 _normalize_market_type_to_external = _order_execution._normalize_market_type_to_external
@@ -159,9 +159,9 @@ async def get_order_history_impl(
                 if status in ("all", "pending"):
                     target_exchanges = ["NASD", "NYSE", "AMEX"]
                     if normalized_symbol:
-                        ex = get_exchange_by_symbol(normalized_symbol)
-                        if ex:
-                            target_exchanges = [ex]
+                        target_exchanges = [
+                            await get_us_exchange_by_symbol(normalized_symbol)
+                        ]
 
                     seen_oids = set()
                     for ex in target_exchanges:
@@ -183,7 +183,7 @@ async def get_order_history_impl(
                 if status in ("all", "filled", "cancelled") and normalized_symbol:
                     lookup_days = effective_days if effective_days is not None else 30
                     start_dt, end_dt = _calculate_date_range(lookup_days)
-                    ex = get_exchange_by_symbol(normalized_symbol) or "NASD"
+                    ex = await get_us_exchange_by_symbol(normalized_symbol)
                     hist_ops = await kis.inquire_daily_order_overseas(
                         start_date=start_dt,
                         end_date=end_dt,

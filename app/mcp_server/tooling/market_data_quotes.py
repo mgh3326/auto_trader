@@ -43,11 +43,11 @@ from app.services import kis_ohlcv_cache
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
+from app.services.us_symbol_universe_service import search_us_symbols
 from data.coins_info import get_or_refresh_maps
 from data.stocks_info import (
     get_kosdaq_name_to_code,
     get_kospi_name_to_code,
-    get_us_stocks_data,
 )
 
 if TYPE_CHECKING:
@@ -99,30 +99,12 @@ async def _search_master_data(
                     return results
 
     if instrument_type is None or instrument_type == "equity_us":
-        us_data = get_us_stocks_data()
-        symbol_to_exchange = us_data.get("symbol_to_exchange", {})
-        symbol_to_name_kr = us_data.get("symbol_to_name_kr", {})
-        symbol_to_name_en = us_data.get("symbol_to_name_en", {})
-
-        for symbol, exchange in symbol_to_exchange.items():
-            name_kr = symbol_to_name_kr.get(symbol, "")
-            name_en = symbol_to_name_en.get(symbol, "")
-            if (
-                query_upper in symbol.upper()
-                or query_lower in name_kr.lower()
-                or query_lower in name_en.lower()
-            ):
-                results.append(
-                    {
-                        "symbol": symbol,
-                        "name": name_kr or name_en or symbol,
-                        "instrument_type": "equity_us",
-                        "exchange": exchange,
-                        "is_active": True,
-                    }
-                )
-                if len(results) >= limit:
-                    return results
+        remaining = limit - len(results)
+        if remaining > 0:
+            us_results = await search_us_symbols(query, remaining)
+            results.extend(us_results)
+            if len(results) >= limit:
+                return results
 
     if instrument_type is None or instrument_type == "crypto":
         try:

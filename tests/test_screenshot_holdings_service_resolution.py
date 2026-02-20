@@ -12,6 +12,7 @@ import pytest
 
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.stock_alias_service import StockAliasService
+from app.services.us_symbol_universe_service import USSymbolUniverseLookupError
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def _setup_mocks(
     crypto_maps=None,
     kospi_map=None,
     kosdaq_map=None,
-    us_stocks=None,
+    us_name_to_symbol=None,
     alias_ticker=None,
 ):
     """Helper to set up all required mocks."""
@@ -52,7 +53,7 @@ def _setup_mocks(
     crypto_maps = crypto_maps or {"NAME_TO_PAIR_KR": {}, "COIN_TO_NAME_KR": {}}
     kospi_map = kospi_map or {}
     kosdaq_map = kosdaq_map or {}
-    us_stocks = us_stocks or {"name_to_symbol": {}}
+    us_name_to_symbol = us_name_to_symbol or {}
 
     mock_db.execute.return_value = MagicMock()
     mock_db.execute.return_value.scalars.return_value.all.return_value = (
@@ -71,9 +72,16 @@ def _setup_mocks(
         "app.services.screenshot_holdings_service.get_kosdaq_name_to_code",
         lambda: kosdaq_map,
     )
+
+    async def mock_get_us_symbol_by_name(name, _db=None):
+        symbol = us_name_to_symbol.get(name)
+        if symbol is None:
+            raise USSymbolUniverseLookupError("not found")
+        return symbol
+
     monkeypatch.setattr(
-        "app.services.screenshot_holdings_service.get_us_stocks_data",
-        lambda: us_stocks,
+        "app.services.screenshot_holdings_service.get_us_symbol_by_name",
+        mock_get_us_symbol_by_name,
     )
 
     async def mock_get_ticker_by_alias(self, alias, market_type):
@@ -267,6 +275,29 @@ async def test_kr_stock_regression(service, mock_db, mock_broker_account, monkey
     assert holding["resolved_ticker"] == "005930"
     assert holding["market_type"] == "KR"
     assert holding["resolution_method"] == "krx_master"
+
+
+@pytest.mark.asyncio
+async def test_us_lookup_failure_raises_explicit_error(
+    service, mock_db, mock_broker_account, monkeypatch
+):
+    """US lookup failures should raise explicit errors instead of fallback ticker."""
+    _setup_mocks(monkeypatch, mock_db, mock_broker_account, us_name_to_symbol={})
+
+    with pytest.raises(USSymbolUniverseLookupError, match="not found"):
+        await service.resolve_and_update(
+            user_id=1,
+            holdings_data=[
+                {
+                    "stock_name": "알수없는미국종목",
+                    "quantity": 1,
+                    "eval_amount": 100,
+                    "market_section": "us",
+                }
+            ],
+            broker="toss",
+            dry_run=True,
+        )
 
 
 @pytest.mark.asyncio

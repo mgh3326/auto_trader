@@ -18,7 +18,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services import upbit as upbit_service
 from app.services.kis import KISClient
-from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
+from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
 def _map_upbit_state(state: str, filled: float, remaining: float) -> str:
@@ -173,14 +173,10 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_us_exchange_candidates(symbol: str | None) -> list[str]:
-    preferred_exchange = get_exchange_by_symbol(symbol) if symbol else None
-    preferred_exchange = preferred_exchange or "NASD"
-    candidates: list[str] = []
-    for exchange in [preferred_exchange, "NASD", "NYSE", "AMEX"]:
-        if exchange and exchange not in candidates:
-            candidates.append(exchange)
-    return candidates
+async def _build_us_exchange_candidates(symbol: str | None) -> list[str]:
+    if symbol:
+        return [await get_us_exchange_by_symbol(symbol)]
+    return ["NASD", "NYSE", "AMEX"]
 
 
 async def _find_us_open_order_by_id(
@@ -188,7 +184,7 @@ async def _find_us_open_order_by_id(
     order_id: str,
     symbol: str | None,
 ) -> tuple[dict[str, Any] | None, str | None, list[str]]:
-    exchange_candidates = _build_us_exchange_candidates(symbol)
+    exchange_candidates = await _build_us_exchange_candidates(symbol)
     for exchange in exchange_candidates:
         try:
             open_orders = await kis.inquire_overseas_orders(exchange)

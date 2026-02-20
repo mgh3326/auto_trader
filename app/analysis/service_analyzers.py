@@ -1,8 +1,9 @@
 import pandas as pd
 
 from app.services import kis, upbit, yahoo
+from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 from data.coins_info import upbit_pairs
-from data.stocks_info import KRX_NAME_TO_CODE, get_exchange_by_symbol
+from data.stocks_info import KRX_NAME_TO_CODE
 
 from .analyzer import Analyzer, DataProcessor
 
@@ -572,10 +573,7 @@ class KISAnalyzer(Analyzer):
         print(f"\n=== {symbol} 해외주식 분석 시작 ===")
 
         # 거래소 코드 자동 조회
-        exchange_code = get_exchange_by_symbol(symbol)
-        if not exchange_code:
-            print(f"심볼을 찾을 수 없음: {symbol}")
-            return
+        exchange_code = await get_us_exchange_by_symbol(symbol)
 
         print(f"거래소: {exchange_code}")
 
@@ -610,10 +608,7 @@ class KISAnalyzer(Analyzer):
         print(f"\n=== {symbol} 해외주식 JSON 분석 시작 ===")
 
         # 거래소 코드 자동 조회
-        exchange_code = get_exchange_by_symbol(symbol)
-        if not exchange_code:
-            print(f"심볼을 찾을 수 없음: {symbol}")
-            return
+        exchange_code = await get_us_exchange_by_symbol(symbol)
 
         print(f"거래소: {exchange_code}")
 

@@ -30,7 +30,7 @@ from app.services.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )
-from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
+from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
 def _calculate_date_range(days: int) -> tuple[str, str]:
@@ -390,7 +390,7 @@ async def _execute_order(
         return result
 
     kis = KISClient()
-    exchange_code = get_exchange_by_symbol(symbol) or "NASD"
+    exchange_code = await get_us_exchange_by_symbol(symbol)
 
     if side == "buy":
         return await kis.buy_overseas_stock(

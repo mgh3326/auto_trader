@@ -394,13 +394,6 @@ async def test_update_manual_holdings_us_master_resolution(monkeypatch):
         }
     ]
 
-    # Mock master data
-    monkeypatch.setattr(
-        market_data_quotes,
-        "get_us_stocks_data",
-        lambda: {"name_to_symbol": {"애플": "AAPL"}, "symbol_to_exchange": {}},
-    )
-
     async def mock_resolve_and_update(self, **kwargs):
         return {
             "success": True,

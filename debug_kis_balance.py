@@ -3,13 +3,11 @@ KIS 보유 주식 조회 테스트 스크립트
 Upbit의 fetch_my_coins와 유사한 기능을 테스트합니다.
 국내주식과 해외주식 모두 조회 가능합니다.
 """
+
 import asyncio
 import pprint
 
 from app.services.kis import kis
-from data.stocks_info import (
-    US_STOCKS_SYMBOL_TO_EXCHANGE,
-)
 
 
 async def main():
@@ -33,14 +31,18 @@ async def main():
                 print(f"   매입평균가: {float(stock.get('pchs_avg_pric', 0)):,.0f}원")
                 print(f"   현재가: {float(stock.get('prpr', 0)):,.0f}원")
                 print(f"   평가금액: {float(stock.get('evlu_amt', 0)):,.0f}원")
-                print(f"   평가손익: {float(stock.get('evlu_pfls_amt', 0)):,.0f}원 ({stock.get('evlu_pfls_rt')}%)")
+                print(
+                    f"   평가손익: {float(stock.get('evlu_pfls_amt', 0)):,.0f}원 ({stock.get('evlu_pfls_rt')}%)"
+                )
                 print("-" * 70)
 
         # 2. 해외주식 조회 (나스닥)
         print("\n" + "=" * 70)
         print("2. 해외주식 잔고 조회 (나스닥 - USD)")
         print("=" * 70)
-        overseas_stocks_nasd = await kis.fetch_my_us_stocks(is_mock=False, exchange="NASD")
+        overseas_stocks_nasd = await kis.fetch_my_us_stocks(
+            is_mock=False, exchange="NASD"
+        )
 
         if not overseas_stocks_nasd:
             print("   보유 중인 나스닥 주식이 없습니다.\n")
@@ -51,15 +53,21 @@ async def main():
                 print(f"   종목명: {stock.get('ovrs_item_name')}")
                 print(f"   보유수량: {stock.get('ovrs_cblc_qty')}주")
                 print(f"   외화매입금액: ${float(stock.get('frcr_pchs_amt1', 0)):,.2f}")
-                print(f"   외화평가금액: ${float(stock.get('ovrs_stck_evlu_amt', 0)):,.2f}")
-                print(f"   외화평가손익: ${float(stock.get('frcr_evlu_pfls_amt', 0)):,.2f} ({stock.get('evlu_pfls_rt')}%)")
+                print(
+                    f"   외화평가금액: ${float(stock.get('ovrs_stck_evlu_amt', 0)):,.2f}"
+                )
+                print(
+                    f"   외화평가손익: ${float(stock.get('frcr_evlu_pfls_amt', 0)):,.2f} ({stock.get('evlu_pfls_rt')}%)"
+                )
                 print("-" * 70)
 
         # 3. 해외주식 조회 (뉴욕증권거래소)
         print("\n" + "=" * 70)
         print("3. 해외주식 잔고 조회 (뉴욕증권거래소 - USD)")
         print("=" * 70)
-        overseas_stocks_nyse = await kis.fetch_my_us_stocks(is_mock=False, exchange="NYSE")
+        overseas_stocks_nyse = await kis.fetch_my_us_stocks(
+            is_mock=False, exchange="NYSE"
+        )
 
         if not overseas_stocks_nyse:
             print("   보유 중인 뉴욕증권거래소 주식이 없습니다.\n")
@@ -70,10 +78,13 @@ async def main():
                 print(f"   종목명: {stock.get('ovrs_item_name')}")
                 print(f"   보유수량: {stock.get('ovrs_cblc_qty')}주")
                 print(f"   외화매입금액: ${float(stock.get('frcr_pchs_amt1', 0)):,.2f}")
-                print(f"   외화평가금액: ${float(stock.get('ovrs_stck_evlu_amt', 0)):,.2f}")
-                print(f"   외화평가손익: ${float(stock.get('frcr_evlu_pfls_amt', 0)):,.2f} ({stock.get('evlu_pfls_rt')}%)")
+                print(
+                    f"   외화평가금액: ${float(stock.get('ovrs_stck_evlu_amt', 0)):,.2f}"
+                )
+                print(
+                    f"   외화평가손익: ${float(stock.get('frcr_evlu_pfls_amt', 0)):,.2f} ({stock.get('evlu_pfls_rt')}%)"
+                )
                 print("-" * 70)
-                US_STOCKS_SYMBOL_TO_EXCHANGE
 
         # 4. 전체 응답 구조 확인 (디버깅용)
         print("\n" + "=" * 70)
@@ -89,6 +100,7 @@ async def main():
     except Exception as e:
         print(f"오류 발생: {type(e).__name__}: {e}")
         import traceback
+
         traceback.print_exc()
 
 

@@ -19,6 +19,7 @@ from .research_backtest import (
 )
 from .symbol_trade_settings import SymbolTradeSettings
 from .trading import Exchange, Instrument, User, UserChannel, UserRole, UserWatchItem
+from .us_symbol_universe import USSymbolUniverse
 
 # 필요한 다른 모델도 여기서 import
 # from .alert import AlertRule, AlertEvent
@@ -40,6 +41,7 @@ __all__ = [
     "StockInfo",
     "StockAnalysisResult",
     "KRSymbolUniverse",
+    "USSymbolUniverse",
     "SymbolTradeSettings",
     "NewsArticle",
     "NewsAnalysisResult",

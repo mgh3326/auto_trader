@@ -18,6 +18,10 @@ from app.services.symbol_trade_settings_service import (
     UserTradeDefaultsService,
     calculate_estimated_order_cost,
 )
+from app.services.us_symbol_universe_service import (
+    USSymbolUniverseLookupError,
+    get_us_exchange_by_symbol,
+)
 
 router = APIRouter(prefix="/api/symbol-settings", tags=["symbol-settings"])
 
@@ -795,12 +799,13 @@ async def create_settings(
     # 해외주식이고 exchange_code가 없으면 자동으로 조회
     exchange_code = request_data.exchange_code
     if request_data.instrument_type == InstrumentType.equity_us and not exchange_code:
-        from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
-
-        exchange_code = get_exchange_by_symbol(request_data.symbol)
-        # 조회 실패 시 기본값 NASD
-        if not exchange_code:
-            exchange_code = "NASD"
+        try:
+            exchange_code = await get_us_exchange_by_symbol(request_data.symbol)
+        except USSymbolUniverseLookupError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
 
     settings_obj = await service.create(
         user_id=user.id,

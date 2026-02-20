@@ -15,11 +15,14 @@ from app.models.manual_holdings import ManualHolding, MarketType
 from app.services.broker_account_service import BrokerAccountService
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.stock_alias_service import StockAliasService
+from app.services.us_symbol_universe_service import (
+    USSymbolUniverseLookupError,
+    get_us_symbol_by_name,
+)
 from data.coins_info import get_or_refresh_maps
 from data.stocks_info import (
     get_kosdaq_name_to_code,
     get_kospi_name_to_code,
-    get_us_stocks_data,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,12 +80,19 @@ class ScreenshotHoldingsService:
             if ticker:
                 return ticker, market_type.value, "krx_master"
         elif market_type == MarketType.US:
-            us_data = get_us_stocks_data()
-            ticker = us_data.get("name_to_symbol", {}).get(stock_name)
-            if ticker:
+            try:
+                ticker = await get_us_symbol_by_name(stock_name, self.db)
                 from app.core.symbol import to_db_symbol
 
                 return to_db_symbol(ticker), market_type.value, "us_master"
+            except USSymbolUniverseLookupError as exc:
+                logger.warning(
+                    "US symbol lookup failed for '%s' (%s): %s",
+                    stock_name,
+                    broker,
+                    exc,
+                )
+                raise
         elif market_type == MarketType.CRYPTO:
             try:
                 crypto_maps = await get_or_refresh_maps()

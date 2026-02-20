@@ -12,13 +12,58 @@ from app.services.kis_trading_service import (
     process_kis_overseas_buy_orders_with_analysis,
     process_kis_overseas_sell_orders_with_analysis,
 )
-from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
+from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 logger = logging.getLogger(__name__)
 
 STATUS_FETCHING_HOLDINGS = "보유 주식 조회 중..."
 NO_DOMESTIC_STOCKS_MESSAGE = "보유 중인 국내 주식이 없습니다."
 NO_OVERSEAS_STOCKS_MESSAGE = "보유 중인 해외 주식이 없습니다."
+
+
+async def _resolve_overseas_exchange_code(
+    symbol: str,
+    preferred_exchange: str | None,
+) -> str:
+    normalized_preferred = str(preferred_exchange or "").strip().upper()
+    if normalized_preferred:
+        return normalized_preferred
+    return await get_us_exchange_by_symbol(symbol)
+
+
+def _extract_overseas_order_id(order: dict) -> str:
+    for key in ("odno", "ODNO", "ord_no", "ORD_NO"):
+        value = order.get(key)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+async def _load_overseas_open_orders_all_exchanges(kis: KISClient) -> list[dict]:
+    orders_by_id: dict[str, dict] = {}
+    anonymous_orders: list[dict] = []
+    for exchange_code in ("NASD", "NYSE", "AMEX"):
+        try:
+            open_orders = await kis.inquire_overseas_orders(
+                exchange_code=exchange_code,
+                is_mock=False,
+            )
+        except Exception as exc:
+            logger.warning(
+                "미체결 주문 조회 실패 (exchange=%s): %s",
+                exchange_code,
+                exc,
+            )
+            continue
+
+        for order in open_orders:
+            order_id = _extract_overseas_order_id(order)
+            if order_id:
+                orders_by_id[order_id] = order
+            else:
+                anonymous_orders.append(order)
+
+    return list(orders_by_id.values()) + anonymous_orders
 
 
 async def _send_toss_recommendation_async(
@@ -436,6 +481,12 @@ async def _cancel_domestic_pending_orders(
             order_price = int(
                 float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0)
             )
+            order_orgno = (
+                order.get("ord_gno_brno")
+                or order.get("ORD_GNO_BRNO")
+                or order.get("krx_fwdg_ord_orgno")
+                or order.get("KRX_FWDG_ORD_ORGNO")
+            )
 
             if not order_number:
                 logger.warning(f"주문번호 없음 ({stock_code}): order={order}")
@@ -449,6 +500,7 @@ async def _cancel_domestic_pending_orders(
                 price=order_price,
                 order_type=order_type,
                 is_mock=False,
+                krx_fwdg_ord_orgno=str(order_orgno).strip() if order_orgno else None,
             )
             cancelled += 1
             await asyncio.sleep(0.2)  # API 호출 제한 방지
@@ -905,7 +957,10 @@ async def execute_overseas_buy_order_task(symbol: str) -> dict:
             if target_stock:
                 avg_price = float(target_stock["pchs_avg_pric"])
                 current_price = float(target_stock["now_pric2"])
-                exchange_code = target_stock.get("ovrs_excg_cd", "NASD")
+                exchange_code = await _resolve_overseas_exchange_code(
+                    symbol,
+                    target_stock.get("ovrs_excg_cd"),
+                )
             else:
                 try:
                     current_price = await kis.fetch_overseas_price(symbol)
@@ -915,7 +970,7 @@ async def execute_overseas_buy_order_task(symbol: str) -> dict:
                         "success": False,
                         "message": f"현재가 조회 실패: {price_error}",
                     }
-                exchange_code = get_exchange_by_symbol(symbol) or "NASD"
+                exchange_code = await _resolve_overseas_exchange_code(symbol, None)
 
             res = await process_kis_overseas_buy_orders_with_analysis(
                 kis, symbol, current_price, avg_price, exchange_code
@@ -958,7 +1013,10 @@ async def execute_overseas_sell_order_task(symbol: str) -> dict:
                     )
                 )
             )
-            exchange_code = target_stock.get("ovrs_excg_cd", "NASD")
+            exchange_code = await _resolve_overseas_exchange_code(
+                symbol,
+                target_stock.get("ovrs_excg_cd"),
+            )
 
             res = await process_kis_overseas_sell_orders_with_analysis(
                 kis, symbol, current_price, avg_price, qty, exchange_code
@@ -1175,7 +1233,10 @@ async def execute_overseas_buy_orders() -> dict:
                 name = stock.get("ovrs_item_name")
                 avg_price = float(stock.get("pchs_avg_pric", 0))
                 current_price = float(stock.get("now_pric2", 0))
-                exchange_code = stock.get("ovrs_excg_cd", "NASD")
+                exchange_code = await _resolve_overseas_exchange_code(
+                    symbol,
+                    stock.get("ovrs_excg_cd"),
+                )
 
                 try:
                     res = await process_kis_overseas_buy_orders_with_analysis(
@@ -1268,7 +1329,10 @@ async def execute_overseas_sell_orders() -> dict:
                 qty = int(
                     float(stock.get("ord_psbl_qty", stock.get("ovrs_cblc_qty", 0)))
                 )
-                exchange_code = stock.get("ovrs_excg_cd", "NASD")
+                exchange_code = await _resolve_overseas_exchange_code(
+                    symbol,
+                    stock.get("ovrs_excg_cd"),
+                )
 
                 try:
                     res = await process_kis_overseas_sell_orders_with_analysis(
@@ -1449,7 +1513,6 @@ async def run_per_overseas_stock_automation() -> dict:
                         "ord_psbl_qty": qty_str,  # 수동 잔고는 미체결 없음
                         "pchs_avg_pric": str(holding.avg_price),
                         "now_pric2": "0",  # 현재가는 나중에 API로 조회
-                        "ovrs_excg_cd": "NASD",  # 기본값 (실제 거래소는 API 조회로 확인)
                         "_is_manual": True,  # 수동 잔고 표시
                     }
                 )
@@ -1464,9 +1527,7 @@ async def run_per_overseas_stock_automation() -> dict:
             results = []
 
             # 미체결 주문 조회 (한 번만 조회하여 재사용)
-            all_open_orders = await kis.inquire_overseas_orders(
-                exchange_code="NASD", is_mock=False
-            )
+            all_open_orders = await _load_overseas_open_orders_all_exchanges(kis)
             logger.info(f"미체결 주문 조회 완료: {len(all_open_orders)}건")
 
             for _index, stock in enumerate(my_stocks, 1):
@@ -1478,7 +1539,10 @@ async def run_per_overseas_stock_automation() -> dict:
                 qty = int(
                     float(stock.get("ord_psbl_qty", stock.get("ovrs_cblc_qty", 0)))
                 )
-                exchange_code = stock.get("ovrs_excg_cd", "NASD")
+                exchange_code = await _resolve_overseas_exchange_code(
+                    symbol,
+                    stock.get("ovrs_excg_cd"),
+                )
                 is_manual = stock.get("_is_manual", False)
 
                 # 수동 잔고 종목인 경우 현재가를 API로 조회
@@ -1545,7 +1609,11 @@ async def run_per_overseas_stock_automation() -> dict:
                 # 3. 매수
                 try:
                     res = await process_kis_overseas_buy_orders_with_analysis(
-                        kis, symbol, current_price, avg_price
+                        kis,
+                        symbol,
+                        current_price,
+                        avg_price,
+                        exchange_code,
                     )
                     stock_steps.append({"step": "매수", "result": res})
                     # 매수 성공 시 텔레그램 알림

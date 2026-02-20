@@ -889,6 +889,11 @@ async def test_cancel_order_kis_overseas(monkeypatch):
             return {"odno": order_number, "ord_tmd": "2024-01-01 10:00:00"}
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    monkeypatch.setattr(
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
+    )
 
     result = await tools["cancel_order"](order_id="67890", symbol="AAPL", market="us")
 
@@ -930,14 +935,16 @@ async def test_cancel_order_kis_overseas_falls_back_exchange(monkeypatch):
     mock_kis = MockKISClient()
     monkeypatch.setattr(orders_modify_cancel, "KISClient", lambda: mock_kis)
     monkeypatch.setattr(
-        orders_modify_cancel, "get_exchange_by_symbol", lambda _symbol: "NASD"
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NYSE"),
     )
 
     result = await tools["cancel_order"](order_id="67890", symbol="AAPL", market="us")
 
     assert result["success"] is True
     assert result["symbol"] == "AAPL"
-    assert mock_kis.inquiry_calls == ["NASD", "NYSE"]
+    assert mock_kis.inquiry_calls == ["NYSE"]
     assert mock_kis.cancel_calls == [("67890", "AAPL", "NYSE", 50)]
 
 
@@ -959,7 +966,9 @@ async def test_cancel_order_kis_overseas_fails_when_order_not_found(monkeypatch)
     mock_kis = MockKISClient()
     monkeypatch.setattr(orders_modify_cancel, "KISClient", lambda: mock_kis)
     monkeypatch.setattr(
-        orders_modify_cancel, "get_exchange_by_symbol", lambda _symbol: "NASD"
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NASD"),
     )
 
     result = await tools["cancel_order"](
@@ -967,8 +976,8 @@ async def test_cancel_order_kis_overseas_fails_when_order_not_found(monkeypatch)
     )
 
     assert result["success"] is False
-    assert "checked: NASD,NYSE,AMEX" in result["error"]
-    assert mock_kis.inquiry_calls == ["NASD", "NYSE", "AMEX"]
+    assert "checked: NASD" in result["error"]
+    assert mock_kis.inquiry_calls == ["NASD"]
 
 
 @pytest.mark.asyncio
@@ -1017,12 +1026,8 @@ async def test_search_symbol_clamps_limit_and_shapes(monkeypatch):
     _patch_runtime_attr(monkeypatch, "get_kosdaq_name_to_code", lambda: {})
     _patch_runtime_attr(
         monkeypatch,
-        "get_us_stocks_data",
-        lambda: {
-            "symbol_to_exchange": {},
-            "symbol_to_name_kr": {},
-            "symbol_to_name_en": {},
-        },
+        "search_us_symbols",
+        AsyncMock(return_value=[]),
     )
 
     result = await tools["search_symbol"]("삼성", limit=500)
@@ -1048,12 +1053,18 @@ async def test_search_symbol_with_market_filter(monkeypatch):
     _patch_runtime_attr(monkeypatch, "get_kosdaq_name_to_code", lambda: {})
     _patch_runtime_attr(
         monkeypatch,
-        "get_us_stocks_data",
-        lambda: {
-            "symbol_to_exchange": {"AAPL": "NASDAQ"},
-            "symbol_to_name_kr": {"AAPL": "애플"},
-            "symbol_to_name_en": {"AAPL": "Apple Inc."},
-        },
+        "search_us_symbols",
+        AsyncMock(
+            return_value=[
+                {
+                    "symbol": "AAPL",
+                    "name": "애플",
+                    "instrument_type": "equity_us",
+                    "exchange": "NASDAQ",
+                    "is_active": True,
+                }
+            ]
+        ),
     )
 
     # Search with us market filter
@@ -7511,7 +7522,9 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
     _patch_runtime_attr(
-        monkeypatch, "get_exchange_by_symbol", lambda s: "NYSE" if s == "TSM" else None
+        monkeypatch,
+        "get_us_exchange_by_symbol",
+        AsyncMock(side_effect=lambda s: "NYSE" if s == "TSM" else None),
     )
 
     result = await tools["place_order"](
@@ -7812,7 +7825,9 @@ class TestPlaceOrderHighAmount:
 
         _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
         _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", fetch_quote)
-        _patch_runtime_attr(monkeypatch, "get_exchange_by_symbol", lambda _: "NASD")
+        _patch_runtime_attr(
+            monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
+        )
 
         result = await tools["place_order"](
             symbol="AAPL",

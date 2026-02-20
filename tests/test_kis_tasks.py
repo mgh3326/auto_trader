@@ -568,6 +568,16 @@ def test_execute_overseas_buy_order_fetches_price_for_new_symbol(monkeypatch):
         kis_tasks, "process_kis_overseas_buy_orders_with_analysis", fake_process
     )
 
+    async def fake_get_us_exchange_by_symbol(symbol: str) -> str:
+        assert symbol == "AAPL"
+        return "NASD"
+
+    monkeypatch.setattr(
+        kis_tasks,
+        "get_us_exchange_by_symbol",
+        fake_get_us_exchange_by_symbol,
+    )
+
     result = asyncio.run(
         kis_tasks.execute_overseas_buy_order_task(
             "AAPL",
@@ -1667,7 +1677,7 @@ class TestOverseasManualHoldings:
             async def notify_trade_failure(self, **kwargs):
                 return True
 
-        async def fake_buy(kis, symbol, current_price, avg_price):
+        async def fake_buy(kis, symbol, current_price, avg_price, exchange_code):
             buy_calls.append({"symbol": symbol, "current_price": current_price})
             return {
                 "success": True,
@@ -1708,6 +1718,17 @@ class TestOverseasManualHoldings:
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
             monkeypatch.setattr(
                 kis_tasks, "_send_toss_recommendation_async", mock_toss_recommendation
+            )
+
+            async def fake_get_us_exchange_by_symbol(symbol: str) -> str:
+                if symbol == "CONY":
+                    return "NASD"
+                return "NASD"
+
+            monkeypatch.setattr(
+                kis_tasks,
+                "get_us_exchange_by_symbol",
+                fake_get_us_exchange_by_symbol,
             )
 
             result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())
@@ -1817,6 +1838,16 @@ class TestOverseasManualHoldings:
             monkeypatch.setattr(kis_tasks, "get_trade_notifier", lambda: MockNotifier())
             monkeypatch.setattr(
                 kis_tasks, "_send_toss_recommendation_async", mock_toss_recommendation
+            )
+
+            async def fake_get_us_exchange_by_symbol(symbol: str) -> str:
+                assert symbol == "CONY"
+                return "NASD"
+
+            monkeypatch.setattr(
+                kis_tasks,
+                "get_us_exchange_by_symbol",
+                fake_get_us_exchange_by_symbol,
             )
 
             result = asyncio.run(kis_tasks.run_per_overseas_stock_automation())

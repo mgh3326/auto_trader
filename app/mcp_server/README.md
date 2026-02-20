@@ -47,6 +47,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - Domestic order tools (`place_order`, `modify_order`, `cancel_order` with `market="kr"`) use the new KIS TR IDs (`TTTC0012U/TTTC0011U/TTTC0013U`, mock: `VTTC0012U/VTTC0011U/VTTC0013U`).
 - Domestic order requests (`order-cash`, `order-rvsecncl`) route with `EXCG_ID_DVSN_CD="SOR"`.
 
+### US symbol/exchange resolution
+- US symbol search and order routing resolve from DB table `us_symbol_universe` only.
+- Runtime does not use in-memory/file-cache fallback for US symbol/exchange lookups.
+- If symbol/name is missing, inactive, or ambiguous in `us_symbol_universe`, tools return explicit lookup errors with sync hint.
+- US prerequisite: run `make sync-us-symbol-universe` (or `uv run python scripts/sync_us_symbol_universe.py`) right after migrations.
+
 ### `get_indicators` spec
 Parameters:
 - `symbol`: Asset symbol/ticker

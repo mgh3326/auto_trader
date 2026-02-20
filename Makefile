@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-unit test-integration test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test sync-kr-symbol-universe
+.PHONY: help install install-dev test test-unit test-integration test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test sync-kr-symbol-universe sync-us-symbol-universe
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -65,6 +65,9 @@ taskiq-scheduler: ## Start TaskIQ scheduler
 
 sync-kr-symbol-universe: ## Sync KR symbol universe for KR 1h routing
 	uv run python scripts/sync_kr_symbol_universe.py
+
+sync-us-symbol-universe: ## Sync US symbol universe for US symbol/exchange resolution
+	uv run python scripts/sync_us_symbol_universe.py
 
 docker-build: ## Build Docker image
 	docker build -t auto-trader .

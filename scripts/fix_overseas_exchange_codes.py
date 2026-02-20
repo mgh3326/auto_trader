@@ -13,7 +13,7 @@ from sqlalchemy import select, update
 from app.core.db import AsyncSessionLocal
 from app.models.symbol_trade_settings import SymbolTradeSettings
 from app.models.trading import InstrumentType
-from data.stocks_info.overseas_us_stocks import get_exchange_by_symbol
+from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
 async def fix_exchange_codes():
@@ -22,7 +22,8 @@ async def fix_exchange_codes():
         # exchange_code가 없는 해외주식 설정 조회
         stmt = select(SymbolTradeSettings).where(
             SymbolTradeSettings.instrument_type == InstrumentType.equity_us,
-            (SymbolTradeSettings.exchange_code == None) | (SymbolTradeSettings.exchange_code == "")
+            (SymbolTradeSettings.exchange_code.is_(None))
+            | (SymbolTradeSettings.exchange_code == ""),
         )
         result = await db.execute(stmt)
         settings_list = result.scalars().all()
@@ -35,13 +36,15 @@ async def fix_exchange_codes():
         print("-" * 50)
 
         updated_count = 0
+        failed_count = 0
         for settings in settings_list:
-            exchange_code = get_exchange_by_symbol(settings.symbol)
-            if not exchange_code:
-                exchange_code = "NASD"  # 기본값
-                print(f"  {settings.symbol}: 조회 실패 -> 기본값 {exchange_code}")
-            else:
+            try:
+                exchange_code = await get_us_exchange_by_symbol(settings.symbol, db)
                 print(f"  {settings.symbol}: {exchange_code}")
+            except Exception as exc:
+                failed_count += 1
+                print(f"  {settings.symbol}: 조회 실패 -> {exc}")
+                continue
 
             # 업데이트
             stmt = (
@@ -55,6 +58,8 @@ async def fix_exchange_codes():
         await db.commit()
         print("-" * 50)
         print(f"총 {updated_count}개 설정 업데이트 완료")
+        if failed_count:
+            print(f"조회 실패 {failed_count}개")
 
 
 if __name__ == "__main__":
