@@ -20,11 +20,9 @@ from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
     analysis_json,
     dashboard,
+    deprecated_pages,
     health,
-    kis_domestic_trading,
-    kis_overseas_trading,
     kospi200,
-    manual_holdings,
     news_analysis,
     openclaw_callback,
     orderbook,
@@ -34,7 +32,6 @@ from app.routers import (
     symbol_settings,
     test,
     trading,
-    upbit_trading,
     websocket,
 )
 
@@ -127,13 +124,10 @@ def create_app() -> FastAPI:
     app.include_router(news_analysis.router)
     app.include_router(openclaw_callback.router)
     app.include_router(stock_latest.router)
-    app.include_router(upbit_trading.router)
-    app.include_router(kis_domestic_trading.router)
-    app.include_router(kis_overseas_trading.router)
     app.include_router(symbol_settings.router)
-    app.include_router(manual_holdings.router)
     app.include_router(orderbook.router)
     app.include_router(portfolio.router)
+    app.include_router(deprecated_pages.router)
     app.include_router(trading.router)
     app.include_router(kospi200.router)
     app.include_router(websocket.router)

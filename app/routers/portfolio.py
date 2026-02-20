@@ -5,11 +5,14 @@ Portfolio Router
 """
 
 import logging
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
+from app.core.templates import templates
 from app.models.manual_holdings import MarketType
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
@@ -21,9 +24,50 @@ from app.schemas.manual_holdings import (
 from app.services.kis import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
+from app.services.portfolio_overview_service import PortfolioOverviewService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/portfolio", tags=["Portfolio"])
+
+
+def get_portfolio_overview_service(
+    db: AsyncSession = Depends(get_db),
+) -> PortfolioOverviewService:
+    return PortfolioOverviewService(db)
+
+
+@router.get("/", response_class=HTMLResponse)
+async def portfolio_dashboard_page(request: Request):
+    user = getattr(request.state, "user", None)
+    return templates.TemplateResponse(
+        "portfolio_dashboard.html",
+        {
+            "request": request,
+            "user": user,
+        },
+    )
+
+
+@router.get("/api/overview")
+async def get_portfolio_overview(
+    market: Literal["ALL", "KR", "US", "CRYPTO"] = "ALL",
+    account_keys: Annotated[list[str] | None, Query()] = None,
+    q: Annotated[str | None, Query(min_length=1)] = None,
+    current_user: User = Depends(get_authenticated_user),
+    overview_service: PortfolioOverviewService = Depends(
+        get_portfolio_overview_service
+    ),
+):
+    try:
+        return await overview_service.get_overview(
+            user_id=current_user.id,
+            market=market,
+            account_keys=account_keys,
+            q=q,
+        )
+    except Exception as e:
+        logger.error("Error fetching portfolio overview: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/api/merged", response_model=MergedPortfolioResponse)

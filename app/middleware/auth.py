@@ -45,6 +45,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/api/v1/openclaw/callback",
         "/api/screener/callback",
     ]
+    LEGACY_DEPRECATED_PREFIXES: ClassVar[list[str]] = [
+        "/manual-holdings",
+        "/kis-domestic-trading",
+        "/kis-overseas-trading",
+        "/upbit-trading",
+    ]
 
     def __init__(self, app):
         """Initialize middleware with dynamic public paths."""
@@ -69,10 +75,26 @@ class AuthMiddleware(BaseHTTPMiddleware):
             for public_api_path in self.public_api_paths
         )
 
+    def _is_legacy_deprecated_path(self, path: str) -> bool:
+        """Check if path is under deprecated legacy prefixes."""
+        return any(
+            path.startswith(legacy_prefix)
+            for legacy_prefix in self.LEGACY_DEPRECATED_PREFIXES
+        )
+
+    @staticmethod
+    def _is_api_request_path(path: str) -> bool:
+        """Treat both '/api/*' and '*/api/*' paths as API requests."""
+        return path.startswith("/api/") or "/api/" in path or path.endswith("/api")
+
     async def dispatch(self, request: Request, call_next):
         """Check authentication for protected routes."""
         path = request.url.path
-        is_api_request = path.startswith("/api/")
+        is_api_request = self._is_api_request_path(path)
+
+        # Legacy paths must always pass through to deprecated router handlers.
+        if self._is_legacy_deprecated_path(path):
+            return await call_next(request)
 
         # Allow public paths
         if self._is_public_path(path):

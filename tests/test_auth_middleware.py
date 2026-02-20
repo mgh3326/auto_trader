@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.testclient import TestClient
 
 from app.auth.web_router import create_session_token
@@ -33,6 +33,28 @@ async def api_data():
     return {"data": "ok"}
 
 
+@app.get("/nested/api/data")
+async def nested_api_data():
+    return {"data": "nested-ok"}
+
+
+@app.get("/manual-holdings/", response_class=HTMLResponse)
+async def legacy_page_placeholder():
+    return HTMLResponse("Deprecated page", status_code=410)
+
+
+@app.get("/upbit-trading/api/my-coins")
+async def legacy_api_placeholder():
+    return JSONResponse(
+        status_code=410,
+        content={
+            "detail": "deprecated",
+            "replacement_url": "/portfolio/",
+            "deprecated_at": "2026-02-20T00:00:00+09:00",
+        },
+    )
+
+
 @pytest.fixture
 def client():
     return TestClient(app)
@@ -60,6 +82,12 @@ def test_api_path_access(client, mock_session_local):
     response = client.get("/api/data")
     assert response.status_code == 200
     assert response.json() == {"data": "ok"}
+
+
+def test_nested_api_path_without_auth_returns_401(client, mock_session_local):
+    response = client.get("/nested/api/data", follow_redirects=False)
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Authentication required for this endpoint."
 
 
 def test_create_session_token_returns_string():
@@ -104,3 +132,22 @@ def test_protected_route_with_auth(client, mock_session_local, mock_db_session):
         response = client.get("/test-protected")
         assert response.status_code == 200
         assert response.text == "Protected Content"
+
+
+def test_legacy_deprecated_page_path_bypasses_auth_redirect(
+    client, mock_session_local
+):
+    response = client.get("/manual-holdings/", follow_redirects=False)
+    assert response.status_code == 410
+    assert response.text == "Deprecated page"
+
+
+def test_legacy_deprecated_api_path_bypasses_auth_401(client, mock_session_local):
+    response = client.get(
+        "/upbit-trading/api/my-coins",
+        headers={"Accept": "application/json"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 410
+    payload = response.json()
+    assert payload["replacement_url"] == "/portfolio/"
