@@ -62,7 +62,7 @@ auto_trader/
 - Multi-runtime repository: API, worker/scheduler, MCP process, and websocket monitors all coexist.
 - Root includes many operator/debug utilities (`debug_*.py`, monitor scripts, management CLIs).
 - Production compose is host-network oriented and includes a migration profile workflow.
-- `data/stocks_info/` mixes Python loaders with static `.h` reference files.
+- KR/US symbol universes are DB-backed (`kr_symbol_universe`, `us_symbol_universe`) and synced via `app/services/kr_symbol_universe_service.py` and `app/services/us_symbol_universe_service.py`.
 
 ## COMMANDS
 ```bash

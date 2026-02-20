@@ -216,22 +216,25 @@ app/services/
 
 ### 데이터 구조
 
-**Lazy Loading 시스템:**
+**KR/US 심볼 유니버스 (DB 단일 소스):**
 ```
-data/
-├── stocks_info/             # 주식 종목 코드 (lazy loading)
-│   ├── kis_kospi_code_mst.py
-│   ├── kis_kosdaq_code_mst.py
-│   ├── overseas_nasdaq_code.py
-│   └── overseas_us_stocks.py
-└── coins_info/              # 암호화폐 페어 (lazy loading)
-    └── upbit_pairs.py
+app/services/
+├── kr_symbol_universe_service.py   # KR 심볼 조회/동기화
+└── us_symbol_universe_service.py   # US 심볼 조회/동기화
+
+scripts/
+├── sync_kr_symbol_universe.py      # KR 유니버스 DB 동기화
+└── sync_us_symbol_universe.py      # US 유니버스 DB 동기화
+
+DB Tables:
+├── kr_symbol_universe
+└── us_symbol_universe
 ```
 
 **특징:**
-- `prime_*_constants()` 호출로 초기화
-- 첫 접근 시에만 데이터 로딩 (메모리 효율)
-- `NAME_TO_CODE`, `CODE_TO_NAME` 딕셔너리 제공
+- KR/US 종목 검색 및 라우팅은 DB 테이블을 단일 소스로 사용
+- 배포/마이그레이션 직후 심볼 유니버스 sync 스크립트 실행이 필요
+- `data/coins_info`는 암호화폐 페어 로더로만 유지됨
 
 ## 주요 워크플로우
 

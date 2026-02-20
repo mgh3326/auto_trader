@@ -40,7 +40,6 @@ exclude = [
     ".venv",
     "alembic/versions",
     "__pycache__",
-    "data/stocks_info",
     "data/coins_info",
 ]
 
