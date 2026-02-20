@@ -29,6 +29,40 @@ class TestHealthRouter:
         assert "status" in data
         assert data["status"] == "ok"
 
+    def test_ready_check_success(self, client, monkeypatch):
+        async def _db_ready() -> bool:
+            return True
+
+        async def _redis_ready() -> bool:
+            return True
+
+        monkeypatch.setattr("app.routers.health.check_database_ready", _db_ready)
+        monkeypatch.setattr("app.routers.health.check_redis_ready", _redis_ready)
+
+        response = client.get("/readyz")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["status"] == "ready"
+        assert data["checks"] == {"database": "ok", "redis": "ok"}
+
+    def test_ready_check_failure(self, client, monkeypatch):
+        async def _db_ready() -> bool:
+            return False
+
+        async def _redis_ready() -> bool:
+            return True
+
+        monkeypatch.setattr("app.routers.health.check_database_ready", _db_ready)
+        monkeypatch.setattr("app.routers.health.check_redis_ready", _redis_ready)
+
+        response = client.get("/readyz")
+        assert response.status_code == 503
+
+        data = response.json()
+        assert data["status"] == "not_ready"
+        assert data["checks"] == {"database": "error", "redis": "ok"}
+
 
 class TestDashboardRouter:
     """Test dashboard endpoints."""

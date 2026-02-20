@@ -1,0 +1,1 @@
+import /etc/caddy/upstreams/api_blue.caddy

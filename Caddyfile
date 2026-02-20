@@ -59,11 +59,7 @@
 
 	# MCP subpath → MCP server
 	handle /mcp* {
-		reverse_proxy host.docker.internal:8765 {
-			# Headers for proper subpath handling
-			header_up Host {host}
-			header_up X-Real-IP {remote_host}
-		}
+		import /etc/caddy/upstreams/mcp_active.caddy
 	}
 
 	# Block API documentation in production
@@ -76,11 +72,7 @@
 
 	# Root path → Auto-trader main application (catch-all)
 	handle {
-		reverse_proxy host.docker.internal:8000 {
-			# Headers
-			header_up Host {host}
-			header_up X-Real-IP {remote_host}
-		}
+		import /etc/caddy/upstreams/api_active.caddy
 	}
 
 	# Access logs for this site
@@ -91,5 +83,21 @@
 			roll_keep_for 720h  # Keep for 30 days
 		}
 		format json
+	}
+}
+
+127.0.0.1:18080 {
+	handle {
+		import /etc/caddy/upstreams/api_active.caddy
+	}
+}
+
+127.0.0.1:18065 {
+	handle /mcp* {
+		import /etc/caddy/upstreams/mcp_active.caddy
+	}
+
+	handle {
+		respond "Not Found" 404
 	}
 }

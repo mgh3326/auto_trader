@@ -31,6 +31,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/web-auth/logout",
         "/auth/",
         "/health",
+        "/readyz",
     ]
 
     # Documentation paths (conditionally accessible)

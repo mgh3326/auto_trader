@@ -232,6 +232,12 @@
         let ws = null;
         let selectedMarket = null;
         let orderbookData = null;
+        const reconnectBaseDelayMs = 1000;
+        const reconnectBackoffMultiplier = 1.8;
+        const reconnectMaxDelayMs = 30000;
+        let reconnectDelayMs = reconnectBaseDelayMs;
+        let reconnectTimer = null;
+        let shouldReconnect = true;
 
         function getCsrfToken() {
             const metaTag = document.querySelector('meta[name="csrf-token"]');
@@ -289,6 +295,10 @@
         }
 
         function connectWebSocket() {
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+                return;
+            }
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/orderbook/ws`;
 
@@ -296,6 +306,7 @@
 
             ws.onopen = () => {
                 console.log('WebSocket connected');
+                reconnectDelayMs = reconnectBaseDelayMs;
                 updateConnectionStatus(true);
             };
 
@@ -312,12 +323,33 @@
             ws.onclose = () => {
                 console.log('WebSocket disconnected');
                 updateConnectionStatus(false);
-                setTimeout(connectWebSocket, 3000);
+                scheduleReconnect();
             };
 
             ws.onerror = (error) => {
                 console.error('WebSocket error:', error);
             };
+        }
+
+        function nextReconnectDelay() {
+            const delay = Math.min(reconnectDelayMs, reconnectMaxDelayMs);
+            reconnectDelayMs = Math.min(
+                Math.ceil(reconnectDelayMs * reconnectBackoffMultiplier),
+                reconnectMaxDelayMs
+            );
+            return delay;
+        }
+
+        function scheduleReconnect() {
+            if (!shouldReconnect || reconnectTimer) {
+                return;
+            }
+
+            const reconnectDelay = nextReconnectDelay();
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                connectWebSocket();
+            }, reconnectDelay);
         }
 
         function handleOrderbookData(data) {
@@ -478,6 +510,11 @@
         });
 
         window.addEventListener('beforeunload', () => {
+            shouldReconnect = false;
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
             if (ws) {
                 ws.close();
             }

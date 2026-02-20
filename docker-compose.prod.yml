@@ -55,7 +55,18 @@ services:
     restart: unless-stopped
     network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
     command: >
-      /app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks
+      /app/.venv/bin/taskiq worker
+      --wait-tasks-timeout 600
+      --shutdown-timeout 120
+      app.core.taskiq_broker:broker
+      app.tasks
+    stop_grace_period: 11m
+    healthcheck:
+      test: [ "CMD", "pgrep", "-f", "taskiq worker" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     deploy:
       resources:
         limits:

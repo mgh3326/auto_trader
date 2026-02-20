@@ -1,0 +1,1 @@
+import /etc/caddy/upstreams/mcp_blue.caddy
