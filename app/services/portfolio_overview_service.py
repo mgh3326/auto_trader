@@ -11,6 +11,7 @@ from app.models.manual_holdings import MarketType
 from app.services import upbit as upbit_service
 from app.services.kis import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
+from app.services.price_provider import UsEquityPriceProvider, YahooUsPriceProvider
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ _MARKET_KR = "KR"
 _MARKET_US = "US"
 _MARKET_CRYPTO = "CRYPTO"
 _MARKET_ORDER = {_MARKET_KR: 0, _MARKET_US: 1, _MARKET_CRYPTO: 2}
+_UPBIT_PRICE_BATCH_SIZE = 50
 
 
 def _to_float(value: Any, *, default: float = 0.0) -> float:
@@ -68,9 +70,14 @@ def _normalize_symbol(symbol: str, market_type: str) -> str:
 
 
 class PortfolioOverviewService:
-    def __init__(self, db: AsyncSession):
+    def __init__(
+        self,
+        db: AsyncSession,
+        us_price_provider: UsEquityPriceProvider | None = None,
+    ):
         self.db = db
         self.manual_holdings_service = ManualHoldingsService(db)
+        self.us_price_provider = us_price_provider or YahooUsPriceProvider()
 
     async def get_overview(
         self,
@@ -281,12 +288,11 @@ class PortfolioOverviewService:
         if not symbols:
             return components
 
-        try:
-            price_map = await upbit_service.fetch_multiple_current_prices(symbols)
-        except Exception as exc:
-            logger.warning("Failed to fetch Upbit current prices: %s", exc)
-            warnings.append(f"Upbit price fetch failed: {exc}")
-            return components
+        price_map = await self._fetch_upbit_prices_resilient(
+            symbols,
+            warnings,
+            stage="collect_upbit_components",
+        )
 
         for item in components:
             symbol = item["symbol"]
@@ -400,33 +406,176 @@ class PortfolioOverviewService:
                 logger.warning("Failed to fetch KIS KR price for %s: %s", symbol, exc)
                 warnings.append(f"KIS KR price fetch failed for {symbol}: {exc}")
 
-        for symbol in us_symbols:
+        if us_symbols:
             try:
-                frame = await kis_client.inquire_overseas_price(symbol)
-                if frame.empty:
-                    continue
-                price = _to_float(frame.iloc[-1].get("close"), default=0.0)
-                if price <= 0:
-                    continue
-                self._apply_price(components, _MARKET_US, symbol, price)
+                us_prices, us_errors = await self.us_price_provider.fetch_many(
+                    us_symbols
+                )
+                for symbol, price in us_prices.items():
+                    if price <= 0:
+                        continue
+                    self._apply_price(components, _MARKET_US, symbol, price)
+                for error in us_errors:
+                    logger.warning(
+                        "Failed to fetch US price for %s via %s: %s",
+                        error.symbol,
+                        error.source,
+                        error.error,
+                    )
+                    warnings.append(
+                        f"US price fetch failed for {error.symbol} via {error.source}: {error.error}"
+                    )
             except Exception as exc:
-                logger.warning("Failed to fetch KIS US price for %s: %s", symbol, exc)
-                warnings.append(f"KIS US price fetch failed for {symbol}: {exc}")
+                logger.warning("Failed to fetch US prices via provider: %s", exc)
+                warnings.append(f"US price provider failure: {exc}")
 
         if crypto_symbols:
-            try:
-                price_map = await upbit_service.fetch_multiple_current_prices(
-                    crypto_symbols
+            price_map = await self._fetch_upbit_prices_resilient(
+                crypto_symbols,
+                warnings,
+                stage="manual_crypto",
+            )
+            for symbol, price in price_map.items():
+                if price is None:
+                    continue
+                self._apply_price(components, _MARKET_CRYPTO, symbol, float(price))
+
+    async def _fetch_upbit_prices_resilient(
+        self,
+        symbols: list[str],
+        warnings: list[str],
+        stage: str,
+    ) -> dict[str, float]:
+        unique_symbols: list[str] = []
+        seen: set[str] = set()
+        for symbol in symbols:
+            normalized = str(symbol or "").strip().upper()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_symbols.append(normalized)
+
+        if not unique_symbols:
+            return {}
+
+        recovered_prices: dict[str, float] = {}
+        symbols_to_recover = list(unique_symbols)
+
+        try:
+            initial_prices = await upbit_service.fetch_multiple_current_prices(
+                unique_symbols
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed initial Upbit price batch fetch (%s): %s",
+                stage,
+                exc,
+            )
+        else:
+            for symbol, price in initial_prices.items():
+                if price is None:
+                    continue
+                normalized = str(symbol).strip().upper()
+                if not normalized:
+                    continue
+                recovered_prices[normalized] = float(price)
+
+            symbols_to_recover = [
+                symbol for symbol in unique_symbols if symbol not in recovered_prices
+            ]
+            if not symbols_to_recover:
+                return recovered_prices
+
+        try:
+            tradable_markets = await upbit_service.fetch_all_market_codes(fiat=None)
+            tradable_set = {
+                str(market).strip().upper()
+                for market in tradable_markets
+                if str(market).strip()
+            }
+        except Exception as exc:
+            logger.warning(
+                "Failed to load Upbit tradable markets (%s): %s",
+                stage,
+                exc,
+            )
+            reason = str(exc)
+            for symbol in symbols_to_recover:
+                warnings.append(
+                    f"Upbit price fetch failed ({stage}) for {symbol}: {reason}"
                 )
-                for symbol, price in price_map.items():
+            return recovered_prices
+
+        filtered_symbols: list[str] = []
+        for symbol in symbols_to_recover:
+            if symbol in tradable_set:
+                filtered_symbols.append(symbol)
+                continue
+            warnings.append(
+                f"Upbit price fetch failed ({stage}) for {symbol}: symbol not tradable"
+            )
+
+        if not filtered_symbols:
+            return recovered_prices
+        failed_symbols: list[str] = []
+
+        for index in range(0, len(filtered_symbols), _UPBIT_PRICE_BATCH_SIZE):
+            batch = filtered_symbols[index : index + _UPBIT_PRICE_BATCH_SIZE]
+            if not batch:
+                continue
+            try:
+                batch_prices = await upbit_service.fetch_multiple_current_prices(batch)
+                normalized_batch_prices: dict[str, float] = {}
+                for symbol, price in batch_prices.items():
                     if price is None:
                         continue
-                    self._apply_price(components, _MARKET_CRYPTO, symbol, float(price))
+                    normalized = str(symbol).strip().upper()
+                    if not normalized:
+                        continue
+                    normalized_batch_prices[normalized] = float(price)
+                    recovered_prices[normalized] = float(price)
+
+                missing_symbols = [
+                    symbol for symbol in batch if symbol not in normalized_batch_prices
+                ]
+                failed_symbols.extend(missing_symbols)
             except Exception as exc:
                 logger.warning(
-                    "Failed to fetch crypto prices for manual holdings: %s", exc
+                    "Failed Upbit price batch retry (%s, size=%d): %s",
+                    stage,
+                    len(batch),
+                    exc,
                 )
-                warnings.append(f"Upbit price fetch failed for manual crypto: {exc}")
+                failed_symbols.extend(batch)
+
+        failed_symbols = list(dict.fromkeys(failed_symbols))
+        for symbol in failed_symbols:
+            try:
+                single_prices = await upbit_service.fetch_multiple_current_prices(
+                    [symbol]
+                )
+            except Exception as exc:
+                warnings.append(
+                    f"Upbit price fetch failed ({stage}) for {symbol}: {exc}"
+                )
+                continue
+
+            single_price: float | None = None
+            for fetched_symbol, fetched_price in single_prices.items():
+                normalized = str(fetched_symbol).strip().upper()
+                if normalized != symbol or fetched_price is None:
+                    continue
+                single_price = float(fetched_price)
+                break
+
+            if single_price is None:
+                warnings.append(
+                    f"Upbit price fetch failed ({stage}) for {symbol}: empty response"
+                )
+                continue
+            recovered_prices[symbol] = single_price
+
+        return recovered_prices
 
     def _apply_price(
         self,
