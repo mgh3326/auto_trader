@@ -1020,10 +1020,26 @@ async def test_search_symbol_clamps_limit_and_shapes(monkeypatch):
     # Mock master data
     _patch_runtime_attr(
         monkeypatch,
-        "get_kospi_name_to_code",
-        lambda: {"삼성전자": "005930", "삼성SDI": "006400"},
+        "search_kr_symbols",
+        AsyncMock(
+            return_value=[
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "instrument_type": "equity_kr",
+                    "exchange": "KOSPI",
+                    "is_active": True,
+                },
+                {
+                    "symbol": "006400",
+                    "name": "삼성SDI",
+                    "instrument_type": "equity_kr",
+                    "exchange": "KOSPI",
+                    "is_active": True,
+                },
+            ]
+        ),
     )
-    _patch_runtime_attr(monkeypatch, "get_kosdaq_name_to_code", lambda: {})
     _patch_runtime_attr(
         monkeypatch,
         "search_us_symbols",
@@ -1045,12 +1061,6 @@ async def test_search_symbol_with_market_filter(monkeypatch):
     tools = build_tools()
 
     # Mock master data
-    _patch_runtime_attr(
-        monkeypatch,
-        "get_kospi_name_to_code",
-        lambda: {"애플": "123456"},
-    )
-    _patch_runtime_attr(monkeypatch, "get_kosdaq_name_to_code", lambda: {})
     _patch_runtime_attr(
         monkeypatch,
         "search_us_symbols",
@@ -1079,10 +1089,10 @@ async def test_search_symbol_with_market_filter(monkeypatch):
 async def test_search_symbol_returns_error_payload(monkeypatch):
     tools = build_tools()
 
-    def raise_error():
+    async def raise_error(*_args, **_kwargs):
         raise RuntimeError("master data failed")
 
-    _patch_runtime_attr(monkeypatch, "get_kospi_name_to_code", raise_error)
+    _patch_runtime_attr(monkeypatch, "search_kr_symbols", raise_error)
 
     result = await tools["search_symbol"]("samsung")
 

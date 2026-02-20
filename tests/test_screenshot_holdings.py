@@ -6,9 +6,9 @@ Tests for screenshot-based holdings update service and MCP tool.
 
 import pytest
 
-from app.mcp_server.tooling import market_data_quotes
 from app.mcp_server.tooling.registry import register_all_tools
 from app.models.manual_holdings import MarketType
+from app.services.kr_symbol_universe_service import KRSymbolUniverseLookupError
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.stock_alias_service import StockAliasService
@@ -332,11 +332,6 @@ async def test_update_manual_holdings_krx_master_resolution(monkeypatch):
         }
     ]
 
-    # Mock master data
-    monkeypatch.setattr(
-        market_data_quotes, "get_kosdaq_name_to_code", lambda: {"셀트리온": "068270"}
-    )
-
     async def mock_resolve_and_update(self, **kwargs):
         return {
             "success": True,
@@ -436,8 +431,7 @@ async def test_update_manual_holdings_us_master_resolution(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_update_manual_holdings_fallback_resolution(monkeypatch):
-    """Test fallback resolution when symbol not found in alias or master data."""
+async def test_update_manual_holdings_kr_lookup_error(monkeypatch):
     tools = build_tools()
 
     holdings = [
@@ -451,52 +445,8 @@ async def test_update_manual_holdings_fallback_resolution(monkeypatch):
         }
     ]
 
-    # Mock empty master data
-    monkeypatch.setattr(market_data_quotes, "get_kospi_name_to_code", lambda: {})
-    monkeypatch.setattr(market_data_quotes, "get_kosdaq_name_to_code", lambda: {})
-
     async def mock_resolve_and_update(self, **kwargs):
-        holdings_data = kwargs.get("holdings_data", [])
-        if holdings_data and len(holdings_data) > 0:
-            holding = holdings_data[0]
-            return {
-                "success": True,
-                "dry_run": kwargs.get("dry_run", True),
-                "message": "Preview",
-                "broker": kwargs.get("broker", "toss"),
-                "account_name": kwargs.get("account_name", "기본 계좌"),
-                "parsed_count": 1,
-                "holdings": [
-                    {
-                        "stock_name": holding["stock_name"],
-                        "resolved_ticker": holding["stock_name"].upper(),
-                        "market_type": "KR",
-                        "quantity": holding["quantity"],
-                        "avg_buy_price": (
-                            holding["eval_amount"] - holding["profit_loss"]
-                        )
-                        / holding["quantity"],
-                        "eval_amount": holding["eval_amount"],
-                        "profit_loss": holding["profit_loss"],
-                        "profit_rate": holding["profit_rate"],
-                        "resolution_method": "fallback",
-                        "action": "upsert",
-                    }
-                ],
-                "warnings": [
-                    "Symbol not found in alias/master data, using uppercase name"
-                ],
-            }
-        return {
-            "success": True,
-            "dry_run": kwargs.get("dry_run", True),
-            "message": "Preview",
-            "broker": kwargs.get("broker", "toss"),
-            "account_name": kwargs.get("account_name", "기본 계좌"),
-            "parsed_count": 1,
-            "holdings": [],
-            "warnings": [],
-        }
+        raise KRSymbolUniverseLookupError("not found")
 
     monkeypatch.setattr(
         ScreenshotHoldingsService,
@@ -508,11 +458,8 @@ async def test_update_manual_holdings_fallback_resolution(monkeypatch):
         holdings=holdings, broker="toss", account_name="기본 계좌", dry_run=True
     )
 
-    assert result["success"] is True
-    holding = result["holdings"][0]
-    assert holding["resolved_ticker"] == "알수없는종목".upper()
-    assert holding["resolution_method"] == "fallback"
-    assert len(result["warnings"]) > 0  # Should warn about fallback
+    assert result["success"] is False
+    assert "not found" in result["error"]
 
 
 @pytest.mark.asyncio

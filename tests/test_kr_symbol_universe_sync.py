@@ -174,6 +174,33 @@ class _FakeSession:
         self.flushed = True
 
 
+@dataclass
+class _LookupResult:
+    rows: list[KRSymbolUniverse] | None = None
+    scalar: object | None = None
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.rows or []
+
+    def scalar_one_or_none(self):
+        return self.scalar
+
+
+class _LookupSession:
+    def __init__(self, results: list[_LookupResult]):
+        self._results = list(results)
+        self.queries: list[object] = []
+
+    async def execute(self, query):
+        self.queries.append(query)
+        if not self._results:
+            raise AssertionError("No more mocked execute results")
+        return self._results.pop(0)
+
+
 @pytest.mark.asyncio
 async def test_sync_service_upsert_deactivate_and_idempotent(monkeypatch):
     snapshot = {
@@ -250,6 +277,185 @@ async def test_sync_service_hard_fails_before_db_changes_on_snapshot_error(monke
 
     assert db.execute_calls == 0
     assert db.added == []
+
+
+@pytest.mark.asyncio
+async def test_get_kr_symbol_by_name_returns_symbol_when_active():
+    db = _LookupSession(
+        [
+            _LookupResult(
+                rows=[
+                    KRSymbolUniverse(
+                        symbol="005930",
+                        name="삼성전자",
+                        exchange="KOSPI",
+                        nxt_eligible=True,
+                        is_active=True,
+                    )
+                ]
+            )
+        ]
+    )
+
+    symbol = await kr_symbol_universe_service.get_kr_symbol_by_name(" 삼성전자 ", db=db)
+
+    assert symbol == "005930"
+
+
+@pytest.mark.asyncio
+async def test_get_kr_symbol_by_name_raises_empty_error():
+    db = _LookupSession([_LookupResult(rows=[]), _LookupResult(scalar=None)])
+
+    with pytest.raises(kr_symbol_universe_service.KRSymbolUniverseEmptyError):
+        await kr_symbol_universe_service.get_kr_symbol_by_name("삼성전자", db=db)
+
+
+@pytest.mark.asyncio
+async def test_get_kr_symbol_by_name_raises_not_registered_error():
+    db = _LookupSession([_LookupResult(rows=[]), _LookupResult(scalar="005930")])
+
+    with pytest.raises(kr_symbol_universe_service.KRSymbolNotRegisteredError):
+        await kr_symbol_universe_service.get_kr_symbol_by_name("없는종목", db=db)
+
+
+@pytest.mark.asyncio
+async def test_get_kr_symbol_by_name_raises_inactive_error():
+    db = _LookupSession(
+        [
+            _LookupResult(
+                rows=[
+                    KRSymbolUniverse(
+                        symbol="005930",
+                        name="삼성전자",
+                        exchange="KOSPI",
+                        nxt_eligible=True,
+                        is_active=False,
+                    )
+                ]
+            )
+        ]
+    )
+
+    with pytest.raises(kr_symbol_universe_service.KRSymbolInactiveError):
+        await kr_symbol_universe_service.get_kr_symbol_by_name("삼성전자", db=db)
+
+
+@pytest.mark.asyncio
+async def test_get_kr_symbol_by_name_raises_ambiguous_error():
+    db = _LookupSession(
+        [
+            _LookupResult(
+                rows=[
+                    KRSymbolUniverse(
+                        symbol="005930",
+                        name="삼성전자",
+                        exchange="KOSPI",
+                        nxt_eligible=True,
+                        is_active=True,
+                    ),
+                    KRSymbolUniverse(
+                        symbol="005935",
+                        name="삼성전자",
+                        exchange="KOSPI",
+                        nxt_eligible=False,
+                        is_active=True,
+                    ),
+                ]
+            )
+        ]
+    )
+
+    with pytest.raises(kr_symbol_universe_service.KRSymbolNameAmbiguousError):
+        await kr_symbol_universe_service.get_kr_symbol_by_name("삼성전자", db=db)
+
+
+@pytest.mark.asyncio
+async def test_search_kr_symbols_returns_partial_matches():
+    db = _LookupSession(
+        [
+            _LookupResult(
+                rows=[
+                    KRSymbolUniverse(
+                        symbol="005930",
+                        name="삼성전자",
+                        exchange="KOSPI",
+                        nxt_eligible=True,
+                        is_active=True,
+                    ),
+                    KRSymbolUniverse(
+                        symbol="035420",
+                        name="NAVER",
+                        exchange="KOSDAQ",
+                        nxt_eligible=False,
+                        is_active=True,
+                    ),
+                ]
+            )
+        ]
+    )
+
+    rows = await kr_symbol_universe_service.search_kr_symbols("0", 20, db=db)
+
+    assert len(rows) == 2
+    assert rows[0]["symbol"] == "005930"
+    assert rows[0]["instrument_type"] == "equity_kr"
+    assert rows[0]["exchange"] == "KOSPI"
+
+
+@pytest.mark.asyncio
+async def test_search_kr_symbols_caps_limit(monkeypatch):
+    captured: dict[str, int] = {}
+
+    async def fake_search_impl(db, query, limit):
+        captured["limit"] = limit
+        return []
+
+    monkeypatch.setattr(
+        kr_symbol_universe_service,
+        "_search_kr_symbols_impl",
+        fake_search_impl,
+    )
+
+    rows = await kr_symbol_universe_service.search_kr_symbols("삼성", 500, db=object())
+
+    assert rows == []
+    assert captured["limit"] == 100
+
+
+@pytest.mark.asyncio
+async def test_search_kr_symbols_builds_kospi_priority_order_clause():
+    db = _LookupSession(
+        [
+            _LookupResult(
+                rows=[
+                    KRSymbolUniverse(
+                        symbol="005930",
+                        name="삼성전자",
+                        exchange="KOSPI",
+                        nxt_eligible=True,
+                        is_active=True,
+                    )
+                ]
+            )
+        ]
+    )
+
+    await kr_symbol_universe_service.search_kr_symbols("삼성", 20, db=db)
+
+    compiled = str(
+        db.queries[0].compile(compile_kwargs={"literal_binds": True})
+    ).lower()
+    assert "case" in compiled
+    assert "kospi" in compiled
+    assert "kosdaq" in compiled
+
+
+@pytest.mark.asyncio
+async def test_search_kr_symbols_raises_empty_error_when_table_empty():
+    db = _LookupSession([_LookupResult(rows=[]), _LookupResult(scalar=None)])
+
+    with pytest.raises(kr_symbol_universe_service.KRSymbolUniverseEmptyError):
+        await kr_symbol_universe_service.search_kr_symbols("삼성", 20, db=db)
 
 
 @pytest.mark.asyncio

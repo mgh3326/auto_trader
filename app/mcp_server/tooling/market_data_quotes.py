@@ -43,12 +43,9 @@ from app.services import kis_ohlcv_cache
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
+from app.services.kr_symbol_universe_service import search_kr_symbols
 from app.services.us_symbol_universe_service import search_us_symbols
 from data.coins_info import get_or_refresh_maps
-from data.stocks_info import (
-    get_kosdaq_name_to_code,
-    get_kospi_name_to_code,
-)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -67,36 +64,10 @@ async def _search_master_data(
     query_upper = query.upper()
 
     if instrument_type is None or instrument_type == "equity_kr":
-        kospi = get_kospi_name_to_code()
-        kosdaq = get_kosdaq_name_to_code()
-
-        for name, code in kospi.items():
-            if query_lower in name.lower() or query_upper in code:
-                results.append(
-                    {
-                        "symbol": code,
-                        "name": name,
-                        "instrument_type": "equity_kr",
-                        "exchange": "KOSPI",
-                        "is_active": True,
-                    }
-                )
-                if len(results) >= limit:
-                    return results
-
-        for name, code in kosdaq.items():
-            if query_lower in name.lower() or query_upper in code:
-                results.append(
-                    {
-                        "symbol": code,
-                        "name": name,
-                        "instrument_type": "equity_kr",
-                        "exchange": "KOSDAQ",
-                        "is_active": True,
-                    }
-                )
-                if len(results) >= limit:
-                    return results
+        kr_results = await search_kr_symbols(query, limit)
+        results.extend(kr_results)
+        if len(results) >= limit:
+            return results
 
     if instrument_type is None or instrument_type == "equity_us":
         remaining = limit - len(results)

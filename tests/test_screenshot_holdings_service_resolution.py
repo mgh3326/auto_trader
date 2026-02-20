@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.services.kr_symbol_universe_service import KRSymbolUniverseLookupError
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.stock_alias_service import StockAliasService
 from app.services.us_symbol_universe_service import USSymbolUniverseLookupError
@@ -43,16 +44,14 @@ def _setup_mocks(
     mock_broker_account,
     existing_holdings=None,
     crypto_maps=None,
-    kospi_map=None,
-    kosdaq_map=None,
+    kr_name_to_symbol=None,
     us_name_to_symbol=None,
     alias_ticker=None,
 ):
     """Helper to set up all required mocks."""
     existing_holdings = existing_holdings or []
     crypto_maps = crypto_maps or {"NAME_TO_PAIR_KR": {}, "COIN_TO_NAME_KR": {}}
-    kospi_map = kospi_map or {}
-    kosdaq_map = kosdaq_map or {}
+    kr_name_to_symbol = kr_name_to_symbol or {}
     us_name_to_symbol = us_name_to_symbol or {}
 
     mock_db.execute.return_value = MagicMock()
@@ -64,13 +63,16 @@ def _setup_mocks(
         "app.services.screenshot_holdings_service.get_or_refresh_maps",
         AsyncMock(return_value=crypto_maps),
     )
+
+    async def mock_get_kr_symbol_by_name(name, _db=None):
+        symbol = kr_name_to_symbol.get(name)
+        if symbol is None:
+            raise KRSymbolUniverseLookupError("not found")
+        return symbol
+
     monkeypatch.setattr(
-        "app.services.screenshot_holdings_service.get_kospi_name_to_code",
-        lambda: kospi_map,
-    )
-    monkeypatch.setattr(
-        "app.services.screenshot_holdings_service.get_kosdaq_name_to_code",
-        lambda: kosdaq_map,
+        "app.services.screenshot_holdings_service.get_kr_symbol_by_name",
+        mock_get_kr_symbol_by_name,
     )
 
     async def mock_get_us_symbol_by_name(name, _db=None):
@@ -252,8 +254,12 @@ async def test_avg_buy_price_calculated_from_eval_profit_qty(
 @pytest.mark.asyncio
 async def test_kr_stock_regression(service, mock_db, mock_broker_account, monkeypatch):
     """Scenario 5: KR 회귀 - '삼성전자' + market_section='kr' -> KRX 해석 유지"""
-    kospi_map = {"삼성전자": "005930"}
-    _setup_mocks(monkeypatch, mock_db, mock_broker_account, kospi_map=kospi_map)
+    _setup_mocks(
+        monkeypatch,
+        mock_db,
+        mock_broker_account,
+        kr_name_to_symbol={"삼성전자": "005930"},
+    )
 
     result = await service.resolve_and_update(
         user_id=1,
@@ -275,6 +281,28 @@ async def test_kr_stock_regression(service, mock_db, mock_broker_account, monkey
     assert holding["resolved_ticker"] == "005930"
     assert holding["market_type"] == "KR"
     assert holding["resolution_method"] == "krx_master"
+
+
+@pytest.mark.asyncio
+async def test_kr_lookup_failure_raises_explicit_error(
+    service, mock_db, mock_broker_account, monkeypatch
+):
+    _setup_mocks(monkeypatch, mock_db, mock_broker_account, kr_name_to_symbol={})
+
+    with pytest.raises(KRSymbolUniverseLookupError, match="not found"):
+        await service.resolve_and_update(
+            user_id=1,
+            holdings_data=[
+                {
+                    "stock_name": "알수없는국내종목",
+                    "quantity": 1,
+                    "eval_amount": 100,
+                    "market_section": "kr",
+                }
+            ],
+            broker="toss",
+            dry_run=True,
+        )
 
 
 @pytest.mark.asyncio

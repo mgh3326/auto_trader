@@ -1,9 +1,9 @@
 import pandas as pd
 
 from app.services import kis, upbit, yahoo
+from app.services.kr_symbol_universe_service import get_kr_symbol_by_name
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 from data.coins_info import upbit_pairs
-from data.stocks_info import KRX_NAME_TO_CODE
 
 from .analyzer import Analyzer, DataProcessor
 
@@ -498,10 +498,7 @@ class KISAnalyzer(Analyzer):
         print(f"\n=== {stock_name} 분석 시작 ===")
 
         # 종목 코드 조회
-        stock_code = KRX_NAME_TO_CODE.get(stock_name)
-        if not stock_code:
-            print(f"종목명을 찾을 수 없음: {stock_name}")
-            return
+        stock_code = await get_kr_symbol_by_name(stock_name)
 
         # 데이터 수집
         df_merged, fundamental_info, minute_candles = await self._collect_stock_data(
@@ -537,10 +534,7 @@ class KISAnalyzer(Analyzer):
         print(f"\n=== {stock_name} JSON 분석 시작 ===")
 
         # 종목 코드 조회
-        stock_code = KRX_NAME_TO_CODE.get(stock_name)
-        if not stock_code:
-            print(f"종목명을 찾을 수 없음: {stock_name}")
-            return None, ""
+        stock_code = await get_kr_symbol_by_name(stock_name)
 
         # 데이터 수집
         df_merged, fundamental_info, minute_candles = await self._collect_stock_data(

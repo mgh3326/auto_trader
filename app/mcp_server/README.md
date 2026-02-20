@@ -53,6 +53,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - If symbol/name is missing, inactive, or ambiguous in `us_symbol_universe`, tools return explicit lookup errors with sync hint.
 - US prerequisite: run `make sync-us-symbol-universe` (or `uv run python scripts/sync_us_symbol_universe.py`) right after migrations.
 
+### KR symbol resolution
+- KR symbol search resolves from DB table `kr_symbol_universe` only.
+- Runtime does not use in-memory/file-cache fallback for KR name/symbol lookups.
+- If symbol/name is missing, inactive, or ambiguous in `kr_symbol_universe`, tools return explicit lookup errors with sync hint.
+- KR prerequisite: run `make sync-kr-symbol-universe` (or `uv run python scripts/sync_kr_symbol_universe.py`) right after migrations.
+
 ### `get_indicators` spec
 Parameters:
 - `symbol`: Asset symbol/ticker

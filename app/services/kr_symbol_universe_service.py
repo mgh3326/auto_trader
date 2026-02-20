@@ -4,9 +4,10 @@ import io
 import logging
 import zipfile
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
@@ -19,9 +20,30 @@ _KOSPI_ZIP = "kospi_code.mst.zip"
 _KOSDAQ_ZIP = "kosdaq_code.mst.zip"
 _NXT_KOSPI_ZIP = "nxt_kospi_code.mst.zip"
 _NXT_KOSDAQ_ZIP = "nxt_kosdaq_code.mst.zip"
+_KR_UNIVERSE_SYNC_COMMAND = "uv run python scripts/sync_kr_symbol_universe.py"
 
 _KOSPI_SUFFIX_LENGTH = 228
 _KOSDAQ_SUFFIX_LENGTH = 222
+
+
+class KRSymbolUniverseLookupError(ValueError):
+    pass
+
+
+class KRSymbolUniverseEmptyError(KRSymbolUniverseLookupError):
+    pass
+
+
+class KRSymbolNotRegisteredError(KRSymbolUniverseLookupError):
+    pass
+
+
+class KRSymbolInactiveError(KRSymbolUniverseLookupError):
+    pass
+
+
+class KRSymbolNameAmbiguousError(KRSymbolUniverseLookupError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -46,6 +68,14 @@ def _normalize_symbol_or_none(value: str) -> str | None:
     if len(symbol) == 6 and symbol.isalnum():
         return symbol
     return None
+
+
+def _normalize_name(value: str) -> str:
+    return str(value or "").strip()
+
+
+def _sync_hint() -> str:
+    return f"Sync required: {_KR_UNIVERSE_SYNC_COMMAND}"
 
 
 async def _download_mst_lines(zip_name: str) -> list[str]:
@@ -273,6 +303,123 @@ async def _apply_snapshot(
     }
 
 
+async def _has_any_rows(db: AsyncSession) -> bool:
+    result = await db.execute(select(KRSymbolUniverse.symbol).limit(1))
+    return result.scalar_one_or_none() is not None
+
+
+async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
+    normalized_name = _normalize_name(name)
+    if not normalized_name:
+        raise ValueError("name is required")
+
+    stmt = select(KRSymbolUniverse).where(
+        func.btrim(KRSymbolUniverse.name) == normalized_name
+    )
+    rows = list((await db.execute(stmt)).scalars().all())
+
+    if not rows:
+        if not await _has_any_rows(db):
+            raise KRSymbolUniverseEmptyError(
+                f"kr_symbol_universe is empty. {_sync_hint()}"
+            )
+        raise KRSymbolNotRegisteredError(
+            f"KR name '{normalized_name}' is not registered in kr_symbol_universe. "
+            f"{_sync_hint()}"
+        )
+
+    active_rows = [row for row in rows if row.is_active]
+    if not active_rows:
+        symbols = sorted({row.symbol for row in rows})
+        preview = ", ".join(symbols[:10])
+        raise KRSymbolInactiveError(
+            f"KR name '{normalized_name}' is inactive in kr_symbol_universe. "
+            f"matched_symbols=[{preview}]. {_sync_hint()}"
+        )
+
+    unique_symbols = sorted({row.symbol for row in active_rows})
+    if len(unique_symbols) > 1:
+        preview = ", ".join(unique_symbols[:10])
+        raise KRSymbolNameAmbiguousError(
+            f"KR name '{normalized_name}' is ambiguous in kr_symbol_universe. "
+            f"matched_symbols=[{preview}] count={len(unique_symbols)}. {_sync_hint()}"
+        )
+
+    return unique_symbols[0]
+
+
+async def get_kr_symbol_by_name(
+    name: str,
+    db: AsyncSession | None = None,
+) -> str:
+    if db is not None:
+        return await _resolve_active_symbol_by_name(db, name)
+
+    async with AsyncSessionLocal() as session:
+        return await _resolve_active_symbol_by_name(session, name)
+
+
+async def _search_kr_symbols_impl(
+    db: AsyncSession,
+    query: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    normalized_query = _normalize_name(query)
+    if not normalized_query:
+        return []
+
+    pattern = f"%{normalized_query}%"
+    exchange_priority = case(
+        (KRSymbolUniverse.exchange == "KOSPI", 0),
+        (KRSymbolUniverse.exchange == "KOSDAQ", 1),
+        else_=2,
+    )
+    stmt = (
+        select(KRSymbolUniverse)
+        .where(
+            KRSymbolUniverse.is_active.is_(True),
+            or_(
+                KRSymbolUniverse.symbol.ilike(pattern),
+                KRSymbolUniverse.name.ilike(pattern),
+            ),
+        )
+        .order_by(
+            exchange_priority.asc(),
+            KRSymbolUniverse.name.asc(),
+            KRSymbolUniverse.symbol.asc(),
+        )
+        .limit(limit)
+    )
+
+    rows = list((await db.execute(stmt)).scalars().all())
+    if not rows and not await _has_any_rows(db):
+        raise KRSymbolUniverseEmptyError(f"kr_symbol_universe is empty. {_sync_hint()}")
+
+    return [
+        {
+            "symbol": row.symbol,
+            "name": row.name,
+            "instrument_type": "equity_kr",
+            "exchange": row.exchange,
+            "is_active": row.is_active,
+        }
+        for row in rows
+    ]
+
+
+async def search_kr_symbols(
+    query: str,
+    limit: int,
+    db: AsyncSession | None = None,
+) -> list[dict[str, Any]]:
+    capped_limit = min(max(int(limit), 1), 100)
+    if db is not None:
+        return await _search_kr_symbols_impl(db, query, capped_limit)
+
+    async with AsyncSessionLocal() as session:
+        return await _search_kr_symbols_impl(session, query, capped_limit)
+
+
 async def sync_kr_symbol_universe(db: AsyncSession | None = None) -> dict[str, int]:
     snapshot = await build_kr_symbol_universe_snapshot()
     if db is not None:
@@ -292,6 +439,13 @@ async def sync_kr_symbol_universe(db: AsyncSession | None = None) -> dict[str, i
 
 
 __all__ = [
+    "KRSymbolUniverseLookupError",
+    "KRSymbolUniverseEmptyError",
+    "KRSymbolNotRegisteredError",
+    "KRSymbolInactiveError",
+    "KRSymbolNameAmbiguousError",
     "build_kr_symbol_universe_snapshot",
+    "get_kr_symbol_by_name",
+    "search_kr_symbols",
     "sync_kr_symbol_universe",
 ]

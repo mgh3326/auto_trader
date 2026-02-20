@@ -8,8 +8,9 @@ from pydantic import BaseModel, Field
 
 from app.analysis.prompt import build_prompt
 from app.core.config import settings
+from app.core.db import AsyncSessionLocal
 from app.services.kis import kis  # 경로는 실제 패키지 구조에 맞게
-from data.stocks_info import KRX_NAME_TO_CODE
+from app.services.kr_symbol_universe_service import get_kr_symbol_by_name
 
 
 class TradePlan(BaseModel):
@@ -25,10 +26,13 @@ async def main():
     # print(json.dumps(price, indent=2, ensure_ascii=False))
     # await dart.init_dart()
     # a = await dart.list_filings("삼성전자")
-    client = genai.Client(api_key=settings.google_api_key)  # 환경변수 GEMINI_API_KEY 필요
+    client = genai.Client(
+        api_key=settings.google_api_key
+    )  # 환경변수 GEMINI_API_KEY 필요
 
-    stock_name = ("한국타이어앤테크놀로지")
-    stock_code = KRX_NAME_TO_CODE.get(stock_name)
+    stock_name = "한국타이어앤테크놀로지"
+    async with AsyncSessionLocal() as db:
+        stock_code = await get_kr_symbol_by_name(stock_name, db)
     df = await kis.inquire_daily_itemchartprice(stock_code)
     today_now = await kis.inquire_price(stock_code)  # 1행 DataFrame, index='code'
     df = (
@@ -59,20 +63,20 @@ def safe_get_response_text(resp) -> str:
         return "응답 객체가 없습니다."
 
     # 기본 text 속성 확인
-    if hasattr(resp, 'text') and resp.text:
+    if hasattr(resp, "text") and resp.text:
         return resp.text
 
     # candidates를 통한 대체 접근
-    if hasattr(resp, 'candidates') and resp.candidates:
+    if hasattr(resp, "candidates") and resp.candidates:
         candidate = resp.candidates[0]
-        if hasattr(candidate, 'content') and candidate.content:
-            if hasattr(candidate.content, 'parts') and candidate.content.parts:
+        if hasattr(candidate, "content") and candidate.content:
+            if hasattr(candidate.content, "parts") and candidate.content.parts:
                 for part in candidate.content.parts:
-                    if hasattr(part, 'text') and part.text:
+                    if hasattr(part, "text") and part.text:
                         return part.text
 
         # finish_reason 확인
-        if hasattr(candidate, 'finish_reason'):
+        if hasattr(candidate, "finish_reason"):
             return f"응답 생성 중단됨. 이유: {candidate.finish_reason}"
 
     return "응답 텍스트를 추출할 수 없습니다."
@@ -95,11 +99,13 @@ async def generate_with_smart_retry(client, prompt, max_retries=3):
 
                 if resp and resp.candidates:
                     candidate = resp.candidates[0]
-                    finish_reason = getattr(candidate, 'finish_reason', None)
+                    finish_reason = getattr(candidate, "finish_reason", None)
 
                     # STOP인데 text가 None인 경우 → 재시도
                     if finish_reason == "STOP" and not resp.text:
-                        print(f"  시도 {attempt + 1}: STOP이지만 text가 None, 재시도...")
+                        print(
+                            f"  시도 {attempt + 1}: STOP이지만 text가 None, 재시도..."
+                        )
                         await asyncio.sleep(1 + attempt)  # 점진적 대기
                         continue
 

@@ -13,6 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.manual_holdings import ManualHolding, MarketType
 from app.services.broker_account_service import BrokerAccountService
+from app.services.kr_symbol_universe_service import (
+    KRSymbolUniverseLookupError,
+    get_kr_symbol_by_name,
+)
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.stock_alias_service import StockAliasService
 from app.services.us_symbol_universe_service import (
@@ -20,10 +24,6 @@ from app.services.us_symbol_universe_service import (
     get_us_symbol_by_name,
 )
 from data.coins_info import get_or_refresh_maps
-from data.stocks_info import (
-    get_kosdaq_name_to_code,
-    get_kospi_name_to_code,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +70,17 @@ class ScreenshotHoldingsService:
 
         # 2단계: 마스터 데이터 검색
         if market_type == MarketType.KR:
-            kospi_map = get_kospi_name_to_code()
-            ticker = kospi_map.get(stock_name)
-            if ticker:
+            try:
+                ticker = await get_kr_symbol_by_name(stock_name, self.db)
                 return ticker, market_type.value, "krx_master"
-
-            kosdaq_map = get_kosdaq_name_to_code()
-            ticker = kosdaq_map.get(stock_name)
-            if ticker:
-                return ticker, market_type.value, "krx_master"
+            except KRSymbolUniverseLookupError as exc:
+                logger.warning(
+                    "KR symbol lookup failed for '%s' (%s): %s",
+                    stock_name,
+                    broker,
+                    exc,
+                )
+                raise
         elif market_type == MarketType.US:
             try:
                 ticker = await get_us_symbol_by_name(stock_name, self.db)
