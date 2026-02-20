@@ -37,9 +37,7 @@ ORDERBOOK_TR = "FHKST01010200"  # 주식현재가호가상체결
 # 분봉 데이터 관련 URL 및 TR ID 추가
 MINUTE_CHART_URL = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
 MINUTE_CHART_TR = "FHKST03010200"  # 분봉 조회 TR ID
-TIME_DAILY_CHART_URL = (
-    "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
-)
+TIME_DAILY_CHART_URL = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
 TIME_DAILY_CHART_TR = "FHKST03010230"  # 당일분봉 조회 TR ID
 
 # 주식잔고 조회 관련 URL 및 TR ID 추가
@@ -999,6 +997,7 @@ class KISClient:
             "FID_INPUT_HOUR_1": current_time,
             "FID_INPUT_DATE_1": base_date.strftime("%Y%m%d"),
             "FID_PW_DATA_INCU_YN": "N",
+            "FID_FAKE_TICK_INCU_YN": "",
             "FID_ETC_CLS_CODE": "",
         }
 
