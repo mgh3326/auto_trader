@@ -3,13 +3,13 @@ import asyncio
 from app.analysis.service_analyzers import KISAnalyzer, UpbitAnalyzer, YahooAnalyzer
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services import upbit
+from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.order_service import (
     cancel_existing_buy_orders,
     cancel_existing_sell_orders,
     get_sell_prices_for_coin,
     place_multiple_sell_orders,
 )
-from data.coins_info import upbit_pairs
 
 
 async def _fetch_tradable_coins() -> tuple[list[dict], list[dict]]:

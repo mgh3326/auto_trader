@@ -10,7 +10,7 @@ from google import genai
 
 from app.analysis.analyzer import DataProcessor
 from app.services import upbit
-from data.coins_info import upbit_pairs
+from app.services import upbit_symbol_universe_service as upbit_pairs
 
 
 def add_indicators(df):

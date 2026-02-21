@@ -7,7 +7,7 @@ import asyncio
 
 from app.analysis.service_analyzers import UpbitAnalyzer
 from app.services import upbit
-from data.coins_info import upbit_pairs
+from app.services import upbit_symbol_universe_service as upbit_pairs
 
 # ===== 매도 전략 설정 =====
 SELL_STRATEGY = "split"  # "split": 분할 지정가 매도 | "market": 전량 시장가 매도

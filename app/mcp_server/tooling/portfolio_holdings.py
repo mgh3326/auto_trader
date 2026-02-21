@@ -84,7 +84,10 @@ from app.services import upbit as upbit_service
 from app.services.kis import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
-from data.coins_info import get_or_refresh_maps
+from app.services.upbit_symbol_universe_service import (
+    get_active_upbit_markets,
+    get_or_refresh_maps,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -306,7 +309,7 @@ async def _fetch_price_map_for_positions(
     if crypto_symbols:
         valid_symbols = list(crypto_symbols)
         try:
-            tradable_markets = await upbit_service.fetch_all_market_codes(fiat=None)
+            tradable_markets = await get_active_upbit_markets(fiat=None)
             tradable_set = {str(market).upper() for market in tradable_markets}
             valid_symbols = [
                 symbol for symbol in crypto_symbols if symbol.upper() in tradable_set

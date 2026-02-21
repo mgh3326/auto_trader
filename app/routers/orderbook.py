@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.core.templates import templates
 from app.services import upbit_orderbook
+from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.websocket_connection_manager import manager
-from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)
 

@@ -27,6 +27,7 @@ from app.services.krx import (
     fetch_stock_all_cached,
     fetch_valuation_all_cached,
 )
+from app.services.upbit_symbol_universe_service import get_upbit_warning_markets
 
 logger = logging.getLogger(__name__)
 
@@ -1115,21 +1116,7 @@ async def _screen_crypto(
 
     warning_markets: set[str] = set()
     try:
-        market_details = await upbit_service.fetch_all_market_codes(
-            fiat="KRW",
-            include_details=True,
-        )
-        for detail in market_details:
-            if not isinstance(detail, dict):
-                continue
-            market_code = str(detail.get("market") or "").strip().upper()
-            if not market_code:
-                continue
-            market_event = detail.get("market_event")
-            if isinstance(market_event, dict) and _is_market_warning(
-                market_event.get("warning")
-            ):
-                warning_markets.add(market_code)
+        warning_markets = await get_upbit_warning_markets(fiat="KRW")
     except Exception as exc:
         warnings.append(
             "market warning details unavailable; warning filter skipped "

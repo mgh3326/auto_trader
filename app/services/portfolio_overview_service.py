@@ -7,11 +7,17 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.symbol import to_db_symbol
 from app.models.manual_holdings import MarketType
 from app.services import upbit as upbit_service
 from app.services.kis import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.price_provider import UsEquityPriceProvider, YahooUsPriceProvider
+from app.services.upbit_symbol_universe_service import get_active_upbit_markets
+from app.services.us_symbol_universe_service import (
+    USSymbolUniverseLookupError,
+    get_us_exchange_by_symbol,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +260,13 @@ class PortfolioOverviewService:
             warnings.append(f"Upbit holdings fetch failed: {exc}")
             return components
 
+        tradable_markets = await get_active_upbit_markets(fiat=None)
+        tradable_set = {
+            str(market).strip().upper()
+            for market in tradable_markets
+            if str(market).strip()
+        }
+
         symbols: list[str] = []
         for coin in coins:
             currency = str(coin.get("currency", "")).strip().upper()
@@ -262,6 +275,9 @@ class PortfolioOverviewService:
 
             unit_currency = str(coin.get("unit_currency") or "KRW").strip().upper()
             symbol = _normalize_symbol(f"{unit_currency}-{currency}", _MARKET_CRYPTO)
+            if symbol not in tradable_set:
+                logger.info("Skipping non-tradable Upbit holding symbol=%s", symbol)
+                continue
             quantity = _to_float(coin.get("balance")) + _to_float(coin.get("locked"))
             if quantity <= 0:
                 continue
@@ -317,6 +333,7 @@ class PortfolioOverviewService:
             return []
 
         components: list[dict[str, Any]] = []
+        tradable_crypto_symbols: set[str] | None = None
         for holding in holdings:
             market_type = _normalize_market_type(getattr(holding, "market_type", None))
             if market_type is None:
@@ -325,6 +342,21 @@ class PortfolioOverviewService:
             symbol = _normalize_symbol(getattr(holding, "ticker", ""), market_type)
             if not symbol:
                 continue
+
+            if market_type == _MARKET_CRYPTO:
+                if tradable_crypto_symbols is None:
+                    tradable_markets = await get_active_upbit_markets(fiat=None)
+                    tradable_crypto_symbols = {
+                        str(market).strip().upper()
+                        for market in tradable_markets
+                        if str(market).strip()
+                    }
+                if symbol not in tradable_crypto_symbols:
+                    logger.info(
+                        "Skipping non-tradable manual CRYPTO holding symbol=%s",
+                        symbol,
+                    )
+                    continue
 
             broker_account = getattr(holding, "broker_account", None)
             broker_value = getattr(broker_account, "broker_type", "manual")
@@ -377,13 +409,19 @@ class PortfolioOverviewService:
                 if item["market_type"] == _MARKET_KR and item["current_price"] is None
             }
         )
-        us_symbols = sorted(
-            {
-                item["symbol"]
-                for item in components
-                if item["market_type"] == _MARKET_US and item["current_price"] is None
-            }
-        )
+        us_symbol_targets: dict[str, set[str]] = {}
+        for item in components:
+            if item["market_type"] != _MARKET_US or item["current_price"] is not None:
+                continue
+            raw_symbol = str(item.get("symbol") or "").strip().upper()
+            if not raw_symbol:
+                continue
+            normalized_symbol = to_db_symbol(raw_symbol).upper()
+            if not normalized_symbol:
+                continue
+            us_symbol_targets.setdefault(normalized_symbol, set()).add(raw_symbol)
+
+        us_symbols = sorted(us_symbol_targets)
         crypto_symbols = sorted(
             {
                 item["symbol"]
@@ -406,15 +444,34 @@ class PortfolioOverviewService:
                 logger.warning("Failed to fetch KIS KR price for %s: %s", symbol, exc)
                 warnings.append(f"KIS KR price fetch failed for {symbol}: {exc}")
 
+        valid_us_symbols: list[str] = []
         if us_symbols:
+            for normalized_symbol in us_symbols:
+                try:
+                    await get_us_exchange_by_symbol(normalized_symbol, db=self.db)
+                except USSymbolUniverseLookupError as exc:
+                    raw_symbols = sorted(
+                        us_symbol_targets.get(normalized_symbol, {normalized_symbol})
+                    )
+                    logger.info(
+                        "Skipping invalid US symbol before price fetch symbols=%s normalized=%s reason=%s",
+                        ",".join(raw_symbols),
+                        normalized_symbol,
+                        exc,
+                    )
+                    continue
+                valid_us_symbols.append(normalized_symbol)
+
+        if valid_us_symbols:
             try:
                 us_prices, us_errors = await self.us_price_provider.fetch_many(
-                    us_symbols
+                    valid_us_symbols
                 )
                 for symbol, price in us_prices.items():
                     if price <= 0:
                         continue
-                    self._apply_price(components, _MARKET_US, symbol, price)
+                    for target_symbol in us_symbol_targets.get(symbol, {symbol}):
+                        self._apply_price(components, _MARKET_US, target_symbol, price)
                 for error in us_errors:
                     logger.warning(
                         "Failed to fetch US price for %s via %s: %s",
@@ -486,34 +543,23 @@ class PortfolioOverviewService:
             if not symbols_to_recover:
                 return recovered_prices
 
-        try:
-            tradable_markets = await upbit_service.fetch_all_market_codes(fiat=None)
-            tradable_set = {
-                str(market).strip().upper()
-                for market in tradable_markets
-                if str(market).strip()
-            }
-        except Exception as exc:
-            logger.warning(
-                "Failed to load Upbit tradable markets (%s): %s",
-                stage,
-                exc,
-            )
-            reason = str(exc)
-            for symbol in symbols_to_recover:
-                warnings.append(
-                    f"Upbit price fetch failed ({stage}) for {symbol}: {reason}"
-                )
-            return recovered_prices
+        tradable_markets = await get_active_upbit_markets(fiat=None)
+        tradable_set = {
+            str(market).strip().upper()
+            for market in tradable_markets
+            if str(market).strip()
+        }
 
         filtered_symbols: list[str] = []
         for symbol in symbols_to_recover:
             if symbol in tradable_set:
                 filtered_symbols.append(symbol)
-                continue
-            warnings.append(
-                f"Upbit price fetch failed ({stage}) for {symbol}: symbol not tradable"
-            )
+            else:
+                logger.info(
+                    "Skipping non-tradable Upbit symbol (%s): %s",
+                    stage,
+                    symbol,
+                )
 
         if not filtered_symbols:
             return recovered_prices

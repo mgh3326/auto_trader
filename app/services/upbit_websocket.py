@@ -11,7 +11,7 @@ import jwt
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from app.core.config import settings
-from data.coins_info import upbit_pairs
+from app.services import upbit_symbol_universe_service as upbit_pairs
 
 # 로깅 설정
 logger = logging.getLogger(__name__)

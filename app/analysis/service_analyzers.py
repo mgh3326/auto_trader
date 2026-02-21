@@ -1,9 +1,9 @@
 import pandas as pd
 
 from app.services import kis, upbit, yahoo
+from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.kr_symbol_universe_service import get_kr_symbol_by_name
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
-from data.coins_info import upbit_pairs
 
 from .analyzer import Analyzer, DataProcessor
 

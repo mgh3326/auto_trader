@@ -19,11 +19,11 @@ from app.services.kr_symbol_universe_service import (
 )
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.stock_alias_service import StockAliasService
+from app.services.upbit_symbol_universe_service import get_or_refresh_maps
 from app.services.us_symbol_universe_service import (
     USSymbolUniverseLookupError,
     get_us_symbol_by_name,
 )
-from data.coins_info import get_or_refresh_maps
 
 logger = logging.getLogger(__name__)
 

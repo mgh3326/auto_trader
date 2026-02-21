@@ -23,6 +23,7 @@ from app.mcp_server.tooling.shared import (
     to_optional_int as _to_optional_int,
 )
 from app.services import upbit as upbit_service
+from app.services.upbit_symbol_universe_service import get_or_refresh_maps
 
 DEFAULT_BATCH_CRYPTO_SYMBOLS = [
     "BTC",
@@ -407,8 +408,12 @@ async def _resolve_batch_crypto_symbols() -> list[str]:
 
         if held_symbols:
             try:
-                tradable_markets = await upbit_service.fetch_all_market_codes(fiat=None)
-                tradable_set = {str(market).upper() for market in tradable_markets}
+                crypto_maps = await get_or_refresh_maps()
+                tradable_set = {
+                    str(symbol).upper()
+                    for symbol in crypto_maps.get("COIN_TO_PAIR", {}).keys()
+                    if str(symbol).strip()
+                }
                 held_symbols = [
                     symbol for symbol in held_symbols if symbol.upper() in tradable_set
                 ]

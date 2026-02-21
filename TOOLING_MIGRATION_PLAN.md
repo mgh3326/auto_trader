@@ -40,7 +40,6 @@ exclude = [
     ".venv",
     "alembic/versions",
     "__pycache__",
-    "data/coins_info",
 ]
 
 [tool.ruff.lint]

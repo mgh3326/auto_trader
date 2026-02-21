@@ -59,6 +59,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - If symbol/name is missing, inactive, or ambiguous in `kr_symbol_universe`, tools return explicit lookup errors with sync hint.
 - KR prerequisite: run `make sync-kr-symbol-universe` (or `uv run python scripts/sync_kr_symbol_universe.py`) right after migrations.
 
+### Upbit symbol resolution
+- Upbit crypto symbol/market resolution uses DB table `upbit_symbol_universe` only.
+- Runtime does not call Upbit `/v1/market/all`; that endpoint is sync-path only.
+- If `upbit_symbol_universe` is empty/unavailable, tools fail fast with explicit sync hint.
+- Upbit prerequisite: run `make sync-upbit-symbol-universe` (or `uv run python scripts/sync_upbit_symbol_universe.py`) right after migrations.
+
 ### `get_indicators` spec
 Parameters:
 - `symbol`: Asset symbol/ticker
@@ -437,7 +443,7 @@ Filtering rules:
 - When `minimum_value=None`, per-currency thresholds are automatically applied based on `instrument_type`: `equity_kr` and `crypto` use 5000, `equity_us` uses 10
 - When `minimum_value` is a number, that uniform threshold is applied to all positions
 - Upbit crypto current prices are fetched via batch ticker request (`/v1/ticker?markets=...`)
-- Before batch ticker request, tradable markets are loaded from `/v1/market/all` and only valid holdings symbols are included in the batch
+- Before batch ticker request, tradable markets are loaded from `upbit_symbol_universe` and only valid holdings symbols are included in the batch
 - Non-tradable symbols (delisted/unsupported) are excluded from ticker request and treated as 0 value for `minimum_value` filtering (counted in `filtered_count`)
 - Value is primarily based on `evaluation_amount`
 - If current price lookup fails (`current_price=null`), value is treated as `0` for minimum filtering

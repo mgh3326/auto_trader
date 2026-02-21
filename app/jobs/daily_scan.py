@@ -10,6 +10,7 @@ from app.core.timezone import now_kst
 from app.mcp_server.tooling.analysis_tool_handlers import get_fear_greed_index_impl
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi, _calculate_sma
 from app.monitoring.trade_notifier import get_trade_notifier
+from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.openclaw_client import OpenClawClient
 from app.services.upbit import (
     fetch_multiple_tickers,
@@ -17,7 +18,6 @@ from app.services.upbit import (
     fetch_ohlcv,
     fetch_top_traded_coins,
 )
-from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)
 

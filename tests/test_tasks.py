@@ -43,7 +43,7 @@ def test_run_analysis_for_my_coins_no_tradable(monkeypatch):
         return [{"currency": "KRW", "balance": "100000"}]
 
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.prime_upbit_constants",
+        "app.services.upbit_symbol_universe_service.prime_upbit_constants",
         fake_prime,
     )
     monkeypatch.setattr(
@@ -51,12 +51,12 @@ def test_run_analysis_for_my_coins_no_tradable(monkeypatch):
         fake_fetch_my_coins,
     )
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.KRW_TRADABLE_COINS",
+        "app.services.upbit_symbol_universe_service.KRW_TRADABLE_COINS",
         {"BTC"},
         raising=False,
     )
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.COIN_TO_NAME_KR",
+        "app.services.upbit_symbol_universe_service.COIN_TO_NAME_KR",
         {"BTC": "비트코인"},
         raising=False,
     )
@@ -82,7 +82,7 @@ def test_execute_buy_orders_task_no_tradable(monkeypatch):
         return [{"currency": "KRW", "balance": "100000"}]
 
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.prime_upbit_constants",
+        "app.services.upbit_symbol_universe_service.prime_upbit_constants",
         fake_prime,
     )
     monkeypatch.setattr(
@@ -90,12 +90,12 @@ def test_execute_buy_orders_task_no_tradable(monkeypatch):
         fake_fetch_my_coins,
     )
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.KRW_TRADABLE_COINS",
+        "app.services.upbit_symbol_universe_service.KRW_TRADABLE_COINS",
         {"BTC"},
         raising=False,
     )
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.COIN_TO_NAME_KR",
+        "app.services.upbit_symbol_universe_service.COIN_TO_NAME_KR",
         {"BTC": "비트코인"},
         raising=False,
     )
@@ -119,16 +119,16 @@ async def test_execute_buy_order_notifies_on_insufficient_balance(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.prime_upbit_constants",
+        "app.services.upbit_symbol_universe_service.prime_upbit_constants",
         fake_prime,
     )
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.KRW_TRADABLE_COINS",
+        "app.services.upbit_symbol_universe_service.KRW_TRADABLE_COINS",
         {"BTC"},
         raising=False,
     )
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.COIN_TO_NAME_KR",
+        "app.services.upbit_symbol_universe_service.COIN_TO_NAME_KR",
         {"BTC": "비트코인"},
         raising=False,
     )

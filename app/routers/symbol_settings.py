@@ -598,7 +598,7 @@ async def get_crypto_estimated_costs(
 
     from app.analysis.service_analyzers import UpbitAnalyzer
     from app.services import upbit
-    from data.coins_info import upbit_pairs
+    from app.services import upbit_symbol_universe_service as upbit_pairs
 
     user = await get_user_from_request(request, db)
     settings_service = SymbolTradeSettingsService(db)

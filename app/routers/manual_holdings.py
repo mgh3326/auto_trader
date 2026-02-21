@@ -28,7 +28,10 @@ from app.schemas.manual_holdings import (
     StockAliasSearchResult,
 )
 from app.services.broker_account_service import BrokerAccountService
-from app.services.manual_holdings_service import ManualHoldingsService
+from app.services.manual_holdings_service import (
+    ManualHoldingsService,
+    ManualHoldingValidationError,
+)
 from app.services.stock_alias_service import StockAliasService, seed_toss_aliases
 
 logger = logging.getLogger(__name__)
@@ -202,14 +205,17 @@ async def create_holding(
 
     # 보유 종목 등록 (upsert)
     holdings_service = ManualHoldingsService(db)
-    holding = await holdings_service.upsert_holding(
-        broker_account_id=account.id,
-        ticker=data.ticker,
-        market_type=data.market_type,
-        quantity=data.quantity,
-        avg_price=data.avg_price,
-        display_name=data.display_name,
-    )
+    try:
+        holding = await holdings_service.upsert_holding(
+            broker_account_id=account.id,
+            ticker=data.ticker,
+            market_type=data.market_type,
+            quantity=data.quantity,
+            avg_price=data.avg_price,
+            display_name=data.display_name,
+        )
+    except ManualHoldingValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     result = ManualHoldingResponse.model_validate(holding)
     result.broker_type = _parse_broker_type(account.broker_type)
@@ -248,6 +254,8 @@ async def create_holdings_bulk(
                 for h in data.holdings
             ],
         )
+    except ManualHoldingValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("Bulk create failed")
         raise HTTPException(

@@ -8,7 +8,7 @@ Upbit Lazy Loading 테스트 - prime 없이
 """
 import asyncio
 
-from data.coins_info import upbit_pairs
+from app.services import upbit_symbol_universe_service as upbit_pairs
 
 
 async def test_without_prime():

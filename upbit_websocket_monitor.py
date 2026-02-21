@@ -9,13 +9,12 @@ import logging
 
 from app.analysis.service_analyzers import UpbitAnalyzer
 from app.monitoring.sentry import capture_exception, init_sentry
+from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.upbit_websocket import UpbitOrderAnalysisService
-from data.coins_info import upbit_pairs
 
 # 로깅 설정
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -42,7 +41,7 @@ async def main():
     # WebSocket 모니터링 서비스 초기화 (SSL 검증 비활성화 - macOS 호환성)
     service = UpbitOrderAnalysisService(
         analyzer_callback=analyze_coin_callback,
-        verify_ssl=False  # macOS에서 SSL 인증서 문제 해결
+        verify_ssl=False,  # macOS에서 SSL 인증서 문제 해결
     )
 
     try:

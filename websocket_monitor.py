@@ -15,6 +15,7 @@ from typing import Any
 from app.core.config import settings
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
+from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.fill_notification import (
     FillOrder,
     normalize_kis_fill,
@@ -23,7 +24,6 @@ from app.services.fill_notification import (
 from app.services.kis_websocket import KISExecutionWebSocket
 from app.services.openclaw_client import OpenClawClient
 from app.services.upbit_websocket import UpbitMyOrderWebSocket
-from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)
 VALID_MONITOR_MODES = {"upbit", "kis", "both"}

@@ -27,11 +27,11 @@ from app.jobs.analyze import (
     run_per_coin_automation_task,
 )
 from app.services import upbit
+from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.stock_info_service import (
     StockAnalysisService,
 )
 from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
-from data.coins_info import upbit_pairs
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/upbit-trading", tags=["Upbit Trading"])

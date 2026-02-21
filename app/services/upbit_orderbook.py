@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 from httpx import HTTPStatusError
 
-from data.coins_info import upbit_pairs
+from app.services import upbit_symbol_universe_service as upbit_pairs
 
 logger = logging.getLogger(__name__)
 

@@ -5801,9 +5801,9 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
         "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
-    monkeypatch.setattr(
-        upbit_service,
-        "fetch_all_market_codes",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_active_upbit_markets",
         AsyncMock(return_value=["KRW-BTC", "KRW-ETH"]),
     )
 
@@ -5878,9 +5878,9 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
         "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
-    monkeypatch.setattr(
-        upbit_service,
-        "fetch_all_market_codes",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_active_upbit_markets",
         AsyncMock(return_value=["KRW-BTC", "KRW-DOGE"]),
     )
 
@@ -5985,18 +5985,17 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
         "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
-    monkeypatch.setattr(
-        upbit_service,
-        "fetch_all_market_codes",
-        AsyncMock(return_value=["KRW-BTC", "KRW-ONG", "KRW-XYM", "KRW-PCI"]),
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_active_upbit_markets",
+        AsyncMock(return_value=["KRW-BTC", "KRW-ONG"]),
     )
 
     async def mock_fetch(markets: list[str]) -> dict[str, float]:
-        assert sorted(markets) == ["KRW-BTC", "KRW-ONG", "KRW-PCI", "KRW-XYM"]
+        assert sorted(markets) == ["KRW-BTC", "KRW-ONG"]
         return {
             "KRW-BTC": 62000000.0,
             "KRW-ONG": 28.0,
-            "KRW-XYM": 0.1,
         }
 
     quote_mock = AsyncMock(side_effect=mock_fetch)
@@ -6023,9 +6022,7 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
     assert "KRW-BTC" in positions_by_symbol
     assert "KRW-PCI" not in positions_by_symbol
 
-    assert len(result["errors"]) == 1
-    assert result["errors"][0]["symbol"] == "KRW-PCI"
-    assert result["errors"][0]["error"] == "price missing in batch ticker response"
+    assert result["errors"] == []
     quote_mock.assert_awaited_once()
 
 
@@ -6075,9 +6072,9 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
         "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
-    monkeypatch.setattr(
-        upbit_service,
-        "fetch_all_market_codes",
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_active_upbit_markets",
         AsyncMock(return_value=["KRW-BTC"]),
     )
 

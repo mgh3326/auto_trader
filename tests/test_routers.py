@@ -2,6 +2,7 @@
 Tests for API routers.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -86,7 +87,7 @@ class TestUpbitTradingRouter:
                 return None
 
         monkeypatch.setattr(
-            "data.coins_info.upbit_pairs.prime_upbit_constants",
+            "app.services.upbit_symbol_universe_service.prime_upbit_constants",
             fake_prime,
         )
         monkeypatch.setattr(
@@ -186,3 +187,113 @@ class TestKISOverseasTradingRouter:
         assert result["success"] is True
         assert result["usd_balance"] == 321.5
         assert call_state["integrated_called"] is False
+
+
+class TestManualHoldingsRouter:
+    @pytest.mark.asyncio
+    async def test_create_holding_maps_validation_error_to_400(self, monkeypatch):
+        from app.models.manual_holdings import BrokerType, MarketType
+        from app.routers import manual_holdings
+        from app.schemas.manual_holdings import ManualHoldingCreate
+        from app.services.manual_holdings_service import ManualHoldingValidationError
+
+        account_service = AsyncMock()
+        account_service.get_or_create_default_account.return_value = SimpleNamespace(
+            id=1,
+            broker_type="toss",
+            account_name="기본 계좌",
+        )
+        holdings_service = AsyncMock()
+        holdings_service.upsert_holding.side_effect = ManualHoldingValidationError(
+            "invalid US ticker"
+        )
+
+        monkeypatch.setattr(
+            manual_holdings,
+            "BrokerAccountService",
+            lambda db: account_service,
+        )
+        monkeypatch.setattr(
+            manual_holdings,
+            "ManualHoldingsService",
+            lambda db: holdings_service,
+        )
+
+        data = ManualHoldingCreate(
+            broker_type=BrokerType.TOSS,
+            account_name="기본 계좌",
+            ticker="솔라나",
+            market_type=MarketType.US,
+            quantity=1,
+            avg_price=10,
+            display_name="솔라나",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await manual_holdings.create_holding(
+                data=data,
+                current_user=SimpleNamespace(id=1),
+                db=AsyncMock(),
+            )
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == "invalid US ticker"
+
+    @pytest.mark.asyncio
+    async def test_create_holdings_bulk_maps_validation_error_to_400(self, monkeypatch):
+        from app.models.manual_holdings import BrokerType, MarketType
+        from app.routers import manual_holdings
+        from app.schemas.manual_holdings import ManualHoldingBulkCreate
+        from app.services.manual_holdings_service import ManualHoldingValidationError
+
+        account_service = AsyncMock()
+        account_service.get_account_by_user_and_broker.return_value = SimpleNamespace(
+            id=1,
+            broker_type="toss",
+            account_name="기본 계좌",
+        )
+
+        holdings_service = AsyncMock()
+        holdings_service.bulk_create_holdings.side_effect = (
+            ManualHoldingValidationError("invalid mixed holdings")
+        )
+
+        monkeypatch.setattr(
+            manual_holdings,
+            "BrokerAccountService",
+            lambda db: account_service,
+        )
+        monkeypatch.setattr(
+            manual_holdings,
+            "ManualHoldingsService",
+            lambda db: holdings_service,
+        )
+
+        data = ManualHoldingBulkCreate(
+            broker_type=BrokerType.TOSS,
+            account_name="기본 계좌",
+            holdings=[
+                {
+                    "ticker": "AAPL",
+                    "market_type": MarketType.US,
+                    "quantity": 1,
+                    "avg_price": 100,
+                },
+                {
+                    "ticker": "솔라나",
+                    "market_type": MarketType.US,
+                    "quantity": 1,
+                    "avg_price": 100,
+                },
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await manual_holdings.create_holdings_bulk(
+                data=data,
+                current_user=SimpleNamespace(id=1),
+                db=AsyncMock(),
+            )
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == "invalid mixed holdings"

@@ -44,8 +44,8 @@ from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
 from app.services.kr_symbol_universe_service import search_kr_symbols
+from app.services.upbit_symbol_universe_service import get_or_refresh_maps
 from app.services.us_symbol_universe_service import search_us_symbols
-from data.coins_info import get_or_refresh_maps
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP

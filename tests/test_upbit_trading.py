@@ -63,7 +63,7 @@ async def test_get_my_coins_success(monkeypatch):
             return None  # No settings configured
 
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.prime_upbit_constants",
+        "app.services.upbit_symbol_universe_service.prime_upbit_constants",
         fake_prime,
     )
     monkeypatch.setattr(
@@ -75,12 +75,12 @@ async def test_get_my_coins_success(monkeypatch):
         fake_fetch_prices,
     )
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.KRW_TRADABLE_COINS",
+        "app.services.upbit_symbol_universe_service.KRW_TRADABLE_COINS",
         {"BTC"},
         raising=False,
     )
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.COIN_TO_NAME_KR",
+        "app.services.upbit_symbol_universe_service.COIN_TO_NAME_KR",
         {"BTC": "비트코인"},
         raising=False,
     )

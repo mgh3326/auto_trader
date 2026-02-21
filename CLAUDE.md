@@ -220,21 +220,24 @@ app/services/
 ```
 app/services/
 ├── kr_symbol_universe_service.py   # KR 심볼 조회/동기화
+├── upbit_symbol_universe_service.py # Upbit 심볼 조회/동기화
 └── us_symbol_universe_service.py   # US 심볼 조회/동기화
 
 scripts/
 ├── sync_kr_symbol_universe.py      # KR 유니버스 DB 동기화
+├── sync_upbit_symbol_universe.py   # Upbit 유니버스 DB 동기화
 └── sync_us_symbol_universe.py      # US 유니버스 DB 동기화
 
 DB Tables:
 ├── kr_symbol_universe
+├── upbit_symbol_universe
 └── us_symbol_universe
 ```
 
 **특징:**
 - KR/US 종목 검색 및 라우팅은 DB 테이블을 단일 소스로 사용
+- Upbit 심볼/마켓 해석도 DB 테이블(`upbit_symbol_universe`)을 단일 소스로 사용
 - 배포/마이그레이션 직후 심볼 유니버스 sync 스크립트 실행이 필요
-- `data/coins_info`는 암호화폐 페어 로더로만 유지됨
 
 ## 주요 워크플로우
 

@@ -13,6 +13,7 @@ import pandas as pd
 
 from app.core.async_rate_limiter import RateLimitExceededError, get_limiter
 from app.core.config import settings
+from app.services.upbit_symbol_universe_service import get_active_upbit_markets
 
 logger = logging.getLogger(__name__)
 
@@ -537,8 +538,14 @@ async def fetch_top_traded_coins(fiat: str = "KRW") -> list[dict]:
     """
     지정된 fiat 시장의 모든 코인을 24시간 거래대금 순으로 정렬하여 반환합니다.
     """
-    # 1. 거래 가능한 모든 KRW 마켓 코드를 가져옵니다.
-    market_codes = await fetch_all_market_codes(fiat)
+    normalized_fiat = str(fiat or "KRW").strip().upper()
+    market_codes = await get_active_upbit_markets(fiat=normalized_fiat)
+    if not market_codes:
+        raise ValueError(
+            "upbit_symbol_universe has no active markets for "
+            f"fiat={normalized_fiat}. "
+            "Sync required: uv run python scripts/sync_upbit_symbol_universe.py"
+        )
 
     # 2. 모든 마켓 코드의 현재가 정보를 한 번의 API 호출로 가져옵니다.
     all_tickers_info = await fetch_multiple_tickers(market_codes)

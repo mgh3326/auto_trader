@@ -1,8 +1,9 @@
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services import upbit
+from app.services import upbit, upbit_symbol_universe_service
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +44,7 @@ async def test_request_json_uses_candles_wildcard_limiter_key(monkeypatch):
 
     class DummyLimiter:
         async def acquire(self, blocking_callback=None):
+            _ = blocking_callback
             return None
 
     async def fake_get_limiter(
@@ -208,3 +210,41 @@ async def test_fetch_multiple_current_prices_bypass_cache(monkeypatch):
 
     assert first != second
     assert raw_call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_top_traded_coins_uses_db_universe_markets(monkeypatch):
+    get_active_markets = AsyncMock(return_value=["KRW-BTC", "KRW-ETH"])
+    fetch_tickers = AsyncMock(
+        return_value=[
+            {"market": "KRW-ETH", "acc_trade_price_24h": 10.0},
+            {"market": "KRW-BTC", "acc_trade_price_24h": 30.0},
+        ]
+    )
+
+    monkeypatch.setattr(upbit, "get_active_upbit_markets", get_active_markets)
+    monkeypatch.setattr(upbit, "fetch_multiple_tickers", fetch_tickers)
+
+    result = await upbit.fetch_top_traded_coins("KRW")
+
+    get_active_markets.assert_awaited_once_with(fiat="KRW")
+    fetch_tickers.assert_awaited_once_with(["KRW-BTC", "KRW-ETH"])
+    assert [item["market"] for item in result] == ["KRW-BTC", "KRW-ETH"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_top_traded_coins_fail_fast_when_universe_missing(monkeypatch):
+    get_active_markets = AsyncMock(
+        side_effect=upbit_symbol_universe_service.UpbitSymbolUniverseEmptyError(
+            "upbit_symbol_universe is empty"
+        )
+    )
+    fetch_tickers = AsyncMock(return_value=[])
+
+    monkeypatch.setattr(upbit, "get_active_upbit_markets", get_active_markets)
+    monkeypatch.setattr(upbit, "fetch_multiple_tickers", fetch_tickers)
+
+    with pytest.raises(upbit_symbol_universe_service.UpbitSymbolUniverseEmptyError):
+        await upbit.fetch_top_traded_coins("KRW")
+
+    fetch_tickers.assert_not_awaited()

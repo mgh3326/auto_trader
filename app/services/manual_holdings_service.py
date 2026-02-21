@@ -12,13 +12,23 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.symbol import to_db_symbol
 from app.models.manual_holdings import (
     BrokerAccount,
     ManualHolding,
     MarketType,
 )
+from app.services.upbit_symbol_universe_service import get_active_upbit_markets
+from app.services.us_symbol_universe_service import (
+    USSymbolUniverseLookupError,
+    get_us_exchange_by_symbol,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class ManualHoldingValidationError(ValueError):
+    pass
 
 
 class ManualHoldingsService:
@@ -32,6 +42,46 @@ class ManualHoldingsService:
         """Convert numeric input to Decimal for consistent precision."""
         return Decimal(str(value))
 
+    @staticmethod
+    def _normalize_ticker_for_market(market_type: MarketType, ticker: str) -> str:
+        normalized = str(ticker or "").strip().upper()
+        if market_type == MarketType.US:
+            return to_db_symbol(normalized).upper()
+        if market_type == MarketType.CRYPTO:
+            if "-" in normalized:
+                return normalized
+            return f"KRW-{normalized}"
+        return normalized
+
+    async def _normalize_and_validate_ticker(
+        self,
+        market_type: MarketType,
+        ticker: str,
+    ) -> str:
+        normalized_ticker = self._normalize_ticker_for_market(market_type, ticker)
+        if not normalized_ticker or normalized_ticker == "KRW-":
+            raise ManualHoldingValidationError("ticker is required")
+
+        if market_type == MarketType.US:
+            try:
+                await get_us_exchange_by_symbol(normalized_ticker, db=self.db)
+            except USSymbolUniverseLookupError as exc:
+                raise ManualHoldingValidationError(str(exc)) from exc
+
+        if market_type == MarketType.CRYPTO:
+            active_markets = await get_active_upbit_markets(fiat=None, db=self.db)
+            active_set = {
+                str(market).strip().upper()
+                for market in active_markets
+                if str(market).strip()
+            }
+            if normalized_ticker not in active_set:
+                raise ManualHoldingValidationError(
+                    f"Upbit market '{normalized_ticker}' is not active in upbit_symbol_universe"
+                )
+
+        return normalized_ticker
+
     async def create_holding(
         self,
         broker_account_id: int,
@@ -42,9 +92,12 @@ class ManualHoldingsService:
         display_name: str | None = None,
     ) -> ManualHolding:
         """새 보유 종목 등록"""
+        normalized_ticker = await self._normalize_and_validate_ticker(
+            market_type, ticker
+        )
         holding = ManualHolding(
             broker_account_id=broker_account_id,
-            ticker=ticker.upper(),
+            ticker=normalized_ticker,
             market_type=market_type,
             quantity=self._to_decimal(quantity),
             avg_price=self._to_decimal(avg_price),
@@ -55,7 +108,7 @@ class ManualHoldingsService:
         await self.db.refresh(holding)
         logger.info(
             f"Created manual holding: account_id={broker_account_id}, "
-            f"ticker={ticker}, qty={quantity}"
+            f"ticker={normalized_ticker}, qty={quantity}"
         )
         return holding
 
@@ -110,10 +163,11 @@ class ManualHoldingsService:
         market_type: MarketType,
     ) -> ManualHolding | None:
         """티커로 보유 종목 조회"""
+        normalized_ticker = self._normalize_ticker_for_market(market_type, ticker)
         result = await self.db.execute(
             select(ManualHolding)
             .where(ManualHolding.broker_account_id == broker_account_id)
-            .where(ManualHolding.ticker == ticker.upper())
+            .where(ManualHolding.ticker == normalized_ticker)
             .where(ManualHolding.market_type == market_type)
         )
         return result.scalar_one_or_none()
@@ -125,12 +179,13 @@ class ManualHoldingsService:
         market_type: MarketType,
     ) -> list[ManualHolding]:
         """특정 티커의 모든 계좌 보유 종목 조회"""
+        normalized_ticker = self._normalize_ticker_for_market(market_type, ticker)
         result = await self.db.execute(
             select(ManualHolding)
             .join(BrokerAccount)
             .where(BrokerAccount.user_id == user_id)
             .where(BrokerAccount.is_active.is_(True))
-            .where(ManualHolding.ticker == ticker.upper())
+            .where(ManualHolding.ticker == normalized_ticker)
             .where(ManualHolding.market_type == market_type)
             .options(selectinload(ManualHolding.broker_account))
         )
@@ -179,8 +234,11 @@ class ManualHoldingsService:
         display_name: str | None = None,
     ) -> ManualHolding:
         """보유 종목 등록 또는 업데이트 (upsert)"""
+        normalized_ticker = await self._normalize_and_validate_ticker(
+            market_type, ticker
+        )
         existing = await self.get_holding_by_ticker(
-            broker_account_id, ticker, market_type
+            broker_account_id, normalized_ticker, market_type
         )
 
         if existing:
@@ -192,9 +250,18 @@ class ManualHoldingsService:
             await self.db.refresh(existing)
             return existing
 
-        return await self.create_holding(
-            broker_account_id, ticker, market_type, quantity, avg_price, display_name
+        holding = ManualHolding(
+            broker_account_id=broker_account_id,
+            ticker=normalized_ticker,
+            market_type=market_type,
+            quantity=self._to_decimal(quantity),
+            avg_price=self._to_decimal(avg_price),
+            display_name=display_name,
         )
+        self.db.add(holding)
+        await self.db.commit()
+        await self.db.refresh(holding)
+        return holding
 
     async def bulk_create_holdings(
         self,
@@ -203,9 +270,24 @@ class ManualHoldingsService:
     ) -> list[ManualHolding]:
         """여러 보유 종목 일괄 등록"""
         created = []
+
+        normalized_holdings_data: list[dict[str, Any]] = []
+        for data in holdings_data:
+            market_type = data["market_type"]
+            normalized_ticker = await self._normalize_and_validate_ticker(
+                market_type,
+                data["ticker"],
+            )
+            normalized_holdings_data.append(
+                {
+                    **data,
+                    "ticker": normalized_ticker,
+                }
+            )
+
         try:
             async with self.db.begin_nested():
-                for data in holdings_data:
+                for data in normalized_holdings_data:
                     # upsert_holding 내부에서 commit을 하지 않도록 수정하거나,
                     # 여기서는 별도의 로직을 사용해야 함.
                     # upsert_holding이 commit을 수행하므로, 여기서는 직접 구현하는 것이 안전함.
@@ -227,7 +309,7 @@ class ManualHoldingsService:
                     else:
                         holding = ManualHolding(
                             broker_account_id=broker_account_id,
-                            ticker=ticker.upper(),
+                            ticker=ticker,
                             market_type=market_type,
                             quantity=self._to_decimal(data["quantity"]),
                             avg_price=self._to_decimal(data["avg_price"]),
