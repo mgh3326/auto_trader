@@ -183,7 +183,9 @@ def test_build_tracing_session_uses_chrome_impersonation(
         def __init__(self, **kwargs: Any) -> None:
             captured["kwargs"] = kwargs
 
-    monkeypatch.setattr(yfinance_sentry_module, "SentryTracingCurlSession", _FakeSession)
+    monkeypatch.setattr(
+        yfinance_sentry_module, "SentryTracingCurlSession", _FakeSession
+    )
 
     session = yfinance_sentry_module.build_yfinance_tracing_session()
 

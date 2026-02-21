@@ -134,9 +134,7 @@ def test_protected_route_with_auth(client, mock_session_local, mock_db_session):
         assert response.text == "Protected Content"
 
 
-def test_legacy_deprecated_page_path_bypasses_auth_redirect(
-    client, mock_session_local
-):
+def test_legacy_deprecated_page_path_bypasses_auth_redirect(client, mock_session_local):
     response = client.get("/manual-holdings/", follow_redirects=False)
     assert response.status_code == 410
     assert response.text == "Deprecated page"

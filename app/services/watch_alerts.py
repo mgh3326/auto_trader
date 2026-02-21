@@ -229,7 +229,9 @@ class WatchAlertService:
                     continue
 
                 try:
-                    normalized_condition = self._normalize_condition_type(condition_type)
+                    normalized_condition = self._normalize_condition_type(
+                        condition_type
+                    )
                 except ValueError:
                     logger.warning(
                         "Skipping unsupported condition type: market=%s field=%s",

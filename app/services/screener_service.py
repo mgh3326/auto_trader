@@ -173,6 +173,7 @@ class ScreenerService:
             "returned_count": len(sliced_results),
             "filters_applied": normalized_filters_applied,
         }
+
     def _screening_cache_key(self, filters: dict[str, Any]) -> str:
         serialized = self._compact_json(filters)
         digest = sha256(serialized.encode("utf-8")).hexdigest()
