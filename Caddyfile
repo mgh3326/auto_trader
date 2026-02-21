@@ -86,13 +86,13 @@
 	}
 }
 
-127.0.0.1:18080 {
+http://127.0.0.1:18080 {
 	handle {
 		import /etc/caddy/upstreams/api_active.caddy
 	}
 }
 
-127.0.0.1:18065 {
+http://127.0.0.1:18065 {
 	handle /mcp* {
 		import /etc/caddy/upstreams/mcp_active.caddy
 	}
