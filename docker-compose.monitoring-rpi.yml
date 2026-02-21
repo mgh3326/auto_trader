@@ -16,6 +16,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "127.0.0.1:18080:18080"
+      - "127.0.0.1:18065:18065"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
