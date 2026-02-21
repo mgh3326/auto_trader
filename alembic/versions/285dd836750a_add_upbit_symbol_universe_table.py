@@ -22,10 +22,11 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "upbit_symbol_universe",
-        sa.Column("symbol", sa.String(length=20), nullable=False),
+        sa.Column("market", sa.String(length=20), nullable=False),
+        sa.Column("quote_currency", sa.String(length=10), nullable=False),
+        sa.Column("base_currency", sa.String(length=20), nullable=False),
         sa.Column("korean_name", sa.String(length=100), nullable=False),
         sa.Column("english_name", sa.String(length=100), nullable=False),
-        sa.Column("market", sa.String(length=10), nullable=False),
         sa.Column(
             "market_warning",
             sa.String(length=20),
@@ -50,19 +51,29 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.PrimaryKeyConstraint("symbol", name=op.f("pk_upbit_symbol_universe")),
+        sa.PrimaryKeyConstraint("market", name=op.f("pk_upbit_symbol_universe")),
     )
     op.create_index(
-        "ix_upbit_symbol_universe_market_is_active",
+        "ix_upbit_symbol_universe_quote_is_active",
         "upbit_symbol_universe",
-        ["market", "is_active"],
+        ["quote_currency", "is_active"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_upbit_symbol_universe_base_is_active",
+        "upbit_symbol_universe",
+        ["base_currency", "is_active"],
         unique=False,
     )
 
 
 def downgrade() -> None:
     op.drop_index(
-        "ix_upbit_symbol_universe_market_is_active",
+        "ix_upbit_symbol_universe_base_is_active",
+        table_name="upbit_symbol_universe",
+    )
+    op.drop_index(
+        "ix_upbit_symbol_universe_quote_is_active",
         table_name="upbit_symbol_universe",
     )
     op.drop_table("upbit_symbol_universe")

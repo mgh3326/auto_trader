@@ -565,13 +565,17 @@
 
         function renderWarnings(warnings) {
             warningsList.innerHTML = "";
-            if (!warnings || warnings.length === 0) {
+            const visibleWarnings = Array.isArray(warnings)
+                ? warnings.filter((warning) => !/symbol\s+not\s+tradable/i.test(String(warning || "")))
+                : [];
+
+            if (visibleWarnings.length === 0) {
                 statusMessage.textContent = "정상적으로 조회되었습니다.";
                 return;
             }
 
-            statusMessage.textContent = `일부 소스 조회 경고: ${warnings.length}건`;
-            const grouped = warnings.reduce((acc, warning) => {
+            statusMessage.textContent = `일부 소스 조회 경고: ${visibleWarnings.length}건`;
+            const grouped = visibleWarnings.reduce((acc, warning) => {
                 const text = String(warning || "");
                 const delimiterIndex = text.indexOf(":");
                 const key = (delimiterIndex > 0 ? text.slice(0, delimiterIndex) : text).trim() || "기타";
@@ -583,8 +587,8 @@
                 .map(([cause, count]) => `${escapeHtml(cause)} ${count}건`)
                 .join(", ");
             const detailLimit = 5;
-            const detailWarnings = warnings.slice(0, detailLimit);
-            const omittedCount = warnings.length - detailWarnings.length;
+            const detailWarnings = visibleWarnings.slice(0, detailLimit);
+            const omittedCount = visibleWarnings.length - detailWarnings.length;
 
             const entries = [
                 `<li><strong>원인 요약:</strong> ${summaryText}</li>`,

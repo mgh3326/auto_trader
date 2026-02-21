@@ -110,13 +110,56 @@ class PortfolioOverviewService:
 
         components: list[dict[str, Any]] = []
         warnings: list[str] = []
+        enforce_upbit_universe = True
+
+        try:
+            active_upbit_markets = await get_active_upbit_markets(quote_currency=None)
+        except Exception as exc:
+            logger.warning("Failed to load active Upbit markets: %s", exc)
+            warnings.append(f"Upbit universe lookup failed: {exc}")
+            active_upbit_markets = None
+            enforce_upbit_universe = False
+
+        if active_upbit_markets is not None:
+            active_upbit_markets = {
+                str(market).strip().upper()
+                for market in active_upbit_markets
+                if str(market).strip()
+            }
 
         kis_client = KISClient()
         components.extend(await self._collect_kis_components(kis_client, warnings))
-        components.extend(await self._collect_upbit_components(warnings))
-        components.extend(await self._collect_manual_components(user_id, warnings))
+        components.extend(
+            await self._collect_upbit_components(
+                warnings,
+                active_upbit_markets=active_upbit_markets,
+                enforce_upbit_universe=enforce_upbit_universe,
+            )
+        )
+        components.extend(
+            await self._collect_manual_components(
+                user_id,
+                warnings,
+                active_upbit_markets=active_upbit_markets,
+                enforce_upbit_universe=enforce_upbit_universe,
+            )
+        )
 
-        await self._fill_missing_prices(kis_client, components, warnings)
+        if enforce_upbit_universe and active_upbit_markets is not None:
+            components = [
+                item
+                for item in components
+                if item["market_type"] != _MARKET_CRYPTO
+                or item["symbol"] in active_upbit_markets
+            ]
+
+        await self._fill_missing_prices(
+            kis_client,
+            components,
+            warnings,
+            active_upbit_markets=active_upbit_markets,
+            enforce_upbit_universe=enforce_upbit_universe,
+        )
 
         facets = self._build_account_facets(components)
         filtered_components = self._filter_components(
@@ -250,6 +293,8 @@ class PortfolioOverviewService:
     async def _collect_upbit_components(
         self,
         warnings: list[str],
+        active_upbit_markets: set[str] | None = None,
+        enforce_upbit_universe: bool = True,
     ) -> list[dict[str, Any]]:
         components: list[dict[str, Any]] = []
 
@@ -260,12 +305,16 @@ class PortfolioOverviewService:
             warnings.append(f"Upbit holdings fetch failed: {exc}")
             return components
 
-        tradable_markets = await get_active_upbit_markets(fiat=None)
-        tradable_set = {
-            str(market).strip().upper()
-            for market in tradable_markets
-            if str(market).strip()
-        }
+        tradable_set: set[str] | None = None
+        if enforce_upbit_universe:
+            tradable_set = active_upbit_markets
+            if tradable_set is None:
+                tradable_set = await get_active_upbit_markets(quote_currency=None)
+            tradable_set = {
+                str(market).strip().upper()
+                for market in tradable_set
+                if str(market).strip()
+            }
 
         symbols: list[str] = []
         for coin in coins:
@@ -275,7 +324,7 @@ class PortfolioOverviewService:
 
             unit_currency = str(coin.get("unit_currency") or "KRW").strip().upper()
             symbol = _normalize_symbol(f"{unit_currency}-{currency}", _MARKET_CRYPTO)
-            if symbol not in tradable_set:
+            if tradable_set is not None and symbol not in tradable_set:
                 logger.info("Skipping non-tradable Upbit holding symbol=%s", symbol)
                 continue
             quantity = _to_float(coin.get("balance")) + _to_float(coin.get("locked"))
@@ -308,6 +357,8 @@ class PortfolioOverviewService:
             symbols,
             warnings,
             stage="collect_upbit_components",
+            active_upbit_markets=tradable_set,
+            enforce_upbit_universe=enforce_upbit_universe,
         )
 
         for item in components:
@@ -324,6 +375,8 @@ class PortfolioOverviewService:
         self,
         user_id: int,
         warnings: list[str],
+        active_upbit_markets: set[str] | None = None,
+        enforce_upbit_universe: bool = True,
     ) -> list[dict[str, Any]]:
         try:
             holdings = await self.manual_holdings_service.get_holdings_by_user(user_id)
@@ -333,7 +386,13 @@ class PortfolioOverviewService:
             return []
 
         components: list[dict[str, Any]] = []
-        tradable_crypto_symbols: set[str] | None = None
+        tradable_crypto_symbols = active_upbit_markets
+        if tradable_crypto_symbols is not None:
+            tradable_crypto_symbols = {
+                str(market).strip().upper()
+                for market in tradable_crypto_symbols
+                if str(market).strip()
+            }
         for holding in holdings:
             market_type = _normalize_market_type(getattr(holding, "market_type", None))
             if market_type is None:
@@ -343,12 +402,14 @@ class PortfolioOverviewService:
             if not symbol:
                 continue
 
-            if market_type == _MARKET_CRYPTO:
+            if market_type == _MARKET_CRYPTO and enforce_upbit_universe:
                 if tradable_crypto_symbols is None:
-                    tradable_markets = await get_active_upbit_markets(fiat=None)
+                    tradable_crypto_symbols = await get_active_upbit_markets(
+                        quote_currency=None
+                    )
                     tradable_crypto_symbols = {
                         str(market).strip().upper()
-                        for market in tradable_markets
+                        for market in tradable_crypto_symbols
                         if str(market).strip()
                     }
                 if symbol not in tradable_crypto_symbols:
@@ -401,7 +462,19 @@ class PortfolioOverviewService:
         kis_client: KISClient,
         components: list[dict[str, Any]],
         warnings: list[str],
+        active_upbit_markets: set[str] | None = None,
+        enforce_upbit_universe: bool = True,
     ) -> None:
+        active_upbit_set = (
+            {
+                str(market).strip().upper()
+                for market in active_upbit_markets
+                if str(market).strip()
+            }
+            if active_upbit_markets is not None
+            else None
+        )
+
         kr_symbols = sorted(
             {
                 item["symbol"]
@@ -427,7 +500,13 @@ class PortfolioOverviewService:
                 item["symbol"]
                 for item in components
                 if item["market_type"] == _MARKET_CRYPTO
+                and item.get("source") == "manual"
                 and item["current_price"] is None
+                and (
+                    not enforce_upbit_universe
+                    or active_upbit_set is None
+                    or item["symbol"] in active_upbit_set
+                )
             }
         )
 
@@ -491,6 +570,8 @@ class PortfolioOverviewService:
                 crypto_symbols,
                 warnings,
                 stage="manual_crypto",
+                active_upbit_markets=active_upbit_set,
+                enforce_upbit_universe=enforce_upbit_universe,
             )
             for symbol, price in price_map.items():
                 if price is None:
@@ -502,6 +583,8 @@ class PortfolioOverviewService:
         symbols: list[str],
         warnings: list[str],
         stage: str,
+        active_upbit_markets: set[str] | None = None,
+        enforce_upbit_universe: bool = True,
     ) -> dict[str, float]:
         unique_symbols: list[str] = []
         seen: set[str] = set()
@@ -543,23 +626,28 @@ class PortfolioOverviewService:
             if not symbols_to_recover:
                 return recovered_prices
 
-        tradable_markets = await get_active_upbit_markets(fiat=None)
-        tradable_set = {
-            str(market).strip().upper()
-            for market in tradable_markets
-            if str(market).strip()
-        }
-
         filtered_symbols: list[str] = []
-        for symbol in symbols_to_recover:
-            if symbol in tradable_set:
-                filtered_symbols.append(symbol)
-            else:
-                logger.info(
-                    "Skipping non-tradable Upbit symbol (%s): %s",
-                    stage,
-                    symbol,
-                )
+        if enforce_upbit_universe:
+            tradable_set = active_upbit_markets
+            if tradable_set is None:
+                tradable_set = await get_active_upbit_markets(quote_currency=None)
+            tradable_set = {
+                str(market).strip().upper()
+                for market in tradable_set
+                if str(market).strip()
+            }
+
+            for symbol in symbols_to_recover:
+                if symbol in tradable_set:
+                    filtered_symbols.append(symbol)
+                else:
+                    logger.info(
+                        "Skipping non-tradable Upbit symbol (%s): %s",
+                        stage,
+                        symbol,
+                    )
+        else:
+            filtered_symbols = list(symbols_to_recover)
 
         if not filtered_symbols:
             return recovered_prices

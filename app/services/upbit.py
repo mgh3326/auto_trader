@@ -539,7 +539,9 @@ async def fetch_top_traded_coins(fiat: str = "KRW") -> list[dict]:
     지정된 fiat 시장의 모든 코인을 24시간 거래대금 순으로 정렬하여 반환합니다.
     """
     normalized_fiat = str(fiat or "KRW").strip().upper()
-    market_codes = await get_active_upbit_markets(fiat=normalized_fiat)
+    market_codes = sorted(
+        await get_active_upbit_markets(quote_currency=normalized_fiat)
+    )
     if not market_codes:
         raise ValueError(
             "upbit_symbol_universe has no active markets for "

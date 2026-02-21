@@ -227,7 +227,7 @@ async def test_fetch_top_traded_coins_uses_db_universe_markets(monkeypatch):
 
     result = await upbit.fetch_top_traded_coins("KRW")
 
-    get_active_markets.assert_awaited_once_with(fiat="KRW")
+    get_active_markets.assert_awaited_once_with(quote_currency="KRW")
     fetch_tickers.assert_awaited_once_with(["KRW-BTC", "KRW-ETH"])
     assert [item["market"] for item in result] == ["KRW-BTC", "KRW-ETH"]
 

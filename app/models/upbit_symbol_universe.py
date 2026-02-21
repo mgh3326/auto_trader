@@ -10,16 +10,22 @@ class UpbitSymbolUniverse(Base):
     __tablename__ = "upbit_symbol_universe"
     __table_args__ = (
         Index(
-            "ix_upbit_symbol_universe_market_is_active",
-            "market",
+            "ix_upbit_symbol_universe_quote_is_active",
+            "quote_currency",
+            "is_active",
+        ),
+        Index(
+            "ix_upbit_symbol_universe_base_is_active",
+            "base_currency",
             "is_active",
         ),
     )
 
-    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    market: Mapped[str] = mapped_column(String(20), primary_key=True)
+    quote_currency: Mapped[str] = mapped_column(String(10), nullable=False)
+    base_currency: Mapped[str] = mapped_column(String(20), nullable=False)
     korean_name: Mapped[str] = mapped_column(String(100), nullable=False)
     english_name: Mapped[str] = mapped_column(String(100), nullable=False)
-    market: Mapped[str] = mapped_column(String(10), nullable=False)
     market_warning: Mapped[str] = mapped_column(
         String(20), nullable=False, default="NONE"
     )

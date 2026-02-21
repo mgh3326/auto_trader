@@ -126,7 +126,7 @@ async def test_get_overview_applies_market_and_q_filters() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_overview_includes_deduplicated_warnings() -> None:
+async def test_get_overview_includes_deduplicated_warnings(monkeypatch) -> None:
     service = PortfolioOverviewService(AsyncMock())
 
     async def collect_kis(_kis_client, warnings):
@@ -134,11 +134,22 @@ async def test_get_overview_includes_deduplicated_warnings() -> None:
         warnings.append("KIS warning")
         return []
 
-    async def collect_upbit(warnings):
+    async def collect_upbit(
+        warnings,
+        active_upbit_markets=None,
+        enforce_upbit_universe=True,
+    ):
+        _ = active_upbit_markets, enforce_upbit_universe
         warnings.append("Upbit warning")
         return []
 
-    async def collect_manual(_user_id, warnings):
+    async def collect_manual(
+        _user_id,
+        warnings,
+        active_upbit_markets=None,
+        enforce_upbit_universe=True,
+    ):
+        _ = active_upbit_markets, enforce_upbit_universe
         warnings.append("KIS warning")
         return []
 
@@ -146,6 +157,12 @@ async def test_get_overview_includes_deduplicated_warnings() -> None:
     service._collect_upbit_components = collect_upbit
     service._collect_manual_components = collect_manual
     service._fill_missing_prices = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_active_upbit_markets",
+        AsyncMock(return_value={"KRW-BTC"}),
+    )
 
     overview = await service.get_overview(user_id=1)
     assert overview["warnings"] == ["KIS warning", "Upbit warning"]
@@ -569,6 +586,8 @@ async def test_collect_upbit_components_uses_resilient_fetch_helper(
         ["KRW-BTC"],
         warnings,
         stage="collect_upbit_components",
+        active_upbit_markets={"KRW-BTC"},
+        enforce_upbit_universe=True,
     )
 
 
@@ -606,6 +625,8 @@ async def test_fill_missing_prices_uses_resilient_fetch_helper_for_manual_crypto
         ["KRW-BTC"],
         warnings,
         stage="manual_crypto",
+        active_upbit_markets=None,
+        enforce_upbit_universe=True,
     )
     assert components[0]["current_price"] == 115000000.0
     assert components[0]["evaluation"] == 23000000.0
@@ -655,9 +676,112 @@ async def test_collect_manual_components_filters_non_tradable_crypto_symbols(
 
     components = await service._collect_manual_components(user_id=1, warnings=warnings)
 
-    get_active_markets.assert_awaited_once_with(fiat=None)
+    get_active_markets.assert_awaited_once_with(quote_currency=None)
     assert [item["symbol"] for item in components] == ["KRW-BTC"]
     assert warnings == []
+
+
+@pytest.mark.asyncio
+async def test_fill_missing_prices_manual_crypto_targets_manual_source_only() -> None:
+    service = PortfolioOverviewService(AsyncMock(), us_price_provider=AsyncMock())
+    service._fetch_upbit_prices_resilient = AsyncMock(
+        return_value={"KRW-BTC": 120000000.0}
+    )
+
+    components = [
+        {
+            "market_type": "CRYPTO",
+            "symbol": "KRW-BTC",
+            "name": "KRW-BTC",
+            "account_key": "manual:1",
+            "broker": "manual",
+            "account_name": "manual",
+            "source": "manual",
+            "quantity": 0.2,
+            "avg_price": 100000000.0,
+            "current_price": None,
+            "evaluation": None,
+            "profit_loss": None,
+            "profit_rate": None,
+        },
+        {
+            "market_type": "CRYPTO",
+            "symbol": "KRW-ETH",
+            "name": "KRW-ETH",
+            "account_key": "live:upbit",
+            "broker": "upbit",
+            "account_name": "Upbit",
+            "source": "live",
+            "quantity": 1.0,
+            "avg_price": 4000000.0,
+            "current_price": None,
+            "evaluation": None,
+            "profit_loss": None,
+            "profit_rate": None,
+        },
+    ]
+    warnings: list[str] = []
+
+    await service._fill_missing_prices(AsyncMock(), components, warnings)
+
+    service._fetch_upbit_prices_resilient.assert_awaited_once_with(
+        ["KRW-BTC"],
+        warnings,
+        stage="manual_crypto",
+        active_upbit_markets=None,
+        enforce_upbit_universe=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_overview_keeps_crypto_when_universe_lookup_fails(
+    monkeypatch,
+) -> None:
+    service = PortfolioOverviewService(AsyncMock())
+
+    async def collect_upbit(
+        _warnings,
+        active_upbit_markets=None,
+        enforce_upbit_universe=True,
+    ):
+        assert active_upbit_markets is None
+        assert enforce_upbit_universe is False
+        return [
+            {
+                "market_type": "CRYPTO",
+                "symbol": "KRW-BTC",
+                "name": "KRW-BTC",
+                "account_key": "live:upbit",
+                "broker": "upbit",
+                "account_name": "Upbit 실계좌",
+                "source": "live",
+                "quantity": 0.1,
+                "avg_price": 100000000.0,
+                "current_price": 101000000.0,
+                "evaluation": 10100000.0,
+                "profit_loss": 100000.0,
+                "profit_rate": 0.01,
+            }
+        ]
+
+    service._collect_kis_components = AsyncMock(return_value=[])
+    service._collect_upbit_components = collect_upbit
+    service._collect_manual_components = AsyncMock(return_value=[])
+    service._fill_missing_prices = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_active_upbit_markets",
+        AsyncMock(side_effect=RuntimeError("universe offline")),
+    )
+
+    overview = await service.get_overview(user_id=1)
+
+    assert [item["symbol"] for item in overview["positions"]] == ["KRW-BTC"]
+    assert any(
+        "Upbit universe lookup failed: universe offline" in warning
+        for warning in overview["warnings"]
+    )
 
 
 @pytest.mark.asyncio

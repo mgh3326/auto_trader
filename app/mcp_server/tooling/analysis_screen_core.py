@@ -1116,7 +1116,7 @@ async def _screen_crypto(
 
     warning_markets: set[str] = set()
     try:
-        warning_markets = await get_upbit_warning_markets(fiat="KRW")
+        warning_markets = await get_upbit_warning_markets(quote_currency="KRW")
     except Exception as exc:
         warnings.append(
             "market warning details unavailable; warning filter skipped "

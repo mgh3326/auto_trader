@@ -69,12 +69,7 @@ class ManualHoldingsService:
                 raise ManualHoldingValidationError(str(exc)) from exc
 
         if market_type == MarketType.CRYPTO:
-            active_markets = await get_active_upbit_markets(fiat=None, db=self.db)
-            active_set = {
-                str(market).strip().upper()
-                for market in active_markets
-                if str(market).strip()
-            }
+            active_set = await get_active_upbit_markets(db=self.db)
             if normalized_ticker not in active_set:
                 raise ManualHoldingValidationError(
                     f"Upbit market '{normalized_ticker}' is not active in upbit_symbol_universe"

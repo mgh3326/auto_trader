@@ -80,6 +80,7 @@ def test_portfolio_dashboard_page_renders_screener_style_shell() -> None:
     assert "function escapeHtml(value)" in body
     assert "escapeHtml(item.name)" in body
     assert "escapeHtml(warning)" in body
+    assert "symbol\\s+not\\s+tradable" in body
     assert "const detailLimit = 5;" in body
     assert "원인 요약:" in body
     assert "외 ${omittedCount}건 생략" in body

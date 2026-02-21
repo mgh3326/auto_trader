@@ -309,8 +309,7 @@ async def _fetch_price_map_for_positions(
     if crypto_symbols:
         valid_symbols = list(crypto_symbols)
         try:
-            tradable_markets = await get_active_upbit_markets(fiat=None)
-            tradable_set = {str(market).upper() for market in tradable_markets}
+            tradable_set = await get_active_upbit_markets(quote_currency=None)
             valid_symbols = [
                 symbol for symbol in crypto_symbols if symbol.upper() in tradable_set
             ]

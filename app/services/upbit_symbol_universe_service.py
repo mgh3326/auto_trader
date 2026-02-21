@@ -41,10 +41,11 @@ class UpbitSymbolNameAmbiguousError(UpbitSymbolUniverseLookupError):
 
 @dataclass(frozen=True)
 class _UniverseRow:
-    symbol: str
+    market: str
+    quote_currency: str
+    base_currency: str
     korean_name: str
     english_name: str
-    market: str
     market_warning: str
 
 
@@ -65,10 +66,10 @@ def _normalize_market_warning(value: str) -> str:
     return warning or "NONE"
 
 
-def _split_symbol(symbol: str) -> tuple[str, str] | None:
-    if "-" not in symbol:
+def _split_market(market: str) -> tuple[str, str] | None:
+    if "-" not in market:
         return None
-    quote, base = symbol.split("-", 1)
+    quote, base = market.split("-", 1)
     quote = quote.strip().upper()
     base = base.strip().upper()
     if not quote or not base:
@@ -93,24 +94,25 @@ async def build_upbit_symbol_universe_snapshot() -> dict[str, _UniverseRow]:
     snapshot: dict[str, _UniverseRow] = {}
     skipped = 0
     for item in rows:
-        symbol = _normalize_symbol(item.get("market", ""))
-        split = _split_symbol(symbol)
+        market = _normalize_symbol(item.get("market", ""))
+        split = _split_market(market)
         if split is None:
             skipped += 1
             continue
 
-        market, _ = split
+        quote_currency, base_currency = split
         korean_name = _normalize_name(item.get("korean_name", ""))
         english_name = _normalize_name(item.get("english_name", ""))
         if not korean_name or not english_name:
             skipped += 1
             continue
 
-        snapshot[symbol] = _UniverseRow(
-            symbol=symbol,
+        snapshot[market] = _UniverseRow(
+            market=market,
+            quote_currency=quote_currency,
+            base_currency=base_currency,
             korean_name=korean_name,
             english_name=english_name,
-            market=market,
             market_warning=_normalize_market_warning(
                 item.get("market_warning", "NONE")
             ),
@@ -130,21 +132,22 @@ async def _apply_snapshot(
     snapshot: dict[str, _UniverseRow],
 ) -> dict[str, int]:
     existing_result = await db.execute(select(UpbitSymbolUniverse))
-    existing_rows = {row.symbol: row for row in list(existing_result.scalars().all())}
+    existing_rows = {row.market: row for row in list(existing_result.scalars().all())}
 
     inserted = 0
     updated = 0
     deactivated = 0
 
-    for symbol, row in snapshot.items():
-        existing = existing_rows.get(symbol)
+    for market, row in snapshot.items():
+        existing = existing_rows.get(market)
         if existing is None:
             db.add(
                 UpbitSymbolUniverse(
-                    symbol=row.symbol,
+                    market=row.market,
+                    quote_currency=row.quote_currency,
+                    base_currency=row.base_currency,
                     korean_name=row.korean_name,
                     english_name=row.english_name,
-                    market=row.market,
                     market_warning=row.market_warning,
                     is_active=True,
                 )
@@ -153,14 +156,17 @@ async def _apply_snapshot(
             continue
 
         changed = False
+        if existing.quote_currency != row.quote_currency:
+            existing.quote_currency = row.quote_currency
+            changed = True
+        if existing.base_currency != row.base_currency:
+            existing.base_currency = row.base_currency
+            changed = True
         if existing.korean_name != row.korean_name:
             existing.korean_name = row.korean_name
             changed = True
         if existing.english_name != row.english_name:
             existing.english_name = row.english_name
-            changed = True
-        if existing.market != row.market:
-            existing.market = row.market
             changed = True
         if existing.market_warning != row.market_warning:
             existing.market_warning = row.market_warning
@@ -171,9 +177,9 @@ async def _apply_snapshot(
         if changed:
             updated += 1
 
-    snapshot_symbols = set(snapshot)
-    for symbol, existing in existing_rows.items():
-        if symbol in snapshot_symbols:
+    snapshot_markets = set(snapshot)
+    for market, existing in existing_rows.items():
+        if market in snapshot_markets:
             continue
         if existing.is_active:
             existing.is_active = False
@@ -208,7 +214,7 @@ async def sync_upbit_symbol_universe(db: AsyncSession | None = None) -> dict[str
 
 
 async def _has_any_rows(db: AsyncSession) -> bool:
-    result = await db.execute(select(UpbitSymbolUniverse.symbol).limit(1))
+    result = await db.execute(select(UpbitSymbolUniverse.market).limit(1))
     return result.scalar_one_or_none() is not None
 
 
@@ -220,11 +226,10 @@ def _build_maps(rows: list[UpbitSymbolUniverse]) -> dict[str, dict[str, str]]:
     coin_to_pair: dict[str, str] = {}
 
     for row in rows:
-        split = _split_symbol(row.symbol)
-        if split is None:
+        coin = row.base_currency
+        pair = row.market
+        if not coin or not pair:
             continue
-        _, coin = split
-        pair = row.symbol
 
         pair_to_name_kr[pair] = row.korean_name
         name_to_pair_kr[row.korean_name] = pair
@@ -246,9 +251,9 @@ async def _load_active_krw_rows(db: AsyncSession) -> list[UpbitSymbolUniverse]:
         select(UpbitSymbolUniverse)
         .where(
             UpbitSymbolUniverse.is_active.is_(True),
-            UpbitSymbolUniverse.market == "KRW",
+            UpbitSymbolUniverse.quote_currency == "KRW",
         )
-        .order_by(UpbitSymbolUniverse.symbol.asc())
+        .order_by(UpbitSymbolUniverse.market.asc())
     )
     return list((await db.execute(stmt)).scalars().all())
 
@@ -337,14 +342,14 @@ async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
 
     active_rows = [row for row in rows if row.is_active]
     if not active_rows:
-        symbols = sorted({row.symbol for row in rows})
-        preview = ", ".join(symbols[:10])
+        markets = sorted({row.market for row in rows})
+        preview = ", ".join(markets[:10])
         raise UpbitSymbolInactiveError(
             f"Upbit name '{normalized_name}' is inactive in upbit_symbol_universe. "
             f"matched_symbols=[{preview}]. {_sync_hint()}"
         )
 
-    unique_symbols = sorted({row.symbol for row in active_rows})
+    unique_symbols = sorted({row.market for row in active_rows})
     if len(unique_symbols) > 1:
         preview = ", ".join(unique_symbols[:10])
         raise UpbitSymbolNameAmbiguousError(
@@ -381,12 +386,12 @@ async def _search_upbit_symbols_impl(
         .where(
             UpbitSymbolUniverse.is_active.is_(True),
             or_(
-                UpbitSymbolUniverse.symbol.ilike(pattern),
+                UpbitSymbolUniverse.market.ilike(pattern),
                 UpbitSymbolUniverse.korean_name.ilike(pattern),
                 UpbitSymbolUniverse.english_name.ilike(pattern),
             ),
         )
-        .order_by(UpbitSymbolUniverse.symbol.asc())
+        .order_by(UpbitSymbolUniverse.market.asc())
         .limit(limit)
     )
     rows = list((await db.execute(stmt)).scalars().all())
@@ -398,10 +403,10 @@ async def _search_upbit_symbols_impl(
 
     return [
         {
-            "symbol": row.symbol,
-            "name": row.korean_name or row.english_name or row.symbol,
+            "symbol": row.market,
+            "name": row.korean_name or row.english_name or row.market,
             "instrument_type": "crypto",
-            "exchange": row.market,
+            "exchange": row.quote_currency,
             "is_active": row.is_active,
             "market_warning": row.market_warning,
         }
@@ -424,16 +429,22 @@ async def search_upbit_symbols(
 
 async def _get_active_upbit_markets_impl(
     db: AsyncSession,
-    fiat: str | None,
-) -> list[str]:
-    normalized_fiat = str(fiat or "").strip().upper()
-    stmt = select(UpbitSymbolUniverse.symbol).where(
+    quote_currency: str | None,
+) -> set[str]:
+    normalized_quote_currency = str(quote_currency or "").strip().upper()
+    stmt = select(UpbitSymbolUniverse.market).where(
         UpbitSymbolUniverse.is_active.is_(True)
     )
-    if normalized_fiat:
-        stmt = stmt.where(UpbitSymbolUniverse.market == normalized_fiat)
-    stmt = stmt.order_by(UpbitSymbolUniverse.symbol.asc())
-    markets = list((await db.execute(stmt)).scalars().all())
+    if normalized_quote_currency:
+        stmt = stmt.where(
+            UpbitSymbolUniverse.quote_currency == normalized_quote_currency
+        )
+    stmt = stmt.order_by(UpbitSymbolUniverse.market.asc())
+    markets = {
+        str(market).strip().upper()
+        for market in (await db.execute(stmt)).scalars().all()
+        if str(market).strip()
+    }
 
     if not markets and not await _has_any_rows(db):
         raise UpbitSymbolUniverseEmptyError(
@@ -444,15 +455,17 @@ async def _get_active_upbit_markets_impl(
 
 async def _get_upbit_warning_markets_impl(
     db: AsyncSession,
-    fiat: str | None,
+    quote_currency: str | None,
 ) -> set[str]:
-    normalized_fiat = str(fiat or "").strip().upper()
-    stmt = select(UpbitSymbolUniverse.symbol).where(
+    normalized_quote_currency = str(quote_currency or "").strip().upper()
+    stmt = select(UpbitSymbolUniverse.market).where(
         UpbitSymbolUniverse.is_active.is_(True),
         UpbitSymbolUniverse.market_warning == "CAUTION",
     )
-    if normalized_fiat:
-        stmt = stmt.where(UpbitSymbolUniverse.market == normalized_fiat)
+    if normalized_quote_currency:
+        stmt = stmt.where(
+            UpbitSymbolUniverse.quote_currency == normalized_quote_currency
+        )
     result = await db.execute(stmt)
     warning_markets = {
         str(symbol).strip().upper()
@@ -468,25 +481,35 @@ async def _get_upbit_warning_markets_impl(
 
 
 async def get_active_upbit_markets(
-    fiat: str | None = None,
     db: AsyncSession | None = None,
-) -> list[str]:
+    quote_currency: str | None = None,
+    fiat: str | None = None,
+) -> set[str]:
+    effective_quote_currency = quote_currency if quote_currency is not None else fiat
     if db is not None:
-        return await _get_active_upbit_markets_impl(db, fiat)
+        return await _get_active_upbit_markets_impl(db, effective_quote_currency)
 
     async with AsyncSessionLocal() as session:
-        return await _get_active_upbit_markets_impl(session, fiat)
+        return await _get_active_upbit_markets_impl(
+            session,
+            effective_quote_currency,
+        )
 
 
 async def get_upbit_warning_markets(
-    fiat: str | None = None,
     db: AsyncSession | None = None,
+    quote_currency: str | None = None,
+    fiat: str | None = None,
 ) -> set[str]:
+    effective_quote_currency = quote_currency if quote_currency is not None else fiat
     if db is not None:
-        return await _get_upbit_warning_markets_impl(db, fiat)
+        return await _get_upbit_warning_markets_impl(db, effective_quote_currency)
 
     async with AsyncSessionLocal() as session:
-        return await _get_upbit_warning_markets_impl(session, fiat)
+        return await _get_upbit_warning_markets_impl(
+            session,
+            effective_quote_currency,
+        )
 
 
 class _LazyUpbitDict:

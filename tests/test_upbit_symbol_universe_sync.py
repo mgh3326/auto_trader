@@ -55,7 +55,8 @@ async def test_build_snapshot_skips_invalid_rows(monkeypatch):
     )
 
     assert set(snapshot) == {"KRW-BTC", "KRW-XRP"}
-    assert snapshot["KRW-BTC"].market == "KRW"
+    assert snapshot["KRW-BTC"].quote_currency == "KRW"
+    assert snapshot["KRW-BTC"].base_currency == "BTC"
     assert snapshot["KRW-XRP"].market_warning == "CAUTION"
 
 
@@ -84,7 +85,7 @@ class _FakeResult:
 
 class _FakeSession:
     def __init__(self, rows: list[UpbitSymbolUniverse]):
-        self.rows = {row.symbol: row for row in rows}
+        self.rows = {row.market: row for row in rows}
         self.added: list[UpbitSymbolUniverse] = []
         self.execute_calls = 0
         self.flushed = False
@@ -95,7 +96,7 @@ class _FakeSession:
 
     def add(self, row: UpbitSymbolUniverse):
         self.added.append(row)
-        self.rows[row.symbol] = row
+        self.rows[row.market] = row
 
     async def flush(self):
         self.flushed = True
@@ -105,17 +106,19 @@ class _FakeSession:
 async def test_sync_service_upsert_deactivate_and_idempotent(monkeypatch):
     snapshot = {
         "KRW-BTC": upbit_symbol_universe_service._UniverseRow(
-            symbol="KRW-BTC",
+            market="KRW-BTC",
+            quote_currency="KRW",
+            base_currency="BTC",
             korean_name="비트코인",
             english_name="Bitcoin",
-            market="KRW",
             market_warning="NONE",
         ),
         "KRW-ETH": upbit_symbol_universe_service._UniverseRow(
-            symbol="KRW-ETH",
+            market="KRW-ETH",
+            quote_currency="KRW",
+            base_currency="ETH",
             korean_name="이더리움",
             english_name="Ethereum",
-            market="KRW",
             market_warning="CAUTION",
         ),
     }
@@ -128,18 +131,20 @@ async def test_sync_service_upsert_deactivate_and_idempotent(monkeypatch):
     db = _FakeSession(
         [
             UpbitSymbolUniverse(
-                symbol="KRW-BTC",
+                market="KRW-BTC",
+                quote_currency="KRW",
+                base_currency="BTC",
                 korean_name="OLD",
                 english_name="OLD",
-                market="KRW",
                 market_warning="NONE",
                 is_active=False,
             ),
             UpbitSymbolUniverse(
-                symbol="KRW-OLD",
+                market="KRW-OLD",
+                quote_currency="KRW",
+                base_currency="OLD",
                 korean_name="LEGACY",
                 english_name="LEGACY",
-                market="KRW",
                 market_warning="NONE",
                 is_active=True,
             ),
@@ -302,3 +307,61 @@ async def test_script_main_returns_nonzero_on_exception(monkeypatch):
 
     assert code == 1
     capture_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_active_upbit_markets_supports_legacy_fiat_alias(monkeypatch):
+    db = object()
+    impl = AsyncMock(return_value={"KRW-BTC"})
+    monkeypatch.setattr(
+        upbit_symbol_universe_service,
+        "_get_active_upbit_markets_impl",
+        impl,
+    )
+
+    result = await upbit_symbol_universe_service.get_active_upbit_markets(
+        db=db,
+        fiat="KRW",
+    )
+
+    assert result == {"KRW-BTC"}
+    impl.assert_awaited_once_with(db, "KRW")
+
+
+@pytest.mark.asyncio
+async def test_get_active_upbit_markets_prefers_quote_currency_over_fiat(monkeypatch):
+    db = object()
+    impl = AsyncMock(return_value={"USDT-BTC"})
+    monkeypatch.setattr(
+        upbit_symbol_universe_service,
+        "_get_active_upbit_markets_impl",
+        impl,
+    )
+
+    result = await upbit_symbol_universe_service.get_active_upbit_markets(
+        db=db,
+        quote_currency="USDT",
+        fiat="KRW",
+    )
+
+    assert result == {"USDT-BTC"}
+    impl.assert_awaited_once_with(db, "USDT")
+
+
+@pytest.mark.asyncio
+async def test_get_upbit_warning_markets_supports_legacy_fiat_alias(monkeypatch):
+    db = object()
+    impl = AsyncMock(return_value={"KRW-BTC"})
+    monkeypatch.setattr(
+        upbit_symbol_universe_service,
+        "_get_upbit_warning_markets_impl",
+        impl,
+    )
+
+    result = await upbit_symbol_universe_service.get_upbit_warning_markets(
+        db=db,
+        fiat="KRW",
+    )
+
+    assert result == {"KRW-BTC"}
+    impl.assert_awaited_once_with(db, "KRW")
