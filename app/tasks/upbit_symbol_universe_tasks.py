@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 @broker.task(
     task_name="symbols.upbit.universe.sync",
-    schedule=[{"cron": "15 * * * *", "cron_offset": "Asia/Seoul"}],
+    schedule=[{"cron": "15 6 * * *", "cron_offset": "Asia/Seoul"}],
 )
 async def sync_upbit_symbol_universe_task() -> dict[str, int | str]:
     try:

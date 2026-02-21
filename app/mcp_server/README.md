@@ -64,6 +64,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - Runtime does not call Upbit `/v1/market/all`; that endpoint is sync-path only.
 - If `upbit_symbol_universe` is empty/unavailable, tools fail fast with explicit sync hint.
 - Upbit prerequisite: run `make sync-upbit-symbol-universe` (or `uv run python scripts/sync_upbit_symbol_universe.py`) right after migrations.
+- Scheduled sync task `symbols.upbit.universe.sync` runs daily at `06:15` KST (`cron: 15 6 * * *`, `cron_offset: Asia/Seoul`).
 
 ### `get_indicators` spec
 Parameters:
