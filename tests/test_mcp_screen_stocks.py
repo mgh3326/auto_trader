@@ -505,15 +505,13 @@ def mock_upbit_coins():
 
 @pytest.fixture(autouse=True)
 def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
-    async def mock_fetch_all_market_codes(
-        fiat: str | None = "KRW",
-        include_details: bool = False,
+    async def mock_get_upbit_warning_markets(
+        db=None,
+        quote_currency: str | None = None,
+        fiat: str | None = None,
     ):
-        if include_details:
-            return []
-        if fiat is None:
-            return ["KRW-BTC", "KRW-ETH"]
-        return ["KRW-BTC", "KRW-ETH"]
+        _ = (quote_currency, fiat, db)
+        return set()
 
     async def mock_market_cap_cache_get():
         return {
@@ -532,9 +530,9 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(
-        upbit_service,
-        "fetch_all_market_codes",
-        mock_fetch_all_market_codes,
+        analysis_screen_core,
+        "get_upbit_warning_markets",
+        mock_get_upbit_warning_markets,
     )
     monkeypatch.setattr(
         analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
@@ -974,16 +972,7 @@ class TestScreenStocksCrypto:
                 },
             ]
 
-        async def mock_fetch_all_market_codes(
-            fiat: str | None = "KRW",
-            include_details: bool = False,
-        ):
-            if include_details:
-                return [
-                    {"market": "KRW-BTC", "market_event": {"warning": False}},
-                    {"market": "KRW-ETH", "market_event": {"warning": True}},
-                ]
-            return ["KRW-BTC", "KRW-ETH"]
+        warning_markets_mock = AsyncMock(return_value={"KRW-ETH"})
 
         monkeypatch.setattr(
             upbit_service,
@@ -991,9 +980,9 @@ class TestScreenStocksCrypto:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            upbit_service,
-            "fetch_all_market_codes",
-            mock_fetch_all_market_codes,
+            analysis_screen_core,
+            "get_upbit_warning_markets",
+            warning_markets_mock,
         )
 
         tools = build_tools()
@@ -1011,6 +1000,7 @@ class TestScreenStocksCrypto:
         )
 
         symbols = [item["symbol"] for item in result["results"]]
+        warning_markets_mock.assert_awaited_once_with(quote_currency="KRW")
         assert "KRW-ETH" not in symbols
         assert result["meta"]["filtered_by_warning"] == 1
         assert all(item["market_warning"] is None for item in result["results"])

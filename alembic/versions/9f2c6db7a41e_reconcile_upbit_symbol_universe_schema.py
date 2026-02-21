@@ -106,4 +106,58 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    pass
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    table_name = "upbit_symbol_universe"
+
+    if table_name not in inspector.get_table_names():
+        return
+
+    columns = {column["name"] for column in inspector.get_columns(table_name)}
+    indexes = {index["name"] for index in inspector.get_indexes(table_name)}
+
+    if "ix_upbit_symbol_universe_base_is_active" in indexes:
+        op.drop_index(
+            "ix_upbit_symbol_universe_base_is_active",
+            table_name=table_name,
+        )
+
+    if "ix_upbit_symbol_universe_quote_is_active" in indexes:
+        op.drop_index(
+            "ix_upbit_symbol_universe_quote_is_active",
+            table_name=table_name,
+        )
+
+    is_reconciled_shape = (
+        "market" in columns
+        and "quote_currency" in columns
+        and "base_currency" in columns
+        and "symbol" not in columns
+    )
+
+    if not is_reconciled_shape:
+        return
+
+    op.drop_column(table_name, "base_currency")
+    op.alter_column(
+        table_name,
+        "market",
+        existing_type=sa.String(length=20),
+        new_column_name="symbol",
+    )
+    op.alter_column(
+        table_name,
+        "quote_currency",
+        existing_type=sa.String(length=10),
+        new_column_name="market",
+    )
+
+    inspector = sa.inspect(bind)
+    indexes = {index["name"] for index in inspector.get_indexes(table_name)}
+    if "ix_upbit_symbol_universe_market_is_active" not in indexes:
+        op.create_index(
+            "ix_upbit_symbol_universe_market_is_active",
+            table_name,
+            ["market", "is_active"],
+            unique=False,
+        )

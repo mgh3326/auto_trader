@@ -102,15 +102,13 @@ def _mock_empty_holdings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
-    async def mock_fetch_all_market_codes(
-        fiat: str | None = "KRW",
-        include_details: bool = False,
+    async def mock_get_upbit_warning_markets(
+        db=None,
+        quote_currency: str | None = None,
+        fiat: str | None = None,
     ):
-        if include_details:
-            return []
-        if fiat is None:
-            return ["KRW-BTC", "KRW-ETH", "KRW-XRP"]
-        return ["KRW-BTC", "KRW-ETH", "KRW-XRP"]
+        _ = (quote_currency, fiat, db)
+        return set()
 
     async def mock_market_cap_cache_get():
         return {
@@ -129,9 +127,9 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(
-        upbit_service,
-        "fetch_all_market_codes",
-        mock_fetch_all_market_codes,
+        analysis_screen_core,
+        "get_upbit_warning_markets",
+        mock_get_upbit_warning_markets,
     )
     monkeypatch.setattr(
         analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
@@ -906,14 +904,6 @@ class TestRecommendStocksIntegration:
                 }
             ]
 
-        async def mock_fetch_all_market_codes(
-            fiat: str | None = "KRW",
-            include_details: bool = False,
-        ):
-            if include_details:
-                return []
-            return ["KRW-BTC"]
-
         async def mock_market_cap_cache_get():
             return {
                 "data": {
@@ -932,11 +922,6 @@ class TestRecommendStocksIntegration:
             upbit_service,
             "fetch_top_traded_coins",
             mock_fetch_top_traded_coins,
-        )
-        monkeypatch.setattr(
-            upbit_service,
-            "fetch_all_market_codes",
-            mock_fetch_all_market_codes,
         )
         monkeypatch.setattr(
             analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
