@@ -264,6 +264,61 @@ reload_caddy() {
 }
 
 
+to_https_url() {
+    local url="$1"
+    if [[ "$url" == http://* ]]; then
+        echo "https://${url#http://}"
+    else
+        echo "$url"
+    fi
+}
+
+
+probe_success_with_https_fallback() {
+    local url="$1"
+
+    if curl -fsS "$url" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local https_url
+    https_url="$(to_https_url "$url")"
+    if [ "$https_url" != "$url" ] && curl -kfsS "$https_url" >/dev/null 2>&1; then
+        log_warn "HTTP probe failed, HTTPS fallback succeeded: ${https_url}"
+        return 0
+    fi
+
+    return 1
+}
+
+
+probe_code_with_https_fallback() {
+    local url="$1"
+
+    local code
+    code="$(curl -s -o /dev/null -w '%{http_code}' "$url" || true)"
+    if [[ "$code" =~ ^[0-9]{3}$ ]] && (( code < 500 )); then
+        echo "$code"
+        return 0
+    fi
+
+    local https_url
+    https_url="$(to_https_url "$url")"
+    if [ "$https_url" != "$url" ]; then
+        local https_code
+        https_code="$(curl -ks -o /dev/null -w '%{http_code}' "$https_url" || true)"
+        if [[ "$https_code" =~ ^[0-9]{3}$ ]] && (( https_code < 500 )); then
+            log_warn "HTTP probe failed, HTTPS fallback succeeded: ${https_url} (http ${https_code})"
+            echo "$https_code"
+            return 0
+        fi
+    fi
+
+    echo "$code"
+    return 1
+}
+
+
 wait_for_readyz() {
     local port="$1"
     local timeout="$2"
@@ -369,12 +424,18 @@ assert_post_cutover_health() {
         return 0
     fi
 
-    curl -fsS "${ACTIVE_API_URL}/healthz" >/dev/null
-    curl -fsS "${ACTIVE_API_URL}/readyz" >/dev/null
+    if ! probe_success_with_https_fallback "${ACTIVE_API_URL}/healthz"; then
+        log_error "Active API health check failed: ${ACTIVE_API_URL}/healthz"
+        return 1
+    fi
+
+    if ! probe_success_with_https_fallback "${ACTIVE_API_URL}/readyz"; then
+        log_error "Active API readiness check failed: ${ACTIVE_API_URL}/readyz"
+        return 1
+    fi
 
     local mcp_code
-    mcp_code="$(curl -s -o /dev/null -w '%{http_code}' "${ACTIVE_MCP_URL}" || true)"
-    if ! [[ "$mcp_code" =~ ^[0-9]{3}$ ]] || (( mcp_code >= 500 )); then
+    if ! mcp_code="$(probe_code_with_https_fallback "${ACTIVE_MCP_URL}")"; then
         log_error "Active MCP endpoint unhealthy: ${ACTIVE_MCP_URL} (http ${mcp_code})"
         return 1
     fi
