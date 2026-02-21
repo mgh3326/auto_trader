@@ -23,7 +23,6 @@ services:
       - DOMAIN_NAME=${DOMAIN_NAME}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./caddy/upstreams:/etc/caddy/upstreams:ro
       - caddy_data:/data
       - caddy_config:/config
       - caddy_logs:/data/logs

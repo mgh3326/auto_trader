@@ -1,4 +1,0 @@
-reverse_proxy 127.0.0.1:18650 {
-	header_up Host {host}
-	header_up X-Real-IP {remote_host}
-}

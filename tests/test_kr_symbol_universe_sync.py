@@ -460,10 +460,6 @@ async def test_search_kr_symbols_raises_empty_error_when_table_empty():
 
 @pytest.mark.asyncio
 async def test_task_returns_success_payload(monkeypatch):
-    async def _run_with_task_lock(*, lock_key: str, ttl_seconds: int, coro_factory):
-        del lock_key, ttl_seconds
-        return await coro_factory()
-
     monkeypatch.setattr(
         kr_symbol_universe_tasks,
         "run_kr_symbol_universe_sync",
@@ -477,11 +473,6 @@ async def test_task_returns_success_payload(monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(
-        kr_symbol_universe_tasks,
-        "run_with_task_lock",
-        _run_with_task_lock,
-    )
 
     result = await kr_symbol_universe_tasks.sync_kr_symbol_universe_task()
 
@@ -491,55 +482,16 @@ async def test_task_returns_success_payload(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_task_returns_failure_payload_on_exception(monkeypatch):
-    async def _run_with_task_lock(*, lock_key: str, ttl_seconds: int, coro_factory):
-        del lock_key, ttl_seconds
-        return await coro_factory()
-
     monkeypatch.setattr(
         kr_symbol_universe_tasks,
         "run_kr_symbol_universe_sync",
         AsyncMock(side_effect=RuntimeError("task failure")),
-    )
-    monkeypatch.setattr(
-        kr_symbol_universe_tasks,
-        "run_with_task_lock",
-        _run_with_task_lock,
     )
 
     result = await kr_symbol_universe_tasks.sync_kr_symbol_universe_task()
 
     assert result["status"] == "failed"
     assert "task failure" in str(result["error"])
-
-
-@pytest.mark.asyncio
-async def test_task_returns_skipped_payload_on_lock_contention(monkeypatch):
-    async def _lock_held(*, lock_key: str, ttl_seconds: int, coro_factory):
-        del ttl_seconds, coro_factory
-        return {
-            "status": "skipped",
-            "reason": "lock_held",
-            "lock_key": lock_key,
-        }
-
-    monkeypatch.setattr(
-        kr_symbol_universe_tasks,
-        "run_kr_symbol_universe_sync",
-        AsyncMock(side_effect=AssertionError("task body must not run when lock held")),
-    )
-    monkeypatch.setattr(
-        kr_symbol_universe_tasks,
-        "run_with_task_lock",
-        _lock_held,
-    )
-
-    result = await kr_symbol_universe_tasks.sync_kr_symbol_universe_task()
-
-    assert result == {
-        "status": "skipped",
-        "reason": "lock_held",
-        "lock_key": kr_symbol_universe_tasks.KR_SYMBOL_UNIVERSE_LOCK_KEY,
-    }
 
 
 @pytest.mark.asyncio
