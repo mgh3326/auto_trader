@@ -13,6 +13,7 @@ import httpx
 import redis.asyncio as redis
 
 from app.core.config import settings
+from app.integrations import upbit as upbit_service
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
@@ -22,7 +23,6 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_optional_int as _to_optional_int,
 )
-from app.services import upbit as upbit_service
 from app.services.upbit_symbol_universe_service import get_or_refresh_maps
 
 DEFAULT_BATCH_CRYPTO_SYMBOLS = [

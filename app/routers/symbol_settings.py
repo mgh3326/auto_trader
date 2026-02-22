@@ -308,7 +308,7 @@ async def get_domestic_estimated_costs(
     설정된 국내 주식 종목에 대해 예상 비용을 계산하고,
     기존 미체결 매수 주문 금액을 차감한 순 비용을 반환합니다.
     """
-    from app.services.kis import KISClient
+    from app.integrations.kis import KISClient
 
     user = await get_user_from_request(request, db)
     settings_service = SymbolTradeSettingsService(db)
@@ -410,7 +410,7 @@ async def get_overseas_estimated_costs(
     설정된 해외 주식 종목에 대해 예상 비용을 계산하고,
     기존 미체결 매수 주문 금액을 차감한 순 비용을 반환합니다.
     """
-    from app.services.kis import KISClient
+    from app.integrations.kis import KISClient
 
     user = await get_user_from_request(request, db)
     settings_service = SymbolTradeSettingsService(db)
@@ -597,7 +597,7 @@ async def get_crypto_estimated_costs(
     import logging
 
     from app.analysis.service_analyzers import UpbitAnalyzer
-    from app.services import upbit
+    from app.integrations import upbit
     from app.services import upbit_symbol_universe_service as upbit_pairs
 
     user = await get_user_from_request(request, db)

@@ -8,7 +8,7 @@ from app.analysis.prompt import build_prompt
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.models import PromptResult
-from app.services import upbit
+from app.integrations import upbit
 from app.services import upbit_symbol_universe_service as upbit_pairs
 
 

@@ -8,8 +8,8 @@ from typing import Any
 
 import yfinance as yf
 
+from app.integrations import upbit as upbit_service
 from app.monitoring import build_yfinance_tracing_session
-from app.services import upbit as upbit_service
 
 
 async def get_us_rankings_impl(

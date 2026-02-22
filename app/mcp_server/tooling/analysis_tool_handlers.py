@@ -14,6 +14,7 @@ from typing import Any, Literal
 import httpx
 import yfinance as yf
 
+from app.integrations.kis import KISClient
 from app.mcp_server.tooling.analysis_screen_core import (
     _normalize_asset_type,
     _normalize_screen_market,
@@ -40,7 +41,6 @@ from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
 from app.monitoring import build_yfinance_tracing_session
-from app.services.kis import KISClient
 
 logger = logging.getLogger(__name__)
 

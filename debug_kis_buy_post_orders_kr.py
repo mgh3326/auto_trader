@@ -7,7 +7,7 @@ import asyncio
 
 from app.analysis.service_analyzers import KISAnalyzer
 from app.core.db import AsyncSessionLocal
-from app.services.kis import kis
+from app.integrations.kis import kis
 from app.services.kr_symbol_universe_service import (
     KRSymbolUniverseLookupError,
     get_kr_symbol_by_name,

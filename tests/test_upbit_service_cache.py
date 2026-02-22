@@ -4,7 +4,7 @@ from unittest.mock import ANY, AsyncMock
 import pandas as pd
 import pytest
 
-from app.services import upbit
+from app.integrations import upbit
 from app.services import upbit_ohlcv_cache as upbit_cache
 
 

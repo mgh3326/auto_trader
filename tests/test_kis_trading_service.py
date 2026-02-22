@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.integrations.kis import KISClient
 from app.models.analysis import StockAnalysisResult
-from app.services.kis import KISClient
 from app.services.kis_trading_service import (
     process_kis_domestic_buy_orders_with_analysis,
     process_kis_domestic_sell_orders_with_analysis,

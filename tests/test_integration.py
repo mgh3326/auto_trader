@@ -9,11 +9,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.analysis.analyzer import Analyzer
-from app.main import api
 
 # 테스트를 위해 서비스 및 분석기 임포트
-from app.services import upbit, yahoo
-from app.services.kis import kis as kis_client  # kis 인스턴스를 직접 임포트
+from app.integrations import upbit, yahoo
+from app.integrations.kis import kis as kis_client  # kis 인스턴스를 직접 임포트
+from app.main import api
 
 
 @pytest.mark.integration

@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from app.integrations import upbit as upbit_service
 from app.mcp_server.scoring import (
     calc_composite_score,
     calc_dividend_score,
@@ -26,7 +27,6 @@ from app.mcp_server.tooling import (
     portfolio_holdings,
 )
 from app.mcp_server.tooling.registry import register_all_tools
-from app.services import upbit as upbit_service
 
 
 class DummyMCP:

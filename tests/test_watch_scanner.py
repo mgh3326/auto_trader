@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pandas as pd
 import pytest
 
 from app.jobs.watch_scanner import WatchScanner
@@ -41,20 +41,6 @@ class _FakeOpenClawClient:
     async def send_watch_alert(self, message: str) -> str | None:
         self.messages.append(message)
         return "watch-1" if self._success else None
-
-
-def _make_ohlcv(closes: list[float]) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "date": pd.date_range("2026-01-01", periods=len(closes), freq="D"),
-            "open": closes,
-            "high": closes,
-            "low": closes,
-            "close": closes,
-            "volume": [100.0] * len(closes),
-            "value": [1000.0] * len(closes),
-        }
-    )
 
 
 @pytest.mark.asyncio
@@ -126,35 +112,24 @@ async def test_get_price_and_rsi_use_market_specific_sources(
 
     scanner = WatchScanner()
 
-    mock_kis = AsyncMock()
-    mock_kis.inquire_price.return_value = pd.DataFrame(
-        [{"code": "005930", "close": 55000.0}]
-    ).set_index("code")
-    mock_kis.inquire_daily_itemchartprice.return_value = _make_ohlcv(
-        [1, 2, 3, 4, 5] * 20
-    )
-    scanner._kis = mock_kis
+    async def _quote_side_effect(*, symbol: str, market: str):
+        if market == "equity_kr":
+            return SimpleNamespace(price=55000.0)
+        if market == "equity_us":
+            return SimpleNamespace(price=190.0)
+        if market == "crypto":
+            return SimpleNamespace(price=91000000.0)
+        raise RuntimeError(f"unexpected symbol/market: {symbol}/{market}")
 
-    mock_us_ohlcv = AsyncMock(return_value=_make_ohlcv([1, 2, 3, 4, 5] * 20))
-    mock_us_price = AsyncMock(return_value=pd.DataFrame([{"close": 190.0}]))
-    monkeypatch.setattr(
-        watch_scanner_module.yahoo_service, "fetch_price", mock_us_price
+    mock_get_quote = AsyncMock(side_effect=_quote_side_effect)
+    mock_get_ohlcv = AsyncMock(
+        return_value=[SimpleNamespace(close=float(x)) for x in [1, 2, 3, 4, 5] * 20]
     )
     monkeypatch.setattr(
-        watch_scanner_module.yahoo_service, "fetch_ohlcv", mock_us_ohlcv
-    )
-
-    mock_crypto_price = AsyncMock(return_value=pd.DataFrame([{"close": 91000000.0}]))
-    mock_crypto_ohlcv = AsyncMock(return_value=_make_ohlcv([1, 2, 3, 4, 5] * 20))
-    monkeypatch.setattr(
-        watch_scanner_module.upbit_service,
-        "fetch_price",
-        mock_crypto_price,
+        watch_scanner_module.market_data_service, "get_quote", mock_get_quote
     )
     monkeypatch.setattr(
-        watch_scanner_module.upbit_service,
-        "fetch_ohlcv",
-        mock_crypto_ohlcv,
+        watch_scanner_module.market_data_service, "get_ohlcv", mock_get_ohlcv
     )
 
     assert await scanner._get_price("005930", "kr") == 55000.0
@@ -168,15 +143,27 @@ async def test_get_price_and_rsi_use_market_specific_sources(
     assert us_rsi is not None
     assert crypto_rsi is not None
 
-    mock_kis.inquire_price.assert_awaited_once_with("005930", market="UN")
-    mock_kis.inquire_daily_itemchartprice.assert_awaited_once_with(
-        code="005930",
-        market="UN",
-        n=250,
-        period="D",
+    mock_get_quote.assert_any_await(symbol="005930", market="equity_kr")
+    mock_get_quote.assert_any_await(symbol="AMZN", market="equity_us")
+    mock_get_quote.assert_any_await(symbol="KRW-BTC", market="crypto")
+    mock_get_ohlcv.assert_any_await(
+        symbol="005930",
+        market="equity_kr",
+        period="day",
+        count=250,
     )
-    mock_us_price.assert_awaited_once_with("AMZN")
-    mock_crypto_price.assert_awaited_once_with("KRW-BTC")
+    mock_get_ohlcv.assert_any_await(
+        symbol="AMZN",
+        market="equity_us",
+        period="day",
+        count=250,
+    )
+    mock_get_ohlcv.assert_any_await(
+        symbol="KRW-BTC",
+        market="crypto",
+        period="day",
+        count=200,
+    )
 
 
 @pytest.mark.asyncio
@@ -187,8 +174,8 @@ async def test_get_price_us_raises_when_yahoo_fails(
 
     scanner = WatchScanner()
     monkeypatch.setattr(
-        watch_scanner_module.yahoo_service,
-        "fetch_price",
+        watch_scanner_module.market_data_service,
+        "get_quote",
         AsyncMock(side_effect=RuntimeError("timeout")),
     )
 
@@ -203,10 +190,12 @@ async def test_get_rsi_crypto_uses_supported_ohlcv_count(
     from app.jobs import watch_scanner as watch_scanner_module
 
     scanner = WatchScanner()
-    mock_crypto_ohlcv = AsyncMock(return_value=_make_ohlcv([1, 2, 3, 4, 5] * 20))
+    mock_crypto_ohlcv = AsyncMock(
+        return_value=[SimpleNamespace(close=float(x)) for x in [1, 2, 3, 4, 5] * 20]
+    )
     monkeypatch.setattr(
-        watch_scanner_module.upbit_service,
-        "fetch_ohlcv",
+        watch_scanner_module.market_data_service,
+        "get_ohlcv",
         mock_crypto_ohlcv,
     )
 
@@ -215,4 +204,37 @@ async def test_get_rsi_crypto_uses_supported_ohlcv_count(
     assert rsi is not None
     await_args = mock_crypto_ohlcv.await_args
     assert await_args is not None
-    assert await_args.kwargs["days"] <= 200
+    assert await_args.kwargs["count"] <= 200
+    assert await_args.kwargs["market"] == "crypto"
+    assert await_args.kwargs["symbol"] == "KRW-BTC"
+
+
+@pytest.mark.asyncio
+async def test_watch_scanner_uses_market_data_domain_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.jobs import watch_scanner as watch_scanner_module
+
+    scanner = WatchScanner()
+    domain_get_quote = AsyncMock(return_value=SimpleNamespace(price=91000000.0))
+    domain_get_ohlcv = AsyncMock(
+        return_value=[SimpleNamespace(close=float(x)) for x in [1, 2, 3, 4, 5] * 20]
+    )
+
+    monkeypatch.setattr(
+        watch_scanner_module,
+        "market_data_service",
+        SimpleNamespace(get_quote=domain_get_quote, get_ohlcv=domain_get_ohlcv),
+        raising=False,
+    )
+
+    assert await scanner._get_price("BTC", "crypto") == 91000000.0
+    assert await scanner._get_rsi("BTC", "crypto") is not None
+
+    domain_get_quote.assert_awaited_once_with(symbol="KRW-BTC", market="crypto")
+    domain_get_ohlcv.assert_awaited_once_with(
+        symbol="KRW-BTC",
+        market="crypto",
+        period="day",
+        count=200,
+    )

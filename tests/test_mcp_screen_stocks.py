@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.core.async_rate_limiter import RateLimitExceededError
+from app.integrations import upbit as upbit_service
 from app.mcp_server.tooling import analysis_screen_core
 from app.mcp_server.tooling.registry import register_all_tools
 from app.services import naver_finance
-from app.services import upbit as upbit_service
 
 
 class DummyMCP:

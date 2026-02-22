@@ -12,6 +12,7 @@ from app.core.symbol import to_db_symbol
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.models.manual_holdings import MarketType
+from app.services.domain_errors import DomainServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,7 @@ def error_payload(
     query: str | None = None,
     suggestion: str | None = None,
     details: str | None = None,
+    error_type: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"error": message, "source": source}
     if symbol is not None:
@@ -251,7 +253,32 @@ def error_payload(
         payload["suggestion"] = suggestion
     if details is not None:
         payload["details"] = details
+    if error_type is not None:
+        payload["error_type"] = error_type
     return payload
+
+
+def error_payload_from_exception(
+    *,
+    source: str,
+    exc: Exception,
+    symbol: str | None = None,
+    instrument_type: str | None = None,
+    query: str | None = None,
+    suggestion: str | None = None,
+) -> dict[str, Any]:
+    domain_error_type = (
+        exc.__class__.__name__ if isinstance(exc, DomainServiceError) else None
+    )
+    return error_payload(
+        source=source,
+        message=str(exc),
+        symbol=symbol,
+        instrument_type=instrument_type,
+        query=query,
+        suggestion=suggestion,
+        error_type=domain_error_type,
+    )
 
 
 # ---------------------------------------------------------------------------

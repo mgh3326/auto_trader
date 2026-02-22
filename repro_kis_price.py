@@ -6,10 +6,11 @@ import sys
 # Add project root to path
 sys.path.append(os.getcwd())
 
-from app.services.kis import KISClient
+from app.integrations.kis import KISClient
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+
 
 async def main():
     kis = KISClient()
@@ -27,6 +28,7 @@ async def main():
 
     except Exception as e:
         print(f"Error: {e}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -16,6 +16,9 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.integrations import upbit as upbit_service
+from app.integrations import yahoo as yahoo_service
+from app.integrations.kis import KISClient
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
     _compute_crypto_realtime_rsi_from_frame,
@@ -24,6 +27,9 @@ from app.mcp_server.tooling.market_data_indicators import (
 )
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
+)
+from app.mcp_server.tooling.shared import (
+    error_payload_from_exception as _error_payload_from_exception,
 )
 from app.mcp_server.tooling.shared import (
     normalize_market as _normalize_market,
@@ -39,9 +45,6 @@ from app.mcp_server.tooling.shared import (
 )
 from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.services import kis_ohlcv_cache
-from app.services import upbit as upbit_service
-from app.services import yahoo as yahoo_service
-from app.services.kis import KISClient
 from app.services.kr_symbol_universe_service import search_kr_symbols
 from app.services.upbit_symbol_universe_service import get_or_refresh_maps
 from app.services.us_symbol_universe_service import search_us_symbols
@@ -542,9 +545,9 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                 return await _fetch_quote_crypto(symbol)
             return await _fetch_quote_equity_kr(symbol)
         except Exception as exc:
-            return _error_payload(
+            return _error_payload_from_exception(
                 source=source,
-                message=str(exc),
+                exc=exc,
                 symbol=symbol,
                 instrument_type=market_type,
             )
@@ -600,9 +603,9 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                 )
             return await _fetch_ohlcv_equity_us(symbol, count, period, parsed_end_date)
         except Exception as exc:
-            return _error_payload(
+            return _error_payload_from_exception(
                 source=source,
-                message=str(exc),
+                exc=exc,
                 symbol=symbol,
                 instrument_type=market_type,
             )
@@ -695,9 +698,9 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             }
 
         except Exception as exc:
-            return _error_payload(
+            return _error_payload_from_exception(
                 source=source,
-                message=str(exc),
+                exc=exc,
                 symbol=symbol,
                 instrument_type=market_type,
             )

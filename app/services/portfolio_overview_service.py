@@ -8,10 +8,10 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
+from app.integrations import upbit as upbit_service
+from app.integrations import yahoo as yahoo_service
+from app.integrations.kis import KISClient
 from app.models.manual_holdings import MarketType
-from app.services import upbit as upbit_service
-from app.services import yahoo as yahoo_service
-from app.services.kis import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.upbit_symbol_universe_service import get_active_upbit_markets
 from app.services.us_symbol_universe_service import (

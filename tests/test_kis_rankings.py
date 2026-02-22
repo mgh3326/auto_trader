@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.services.kis import (
+from app.integrations.kis import (
     FLUCTUATION_RANK_TR,
     FLUCTUATION_RANK_URL,
     FOREIGN_BUYING_RANK_TR,

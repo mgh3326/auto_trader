@@ -17,6 +17,7 @@ from app.analysis.service_analyzers import UpbitAnalyzer
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.templates import templates
+from app.integrations import upbit
 from app.jobs.analyze import (
     execute_buy_order_for_coin_task,
     execute_buy_orders_task,
@@ -26,7 +27,6 @@ from app.jobs.analyze import (
     run_analysis_for_my_coins,
     run_per_coin_automation_task,
 )
-from app.services import upbit
 from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.stock_info_service import (
     StockAnalysisService,

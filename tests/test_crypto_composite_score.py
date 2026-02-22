@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from app.integrations import upbit as upbit_service
 from app.mcp_server.tooling import analysis_screen_core
 from app.mcp_server.tooling.analysis_crypto_score import (
     BEARISH_NORMAL,
@@ -24,7 +25,6 @@ from app.mcp_server.tooling.analysis_crypto_score import (
 )
 from app.mcp_server.tooling.market_data_indicators import _calculate_adx
 from app.mcp_server.tooling.registry import register_all_tools
-from app.services import upbit as upbit_service
 
 
 class DummyMCP:

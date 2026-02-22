@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services import upbit, upbit_symbol_universe_service
+from app.integrations import upbit
+from app.services import upbit_symbol_universe_service
 
 
 @pytest.fixture(autouse=True)

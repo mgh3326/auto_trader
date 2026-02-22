@@ -8,9 +8,7 @@ import pandas as pd
 from pandas import Timestamp
 
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi
-from app.services import upbit as upbit_service
-from app.services import yahoo as yahoo_service
-from app.services.kis import KISClient
+from app.services import market_data as market_data_service
 from app.services.openclaw_client import OpenClawClient
 from app.services.watch_alerts import WatchAlertService
 
@@ -22,7 +20,6 @@ class WatchScanner:
     def __init__(self) -> None:
         self._watch_service = WatchAlertService()
         self._openclaw = OpenClawClient()
-        self._kis = KISClient()
 
     @staticmethod
     @lru_cache(maxsize=2)
@@ -85,17 +82,24 @@ class WatchScanner:
 
     async def _get_price(self, symbol: str, market: str) -> float | None:
         if market == "crypto":
-            frame = await upbit_service.fetch_price(
-                self._normalize_crypto_symbol(symbol)
+            quote = await market_data_service.get_quote(
+                symbol=self._normalize_crypto_symbol(symbol),
+                market="crypto",
             )
-            return self._extract_close(frame)
+            return self._to_float(getattr(quote, "price", None))
         if market == "kr":
-            frame = await self._kis.inquire_price(symbol, market="UN")
-            return self._extract_close(frame)
+            quote = await market_data_service.get_quote(
+                symbol=symbol,
+                market="equity_kr",
+            )
+            return self._to_float(getattr(quote, "price", None))
         if market == "us":
             normalized_symbol = str(symbol or "").strip().upper()
-            frame = await yahoo_service.fetch_price(normalized_symbol)
-            price = self._extract_close(frame)
+            quote = await market_data_service.get_quote(
+                symbol=normalized_symbol,
+                market="equity_us",
+            )
+            price = self._to_float(getattr(quote, "price", None))
             if price is None:
                 raise ValueError(
                     f"US watch price fetch failed for {normalized_symbol}: invalid close"
@@ -104,33 +108,46 @@ class WatchScanner:
         return None
 
     async def _get_rsi(self, symbol: str, market: str) -> float | None:
-        frame: pd.DataFrame
         if market == "crypto":
-            frame = await upbit_service.fetch_ohlcv(
-                market=self._normalize_crypto_symbol(symbol),
-                days=_CRYPTO_RSI_LOOKBACK_DAYS,
-                period="day",
-            )
+            symbol_for_query = self._normalize_crypto_symbol(symbol)
+            market_for_query = "crypto"
+            count = _CRYPTO_RSI_LOOKBACK_DAYS
         elif market == "kr":
-            frame = await self._kis.inquire_daily_itemchartprice(
-                code=symbol,
-                market="UN",
-                n=250,
-                period="D",
-            )
+            symbol_for_query = symbol
+            market_for_query = "equity_kr"
+            count = 250
         elif market == "us":
-            frame = await yahoo_service.fetch_ohlcv(
-                ticker=symbol,
-                days=250,
-                period="day",
-            )
+            symbol_for_query = symbol
+            market_for_query = "equity_us"
+            count = 250
         else:
             return None
 
-        if frame.empty or "close" not in frame.columns:
+        candles = await market_data_service.get_ohlcv(
+            symbol=symbol_for_query,
+            market=market_for_query,
+            period="day",
+            count=count,
+        )
+
+        if not candles:
             return None
 
-        close = pd.to_numeric(frame["close"], errors="coerce").dropna()
+        close_values: list[float] = []
+        for candle in candles:
+            if isinstance(candle, dict):
+                close_raw = candle.get("close")
+            else:
+                close_raw = getattr(candle, "close", None)
+            close_value = self._to_float(close_raw)
+            if close_value is None:
+                continue
+            close_values.append(close_value)
+
+        if not close_values:
+            return None
+
+        close = pd.Series(close_values, dtype="float64").dropna()
         if close.empty:
             return None
 

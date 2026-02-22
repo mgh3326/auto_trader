@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from app.integrations import upbit as upbit_service
+from app.integrations.kis import KISClient
 from app.mcp_server.tooling import order_execution as _order_execution
 from app.mcp_server.tooling.orders_modify_cancel import (
     _extract_kis_order_number,
@@ -21,8 +23,6 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
-from app.services import upbit as upbit_service
-from app.services.kis import KISClient
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 _calculate_date_range = _order_execution._calculate_date_range
