@@ -149,12 +149,12 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         limit: int = 20,
     ) -> dict:
         return await screen_stocks_impl(
-            market=market,  # type: ignore[arg-type]
-            asset_type=asset_type,  # type: ignore[arg-type]
+            market=market,
+            asset_type=asset_type,
             category=category,
             strategy=strategy,
-            sort_by=sort_by,  # type: ignore[arg-type]
-            sort_order=sort_order,  # type: ignore[arg-type]
+            sort_by=sort_by,
+            sort_order=sort_order,
             min_market_cap=min_market_cap,
             max_per=max_per,
             max_pbr=max_pbr,

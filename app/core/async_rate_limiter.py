@@ -183,13 +183,16 @@ class AsyncSlidingWindowRateLimiter:
             - avg_wait_time: Average wait time per throttled request
             - current_window_count: Requests in current sliding window
         """
+        request_denominator = max(self._total_requests, 1)
         throttle_rate = (
-            (self._throttled_requests / self._total_requests * 100)
+            (self._throttled_requests / request_denominator) * 100
             if self._total_requests > 0
             else 0.0
         )
+
+        throttled_denominator = max(self._throttled_requests, 1)
         avg_wait_time = (
-            self._total_wait_time / self._throttled_requests
+            self._total_wait_time / throttled_denominator
             if self._throttled_requests > 0
             else 0.0
         )

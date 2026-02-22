@@ -46,7 +46,7 @@ auto_trader/
 ## CONVENTIONS
 - Toolchain source of truth is `pyproject.toml`, `Makefile`, and CI workflows.
 - Runtime baseline is Python 3.13+; dependency and command execution use `uv`.
-- Formatting/lint/type checks are Ruff + Pyright.
+- Formatting/lint/type checks are Ruff + ty.
 - Test suite uses strict pytest markers/config (`slow`, `integration`, `unit`) with `--cov-fail-under=50`.
 - Keep task declarations in `app/tasks/`; job orchestration stays in `app/jobs/`.
 - Keep MCP behavior changes synchronized with `app/mcp_server/README.md` and tests.

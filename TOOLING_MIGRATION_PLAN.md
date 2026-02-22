@@ -1,397 +1,108 @@
-# Tooling Migration Plan: Ruff + Pyright
+# Tooling Migration Plan: Ruff + ty
 
 ## Overview
 
-현재 분산된 린팅/포맷팅 도구들을 Ruff와 Pyright로 통합하여 단순화하고, CI에 누락된 lint 검사를 추가합니다.
+Python 코드 품질 게이트를 `Ruff + ty`로 단일화한다.
 
-### 현재 상태
-| 도구 | 용도 | 설정 위치 |
-|------|------|-----------|
-| black | 포맷터 | pyproject.toml |
-| isort | import 정렬 | pyproject.toml |
-| flake8 | 린터 | Makefile 인라인 |
-| mypy | 타입 체킹 | Makefile 인라인 |
+- 전환 방식: 기존 타입체커 제거 후 `ty` 즉시 치환 (병행 운영 없음)
+- 타입체킹 범위: `app/` 유지
+- CI 정책: 타입체킹 경고/오류 모두 PR 차단 (`--error-on-warning`)
+- 문서 정책:
+  - 갱신 대상: `README.md`, `TOOLING_MIGRATION_PLAN.md`, `AGENTS.md`, `CLAUDE.md`
+  - 기록 보존: `docs/plans/*`, `blog/*`
 
-### 목표 상태
-| 도구 | 용도 | 설정 위치 |
-|------|------|-----------|
-| Ruff | 린터 + 포맷터 | pyproject.toml |
-| Pyright | 타입 체킹 | pyproject.toml |
+## Locked Decisions
 
----
+- 타입체커: `ty`
+- 의존성 정책: `ty>=0.0.18,<0.1.0`
+- Python 버전 기준: 3.13
+- 엄격도: 기본 모드 (전역 strict 미적용)
+- 설정 파일: `pyproject.toml`
+- 규칙 기본값: `all = "warn"` (규칙 심각도는 warn으로 두되, 게이트는 `--error-on-warning`로 차단)
 
-## Phase 1: Ruff 도입
+## Applied Contract Changes
 
-### 1.1 작업 목록
+### 1) Developer commands
 
-- [x] Ruff 의존성 추가 (`uv add --group dev ruff`)
-- [x] pyproject.toml에 `[tool.ruff]` 설정 추가
-- [x] Makefile에 `lint-ruff`, `format-ruff` 명령어 추가 (기존 명령어 유지)
-- [x] 기존 도구와 Ruff 결과 비교 테스트
-- [x] 기존 lint 에러 수정 또는 ignore 설정
+- `make lint`
+  - 변경 전: 기존 타입체커 호출
+  - 변경 후: `uv run ty check app/ --error-on-warning`
+- `make typecheck`
+  - 변경 전: 기존 타입체커 호출
+  - 변경 후: `uv run ty check app/ --error-on-warning`
 
-### 1.2 pyproject.toml 설정
+### 2) CI commands
 
-```toml
-[tool.ruff]
-target-version = "py314"
-line-length = 88
-exclude = [
-    ".venv",
-    "alembic/versions",
-    "__pycache__",
-]
+- GitHub Actions (`.github/workflows/test.yml`)
+  - 기존 타입체커 스텝 -> `Run ty`
+  - 기존 타입체커 명령 -> `uv run ty check app/ --error-on-warning`
+- CircleCI (`.circleci/config.yml`)
+  - 기존 타입체커 스텝 -> `Run ty type checker`
+  - 기존 타입체커 명령 -> `uv run ty check app/ --error-on-warning`
 
-[tool.ruff.lint]
-select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # Pyflakes
-    "I",      # isort
-    "B",      # flake8-bugbear
-    "C4",     # flake8-comprehensions
-    "UP",     # pyupgrade
-    "ARG",    # flake8-unused-arguments
-    "SIM",    # flake8-simplify
-]
-ignore = [
-    "E203",   # Whitespace before ':' (black 호환)
-    "E501",   # Line too long (formatter가 처리)
-    "W503",   # Line break before binary operator
-]
+### 3) Type checker configuration
 
-[tool.ruff.lint.isort]
-known-first-party = ["app"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
-line-ending = "auto"
-```
-
-### 1.3 Makefile 변경 (병행 기간)
-
-```makefile
-# 기존 명령어 유지 (Phase 4에서 제거)
-lint: ## Run linting checks (legacy)
-	uv run flake8 app/ tests/ --max-line-length=88 --extend-ignore=E203,W503
-	uv run black --check app/ tests/
-	uv run isort --check-only app/ tests/
-	uv run mypy app/ --ignore-missing-imports
-
-format: ## Format code (legacy)
-	uv run black app/ tests/
-	uv run isort app/ tests/
-
-# 새 명령어 추가
-lint-ruff: ## Run Ruff linting
-	uv run ruff check app/ tests/
-
-format-ruff: ## Format with Ruff
-	uv run ruff format app/ tests/
-	uv run ruff check --fix app/ tests/
-
-lint-all: ## Run all linters (comparison)
-	@echo "=== Ruff ===" && uv run ruff check app/ tests/ || true
-	@echo "=== Legacy ===" && $(MAKE) lint || true
-```
-
-### 1.4 롤백 방법
-
-```bash
-# Ruff 제거
-uv remove --group dev ruff
-
-# pyproject.toml에서 [tool.ruff] 섹션 삭제
-# Makefile에서 *-ruff 명령어 삭제
-```
-
----
-
-## Phase 2: Pyright 도입
-
-### 2.1 작업 목록
-
-- [x] Pyright 의존성 추가 (`uv add --group dev pyright`)
-- [x] pyproject.toml에 `[tool.pyright]` 설정 추가
-- [x] Makefile에 `typecheck-pyright` 명령어 추가
-- [x] 기존 mypy와 Pyright 결과 비교 테스트
-- [x] 타입 에러 수정 또는 ignore 설정
-
-### 2.2 pyproject.toml 설정
+- `pyproject.toml`
+  - dev group dependency
+    - 제거: 기존 타입체커 의존성
+    - 추가: `ty>=0.0.18,<0.1.0`
+  - 설정 블록
+    - 제거: 기존 타입체커 설정 블록
+    - 추가:
 
 ```toml
-[tool.pyright]
-pythonVersion = "3.14"
-pythonPlatform = "All"
-typeCheckingMode = "basic"  # "off" | "basic" | "standard" | "strict" | "all"
+[tool.ty.environment]
+python-version = "3.13"
 
+[tool.ty.src]
 include = ["app"]
-exclude = [
-    "**/__pycache__",
-    ".venv",
-    "alembic",
-    "tests",
-    "data",
-]
 
-# 점진적 마이그레이션을 위한 설정
-reportMissingImports = "warning"
-reportMissingTypeStubs = false
-reportUnknownMemberType = false
-reportUnknownParameterType = false
-reportUnknownVariableType = false
-reportUnknownArgumentType = false
+[tool.ty.rules]
+all = "warn"
 ```
 
-### 2.3 Makefile 변경 (병행 기간)
+## Why `[tool.ty.src]` (not `[[tool.ty.src]]`)
 
-```makefile
-# 기존 mypy 명령어 유지
-typecheck: ## Run mypy (legacy)
-	uv run mypy app/ --ignore-missing-imports
+`ty` 공식 설정 스키마에서 `src`는 단일 테이블(`tool.ty.src`)이다.
 
-# 새 명령어 추가
-typecheck-pyright: ## Run Pyright
-	uv run pyright app/
+- 참조: `https://docs.astral.sh/ty/reference/configuration/#src`
 
-typecheck-all: ## Run all type checkers (comparison)
-	@echo "=== Pyright ===" && uv run pyright app/ || true
-	@echo "=== mypy ===" && uv run mypy app/ --ignore-missing-imports || true
-```
+따라서 본 저장소는 공식 스키마를 기준으로 `[tool.ty.src]`를 사용한다.
 
-### 2.4 롤백 방법
+## Verification Checklist
+
+아래 명령을 모두 통과해야 전환 완료로 간주한다.
 
 ```bash
-# Pyright 제거
-uv remove --group dev pyright
-
-# pyproject.toml에서 [tool.pyright] 섹션 삭제
-# Makefile에서 *-pyright 명령어 삭제
+uv run ruff check app/ tests/
+uv run ruff format --check app/ tests/
+uv run ty check app/ --error-on-warning
+make lint
+make typecheck
+rg -n "\bpyright\b|\[tool\.pyright\]" --glob '!docs/plans/**' --glob '!blog/**' --glob '!TOOLING_MIGRATION_PLAN.md'
 ```
 
----
+## Expected Residual References
 
-## Phase 3: CI 개선
+아래 경로의 과거 타입체커 문자열은 기록 보존 목적이므로 허용한다.
 
-### 3.1 작업 목록
+- `docs/plans/*`
+- `blog/*`
 
-- [x] `.github/workflows/test.yml`에 lint job 추가
-- [x] Ruff + Pyright를 CI에서 실행
-- [x] lint 실패 시 PR 차단 설정
+그 외 경로에서는 과거 타입체커 문자열 잔존을 허용하지 않는다.
 
-### 3.2 test.yml 변경사항
+## Rollback
 
-```yaml
-name: Test
+즉시 복구가 필요할 경우:
 
-on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main, develop ]
+1. `pyproject.toml`에서 `ty` 제거, 기존 타입체커 복원
+2. `Makefile`/CI 스텝을 기존 타입체커 명령으로 복원
+3. `uv lock` 재생성
+4. `make lint && make typecheck`로 복구 확인
 
-jobs:
-  # 새로 추가되는 lint job
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
+## References
 
-    - name: Set up Python 3.14
-      uses: actions/setup-python@v6
-      with:
-        python-version: "3.14"
-
-    - name: Install UV
-      run: pip install uv
-
-    - name: Install dependencies
-      run: uv sync --group dev
-
-    - name: Run Ruff linter
-      run: uv run ruff check app/ tests/
-
-    - name: Run Ruff formatter check
-      run: uv run ruff format --check app/ tests/
-
-    - name: Run Pyright
-      run: uv run pyright app/
-
-  test:
-    needs: lint  # lint 통과 후 테스트 실행
-    runs-on: ubuntu-latest
-    # ... 기존 test job 내용 유지 ...
-
-  security:
-    runs-on: ubuntu-latest
-    # ... 기존 security job 내용 유지 ...
-```
-
-### 3.3 롤백 방법
-
-```yaml
-# lint job 삭제
-# test job에서 needs: lint 제거
-```
-
----
-
-## Phase 4: 정리
-
-### 4.1 작업 목록
-
-- [x] 기존 도구 의존성 제거 (black, isort, flake8, mypy)
-- [x] pyproject.toml에서 기존 설정 제거
-- [x] Makefile 명령어 통합 (legacy 제거)
-- [x] 문서 업데이트 (CLAUDE.md, README.md)
-
-### 4.2 의존성 제거
-
-```bash
-uv remove --group dev black isort flake8 mypy
-```
-
-### 4.3 pyproject.toml 정리
-
-**제거할 섹션:**
-```toml
-# 삭제
-[tool.black]
-line-length = 88
-
-# 삭제
-[tool.isort]
-profile = "black"
-line_length = 88
-```
-
-**최종 dev 의존성:**
-```toml
-[dependency-groups]
-dev = [
-    "ruff>=0.8.0",
-    "pyright>=1.1.390",
-    "bandit>=1.7.0,<2.0.0",
-    "safety>=3.7.0,<3.8.0",
-    "playwright>=1.56.0",
-]
-```
-
-### 4.4 Makefile 최종 버전
-
-```makefile
-.PHONY: help install install-dev test lint format typecheck security clean dev
-
-help: ## Show this help message
-	@echo "Available commands:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
-
-install: ## Install production dependencies
-	uv sync
-
-install-dev: ## Install development dependencies
-	uv sync --all-groups
-
-test: ## Run all tests
-	uv run pytest tests/ -v
-
-test-unit: ## Run unit tests only
-	uv run pytest tests/ -v -m "not integration"
-
-test-integration: ## Run integration tests only
-	uv run pytest tests/ -v -m "integration"
-
-test-cov: ## Run tests with coverage report
-	uv run pytest tests/ -v --cov=app --cov-report=html --cov-report=term-missing
-
-test-fast: ## Run tests without coverage (faster)
-	uv run pytest tests/ -v --no-cov
-
-lint: ## Run linting checks (Ruff + Pyright)
-	uv run ruff check app/ tests/
-	uv run ruff format --check app/ tests/
-	uv run pyright app/
-
-format: ## Format code with Ruff
-	uv run ruff format app/ tests/
-	uv run ruff check --fix app/ tests/
-
-typecheck: ## Run type checking with Pyright
-	uv run pyright app/
-
-security: ## Run security checks
-	uv run bandit -r app/
-	uv run safety check
-
-clean: ## Clean up generated files
-	find . -type d -name "__pycache__" -exec rm -rf {} +
-	find . -type f -name "*.pyc" -delete
-	find . -type f -name "*.pyo" -delete
-	find . -type f -name ".coverage" -delete
-	find . -type d -name "htmlcov" -exec rm -rf {} +
-	find . -type d -name ".pytest_cache" -exec rm -rf {} +
-	find . -type d -name ".ruff_cache" -exec rm -rf {} +
-
-dev: ## Start development server
-	uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-### 4.5 CLAUDE.md 업데이트 내용
-
-```markdown
-### 코드 품질
-\`\`\`bash
-make lint                         # Ruff + Pyright 검사
-make format                       # Ruff로 코드 포맷팅
-make typecheck                    # Pyright 타입 체킹
-make security                     # bandit, safety 보안 검사
-\`\`\`
-```
-
-### 4.6 롤백 방법 (전체)
-
-Phase 1-4 전체 롤백이 필요한 경우:
-
-```bash
-# 1. 기존 도구 재설치
-uv add --group dev "black>=25.11.0,<25.12.0" "flake8>=7.3.0,<7.4.0" "isort>=7.0.0,<7.1.0" "mypy>=1.5.0,<2.0.0"
-
-# 2. Ruff, Pyright 제거
-uv remove --group dev ruff pyright
-
-# 3. Git으로 설정 파일 복원
-git checkout HEAD -- pyproject.toml Makefile .github/workflows/test.yml
-```
-
----
-
-## 마이그레이션 체크리스트
-
-### Phase 1 완료 기준
-- [x] `make lint-ruff` 성공
-- [x] `make format-ruff` 성공
-- [x] 기존 `make lint` 대비 동등하거나 더 나은 검출
-
-### Phase 2 완료 기준
-- [x] `make typecheck-pyright` 성공 (warning 허용)
-- [x] 주요 타입 에러 없음
-
-### Phase 3 완료 기준
-- [x] CI lint job 추가됨
-- [x] PR에서 lint 실패 시 머지 차단
-
-### Phase 4 완료 기준
-- [x] 기존 도구 완전 제거
-- [x] `make lint && make format` 정상 동작
-- [x] CI 정상 동작
-- [x] 문서 업데이트 완료
-
----
-
-## 참고 자료
-
-- [Ruff Documentation](https://docs.astral.sh/ruff/)
-- [Pyright Documentation](https://microsoft.github.io/pyright/)
-- [ty - Pyright 후속 타입 체커](https://github.com/astral-sh/ty) (향후 전환 대비)
+- ty docs: `https://docs.astral.sh/ty/`
+- ty config: `https://docs.astral.sh/ty/reference/configuration/`
+- ty CLI: `https://docs.astral.sh/ty/reference/cli/`
+- ty release 0.0.18: `https://github.com/astral-sh/ty/releases/tag/0.0.18`

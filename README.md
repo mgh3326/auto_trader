@@ -288,7 +288,7 @@ tests/
 
 GitHub Actions를 통해 자동으로 다음을 실행합니다:
 
-- **린팅**: Ruff 린터 + 포맷터, Pyright 타입 체커
+- **린팅**: Ruff 린터 + 포맷터, ty 타입 체커
 - **테스트**: Python 3.13에서 테스트 실행 (lint 통과 후)
 - **보안**: bandit, safety 검사
 - **커버리지**: 테스트 커버리지 리포트 생성

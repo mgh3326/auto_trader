@@ -28,17 +28,17 @@ test-fast: ## Run tests without coverage (faster)
 test-watch: ## Run tests in watch mode
 	uv run pytest tests/ -v -f
 
-lint: ## Run linting checks (Ruff + Pyright)
+lint: ## Run linting checks (Ruff + ty)
 	uv run ruff check app/ tests/
 	uv run ruff format --check app/ tests/
-	uv run pyright app/
+	uv run ty check app/ --error-on-warning
 
 format: ## Format code with Ruff
 	uv run ruff format app/ tests/
 	uv run ruff check --fix app/ tests/
 
-typecheck: ## Run Pyright type checking
-	uv run pyright app/
+typecheck: ## Run ty type checking
+	uv run ty check app/ --error-on-warning
 
 security: ## Run security checks
 	uv run bandit -r app/

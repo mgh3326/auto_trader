@@ -60,9 +60,9 @@ uv run pytest tests/test_*.py -v -k "test_name"  # 특정 테스트만
 
 ### 코드 품질
 ```bash
-make lint                         # Ruff + Pyright 검사
+make lint                         # Ruff + ty 검사
 make format                       # Ruff로 코드 포맷팅
-make typecheck                    # Pyright 타입 체킹
+make typecheck                    # ty 타입 체킹
 make security                     # bandit, safety 보안 검사
 ```
 
