@@ -78,8 +78,8 @@ jobs:
           name: Run Ruff formatter check
           command: uv run ruff format --check app/ tests/
       - run:
-          name: Run Pyright type checker
-          command: uv run pyright app/
+          name: Run ty type checker
+          command: uv run ty check app/
 
   test:
     executor: test-executor

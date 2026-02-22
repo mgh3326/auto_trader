@@ -39,8 +39,8 @@ jobs:
     - name: Run Ruff formatter check
       run: uv run ruff format --check app/ tests/
 
-    - name: Run Pyright
-      run: uv run pyright app/
+    - name: Run ty
+      run: uv run ty check app/
 
   test:
     needs: lint

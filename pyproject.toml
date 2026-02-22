@@ -59,7 +59,7 @@ dev = [
     "safety>=3.7.0,<3.8.0",
     "playwright>=1.56.0",
     "ruff>=0.14.10",
-    "pyright>=1.1.407",
+    "ty>=0.0.18,<0.1.0",
 ]
 
 [tool.pytest.ini_options]
@@ -154,33 +154,11 @@ indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
 
-[tool.pyright]
-pythonVersion = "3.13"
-pythonPlatform = "All"
-typeCheckingMode = "basic"
+[tool.ty.environment]
+python-version = "3.13"
 
+[tool.ty.src]
 include = ["app"]
-exclude = [
-    "**/__pycache__",
-    ".venv",
-    "alembic",
-    "tests",
-    "data",
-]
 
-# Gradual migration settings
-reportMissingImports = "warning"
-reportMissingTypeStubs = false
-reportUnknownMemberType = false
-reportUnknownParameterType = false
-reportUnknownVariableType = false
-reportUnknownArgumentType = false
-
-# Relaxed settings for gradual adoption
-reportAttributeAccessIssue = false  # ta library has no type stubs
-reportGeneralTypeIssues = false     # SQLAlchemy async session issues
-reportArgumentType = false          # dict.get() returns Unknown | None
-reportCallIssue = false             # Pydantic Field overloads
-reportOptionalOperand = false       # Optional arithmetic
-reportIndexIssue = false            # StockAnalysisResponse indexing
-reportInvalidTypeForm = false       # Type form issues
+[tool.ty.rules]
+all = "warn"
