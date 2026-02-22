@@ -12,8 +12,8 @@ from typing import Any
 import httpx
 import redis.asyncio as redis
 
+import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
-from app.integrations import upbit as upbit_service
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )

@@ -8,9 +8,7 @@ from google import genai
 from app.analysis.analyzer import DataProcessor
 from app.analysis.prompt import build_prompt
 from app.core.config import settings
-from app.services import kis
-
-
+import app.services.brokers.kis.client as kis
 async def main():
     print("=" * 80)
     print("KIS API로 삼성전자 분석 시작")

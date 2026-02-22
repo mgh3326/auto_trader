@@ -6,11 +6,11 @@ from typing import Any
 import pandas as pd
 
 from app.core.async_rate_limiter import RateLimitExceededError
-from app.integrations.kis import KISClient
-from app.integrations.upbit import fetch_multiple_current_prices
-from app.integrations.upbit import fetch_ohlcv as fetch_upbit_ohlcv
-from app.integrations.yahoo import fetch_fast_info
-from app.integrations.yahoo import fetch_ohlcv as fetch_yahoo_ohlcv
+from app.services.brokers.kis.client import KISClient
+from app.services.brokers.upbit.client import fetch_multiple_current_prices
+from app.services.brokers.upbit.client import fetch_ohlcv as fetch_upbit_ohlcv
+from app.services.brokers.yahoo.client import fetch_fast_info
+from app.services.brokers.yahoo.client import fetch_ohlcv as fetch_yahoo_ohlcv
 from app.services.domain_errors import (
     RateLimitError,
     SymbolNotFoundError,

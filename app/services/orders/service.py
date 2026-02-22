@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from app.core.async_rate_limiter import RateLimitExceededError
-from app.integrations.kis import KISClient
-from app.integrations.upbit import (
+from app.services.brokers.kis.client import KISClient
+from app.services.brokers.upbit.client import (
     cancel_and_reorder,
     cancel_orders,
     place_buy_order,

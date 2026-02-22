@@ -28,9 +28,9 @@ def test_env():
 def mock_external_services():
     """Mock external service calls for testing."""
     with (
-        patch("app.services.upbit.httpx.AsyncClient") as mock_upbit,
-        patch("app.services.yahoo.yfinance.Ticker") as mock_yahoo,
-        patch("app.services.kis.httpx.AsyncClient") as mock_kis,
+        patch("app.services.brokers.upbit.client.httpx.AsyncClient") as mock_upbit,
+        patch("app.services.brokers.yahoo.client.yfinance.Ticker") as mock_yahoo,
+        patch("app.services.brokers.kis.client.httpx.AsyncClient") as mock_kis,
     ):
         yield {"upbit": mock_upbit, "yahoo": mock_yahoo, "kis": mock_kis}
 

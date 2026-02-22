@@ -10,16 +10,16 @@ import httpx
 import pandas as pd
 import pytest
 
-from app.integrations import upbit as upbit_service_module
-from app.integrations.upbit import fetch_ohlcv, fetch_price
+import app.services.brokers.upbit.client as upbit_service_module
 from app.services import stock_info_service
+from app.services.brokers.upbit.client import fetch_ohlcv, fetch_price
 
 
 class TestUpbitService:
     """Test Upbit service functionality."""
 
     @pytest.mark.asyncio
-    @patch("app.services.upbit._request_json")
+    @patch("app.services.brokers.upbit.client._request_json")
     async def test_fetch_ohlcv(self, mock_request):
         """Test fetching OHLCV data."""
         # Mock response
@@ -49,7 +49,7 @@ class TestUpbitService:
         assert "value" in result.columns
 
     @pytest.mark.asyncio
-    @patch("app.services.upbit._request_json")
+    @patch("app.services.brokers.upbit.client._request_json")
     async def test_fetch_ohlcv_4h_uses_minutes_240(self, mock_request):
         mock_request.return_value = []
 
@@ -61,7 +61,7 @@ class TestUpbitService:
         assert called_params["count"] == 200
 
     @pytest.mark.asyncio
-    @patch("app.services.upbit._request_json")
+    @patch("app.services.brokers.upbit.client._request_json")
     async def test_fetch_price(self, mock_request):
         """Test fetching current price."""
         # Mock response
@@ -92,7 +92,7 @@ class TestUpbitService:
         assert "value" in result.columns
 
     @pytest.mark.asyncio
-    @patch("app.services.upbit._request_json")
+    @patch("app.services.brokers.upbit.client._request_json")
     async def test_fetch_ohlcv_raw_keeps_current_upbit_mapping(self, mock_request):
         mock_request.return_value = [
             {
@@ -173,7 +173,7 @@ class TestKISService:
     """Test KIS service functionality."""
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_kis_client_initialization(self, mock_client_class):
         """Test KIS client initialization."""
         # Mock client
@@ -181,7 +181,7 @@ class TestKISService:
         mock_client_class.return_value = mock_client
 
         # Import and test the actual class
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
 
@@ -189,7 +189,7 @@ class TestKISService:
         assert hasattr(client, "_hdr_base")
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_kis_volume_rank(self, mock_client_class):
         """Test KIS volume rank functionality."""
         # Mock client
@@ -217,7 +217,7 @@ class TestKISService:
         mock_client_class.return_value.__aexit__.return_value = None
 
         # Import and test the actual function
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
 
@@ -229,7 +229,7 @@ class TestKISService:
             assert len(result) > 0
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_fetch_my_stocks_inqr_dvsn_domestic(self, mock_client_class):
         """Verify INQR_DVSN is set to '00' for domestic stock queries."""
         # Setup mock client and response
@@ -253,7 +253,7 @@ class TestKISService:
         mock_client_class.return_value.__aexit__.return_value = None
 
         # Import and test the actual function
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
 
@@ -282,7 +282,7 @@ class TestKISService:
             assert headers["tr_id"] == "TTTC8434R"
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_inquire_domestic_cash_balance_success(
         self, mock_client_class, monkeypatch
     ):
@@ -303,10 +303,10 @@ class TestKISService:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
         monkeypatch.setattr(
-            "app.integrations.kis.settings.kis_account_no", "12345678-01", raising=False
+            "app.services.brokers.kis.client.settings.kis_account_no", "12345678-01", raising=False
         )
 
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
         with patch.object(client, "_ensure_token"):
@@ -323,7 +323,7 @@ class TestKISService:
         assert headers["tr_id"] == "TTTC8434R"
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_inquire_domestic_cash_balance_fallback_ord_psbl_cash(
         self, mock_client_class, monkeypatch
     ):
@@ -344,10 +344,10 @@ class TestKISService:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
         monkeypatch.setattr(
-            "app.integrations.kis.settings.kis_account_no", "12345678-01", raising=False
+            "app.services.brokers.kis.client.settings.kis_account_no", "12345678-01", raising=False
         )
 
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
         with patch.object(client, "_ensure_token"):
@@ -357,7 +357,7 @@ class TestKISService:
         assert result["stck_cash_ord_psbl_amt"] == 950000.0
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_inquire_domestic_cash_balance_api_error_raises(
         self, mock_client_class, monkeypatch
     ):
@@ -374,10 +374,10 @@ class TestKISService:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
         monkeypatch.setattr(
-            "app.integrations.kis.settings.kis_account_no", "12345678-01", raising=False
+            "app.services.brokers.kis.client.settings.kis_account_no", "12345678-01", raising=False
         )
 
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
         with patch.object(client, "_ensure_token"):
@@ -385,7 +385,7 @@ class TestKISService:
                 await client.inquire_domestic_cash_balance(is_mock=False)
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_inquire_overseas_margin_parses_extended_orderable_fields(
         self, mock_client_class, monkeypatch
     ):
@@ -413,10 +413,10 @@ class TestKISService:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
         monkeypatch.setattr(
-            "app.integrations.kis.settings.kis_account_no", "12345678-01", raising=False
+            "app.services.brokers.kis.client.settings.kis_account_no", "12345678-01", raising=False
         )
 
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
         with patch.object(client, "_ensure_token"):
@@ -431,7 +431,7 @@ class TestKISService:
         assert result[0]["itgr_ord_psbl_amt"] == 5824.27
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_inquire_overseas_margin_safe_float_handles_blank_values(
         self, mock_client_class, monkeypatch
     ):
@@ -459,10 +459,10 @@ class TestKISService:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
         monkeypatch.setattr(
-            "app.integrations.kis.settings.kis_account_no", "12345678-01", raising=False
+            "app.services.brokers.kis.client.settings.kis_account_no", "12345678-01", raising=False
         )
 
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
         with patch.object(client, "_ensure_token"):
@@ -479,16 +479,16 @@ class TestYahooService:
     """Test Yahoo Finance service functionality."""
 
     @pytest.mark.asyncio
-    @patch("app.integrations.yahoo.yf.download")
+    @patch("app.services.brokers.yahoo.client.yf.download")
     async def test_fetch_ohlcv(self, mock_download, monkeypatch):
         """Test fetching OHLCV data from Yahoo Finance."""
         tracing_session = object()
         monkeypatch.setattr(
-            "app.integrations.yahoo.build_yfinance_tracing_session",
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
             lambda: tracing_session,
         )
         monkeypatch.setattr(
-            "app.integrations.yahoo.settings.yahoo_ohlcv_cache_enabled",
+            "app.services.brokers.yahoo.client.settings.yahoo_ohlcv_cache_enabled",
             False,
             raising=False,
         )
@@ -506,7 +506,7 @@ class TestYahooService:
         mock_download.return_value = mock_df
 
         # Import and test the actual function
-        from app.integrations.yahoo import fetch_ohlcv
+        from app.services.brokers.yahoo.client import fetch_ohlcv
 
         result = await fetch_ohlcv("AAPL", days=3)
 
@@ -518,17 +518,17 @@ class TestYahooService:
         assert mock_download.call_args.kwargs["session"] is tracing_session
 
     @pytest.mark.asyncio
-    @patch("app.integrations.yahoo.yf.download")
+    @patch("app.services.brokers.yahoo.client.yf.download")
     async def test_fetch_ohlcv_period_1h_uses_60m_interval(
         self, mock_download, monkeypatch
     ):
         tracing_session = object()
         monkeypatch.setattr(
-            "app.integrations.yahoo.build_yfinance_tracing_session",
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
             lambda: tracing_session,
         )
         monkeypatch.setattr(
-            "app.integrations.yahoo.settings.yahoo_ohlcv_cache_enabled",
+            "app.services.brokers.yahoo.client.settings.yahoo_ohlcv_cache_enabled",
             False,
             raising=False,
         )
@@ -542,7 +542,7 @@ class TestYahooService:
             }
         )
 
-        from app.integrations.yahoo import fetch_ohlcv
+        from app.services.brokers.yahoo.client import fetch_ohlcv
 
         result = await fetch_ohlcv("AAPL", days=2, period="1h")
 
@@ -550,12 +550,12 @@ class TestYahooService:
         assert mock_download.call_args.kwargs["interval"] == "60m"
 
     @pytest.mark.asyncio
-    @patch("app.integrations.yahoo.yf.Ticker")
+    @patch("app.services.brokers.yahoo.client.yf.Ticker")
     async def test_fetch_price(self, mock_ticker_class, monkeypatch):
         """Test fetching current price from Yahoo Finance."""
         tracing_session = object()
         monkeypatch.setattr(
-            "app.integrations.yahoo.build_yfinance_tracing_session",
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
             lambda: tracing_session,
         )
 
@@ -569,7 +569,7 @@ class TestYahooService:
         mock_ticker_class.return_value = mock_ticker
 
         # Import and test the actual function
-        from app.integrations.yahoo import fetch_price
+        from app.services.brokers.yahoo.client import fetch_price
 
         result = await fetch_price("AAPL")
 
@@ -583,8 +583,7 @@ class TestYahooService:
 
     @pytest.mark.asyncio
     async def test_fetch_price_offloads_blocking_call_to_thread(self, monkeypatch):
-        from app.integrations import yahoo
-
+        import app.services.brokers.yahoo.client as yahoo
         expected = pd.DataFrame([{"close": 123.45}]).set_index(
             pd.Index(["AAPL"], name="code")
         )
@@ -602,11 +601,11 @@ class TestYahooService:
         assert result is expected
 
     @pytest.mark.asyncio
-    @patch("app.integrations.yahoo.yf.Ticker")
+    @patch("app.services.brokers.yahoo.client.yf.Ticker")
     async def test_fetch_fundamental_info(self, mock_ticker_class, monkeypatch):
         tracing_session = object()
         monkeypatch.setattr(
-            "app.integrations.yahoo.build_yfinance_tracing_session",
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
             lambda: tracing_session,
         )
 
@@ -620,7 +619,7 @@ class TestYahooService:
         }
         mock_ticker_class.return_value = mock_ticker
 
-        from app.integrations.yahoo import fetch_fundamental_info
+        from app.services.brokers.yahoo.client import fetch_fundamental_info
 
         result = await fetch_fundamental_info("AAPL")
 
@@ -667,7 +666,7 @@ class TestStockInfoServiceGuard:
         from app.core.config import settings
 
         monkeypatch.setattr(
-            "app.services.upbit.check_krw_balance_sufficient",
+            "app.services.brokers.upbit.client.check_krw_balance_sufficient",
             fake_check,
         )
         monkeypatch.setattr(
@@ -751,12 +750,12 @@ class TestKISIntegratedMarginParams:
     """Test KIS 통합증거금 요청 파라미터 검증 (OPSQ2001 방지)."""
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_params_includes_cma_field(
         self, mock_settings, mock_client_class
     ):
-        from app.integrations.kis import (
+        from app.services.brokers.kis.client import (
             INTEGRATED_MARGIN_TR,
             INTEGRATED_MARGIN_URL,
             KISClient,
@@ -802,12 +801,12 @@ class TestKISIntegratedMarginParams:
         assert INTEGRATED_MARGIN_URL in call_args.args[0]
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_opsq2001_retry_with_y(
         self, mock_settings, mock_client_class
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_app_key = "test_key"
@@ -857,12 +856,12 @@ class TestKISIntegratedMarginParams:
         assert result["stck_itgr_cash100_ord_psbl_amt"] == 800000.0
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_missing_domestic_fields_defaults_zero(
         self, mock_settings, mock_client_class
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_app_key = "test_key"
@@ -894,7 +893,7 @@ class TestKISIntegratedMarginParams:
         assert result["stck_itgr_cash100_ord_psbl_amt"] == 0.0
 
     def test_extract_domestic_cash_summary_from_integrated_margin(self):
-        from app.integrations.kis import (
+        from app.services.brokers.kis.client import (
             extract_domestic_cash_summary_from_integrated_margin,
         )
 
@@ -918,15 +917,15 @@ class TestKISFailureLogging:
     """Test KIS API 실패 로깅 검증."""
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_domestic_cash_balance_logs_failure_details(
         self, mock_settings, mock_client_class, caplog
     ):
         """inquire_domestic_cash_balance 실패 시 endpoint, tr_id, 실제 key 이름 로깅."""
         import logging
 
-        from app.integrations.kis import BALANCE_TR, BALANCE_URL, KISClient
+        from app.services.brokers.kis.client import BALANCE_TR, BALANCE_URL, KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_app_key = "test_key"
@@ -964,14 +963,14 @@ class TestKISFailureLogging:
         assert "ACNT_PRDT_CD" in error_log
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_logs_failure_details(
         self, mock_settings, mock_client_class, caplog
     ):
         import logging
 
-        from app.integrations.kis import (
+        from app.services.brokers.kis.client import (
             INTEGRATED_MARGIN_TR,
             INTEGRATED_MARGIN_URL,
             KISClient,
@@ -1015,12 +1014,12 @@ class TestKISFailureLogging:
         assert "OTHER_ERROR" in error_log
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_msg1_none_no_typeerror(
         self, mock_settings, mock_client_class
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_app_key = "test_key"
@@ -1049,14 +1048,14 @@ class TestKISFailureLogging:
         assert "OPSQ2001" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_opsq2001_cma_warning_logged(
         self, mock_settings, mock_client_class, caplog
     ):
         import logging
 
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_app_key = "test_key"
@@ -1098,15 +1097,15 @@ class TestKISFailureLogging:
         assert result["dnca_tot_amt"] == 500000.0
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_order_korea_stock_logs_failure_details(
         self, mock_settings, mock_client_class, caplog
     ):
         """order_korea_stock 실패 시 endpoint, tr_id, request_keys 로깅."""
         import logging
 
-        from app.integrations.kis import KOREA_ORDER_URL, KISClient
+        from app.services.brokers.kis.client import KOREA_ORDER_URL, KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_app_key = "test_key"
@@ -1161,8 +1160,8 @@ class TestKISFailureLogging:
             ("sell", True, "VTTC0011U"),
         ],
     )
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_order_korea_stock_uses_new_tr_and_sor(
         self,
         mock_settings,
@@ -1171,7 +1170,7 @@ class TestKISFailureLogging:
         is_mock,
         expected_tr_id,
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_app_key = "test_key"
@@ -1219,8 +1218,8 @@ class TestKISFailureLogging:
             (True, "VTTC0013U"),
         ],
     )
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_cancel_korea_order_uses_new_tr_sor_and_explicit_orgno(
         self,
         mock_settings,
@@ -1228,7 +1227,7 @@ class TestKISFailureLogging:
         is_mock,
         expected_tr_id,
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_app_key = "test_key"
@@ -1280,8 +1279,8 @@ class TestKISFailureLogging:
             (True, "VTTC0013U"),
         ],
     )
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_modify_korea_order_uses_new_tr_sor_and_resolved_orgno(
         self,
         mock_settings,
@@ -1289,7 +1288,7 @@ class TestKISFailureLogging:
         is_mock,
         expected_tr_id,
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_app_key = "test_key"
@@ -1341,14 +1340,14 @@ class TestKISFailureLogging:
         assert body["RVSE_CNCL_DVSN_CD"] == "01"
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_cancel_korea_order_raises_when_orgno_resolution_fails(
         self,
         mock_settings,
         mock_client_class,
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_app_key = "test_key"
@@ -1389,12 +1388,12 @@ class TestKISFailureLogging:
 
 class TestKISOverseasDailyPrice:
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_overseas_daily_price_parses_output2(
         self, mock_settings, mock_client_class
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_access_token = "test_token"
@@ -1449,12 +1448,12 @@ class TestKISOverseasDailyPrice:
         assert params["SYMB"] == "AAPL"
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.httpx.AsyncClient")
-    @patch("app.integrations.kis.settings")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_overseas_daily_price_retries_on_expired_token(
         self, mock_settings, mock_client_class
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_settings.kis_account_no = "1234567890"
         mock_settings.kis_access_token = "test_token"
@@ -1502,7 +1501,7 @@ class TestKISOverseasDailyPrice:
 
 @pytest.mark.asyncio
 async def test_kis_inquire_time_dailychartprice_parses_rows(monkeypatch):
-    from app.integrations.kis import KISClient
+    from app.services.brokers.kis.client import KISClient
 
     client = KISClient()
     monkeypatch.setattr(client, "_ensure_token", AsyncMock())
@@ -1552,7 +1551,7 @@ async def test_kis_inquire_time_dailychartprice_parses_rows(monkeypatch):
 async def test_kis_inquire_time_dailychartprice_uses_end_time_when_provided(
     monkeypatch,
 ):
-    from app.integrations.kis import KISClient
+    from app.services.brokers.kis.client import KISClient
 
     client = KISClient()
     monkeypatch.setattr(client, "_ensure_token", AsyncMock())
@@ -1580,7 +1579,7 @@ async def test_kis_inquire_time_dailychartprice_uses_end_time_when_provided(
 
 
 def test_aggregate_to_hourly_keeps_partial_bucket():
-    from app.integrations.kis import KISClient
+    from app.services.brokers.kis.client import KISClient
 
     df = pd.DataFrame(
         {
@@ -1609,8 +1608,8 @@ class TestKISRequestWithRateLimit:
             ("POST", None, {"foo": "bar"}, "post"),
         ],
     )
-    @patch("app.integrations.kis.get_limiter")
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.get_limiter")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_request_with_rate_limit_passes_timeout_keyword(
         self,
         mock_client_class,
@@ -1621,7 +1620,7 @@ class TestKISRequestWithRateLimit:
         expected_call,
     ):
         """_request_with_rate_limit calls httpx with explicit timeout keyword."""
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         timeout_value = 7.5
         mock_limiter = AsyncMock()
@@ -1663,14 +1662,14 @@ class TestKISRequestWithRateLimit:
         assert request_call.await_args.kwargs["timeout"] == timeout_value
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.get_limiter")
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.get_limiter")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_request_with_rate_limit_returns_json_body_on_http_500(
         self,
         mock_client_class,
         mock_get_limiter,
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_limiter = AsyncMock()
         mock_get_limiter.return_value = mock_limiter
@@ -1704,14 +1703,14 @@ class TestKISRequestWithRateLimit:
         mock_response.raise_for_status.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("app.integrations.kis.get_limiter")
-    @patch("app.integrations.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.get_limiter")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_request_with_rate_limit_raises_http_error_on_http_500_non_json(
         self,
         mock_client_class,
         mock_get_limiter,
     ):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         mock_limiter = AsyncMock()
         mock_get_limiter.return_value = mock_limiter
@@ -1750,7 +1749,7 @@ class TestKISRequestWithRateLimit:
 class TestKISInquireOrderbook:
     @pytest.mark.asyncio
     async def test_inquire_orderbook_returns_output1_payload(self):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
         client._ensure_token = AsyncMock(return_value=None)
@@ -1766,7 +1765,7 @@ class TestKISInquireOrderbook:
 
     @pytest.mark.asyncio
     async def test_inquire_orderbook_fallbacks_to_output_payload(self):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
         client._ensure_token = AsyncMock(return_value=None)
@@ -1782,7 +1781,7 @@ class TestKISInquireOrderbook:
 
     @pytest.mark.asyncio
     async def test_inquire_orderbook_raises_when_output_payload_missing(self):
-        from app.integrations.kis import KISClient
+        from app.services.brokers.kis.client import KISClient
 
         client = KISClient()
         client._ensure_token = AsyncMock(return_value=None)

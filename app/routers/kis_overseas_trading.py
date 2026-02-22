@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.templates import templates
-from app.integrations.kis import KISClient
 from app.jobs.kis_trading import (
     analyze_overseas_stock_task,
     execute_overseas_buy_order_task,
@@ -25,6 +24,7 @@ from app.jobs.kis_trading import (
 )
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
+from app.services.brokers.kis.client import KISClient
 from app.services.merged_portfolio_service import MergedPortfolioService
 
 logger = logging.getLogger(__name__)

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.integrations import upbit as upbit_service
+import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import order_execution, orders_history, orders_modify_cancel
 from app.mcp_server.tooling.registry import register_all_tools
 

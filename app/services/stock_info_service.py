@@ -488,10 +488,9 @@ async def process_buy_orders_with_analysis(
             'failure_reasons': List[str] (optional, failures only)
         }
     """
+    import app.services.brokers.upbit.client as upbit
     from app.core.config import settings
     from app.core.db import AsyncSessionLocal
-    from app.integrations import upbit
-
     # 1. KRW 잔고 먼저 확인
     print("💰 KRW 잔고 확인 중...")
     is_sufficient, krw_balance = await upbit.check_krw_balance_sufficient(
@@ -768,8 +767,7 @@ async def _place_single_buy_order(
     failure_reasons: list[str] | None = None,
 ):
     """단일 가격으로 매수 주문을 실행합니다."""
-    from app.integrations import upbit
-
+    import app.services.brokers.upbit.client as upbit
     try:
         # 매수 수량 계산 (수수료 고려)
         fee_rate = 0.0005  # 업비트 수수료 0.05%
@@ -811,8 +809,7 @@ async def _place_single_buy_order_by_quantity(
     market: str, quantity: float, buy_price: float, price_name: str
 ):
     """수량 기반으로 단일 가격 매수 주문을 실행합니다."""
-    from app.integrations import upbit
-
+    import app.services.brokers.upbit.client as upbit
     try:
         # 업비트 가격 단위에 맞게 조정
         adjusted_price = upbit.adjust_price_to_upbit_unit(buy_price)

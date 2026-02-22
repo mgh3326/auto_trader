@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.core.templates import templates
-from app.integrations.kis import KISClient
 from app.models.manual_holdings import MarketType
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
@@ -22,6 +21,7 @@ from app.schemas.manual_holdings import (
     MergedPortfolioResponse,
     ReferencePricesResponse,
 )
+from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
 from app.services.portfolio_overview_service import PortfolioOverviewService

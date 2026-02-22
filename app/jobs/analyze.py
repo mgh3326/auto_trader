@@ -1,7 +1,7 @@
 import asyncio
 
+import app.services.brokers.upbit.client as upbit
 from app.analysis.service_analyzers import KISAnalyzer, UpbitAnalyzer, YahooAnalyzer
-from app.integrations import upbit
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.order_service import (

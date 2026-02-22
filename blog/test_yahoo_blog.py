@@ -8,9 +8,7 @@ from google import genai
 from app.analysis.analyzer import DataProcessor
 from app.analysis.prompt import build_prompt
 from app.core.config import settings
-from app.integrations import yahoo
-
-
+import app.services.brokers.yahoo.client as yahoo
 async def main():
     print("=" * 80)
     print("yfinance로 애플(AAPL) 주식 분석 시작")

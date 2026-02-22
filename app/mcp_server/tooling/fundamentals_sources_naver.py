@@ -16,8 +16,8 @@ import httpx
 import pandas as pd
 import yfinance as yf
 
+import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
-from app.integrations import upbit as upbit_service
 from app.mcp_server.tooling.shared import normalize_value as _normalize_value
 from app.monitoring import build_yfinance_tracing_session
 from app.services import naver_finance

@@ -641,7 +641,7 @@ from app.jobs.analyze import run_per_coin_automation
 async def test_per_coin_automation_empty_coins():
     """보유 코인이 없을 때 처리 확인"""
     # Mock: 빈 코인 목록 반환
-    with patch('app.services.upbit.fetch_my_coins', return_value=[]):
+    with patch('app.services.brokers.upbit.client.fetch_my_coins', return_value=[]):
         result = run_per_coin_automation()
 
         assert result['status'] == 'completed'
@@ -656,7 +656,7 @@ async def test_per_coin_automation_with_coins():
         {"currency": "ETH", "balance": "1.0"}
     ]
 
-    with patch('app.services.upbit.fetch_my_coins', return_value=mock_coins):
+    with patch('app.services.brokers.upbit.client.fetch_my_coins', return_value=mock_coins):
         result = run_per_coin_automation()
 
         assert result['status'] == 'completed'

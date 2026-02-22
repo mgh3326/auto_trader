@@ -252,7 +252,7 @@ class TestOverseasStockTossNotification:
 
         with (
             patch("app.analysis.service_analyzers.YahooAnalyzer") as MockAnalyzer,
-            patch("app.services.yahoo.fetch_price") as mock_fetch_price,
+            patch("app.services.brokers.yahoo.client.fetch_price") as mock_fetch_price,
             patch("app.jobs.kis_trading.get_trade_notifier") as mock_get_notifier,
             patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
             patch(
@@ -316,7 +316,7 @@ class TestOverseasStockTossNotification:
 
         with (
             patch("app.analysis.service_analyzers.YahooAnalyzer") as MockAnalyzer,
-            patch("app.services.yahoo.fetch_price") as mock_fetch_price,
+            patch("app.services.brokers.yahoo.client.fetch_price") as mock_fetch_price,
             patch("app.jobs.kis_trading.get_trade_notifier") as mock_get_notifier,
             patch("app.core.db.AsyncSessionLocal") as mock_session_cls,
             patch(

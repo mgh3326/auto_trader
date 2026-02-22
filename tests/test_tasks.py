@@ -47,7 +47,7 @@ def test_run_analysis_for_my_coins_no_tradable(monkeypatch):
         fake_prime,
     )
     monkeypatch.setattr(
-        "app.services.upbit.fetch_my_coins",
+        "app.services.brokers.upbit.client.fetch_my_coins",
         fake_fetch_my_coins,
     )
     monkeypatch.setattr(
@@ -86,7 +86,7 @@ def test_execute_buy_orders_task_no_tradable(monkeypatch):
         fake_prime,
     )
     monkeypatch.setattr(
-        "app.services.upbit.fetch_my_coins",
+        "app.services.brokers.upbit.client.fetch_my_coins",
         fake_fetch_my_coins,
     )
     monkeypatch.setattr(
@@ -136,7 +136,7 @@ async def test_execute_buy_order_notifies_on_insufficient_balance(monkeypatch):
     async def fake_fetch_my_coins():
         return [{"currency": "BTC", "avg_buy_price": "1000000", "balance": "0.1"}]
 
-    monkeypatch.setattr("app.services.upbit.fetch_my_coins", fake_fetch_my_coins)
+    monkeypatch.setattr("app.services.brokers.upbit.client.fetch_my_coins", fake_fetch_my_coins)
 
     class DummyPriceFrame:
         def __init__(self, close):
@@ -154,7 +154,7 @@ async def test_execute_buy_order_notifies_on_insufficient_balance(monkeypatch):
     async def fake_fetch_price(_):
         return DummyPriceFrame(close=900000)
 
-    monkeypatch.setattr("app.services.upbit.fetch_price", fake_fetch_price)
+    monkeypatch.setattr("app.services.brokers.upbit.client.fetch_price", fake_fetch_price)
 
     async def fake_cancel(_):
         return None

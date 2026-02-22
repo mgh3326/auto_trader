@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling.shared import (
     normalize_account_filter as _normalize_account_filter,
 )
 from app.mcp_server.tooling.shared import (
     to_float,
 )
-from app.services import upbit as upbit_service
-from app.services.kis import (
+from app.services.brokers.kis.client import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )

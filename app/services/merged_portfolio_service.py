@@ -10,8 +10,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.integrations.kis import KISClient
 from app.models.manual_holdings import MarketType
+from app.services.brokers.kis.client import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
 
 logger = logging.getLogger(__name__)

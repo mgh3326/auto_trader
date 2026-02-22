@@ -4,8 +4,8 @@ Order-related helper functions shared between router endpoints and TaskIQ tasks.
 
 from __future__ import annotations
 
+import app.services.brokers.upbit.client as upbit
 from app.core.db import AsyncSessionLocal
-from app.integrations import upbit
 from app.services.stock_info_service import StockAnalysisService
 
 

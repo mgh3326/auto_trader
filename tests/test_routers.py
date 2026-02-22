@@ -91,7 +91,7 @@ class TestUpbitTradingRouter:
             fake_prime,
         )
         monkeypatch.setattr(
-            "app.services.upbit.fetch_my_coins",
+            "app.services.brokers.upbit.client.fetch_my_coins",
             fake_fetch_my_coins,
         )
         monkeypatch.setattr(

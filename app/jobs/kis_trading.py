@@ -4,8 +4,8 @@ import logging
 
 from app.analysis.service_analyzers import KISAnalyzer
 from app.core.symbol import to_db_symbol
-from app.integrations.kis import KISClient
 from app.monitoring.trade_notifier import get_trade_notifier
+from app.services.brokers.kis.client import KISClient
 from app.services.kis_trading_service import (
     process_kis_domestic_buy_orders_with_analysis,
     process_kis_domestic_sell_orders_with_analysis,
@@ -1042,9 +1042,8 @@ async def _analyze_overseas_stock_async(symbol: str) -> dict[str, object]:
     if not symbol:
         return {"status": "failed", "error": "심볼이 필요합니다."}
 
+    import app.services.brokers.yahoo.client as yahoo
     from app.analysis.service_analyzers import YahooAnalyzer
-    from app.integrations import yahoo
-
     analyzer = (
         YahooAnalyzer()
     )  # 해외 주식은 YahooAnalyzer 사용 (또는 KISAnalyzer 확장 필요 시 변경)

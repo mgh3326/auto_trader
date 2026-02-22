@@ -8,12 +8,14 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from app.analysis.analyzer import Analyzer
-
 # 테스트를 위해 서비스 및 분석기 임포트
-from app.integrations import upbit, yahoo
-from app.integrations.kis import kis as kis_client  # kis 인스턴스를 직접 임포트
+import app.services.brokers.upbit.client as upbit
+import app.services.brokers.yahoo.client as yahoo
+from app.analysis.analyzer import Analyzer
 from app.main import api
+from app.services.brokers.kis.client import (
+    kis as kis_client,  # kis 인스턴스를 직접 임포트
+)
 
 
 @pytest.mark.integration
@@ -46,9 +48,9 @@ class TestApplicationIntegration:
         assert app.title == "KIS Auto Screener"
         assert app.version == "0.2.0"
 
-    @patch("app.services.upbit.httpx.AsyncClient")
-    @patch("app.services.yahoo.yf.Ticker")
-    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.upbit.client.httpx.AsyncClient")
+    @patch("app.services.brokers.yahoo.client.yf.Ticker")
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     @patch("app.analysis.analyzer.genai.Client")
     def test_external_services_integration(
         self,
@@ -81,7 +83,7 @@ class TestExternalServiceMocking:
     """Test that all external services are properly mocked."""
 
     @pytest.mark.asyncio
-    @patch("app.services.upbit.httpx.AsyncClient")
+    @patch("app.services.brokers.upbit.client.httpx.AsyncClient")
     async def test_upbit_service_mocking(self, mock_upbit):
         """Test Upbit service mocking."""
         mock_response_data = [
@@ -105,7 +107,7 @@ class TestExternalServiceMocking:
         assert mock_upbit.called
 
     @pytest.mark.asyncio
-    @patch("app.services.yahoo.yf.download")
+    @patch("app.services.brokers.yahoo.client.yf.download")
     async def test_yahoo_service_mocking(self, mock_yahoo_download):
         """Test Yahoo Finance service mocking."""
         mock_df = pd.DataFrame(
@@ -126,8 +128,8 @@ class TestExternalServiceMocking:
         assert mock_yahoo_download.called
 
     @pytest.mark.asyncio
-    @patch("app.services.kis.KISClient._ensure_token", new_callable=AsyncMock)
-    @patch("app.services.kis.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.KISClient._ensure_token", new_callable=AsyncMock)
+    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_kis_service_mocking(self, mock_kis_client, mock_ensure_token):
         """Test KIS service mocking."""
         mock_instance = mock_kis_client.return_value.__aenter__.return_value

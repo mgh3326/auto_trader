@@ -67,11 +67,11 @@ async def test_get_my_coins_success(monkeypatch):
         fake_prime,
     )
     monkeypatch.setattr(
-        "app.services.upbit.fetch_my_coins",
+        "app.services.brokers.upbit.client.fetch_my_coins",
         fake_fetch_my_coins,
     )
     monkeypatch.setattr(
-        "app.services.upbit.fetch_multiple_current_prices",
+        "app.services.brokers.upbit.client.fetch_multiple_current_prices",
         fake_fetch_prices,
     )
     monkeypatch.setattr(

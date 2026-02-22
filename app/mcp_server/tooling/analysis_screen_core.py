@@ -11,8 +11,8 @@ from typing import Any
 import httpx
 import yfinance as yf
 
+import app.services.brokers.upbit.client as upbit_service
 from app.core.async_rate_limiter import RateLimitExceededError
-from app.integrations import upbit as upbit_service
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_rsi,
     _fetch_ohlcv_for_indicators,

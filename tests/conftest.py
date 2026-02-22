@@ -123,10 +123,10 @@ def mock_http_client():
 def mock_external_services():
     """Mock all external service calls for testing."""
     with (
-        patch("app.services.upbit.httpx.AsyncClient") as mock_upbit,
-        patch("app.services.yahoo.yf.download") as mock_yahoo_download,
-        patch("app.services.yahoo.yf.Ticker") as mock_yahoo_ticker,
-        patch("app.services.kis.httpx.AsyncClient") as mock_kis,
+        patch("app.services.brokers.upbit.client.httpx.AsyncClient") as mock_upbit,
+        patch("app.services.brokers.yahoo.client.yf.download") as mock_yahoo_download,
+        patch("app.services.brokers.yahoo.client.yf.Ticker") as mock_yahoo_ticker,
+        patch("app.services.brokers.kis.client.httpx.AsyncClient") as mock_kis,
         patch("app.core.model_rate_limiter.redis.asyncio.Redis") as mock_redis,
     ):
         # Configure mock responses

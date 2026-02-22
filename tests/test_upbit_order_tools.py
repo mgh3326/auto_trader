@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.integrations import upbit
+import app.services.brokers.upbit.client as upbit
 
 
 @pytest.mark.asyncio

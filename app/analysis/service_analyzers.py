@@ -1,6 +1,8 @@
 import pandas as pd
 
-from app.integrations import kis, upbit, yahoo
+import app.services.brokers.kis.client as kis
+import app.services.brokers.upbit.client as upbit
+import app.services.brokers.yahoo.client as yahoo
 from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.kr_symbol_universe_service import get_kr_symbol_by_name
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol

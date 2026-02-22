@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.integrations import upbit
+import app.services.brokers.upbit.client as upbit
 from app.services import upbit_symbol_universe_service
 
 

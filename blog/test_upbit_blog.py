@@ -9,7 +9,7 @@ import asyncio
 from google import genai
 
 from app.analysis.analyzer import DataProcessor
-from app.integrations import upbit
+import app.services.brokers.upbit.client as upbit
 from app.services import upbit_symbol_universe_service as upbit_pairs
 
 

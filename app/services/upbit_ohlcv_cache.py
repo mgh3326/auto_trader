@@ -8,8 +8,8 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 import pandas as pd
 import redis.asyncio as redis
 
+import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
-from app.integrations import upbit as upbit_service
 
 logger = logging.getLogger(__name__)
 

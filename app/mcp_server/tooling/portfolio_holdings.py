@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+import app.services.brokers.upbit.client as upbit_service
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tooling.market_data_indicators import (
@@ -80,8 +81,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     value_for_minimum_filter as _value_for_minimum_filter,
 )
-from app.services import upbit as upbit_service
-from app.services.kis import KISClient
+from app.services.brokers.kis.client import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.upbit_symbol_universe_service import (

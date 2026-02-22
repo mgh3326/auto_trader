@@ -3,12 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.async_rate_limiter import RateLimitExceededError
-from app.integrations.kis import (
+from app.services.account.contracts import CashBalance, MarginSnapshot, Position
+from app.services.brokers.kis.client import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )
-from app.integrations.upbit import fetch_my_coins
-from app.services.account.contracts import CashBalance, MarginSnapshot, Position
+from app.services.brokers.upbit.client import fetch_my_coins
 from app.services.domain_errors import (
     RateLimitError,
     UpstreamUnavailableError,

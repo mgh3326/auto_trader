@@ -19,7 +19,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 ## Tools
 - `search_symbol(query, limit=20)`
 - `get_quote(symbol, market=None)`
-  - US equity quote price resolution uses Yahoo directly via `app.services.yahoo`
+- US equity quote price resolution uses Yahoo directly via `app.services.brokers.yahoo.client`
   - US quote response keeps `source: "yahoo"` and includes `previous_close/open/high/low/volume` from Yahoo `fast_info`
   - US equity Yahoo lookup failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
@@ -28,7 +28,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - period: `day`, `week`, `month`, `4h`, `1h`
   - `4h`: crypto only
   - `1h`: KR/US equity + crypto
-  - US OHLCV remains Yahoo-based (`app.services.yahoo.fetch_ohlcv`)
+- US OHLCV remains Yahoo-based (`app.services.brokers.yahoo.client.fetch_ohlcv`)
   - KR `1h` includes in-progress (partial) hourly candle
   - KR `1h` resolves symbol route from `kr_symbol_universe` (`nxt_eligible=true` -> `UN`, else `J`)
   - KR `1h` returns an explicit error when symbol is missing/inactive in `kr_symbol_universe`

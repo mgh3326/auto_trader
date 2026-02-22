@@ -8,7 +8,7 @@ from typing import Any
 
 import yfinance as yf
 
-from app.integrations import upbit as upbit_service
+import app.services.brokers.upbit.client as upbit_service
 from app.monitoring import build_yfinance_tracing_session
 
 

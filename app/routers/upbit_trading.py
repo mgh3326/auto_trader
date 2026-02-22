@@ -13,11 +13,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.services.brokers.upbit.client as upbit
 from app.analysis.service_analyzers import UpbitAnalyzer
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.templates import templates
-from app.integrations import upbit
 from app.jobs.analyze import (
     execute_buy_order_for_coin_task,
     execute_buy_orders_task,

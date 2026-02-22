@@ -6,6 +6,7 @@ import datetime
 import json
 from typing import Any, Literal
 
+import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling.market_data_quotes import (
@@ -25,8 +26,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
-from app.services import upbit as upbit_service
-from app.services.kis import (
+from app.services.brokers.kis.client import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )

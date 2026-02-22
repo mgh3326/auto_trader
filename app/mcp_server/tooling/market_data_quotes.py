@@ -14,11 +14,10 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from sqlalchemy import select
 
+import app.services.brokers.upbit.client as upbit_service
+import app.services.brokers.yahoo.client as yahoo_service
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.integrations import upbit as upbit_service
-from app.integrations import yahoo as yahoo_service
-from app.integrations.kis import KISClient
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
     _compute_crypto_realtime_rsi_from_frame,
@@ -45,6 +44,7 @@ from app.mcp_server.tooling.shared import (
 )
 from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.services import kis_ohlcv_cache
+from app.services.brokers.kis.client import KISClient
 from app.services.kr_symbol_universe_service import search_kr_symbols
 from app.services.upbit_symbol_universe_service import get_or_refresh_maps
 from app.services.us_symbol_universe_service import search_us_symbols

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from app.integrations import upbit as upbit_service
+import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.scoring import (
     calc_composite_score,
     calc_dividend_score,

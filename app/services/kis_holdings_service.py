@@ -5,8 +5,8 @@ Helpers for fetching KIS holdings data.
 import logging
 
 from app.core.symbol import to_db_symbol
-from app.integrations.kis import KISClient
 from app.models.manual_holdings import MarketType
+from app.services.brokers.kis.client import KISClient
 
 logger = logging.getLogger(__name__)
 

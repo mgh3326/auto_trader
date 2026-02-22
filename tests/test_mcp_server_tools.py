@@ -10,9 +10,9 @@ import pandas as pd
 import pytest
 import yfinance as yf
 
+import app.services.brokers.upbit.client as upbit_service
+import app.services.brokers.yahoo.client as yahoo_service
 from app.core.config import settings
-from app.integrations import upbit as upbit_service
-from app.integrations import yahoo as yahoo_service
 from app.mcp_server.tooling import (
     analysis_rankings,
     analysis_recommend,
@@ -8316,7 +8316,7 @@ async def test_kis_overseas_order_payload_fields_buy(monkeypatch):
     """해외주식 매수 주문 시 필수 필드가 올바르게 포함되는지 검증."""
     import inspect
 
-    from app.integrations.kis import KISClient
+    from app.services.brokers.kis.client import KISClient
 
     sig = inspect.signature(KISClient.order_overseas_stock)
     params = list(sig.parameters.keys())
