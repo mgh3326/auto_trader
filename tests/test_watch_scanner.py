@@ -135,8 +135,8 @@ async def test_get_price_and_rsi_use_market_specific_sources(
     )
     scanner._kis = mock_kis
 
-    mock_us_price = AsyncMock(return_value=pd.DataFrame([{"close": 190.0}]))
     mock_us_ohlcv = AsyncMock(return_value=_make_ohlcv([1, 2, 3, 4, 5] * 20))
+    mock_us_price = AsyncMock(return_value=pd.DataFrame([{"close": 190.0}]))
     monkeypatch.setattr(
         watch_scanner_module.yahoo_service, "fetch_price", mock_us_price
     )
@@ -180,6 +180,23 @@ async def test_get_price_and_rsi_use_market_specific_sources(
 
 
 @pytest.mark.asyncio
+async def test_get_price_us_raises_when_yahoo_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.jobs import watch_scanner as watch_scanner_module
+
+    scanner = WatchScanner()
+    monkeypatch.setattr(
+        watch_scanner_module.yahoo_service,
+        "fetch_price",
+        AsyncMock(side_effect=RuntimeError("timeout")),
+    )
+
+    with pytest.raises(RuntimeError, match="timeout"):
+        await scanner._get_price("AAPL", "us")
+
+
+@pytest.mark.asyncio
 async def test_get_rsi_crypto_uses_supported_ohlcv_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -196,4 +213,6 @@ async def test_get_rsi_crypto_uses_supported_ohlcv_count(
     rsi = await scanner._get_rsi("BTC", "crypto")
 
     assert rsi is not None
-    assert mock_crypto_ohlcv.await_args.kwargs["days"] <= 200
+    await_args = mock_crypto_ohlcv.await_args
+    assert await_args is not None
+    assert await_args.kwargs["days"] <= 200

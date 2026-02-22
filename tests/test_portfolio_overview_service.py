@@ -3,12 +3,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pandas as pd
 import pytest
 
 from app.services import portfolio_overview_service as portfolio_overview_module
 from app.services import upbit as upbit_service
 from app.services.portfolio_overview_service import PortfolioOverviewService
-from app.services.price_provider import PriceFetchError
 from app.services.us_symbol_universe_service import USSymbolNotRegisteredError
 
 
@@ -220,14 +220,18 @@ def test_aggregate_positions_recalculates_totals_when_some_components_missing_ev
 async def test_fill_missing_prices_uses_us_provider_for_missing_us_prices(
     monkeypatch,
 ) -> None:
-    us_provider = AsyncMock()
-    us_provider.fetch_many = AsyncMock(return_value=({"AAPL": 195.0}, []))
-    service = PortfolioOverviewService(AsyncMock(), us_price_provider=us_provider)
+    service = PortfolioOverviewService(AsyncMock())
 
     monkeypatch.setattr(
         portfolio_overview_module,
         "get_us_exchange_by_symbol",
         AsyncMock(return_value="NASD"),
+    )
+    mock_fetch_price = AsyncMock(return_value=pd.DataFrame([{"close": 195.0}]))
+    monkeypatch.setattr(
+        portfolio_overview_module.yahoo_service,
+        "fetch_price",
+        mock_fetch_price,
     )
 
     components = [
@@ -251,7 +255,7 @@ async def test_fill_missing_prices_uses_us_provider_for_missing_us_prices(
 
     await service._fill_missing_prices(AsyncMock(), components, warnings)
 
-    us_provider.fetch_many.assert_awaited_once_with(["AAPL"])
+    mock_fetch_price.assert_awaited_once_with("AAPL")
     assert components[0]["current_price"] == 195.0
     assert components[0]["evaluation"] == 390.0
     assert components[0]["profit_loss"] == 90.0
@@ -259,28 +263,20 @@ async def test_fill_missing_prices_uses_us_provider_for_missing_us_prices(
 
 
 @pytest.mark.asyncio
-async def test_fill_missing_prices_keeps_none_and_warning_on_us_provider_error(
+async def test_fill_missing_prices_raises_on_us_yahoo_error(
     monkeypatch,
 ) -> None:
-    us_provider = AsyncMock()
-    us_provider.fetch_many = AsyncMock(
-        return_value=(
-            {"AAPL": 210.0},
-            [
-                PriceFetchError(
-                    symbol="MSFT",
-                    source="yahoo",
-                    error="upstream timeout",
-                )
-            ],
-        )
-    )
-    service = PortfolioOverviewService(AsyncMock(), us_price_provider=us_provider)
+    service = PortfolioOverviewService(AsyncMock())
 
     monkeypatch.setattr(
         portfolio_overview_module,
         "get_us_exchange_by_symbol",
         AsyncMock(return_value="NASD"),
+    )
+    monkeypatch.setattr(
+        portfolio_overview_module.yahoo_service,
+        "fetch_price",
+        AsyncMock(side_effect=RuntimeError("upstream timeout")),
     )
 
     components = [
@@ -317,20 +313,19 @@ async def test_fill_missing_prices_keeps_none_and_warning_on_us_provider_error(
     ]
     warnings: list[str] = []
 
-    await service._fill_missing_prices(AsyncMock(), components, warnings)
+    with pytest.raises(RuntimeError, match="upstream timeout"):
+        await service._fill_missing_prices(AsyncMock(), components, warnings)
 
-    assert components[0]["current_price"] == 210.0
+    assert components[0]["current_price"] is None
     assert components[1]["current_price"] is None
-    assert warnings == ["US price fetch failed for MSFT via yahoo: upstream timeout"]
+    assert warnings == []
 
 
 @pytest.mark.asyncio
 async def test_fill_missing_prices_filters_invalid_us_symbols_before_provider_fetch(
     monkeypatch,
 ) -> None:
-    us_provider = AsyncMock()
-    us_provider.fetch_many = AsyncMock(return_value=({"AAPL": 205.0}, []))
-    service = PortfolioOverviewService(AsyncMock(), us_price_provider=us_provider)
+    service = PortfolioOverviewService(AsyncMock())
 
     async def mock_get_us_exchange_by_symbol(symbol: str, db=None) -> str:
         if symbol == "AAPL":
@@ -341,6 +336,12 @@ async def test_fill_missing_prices_filters_invalid_us_symbols_before_provider_fe
         portfolio_overview_module,
         "get_us_exchange_by_symbol",
         mock_get_us_exchange_by_symbol,
+    )
+    mock_fetch_price = AsyncMock(return_value=pd.DataFrame([{"close": 205.0}]))
+    monkeypatch.setattr(
+        portfolio_overview_module.yahoo_service,
+        "fetch_price",
+        mock_fetch_price,
     )
 
     components = [
@@ -379,7 +380,7 @@ async def test_fill_missing_prices_filters_invalid_us_symbols_before_provider_fe
 
     await service._fill_missing_prices(AsyncMock(), components, warnings)
 
-    us_provider.fetch_many.assert_awaited_once_with(["AAPL"])
+    mock_fetch_price.assert_awaited_once_with("AAPL")
     assert components[0]["current_price"] == 205.0
     assert components[1]["current_price"] is None
     assert warnings == []
@@ -595,7 +596,7 @@ async def test_collect_upbit_components_uses_resilient_fetch_helper(
 async def test_fill_missing_prices_uses_resilient_fetch_helper_for_manual_crypto() -> (
     None
 ):
-    service = PortfolioOverviewService(AsyncMock(), us_price_provider=AsyncMock())
+    service = PortfolioOverviewService(AsyncMock())
     service._fetch_upbit_prices_resilient = AsyncMock(
         return_value={"KRW-BTC": 115000000.0}
     )
@@ -683,7 +684,7 @@ async def test_collect_manual_components_filters_non_tradable_crypto_symbols(
 
 @pytest.mark.asyncio
 async def test_fill_missing_prices_manual_crypto_targets_manual_source_only() -> None:
-    service = PortfolioOverviewService(AsyncMock(), us_price_provider=AsyncMock())
+    service = PortfolioOverviewService(AsyncMock())
     service._fetch_upbit_prices_resilient = AsyncMock(
         return_value={"KRW-BTC": 120000000.0}
     )

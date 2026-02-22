@@ -275,5 +275,5 @@ class TestKisServiceRateLimitWiring:
     """Static guardrails for KIS rate-limit wrapper coverage."""
 
     def test_kis_uses_async_client_only_in_token_and_wrapper(self):
-        content = Path("app/services/kis.py").read_text(encoding="utf-8")
+        content = Path("app/services/brokers/kis/client.py").read_text(encoding="utf-8")
         assert content.count("async with httpx.AsyncClient") == 2

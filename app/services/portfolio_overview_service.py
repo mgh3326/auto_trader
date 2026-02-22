@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.symbol import to_db_symbol
 from app.models.manual_holdings import MarketType
 from app.services import upbit as upbit_service
+from app.services import yahoo as yahoo_service
 from app.services.kis import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
-from app.services.price_provider import UsEquityPriceProvider, YahooUsPriceProvider
 from app.services.upbit_symbol_universe_service import get_active_upbit_markets
 from app.services.us_symbol_universe_service import (
     USSymbolUniverseLookupError,
@@ -76,14 +76,9 @@ def _normalize_symbol(symbol: str, market_type: str) -> str:
 
 
 class PortfolioOverviewService:
-    def __init__(
-        self,
-        db: AsyncSession,
-        us_price_provider: UsEquityPriceProvider | None = None,
-    ):
+    def __init__(self, db: AsyncSession):
         self.db = db
         self.manual_holdings_service = ManualHoldingsService(db)
-        self.us_price_provider = us_price_provider or YahooUsPriceProvider()
 
     async def get_overview(
         self,
@@ -542,28 +537,21 @@ class PortfolioOverviewService:
                 valid_us_symbols.append(normalized_symbol)
 
         if valid_us_symbols:
-            try:
-                us_prices, us_errors = await self.us_price_provider.fetch_many(
-                    valid_us_symbols
-                )
-                for symbol, price in us_prices.items():
-                    if price <= 0:
-                        continue
-                    for target_symbol in us_symbol_targets.get(symbol, {symbol}):
-                        self._apply_price(components, _MARKET_US, target_symbol, price)
-                for error in us_errors:
-                    logger.warning(
-                        "Failed to fetch US price for %s via %s: %s",
-                        error.symbol,
-                        error.source,
-                        error.error,
+            for symbol in valid_us_symbols:
+                frame = await yahoo_service.fetch_price(symbol)
+                if frame.empty:
+                    raise ValueError(
+                        f"US price fetch failed for {symbol}: empty response"
                     )
-                    warnings.append(
-                        f"US price fetch failed for {error.symbol} via {error.source}: {error.error}"
+
+                price = _to_float(frame.iloc[-1].get("close"), default=0.0)
+                if price <= 0:
+                    raise ValueError(
+                        f"US price fetch failed for {symbol}: non-positive close price"
                     )
-            except Exception as exc:
-                logger.warning("Failed to fetch US prices via provider: %s", exc)
-                warnings.append(f"US price provider failure: {exc}")
+
+                for target_symbol in us_symbol_targets.get(symbol, {symbol}):
+                    self._apply_price(components, _MARKET_US, target_symbol, price)
 
         if crypto_symbols:
             price_map = await self._fetch_upbit_prices_resilient(

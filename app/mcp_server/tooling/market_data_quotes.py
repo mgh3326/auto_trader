@@ -38,7 +38,6 @@ from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
 from app.models.kr_symbol_universe import KRSymbolUniverse
-from app.monitoring import build_yfinance_tracing_session
 from app.services import kis_ohlcv_cache
 from app.services import upbit as upbit_service
 from app.services import yahoo as yahoo_service
@@ -145,27 +144,55 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
 
 async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
     """Fetch US equity quote from Yahoo Finance."""
-    import yfinance as yf
+    normalized_symbol = str(symbol or "").strip().upper()
+    not_found_message = f"Symbol '{normalized_symbol}' not found"
 
-    from app.core.symbol import to_yahoo_symbol
+    try:
+        fast_info = await yahoo_service.fetch_fast_info(normalized_symbol)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Yahoo quote fetch failed for '{normalized_symbol}': {exc}"
+        ) from exc
 
-    yahoo_ticker = to_yahoo_symbol(symbol)
-    session = build_yfinance_tracing_session()
-    info = yf.Ticker(yahoo_ticker, session=session).fast_info
+    try:
+        price = float(fast_info.get("close"))
+    except (TypeError, ValueError):
+        raise ValueError(not_found_message) from None
 
-    price = getattr(info, "last_price", None)
-    if price is None:
-        raise ValueError(f"Symbol '{symbol}' not found")
+    if price <= 0:
+        raise ValueError(not_found_message)
+
+    previous_close_raw = fast_info.get("previous_close")
+    open_raw = fast_info.get("open")
+    high_raw = fast_info.get("high")
+    low_raw = fast_info.get("low")
+    volume_raw = fast_info.get("volume")
+
+    def _to_float_or_none(value: Any) -> float | None:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _to_int_or_none(value: Any) -> int | None:
+        try:
+            if value is None:
+                return None
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
 
     return {
-        "symbol": symbol,
+        "symbol": normalized_symbol,
         "instrument_type": "equity_us",
         "price": price,
-        "previous_close": getattr(info, "regular_market_previous_close", None),
-        "open": getattr(info, "open", None),
-        "high": getattr(info, "day_high", None),
-        "low": getattr(info, "day_low", None),
-        "volume": getattr(info, "last_volume", None),
+        "previous_close": _to_float_or_none(previous_close_raw),
+        "open": _to_float_or_none(open_raw),
+        "high": _to_float_or_none(high_raw),
+        "low": _to_float_or_none(low_raw),
+        "volume": _to_int_or_none(volume_raw),
         "source": "yahoo",
     }
 
@@ -504,15 +531,16 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
 
         market_type, symbol = _resolve_market_type(symbol, market)
 
-        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+        if market_type == "equity_us":
+            return await _fetch_quote_equity_us(symbol)
+
+        source_map = {"crypto": "upbit", "equity_kr": "kis"}
         source = source_map[market_type]
 
         try:
             if market_type == "crypto":
                 return await _fetch_quote_crypto(symbol)
-            if market_type == "equity_kr":
-                return await _fetch_quote_equity_kr(symbol)
-            return await _fetch_quote_equity_us(symbol)
+            return await _fetch_quote_equity_kr(symbol)
         except Exception as exc:
             return _error_payload(
                 source=source,

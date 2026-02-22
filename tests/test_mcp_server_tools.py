@@ -1221,58 +1221,61 @@ async def test_get_quote_korean_etf_with_explicit_market(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_quote_us_equity(monkeypatch):
     tools = build_tools()
-    captured: dict[str, object] = {}
 
-    # Mock yfinance Ticker
-    class MockFastInfo:
-        last_price = 205.0
-        regular_market_previous_close = 200.0
-        open = 201.0
-        day_high = 210.0
-        day_low = 199.0
-        last_volume = 50000000
-
-    class MockTicker:
-        fast_info = MockFastInfo()
-
-    def ticker_factory(symbol, session=None):
-        captured["symbol"] = symbol
-        captured["session"] = session
-        return MockTicker()
-
-    monkeypatch.setattr("yfinance.Ticker", ticker_factory)
+    mock_fetch_fast_info = AsyncMock(
+        return_value={
+            "symbol": "AAPL",
+            "close": 205.0,
+            "previous_close": 201.5,
+            "open": 202.0,
+            "high": 206.2,
+            "low": 200.8,
+            "volume": 123456789,
+        }
+    )
+    monkeypatch.setattr(yahoo_service, "fetch_fast_info", mock_fetch_fast_info)
 
     result = await tools["get_quote"]("AAPL")
 
     assert result["instrument_type"] == "equity_us"
     assert result["source"] == "yahoo"
     assert result["price"] == 205.0
-    assert result["previous_close"] == 200.0
-    assert result["open"] == 201.0
-    assert result["high"] == 210.0
-    assert result["low"] == 199.0
-    assert result["volume"] == 50000000
-    assert captured["symbol"] == "AAPL"
-    assert captured["session"] is not None
+    assert result["previous_close"] == 201.5
+    assert result["open"] == 202.0
+    assert result["high"] == 206.2
+    assert result["low"] == 200.8
+    assert result["volume"] == 123456789
+    mock_fetch_fast_info.assert_awaited_once_with("AAPL")
 
 
 @pytest.mark.asyncio
-async def test_get_quote_us_equity_returns_error_payload(monkeypatch):
+async def test_get_quote_us_equity_propagates_upstream_exception(monkeypatch):
     tools = build_tools()
 
-    def raise_error(symbol, session=None):
-        assert session is not None
-        raise RuntimeError("yahoo down")
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(side_effect=RuntimeError("yahoo down")),
+    )
 
-    monkeypatch.setattr("yfinance.Ticker", raise_error)
+    with pytest.raises(RuntimeError, match="yahoo down"):
+        await tools["get_quote"]("AAPL")
 
-    result = await tools["get_quote"]("AAPL")
+
+@pytest.mark.asyncio
+async def test_get_quote_non_us_markets_keep_error_payload_contract(monkeypatch):
+    tools = build_tools()
+
+    mock_fetch = AsyncMock(side_effect=RuntimeError("upbit down"))
+    monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", mock_fetch)
+
+    result = await tools["get_quote"]("KRW-BTC")
 
     assert result == {
-        "error": "yahoo down",
-        "source": "yahoo",
-        "symbol": "AAPL",
-        "instrument_type": "equity_us",
+        "error": "upbit down",
+        "source": "upbit",
+        "symbol": "KRW-BTC",
+        "instrument_type": "crypto",
     }
 
 
@@ -3055,36 +3058,25 @@ class TestSymbolNotFound:
         assert result["source"] == "kis"
 
     @pytest.mark.asyncio
-    async def test_get_quote_us_equity_not_found(self, monkeypatch):
+    async def test_get_quote_us_equity_not_found_raises(self, monkeypatch):
         tools = build_tools()
-        captured: dict[str, object] = {}
+        mock_fetch_fast_info = AsyncMock(
+            return_value={
+                "symbol": "INVALID",
+                "close": None,
+                "previous_close": None,
+                "open": None,
+                "high": None,
+                "low": None,
+                "volume": None,
+            }
+        )
+        monkeypatch.setattr(yahoo_service, "fetch_fast_info", mock_fetch_fast_info)
 
-        # Mock yfinance Ticker with None values (invalid symbol)
-        class MockFastInfo:
-            last_price = None
-            regular_market_previous_close = None
-            open = None
-            day_high = None
-            day_low = None
-            last_volume = None
+        with pytest.raises(ValueError, match="Symbol 'INVALID' not found"):
+            await tools["get_quote"]("INVALID")
 
-        class MockTicker:
-            fast_info = MockFastInfo()
-
-        def ticker_factory(symbol, session=None):
-            captured["symbol"] = symbol
-            captured["session"] = session
-            return MockTicker()
-
-        monkeypatch.setattr("yfinance.Ticker", ticker_factory)
-
-        result = await tools["get_quote"]("INVALID")
-
-        assert "error" in result
-        assert "not found" in result["error"].lower()
-        assert result["source"] == "yahoo"
-        assert captured["symbol"] == "INVALID"
-        assert captured["session"] is not None
+        mock_fetch_fast_info.assert_awaited_once_with("INVALID")
 
 
 @pytest.mark.asyncio

@@ -93,8 +93,14 @@ class WatchScanner:
             frame = await self._kis.inquire_price(symbol, market="UN")
             return self._extract_close(frame)
         if market == "us":
-            frame = await yahoo_service.fetch_price(symbol)
-            return self._extract_close(frame)
+            normalized_symbol = str(symbol or "").strip().upper()
+            frame = await yahoo_service.fetch_price(normalized_symbol)
+            price = self._extract_close(frame)
+            if price is None:
+                raise ValueError(
+                    f"US watch price fetch failed for {normalized_symbol}: invalid close"
+                )
+            return price
         return None
 
     async def _get_rsi(self, symbol: str, market: str) -> float | None:
