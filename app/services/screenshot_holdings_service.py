@@ -202,7 +202,7 @@ class ScreenshotHoldingsService:
         broker_account_service = BrokerAccountService(self.db)
         broker_account = await broker_account_service.get_account_by_user_and_broker(
             user_id=user_id,
-            broker_type=broker,  # type: ignore[arg-type]  # String으로 변경됨
+            broker_type=broker,  # String으로 변경됨
             account_name=account_name,
         )
 
@@ -216,7 +216,7 @@ class ScreenshotHoldingsService:
             else:
                 broker_account = await broker_account_service.create_account(
                     user_id=user_id,
-                    broker_type=broker,  # type: ignore[arg-type]
+                    broker_type=broker,
                     account_name=account_name,
                 )
                 broker_account_id = broker_account.id

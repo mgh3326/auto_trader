@@ -469,6 +469,7 @@ async def _cancel_domestic_pending_orders(
     failed = 0
 
     for order in target_orders:
+        order_number: str | None = None
         try:
             # API 응답 필드명이 소문자 또는 대문자일 수 있음
             order_number = (
@@ -505,7 +506,12 @@ async def _cancel_domestic_pending_orders(
             cancelled += 1
             await asyncio.sleep(0.2)  # API 호출 제한 방지
         except Exception as e:
-            logger.warning(f"주문 취소 실패 ({stock_code}, {order_number}): {e}")
+            logger.warning(
+                "주문 취소 실패 (%s, %s): %s",
+                stock_code,
+                order_number or "unknown",
+                e,
+            )
             failed += 1
 
     return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}
@@ -1438,6 +1444,7 @@ async def _cancel_overseas_pending_orders(
     failed = 0
 
     for order in target_orders:
+        order_number: str | None = None
         try:
             # API 응답 필드명이 소문자 또는 대문자일 수 있음
             order_number = (
@@ -1463,7 +1470,12 @@ async def _cancel_overseas_pending_orders(
             cancelled += 1
             await asyncio.sleep(0.2)  # API 호출 제한 방지
         except Exception as e:
-            logger.warning(f"주문 취소 실패 ({symbol}, {order_number}): {e}")
+            logger.warning(
+                "주문 취소 실패 (%s, %s): %s",
+                symbol,
+                order_number or "unknown",
+                e,
+            )
             failed += 1
 
     return {"cancelled": cancelled, "failed": failed, "total": len(target_orders)}

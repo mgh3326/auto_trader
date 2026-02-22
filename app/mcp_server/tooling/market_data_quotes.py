@@ -651,7 +651,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                 raise ValueError(
                     f"Invalid indicator '{ind}'. Valid options: {', '.join(sorted(valid_indicators))}"
                 )
-            normalized_indicators.append(ind_lower)  # type: ignore[arg-type]
+            normalized_indicators.append(ind_lower)
 
         market_type, symbol = _resolve_market_type(normalized_symbol, market)
 

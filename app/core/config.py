@@ -88,7 +88,7 @@ class Settings(BaseSettings):
 
     @field_validator("google_api_keys", mode="before")
     @classmethod
-    def split_google_api_keys(cls, v: any) -> list[str]:
+    def split_google_api_keys(cls, v: Any) -> list[str]:
         if isinstance(v, str):
             if not v:  # 빈 문자열 처리
                 return []
