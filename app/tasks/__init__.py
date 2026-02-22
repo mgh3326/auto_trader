@@ -1,5 +1,6 @@
 from app.tasks import (
     daily_scan_tasks,
+    kr_ohlcv_precompute_tasks,
     kr_symbol_universe_tasks,
     upbit_symbol_universe_tasks,
     us_symbol_universe_tasks,
@@ -9,6 +10,7 @@ from app.tasks import (
 TASKIQ_TASK_MODULES = (
     daily_scan_tasks,
     watch_scan_tasks,
+    kr_ohlcv_precompute_tasks,
     kr_symbol_universe_tasks,
     upbit_symbol_universe_tasks,
     us_symbol_universe_tasks,

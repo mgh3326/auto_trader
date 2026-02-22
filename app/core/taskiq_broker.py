@@ -6,12 +6,14 @@ from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 from app.core.config import settings
 from app.monitoring.sentry import init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
+from app.services.kr_ohlcv_timeseries_store import ensure_timescale_ready
 
 logger = logging.getLogger(__name__)
 
 
 class WorkerInitMiddleware(TaskiqMiddleware):
     async def startup(self) -> None:
+        await ensure_timescale_ready()
         if self.broker.is_worker_process:
             init_sentry(
                 service_name="auto-trader-worker",
