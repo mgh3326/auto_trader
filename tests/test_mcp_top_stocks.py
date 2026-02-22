@@ -3,9 +3,9 @@ from unittest.mock import MagicMock
 import pytest
 import yfinance as yf
 
+from app.integrations import upbit as upbit_service
 from app.mcp_server.tooling import analysis_tool_handlers
 from app.mcp_server.tooling.registry import register_all_tools
-from app.services import upbit as upbit_service
 
 
 class DummyMCP:

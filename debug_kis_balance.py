@@ -7,7 +7,7 @@ Upbit의 fetch_my_coins와 유사한 기능을 테스트합니다.
 import asyncio
 import pprint
 
-from app.services.kis import kis
+from app.integrations.kis import kis
 
 
 async def main():

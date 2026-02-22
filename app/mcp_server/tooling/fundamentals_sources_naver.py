@@ -17,10 +17,10 @@ import pandas as pd
 import yfinance as yf
 
 from app.core.config import settings
+from app.integrations import upbit as upbit_service
 from app.mcp_server.tooling.shared import normalize_value as _normalize_value
 from app.monitoring import build_yfinance_tracing_session
 from app.services import naver_finance
-from app.services import upbit as upbit_service
 from app.services.analyst_normalizer import (
     build_consensus,
     normalize_rating_label,

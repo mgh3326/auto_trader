@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 import pandas as pd
 import pytest
 
+from app.integrations import upbit as upbit_service
 from app.services import portfolio_overview_service as portfolio_overview_module
-from app.services import upbit as upbit_service
 from app.services.portfolio_overview_service import PortfolioOverviewService
 from app.services.us_symbol_universe_service import USSymbolNotRegisteredError
 

@@ -6,7 +6,7 @@
 import asyncio
 
 from app.analysis.service_analyzers import UpbitAnalyzer
-from app.services import upbit
+from app.integrations import upbit
 from app.services import upbit_symbol_universe_service as upbit_pairs
 
 # ===== 매도 전략 설정 =====

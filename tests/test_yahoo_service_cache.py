@@ -4,7 +4,7 @@ from unittest.mock import ANY, AsyncMock
 import pandas as pd
 import pytest
 
-from app.services import yahoo
+from app.integrations import yahoo
 from app.services import yahoo_ohlcv_cache as yahoo_cache
 
 

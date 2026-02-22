@@ -9,7 +9,7 @@ import pandas as pd
 import redis.asyncio as redis
 
 from app.core.config import settings
-from app.services import upbit as upbit_service
+from app.integrations import upbit as upbit_service
 
 logger = logging.getLogger(__name__)
 

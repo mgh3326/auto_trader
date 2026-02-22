@@ -8,7 +8,7 @@ from google import genai
 from app.analysis.analyzer import DataProcessor
 from app.analysis.prompt import build_prompt
 from app.core.config import settings
-from app.services import yahoo
+from app.integrations import yahoo
 
 
 async def main():

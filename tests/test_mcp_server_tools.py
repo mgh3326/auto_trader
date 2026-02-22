@@ -11,6 +11,8 @@ import pytest
 import yfinance as yf
 
 from app.core.config import settings
+from app.integrations import upbit as upbit_service
+from app.integrations import yahoo as yahoo_service
 from app.mcp_server.tooling import (
     analysis_rankings,
     analysis_recommend,
@@ -34,8 +36,6 @@ from app.mcp_server.tooling import (
 )
 from app.mcp_server.tooling.registry import register_all_tools
 from app.services import naver_finance
-from app.services import upbit as upbit_service
-from app.services import yahoo as yahoo_service
 
 # from app.mcp_server.tick_size import adjust_tick_size_kr  # TODO: Remove if not needed
 
@@ -8316,7 +8316,7 @@ async def test_kis_overseas_order_payload_fields_buy(monkeypatch):
     """해외주식 매수 주문 시 필수 필드가 올바르게 포함되는지 검증."""
     import inspect
 
-    from app.services.kis import KISClient
+    from app.integrations.kis import KISClient
 
     sig = inspect.signature(KISClient.order_overseas_stock)
     params = list(sig.parameters.keys())

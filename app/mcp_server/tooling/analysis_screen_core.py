@@ -12,6 +12,7 @@ import httpx
 import yfinance as yf
 
 from app.core.async_rate_limiter import RateLimitExceededError
+from app.integrations import upbit as upbit_service
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_rsi,
     _fetch_ohlcv_for_indicators,
@@ -20,7 +21,6 @@ from app.mcp_server.tooling.market_data_indicators import (
 )
 from app.mcp_server.tooling.shared import error_payload as _error_payload
 from app.monitoring import build_yfinance_tracing_session
-from app.services import upbit as upbit_service
 from app.services.krx import (
     classify_etf_category,
     fetch_etf_all_cached,

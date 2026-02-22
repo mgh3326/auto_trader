@@ -6,8 +6,8 @@ KIS 해외주식 자동 매도 주문 시스템
 import asyncio
 
 from app.analysis.service_analyzers import YahooAnalyzer
-from app.services import yahoo
-from app.services.kis import kis
+from app.integrations import yahoo
+from app.integrations.kis import kis
 
 # ===== 매도 전략 설정 =====
 SELL_STRATEGY = "split"  # "split": 분할 지정가 매도
@@ -16,10 +16,7 @@ SELL_STRATEGY = "split"  # "split": 분할 지정가 매도
 
 
 async def cancel_existing_sell_orders(
-    symbol: str,
-    exchange_code: str,
-    all_open_orders: list[dict],
-    is_mock: bool = False
+    symbol: str, exchange_code: str, all_open_orders: list[dict], is_mock: bool = False
 ):
     """
     특정 종목의 기존 매도 주문들을 취소합니다.
@@ -34,8 +31,9 @@ async def cancel_existing_sell_orders(
         # 해당 종목의 매도 주문만 필터링
         # sll_buy_dvsn_cd: 01=매도, 02=매수
         sell_orders = [
-            order for order in all_open_orders
-            if order.get('pdno') == symbol and order.get('sll_buy_dvsn_cd') == '01'
+            order
+            for order in all_open_orders
+            if order.get("pdno") == symbol and order.get("sll_buy_dvsn_cd") == "01"
         ]
 
         if not sell_orders:
@@ -48,18 +46,20 @@ async def cancel_existing_sell_orders(
         success_count = 0
         for order in sell_orders:
             try:
-                order_number = order.get('odno')  # 주문번호
-                order_qty = int(order.get('ft_ord_qty', 0))  # 주문수량
-                order_price = float(order.get('ft_ord_unpr3', 0))  # 주문단가
+                order_number = order.get("odno")  # 주문번호
+                order_qty = int(order.get("ft_ord_qty", 0))  # 주문수량
+                order_price = float(order.get("ft_ord_unpr3", 0))  # 주문단가
 
-                print(f"     🔄 주문 취소 중: {order_number} ({order_qty}주 @ ${order_price:,.2f})")
+                print(
+                    f"     🔄 주문 취소 중: {order_number} ({order_qty}주 @ ${order_price:,.2f})"
+                )
 
                 result = await kis.cancel_overseas_order(
                     order_number=order_number,
                     symbol=symbol,
                     exchange_code=exchange_code,
                     quantity=order_qty,
-                    is_mock=is_mock
+                    is_mock=is_mock,
                 )
 
                 print(f"     ✅ 취소 완료: {result.get('odno')}")
@@ -87,9 +87,11 @@ async def process_sell_orders_for_my_stocks():
         print("=== 보유 해외주식 조회 ===")
         all_stocks = []
 
-        overseas_stocks = await kis.fetch_my_us_stocks(is_mock=False, exchange='NASD')
+        overseas_stocks = await kis.fetch_my_us_stocks(is_mock=False, exchange="NASD")
         if overseas_stocks:
-            all_stocks.extend([(stock['ovrs_excg_cd'], stock) for stock in overseas_stocks])
+            all_stocks.extend(
+                [(stock["ovrs_excg_cd"], stock) for stock in overseas_stocks]
+            )
         else:
             print("보유 종목 없음")
 
@@ -101,27 +103,33 @@ async def process_sell_orders_for_my_stocks():
 
         # 보유 주식 정보 출력
         for exchange, stock in all_stocks:
-            symbol = stock.get('ovrs_pdno')
-            quantity = float(stock.get('ovrs_cblc_qty', 0))
-            avg_buy_price = float(stock.get('pchs_avg_pric', 0))
+            symbol = stock.get("ovrs_pdno")
+            quantity = float(stock.get("ovrs_cblc_qty", 0))
+            avg_buy_price = float(stock.get("pchs_avg_pric", 0))
             evaluation = quantity * avg_buy_price
-            print(f"  - {symbol} ({exchange}): {quantity:.4f}주 (평가액: ${evaluation:,.2f})")
+            print(
+                f"  - {symbol} ({exchange}): {quantity:.4f}주 (평가액: ${evaluation:,.2f})"
+            )
 
         # 미체결 주문 조회 (한 번만)
         print("\n=== 미체결 주문 조회 ===")
-        all_open_orders = await kis.inquire_overseas_orders(exchange_code='NASD', is_mock=False)
+        all_open_orders = await kis.inquire_overseas_orders(
+            exchange_code="NASD", is_mock=False
+        )
         print(f"총 {len(all_open_orders)}개의 미체결 주문 발견")
 
         # 매도 주문만 카운트
-        sell_orders_count = len([o for o in all_open_orders if o.get('sll_buy_dvsn_cd') == '01'])
+        sell_orders_count = len(
+            [o for o in all_open_orders if o.get("sll_buy_dvsn_cd") == "01"]
+        )
         print(f"  - 매도 주문: {sell_orders_count}개")
         print(f"  - 매수 주문: {len(all_open_orders) - sell_orders_count}개")
 
         # 각 주식에 대해 매도 주문 처리
         for exchange, stock in all_stocks:
-            symbol = stock.get('ovrs_pdno')
-            quantity = float(stock.get('ovrs_cblc_qty', 0))
-            avg_buy_price = float(stock.get('pchs_avg_pric', 0))
+            symbol = stock.get("ovrs_pdno")
+            quantity = float(stock.get("ovrs_cblc_qty", 0))
+            avg_buy_price = float(stock.get("pchs_avg_pric", 0))
 
             # 거래소 코드 변환 (3자리 -> 4자리)
             exchange_code = exchange  # NASD, NYSE, AMEX
@@ -138,17 +146,25 @@ async def process_sell_orders_for_my_stocks():
 
             # 현재가 조회
             try:
-                yahoo_current_price_df = await yahoo.fetch_price(symbol)  # DataFrame 1행
-                current_price_df = await kis.inquire_overseas_price(symbol, exchange_code)
-                current_price = float(current_price_df.iloc[0]['close'])
-                print(f"  💰 현재가: ${current_price:,.2f}, 야후 현재가 ${yahoo_current_price_df.iloc[0]['close']:.2f}")
+                yahoo_current_price_df = await yahoo.fetch_price(
+                    symbol
+                )  # DataFrame 1행
+                current_price_df = await kis.inquire_overseas_price(
+                    symbol, exchange_code
+                )
+                current_price = float(current_price_df.iloc[0]["close"])
+                print(
+                    f"  💰 현재가: ${current_price:,.2f}, 야후 현재가 ${yahoo_current_price_df.iloc[0]['close']:.2f}"
+                )
             except Exception as e:
                 print(f"  ❌ 현재가 조회 실패: {e}")
                 continue
 
             # 기존 매도 주문 확인 및 취소 (미리 조회한 데이터 사용)
             print("\n  🔍 기존 매도 주문 확인 및 취소...")
-            await cancel_existing_sell_orders(symbol, exchange_code, all_open_orders, is_mock=False)
+            await cancel_existing_sell_orders(
+                symbol, exchange_code, all_open_orders, is_mock=False
+            )
 
             # API 서버 데이터 동기화를 위해 잠시 대기
             print("  ⏳ API 서버 동기화를 위해 1초 대기...")
@@ -171,6 +187,7 @@ async def process_sell_orders_for_my_stocks():
     except Exception as e:
         print(f"❌ 에러 발생: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         await analyzer.close()
@@ -218,7 +235,9 @@ async def get_sell_prices_for_stock(
 
         if not valid_prices:
             print(f"  ⚠️  {symbol}의 매도 가격이 조건에 맞지 않습니다.")
-            print(f"      - 평균 매수가: ${avg_buy_price:,.2f} (1% 이상: ${min_sell_price:,.2f})")
+            print(
+                f"      - 평균 매수가: ${avg_buy_price:,.2f} (1% 이상: ${min_sell_price:,.2f})"
+            )
             print(f"      - 현재가: ${current_price:,.2f}")
             print(f"      - 조건: 매도가 >= ${max(min_sell_price, current_price):,.2f}")
             return []
@@ -257,9 +276,7 @@ async def place_multiple_sell_orders(
     if len(sell_prices) == 1:
         # 가격이 1개만 있으면 전량 매도
         print("  📤 단일 가격 전량 매도")
-        await place_new_sell_order(
-            symbol, exchange_code, quantity, sell_prices[0]
-        )
+        await place_new_sell_order(symbol, exchange_code, quantity, sell_prices[0])
         return
 
     # 가격을 오름차순으로 정렬
@@ -279,7 +296,7 @@ async def place_multiple_sell_orders(
     if quantity_int < num_prices:
         # 보유 수량이 가격 개수보다 적음 → 보유 수량만큼만 가격 사용
         # 예: 2주 보유, 4개 가격 → 첫 2개 가격에 1주씩
-        split_prices = sell_prices_sorted[:quantity_int - 1]  # 마지막 1개 제외
+        split_prices = sell_prices_sorted[: quantity_int - 1]  # 마지막 1개 제외
         highest_price = sell_prices_sorted[quantity_int - 1]  # 보유 수량 번째 가격
         shares_per_price = 1  # 각 가격에 1주씩
         print(

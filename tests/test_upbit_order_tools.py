@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services import upbit
+from app.integrations import upbit
 
 
 @pytest.mark.asyncio

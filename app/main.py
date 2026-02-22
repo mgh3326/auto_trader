@@ -34,6 +34,11 @@ from app.routers import (
     trading,
     websocket,
 )
+from app.services.error_serialization import (
+    domain_error_status_code,
+    is_domain_error,
+    serialize_domain_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +112,12 @@ def create_app() -> FastAPI:
                 "client": request.client.host if request.client else None,
             },
         )
+
+        if is_domain_error(exc):
+            return JSONResponse(
+                status_code=domain_error_status_code(exc),
+                content=serialize_domain_error(exc),
+            )
 
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

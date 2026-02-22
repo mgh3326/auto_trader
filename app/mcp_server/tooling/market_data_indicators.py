@@ -9,15 +9,15 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
+from app.integrations import upbit as upbit_service
+from app.integrations import yahoo as yahoo_service
+from app.integrations.kis import KISClient
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
 from app.mcp_server.tooling.shared import (
     to_optional_float as _to_optional_float,
 )
-from app.services import upbit as upbit_service
-from app.services import yahoo as yahoo_service
-from app.services.kis import KISClient
 
 IndicatorType = Literal[
     "sma", "ema", "rsi", "macd", "bollinger", "atr", "pivot", "adx", "stoch_rsi", "obv"

@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from app.analysis.prompt import build_prompt
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
-from app.services.kis import kis  # 경로는 실제 패키지 구조에 맞게
+from app.integrations.kis import kis  # 경로는 실제 패키지 구조에 맞게
 from app.services.kr_symbol_universe_service import get_kr_symbol_by_name
 
 

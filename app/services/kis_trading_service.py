@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from app.core.symbol import to_db_symbol
-from app.services.kis import KISClient
+from app.integrations.kis import KISClient
 
 logger = logging.getLogger(__name__)
 

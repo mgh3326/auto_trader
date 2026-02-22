@@ -6,7 +6,7 @@ KIS 국내주식 자동 매도 주문 시스템
 import asyncio
 
 from app.analysis.service_analyzers import KISAnalyzer
-from app.services.kis import kis
+from app.integrations.kis import kis
 
 # ===== 매도 전략 설정 =====
 SELL_STRATEGY = "split"  # "split": 분할 지정가 매도
@@ -15,9 +15,7 @@ SELL_STRATEGY = "split"  # "split": 분할 지정가 매도
 
 
 async def cancel_existing_sell_orders(
-    stock_code: str,
-    all_open_orders: list[dict],
-    is_mock: bool = False
+    stock_code: str, all_open_orders: list[dict], is_mock: bool = False
 ):
     """
     특정 종목의 기존 매도 주문들을 취소합니다.
@@ -31,8 +29,9 @@ async def cancel_existing_sell_orders(
         # 해당 종목의 매도 주문만 필터링
         # sll_buy_dvsn_cd: 01=매도, 02=매수
         sell_orders = [
-            order for order in all_open_orders
-            if order.get('pdno') == stock_code and order.get('sll_buy_dvsn_cd') == '01'
+            order
+            for order in all_open_orders
+            if order.get("pdno") == stock_code and order.get("sll_buy_dvsn_cd") == "01"
         ]
 
         if not sell_orders:
@@ -45,11 +44,13 @@ async def cancel_existing_sell_orders(
         success_count = 0
         for order in sell_orders:
             try:
-                order_number = order.get('ord_no')  # 주문번호
-                order_qty = int(order.get('ord_qty', 0))  # 주문수량
-                order_price = int(float(order.get('ord_unpr', 0)))  # 주문단가
+                order_number = order.get("ord_no")  # 주문번호
+                order_qty = int(order.get("ord_qty", 0))  # 주문수량
+                order_price = int(float(order.get("ord_unpr", 0)))  # 주문단가
 
-                print(f"     🔄 주문 취소 중: {order_number} ({order_qty}주 @ {order_price:,}원)")
+                print(
+                    f"     🔄 주문 취소 중: {order_number} ({order_qty}주 @ {order_price:,}원)"
+                )
 
                 result = await kis.cancel_korea_order(
                     order_number=order_number,
@@ -57,7 +58,7 @@ async def cancel_existing_sell_orders(
                     quantity=order_qty,
                     price=order_price,
                     order_type="sell",
-                    is_mock=is_mock
+                    is_mock=is_mock,
                 )
 
                 print(f"     ✅ 취소 완료: {result.get('odno')}")
@@ -95,12 +96,14 @@ async def process_sell_orders_for_my_stocks():
 
         # 보유 주식 정보 출력
         for stock in kr_stocks:
-            stock_code = stock.get('pdno')  # 종목코드
-            stock_name = stock.get('prdt_name')  # 종목명
-            quantity = int(stock.get('hldg_qty', 0))  # 보유수량
-            avg_buy_price = int(float(stock.get('pchs_avg_pric', 0)))  # 매입평균가격
+            stock_code = stock.get("pdno")  # 종목코드
+            stock_name = stock.get("prdt_name")  # 종목명
+            quantity = int(stock.get("hldg_qty", 0))  # 보유수량
+            avg_buy_price = int(float(stock.get("pchs_avg_pric", 0)))  # 매입평균가격
             evaluation = quantity * avg_buy_price
-            print(f"  - {stock_name} ({stock_code}): {quantity}주 (평가액: {evaluation:,}원)")
+            print(
+                f"  - {stock_name} ({stock_code}): {quantity}주 (평가액: {evaluation:,}원)"
+            )
 
         # 미체결 주문 조회 (한 번만)
         print("\n=== 미체결 주문 조회 ===")
@@ -108,16 +111,18 @@ async def process_sell_orders_for_my_stocks():
         print(f"총 {len(all_open_orders)}개의 미체결 주문 발견")
 
         # 매도 주문만 카운트
-        sell_orders_count = len([o for o in all_open_orders if o.get('sll_buy_dvsn_cd') == '01'])
+        sell_orders_count = len(
+            [o for o in all_open_orders if o.get("sll_buy_dvsn_cd") == "01"]
+        )
         print(f"  - 매도 주문: {sell_orders_count}개")
         print(f"  - 매수 주문: {len(all_open_orders) - sell_orders_count}개")
 
         # 각 주식에 대해 매도 주문 처리
         for stock in kr_stocks:
-            stock_code = stock.get('pdno')  # 종목코드
-            stock_name = stock.get('prdt_name')  # 종목명
-            quantity = int(stock.get('hldg_qty', 0))  # 보유수량
-            avg_buy_price = int(float(stock.get('pchs_avg_pric', 0)))  # 매입평균가격
+            stock_code = stock.get("pdno")  # 종목코드
+            stock_name = stock.get("prdt_name")  # 종목명
+            quantity = int(stock.get("hldg_qty", 0))  # 보유수량
+            avg_buy_price = int(float(stock.get("pchs_avg_pric", 0)))  # 매입평균가격
 
             print(f"\n{'=' * 70}")
             print(f"=== {stock_name} ({stock_code}) 매도 주문 처리 ===")
@@ -132,7 +137,7 @@ async def process_sell_orders_for_my_stocks():
             # 현재가 조회
             try:
                 current_price_df = await kis.inquire_price(stock_code)
-                current_price = int(float(current_price_df.iloc[0]['close']))
+                current_price = int(float(current_price_df.iloc[0]["close"]))
                 print(f"  💰 현재가: {current_price:,}원")
             except Exception as e:
                 print(f"  ❌ 현재가 조회 실패: {e}")
@@ -140,7 +145,9 @@ async def process_sell_orders_for_my_stocks():
 
             # 기존 매도 주문 확인 및 취소 (미리 조회한 데이터 사용)
             print("\n  🔍 기존 매도 주문 확인 및 취소...")
-            await cancel_existing_sell_orders(stock_code, all_open_orders, is_mock=False)
+            await cancel_existing_sell_orders(
+                stock_code, all_open_orders, is_mock=False
+            )
 
             # API 서버 데이터 동기화를 위해 잠시 대기
             print("  ⏳ API 서버 동기화를 위해 1초 대기...")
@@ -163,6 +170,7 @@ async def process_sell_orders_for_my_stocks():
     except Exception as e:
         print(f"❌ 에러 발생: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         await analyzer.close()
@@ -191,9 +199,13 @@ async def get_sell_prices_for_stock(
 
         # appropriate_sell 범위
         if analysis.appropriate_sell_min is not None:
-            sell_prices.append(("appropriate_sell_min", int(analysis.appropriate_sell_min)))
+            sell_prices.append(
+                ("appropriate_sell_min", int(analysis.appropriate_sell_min))
+            )
         if analysis.appropriate_sell_max is not None:
-            sell_prices.append(("appropriate_sell_max", int(analysis.appropriate_sell_max)))
+            sell_prices.append(
+                ("appropriate_sell_max", int(analysis.appropriate_sell_max))
+            )
 
         # sell_target 범위
         if analysis.sell_target_min is not None:
@@ -211,7 +223,9 @@ async def get_sell_prices_for_stock(
 
         if not valid_prices:
             print(f"  ⚠️  {stock_name}의 매도 가격이 조건에 맞지 않습니다.")
-            print(f"      - 평균 매수가: {avg_buy_price:,}원 (1% 이상: {min_sell_price:,}원)")
+            print(
+                f"      - 평균 매수가: {avg_buy_price:,}원 (1% 이상: {min_sell_price:,}원)"
+            )
             print(f"      - 현재가: {current_price:,}원")
             print(f"      - 조건: 매도가 >= {max(min_sell_price, current_price):,}원")
             return []
@@ -249,9 +263,7 @@ async def place_multiple_sell_orders(
     if len(sell_prices) == 1:
         # 가격이 1개만 있으면 전량 매도
         print("  📤 단일 가격 전량 매도")
-        await place_new_sell_order(
-            stock_code, quantity, sell_prices[0]
-        )
+        await place_new_sell_order(stock_code, quantity, sell_prices[0])
         return
 
     # 가격을 오름차순으로 정렬
@@ -263,7 +275,7 @@ async def place_multiple_sell_orders(
     if quantity < num_prices:
         # 보유 수량이 가격 개수보다 적음 → 보유 수량만큼만 가격 사용
         # 예: 2주 보유, 4개 가격 → 첫 2개 가격에 1주씩
-        split_prices = sell_prices_sorted[:quantity - 1]  # 마지막 1개 제외
+        split_prices = sell_prices_sorted[: quantity - 1]  # 마지막 1개 제외
         highest_price = sell_prices_sorted[quantity - 1]  # 보유 수량 번째 가격
         shares_per_price = 1  # 각 가격에 1주씩
         print(
@@ -382,9 +394,7 @@ def _print_error_hint(e: Exception):
         print("             - 가격 단위 확인")
 
 
-async def place_new_sell_order(
-    stock_code: str, quantity: int, sell_price: int
-):
+async def place_new_sell_order(stock_code: str, quantity: int, sell_price: int):
     """단일 매도 주문을 넣습니다."""
     try:
         print(f"  📤 매도 주문 실행: {quantity}주")
