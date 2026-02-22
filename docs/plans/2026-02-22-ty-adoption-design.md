@@ -22,17 +22,17 @@
 
 ### Developer command interface
 
-- `make lint`: `uv run pyright app/` -> `uv run ty check app/`
-- `make typecheck`: `uv run pyright app/` -> `uv run ty check app/`
+- `make lint`: `uv run pyright app/` -> `uv run ty check app/ --error-on-warning`
+- `make typecheck`: `uv run pyright app/` -> `uv run ty check app/ --error-on-warning`
 
 ### CI interface
 
 - `.github/workflows/test.yml`
   - `Run Pyright` -> `Run ty`
-  - `uv run pyright app/` -> `uv run ty check app/`
+  - `uv run pyright app/` -> `uv run ty check app/ --error-on-warning`
 - `.circleci/config.yml`
   - `Run Pyright type checker` -> `Run ty type checker`
-  - `uv run pyright app/` -> `uv run ty check app/`
+  - `uv run pyright app/` -> `uv run ty check app/ --error-on-warning`
 
 ### Config contract
 
@@ -76,7 +76,7 @@ all = "warn"
 
 ### 실패 시나리오
 
-- `uv run ty check app/` 실패 시 CI가 차단된다.
+- `uv run ty check app/ --error-on-warning` 실패 시 CI가 차단된다.
 - 히스토리 문서 외 경로에서 `pyright` 잔존 참조가 발견되면 실패로 처리한다.
 
 ### 회귀 방지
@@ -88,10 +88,10 @@ all = "warn"
 ```bash
 uv run ruff check app/ tests/
 uv run ruff format --check app/ tests/
-uv run ty check app/
+uv run ty check app/ --error-on-warning
 make lint
 make typecheck
-rg -n "\bpyright\b|\[tool\.pyright\]"
+rg -n "\bpyright\b|\[tool\.pyright\]" --glob '!docs/plans/**' --glob '!blog/**'
 ```
 
 ## References

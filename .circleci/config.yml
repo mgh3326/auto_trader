@@ -79,7 +79,7 @@ jobs:
           command: uv run ruff format --check app/ tests/
       - run:
           name: Run ty type checker
-          command: uv run ty check app/
+          command: uv run ty check app/ --error-on-warning
 
   test:
     executor: test-executor

@@ -31,14 +31,14 @@ test-watch: ## Run tests in watch mode
 lint: ## Run linting checks (Ruff + ty)
 	uv run ruff check app/ tests/
 	uv run ruff format --check app/ tests/
-	uv run ty check app/
+	uv run ty check app/ --error-on-warning
 
 format: ## Format code with Ruff
 	uv run ruff format app/ tests/
 	uv run ruff check --fix app/ tests/
 
 typecheck: ## Run ty type checking
-	uv run ty check app/
+	uv run ty check app/ --error-on-warning
 
 security: ## Run security checks
 	uv run bandit -r app/

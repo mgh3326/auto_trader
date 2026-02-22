@@ -6,7 +6,7 @@ Python 코드 품질 게이트를 `Ruff + ty`로 단일화한다.
 
 - 전환 방식: 기존 타입체커 제거 후 `ty` 즉시 치환 (병행 운영 없음)
 - 타입체킹 범위: `app/` 유지
-- CI 정책: 타입체킹 실패 시 PR 차단
+- CI 정책: 타입체킹 경고/오류 모두 PR 차단 (`--error-on-warning`)
 - 문서 정책:
   - 갱신 대상: `README.md`, `TOOLING_MIGRATION_PLAN.md`, `AGENTS.md`, `CLAUDE.md`
   - 기록 보존: `docs/plans/*`, `blog/*`
@@ -18,7 +18,7 @@ Python 코드 품질 게이트를 `Ruff + ty`로 단일화한다.
 - Python 버전 기준: 3.13
 - 엄격도: 기본 모드 (전역 strict 미적용)
 - 설정 파일: `pyproject.toml`
-- 규칙 기본값: `all = "warn"` (즉시 전환 시 기존 코드베이스와의 호환성 유지)
+- 규칙 기본값: `all = "warn"` (규칙 심각도는 warn으로 두되, 게이트는 `--error-on-warning`로 차단)
 
 ## Applied Contract Changes
 
@@ -26,19 +26,19 @@ Python 코드 품질 게이트를 `Ruff + ty`로 단일화한다.
 
 - `make lint`
   - 변경 전: 기존 타입체커 호출
-  - 변경 후: `uv run ty check app/`
+  - 변경 후: `uv run ty check app/ --error-on-warning`
 - `make typecheck`
   - 변경 전: 기존 타입체커 호출
-  - 변경 후: `uv run ty check app/`
+  - 변경 후: `uv run ty check app/ --error-on-warning`
 
 ### 2) CI commands
 
 - GitHub Actions (`.github/workflows/test.yml`)
   - 기존 타입체커 스텝 -> `Run ty`
-  - 기존 타입체커 명령 -> `uv run ty check app/`
+  - 기존 타입체커 명령 -> `uv run ty check app/ --error-on-warning`
 - CircleCI (`.circleci/config.yml`)
   - 기존 타입체커 스텝 -> `Run ty type checker`
-  - 기존 타입체커 명령 -> `uv run ty check app/`
+  - 기존 타입체커 명령 -> `uv run ty check app/ --error-on-warning`
 
 ### 3) Type checker configuration
 
@@ -76,10 +76,10 @@ all = "warn"
 ```bash
 uv run ruff check app/ tests/
 uv run ruff format --check app/ tests/
-uv run ty check app/
+uv run ty check app/ --error-on-warning
 make lint
 make typecheck
-rg -n "\bty\b|\[tool\.ty\]"
+rg -n "\bpyright\b|\[tool\.pyright\]" --glob '!docs/plans/**' --glob '!blog/**' --glob '!TOOLING_MIGRATION_PLAN.md'
 ```
 
 ## Expected Residual References
