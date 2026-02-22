@@ -21,17 +21,17 @@
 
 ```bash
 # 1. 분석 실행
-$ python debug_upbit_json.py
+$ python <ad-hoc-analysis-command>
 ⏳ 비트코인 분석 중... (30초 소요)
 ✅ 분석 완료
 
 # 2. 매수 실행
-$ python debug_upbit_buy_post_orders.py
+$ python <ad-hoc-buy-command>
 ⏳ 매수 주문 처리 중...
 ✅ 주문 완료
 
 # 3. 매도 실행
-$ python debug_upbit_post_orders.py
+$ python <ad-hoc-sell-command>
 ⏳ 매도 주문 처리 중...
 ✅ 주문 완료
 ```

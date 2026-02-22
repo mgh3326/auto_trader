@@ -28,6 +28,6 @@
 - Do not move core fixtures out of `tests/conftest.py` unless fixture scope/ownership is explicit.
 
 ## NOTES
-- Root-level `test_websocket.py` and `blog/test_*.py` exist outside `tests/`; treat them as supplemental scripts.
+- Root-level one-off websocket test scripts were removed; `blog/test_*.py` remains supplemental and is not part of canonical `tests/` discovery.
 - CI runs lint before tests and uses PostgreSQL/Redis services for integration-sensitive coverage.
 - When adding new MCP behavior, update both positive and unsupported-market/error-path tests.

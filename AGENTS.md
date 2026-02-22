@@ -60,7 +60,7 @@ auto_trader/
 
 ## UNIQUE STYLES
 - Multi-runtime repository: API, worker/scheduler, MCP process, and websocket monitors all coexist.
-- Root includes many operator/debug utilities (`debug_*.py`, monitor scripts, management CLIs).
+- Root keeps only stable operator entrypoints (`manage_users.py`, `websocket_monitor.py`, `kis_websocket_monitor.py`, `upbit_websocket_monitor.py`); ad-hoc debug/one-off scripts are intentionally removed.
 - Production compose is host-network oriented and includes a migration profile workflow.
 - KR/US symbol universes are DB-backed (`kr_symbol_universe`, `us_symbol_universe`) and synced via `app/services/kr_symbol_universe_service.py` and `app/services/us_symbol_universe_service.py`.
 
