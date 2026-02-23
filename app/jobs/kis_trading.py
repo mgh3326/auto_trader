@@ -1044,6 +1044,7 @@ async def _analyze_overseas_stock_async(symbol: str) -> dict[str, object]:
 
     import app.services.brokers.yahoo.client as yahoo
     from app.analysis.service_analyzers import YahooAnalyzer
+
     analyzer = (
         YahooAnalyzer()
     )  # 해외 주식은 YahooAnalyzer 사용 (또는 KISAnalyzer 확장 필요 시 변경)

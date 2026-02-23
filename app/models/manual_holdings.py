@@ -24,7 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 
-class BrokerType(str, enum.Enum):
+class BrokerType(enum.StrEnum):
     """브로커 타입"""
 
     KIS = "kis"  # 한국투자증권
@@ -33,7 +33,7 @@ class BrokerType(str, enum.Enum):
     SAMSUNG = "samsung"  # 삼성증권
 
 
-class MarketType(str, enum.Enum):
+class MarketType(enum.StrEnum):
     """시장 타입"""
 
     KR = "KR"  # 국내주식

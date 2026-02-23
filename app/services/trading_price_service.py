@@ -14,7 +14,7 @@ from app.services.merged_portfolio_service import ReferencePrices
 logger = logging.getLogger(__name__)
 
 
-class PriceStrategy(str, enum.Enum):
+class PriceStrategy(enum.StrEnum):
     """가격 전략"""
 
     # 공통

@@ -10,7 +10,7 @@ from app.core.config import settings
 from data.disclosures.dart_corp_index import NAME_TO_CORP, prime_index
 
 
-class ReportType(str, enum.Enum):
+class ReportType(enum.StrEnum):
     """DART 공시 유형 (Report Type).
 
     - periodic: 정기 (반기/사업/분기보고서)

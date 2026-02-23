@@ -303,7 +303,9 @@ class TestKISService:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
         monkeypatch.setattr(
-            "app.services.brokers.kis.client.settings.kis_account_no", "12345678-01", raising=False
+            "app.services.brokers.kis.client.settings.kis_account_no",
+            "12345678-01",
+            raising=False,
         )
 
         from app.services.brokers.kis.client import KISClient
@@ -344,7 +346,9 @@ class TestKISService:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
         monkeypatch.setattr(
-            "app.services.brokers.kis.client.settings.kis_account_no", "12345678-01", raising=False
+            "app.services.brokers.kis.client.settings.kis_account_no",
+            "12345678-01",
+            raising=False,
         )
 
         from app.services.brokers.kis.client import KISClient
@@ -374,7 +378,9 @@ class TestKISService:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
         monkeypatch.setattr(
-            "app.services.brokers.kis.client.settings.kis_account_no", "12345678-01", raising=False
+            "app.services.brokers.kis.client.settings.kis_account_no",
+            "12345678-01",
+            raising=False,
         )
 
         from app.services.brokers.kis.client import KISClient
@@ -413,7 +419,9 @@ class TestKISService:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
         monkeypatch.setattr(
-            "app.services.brokers.kis.client.settings.kis_account_no", "12345678-01", raising=False
+            "app.services.brokers.kis.client.settings.kis_account_no",
+            "12345678-01",
+            raising=False,
         )
 
         from app.services.brokers.kis.client import KISClient
@@ -459,7 +467,9 @@ class TestKISService:
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
         monkeypatch.setattr(
-            "app.services.brokers.kis.client.settings.kis_account_no", "12345678-01", raising=False
+            "app.services.brokers.kis.client.settings.kis_account_no",
+            "12345678-01",
+            raising=False,
         )
 
         from app.services.brokers.kis.client import KISClient
@@ -584,6 +594,7 @@ class TestYahooService:
     @pytest.mark.asyncio
     async def test_fetch_price_offloads_blocking_call_to_thread(self, monkeypatch):
         import app.services.brokers.yahoo.client as yahoo
+
         expected = pd.DataFrame([{"close": 123.45}]).set_index(
             pd.Index(["AAPL"], name="code")
         )
