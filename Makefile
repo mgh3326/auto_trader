@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-unit test-integration test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test sync-kr-symbol-universe sync-upbit-symbol-universe sync-us-symbol-universe
+.PHONY: help install install-dev test test-unit test-integration test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test sync-kr-symbol-universe sync-upbit-symbol-universe sync-us-symbol-universe sync-kr-candles-backfill sync-kr-candles-incremental
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -71,6 +71,12 @@ sync-upbit-symbol-universe: ## Sync Upbit symbol universe for crypto symbol reso
 
 sync-us-symbol-universe: ## Sync US symbol universe for US symbol/exchange resolution
 	uv run python scripts/sync_us_symbol_universe.py
+
+sync-kr-candles-backfill: ## Backfill KR candles for recent sessions
+	uv run python scripts/sync_kr_candles.py --mode backfill --sessions 10
+
+sync-kr-candles-incremental: ## Incremental KR candles sync (venue-gated)
+	uv run python scripts/sync_kr_candles.py --mode incremental
 
 docker-build: ## Build Docker image
 	docker build -t auto-trader .

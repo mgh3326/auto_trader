@@ -105,6 +105,32 @@ END
 $$;
 
 DO $$
+BEGIN
+    IF to_regclass('public.kr_candles_1m') IS NOT NULL THEN
+        PERFORM remove_retention_policy(
+            'public.kr_candles_1m',
+            if_exists => TRUE
+        );
+        PERFORM add_retention_policy(
+            'public.kr_candles_1m',
+            INTERVAL '90 days'
+        );
+    END IF;
+
+    IF to_regclass('public.kr_candles_1h') IS NOT NULL THEN
+        PERFORM remove_retention_policy(
+            'public.kr_candles_1h',
+            if_exists => TRUE
+        );
+        PERFORM add_retention_policy(
+            'public.kr_candles_1h',
+            INTERVAL '90 days'
+        );
+    END IF;
+END
+$$;
+
+DO $$
 DECLARE
     v_start TIMESTAMPTZ;
     v_end TIMESTAMPTZ;
