@@ -27,11 +27,16 @@ from app.jobs.analyze import (
     run_analysis_for_my_coins,
     run_per_coin_automation_task,
 )
-from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.stock_info_service import (
     StockAnalysisService,
 )
 from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
+from app.services.upbit_symbol_universe_service import (
+    UpbitSymbolInactiveError,
+    UpbitSymbolNotRegisteredError,
+    get_upbit_korean_name_by_coin,
+    get_upbit_market_by_coin,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/upbit-trading", tags=["Upbit Trading"])
@@ -77,23 +82,23 @@ async def get_my_coins(
     tradable_coins: list[dict] = []
     try:
         logger.info("Starting get_my_coins request")
-        await upbit_pairs.prime_upbit_constants()
-        logger.info("Upbit constants primed successfully")
 
         my_coins = await upbit.fetch_my_coins()
         logger.info(f"Fetched {len(my_coins)} coins from Upbit")
 
         analyzer = UpbitAnalyzer()
-        tradable_coins = [
-            coin
-            for coin in my_coins
-            if coin.get("currency") != "KRW"
-            and analyzer.is_tradable(coin)
-            and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
-        ]
+        tradable_coins = []
+        for coin in my_coins:
+            currency = str(coin.get("currency") or "").upper()
+            if not currency or currency == "KRW" or not analyzer.is_tradable(coin):
+                continue
+            resolved_market = await get_upbit_market_by_coin(currency, db=db)
+            coin["currency"] = currency
+            coin["_resolved_market"] = resolved_market
+            tradable_coins.append(coin)
 
         if tradable_coins:
-            market_codes = [f"KRW-{coin['currency']}" for coin in tradable_coins]
+            market_codes = [str(coin["_resolved_market"]) for coin in tradable_coins]
             current_prices = await upbit.fetch_multiple_current_prices(market_codes)
             analysis_service = StockAnalysisService(db)
             settings_service = SymbolTradeSettingsService(db)
@@ -112,7 +117,7 @@ async def get_my_coins(
 
             for coin in tradable_coins:
                 currency = coin["currency"]
-                market = f"KRW-{currency}"
+                market = str(coin["_resolved_market"])
                 balance_raw = coin.get("balance", "0")
                 locked_raw = coin.get("locked", "0")
                 balance_decimal = _to_decimal(balance_raw)
@@ -121,7 +126,7 @@ async def get_my_coins(
                 locked = float(locked_decimal)
                 avg_buy_price = float(coin.get("avg_buy_price", 0))
 
-                korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency, currency)
+                korean_name = await get_upbit_korean_name_by_coin(currency, db=db)
                 coin["korean_name"] = korean_name
                 coin["balance_raw"] = str(balance_raw)
                 coin["locked_raw"] = str(locked_raw)
@@ -315,16 +320,15 @@ async def analyze_coin(currency: str):
     currency_code = currency.upper()
 
     try:
-        await upbit_pairs.prime_upbit_constants()
-
-        if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"{currency_code}는 KRW 마켓 거래 대상이 아닙니다.",
-            )
+        await get_upbit_market_by_coin(currency_code)
 
         result = await run_analysis_for_coin_task(currency_code)
         return {"success": True, **result}
+    except (UpbitSymbolNotRegisteredError, UpbitSymbolInactiveError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{currency_code}는 KRW 마켓 거래 대상이 아닙니다.",
+        ) from None
     except HTTPException:
         raise
     except Exception as e:
@@ -355,8 +359,6 @@ async def execute_coin_sell_orders(currency: str):
 async def get_open_orders():
     """체결 대기 중인 모든 주문 조회"""
     try:
-        await upbit_pairs.prime_upbit_constants()
-
         # 현재 보유 자산 정보는 보조 메타데이터로 활용
         my_coins = await upbit.fetch_my_coins()
         holdings = {
@@ -375,7 +377,7 @@ async def get_open_orders():
                 currency = market
 
             korean_name = (
-                upbit_pairs.COIN_TO_NAME_KR.get(currency, currency) if currency else ""
+                await get_upbit_korean_name_by_coin(currency) if currency else ""
             )
             holding = holdings.get(currency)
 
@@ -410,8 +412,6 @@ async def get_open_orders():
 async def cancel_all_orders():
     """모든 미체결 주문 취소"""
     try:
-        await upbit_pairs.prime_upbit_constants()
-
         open_orders = await upbit.fetch_open_orders()
 
         if not open_orders:

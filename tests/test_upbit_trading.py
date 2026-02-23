@@ -3,6 +3,8 @@ Tests covering the Upbit trading router endpoints.
 """
 
 from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,9 +13,6 @@ import pytest
 async def test_get_my_coins_success(monkeypatch):
     """보유 코인 조회가 정상 구조로 응답하는지 확인."""
     from app.routers import upbit_trading
-
-    async def fake_prime():
-        return None
 
     sample_coins = [
         {
@@ -63,10 +62,6 @@ async def test_get_my_coins_success(monkeypatch):
             return None  # No settings configured
 
     monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.prime_upbit_constants",
-        fake_prime,
-    )
-    monkeypatch.setattr(
         "app.services.brokers.upbit.client.fetch_my_coins",
         fake_fetch_my_coins,
     )
@@ -75,14 +70,12 @@ async def test_get_my_coins_success(monkeypatch):
         fake_fetch_prices,
     )
     monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.KRW_TRADABLE_COINS",
-        {"BTC"},
-        raising=False,
+        upbit_trading, "get_upbit_market_by_coin", AsyncMock(return_value="KRW-BTC")
     )
     monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.COIN_TO_NAME_KR",
-        {"BTC": "비트코인"},
-        raising=False,
+        upbit_trading,
+        "get_upbit_korean_name_by_coin",
+        AsyncMock(return_value="비트코인"),
     )
     monkeypatch.setattr(
         upbit_trading,
@@ -100,7 +93,7 @@ async def test_get_my_coins_success(monkeypatch):
         DummySettingsService,
     )
 
-    response = await upbit_trading.get_my_coins(db=object())
+    response = await upbit_trading.get_my_coins(db=cast(Any, object()))
 
     assert response["success"] is True
     assert response["tradable_coins_count"] == 1

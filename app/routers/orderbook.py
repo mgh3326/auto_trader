@@ -14,7 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.core.templates import templates
 from app.services import upbit_orderbook
-from app.services import upbit_symbol_universe_service as upbit_pairs
+from app.services.upbit_symbol_universe_service import (
+    UpbitSymbolUniverseLookupError,
+    get_active_upbit_markets,
+)
 from app.services.websocket_connection_manager import manager
 
 logger = logging.getLogger(__name__)
@@ -42,9 +45,10 @@ async def get_available_markets(db: AsyncSession = Depends(get_db)):
         - markets: list of market codes (e.g. ["KRW-BTC", "KRW-ETH"])
     """
     try:
-        await upbit_pairs.prime_upbit_constants()
-        markets = sorted(upbit_pairs.COIN_TO_PAIR.values())
+        markets = sorted(await get_active_upbit_markets(db=db, quote_currency="KRW"))
         return {"markets": markets}
+    except UpbitSymbolUniverseLookupError:
+        raise
     except Exception as e:
         logger.error(f"Failed to get markets: {e}")
         return {"markets": []}
@@ -111,8 +115,7 @@ async def fetch_all_orderbooks():
         dict: orderbook data per market
     """
     try:
-        await upbit_pairs.prime_upbit_constants()
-        markets = list(upbit_pairs.COIN_TO_PAIR.values())
+        markets = list(await get_active_upbit_markets(quote_currency="KRW"))
 
         orderbooks = await upbit_orderbook.fetch_multiple_orderbooks(markets)
 
@@ -121,6 +124,8 @@ async def fetch_all_orderbooks():
             "timestamp": int(asyncio.get_event_loop().time()),
             "data": orderbooks,
         }
+    except UpbitSymbolUniverseLookupError:
+        raise
     except Exception as e:
         logger.error(f"Failed to fetch orderbook data: {e}")
         return {

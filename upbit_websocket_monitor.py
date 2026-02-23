@@ -9,7 +9,6 @@ import logging
 
 from app.analysis.service_analyzers import UpbitAnalyzer
 from app.monitoring.sentry import capture_exception, init_sentry
-from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.upbit_websocket import UpbitOrderAnalysisService
 
 # 로깅 설정
@@ -22,9 +21,6 @@ logger = logging.getLogger(__name__)
 async def main():
     """메인 실행 함수"""
     init_sentry(service_name="auto-trader-upbit-ws")
-
-    # Upbit 상수 초기화
-    await upbit_pairs.prime_upbit_constants()
 
     # 분석기 초기화
     analyzer = UpbitAnalyzer()

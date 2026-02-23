@@ -11,7 +11,10 @@ import jwt
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from app.core.config import settings
-from app.services import upbit_symbol_universe_service as upbit_pairs
+from app.services.upbit_symbol_universe_service import (
+    UpbitSymbolUniverseLookupError,
+    get_upbit_korean_name_by_market,
+)
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -299,12 +302,7 @@ class UpbitOrderAnalysisService:
                 return
 
             # 페어를 한국 이름으로 변환
-            await upbit_pairs.prime_upbit_constants()
-            coin_name = upbit_pairs.PAIR_TO_NAME_KR.get(code)
-
-            if not coin_name:
-                logger.warning(f"코인명을 찾을 수 없음: {code}")
-                return
+            coin_name = await get_upbit_korean_name_by_market(code)
 
             # 매수/매도 구분
             ask_bid = order_data.get("ask_bid")  # "ASK"(매도) 또는 "BID"(매수)
@@ -323,6 +321,9 @@ class UpbitOrderAnalysisService:
             else:
                 logger.warning("분석 콜백이 설정되지 않았습니다.")
 
+        except UpbitSymbolUniverseLookupError:
+            logger.error(f"주문 데이터 심볼 해석 오류: {order_data}", exc_info=True)
+            raise
         except Exception as e:
             logger.error(f"주문 데이터 처리 오류: {e}")
             logger.error(f"문제가 된 데이터: {order_data}")

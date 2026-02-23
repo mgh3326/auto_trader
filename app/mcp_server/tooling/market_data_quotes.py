@@ -46,7 +46,7 @@ from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.services import kis_ohlcv_cache
 from app.services.brokers.kis.client import KISClient
 from app.services.kr_symbol_universe_service import search_kr_symbols
-from app.services.upbit_symbol_universe_service import get_or_refresh_maps
+from app.services.upbit_symbol_universe_service import search_upbit_symbols
 from app.services.us_symbol_universe_service import search_us_symbols
 
 if TYPE_CHECKING:
@@ -62,8 +62,6 @@ async def _search_master_data(
 ) -> list[dict[str, Any]]:
     """Search symbols across KRX, US, and Upbit master datasets."""
     results: list[dict[str, Any]] = []
-    query_lower = query.lower()
-    query_upper = query.upper()
 
     if instrument_type is None or instrument_type == "equity_kr":
         kr_results = await search_kr_symbols(query, limit)
@@ -80,24 +78,12 @@ async def _search_master_data(
                 return results
 
     if instrument_type is None or instrument_type == "crypto":
-        try:
-            crypto_maps = await get_or_refresh_maps()
-            name_to_pair = crypto_maps.get("NAME_TO_PAIR_KR", {})
-            for name, pair in name_to_pair.items():
-                if query_lower in name.lower() or query_upper in pair.upper():
-                    results.append(
-                        {
-                            "symbol": pair,
-                            "name": name,
-                            "instrument_type": "crypto",
-                            "exchange": "Upbit",
-                            "is_active": True,
-                        }
-                    )
-                    if len(results) >= limit:
-                        return results
-        except Exception:
-            pass
+        remaining = limit - len(results)
+        if remaining > 0:
+            crypto_results = await search_upbit_symbols(query, remaining)
+            results.extend(crypto_results)
+            if len(results) >= limit:
+                return results
 
     return results
 

@@ -15,7 +15,6 @@ from typing import Any
 from app.core.config import settings
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
-from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.fill_notification import (
     FillOrder,
     normalize_kis_fill,
@@ -160,7 +159,6 @@ class UnifiedWebSocketMonitor:
 
     async def _start_upbit(self) -> None:
         """Upbit WebSocket 시작"""
-        await upbit_pairs.prime_upbit_constants()
         self.upbit_ws = UpbitMyOrderWebSocket(
             on_order_callback=self._on_upbit_order,
             verify_ssl=False,

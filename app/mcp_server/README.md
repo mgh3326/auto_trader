@@ -67,6 +67,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - Upbit crypto symbol/market resolution uses DB table `upbit_symbol_universe` only.
 - Runtime does not call Upbit `/v1/market/all`; that endpoint is sync-path only.
 - If `upbit_symbol_universe` is empty/unavailable, tools fail fast with explicit sync hint.
+- If a coin/market lookup is missing or inactive in `upbit_symbol_universe`, MCP tools propagate explicit lookup errors (no silent fallback/default ticker).
+- `search_symbol` (crypto) uses DB-backed `search_upbit_symbols` only; in-memory map-based search is removed.
 - Upbit prerequisite: run `make sync-upbit-symbol-universe` (or `uv run python scripts/sync_upbit_symbol_universe.py`) right after migrations.
 - Scheduled sync task `symbols.upbit.universe.sync` runs daily at `06:15` KST (`cron: 15 6 * * *`, `cron_offset: Asia/Seoul`).
 

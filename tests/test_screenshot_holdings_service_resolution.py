@@ -13,6 +13,7 @@ import pytest
 from app.services.kr_symbol_universe_service import KRSymbolUniverseLookupError
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.stock_alias_service import StockAliasService
+from app.services.upbit_symbol_universe_service import UpbitSymbolNotRegisteredError
 from app.services.us_symbol_universe_service import USSymbolUniverseLookupError
 
 
@@ -43,14 +44,16 @@ def _setup_mocks(
     mock_db,
     mock_broker_account,
     existing_holdings=None,
-    crypto_maps=None,
+    crypto_name_to_market=None,
+    crypto_coin_to_market=None,
     kr_name_to_symbol=None,
     us_name_to_symbol=None,
     alias_ticker=None,
 ):
     """Helper to set up all required mocks."""
     existing_holdings = existing_holdings or []
-    crypto_maps = crypto_maps or {"NAME_TO_PAIR_KR": {}, "COIN_TO_NAME_KR": {}}
+    crypto_name_to_market = crypto_name_to_market or {}
+    crypto_coin_to_market = crypto_coin_to_market or {}
     kr_name_to_symbol = kr_name_to_symbol or {}
     us_name_to_symbol = us_name_to_symbol or {}
 
@@ -59,9 +62,27 @@ def _setup_mocks(
         existing_holdings
     )
 
+    async def mock_get_upbit_symbol_by_name(name, _db=None):
+        market = crypto_name_to_market.get(name)
+        if market is None:
+            raise UpbitSymbolNotRegisteredError("not found")
+        return market
+
     monkeypatch.setattr(
-        "app.services.screenshot_holdings_service.get_or_refresh_maps",
-        AsyncMock(return_value=crypto_maps),
+        "app.services.screenshot_holdings_service.get_upbit_symbol_by_name",
+        mock_get_upbit_symbol_by_name,
+    )
+
+    async def mock_get_upbit_market_by_coin(currency, quote_currency="KRW", db=None):
+        _ = quote_currency, db
+        market = crypto_coin_to_market.get(str(currency).upper())
+        if market is None:
+            raise UpbitSymbolNotRegisteredError("not found")
+        return market
+
+    monkeypatch.setattr(
+        "app.services.screenshot_holdings_service.get_upbit_market_by_coin",
+        mock_get_upbit_market_by_coin,
     )
 
     async def mock_get_kr_symbol_by_name(name, _db=None):
@@ -136,12 +157,12 @@ def _setup_mocks(
 async def test_crypto_korean_name_ethereum(
     service, mock_db, mock_broker_account, monkeypatch
 ):
-    """Scenario 1: '이더리움' + market_section='crypto' -> KRW-ETH, CRYPTO, crypto_name_kr"""
-    crypto_maps = {
-        "NAME_TO_PAIR_KR": {"이더리움": "KRW-ETH", "비트코인": "KRW-BTC"},
-        "COIN_TO_NAME_KR": {"ETH": "이더리움", "BTC": "비트코인"},
-    }
-    _setup_mocks(monkeypatch, mock_db, mock_broker_account, crypto_maps=crypto_maps)
+    _setup_mocks(
+        monkeypatch,
+        mock_db,
+        mock_broker_account,
+        crypto_name_to_market={"이더리움": "KRW-ETH", "비트코인": "KRW-BTC"},
+    )
 
     result = await service.resolve_and_update(
         user_id=1,
@@ -162,7 +183,7 @@ async def test_crypto_korean_name_ethereum(
     holding = result["holdings"][0]
     assert holding["resolved_ticker"] == "KRW-ETH"
     assert holding["market_type"] == "CRYPTO"
-    assert holding["resolution_method"] == "crypto_name_kr"
+    assert holding["resolution_method"] == "crypto_master_name"
 
 
 @pytest.mark.asyncio
@@ -170,11 +191,12 @@ async def test_crypto_korean_name_solana(
     service, mock_db, mock_broker_account, monkeypatch
 ):
     """Scenario 2: '솔라나' -> KRW-SOL"""
-    crypto_maps = {
-        "NAME_TO_PAIR_KR": {"솔라나": "KRW-SOL"},
-        "COIN_TO_NAME_KR": {"SOL": "솔라나"},
-    }
-    _setup_mocks(monkeypatch, mock_db, mock_broker_account, crypto_maps=crypto_maps)
+    _setup_mocks(
+        monkeypatch,
+        mock_db,
+        mock_broker_account,
+        crypto_name_to_market={"솔라나": "KRW-SOL"},
+    )
 
     result = await service.resolve_and_update(
         user_id=1,
@@ -194,7 +216,7 @@ async def test_crypto_korean_name_solana(
     holding = result["holdings"][0]
     assert holding["resolved_ticker"] == "KRW-SOL"
     assert holding["market_type"] == "CRYPTO"
-    assert holding["resolution_method"] == "crypto_name_kr"
+    assert holding["resolution_method"] == "crypto_master_name"
 
 
 @pytest.mark.asyncio
@@ -415,13 +437,12 @@ async def test_stock_name_remove_resolves_and_deletes(
     existing.quantity = Decimal("1")
     existing.avg_price = Decimal("3000000")
 
-    crypto_maps = {"NAME_TO_PAIR_KR": {"이더리움": "KRW-ETH"}, "COIN_TO_NAME_KR": {}}
     _setup_mocks(
         monkeypatch,
         mock_db,
         mock_broker_account,
         existing_holdings=[existing],
-        crypto_maps=crypto_maps,
+        crypto_name_to_market={"이더리움": "KRW-ETH"},
     )
 
     delete_calls = []
@@ -460,16 +481,11 @@ async def test_stock_name_remove_resolves_and_deletes(
 async def test_alias_precedence_over_crypto_map(
     service, mock_db, mock_broker_account, monkeypatch
 ):
-    """alias가 crypto map보다 우선되어 ticker를 결정한다."""
-    crypto_maps = {
-        "NAME_TO_PAIR_KR": {"이더리움": "KRW-ETH"},
-        "COIN_TO_NAME_KR": {"ETH": "이더리움"},
-    }
     _setup_mocks(
         monkeypatch,
         mock_db,
         mock_broker_account,
-        crypto_maps=crypto_maps,
+        crypto_name_to_market={"이더리움": "KRW-ETH"},
         alias_ticker="KRW-ETH-ALIAS",
     )
 
@@ -578,8 +594,12 @@ async def test_dry_run_response_contract(
     service, mock_db, mock_broker_account, monkeypatch
 ):
     """Scenario 10: dry_run=True에서 diff/count 미포함, dry_run=False에서 포함 검증"""
-    crypto_maps = {"NAME_TO_PAIR_KR": {"이더리움": "KRW-ETH"}, "COIN_TO_NAME_KR": {}}
-    _setup_mocks(monkeypatch, mock_db, mock_broker_account, crypto_maps=crypto_maps)
+    _setup_mocks(
+        monkeypatch,
+        mock_db,
+        mock_broker_account,
+        crypto_name_to_market={"이더리움": "KRW-ETH"},
+    )
 
     result_dry = await service.resolve_and_update(
         user_id=1,
@@ -647,30 +667,24 @@ async def test_calculate_avg_buy_price_normal(service):
 
 
 @pytest.mark.asyncio
-async def test_crypto_unknown_coin_fallback(
+async def test_crypto_unknown_coin_raises_explicit_error(
     service, mock_db, mock_broker_account, monkeypatch
 ):
-    """Unknown crypto name falls back to uppercase name as ticker."""
-    crypto_maps = {"NAME_TO_PAIR_KR": {}, "COIN_TO_NAME_KR": {}}
-    _setup_mocks(monkeypatch, mock_db, mock_broker_account, crypto_maps=crypto_maps)
+    _setup_mocks(monkeypatch, mock_db, mock_broker_account)
 
-    result = await service.resolve_and_update(
-        user_id=1,
-        holdings_data=[
-            {
-                "stock_name": "존재안하는코인",
-                "quantity": 1,
-                "market_section": "crypto",
-            }
-        ],
-        broker="upbit",
-        dry_run=True,
-    )
-
-    assert result["success"] is True
-    holding = result["holdings"][0]
-    assert holding["resolved_ticker"] == "존재안하는코인"
-    assert holding["resolution_method"] == "fallback"
+    with pytest.raises(UpbitSymbolNotRegisteredError, match="not found"):
+        await service.resolve_and_update(
+            user_id=1,
+            holdings_data=[
+                {
+                    "stock_name": "존재안하는코인",
+                    "quantity": 1,
+                    "market_section": "crypto",
+                }
+            ],
+            broker="upbit",
+            dry_run=True,
+        )
 
 
 @pytest.mark.asyncio

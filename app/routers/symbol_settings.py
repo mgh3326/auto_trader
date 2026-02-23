@@ -18,6 +18,7 @@ from app.services.symbol_trade_settings_service import (
     UserTradeDefaultsService,
     calculate_estimated_order_cost,
 )
+from app.services.upbit_symbol_universe_service import get_active_upbit_base_currencies
 from app.services.us_symbol_universe_service import (
     USSymbolUniverseLookupError,
     get_us_exchange_by_symbol,
@@ -598,7 +599,6 @@ async def get_crypto_estimated_costs(
 
     import app.services.brokers.upbit.client as upbit
     from app.analysis.service_analyzers import UpbitAnalyzer
-    from app.services import upbit_symbol_universe_service as upbit_pairs
 
     user = await get_user_from_request(request, db)
     settings_service = SymbolTradeSettingsService(db)
@@ -612,17 +612,19 @@ async def get_crypto_estimated_costs(
     )
 
     # 보유 코인 조회
-    await upbit_pairs.prime_upbit_constants()
     my_coins = await upbit.fetch_my_coins()
-    analyzer = UpbitAnalyzer()
+    tradable_currencies = await get_active_upbit_base_currencies(
+        quote_currency="KRW",
+        db=db,
+    )
 
     # 거래 가능한 코인만 필터링
     tradable_coins = [
         coin
         for coin in my_coins
-        if coin.get("currency") != "KRW"
-        and analyzer.is_tradable(coin)
-        and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
+        if str(coin.get("currency") or "").upper() != "KRW"
+        and UpbitAnalyzer.is_tradable(coin)
+        and str(coin.get("currency") or "").upper() in tradable_currencies
     ]
 
     # 종목별 설정 조회

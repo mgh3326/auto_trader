@@ -22,10 +22,6 @@ async def test_main_captures_fatal_exception():
     with (
         patch("upbit_websocket_monitor.init_sentry") as mock_init_sentry,
         patch("upbit_websocket_monitor.capture_exception") as mock_capture_exception,
-        patch(
-            "upbit_websocket_monitor.upbit_pairs.prime_upbit_constants",
-            new=AsyncMock(),
-        ),
         patch("upbit_websocket_monitor.UpbitAnalyzer", return_value=mock_analyzer),
         patch(
             "upbit_websocket_monitor.UpbitOrderAnalysisService",

@@ -19,7 +19,11 @@ from app.services.kr_symbol_universe_service import (
 )
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.stock_alias_service import StockAliasService
-from app.services.upbit_symbol_universe_service import get_or_refresh_maps
+from app.services.upbit_symbol_universe_service import (
+    UpbitSymbolUniverseLookupError,
+    get_upbit_market_by_coin,
+    get_upbit_symbol_by_name,
+)
 from app.services.us_symbol_universe_service import (
     USSymbolUniverseLookupError,
     get_us_symbol_by_name,
@@ -45,15 +49,6 @@ class ScreenshotHoldingsService:
         market_section: str,
         broker: str,
     ) -> tuple[str, str, str]:
-        """종목명 → 티커 해석 (3단계 fallback)
-
-        Returns:
-            (ticker, market_type, resolution_method)
-            - ticker: 해석된 티커
-            - market_type: "KR" | "US" | "CRYPTO"
-            - resolution_method:
-              "alias" | "krx_master" | "us_master" | "crypto_name_kr" | "fallback"
-        """
         market_section = market_section.lower()
         if market_section == "kr":
             market_type = MarketType.KR
@@ -96,27 +91,23 @@ class ScreenshotHoldingsService:
                 )
                 raise
         elif market_type == MarketType.CRYPTO:
+            normalized_name = stock_name.strip()
+            if not normalized_name:
+                raise ValueError("crypto stock_name is required when symbol is missing")
+
             try:
-                crypto_maps = await get_or_refresh_maps()
-                name_to_pair = crypto_maps.get("NAME_TO_PAIR_KR", {})
-                ticker = name_to_pair.get(stock_name)
-                if ticker:
-                    return ticker, market_type.value, "crypto_name_kr"
+                ticker = await get_upbit_symbol_by_name(normalized_name, self.db)
+                return ticker, market_type.value, "crypto_master_name"
+            except UpbitSymbolUniverseLookupError:
+                candidate_coin = normalized_name.upper()
+                if candidate_coin.isalnum():
+                    ticker = await get_upbit_market_by_coin(candidate_coin, db=self.db)
+                    return ticker, market_type.value, "crypto_master_coin"
+                raise
 
-                coin_to_name = crypto_maps.get("COIN_TO_NAME_KR", {})
-                for coin_symbol, kr_name in coin_to_name.items():
-                    if kr_name == stock_name:
-                        pair = f"KRW-{coin_symbol}"
-                        return pair, market_type.value, "crypto_name_kr"
-            except Exception as e:
-                logger.warning(f"Crypto map lookup failed: {e}")
-
-        # 3단계: Fallback - 이름 그대로 대문자로 반환
-        logger.warning(
-            f"Symbol not found in alias/master data: {stock_name} ({broker}), "
-            "using uppercase name as ticker"
+        raise ValueError(
+            f"Unsupported market section '{market_section}' for broker '{broker}'"
         )
-        return stock_name.upper(), market_type.value, "fallback"
 
     async def _calculate_avg_buy_price(
         self,

@@ -74,17 +74,22 @@ def scanner_env(monkeypatch: pytest.MonkeyPatch):
     fake_redis = _FakeRedis()
     scanner._get_redis = AsyncMock(return_value=fake_redis)  # type: ignore[method-assign]
 
+    async def fake_get_upbit_korean_name_by_coin(
+        currency: str,
+        quote_currency: str = "KRW",
+        db=None,
+    ) -> str:
+        _ = quote_currency, db
+        return {
+            "BTC": "비트코인",
+            "ETH": "이더리움",
+            "XRP": "리플",
+        }.get(currency, currency)
+
     monkeypatch.setattr(
-        daily_scan.upbit_pairs,
-        "COIN_TO_NAME_KR",
-        {"BTC": "비트코인", "ETH": "이더리움", "XRP": "리플"},
-        raising=False,
-    )
-    monkeypatch.setattr(
-        daily_scan.upbit_pairs,
-        "prime_upbit_constants",
-        AsyncMock(return_value=None),
-        raising=False,
+        daily_scan,
+        "get_upbit_korean_name_by_coin",
+        fake_get_upbit_korean_name_by_coin,
     )
 
     monkeypatch.setattr(

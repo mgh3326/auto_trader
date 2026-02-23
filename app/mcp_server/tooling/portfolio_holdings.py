@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.db import AsyncSessionLocal
@@ -85,8 +85,9 @@ from app.services.brokers.kis.client import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.upbit_symbol_universe_service import (
+    UpbitSymbolUniverseLookupError,
     get_active_upbit_markets,
-    get_or_refresh_maps,
+    get_upbit_korean_name_by_coin,
 )
 
 if TYPE_CHECKING:
@@ -190,13 +191,6 @@ async def _collect_upbit_positions(
     errors: list[dict[str, Any]] = []
 
     try:
-        coin_name_map: dict[str, str] = {}
-        try:
-            crypto_maps = await get_or_refresh_maps()
-            coin_name_map = crypto_maps.get("COIN_TO_NAME_KR", {}) or {}
-        except Exception:
-            coin_name_map = {}
-
         coins = await upbit_service.fetch_my_coins()
         for coin in coins:
             currency = str(coin.get("currency", "")).upper().strip()
@@ -208,9 +202,14 @@ async def _collect_upbit_positions(
                 continue
 
             unit_currency = str(coin.get("unit_currency", "KRW")).upper().strip()
+            quote_currency = unit_currency or "KRW"
             symbol = _normalize_position_symbol(
-                f"{unit_currency or 'KRW'}-{currency}",
+                f"{quote_currency}-{currency}",
                 "crypto",
+            )
+            korean_name = await get_upbit_korean_name_by_coin(
+                currency,
+                quote_currency=quote_currency,
             )
 
             positions.append(
@@ -222,7 +221,7 @@ async def _collect_upbit_positions(
                     "instrument_type": "crypto",
                     "market": "crypto",
                     "symbol": symbol,
-                    "name": coin_name_map.get(currency, symbol),
+                    "name": korean_name,
                     "quantity": quantity,
                     "avg_buy_price": _to_float(coin.get("avg_buy_price")),
                     "current_price": None,
@@ -231,6 +230,8 @@ async def _collect_upbit_positions(
                     "profit_rate": None,
                 }
             )
+    except UpbitSymbolUniverseLookupError:
+        raise
     except Exception as exc:
         errors.append({"source": "upbit", "market": "crypto", "error": str(exc)})
 
@@ -313,6 +314,8 @@ async def _fetch_price_map_for_positions(
             valid_symbols = [
                 symbol for symbol in crypto_symbols if symbol.upper() in tradable_set
             ]
+        except UpbitSymbolUniverseLookupError:
+            raise
         except Exception as exc:
             price_errors.append(
                 {
@@ -453,10 +456,15 @@ async def _collect_portfolio_positions(
     errors: list[dict[str, Any]] = []
 
     for result in results:
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
+            if isinstance(result, UpbitSymbolUniverseLookupError):
+                raise result
             errors.append({"source": "holdings", "error": str(result)})
             continue
-        source_positions, source_errors = result
+        source_positions, source_errors = cast(
+            tuple[list[dict[str, Any]], list[dict[str, Any]]],
+            result,
+        )
         positions.extend(source_positions)
         errors.extend(source_errors)
 

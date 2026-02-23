@@ -3,6 +3,7 @@ Tests for API routers.
 """
 
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -70,9 +71,6 @@ class TestUpbitTradingRouter:
         """get_my_coins는 내부 오류 시 HTTPException을 일관되게 전달해야 한다."""
         from app.routers import upbit_trading
 
-        async def fake_prime():
-            return None
-
         async def fake_fetch_my_coins():
             raise RuntimeError("boom")
 
@@ -87,10 +85,6 @@ class TestUpbitTradingRouter:
                 return None
 
         monkeypatch.setattr(
-            "app.services.upbit_symbol_universe_service.prime_upbit_constants",
-            fake_prime,
-        )
-        monkeypatch.setattr(
             "app.services.brokers.upbit.client.fetch_my_coins",
             fake_fetch_my_coins,
         )
@@ -101,7 +95,7 @@ class TestUpbitTradingRouter:
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            await upbit_trading.get_my_coins(db=object())
+            await upbit_trading.get_my_coins(db=cast(Any, object()))
 
         assert exc_info.value.status_code == 500
         assert "boom" in exc_info.value.detail
@@ -232,7 +226,7 @@ class TestManualHoldingsRouter:
         with pytest.raises(HTTPException) as exc_info:
             await manual_holdings.create_holding(
                 data=data,
-                current_user=SimpleNamespace(id=1),
+                current_user=cast(Any, SimpleNamespace(id=1)),
                 db=AsyncMock(),
             )
 
@@ -272,26 +266,29 @@ class TestManualHoldingsRouter:
         data = ManualHoldingBulkCreate(
             broker_type=BrokerType.TOSS,
             account_name="기본 계좌",
-            holdings=[
-                {
-                    "ticker": "AAPL",
-                    "market_type": MarketType.US,
-                    "quantity": 1,
-                    "avg_price": 100,
-                },
-                {
-                    "ticker": "솔라나",
-                    "market_type": MarketType.US,
-                    "quantity": 1,
-                    "avg_price": 100,
-                },
-            ],
+            holdings=cast(
+                Any,
+                [
+                    {
+                        "ticker": "AAPL",
+                        "market_type": MarketType.US,
+                        "quantity": 1,
+                        "avg_price": 100,
+                    },
+                    {
+                        "ticker": "솔라나",
+                        "market_type": MarketType.US,
+                        "quantity": 1,
+                        "avg_price": 100,
+                    },
+                ],
+            ),
         )
 
         with pytest.raises(HTTPException) as exc_info:
             await manual_holdings.create_holdings_bulk(
                 data=data,
-                current_user=SimpleNamespace(id=1),
+                current_user=cast(Any, SimpleNamespace(id=1)),
                 db=AsyncMock(),
             )
 

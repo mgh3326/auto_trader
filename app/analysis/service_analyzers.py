@@ -3,8 +3,11 @@ import pandas as pd
 import app.services.brokers.kis.client as kis
 import app.services.brokers.upbit.client as upbit
 import app.services.brokers.yahoo.client as yahoo
-from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.kr_symbol_universe_service import get_kr_symbol_by_name
+from app.services.upbit_symbol_universe_service import (
+    get_active_upbit_base_currencies,
+    get_upbit_symbol_by_name,
+)
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 from .analyzer import Analyzer, DataProcessor
@@ -18,7 +21,8 @@ class UpbitAnalyzer(Analyzer):
 
     def __init__(self, api_key=None):
         super().__init__(api_key)
-        self._tradable_coins_map = None  # 캐시용 인스턴스 변수
+        self._tradable_coins_map: dict[str, dict] | None = None
+        self._tradable_base_currencies: set[str] | None = None
 
     @staticmethod
     def is_tradable(coin: dict) -> bool:
@@ -47,21 +51,29 @@ class UpbitAnalyzer(Analyzer):
             심볼별 코인 정보 딕셔너리
         """
         if self._tradable_coins_map is None or force_refresh:
-            try:
-                my_coins = await upbit.fetch_my_coins()
-                self._tradable_coins_map = {
-                    f"KRW-{coin['currency']}": coin
-                    for coin in my_coins
-                    if coin.get("currency") != "KRW"  # 원화 제외
-                    and self.is_tradable(coin)  # 최소 평가액 이상
-                    and coin.get("currency")
-                    in upbit_pairs.KRW_TRADABLE_COINS  # KRW 마켓에서 거래 가능
-                }
-            except Exception as e:
-                print(f"보유 자산 정보를 가져오는 데 실패했습니다: {e}")
-                self._tradable_coins_map = {}
+            my_coins = await upbit.fetch_my_coins()
+            tradable_base_currencies = await self._get_tradable_base_currencies(
+                force_refresh=force_refresh
+            )
+            self._tradable_coins_map = {
+                f"KRW-{coin['currency']}": coin
+                for coin in my_coins
+                if coin.get("currency") != "KRW"  # 원화 제외
+                and self.is_tradable(coin)  # 최소 평가액 이상
+                and str(coin.get("currency") or "").upper() in tradable_base_currencies
+            }
 
         return self._tradable_coins_map
+
+    async def _get_tradable_base_currencies(
+        self,
+        force_refresh: bool = False,
+    ) -> set[str]:
+        if self._tradable_base_currencies is None or force_refresh:
+            self._tradable_base_currencies = await get_active_upbit_base_currencies(
+                quote_currency="KRW"
+            )
+        return self._tradable_base_currencies
 
     def _create_position_info(self, my_coin: dict | None) -> dict | None:
         """
@@ -130,16 +142,11 @@ class UpbitAnalyzer(Analyzer):
 
     async def analyze_coins(self, coin_names: list[str]) -> None:
         """여러 코인을 순차적으로 분석"""
-        await upbit_pairs.prime_upbit_constants()
-
         # 보유 코인 정보를 한 번만 가져와서 캐시
         tradable_coins_map = await self._get_tradable_coins_map()
 
         for coin_name in coin_names:
-            stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
-            if not stock_symbol:
-                print(f"코인명을 찾을 수 없음: {coin_name}")
-                continue
+            stock_symbol = await get_upbit_symbol_by_name(coin_name)
 
             # 캐시된 정보에서 코인 조회
             my_coin = tradable_coins_map.get(stock_symbol)
@@ -170,16 +177,11 @@ class UpbitAnalyzer(Analyzer):
 
     async def analyze_coins_json(self, coin_names: list[str]) -> None:
         """여러 코인을 순차적으로 JSON 형식으로 분석"""
-        await upbit_pairs.prime_upbit_constants()
-
         # 보유 코인 정보를 한 번만 가져와서 캐시
         tradable_coins_map = await self._get_tradable_coins_map()
 
         for coin_name in coin_names:
-            stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
-            if not stock_symbol:
-                print(f"코인명을 찾을 수 없음: {coin_name}")
-                continue
+            stock_symbol = await get_upbit_symbol_by_name(coin_name)
 
             # 캐시된 정보에서 코인 조회
             my_coin = tradable_coins_map.get(stock_symbol)
@@ -217,12 +219,7 @@ class UpbitAnalyzer(Analyzer):
     async def analyze_coin_json(self, coin_name: str) -> tuple[object | None, str]:
         """단일 코인을 JSON 형식으로 분석"""
         try:
-            await upbit_pairs.prime_upbit_constants()
-
-            stock_symbol = upbit_pairs.NAME_TO_PAIR_KR.get(coin_name)
-            if not stock_symbol:
-                print(f"코인명을 찾을 수 없음: {coin_name}")
-                return None, ""
+            stock_symbol = await get_upbit_symbol_by_name(coin_name)
 
             # 보유 코인 정보 가져오기 (캐시 사용)
             tradable_coins_map = await self._get_tradable_coins_map()

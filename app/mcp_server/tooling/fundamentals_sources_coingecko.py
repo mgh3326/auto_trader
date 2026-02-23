@@ -23,7 +23,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_optional_int as _to_optional_int,
 )
-from app.services.upbit_symbol_universe_service import get_or_refresh_maps
+from app.services.upbit_symbol_universe_service import get_active_upbit_base_currencies
 
 DEFAULT_BATCH_CRYPTO_SYMBOLS = [
     "BTC",
@@ -396,34 +396,29 @@ async def _fetch_coingecko_coin_profile(coin_id: str) -> dict[str, Any]:
 async def _resolve_batch_crypto_symbols() -> list[str]:
     try:
         coins = await upbit_service.fetch_my_coins()
-        held_symbols: list[str] = []
-        for coin in coins:
-            currency = str(coin.get("currency", "")).upper().strip()
-            if not currency or currency == "KRW":
-                continue
-            quantity = _to_float(coin.get("balance")) + _to_float(coin.get("locked"))
-            if quantity <= 0:
-                continue
-            held_symbols.append(currency)
-
-        if held_symbols:
-            try:
-                crypto_maps = await get_or_refresh_maps()
-                tradable_set = {
-                    str(symbol).upper()
-                    for symbol in crypto_maps.get("COIN_TO_PAIR", {}).keys()
-                    if str(symbol).strip()
-                }
-                held_symbols = [
-                    symbol for symbol in held_symbols if symbol.upper() in tradable_set
-                ]
-            except Exception:
-                pass
-
-            if held_symbols:
-                return sorted(set(held_symbols))
     except Exception:
-        pass
+        return list(DEFAULT_BATCH_CRYPTO_SYMBOLS)
+
+    held_symbols: list[str] = []
+    for coin in coins:
+        currency = str(coin.get("currency", "")).upper().strip()
+        if not currency or currency == "KRW":
+            continue
+        quantity = _to_float(coin.get("balance")) + _to_float(coin.get("locked"))
+        if quantity <= 0:
+            continue
+        held_symbols.append(currency)
+
+    if not held_symbols:
+        return list(DEFAULT_BATCH_CRYPTO_SYMBOLS)
+
+    tradable_set = await get_active_upbit_base_currencies(quote_currency="KRW")
+    tradable_held_symbols = [
+        symbol for symbol in held_symbols if symbol.upper() in tradable_set
+    ]
+
+    if tradable_held_symbols:
+        return sorted(set(tradable_held_symbols))
 
     return list(DEFAULT_BATCH_CRYPTO_SYMBOLS)
 
