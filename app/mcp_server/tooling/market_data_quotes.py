@@ -8,16 +8,12 @@ ADX, Stochastic RSI, OBV, Fibonacci).
 from __future__ import annotations
 
 import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
-
-import pandas as pd
-from sqlalchemy import select
 
 import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 from app.core.config import settings
-from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
     _compute_crypto_realtime_rsi_from_frame,
@@ -42,9 +38,9 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
-from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.services import kis_ohlcv_cache
 from app.services.brokers.kis.client import KISClient
+from app.services.kr_hourly_candles_read_service import read_kr_hourly_candles_1h
 from app.services.kr_symbol_universe_service import search_kr_symbols
 from app.services.upbit_symbol_universe_service import search_upbit_symbols
 from app.services.us_symbol_universe_service import search_us_symbols
@@ -143,8 +139,12 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
             f"Yahoo quote fetch failed for '{normalized_symbol}': {exc}"
         ) from exc
 
+    close_raw = fast_info.get("close")
+    if close_raw is None:
+        raise ValueError(not_found_message) from None
+
     try:
-        price = float(fast_info.get("close"))
+        price = float(close_raw)
     except (TypeError, ValueError):
         raise ValueError(not_found_message) from None
 
@@ -222,131 +222,6 @@ async def _fetch_ohlcv_crypto(
 
 
 _KST = ZoneInfo("Asia/Seoul")
-_KR_ROUTE_CLOSE = {
-    "J": "153000",
-    "UN": "200000",
-}
-_KR_ROUTE_START = {
-    "J": "090000",
-    "UN": "080000",
-}
-_KR_INTRADAY_MAX_PAGE_CALLS_PER_DAY = 10
-_KR_UNIVERSE_SYNC_COMMAND = "uv run python scripts/sync_kr_symbol_universe.py"
-
-
-def _kr_universe_sync_hint() -> str:
-    return f"Sync required: {_KR_UNIVERSE_SYNC_COMMAND}"
-
-
-async def _resolve_kr_intraday_route(symbol: str) -> str:
-    normalized_symbol = str(symbol or "").strip().upper()
-    async with AsyncSessionLocal() as db:
-        query = select(KRSymbolUniverse).where(
-            KRSymbolUniverse.symbol == normalized_symbol
-        )
-        result = await db.execute(query)
-        universe = result.scalar_one_or_none()
-    if universe is None:
-        async with AsyncSessionLocal() as db:
-            has_any_rows_result = await db.execute(
-                select(KRSymbolUniverse.symbol).limit(1)
-            )
-            has_any_rows = has_any_rows_result.scalar_one_or_none()
-        if has_any_rows is None:
-            raise ValueError(f"kr_symbol_universe is empty. {_kr_universe_sync_hint()}")
-        raise ValueError(
-            f"KR symbol '{normalized_symbol}' is not registered in kr_symbol_universe. "
-            f"{_kr_universe_sync_hint()}"
-        )
-    if not universe.is_active:
-        raise ValueError(
-            f"KR symbol '{normalized_symbol}' is inactive in kr_symbol_universe. "
-            f"{_kr_universe_sync_hint()}"
-        )
-    return "UN" if universe.nxt_eligible else "J"
-
-
-def _resolve_kr_intraday_end_time(route_market: str, target_day: datetime.date) -> str:
-    session_close = _KR_ROUTE_CLOSE[route_market]
-    now_kst = datetime.datetime.now(_KST)
-    if target_day < now_kst.date():
-        return session_close
-    now_hhmmss = now_kst.strftime("%H%M%S")
-    return min(now_hhmmss, session_close)
-
-
-def _filter_kr_intraday_session(
-    frame: pd.DataFrame,
-    route_market: str,
-) -> pd.DataFrame:
-    if frame.empty or "datetime" not in frame.columns:
-        return frame
-    out = frame.copy()
-    out["datetime"] = pd.to_datetime(out["datetime"], errors="coerce")
-    out = out.dropna(subset=["datetime"])
-    if out.empty:
-        return out
-    start = _KR_ROUTE_START[route_market]
-    end = _KR_ROUTE_CLOSE[route_market]
-    hhmmss = out["datetime"].dt.strftime("%H%M%S")
-    return out.loc[(hhmmss >= start) & (hhmmss <= end)].reset_index(drop=True)
-
-
-async def _page_kr_intraday_day(
-    kis: KISClient,
-    symbol: str,
-    route_market: str,
-    target_day: datetime.date,
-    initial_end_time: str,
-    max_page_calls: int = _KR_INTRADAY_MAX_PAGE_CALLS_PER_DAY,
-) -> pd.DataFrame:
-    session_start = _KR_ROUTE_START[route_market]
-    page_limit = max(int(max_page_calls), 1)
-    end_time = initial_end_time
-    merged = pd.DataFrame()
-
-    for _ in range(page_limit):
-        intraday = await kis.inquire_time_dailychartprice(
-            code=symbol,
-            market=route_market,
-            n=200,
-            end_date=target_day,
-            end_time=end_time,
-        )
-        intraday = _filter_kr_intraday_session(intraday, route_market)
-        if intraday.empty:
-            break
-
-        merged = pd.concat([merged, intraday], ignore_index=True)
-        if "datetime" in merged.columns:
-            merged["datetime"] = pd.to_datetime(merged["datetime"], errors="coerce")
-            merged = merged.dropna(subset=["datetime"])
-            merged = (
-                merged.drop_duplicates(subset=["datetime"], keep="last")
-                .sort_values("datetime")
-                .reset_index(drop=True)
-            )
-        else:
-            merged = merged.drop_duplicates().reset_index(drop=True)
-
-        if "datetime" not in intraday.columns:
-            break
-
-        intraday_datetimes = pd.to_datetime(intraday["datetime"], errors="coerce")
-        intraday_datetimes = intraday_datetimes.dropna()
-        if intraday_datetimes.empty:
-            break
-
-        oldest = intraday_datetimes.min()
-        next_end_time = (oldest - datetime.timedelta(minutes=1)).strftime("%H%M%S")
-        if next_end_time < session_start:
-            break
-        if next_end_time == end_time:
-            break
-
-        end_time = next_end_time
-
-    return merged
 
 
 async def _fetch_ohlcv_equity_kr(
@@ -381,61 +256,11 @@ async def _fetch_ohlcv_equity_kr(
         else:
             df = await _raw_fetch_day(capped_count)
     elif period == "1h":
-        route_market = await _resolve_kr_intraday_route(symbol)
-
-        async def _raw_fetch_1h(requested_count: int):
-            aggregate_fn = getattr(KISClient, "_aggregate_intraday_to_hour", None)
-            target_count = max(int(requested_count), 1)
-            current_day = (
-                end_date.date() if end_date else datetime.datetime.now(_KST).date()
-            )
-            estimated_days = (target_count + 5) // 6
-            max_fetch_days = min(max(estimated_days + 3, 3), 120)
-
-            merged = pd.DataFrame()
-            for _ in range(max_fetch_days):
-                end_time = _resolve_kr_intraday_end_time(route_market, current_day)
-                intraday = await _page_kr_intraday_day(
-                    kis=kis,
-                    symbol=symbol,
-                    route_market=route_market,
-                    target_day=current_day,
-                    initial_end_time=end_time,
-                    max_page_calls=_KR_INTRADAY_MAX_PAGE_CALLS_PER_DAY,
-                )
-                if callable(aggregate_fn):
-                    hourly = aggregate_fn(intraday)
-                else:
-                    hourly = intraday
-
-                if not hourly.empty:
-                    merged = pd.concat([merged, hourly], ignore_index=True)
-                    if "datetime" in merged.columns:
-                        merged = (
-                            merged.drop_duplicates(subset=["datetime"], keep="last")
-                            .sort_values("datetime")
-                            .reset_index(drop=True)
-                        )
-                    else:
-                        merged = merged.drop_duplicates().reset_index(drop=True)
-                    if len(merged) >= target_count:
-                        break
-
-                current_day = current_day - datetime.timedelta(days=1)
-
-            return merged.tail(target_count).reset_index(drop=True)
-
-        use_cache = end_date is None and settings.kis_ohlcv_cache_enabled
-        if use_cache:
-            df = await kis_ohlcv_cache.get_candles(
-                symbol=symbol,
-                count=capped_count,
-                period="1h",
-                raw_fetcher=_raw_fetch_1h,
-                route=route_market,
-            )
-        else:
-            df = await _raw_fetch_1h(capped_count)
+        df = await read_kr_hourly_candles_1h(
+            symbol=symbol,
+            count=capped_count,
+            end_date=end_date,
+        )
     else:
         kis_period_map = {"week": "W", "month": "M"}
         df = await kis.inquire_daily_itemchartprice(
@@ -640,7 +465,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                 raise ValueError(
                     f"Invalid indicator '{ind}'. Valid options: {', '.join(sorted(valid_indicators))}"
                 )
-            normalized_indicators.append(ind_lower)
+            normalized_indicators.append(cast(IndicatorType, ind_lower))
 
         market_type, symbol = _resolve_market_type(normalized_symbol, market)
 

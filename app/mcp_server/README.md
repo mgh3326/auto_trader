@@ -29,14 +29,19 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `4h`: crypto only
   - `1h`: KR/US equity + crypto
 - US OHLCV remains Yahoo-based (`app.services.brokers.yahoo.client.fetch_ohlcv`)
-  - KR `1h` includes in-progress (partial) hourly candle
-  - KR `1h` resolves symbol route from `kr_symbol_universe` (`nxt_eligible=true` -> `UN`, else `J`)
-  - KR `1h` returns an explicit error when symbol is missing/inactive in `kr_symbol_universe`
-  - KR `1h` keeps `UN` empty-result behavior without `J` fallback
-  - KR `1h` expands intraday coverage with same-day `end_time` cursor pagination before moving to prior dates
-  - KR `1h` same-day pagination is capped at `10` internal API calls per trading day
-  - KR `1h` historical backfill uses route-specific cutoff (`J=153000`, `UN=200000`)
-  - KR `1h` prerequisite: run `make sync-kr-symbol-universe` (or `uv run python scripts/sync_kr_symbol_universe.py`) right after migrations
+  - KR `1h` history is DB-first from Timescale continuous aggregate `public.kr_candles_1h`
+  - KR `1h` includes the in-progress (partial) hourly candle by rebuilding the current hour in-memory from:
+    - `public.kr_candles_1m` (minute DB) + KIS minute API (up to 30 rows)
+    - KIS minute venues are merged with strict dedup to prevent double-counting (API overwrites DB per minute+venue)
+  - KIS minute API call plan (KST):
+    - `09:00 <= now < 15:35`: call KRX (`J`) + NTX (`NX`) in parallel when `nxt_eligible=true` (15:35 delay defense)
+    - `08:00 <= now < 09:00`: call NTX (`NX`) only when `nxt_eligible=true`
+    - `15:35 <= now < 20:00`: call NTX (`NX`) only when `nxt_eligible=true`
+    - When `end_date` is in the past: DB-only (0 API calls)
+  - KR `1h` returns an explicit error when symbol is missing/inactive in `kr_symbol_universe` (used for `nxt_eligible`)
+  - KR `1h` does not use Redis OHLCV cache (`kis_ohlcv_cache`)
+  - KR `1h` treats partial API failure (KRX/NTX) as a tool-level error (exception)
+  - KR `1h` response rows add `session` and `venues` fields (KR `1h` only; other market/period schemas unchanged)
 - `get_indicators(symbol, indicators, market=None)`
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50)`
