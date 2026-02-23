@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 @broker.task(
     task_name="candles.kr.sync",
-    schedule=[{"cron": "*/1 * * * 1-5", "cron_offset": "Asia/Seoul"}],
+    schedule=[{"cron": "*/10 * * * 1-5", "cron_offset": "Asia/Seoul"}],
 )
 async def sync_kr_candles_incremental_task() -> dict[str, object]:
     try:
