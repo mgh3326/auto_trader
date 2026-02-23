@@ -16,7 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 
-class InstrumentType(str, enum.Enum):
+class InstrumentType(enum.StrEnum):
     equity_kr = "equity_kr"  # 국내주식
     equity_us = "equity_us"  # 해외주식
     crypto = "crypto"  # 암호화폐
@@ -24,13 +24,13 @@ class InstrumentType(str, enum.Enum):
     index = "index"  # 지수
 
 
-class NotifyChannel(str, enum.Enum):
+class NotifyChannel(enum.StrEnum):
     telegram = "telegram"
     email = "email"
     webhook = "webhook"
 
 
-class UserRole(str, enum.Enum):
+class UserRole(enum.StrEnum):
     """User roles for permission management."""
 
     admin = "admin"  # 관리자: 모든 권한

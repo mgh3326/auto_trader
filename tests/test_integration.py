@@ -128,7 +128,10 @@ class TestExternalServiceMocking:
         assert mock_yahoo_download.called
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.KISClient._ensure_token", new_callable=AsyncMock)
+    @patch(
+        "app.services.brokers.kis.client.KISClient._ensure_token",
+        new_callable=AsyncMock,
+    )
     @patch("app.services.brokers.kis.client.httpx.AsyncClient")
     async def test_kis_service_mocking(self, mock_kis_client, mock_ensure_token):
         """Test KIS service mocking."""
