@@ -10,7 +10,6 @@ from app.core.timezone import now_kst
 from app.mcp_server.tooling.analysis_tool_handlers import get_fear_greed_index_impl
 from app.mcp_server.tooling.market_data_indicators import _calculate_rsi, _calculate_sma
 from app.monitoring.trade_notifier import get_trade_notifier
-from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.brokers.upbit.client import (
     fetch_multiple_tickers,
     fetch_my_coins,
@@ -18,6 +17,7 @@ from app.services.brokers.upbit.client import (
     fetch_top_traded_coins,
 )
 from app.services.openclaw_client import OpenClawClient
+from app.services.upbit_symbol_universe_service import get_upbit_korean_name_by_coin
 
 logger = logging.getLogger(__name__)
 
@@ -114,15 +114,8 @@ class DailyScanner:
 
         return sorted(market_codes), sorted(skipped_markets)
 
-    @staticmethod
-    def _coin_name(currency: str) -> str:
-        try:
-            name = upbit_pairs.COIN_TO_NAME_KR.get(currency, currency)
-            if isinstance(name, str) and name:
-                return name
-            return currency
-        except Exception:
-            return currency
+    async def _coin_name(self, currency: str) -> str:
+        return await get_upbit_korean_name_by_coin(currency, quote_currency="KRW")
 
     @staticmethod
     def _build_rank_by_market(top_coins: list[dict]) -> dict[str, int]:
@@ -303,7 +296,7 @@ class DailyScanner:
             if not await self._should_alert(currency, "overbought"):
                 continue
 
-            name = self._coin_name(currency)
+            name = await self._coin_name(currency)
             base_message = f"⚠️ {name}({currency}) RSI {rsi:.1f} — 과매수 구간"
             if send_immediately:
                 message = f"{base_message}\n{btc_ctx}"
@@ -350,7 +343,7 @@ class DailyScanner:
             if not await self._should_alert(currency, "oversold"):
                 continue
 
-            name = self._coin_name(currency)
+            name = await self._coin_name(currency)
             base_message = f"📉 {name}({currency}) RSI {rsi:.1f} — 과매도 구간"
             if send_immediately:
                 message = f"{base_message}\n{btc_ctx}"
@@ -455,7 +448,7 @@ class DailyScanner:
                 )
                 continue
 
-            name = self._coin_name(currency)
+            name = await self._coin_name(currency)
             direction = "급등" if change_rate > 0 else "급락"
             message = f"{name}({currency}) 24h {change_rate:+.2%} — {direction} 감지"
             logger.info(
@@ -599,7 +592,7 @@ class DailyScanner:
             if not await self._should_alert(symbol, "sma_cross"):
                 continue
 
-            name = self._coin_name(currency)
+            name = await self._coin_name(currency)
             message = (
                 f"{emoji} {name}({currency}) SMA20 {crossing_label} — "
                 f"종가 {curr_close:,.0f} / SMA20 {curr_sma20:,.0f}"
@@ -663,7 +656,6 @@ class DailyScanner:
         if not settings.DAILY_SCAN_ENABLED:
             return {"skipped": True, "reason": "disabled"}
 
-        await upbit_pairs.prime_upbit_constants()
         btc_ctx = await self._get_btc_context()
         pending_cooldowns: list[tuple[str, str]] = []
 
@@ -716,7 +708,6 @@ class DailyScanner:
         if not settings.DAILY_SCAN_ENABLED:
             return {"skipped": True, "reason": "disabled"}
 
-        await upbit_pairs.prime_upbit_constants()
         pending_cooldowns: list[tuple[str, str]] = []
         alerts = await self.check_price_crash(
             send_immediately=False,

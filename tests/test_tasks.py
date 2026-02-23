@@ -1,6 +1,8 @@
 """Tests for TaskIQ tasks defined in app.jobs.analyze."""
 
 import asyncio
+from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -36,29 +38,12 @@ def test_run_analysis_for_my_coins_no_tradable(monkeypatch):
     """거래 가능한 코인이 없을 때 완료 상태로 즉시 반환하는지 확인."""
     from app.jobs import analyze
 
-    async def fake_prime():
-        return None
-
     async def fake_fetch_my_coins():
         return [{"currency": "KRW", "balance": "100000"}]
 
     monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.prime_upbit_constants",
-        fake_prime,
-    )
-    monkeypatch.setattr(
         "app.services.brokers.upbit.client.fetch_my_coins",
         fake_fetch_my_coins,
-    )
-    monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.KRW_TRADABLE_COINS",
-        {"BTC"},
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.COIN_TO_NAME_KR",
-        {"BTC": "비트코인"},
-        raising=False,
     )
     analyzers = _patch_upbit_analyzer(monkeypatch, tradable=False)
 
@@ -75,29 +60,12 @@ def test_execute_buy_orders_task_no_tradable(monkeypatch):
     """매수 태스크가 거래 가능한 코인이 없으면 즉시 종료하는지 확인."""
     from app.jobs import analyze
 
-    async def fake_prime():
-        return None
-
     async def fake_fetch_my_coins():
         return [{"currency": "KRW", "balance": "100000"}]
 
     monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.prime_upbit_constants",
-        fake_prime,
-    )
-    monkeypatch.setattr(
         "app.services.brokers.upbit.client.fetch_my_coins",
         fake_fetch_my_coins,
-    )
-    monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.KRW_TRADABLE_COINS",
-        {"BTC"},
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.COIN_TO_NAME_KR",
-        {"BTC": "비트코인"},
-        raising=False,
     )
     analyzers = _patch_upbit_analyzer(monkeypatch, tradable=False)
 
@@ -115,22 +83,15 @@ async def test_execute_buy_order_notifies_on_insufficient_balance(monkeypatch):
     """잔고 부족으로 매수 실패 시 텔레그램 알림을 보내는지 확인."""
     from app.jobs import analyze
 
-    async def fake_prime():
-        return None
-
     monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.prime_upbit_constants",
-        fake_prime,
+        analyze,
+        "get_upbit_market_by_coin",
+        AsyncMock(return_value="KRW-BTC"),
     )
     monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.KRW_TRADABLE_COINS",
-        {"BTC"},
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.services.upbit_symbol_universe_service.COIN_TO_NAME_KR",
-        {"BTC": "비트코인"},
-        raising=False,
+        analyze,
+        "get_upbit_korean_name_by_coin",
+        AsyncMock(return_value="비트코인"),
     )
 
     async def fake_fetch_my_coins():
@@ -271,8 +232,9 @@ def test_run_per_coin_automation_success(monkeypatch):
     assert result["status"] == "completed"
     assert result["total_coins"] == 1
     assert result["success_coins"] == 1
-    assert len(result["results"]) == 1
-    coin_steps = result["results"][0]["steps"]
+    coin_results = cast(list[dict[str, Any]], result["results"])
+    assert len(coin_results) == 1
+    coin_steps = cast(list[dict[str, Any]], coin_results[0]["steps"])
     assert [step["step"] for step in coin_steps] == ["analysis", "buy", "sell"]
     assert all(step["result"]["status"] == "completed" for step in coin_steps)
     assert len(coin_steps) == 3

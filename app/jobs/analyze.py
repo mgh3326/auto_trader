@@ -1,32 +1,54 @@
 import asyncio
+from typing import Any
 
 import app.services.brokers.upbit.client as upbit
 from app.analysis.service_analyzers import KISAnalyzer, UpbitAnalyzer, YahooAnalyzer
 from app.monitoring.trade_notifier import get_trade_notifier
-from app.services import upbit_symbol_universe_service as upbit_pairs
 from app.services.order_service import (
     cancel_existing_buy_orders,
     cancel_existing_sell_orders,
     get_sell_prices_for_coin,
     place_multiple_sell_orders,
 )
+from app.services.upbit_symbol_universe_service import (
+    UpbitSymbolUniverseLookupError,
+    get_upbit_korean_name_by_coin,
+    get_upbit_market_by_coin,
+)
 
 
-async def _fetch_tradable_coins() -> tuple[list[dict], list[dict]]:
+def _normalize_currency(value: object) -> str:
+    return str(value or "").upper().strip()
+
+
+async def _resolve_tradable_coins(
+    my_coins: list[dict[str, Any]],
+    analyzer: UpbitAnalyzer,
+) -> list[dict[str, Any]]:
+    tradable_coins: list[dict[str, Any]] = []
+    for coin in my_coins:
+        currency = _normalize_currency(coin.get("currency"))
+        if not currency or currency == "KRW" or not analyzer.is_tradable(coin):
+            continue
+
+        market = await get_upbit_market_by_coin(currency)
+        korean_name = await get_upbit_korean_name_by_coin(currency)
+        enriched_coin = dict(coin)
+        enriched_coin["currency"] = currency
+        enriched_coin["market"] = market
+        enriched_coin["korean_name"] = korean_name
+        tradable_coins.append(enriched_coin)
+
+    return tradable_coins
+
+
+async def _fetch_tradable_coins() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """보유 중인 코인과 거래 가능한 코인을 동시에 조회."""
-    await upbit_pairs.prime_upbit_constants()
-
     my_coins = await upbit.fetch_my_coins()
 
     analyzer = UpbitAnalyzer()
     try:
-        tradable_coins = [
-            coin
-            for coin in my_coins
-            if coin.get("currency") != "KRW"
-            and analyzer.is_tradable(coin)
-            and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
-        ]
+        tradable_coins = await _resolve_tradable_coins(my_coins, analyzer)
     finally:
         await analyzer.close()
 
@@ -38,17 +60,9 @@ async def _analyze_coin_async(currency: str) -> dict[str, object]:
     if not currency:
         return {"status": "failed", "error": "코인 코드가 필요합니다."}
 
-    await upbit_pairs.prime_upbit_constants()
     currency_code = currency.upper()
-
-    if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
-        return {
-            "status": "failed",
-            "currency": currency_code,
-            "message": f"{currency_code}는 KRW 마켓 거래 대상이 아닙니다.",
-        }
-
-    korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency_code, currency_code)
+    korean_name = await get_upbit_korean_name_by_coin(currency_code)
+    await get_upbit_market_by_coin(currency_code)
 
     analyzer = UpbitAnalyzer()
     try:
@@ -67,14 +81,15 @@ async def _analyze_coin_async(currency: str) -> dict[str, object]:
         if hasattr(result, "decision"):
             try:
                 notifier = get_trade_notifier()
+                result_decision = getattr(result, "decision", None)
+                result_confidence = getattr(result, "confidence", None)
+                result_reasons = getattr(result, "reasons", None)
                 await notifier.notify_analysis_complete(
                     symbol=currency_code,
                     korean_name=korean_name,
-                    decision=result.decision,
-                    confidence=float(result.confidence) if result.confidence else 0.0,
-                    reasons=result.reasons
-                    if hasattr(result, "reasons") and result.reasons
-                    else [],
+                    decision=str(result_decision),
+                    confidence=float(result_confidence) if result_confidence else 0.0,
+                    reasons=result_reasons if result_reasons else [],
                     market_type="암호화폐",
                 )
             except Exception as notify_error:  # pragma: no cover
@@ -86,6 +101,8 @@ async def _analyze_coin_async(currency: str) -> dict[str, object]:
             "korean_name": korean_name,
             "message": f"{korean_name} 분석이 완료되었습니다.",
         }
+    except UpbitSymbolUniverseLookupError:
+        raise
     except Exception as exc:  # pragma: no cover - defensive logging
         return {
             "status": "failed",
@@ -105,17 +122,8 @@ async def _execute_buy_order_for_coin_async(currency: str) -> dict[str, object]:
     from app.services.stock_info_service import process_buy_orders_with_analysis
 
     currency_code = currency.upper()
-
-    await upbit_pairs.prime_upbit_constants()
-
-    if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
-        return {
-            "status": "failed",
-            "currency": currency_code,
-            "message": f"{currency_code}는 KRW 마켓에서 거래할 수 없습니다.",
-        }
-
-    market = f"KRW-{currency_code}"
+    market = await get_upbit_market_by_coin(currency_code)
+    korean_name = await get_upbit_korean_name_by_coin(currency_code)
 
     try:
         my_coins = await upbit.fetch_my_coins()
@@ -161,9 +169,6 @@ async def _execute_buy_order_for_coin_async(currency: str) -> dict[str, object]:
         if result.get("success") and result.get("orders_placed", 0) > 0:
             try:
                 notifier = get_trade_notifier()
-                korean_name = upbit_pairs.COIN_TO_NAME_KR.get(
-                    currency_code, currency_code
-                )
 
                 # Extract order details from result if available
                 orders_placed = result.get("orders_placed", 0)
@@ -187,9 +192,6 @@ async def _execute_buy_order_for_coin_async(currency: str) -> dict[str, object]:
         elif not result.get("success") and has_insufficient_balance:
             try:
                 notifier = get_trade_notifier()
-                korean_name = upbit_pairs.COIN_TO_NAME_KR.get(
-                    currency_code, currency_code
-                )
                 reason = message or (
                     failure_reasons[0] if failure_reasons else "잔고 부족으로 매수 실패"
                 )
@@ -209,6 +211,8 @@ async def _execute_buy_order_for_coin_async(currency: str) -> dict[str, object]:
             "message": result.get("message"),
             "result": result,
         }
+    except UpbitSymbolUniverseLookupError:
+        raise
     except Exception as exc:  # pragma: no cover - defensive logging
         return {
             "status": "failed",
@@ -223,17 +227,8 @@ async def _execute_sell_order_for_coin_async(currency: str) -> dict[str, object]
         return {"status": "failed", "error": "코인 코드가 필요합니다."}
 
     currency_code = currency.upper()
-
-    await upbit_pairs.prime_upbit_constants()
-
-    if currency_code not in upbit_pairs.KRW_TRADABLE_COINS:
-        return {
-            "status": "failed",
-            "currency": currency_code,
-            "message": f"{currency_code}는 KRW 마켓에서 거래할 수 없습니다.",
-        }
-
-    market = f"KRW-{currency_code}"
+    market = await get_upbit_market_by_coin(currency_code)
+    korean_name = await get_upbit_korean_name_by_coin(currency_code)
 
     try:
         my_coins = await upbit.fetch_my_coins()
@@ -301,9 +296,6 @@ async def _execute_sell_order_for_coin_async(currency: str) -> dict[str, object]
             if result.get("orders_placed", 0) > 0:
                 try:
                     notifier = get_trade_notifier()
-                    korean_name = upbit_pairs.COIN_TO_NAME_KR.get(
-                        currency_code, currency_code
-                    )
 
                     orders_placed = result.get("orders_placed", 0)
                     # Estimate expected amount from sell_prices and balance
@@ -334,6 +326,8 @@ async def _execute_sell_order_for_coin_async(currency: str) -> dict[str, object]
             "message": result.get("message"),
             "result": result,
         }
+    except UpbitSymbolUniverseLookupError:
+        raise
     except Exception as exc:  # pragma: no cover - defensive logging
         return {
             "status": "failed",
@@ -342,7 +336,11 @@ async def _execute_sell_order_for_coin_async(currency: str) -> dict[str, object]
         }
 
 
-async def run_analysis_for_stock(symbol: str, name: str, instrument_type: str) -> dict:
+async def run_analysis_for_stock(
+    symbol: str,
+    name: str,
+    instrument_type: str,
+) -> dict[str, object]:
     analyzer = None
     try:
         if instrument_type == "equity_kr":
@@ -379,19 +377,12 @@ async def run_analysis_for_stock(symbol: str, name: str, instrument_type: str) -
             await analyzer.close()
 
 
-async def run_analysis_for_my_coins() -> dict:
-    await upbit_pairs.prime_upbit_constants()
+async def run_analysis_for_my_coins() -> dict[str, object]:
     analyzer = UpbitAnalyzer()
 
     try:
         my_coins = await upbit.fetch_my_coins()
-        tradable_coins = [
-            coin
-            for coin in my_coins
-            if coin.get("currency") != "KRW"
-            and analyzer.is_tradable(coin)
-            and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
-        ]
+        tradable_coins = await _resolve_tradable_coins(my_coins, analyzer)
 
         if not tradable_coins:
             return {
@@ -402,19 +393,14 @@ async def run_analysis_for_my_coins() -> dict:
                 "results": [],
             }
 
-        coin_names = []
-        for coin in tradable_coins:
-            currency = coin.get("currency")
-            korean_name = upbit_pairs.COIN_TO_NAME_KR.get(currency)
-            if korean_name:
-                coin_names.append(korean_name)
+        coin_names = [str(coin["korean_name"]) for coin in tradable_coins]
 
         total_count = len(coin_names)
         results = []
 
         for coin_name in coin_names:
             try:
-                _, model = await analyzer.analyze_coins_json([coin_name])
+                _, model = await analyzer.analyze_coin_json(coin_name)
                 results.append(
                     {"coin_name": coin_name, "success": True, "model": model}
                 )
@@ -431,6 +417,8 @@ async def run_analysis_for_my_coins() -> dict:
             "message": f"{success_count}/{total_count}개 코인 분석 완료",
             "results": results,
         }
+    except UpbitSymbolUniverseLookupError:
+        raise
     except Exception as exc:
         return {
             "status": "failed",
@@ -443,21 +431,14 @@ async def run_analysis_for_my_coins() -> dict:
         await analyzer.close()
 
 
-async def execute_buy_orders_task() -> dict:
+async def execute_buy_orders_task() -> dict[str, object]:
     from app.services.stock_info_service import process_buy_orders_with_analysis
 
-    await upbit_pairs.prime_upbit_constants()
     analyzer = UpbitAnalyzer()
 
     try:
         my_coins = await upbit.fetch_my_coins()
-        tradable_coins = [
-            coin
-            for coin in my_coins
-            if coin.get("currency") != "KRW"
-            and analyzer.is_tradable(coin)
-            and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
-        ]
+        tradable_coins = await _resolve_tradable_coins(my_coins, analyzer)
 
         if not tradable_coins:
             return {
@@ -468,12 +449,12 @@ async def execute_buy_orders_task() -> dict:
                 "results": [],
             }
 
-        market_codes = [f"KRW-{coin['currency']}" for coin in tradable_coins]
+        market_codes = [str(coin["market"]) for coin in tradable_coins]
         current_prices = await upbit.fetch_multiple_current_prices(market_codes)
 
         for coin in tradable_coins:
             currency = coin["currency"]
-            market = f"KRW-{currency}"
+            market = str(coin["market"])
             avg_buy_price = float(coin.get("avg_buy_price", 0))
 
             if avg_buy_price > 0 and market in current_prices:
@@ -490,7 +471,7 @@ async def execute_buy_orders_task() -> dict:
 
         for coin in tradable_coins:
             currency = coin["currency"]
-            market = f"KRW-{currency}"
+            market = str(coin["market"])
             avg_buy_price = float(coin["avg_buy_price"])
 
             try:
@@ -534,6 +515,8 @@ async def execute_buy_orders_task() -> dict:
             "message": f"{success_count}/{total_count}개 코인 매수 주문 완료",
             "results": order_results,
         }
+    except UpbitSymbolUniverseLookupError:
+        raise
     except Exception as exc:
         return {
             "status": "failed",
@@ -546,19 +529,12 @@ async def execute_buy_orders_task() -> dict:
         await analyzer.close()
 
 
-async def execute_sell_orders_task() -> dict:
-    await upbit_pairs.prime_upbit_constants()
+async def execute_sell_orders_task() -> dict[str, object]:
     analyzer = UpbitAnalyzer()
 
     try:
         my_coins = await upbit.fetch_my_coins()
-        tradable_coins = [
-            coin
-            for coin in my_coins
-            if coin.get("currency") != "KRW"
-            and analyzer.is_tradable(coin)
-            and coin.get("currency") in upbit_pairs.KRW_TRADABLE_COINS
-        ]
+        tradable_coins = await _resolve_tradable_coins(my_coins, analyzer)
 
         if not tradable_coins:
             return {
@@ -574,7 +550,7 @@ async def execute_sell_orders_task() -> dict:
 
         for coin in tradable_coins:
             currency = coin["currency"]
-            market = f"KRW-{currency}"
+            market = str(coin["market"])
             balance = float(coin["balance"])
             avg_buy_price = float(coin["avg_buy_price"])
 
@@ -648,6 +624,8 @@ async def execute_sell_orders_task() -> dict:
             "message": f"{success_count}/{total_count}개 코인 매도 주문 완료",
             "results": order_results,
         }
+    except UpbitSymbolUniverseLookupError:
+        raise
     except Exception as exc:
         return {
             "status": "failed",
@@ -660,25 +638,25 @@ async def execute_sell_orders_task() -> dict:
         await analyzer.close()
 
 
-async def execute_buy_order_for_coin_task(currency: str) -> dict:
+async def execute_buy_order_for_coin_task(currency: str) -> dict[str, object]:
     """특정 코인에 대한 분할 매수 주문 실행."""
 
     return await _execute_buy_order_for_coin_async(currency)
 
 
-async def execute_sell_order_for_coin_task(currency: str) -> dict:
+async def execute_sell_order_for_coin_task(currency: str) -> dict[str, object]:
     """특정 코인에 대한 분할 매도 주문 실행."""
 
     return await _execute_sell_order_for_coin_async(currency)
 
 
-async def run_analysis_for_coin_task(currency: str) -> dict:
+async def run_analysis_for_coin_task(currency: str) -> dict[str, object]:
     """단일 코인에 대한 AI 분석 실행."""
 
     return await _analyze_coin_async(currency)
 
 
-async def run_per_coin_automation_task() -> dict:
+async def run_per_coin_automation_task() -> dict[str, object]:
     """보유 코인 각각에 대해 분석 → 분할 매수 → 분할 매도를 순차 실행."""
 
     _, tradable_coins = await _fetch_tradable_coins()
@@ -696,14 +674,14 @@ async def run_per_coin_automation_task() -> dict:
 
     for coin in tradable_coins:
         currency = (coin.get("currency") or "").upper()
-        korean_name = coin.get("korean_name") or upbit_pairs.COIN_TO_NAME_KR.get(
-            currency, currency
-        )
-        coin_summary = {
+        korean_name = coin.get("korean_name")
+        if not korean_name:
+            korean_name = await get_upbit_korean_name_by_coin(currency)
+        coin_summary: dict[str, object] = {
             "currency": currency,
-            "korean_name": korean_name,
-            "steps": [],
+            "korean_name": str(korean_name),
         }
+        step_results: list[dict[str, object]] = []
 
         step_definitions = [
             ("analysis", lambda c=currency: _analyze_coin_async(c)),
@@ -718,7 +696,7 @@ async def run_per_coin_automation_task() -> dict:
                 break
 
             result = await step_fn()
-            coin_summary["steps"].append(
+            step_results.append(
                 {
                     "step": step_name,
                     "result": result,
@@ -730,13 +708,21 @@ async def run_per_coin_automation_task() -> dict:
 
             await asyncio.sleep(0.5)
 
+        coin_summary["steps"] = step_results
         results.append(coin_summary)
 
-    success_coins = sum(
-        1
-        for item in results
-        if all(step["result"].get("status") == "completed" for step in item["steps"])
-    )
+    success_coins = 0
+    for item in results:
+        steps_obj = item.get("steps")
+        if not isinstance(steps_obj, list):
+            continue
+        if all(
+            isinstance(step, dict)
+            and isinstance(step.get("result"), dict)
+            and step["result"].get("status") == "completed"
+            for step in steps_obj
+        ):
+            success_coins += 1
 
     return {
         "status": "completed",

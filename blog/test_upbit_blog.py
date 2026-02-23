@@ -10,7 +10,6 @@ from google import genai
 
 from app.analysis.analyzer import DataProcessor
 import app.services.brokers.upbit.client as upbit
-from app.services import upbit_symbol_universe_service as upbit_pairs
 
 
 def add_indicators(df):
@@ -54,7 +53,7 @@ def build_prompt(df, ticker: str, coin_name: str, fundamental_info: dict = None)
     # 1. 기술적 지표 계산
     df = add_indicators(df).sort_values("date").reset_index(drop=True)
 
-    latest = df.iloc[-1]     # 오늘
+    latest = df.iloc[-1]  # 오늘
     yesterday = df.iloc[-2]  # 어제
 
     # 2. 전일 대비 계산
@@ -117,9 +116,6 @@ def build_prompt(df, ticker: str, coin_name: str, fundamental_info: dict = None)
 
 
 async def main():
-    # Upbit 상수 초기화
-    await upbit_pairs.prime_upbit_constants()
-
     # 비트코인 데이터 수집
     coin_name = "비트코인"
     ticker = "KRW-BTC"
@@ -152,10 +148,7 @@ async def main():
 
     # GOOGLE_API_KEY 환경 변수에서 자동으로 가져옴
     client = genai.Client()
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
 
     print("\nGemini AI 분석 결과:")
     print("=" * 80)

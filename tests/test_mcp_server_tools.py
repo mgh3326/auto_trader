@@ -149,6 +149,15 @@ def _patch_runtime_attr(
         raise AttributeError(f"No runtime module exposes attribute '{attr_name}'")
 
 
+def _upbit_name_lookup_mock(name_map: dict[str, str]) -> AsyncMock:
+    async def _lookup(currency: str, quote_currency: str = "KRW", db=None) -> str:
+        _ = quote_currency, db
+        key = str(currency).upper()
+        return name_map.get(key, key)
+
+    return AsyncMock(side_effect=_lookup)
+
+
 def _patch_httpx_async_client(
     monkeypatch: pytest.MonkeyPatch, async_client_class: type
 ) -> None:
@@ -1043,6 +1052,11 @@ async def test_search_symbol_clamps_limit_and_shapes(monkeypatch):
     _patch_runtime_attr(
         monkeypatch,
         "search_us_symbols",
+        AsyncMock(return_value=[]),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "search_upbit_symbols",
         AsyncMock(return_value=[]),
     )
 
@@ -5672,8 +5686,8 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
     )
     _patch_runtime_attr(
         monkeypatch,
-        "get_or_refresh_maps",
-        AsyncMock(return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인"}}),
+        "get_upbit_korean_name_by_coin",
+        _upbit_name_lookup_mock({"BTC": "비트코인"}),
     )
     _patch_runtime_attr(
         monkeypatch,
@@ -5783,10 +5797,8 @@ async def test_get_holdings_crypto_prices_batch_fetch(monkeypatch):
     )
     _patch_runtime_attr(
         monkeypatch,
-        "get_or_refresh_maps",
-        AsyncMock(
-            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "ETH": "이더리움"}}
-        ),
+        "get_upbit_korean_name_by_coin",
+        _upbit_name_lookup_mock({"BTC": "비트코인", "ETH": "이더리움"}),
     )
     _patch_runtime_attr(
         monkeypatch,
@@ -5860,10 +5872,8 @@ async def test_get_holdings_includes_crypto_price_errors(monkeypatch):
     )
     _patch_runtime_attr(
         monkeypatch,
-        "get_or_refresh_maps",
-        AsyncMock(
-            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "DOGE": "도지"}}
-        ),
+        "get_upbit_korean_name_by_coin",
+        _upbit_name_lookup_mock({"BTC": "비트코인", "DOGE": "도지"}),
     )
     _patch_runtime_attr(
         monkeypatch,
@@ -5960,15 +5970,13 @@ async def test_get_holdings_applies_minimum_value_filter(monkeypatch):
     )
     _patch_runtime_attr(
         monkeypatch,
-        "get_or_refresh_maps",
-        AsyncMock(
-            return_value={
-                "COIN_TO_NAME_KR": {
-                    "BTC": "비트코인",
-                    "ONG": "온톨로지가스",
-                    "XYM": "심볼",
-                    "PCI": "페이코인",
-                }
+        "get_upbit_korean_name_by_coin",
+        _upbit_name_lookup_mock(
+            {
+                "BTC": "비트코인",
+                "ONG": "온톨로지가스",
+                "XYM": "심볼",
+                "PCI": "페이코인",
             }
         ),
     )
@@ -6054,10 +6062,8 @@ async def test_get_holdings_filters_delisted_markets_before_batch_fetch(monkeypa
     )
     _patch_runtime_attr(
         monkeypatch,
-        "get_or_refresh_maps",
-        AsyncMock(
-            return_value={"COIN_TO_NAME_KR": {"BTC": "비트코인", "PCI": "페이코인"}}
-        ),
+        "get_upbit_korean_name_by_coin",
+        _upbit_name_lookup_mock({"BTC": "비트코인", "PCI": "페이코인"}),
     )
     _patch_runtime_attr(
         monkeypatch,
@@ -6128,8 +6134,8 @@ async def test_get_holdings_filters_account_market_and_disables_prices(monkeypat
     )
     _patch_runtime_attr(
         monkeypatch,
-        "get_or_refresh_maps",
-        AsyncMock(return_value={"COIN_TO_NAME_KR": {"ETH": "이더리움"}}),
+        "get_upbit_korean_name_by_coin",
+        _upbit_name_lookup_mock({"ETH": "이더리움"}),
     )
     _patch_runtime_attr(
         monkeypatch,

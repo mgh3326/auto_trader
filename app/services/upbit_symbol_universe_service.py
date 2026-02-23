@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from sqlalchemy import func, or_, select
@@ -15,8 +17,6 @@ logger = logging.getLogger(__name__)
 
 _UPBIT_MARKET_ALL_URL = "https://api.upbit.com/v1/market/all"
 _UPBIT_UNIVERSE_SYNC_COMMAND = "uv run python scripts/sync_upbit_symbol_universe.py"
-
-_upbit_maps: dict[str, dict[str, str]] | None = None
 
 
 class UpbitSymbolUniverseLookupError(ValueError):
@@ -199,7 +199,7 @@ async def sync_upbit_symbol_universe(db: AsyncSession | None = None) -> dict[str
     if db is not None:
         return await _apply_snapshot(db, snapshot)
 
-    async with AsyncSessionLocal() as session:
+    async with _internal_session() as session:
         async with session.begin():
             result = await _apply_snapshot(session, snapshot)
 
@@ -218,103 +218,94 @@ async def _has_any_rows(db: AsyncSession) -> bool:
     return result.scalar_one_or_none() is not None
 
 
-def _build_maps(rows: list[UpbitSymbolUniverse]) -> dict[str, dict[str, str]]:
-    pair_to_name_kr: dict[str, str] = {}
-    name_to_pair_kr: dict[str, str] = {}
-    coin_to_name_kr: dict[str, str] = {}
-    coin_to_name_en: dict[str, str] = {}
-    coin_to_pair: dict[str, str] = {}
-
-    for row in rows:
-        coin = row.base_currency
-        pair = row.market
-        if not coin or not pair:
-            continue
-
-        pair_to_name_kr[pair] = row.korean_name
-        name_to_pair_kr[row.korean_name] = pair
-        coin_to_name_kr[coin] = row.korean_name
-        coin_to_name_en[coin] = row.english_name
-        coin_to_pair[coin] = pair
-
-    return {
-        "NAME_TO_PAIR_KR": name_to_pair_kr,
-        "PAIR_TO_NAME_KR": pair_to_name_kr,
-        "COIN_TO_PAIR": coin_to_pair,
-        "COIN_TO_NAME_KR": coin_to_name_kr,
-        "COIN_TO_NAME_EN": coin_to_name_en,
-    }
+@asynccontextmanager
+async def _internal_session() -> AsyncIterator[AsyncSession]:
+    session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
+    try:
+        yield session
+    finally:
+        await session.close()
 
 
-async def _load_active_krw_rows(db: AsyncSession) -> list[UpbitSymbolUniverse]:
+def _normalize_quote_currency(value: str | None, *, default: str = "KRW") -> str:
+    quote_currency = _normalize_symbol(value or default)
+    if not quote_currency:
+        raise ValueError("quote_currency is required")
+    return quote_currency
+
+
+async def _resolve_active_row_by_market(
+    db: AsyncSession,
+    market: str,
+) -> UpbitSymbolUniverse:
+    normalized_market = _normalize_symbol(market)
+    if not normalized_market:
+        raise ValueError("market is required")
+
+    stmt = select(UpbitSymbolUniverse).where(
+        UpbitSymbolUniverse.market == normalized_market
+    )
+    row = (await db.execute(stmt)).scalar_one_or_none()
+
+    if row is None:
+        if not await _has_any_rows(db):
+            raise UpbitSymbolUniverseEmptyError(
+                f"upbit_symbol_universe is empty. {_sync_hint()}"
+            )
+        raise UpbitSymbolNotRegisteredError(
+            f"Upbit market '{normalized_market}' is not registered in upbit_symbol_universe. "
+            f"{_sync_hint()}"
+        )
+
+    if not row.is_active:
+        raise UpbitSymbolInactiveError(
+            f"Upbit market '{normalized_market}' is inactive in upbit_symbol_universe. "
+            f"{_sync_hint()}"
+        )
+
+    return row
+
+
+async def _resolve_active_row_by_coin(
+    db: AsyncSession,
+    currency: str,
+    quote_currency: str,
+) -> UpbitSymbolUniverse:
+    normalized_currency = _normalize_symbol(currency)
+    if not normalized_currency:
+        raise ValueError("currency is required")
+
+    normalized_quote_currency = _normalize_quote_currency(quote_currency)
     stmt = (
         select(UpbitSymbolUniverse)
         .where(
-            UpbitSymbolUniverse.is_active.is_(True),
-            UpbitSymbolUniverse.quote_currency == "KRW",
+            UpbitSymbolUniverse.base_currency == normalized_currency,
+            UpbitSymbolUniverse.quote_currency == normalized_quote_currency,
         )
         .order_by(UpbitSymbolUniverse.market.asc())
     )
-    return list((await db.execute(stmt)).scalars().all())
+    rows = list((await db.execute(stmt)).scalars().all())
 
-
-async def _load_maps_from_db(db: AsyncSession) -> dict[str, dict[str, str]]:
-    rows = await _load_active_krw_rows(db)
     if not rows:
         if not await _has_any_rows(db):
             raise UpbitSymbolUniverseEmptyError(
                 f"upbit_symbol_universe is empty. {_sync_hint()}"
             )
-        raise UpbitSymbolUniverseEmptyError(
-            f"upbit_symbol_universe has no active KRW symbols. {_sync_hint()}"
+        raise UpbitSymbolNotRegisteredError(
+            f"Upbit coin '{normalized_currency}' is not registered for quote '{normalized_quote_currency}' "
+            f"in upbit_symbol_universe. {_sync_hint()}"
         )
 
-    maps = _build_maps(rows)
-    if not maps["COIN_TO_PAIR"]:
-        raise UpbitSymbolUniverseEmptyError(
-            f"upbit_symbol_universe has no active KRW symbols. {_sync_hint()}"
+    active_rows = [row for row in rows if row.is_active]
+    if not active_rows:
+        markets = sorted({row.market for row in rows})
+        preview = ", ".join(markets[:10])
+        raise UpbitSymbolInactiveError(
+            f"Upbit coin '{normalized_currency}' for quote '{normalized_quote_currency}' is inactive "
+            f"in upbit_symbol_universe. matched_symbols=[{preview}]. {_sync_hint()}"
         )
-    return maps
 
-
-async def get_upbit_maps(db: AsyncSession | None = None) -> dict[str, dict[str, str]]:
-    global _upbit_maps
-
-    if _upbit_maps is not None and db is None:
-        return _upbit_maps
-
-    if db is not None:
-        maps = await _load_maps_from_db(db)
-        if _upbit_maps is None:
-            _upbit_maps = maps
-        return maps
-
-    async with AsyncSessionLocal() as session:
-        maps = await _load_maps_from_db(session)
-    _upbit_maps = maps
-    return maps
-
-
-async def get_or_refresh_maps(
-    force: bool = False,
-    db: AsyncSession | None = None,
-) -> dict[str, dict[str, str]]:
-    global _upbit_maps
-    if force:
-        if db is not None:
-            maps = await _load_maps_from_db(db)
-            _upbit_maps = maps
-            return maps
-        async with AsyncSessionLocal() as session:
-            maps = await _load_maps_from_db(session)
-        _upbit_maps = maps
-        return maps
-
-    return await get_upbit_maps(db=db)
-
-
-async def prime_upbit_constants() -> None:
-    await get_upbit_maps()
+    return active_rows[0]
 
 
 async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
@@ -367,8 +358,62 @@ async def get_upbit_symbol_by_name(
     if db is not None:
         return await _resolve_active_symbol_by_name(db, name)
 
-    async with AsyncSessionLocal() as session:
+    async with _internal_session() as session:
         return await _resolve_active_symbol_by_name(session, name)
+
+
+async def get_upbit_market_by_coin(
+    currency: str,
+    quote_currency: str = "KRW",
+    db: AsyncSession | None = None,
+) -> str:
+    if db is not None:
+        row = await _resolve_active_row_by_coin(db, currency, quote_currency)
+        return row.market
+
+    async with _internal_session() as session:
+        row = await _resolve_active_row_by_coin(session, currency, quote_currency)
+    return row.market
+
+
+async def get_upbit_korean_name_by_coin(
+    currency: str,
+    quote_currency: str = "KRW",
+    db: AsyncSession | None = None,
+) -> str:
+    if db is not None:
+        row = await _resolve_active_row_by_coin(db, currency, quote_currency)
+        return row.korean_name
+
+    async with _internal_session() as session:
+        row = await _resolve_active_row_by_coin(session, currency, quote_currency)
+    return row.korean_name
+
+
+async def get_upbit_korean_name_by_market(
+    market: str,
+    db: AsyncSession | None = None,
+) -> str:
+    if db is not None:
+        row = await _resolve_active_row_by_market(db, market)
+        return row.korean_name
+
+    async with _internal_session() as session:
+        row = await _resolve_active_row_by_market(session, market)
+    return row.korean_name
+
+
+async def get_upbit_coin_by_market(
+    market: str,
+    db: AsyncSession | None = None,
+) -> str:
+    if db is not None:
+        row = await _resolve_active_row_by_market(db, market)
+        return row.base_currency
+
+    async with _internal_session() as session:
+        row = await _resolve_active_row_by_market(session, market)
+    return row.base_currency
 
 
 async def _search_upbit_symbols_impl(
@@ -423,7 +468,7 @@ async def search_upbit_symbols(
     if db is not None:
         return await _search_upbit_symbols_impl(db, query, capped_limit)
 
-    async with AsyncSessionLocal() as session:
+    async with _internal_session() as session:
         return await _search_upbit_symbols_impl(session, query, capped_limit)
 
 
@@ -489,11 +534,45 @@ async def get_active_upbit_markets(
     if db is not None:
         return await _get_active_upbit_markets_impl(db, effective_quote_currency)
 
-    async with AsyncSessionLocal() as session:
+    async with _internal_session() as session:
         return await _get_active_upbit_markets_impl(
             session,
             effective_quote_currency,
         )
+
+
+async def get_active_upbit_base_currencies(
+    quote_currency: str = "KRW",
+    db: AsyncSession | None = None,
+) -> set[str]:
+    normalized_quote_currency = _normalize_quote_currency(quote_currency)
+
+    stmt = (
+        select(UpbitSymbolUniverse.base_currency)
+        .where(
+            UpbitSymbolUniverse.is_active.is_(True),
+            UpbitSymbolUniverse.quote_currency == normalized_quote_currency,
+        )
+        .order_by(UpbitSymbolUniverse.base_currency.asc())
+    )
+
+    async def _load(session: AsyncSession) -> set[str]:
+        base_currencies = {
+            str(base_currency).strip().upper()
+            for base_currency in (await session.execute(stmt)).scalars().all()
+            if str(base_currency).strip()
+        }
+        if not base_currencies and not await _has_any_rows(session):
+            raise UpbitSymbolUniverseEmptyError(
+                f"upbit_symbol_universe is empty. {_sync_hint()}"
+            )
+        return base_currencies
+
+    if db is not None:
+        return await _load(db)
+
+    async with _internal_session() as session:
+        return await _load(session)
 
 
 async def get_upbit_warning_markets(
@@ -505,83 +584,11 @@ async def get_upbit_warning_markets(
     if db is not None:
         return await _get_upbit_warning_markets_impl(db, effective_quote_currency)
 
-    async with AsyncSessionLocal() as session:
+    async with _internal_session() as session:
         return await _get_upbit_warning_markets_impl(
             session,
             effective_quote_currency,
         )
-
-
-class _LazyUpbitDict:
-    def __init__(self, key: str):
-        self._key = key
-
-    def _get_data(self) -> dict[str, str]:
-        global _upbit_maps
-        if _upbit_maps is None:
-            raise RuntimeError(
-                "Upbit symbol universe maps are not initialized. "
-                "Call 'await prime_upbit_constants()' first."
-            )
-        return _upbit_maps[self._key]
-
-    def __getitem__(self, key: str) -> str:
-        return self._get_data()[key]
-
-    def __contains__(self, key: object) -> bool:
-        return key in self._get_data()
-
-    def get(self, key: str, default: str | None = None) -> str | None:
-        return self._get_data().get(key, default)
-
-    def keys(self):
-        return self._get_data().keys()
-
-    def values(self):
-        return self._get_data().values()
-
-    def items(self):
-        return self._get_data().items()
-
-    def __iter__(self):
-        return iter(self._get_data())
-
-    def __len__(self) -> int:
-        return len(self._get_data())
-
-    def __repr__(self) -> str:
-        return repr(self._get_data())
-
-
-class _LazyUpbitSet:
-    def _get_data(self) -> set[str]:
-        global _upbit_maps
-        if _upbit_maps is None:
-            raise RuntimeError(
-                "Upbit symbol universe maps are not initialized. "
-                "Call 'await prime_upbit_constants()' first."
-            )
-        return set(_upbit_maps["COIN_TO_NAME_KR"].keys())
-
-    def __contains__(self, item: object) -> bool:
-        return item in self._get_data()
-
-    def __iter__(self):
-        return iter(self._get_data())
-
-    def __len__(self) -> int:
-        return len(self._get_data())
-
-    def __repr__(self) -> str:
-        return repr(self._get_data())
-
-
-NAME_TO_PAIR_KR = _LazyUpbitDict("NAME_TO_PAIR_KR")
-PAIR_TO_NAME_KR = _LazyUpbitDict("PAIR_TO_NAME_KR")
-COIN_TO_PAIR = _LazyUpbitDict("COIN_TO_PAIR")
-COIN_TO_NAME_KR = _LazyUpbitDict("COIN_TO_NAME_KR")
-COIN_TO_NAME_EN = _LazyUpbitDict("COIN_TO_NAME_EN")
-KRW_TRADABLE_COINS = _LazyUpbitSet()
 
 
 __all__ = [
@@ -590,19 +597,15 @@ __all__ = [
     "UpbitSymbolNotRegisteredError",
     "UpbitSymbolInactiveError",
     "UpbitSymbolNameAmbiguousError",
-    "NAME_TO_PAIR_KR",
-    "PAIR_TO_NAME_KR",
-    "COIN_TO_PAIR",
-    "COIN_TO_NAME_KR",
-    "COIN_TO_NAME_EN",
-    "KRW_TRADABLE_COINS",
     "build_upbit_symbol_universe_snapshot",
     "get_active_upbit_markets",
-    "get_or_refresh_maps",
+    "get_active_upbit_base_currencies",
+    "get_upbit_coin_by_market",
+    "get_upbit_korean_name_by_coin",
+    "get_upbit_korean_name_by_market",
+    "get_upbit_market_by_coin",
     "get_upbit_warning_markets",
-    "get_upbit_maps",
     "get_upbit_symbol_by_name",
-    "prime_upbit_constants",
     "search_upbit_symbols",
     "sync_upbit_symbol_universe",
 ]

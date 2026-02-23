@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 from httpx import HTTPStatusError
 
-from app.services import upbit_symbol_universe_service as upbit_pairs
+from app.services.upbit_symbol_universe_service import get_upbit_market_by_coin
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,7 @@ async def _normalize_market_code(market: str) -> str | None:
     if market_code.startswith("KRW-"):
         return market_code
 
-    await upbit_pairs.prime_upbit_constants()
-    return upbit_pairs.COIN_TO_PAIR.get(market_code)
+    return await get_upbit_market_by_coin(market_code)
 
 
 def _build_orderbook_result(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

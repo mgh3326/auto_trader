@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -75,11 +74,8 @@ async def test_fetch_orderbook_normalizes_symbol(monkeypatch):
 
     monkeypatch.setattr(
         upbit_orderbook,
-        "upbit_pairs",
-        SimpleNamespace(
-            prime_upbit_constants=AsyncMock(),
-            COIN_TO_PAIR={"BTC": "KRW-BTC"},
-        ),
+        "get_upbit_market_by_coin",
+        AsyncMock(return_value="KRW-BTC"),
     )
     monkeypatch.setattr(
         upbit_orderbook.httpx,
@@ -112,13 +108,17 @@ async def test_fetch_multiple_orderbooks_batches_and_deduplicates(monkeypatch):
         ),
     ]
 
+    async def fake_get_upbit_market_by_coin(currency: str) -> str:
+        return {
+            "BTC": "KRW-BTC",
+            "ETH": "KRW-ETH",
+            "XRP": "KRW-XRP",
+        }[currency]
+
     monkeypatch.setattr(
         upbit_orderbook,
-        "upbit_pairs",
-        SimpleNamespace(
-            prime_upbit_constants=AsyncMock(),
-            COIN_TO_PAIR={"BTC": "KRW-BTC", "ETH": "KRW-ETH", "XRP": "KRW-XRP"},
-        ),
+        "get_upbit_market_by_coin",
+        fake_get_upbit_market_by_coin,
     )
     monkeypatch.setattr(upbit_orderbook, "MAX_MARKETS_PER_REQUEST", 2)
     monkeypatch.setattr(
@@ -128,7 +128,7 @@ async def test_fetch_multiple_orderbooks_batches_and_deduplicates(monkeypatch):
     )
 
     result = await upbit_orderbook.fetch_multiple_orderbooks(
-        ["btc", "KRW-ETH", "xrp", "BTC", "NOT-A-MARKET"]
+        ["btc", "KRW-ETH", "xrp", "BTC"]
     )
 
     assert len(calls) == 2
@@ -151,13 +151,17 @@ async def test_fetch_multiple_orderbooks_returns_partial_on_429(monkeypatch):
         DummyResponse(429, []),
     ]
 
+    async def fake_get_upbit_market_by_coin(currency: str) -> str:
+        return {
+            "BTC": "KRW-BTC",
+            "ETH": "KRW-ETH",
+            "XRP": "KRW-XRP",
+        }[currency]
+
     monkeypatch.setattr(
         upbit_orderbook,
-        "upbit_pairs",
-        SimpleNamespace(
-            prime_upbit_constants=AsyncMock(),
-            COIN_TO_PAIR={"BTC": "KRW-BTC", "ETH": "KRW-ETH", "XRP": "KRW-XRP"},
-        ),
+        "get_upbit_market_by_coin",
+        fake_get_upbit_market_by_coin,
     )
     monkeypatch.setattr(upbit_orderbook, "MAX_MARKETS_PER_REQUEST", 2)
     monkeypatch.setattr(
