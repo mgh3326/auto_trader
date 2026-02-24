@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+
+import pandas as pd
 from typing import TYPE_CHECKING, Any
 
 from app.mcp_server.tooling.fundamentals_sources_binance import (
@@ -104,6 +106,7 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
 async def _get_support_resistance_impl(
     symbol: str,
     market: str | None = None,
+    preloaded_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Get support/resistance zones from multi-indicator clustering."""
 
@@ -116,7 +119,11 @@ async def _get_support_resistance_impl(
     source = source_map[market_type]
 
     try:
-        df = await _fetch_ohlcv_for_indicators(normalized_symbol, market_type, count=60)
+        # Use preloaded OHLCV data if provided, otherwise fetch
+        if preloaded_df is not None and not preloaded_df.empty:
+            df = preloaded_df
+        else:
+            df = await _fetch_ohlcv_for_indicators(normalized_symbol, market_type, count=60)
         if df.empty:
             raise ValueError(f"No data available for symbol '{normalized_symbol}'")
 
@@ -128,10 +135,8 @@ async def _get_support_resistance_impl(
         fib_result = _calculate_fibonacci(df, current_price)
         fib_result["symbol"] = normalized_symbol
 
-        volume_profile_df = await _fetch_ohlcv_for_volume_profile(
-            normalized_symbol, market_type, 60
-        )
-        volume_result = _calculate_volume_profile(volume_profile_df, bins=20)
+        # Reuse the same OHLCV dataframe for volume profile (avoid duplicate fetch)
+        volume_result = _calculate_volume_profile(df, bins=20)
         volume_result["symbol"] = normalized_symbol
         volume_result["period_days"] = 60
 

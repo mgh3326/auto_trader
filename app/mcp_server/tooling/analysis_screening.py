@@ -25,7 +25,11 @@ from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
     _fetch_news_finnhub,
 )
+import pandas as pd
+import yfinance as yf
+
 from app.mcp_server.tooling.fundamentals_sources_naver import (
+    _YFinanceSnapshot,
     _fetch_investment_opinions_naver,
     _fetch_investment_opinions_yfinance,
     _fetch_news_naver,
@@ -34,6 +38,10 @@ from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_valuation_naver,
     _fetch_valuation_yfinance,
 )
+from app.mcp_server.tooling.market_data_indicators import (
+    _fetch_ohlcv_for_indicators,
+)
+from app.monitoring import build_yfinance_tracing_session
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_crypto,
     _fetch_quote_equity_kr,
@@ -211,21 +219,23 @@ async def _get_indicators_impl(
     symbol: str,
     indicators: list[str],
     market: str | None = None,
+    preloaded_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     from app.mcp_server.tooling.portfolio_holdings import _get_indicators_impl as _impl
 
-    return await _impl(symbol, indicators, market)
+    return await _impl(symbol, indicators, market, preloaded_df=preloaded_df)
 
 
 async def _get_support_resistance_impl(
     symbol: str,
     market: str | None = None,
+    preloaded_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     from app.mcp_server.tooling.fundamentals_handlers import (
         _get_support_resistance_impl as _impl,
     )
 
-    return await _impl(symbol, market)
+    return await _impl(symbol, market, preloaded_df=preloaded_df)
 
 
 async def _analyze_stock_impl(
@@ -250,18 +260,25 @@ async def _analyze_stock_impl(
 
     tasks: list[asyncio.Task[Any]] = []
 
+    # Fetch OHLCV once for indicators and support/resistance (avoid duplicate fetch)
+    loop = asyncio.get_running_loop()
+    ohlcv_df = await _fetch_ohlcv_for_indicators(normalized_symbol, market_type, count=250)
+    # Use last 60 days for support/resistance (slice from the 250-day df)
+    ohlcv_60d = ohlcv_df.tail(60) if len(ohlcv_df) >= 60 else ohlcv_df
+
     quote_task = asyncio.create_task(_get_quote_impl(normalized_symbol, market_type))
     tasks.append(quote_task)
 
     indicators_task = asyncio.create_task(
         _get_indicators_impl(
-            normalized_symbol, ["rsi", "macd", "bollinger", "sma"], None
+            normalized_symbol, ["rsi", "macd", "bollinger", "sma"], None,
+            preloaded_df=ohlcv_df,
         ),
     )
     tasks.append(indicators_task)
 
     sr_task = asyncio.create_task(
-        _get_support_resistance_impl(normalized_symbol, None),
+        _get_support_resistance_impl(normalized_symbol, None, preloaded_df=ohlcv_60d),
     )
     tasks.append(sr_task)
 
@@ -282,8 +299,32 @@ async def _analyze_stock_impl(
         tasks.append(opinions_task)
 
     elif market_type == "equity_us":
+        # Collect yfinance snapshot once to avoid duplicate ticker.info calls
+        yf_session = build_yfinance_tracing_session()
+        yf_ticker = yf.Ticker(normalized_symbol, session=yf_session)
+
+        def _collect_yf_snapshot() -> _YFinanceSnapshot:
+            info = None
+            targets = None
+            ud = None
+            try:
+                info = yf_ticker.info
+            except Exception:
+                pass
+            try:
+                targets = yf_ticker.analyst_price_targets
+            except Exception:
+                pass
+            try:
+                ud = yf_ticker.upgrades_downgrades
+            except Exception:
+                pass
+            return _YFinanceSnapshot(info=info, analyst_price_targets=targets, upgrades_downgrades=ud)
+
+        yf_snapshot = await loop.run_in_executor(None, _collect_yf_snapshot)
+
         valuation_task = asyncio.create_task(
-            _fetch_valuation_yfinance(normalized_symbol),
+            _fetch_valuation_yfinance(normalized_symbol, snapshot=yf_snapshot, session=yf_session),
         )
         tasks.append(valuation_task)
 
@@ -298,7 +339,7 @@ async def _analyze_stock_impl(
         tasks.append(news_task)
 
         opinions_task = asyncio.create_task(
-            _fetch_investment_opinions_yfinance(normalized_symbol, 10),
+            _fetch_investment_opinions_yfinance(normalized_symbol, 10, snapshot=yf_snapshot, session=yf_session),
         )
         tasks.append(opinions_task)
 

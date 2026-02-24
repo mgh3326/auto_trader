@@ -8718,3 +8718,186 @@ async def test_recommend_stocks_registration():
     """Test recommend_stocks tool is registered."""
     tools = build_tools()
     assert "recommend_stocks" in tools
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for yfinance dedupe (GH-8160)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_support_resistance_uses_single_ohlcv_fetch(monkeypatch):
+    """Verify get_support_resistance fetches OHLCV only once (not twice)."""
+    from app.mcp_server.tooling import fundamentals_handlers
+
+    tools = build_tools()
+    fetch_calls = []
+
+    async def mock_fetch_ohlcv(symbol, market_type, count):
+        fetch_calls.append((symbol, market_type, count))
+        return pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=60, freq="D"),
+                "open": [100.0] * 60,
+                "high": [105.0] * 60,
+                "low": [95.0] * 60,
+                "close": [102.0] * 60,
+                "volume": [1000] * 60,
+            }
+        )
+
+    # Patch in fundamentals_handlers since that's where the import happens
+    monkeypatch.setattr(
+        fundamentals_handlers,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv,
+    )
+
+    result = await tools["get_support_resistance"]("AAPL", market="us")
+
+    # Should only fetch once, not twice
+    assert len(fetch_calls) == 1
+    assert fetch_calls[0][0] == "AAPL"
+    assert result["symbol"] == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_sector_peers_us_dedupes_before_network_call(monkeypatch):
+    """Verify sector_peers_us dedupes base tickers before fetching yfinance info."""
+    from app.mcp_server.tooling import fundamentals_sources_naver
+
+    tools = build_tools()
+    yf_info_calls = []
+
+    # Mock Finnhub client to return peers with duplicates
+    class MockFinnhubClient:
+        def company_peers(self, symbol):
+            # Return peers with same base ticker (e.g., BRK.B and BRK.A)
+            return ["AAPL", "BRK.B", "BRK.A", "MSFT"]
+
+    monkeypatch.setattr(
+        fundamentals_sources_naver,
+        "_get_finnhub_client",
+        MockFinnhubClient,
+    )
+
+    def mock_yf_ticker(symbol, session=None):
+        calls = {"symbol": symbol}
+
+        class MockTicker:
+            @property
+            def info(self):
+                yf_info_calls.append(symbol)
+                return {
+                    "shortName": f"{symbol} Inc",
+                    "currentPrice": 100.0,
+                    "previousClose": 99.0,
+                    "trailingPE": 15.0,
+                    "priceToBook": 2.0,
+                    "marketCap": 1000000000,
+                    "industry": "Tech",
+                }
+
+        return MockTicker()
+
+    monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", mock_yf_ticker)
+
+    result = await tools["get_sector_peers"]("TEST", market="us", limit=5)
+
+    # BRK.B and BRK.A share base ticker "BRK", so only one should be fetched
+    # Total calls: 1 for target (TEST) + deduped peers (AAPL, BRK.B or BRK.A, MSFT)
+    assert len(yf_info_calls) <= 4  # TEST + AAPL + (BRK.B or BRK.A) + MSFT
+    assert "BRK.B" not in yf_info_calls or "BRK.A" not in yf_info_calls
+
+
+@pytest.mark.asyncio
+async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
+    """Verify analyze_stock(US) fetches ticker.info only once for valuation+opinions."""
+    from app.mcp_server.tooling import fundamentals_sources_naver
+
+    tools = build_tools()
+    yf_info_calls = []
+
+    # Mock OHLCV fetch for indicators and support/resistance
+    async def mock_fetch_ohlcv(symbol, market_type, count):
+        return pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=250, freq="D"),
+                "open": [100.0] * 250,
+                "high": [105.0] * 250,
+                "low": [95.0] * 250,
+                "close": [102.0] * 250,
+                "volume": [1000] * 250,
+            }
+        )
+
+    monkeypatch.setattr(
+        market_data_indicators,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv,
+    )
+
+    # Mock KIS client
+    class MockKISClient:
+        pass
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    # Mock yfinance to count info calls
+    original_ticker = fundamentals_sources_naver.yf.Ticker
+
+    def mock_yf_ticker(symbol, session=None):
+        class MockTicker:
+            @property
+            def info(self):
+                yf_info_calls.append(f"info:{symbol}")
+                return {
+                    "shortName": f"{symbol} Inc",
+                    "currentPrice": 150.0,
+                    "fiftyTwoWeekHigh": 200.0,
+                    "fiftyTwoWeekLow": 100.0,
+                    "trailingPE": 25.0,
+                    "priceToBook": 5.0,
+                    "returnOnEquity": 0.15,
+                    "dividendYield": 0.01,
+                }
+
+            @property
+            def analyst_price_targets(self):
+                return {"mean": 180.0, "median": 175.0, "low": 150.0, "high": 200.0}
+
+            @property
+            def upgrades_downgrades(self):
+                return pd.DataFrame()
+
+        return MockTicker()
+
+    monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", mock_yf_ticker)
+
+    # Mock Finnhub for profile and news
+    class MockFinnhubClient:
+        def company_profile2(self, symbol):
+            return {"name": f"{symbol} Inc", "ticker": symbol}
+
+        def general_news(self, category, min_id=0):
+            return []
+
+        def company_news(self, symbol, _from, to):
+            return []
+
+    monkeypatch.setattr(
+        fundamentals_sources_naver,
+        "_get_finnhub_client",
+        MockFinnhubClient,
+    )
+
+    # Run analyze_stock for US market
+    result = await tools["analyze_stock"]("AAPL", market="us")
+
+    # ticker.info should be called only once (via snapshot) for both valuation and opinions
+    info_calls = [c for c in yf_info_calls if c.startswith("info:")]
+    assert len(info_calls) == 1, f"Expected 1 info call, got {len(info_calls)}: {info_calls}"
+
+    assert result["symbol"] == "AAPL"
+    assert "valuation" in result
+    assert "opinions" in result

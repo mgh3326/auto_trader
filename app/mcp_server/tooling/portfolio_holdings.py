@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+
+import pandas as pd
 from typing import TYPE_CHECKING, Any, cast
 
 import app.services.brokers.upbit.client as upbit_service
@@ -526,6 +528,7 @@ async def _get_indicators_impl(
     symbol: str,
     indicators: list[str],
     market: str | None = None,
+    preloaded_df: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
@@ -538,7 +541,11 @@ async def _get_indicators_impl(
     source = source_map[market_type]
 
     try:
-        df = await _fetch_ohlcv_for_indicators(symbol, market_type, count=250)
+        # Use preloaded OHLCV data if provided, otherwise fetch
+        if preloaded_df is not None and not preloaded_df.empty:
+            df = preloaded_df
+        else:
+            df = await _fetch_ohlcv_for_indicators(symbol, market_type, count=250)
         if df.empty:
             raise ValueError(f"No data available for symbol '{symbol}'")
 
