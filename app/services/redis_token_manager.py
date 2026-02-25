@@ -141,7 +141,7 @@ class RedisTokenManager:
             return None
 
         async with self._local_lock:
-            if self._is_local_token_valid():
+            if not force_redis_check and self._is_local_token_valid():
                 return self._local_token
 
             current_time = time.time()
@@ -191,7 +191,6 @@ class RedisTokenManager:
             "expires_at": expires_at,
             "created_at": now,
         }
-        self._update_local_cache(access_token, expires_at)
 
         try:
             redis_client = await self._get_redis_client()
@@ -204,6 +203,7 @@ class RedisTokenManager:
             )
 
             logging.info(f"Redis에 토큰 저장 완료 (만료: {expires_in}초)")
+            self._update_local_cache(access_token, expires_at)
 
         except Exception as e:
             logging.error(f"Redis에 토큰 저장 실패: {e}")

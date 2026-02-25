@@ -329,6 +329,56 @@ class TestRedisTokenManagerToken:
         assert result is None
         assert mock_redis.get.await_count == 1
 
+    @pytest.mark.asyncio
+    async def test_force_redis_check_bypasses_local_cache_in_lock(self):
+        """Test force_redis_check=True forces Redis GET even with valid local token."""
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        mock_redis = AsyncMock()
+
+        # Set up valid local cache
+        manager._local_token = "local_cached_token"
+        manager._local_expires_at = time.time() + 7200
+
+        # Redis returns different token
+        redis_token_data = {
+            "access_token": "redis_fresh_token",
+            "expires_at": time.time() + 7200,
+            "created_at": time.time(),
+        }
+        mock_redis.get.return_value = json.dumps(redis_token_data)
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            result = await manager.get_token(force_redis_check=True)
+
+        # Should have called Redis GET despite valid local cache
+        assert mock_redis.get.await_count == 1
+        # Should return the Redis token, not local cache
+        assert result == "redis_fresh_token"
+
+    @pytest.mark.asyncio
+    async def test_save_token_failure_does_not_pollute_local_cache(self):
+        """Test save_token Redis failure does NOT update local cache."""
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        manager._local_token = "existing_token"
+        manager._local_expires_at = time.time() + 3600
+
+        mock_redis = AsyncMock()
+        mock_redis.set.side_effect = Exception("Redis connection failed")
+
+        original_token = manager._local_token
+        original_expires = manager._local_expires_at
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            await manager.save_token("new_token_789", expires_in=3600)
+
+        # Local cache should NOT be updated on failure
+        assert manager._local_token == original_token
+        assert manager._local_expires_at == original_expires
+
 
 class TestRefreshTokenWithLock:
     """Test the refresh_token_with_lock functionality."""
