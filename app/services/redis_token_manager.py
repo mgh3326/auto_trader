@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
 
 import redis.asyncio as redis
 
@@ -19,6 +20,13 @@ class RedisTokenManager:
         self._lock_timeout = 30  # 락 타임아웃 (초)
         self._token_expiry_buffer = 60  # 토큰 만료 전 버퍼 (초)
         self._current_lock_value: str | None = None  # 현재 획득한 락 값 저장
+        self._local_token: str | None = None
+        self._local_expires_at: float = 0.0
+        self._local_lock = asyncio.Lock()
+        self._local_redis_miss_cooldown_until: float = 0.0
+        self._local_redis_miss_cooldown_seconds = 0.2
+        self._local_last_redis_check_at: float = 0.0
+        self._local_redis_revalidate_interval_seconds = 5.0
 
     async def _get_redis_client(self) -> redis.Redis:
         """Redis 클라이언트 가져오기 (지연 초기화)"""
@@ -73,8 +81,8 @@ class RedisTokenManager:
         """
 
         try:
-            await redis_client.eval(
-                lua_script, 1, self._lock_key, self._current_lock_value
+            await redis_client.execute_command(
+                "EVAL", lua_script, 1, self._lock_key, self._current_lock_value
             )
         except Exception as e:
             logging.warning(f"락 해제 중 오류 (무시됨): {e}")
@@ -82,50 +90,111 @@ class RedisTokenManager:
         finally:
             self._current_lock_value = None  # 락 값 초기화
 
-    def _is_token_valid(self, token_data: dict) -> bool:
+    def _is_token_valid(self, token_data: Mapping[str, object] | None) -> bool:
         """토큰이 유효한지 확인 (만료 시간 체크)"""
         if not token_data or "expires_at" not in token_data:
             return False
 
         current_time = time.time()
-        expires_at = token_data["expires_at"]
+        try:
+            raw_expires = token_data["expires_at"]
+            if not isinstance(raw_expires, int | float | str):
+                return False
+            expires_at = float(raw_expires)
+        except (TypeError, ValueError):
+            return False
 
         # 버퍼 시간을 고려하여 만료 여부 판단
         return current_time < (expires_at - self._token_expiry_buffer)
 
-    async def get_token(self) -> str | None:
-        """Redis에서 토큰 가져오기"""
-        try:
-            redis_client = await self._get_redis_client()
-            token_data_str = await redis_client.get(self._token_key)
+    def _is_local_token_valid(self) -> bool:
+        if not self._local_token:
+            return False
+        current_time = time.time()
+        return current_time < (self._local_expires_at - self._token_expiry_buffer)
 
-            if not token_data_str:
-                logging.info("Redis에 토큰이 없음")
-                return None
+    def _update_local_cache(self, access_token: str, expires_at: float) -> None:
+        self._local_token = access_token
+        self._local_expires_at = expires_at
+        self._local_redis_miss_cooldown_until = 0.0
+        self._local_last_redis_check_at = time.time()
 
-            token_data = json.loads(token_data_str)
+    def _clear_local_cache(self) -> None:
+        self._local_token = None
+        self._local_expires_at = 0.0
+        self._local_redis_miss_cooldown_until = 0.0
+        self._local_last_redis_check_at = 0.0
 
-            if self._is_token_valid(token_data):
-                logging.info("Redis에서 유효한 토큰 사용")
-                return token_data["access_token"]
-            else:
-                logging.info("Redis의 토큰이 만료됨")
-                return None
+    async def get_token(self, *, force_redis_check: bool = False) -> str | None:
+        if self._is_local_token_valid():
+            if not force_redis_check and (
+                time.time() - self._local_last_redis_check_at
+                < self._local_redis_revalidate_interval_seconds
+            ):
+                return self._local_token
 
-        except Exception as e:
-            logging.error(f"Redis에서 토큰 조회 실패: {e}")
+        current_time = time.time()
+        if (
+            not force_redis_check
+            and current_time < self._local_redis_miss_cooldown_until
+        ):
             return None
+
+        async with self._local_lock:
+            if self._is_local_token_valid():
+                return self._local_token
+
+            current_time = time.time()
+            if (
+                not force_redis_check
+                and current_time < self._local_redis_miss_cooldown_until
+            ):
+                return None
+
+            try:
+                redis_client = await self._get_redis_client()
+                token_data_str = await redis_client.get(self._token_key)
+                self._local_last_redis_check_at = time.time()
+
+                if not token_data_str:
+                    logging.info("Redis에 토큰이 없음")
+                    self._local_redis_miss_cooldown_until = (
+                        time.time() + self._local_redis_miss_cooldown_seconds
+                    )
+                    return None
+
+                token_data = json.loads(token_data_str)
+
+                if self._is_token_valid(token_data):
+                    access_token = token_data["access_token"]
+                    expires_at = float(token_data["expires_at"])
+                    self._update_local_cache(access_token, expires_at)
+                    logging.info("Redis에서 유효한 토큰 사용")
+                    return access_token
+
+                logging.info("Redis의 토큰이 만료됨")
+                self._clear_local_cache()
+                return None
+
+            except Exception as e:
+                logging.error(f"Redis에서 토큰 조회 실패: {e}")
+                if self._is_local_token_valid():
+                    return self._local_token
+                return None
 
     async def save_token(self, access_token: str, expires_in: int = 3600) -> None:
         """Redis에 토큰 저장"""
+        now = time.time()
+        expires_at = now + expires_in
+        token_data = {
+            "access_token": access_token,
+            "expires_at": expires_at,
+            "created_at": now,
+        }
+        self._update_local_cache(access_token, expires_at)
+
         try:
             redis_client = await self._get_redis_client()
-
-            token_data = {
-                "access_token": access_token,
-                "expires_at": time.time() + expires_in,
-                "created_at": time.time(),
-            }
 
             # 토큰을 JSON으로 직렬화하여 저장
             await redis_client.set(
@@ -151,7 +220,7 @@ class RedisTokenManager:
         """
         # 먼저 기존 토큰 확인 (여러 번 체크)
         for attempt in range(3):
-            existing_token = await self.get_token()
+            existing_token = await self.get_token(force_redis_check=True)
             if existing_token:
                 logging.info(f"기존 토큰 사용: {existing_token[:10]}...")
                 return existing_token
@@ -165,7 +234,7 @@ class RedisTokenManager:
             logging.info("락 획득 실패, 대기 중...")
             # 락 획득 실패 시 더 긴 대기
             await asyncio.sleep(0.2)
-            existing_token = await self.get_token()
+            existing_token = await self.get_token(force_redis_check=True)
             if existing_token:
                 logging.info(
                     f"대기 중 다른 프로세스가 토큰 발급: {existing_token[:10]}..."
@@ -175,7 +244,7 @@ class RedisTokenManager:
             # 여전히 토큰이 없으면 락 대기 (더 긴 대기)
             for i in range(30):  # 3초 대기 (0.1초 * 30)
                 await asyncio.sleep(0.1)
-                existing_token = await self.get_token()
+                existing_token = await self.get_token(force_redis_check=True)
                 if existing_token:
                     logging.info(f"대기 중 토큰 발견: {existing_token[:10]}...")
                     return existing_token
@@ -187,7 +256,7 @@ class RedisTokenManager:
         try:
             logging.info("분산 락 획득 성공, 토큰 발급 시작")
             # 락을 획득한 상태에서 다시 한번 확인
-            existing_token = await self.get_token()
+            existing_token = await self.get_token(force_redis_check=True)
             if existing_token:
                 logging.info(f"락 획득 후 기존 토큰 발견: {existing_token[:10]}...")
                 return existing_token
@@ -209,6 +278,7 @@ class RedisTokenManager:
 
     async def clear_token(self) -> None:
         """Redis에서 토큰 삭제"""
+        self._clear_local_cache()
         try:
             redis_client = await self._get_redis_client()
             await redis_client.delete(self._token_key)
