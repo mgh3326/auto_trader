@@ -2,6 +2,7 @@
 Tests for Redis Token Manager.
 """
 
+import asyncio
 import json
 import time
 from unittest.mock import AsyncMock, patch
@@ -58,7 +59,7 @@ class TestRedisTokenManagerLock:
 
         manager = RedisTokenManager()
         mock_redis = AsyncMock()
-        mock_redis.eval.return_value = 1
+        mock_redis.execute_command.return_value = 1
 
         # Simulate having acquired a lock
         stored_lock_value = "1234567890.123:12345:6789"
@@ -67,10 +68,9 @@ class TestRedisTokenManagerLock:
         with patch.object(manager, "_get_redis_client", return_value=mock_redis):
             await manager._release_lock()
 
-            # Verify eval was called with the stored lock value
-            mock_redis.eval.assert_called_once()
-            call_args = mock_redis.eval.call_args
-            assert call_args[0][3] == stored_lock_value  # 4th argument is lock value
+            mock_redis.execute_command.assert_called_once()
+            call_args = mock_redis.execute_command.call_args
+            assert call_args[0][4] == stored_lock_value
 
             # Verify lock value is cleared after release
             assert manager._current_lock_value is None
@@ -89,8 +89,7 @@ class TestRedisTokenManagerLock:
         with patch.object(manager, "_get_redis_client", return_value=mock_redis):
             await manager._release_lock()
 
-            # Verify eval was NOT called
-            mock_redis.eval.assert_not_called()
+            mock_redis.execute_command.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_lock_value_consistency(self):
@@ -99,7 +98,7 @@ class TestRedisTokenManagerLock:
 
         manager = RedisTokenManager()
         mock_redis = AsyncMock()
-        mock_redis.eval.return_value = 1
+        mock_redis.execute_command.return_value = 1
 
         captured_lock_values = []
 
@@ -119,8 +118,8 @@ class TestRedisTokenManagerLock:
             await manager._release_lock()
 
             # Verify the same value was used
-            call_args = mock_redis.eval.call_args
-            release_value = call_args[0][3]
+            call_args = mock_redis.execute_command.call_args
+            release_value = call_args[0][4]
 
             assert acquire_value == release_value
 
@@ -185,6 +184,65 @@ class TestRedisTokenManagerToken:
             assert result is None
 
     @pytest.mark.asyncio
+    async def test_get_token_local_cache_hit_skips_redis_get(self):
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        mock_redis = AsyncMock()
+
+        token_data = {
+            "access_token": "cached_token",
+            "expires_at": time.time() + 7200,
+            "created_at": time.time(),
+        }
+        mock_redis.get.return_value = json.dumps(token_data)
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            first = await manager.get_token()
+            assert first == "cached_token"
+            assert mock_redis.get.await_count == 1
+
+            second = await manager.get_token()
+            assert second == "cached_token"
+            assert mock_redis.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_get_token_concurrent_local_miss_single_redis_get(self):
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        mock_redis = AsyncMock()
+
+        token_data = {
+            "access_token": "concurrent_cached_token",
+            "expires_at": time.time() + 7200,
+            "created_at": time.time(),
+        }
+        mock_redis.get.return_value = json.dumps(token_data)
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            results = await asyncio.gather(*[manager.get_token() for _ in range(30)])
+
+        assert all(result == "concurrent_cached_token" for result in results)
+        assert mock_redis.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_get_token_redis_miss_uses_short_cooldown(self):
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        mock_redis = AsyncMock()
+        mock_redis.get.return_value = None
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            first = await manager.get_token()
+            second = await manager.get_token()
+
+        assert first is None
+        assert second is None
+        assert mock_redis.get.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_save_token(self):
         """Test saving a token to Redis."""
         from app.services.redis_token_manager import RedisTokenManager
@@ -208,6 +266,21 @@ class TestRedisTokenManagerToken:
             assert "created_at" in saved_data
 
     @pytest.mark.asyncio
+    async def test_save_token_updates_local_cache_for_immediate_hit(self):
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        mock_redis = AsyncMock()
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            await manager.save_token("new_token_456", expires_in=3600)
+
+            result = await manager.get_token()
+
+        assert result == "new_token_456"
+        mock_redis.get.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_clear_token(self):
         """Test clearing token from Redis."""
         from app.services.redis_token_manager import RedisTokenManager
@@ -219,6 +292,92 @@ class TestRedisTokenManagerToken:
             await manager.clear_token()
 
             mock_redis.delete.assert_called_once_with("kis:access_token")
+
+    @pytest.mark.asyncio
+    async def test_clear_token_invalidates_local_cache(self):
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        mock_redis = AsyncMock()
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            await manager.save_token("token_to_clear", expires_in=3600)
+            assert await manager.get_token() == "token_to_clear"
+
+            await manager.clear_token()
+
+            mock_redis.get.return_value = None
+            assert await manager.get_token() is None
+
+        assert manager._local_token is None
+        assert manager._local_expires_at == 0.0
+
+    @pytest.mark.asyncio
+    async def test_local_token_within_expiry_buffer_is_invalid(self):
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        manager._local_token = "soon_expired"
+        manager._local_expires_at = time.time() + 30
+
+        mock_redis = AsyncMock()
+        mock_redis.get.return_value = None
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            result = await manager.get_token()
+
+        assert result is None
+        assert mock_redis.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_force_redis_check_bypasses_local_cache_in_lock(self):
+        """Test force_redis_check=True forces Redis GET even with valid local token."""
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        mock_redis = AsyncMock()
+
+        # Set up valid local cache
+        manager._local_token = "local_cached_token"
+        manager._local_expires_at = time.time() + 7200
+
+        # Redis returns different token
+        redis_token_data = {
+            "access_token": "redis_fresh_token",
+            "expires_at": time.time() + 7200,
+            "created_at": time.time(),
+        }
+        mock_redis.get.return_value = json.dumps(redis_token_data)
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            result = await manager.get_token(force_redis_check=True)
+
+        # Should have called Redis GET despite valid local cache
+        assert mock_redis.get.await_count == 1
+        # Should return the Redis token, not local cache
+        assert result == "redis_fresh_token"
+
+    @pytest.mark.asyncio
+    async def test_save_token_failure_does_not_pollute_local_cache(self):
+        """Test save_token Redis failure does NOT update local cache."""
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        manager._local_token = "existing_token"
+        manager._local_expires_at = time.time() + 3600
+
+        mock_redis = AsyncMock()
+        mock_redis.set.side_effect = Exception("Redis connection failed")
+
+        original_token = manager._local_token
+        original_expires = manager._local_expires_at
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            await manager.save_token("new_token_789", expires_in=3600)
+
+        # Local cache should NOT be updated on failure
+        assert manager._local_token == original_token
+        assert manager._local_expires_at == original_expires
 
 
 class TestRefreshTokenWithLock:
@@ -251,7 +410,8 @@ class TestRefreshTokenWithLock:
         get_token_calls = [None, None, None, None]  # Multiple None for retry checks
         get_token_index = 0
 
-        async def mock_get_token():
+        async def mock_get_token(*, force_redis_check: bool = False):
+            del force_redis_check
             nonlocal get_token_index
             if get_token_index < len(get_token_calls):
                 result = get_token_calls[get_token_index]
@@ -312,7 +472,8 @@ class TestRefreshTokenWithLock:
         ]  # For initial checks and post-lock check
         get_token_index = 0
 
-        async def mock_get_token():
+        async def mock_get_token(*, force_redis_check: bool = False):
+            del force_redis_check
             nonlocal get_token_index
             if get_token_index < len(get_token_returns):
                 result = get_token_returns[get_token_index]
@@ -345,7 +506,8 @@ class TestRefreshTokenWithLock:
         get_token_returns = [None, None, None, None]
         get_token_index = 0
 
-        async def mock_get_token():
+        async def mock_get_token(*, force_redis_check: bool = False):
+            del force_redis_check
             nonlocal get_token_index
             if get_token_index < len(get_token_returns):
                 result = get_token_returns[get_token_index]
@@ -431,3 +593,112 @@ class TestTokenValidity:
         token_data = {"access_token": "token_without_expiry"}
 
         assert manager._is_token_valid(token_data) is False
+
+
+class TestKISTokenPathIntegration:
+    @pytest.mark.asyncio
+    async def test_kis_ensure_token_repeated_calls_limit_redis_get(self):
+        from app.services.brokers.kis.client import KISClient
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        mock_redis = AsyncMock()
+        token_data = {
+            "access_token": "kis_token_for_ensure",
+            "expires_at": time.time() + 7200,
+            "created_at": time.time(),
+        }
+        mock_redis.get.return_value = json.dumps(token_data)
+
+        client = KISClient()
+        client._token_manager = manager
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            await asyncio.gather(*[client._ensure_token() for _ in range(50)])
+
+        assert mock_redis.get.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_path_kr_price_fanout_limits_token_redis_get(monkeypatch):
+    from app.mcp_server.tooling import portfolio_holdings
+    from app.services.redis_token_manager import RedisTokenManager
+
+    manager = RedisTokenManager()
+    mock_redis = AsyncMock()
+    mock_redis.get.return_value = json.dumps(
+        {
+            "access_token": "kis_holdings_token",
+            "expires_at": time.time() + 7200,
+            "created_at": time.time(),
+        }
+    )
+
+    positions = [
+        {
+            "account": "kis",
+            "account_name": "기본 계좌",
+            "broker": "kis",
+            "source": "kis_api",
+            "instrument_type": "equity_kr",
+            "market": "kr",
+            "symbol": f"0000{i}",
+            "name": f"KR{i}",
+            "quantity": 1.0,
+            "avg_buy_price": 1000.0,
+            "current_price": None,
+            "evaluation_amount": None,
+            "profit_loss": None,
+            "profit_rate": None,
+        }
+        for i in range(20)
+    ]
+
+    async def fake_collect_kis_positions(market_filter):
+        assert market_filter == "equity_kr"
+        return positions, []
+
+    async def fake_collect_upbit_positions(market_filter):
+        assert market_filter == "equity_kr"
+        return [], []
+
+    async def fake_collect_manual_positions(*, user_id, market_filter):
+        assert user_id == 1
+        assert market_filter == "equity_kr"
+        return [], []
+
+    async def fake_fetch_quote_equity_kr(symbol: str):
+        assert symbol.startswith("0000")
+        await manager.get_token()
+        return {"price": 1000.0}
+
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_upbit_positions", fake_collect_upbit_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "_collect_manual_positions",
+        fake_collect_manual_positions,
+    )
+    monkeypatch.setattr(
+        portfolio_holdings, "_fetch_quote_equity_kr", fake_fetch_quote_equity_kr
+    )
+
+    with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+        (
+            result_positions,
+            result_errors,
+            _,
+            _,
+        ) = await portfolio_holdings._collect_portfolio_positions(
+            account="kis",
+            market="kr",
+            include_current_price=True,
+        )
+
+    assert len(result_positions) == 20
+    assert result_errors == []
+    assert mock_redis.get.await_count == 1
