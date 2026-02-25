@@ -7,10 +7,14 @@ Upbit/KIS 체결 WebSocket을 통합하여 OpenClaw Gateway로 체결 알림을 
 
 import argparse
 import asyncio
+import json
 import logging
+import os
 import signal
 import sys
-from typing import Any
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, cast
 
 from app.core.config import settings
 from app.monitoring.sentry import capture_exception, init_sentry
@@ -27,6 +31,11 @@ from app.services.upbit_websocket import UpbitMyOrderWebSocket
 logger = logging.getLogger(__name__)
 VALID_MONITOR_MODES = {"upbit", "kis", "both"}
 MIN_FILL_NOTIFY_AMOUNT = 50_000
+
+# Default heartbeat configuration
+DEFAULT_HEARTBEAT_PATH = "/tmp/websocket_monitor_heartbeat.json"
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 5.0
+DEFAULT_RECONNECT_DELAY_SECONDS = 5.0
 
 
 class UnifiedWebSocketMonitor:
@@ -51,6 +60,24 @@ class UnifiedWebSocketMonitor:
         self._next_health_log_at = 0.0
         self._setup_signal_handlers()
 
+        # Heartbeat configuration from environment
+        self._heartbeat_path = os.environ.get(
+            "WS_MONITOR_HEARTBEAT_PATH", DEFAULT_HEARTBEAT_PATH
+        )
+        self._heartbeat_interval_seconds = float(
+            os.environ.get(
+                "WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS",
+                str(DEFAULT_HEARTBEAT_INTERVAL_SECONDS),
+            )
+        )
+        self._reconnect_delay_seconds = float(
+            os.environ.get(
+                "WS_MONITOR_RECONNECT_DELAY_SECONDS",
+                str(DEFAULT_RECONNECT_DELAY_SECONDS),
+            )
+        )
+        self._last_heartbeat_at = 0.0
+
     def _setup_signal_handlers(self):
         """SIGINT/SIGTERM 시그널 핸들러 설정"""
         signal.signal(signal.SIGINT, self._handle_signal)
@@ -63,7 +90,51 @@ class UnifiedWebSocketMonitor:
         logger.info(f"Received signal {sig_name} ({signum}), initiating shutdown...")
         self.is_running = False
 
-    async def _on_upbit_order(self, order_data: dict) -> None:
+    def _write_heartbeat(self, is_running: bool | None = None) -> None:
+        """
+        Write heartbeat file atomically.
+
+        Args:
+            is_running: Override for is_running status. If None, uses self.is_running.
+        """
+        import time
+
+        if is_running is None:
+            is_running = self.is_running
+
+        upbit_enabled = self.mode in {"upbit", "both"}
+        kis_enabled = self.mode in {"kis", "both"}
+
+        upbit_connected: bool | str = (
+            bool(self.upbit_ws and self.upbit_ws.is_connected)
+            if upbit_enabled
+            else "n/a"
+        )
+        kis_connected: bool | str = (
+            bool(self.kis_ws and self.kis_ws.is_connected) if kis_enabled else "n/a"
+        )
+
+        data = {
+            "updated_at_unix": time.time(),
+            "mode": self.mode,
+            "is_running": is_running,
+            "upbit_connected": upbit_connected,
+            "kis_connected": kis_connected,
+        }
+
+        # Atomic write: write to temp file, then rename
+        heartbeat_path = Path(self._heartbeat_path)
+        heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = heartbeat_path.with_suffix(".tmp")
+
+        try:
+            with open(temp_path, "w") as f:
+                json.dump(data, f)
+            temp_path.replace(heartbeat_path)
+        except OSError as e:
+            logger.warning("Failed to write heartbeat file: %s", e)
+
+    async def _on_upbit_order(self, order_data: dict[str, Any]) -> None:
         """
         Upbit 주문/체결 이벤트 처리
 
@@ -157,31 +228,93 @@ class UnifiedWebSocketMonitor:
         except Exception as e:
             logger.error(f"Fill notification error: {e}", exc_info=True)
 
-    async def _start_upbit(self) -> None:
-        """Upbit WebSocket 시작"""
-        self.upbit_ws = UpbitMyOrderWebSocket(
-            on_order_callback=self._on_upbit_order,
-            verify_ssl=False,
-        )
-        logger.info("Starting Upbit WebSocket...")
-        await self.upbit_ws.connect_and_subscribe()
+    async def _start_upbit_supervisor(self) -> None:
+        """
+        Upbit WebSocket supervisor loop with auto-reconnect.
 
-        if self.is_running:
-            raise RuntimeError("Upbit WebSocket task exited unexpectedly")
+        When connection closes and is_running=True, reconnects after delay.
+        Only exits when is_running=False (stop signal).
+        """
+        while self.is_running:
+            try:
+                self.upbit_ws = UpbitMyOrderWebSocket(
+                    on_order_callback=self._on_upbit_order,
+                    verify_ssl=False,
+                )
+                logger.info("Connecting to Upbit WebSocket...")
+                await self.upbit_ws.connect_and_subscribe()
+                if self.upbit_ws.is_connected is not True:
+                    raise RuntimeError("Upbit WebSocket connection not established")
+                logger.info("Upbit WebSocket connected")
+
+                # Connection closed normally - check if we should reconnect
+                if self.is_running:
+                    logger.warning(
+                        "Upbit WebSocket connection closed, reconnecting in %.1fs...",
+                        self._reconnect_delay_seconds,
+                    )
+                    await asyncio.sleep(self._reconnect_delay_seconds)
+                else:
+                    logger.info("Upbit WebSocket exiting (stop signal)")
+                    break
+            except Exception as e:
+                logger.error("Upbit WebSocket error: %s", e, exc_info=True)
+                if self.is_running:
+                    logger.info(
+                        "Reconnecting Upbit in %.1fs...", self._reconnect_delay_seconds
+                    )
+                    await asyncio.sleep(self._reconnect_delay_seconds)
+                else:
+                    raise
+
+    async def _start_kis_supervisor(self) -> None:
+        """
+        KIS WebSocket supervisor loop with auto-reconnect.
+
+        When connection closes and is_running=True, reconnects after delay.
+        Only exits when is_running=False (stop signal).
+        """
+        while self.is_running:
+            try:
+                self.kis_ws = KISExecutionWebSocket(
+                    on_execution=cast(
+                        Callable[[dict[str, Any]], None],
+                        self._on_kis_execution,
+                    ),
+                    mock_mode=settings.kis_ws_is_mock,
+                )
+                self.kis_ws.is_running = True
+                logger.info("Connecting to KIS WebSocket...")
+                await self.kis_ws.connect_and_subscribe()
+                await self.kis_ws.listen()
+
+                # listen() returned - connection closed
+                if self.is_running:
+                    logger.warning(
+                        "KIS WebSocket connection closed, reconnecting in %.1fs...",
+                        self._reconnect_delay_seconds,
+                    )
+                    await asyncio.sleep(self._reconnect_delay_seconds)
+                else:
+                    logger.info("KIS WebSocket exiting (stop signal)")
+                    break
+            except Exception as e:
+                logger.error("KIS WebSocket error: %s", e, exc_info=True)
+                if self.is_running:
+                    logger.info(
+                        "Reconnecting KIS in %.1fs...", self._reconnect_delay_seconds
+                    )
+                    await asyncio.sleep(self._reconnect_delay_seconds)
+                else:
+                    raise
+
+    async def _start_upbit(self) -> None:
+        """Upbit WebSocket 시작 (supervisor wrapper)."""
+        await self._start_upbit_supervisor()
 
     async def _start_kis(self) -> None:
-        """KIS WebSocket 시작"""
-        self.kis_ws = KISExecutionWebSocket(
-            on_execution=self._on_kis_execution,
-            mock_mode=settings.kis_ws_is_mock,
-        )
-        self.kis_ws.is_running = True
-        logger.info("Starting KIS WebSocket...")
-        await self.kis_ws.connect_and_subscribe()
-        await self.kis_ws.listen()
-
-        if self.is_running:
-            raise RuntimeError("KIS WebSocket task exited unexpectedly")
+        """KIS WebSocket 시작 (supervisor wrapper)."""
+        await self._start_kis_supervisor()
 
     def _log_health_status(self, *, force: bool = False) -> None:
         now = asyncio.get_running_loop().time()
@@ -212,6 +345,9 @@ class UnifiedWebSocketMonitor:
         logger.info("Starting Unified WebSocket Monitor (mode=%s)...", self.mode)
         self.is_running = True
 
+        # Write initial heartbeat
+        self._write_heartbeat()
+
         task_map: dict[str, asyncio.Task[Any]] = {}
         if self.mode in {"upbit", "both"}:
             task_map["upbit"] = asyncio.create_task(
@@ -231,9 +367,13 @@ class UnifiedWebSocketMonitor:
             while self.is_running:
                 done, _ = await asyncio.wait(
                     set(task_map.values()),
-                    timeout=5,
+                    timeout=self._heartbeat_interval_seconds,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+
+                # Update heartbeat periodically
+                self._write_heartbeat()
+
                 if not done:
                     self._log_health_status()
                     continue
@@ -253,15 +393,17 @@ class UnifiedWebSocketMonitor:
                             failure = RuntimeError(f"{name} task failed: {exc}")
                             logger.error("%s task failed: %s", name, exc, exc_info=exc)
                         else:
-                            failure = RuntimeError(
-                                f"{name} task exited unexpectedly without exception"
-                            )
-                            logger.error(
-                                "%s task exited unexpectedly without exception", name
-                            )
+                            # Task completed normally - supervisor exited
+                            # This means stop was requested, which is fine
+                            if self.is_running:
+                                failure = RuntimeError(
+                                    f"{name} supervisor exited unexpectedly"
+                                )
+                                logger.error("%s supervisor exited unexpectedly", name)
 
-                    self.is_running = False
-                    break
+                    if failure:
+                        self.is_running = False
+                        break
         except asyncio.CancelledError:
             logger.info("Main loop cancelled")
             raise
@@ -276,6 +418,7 @@ class UnifiedWebSocketMonitor:
                     logger.debug("Child task cleanup ignored error: %s", exc)
 
             self._log_health_status(force=True)
+            self._write_heartbeat(is_running=False)
 
         if failure is not None:
             raise failure
@@ -284,6 +427,9 @@ class UnifiedWebSocketMonitor:
         """통합 모니터링 정지"""
         logger.info("Stopping Unified WebSocket Monitor...")
         self.is_running = False
+
+        # Write heartbeat to indicate stopped
+        self._write_heartbeat(is_running=False)
 
         if self.upbit_ws:
             try:

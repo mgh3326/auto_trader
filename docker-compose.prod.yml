@@ -116,12 +116,17 @@ services:
     command: [ "python", "websocket_monitor.py", "--mode", "upbit" ]
     env_file:
       - .env.prod
+    environment:
+      WS_MONITOR_HEARTBEAT_PATH: ${WS_MONITOR_HEARTBEAT_PATH:-/tmp/websocket_monitor_heartbeat.json}
+      WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS: ${WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS:-5}
+      WS_MONITOR_RECONNECT_DELAY_SECONDS: ${WS_MONITOR_RECONNECT_DELAY_SECONDS:-5}
+      WS_MONITOR_EXPECT_MODE: upbit
     depends_on:
       - api
     restart: unless-stopped
     network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
     healthcheck:
-      test: [ "CMD", "pgrep", "-f", "websocket_monitor.py --mode upbit" ]
+      test: [ "CMD", "python", "scripts/websocket_healthcheck.py" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -134,19 +139,23 @@ services:
         reservations:
           memory: 128M
           cpus: '0.125'
-
   kis_websocket:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
     container_name: auto_trader_kis_ws_prod
     command: [ "python", "websocket_monitor.py", "--mode", "kis" ]
     env_file:
       - .env.prod
+    environment:
+      WS_MONITOR_HEARTBEAT_PATH: ${WS_MONITOR_HEARTBEAT_PATH:-/tmp/websocket_monitor_heartbeat.json}
+      WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS: ${WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS:-5}
+      WS_MONITOR_RECONNECT_DELAY_SECONDS: ${WS_MONITOR_RECONNECT_DELAY_SECONDS:-5}
+      WS_MONITOR_EXPECT_MODE: kis
     depends_on:
       - api
     restart: unless-stopped
     network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
     healthcheck:
-      test: [ "CMD", "pgrep", "-f", "websocket_monitor.py --mode kis" ]
+      test: [ "CMD", "python", "scripts/websocket_healthcheck.py" ]
       interval: 30s
       timeout: 10s
       retries: 3
