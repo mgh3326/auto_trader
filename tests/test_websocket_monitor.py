@@ -365,3 +365,176 @@ class TestUnifiedWebSocketMonitor:
         notifier.shutdown.assert_awaited_once()
         monitor.start.assert_awaited_once()
         monitor.stop.assert_awaited_once()
+
+
+class TestHeartbeat:
+    """Tests for heartbeat file writing."""
+
+    def test_write_heartbeat_creates_file(self, mock_settings: None, tmp_path) -> None:
+        """Test that _write_heartbeat creates heartbeat file."""
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        heartbeat_file = tmp_path / "heartbeat.json"
+        monitor = UnifiedWebSocketMonitor()
+        monitor._heartbeat_path = str(heartbeat_file)
+        monitor._write_heartbeat()
+
+        assert heartbeat_file.exists()
+
+    def test_write_heartbeat_content(self, mock_settings: None, tmp_path) -> None:
+        """Test that _write_heartbeat writes correct content."""
+        import json
+        import time
+
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        heartbeat_file = tmp_path / "heartbeat.json"
+        monitor = UnifiedWebSocketMonitor(mode="both")
+        monitor._heartbeat_path = str(heartbeat_file)
+        monitor._write_heartbeat()
+
+        with open(heartbeat_file) as f:
+            data = json.load(f)
+
+        assert "updated_at_unix" in data
+        assert data["mode"] == "both"
+        assert data["is_running"] is False  # Default
+        assert data["upbit_connected"] is False
+        assert data["kis_connected"] is False
+        # Verify timestamp is recent
+        assert time.time() - data["updated_at_unix"] < 2
+
+    def test_write_heartbeat_with_override(self, mock_settings: None, tmp_path) -> None:
+        """Test that _write_heartbeat respects is_running override."""
+        import json
+
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        heartbeat_file = tmp_path / "heartbeat.json"
+        monitor = UnifiedWebSocketMonitor()
+        monitor._heartbeat_path = str(heartbeat_file)
+        monitor._write_heartbeat(is_running=True)
+
+        with open(heartbeat_file) as f:
+            data = json.load(f)
+
+        assert data["is_running"] is True
+
+    def test_write_heartbeat_mode_upbit(self, mock_settings: None, tmp_path) -> None:
+        """Test heartbeat shows correct connection status for upbit mode."""
+        import json
+
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        heartbeat_file = tmp_path / "heartbeat.json"
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor._heartbeat_path = str(heartbeat_file)
+        monitor._write_heartbeat()
+
+        with open(heartbeat_file) as f:
+            data = json.load(f)
+
+        assert data["mode"] == "upbit"
+        assert data["upbit_connected"] is False
+        assert data["kis_connected"] == "n/a"
+
+    def test_write_heartbeat_creates_parent_dir(
+        self, mock_settings: None, tmp_path
+    ) -> None:
+        """Test that _write_heartbeat creates parent directories."""
+        import json
+
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        heartbeat_file = tmp_path / "nested" / "dir" / "heartbeat.json"
+        monitor = UnifiedWebSocketMonitor()
+        monitor._heartbeat_path = str(heartbeat_file)
+        monitor._write_heartbeat()
+
+        assert heartbeat_file.exists()
+        with open(heartbeat_file) as f:
+            data = json.load(f)
+        assert "updated_at_unix" in data
+
+
+class TestAutoReconnect:
+    """Tests for auto-reconnect supervisor behavior."""
+
+    def test_reconnect_delay_configurable(self, mock_settings: None) -> None:
+        """Test that reconnect delay is configurable."""
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor._reconnect_delay_seconds = 5.0
+
+        assert monitor._reconnect_delay_seconds == 5.0
+
+    def test_heartbeat_path_configurable(
+        self, mock_settings: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that heartbeat path is configurable via environment."""
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monkeypatch.setenv("WS_MONITOR_HEARTBEAT_PATH", "/custom/heartbeat.json")
+        monitor = UnifiedWebSocketMonitor()
+        assert monitor._heartbeat_path == "/custom/heartbeat.json"
+
+    def test_heartbeat_interval_configurable(
+        self, mock_settings: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test that heartbeat interval is configurable via environment."""
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monkeypatch.setenv("WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS", "30")
+        monitor = UnifiedWebSocketMonitor()
+        assert monitor._heartbeat_interval_seconds == 30.0
+
+    @pytest.mark.asyncio
+    async def test_supervisor_exits_on_stop_before_start(
+        self, mock_settings: None
+    ) -> None:
+        """Test that supervisor exits immediately when is_running is False."""
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor.is_running = False
+
+        # Should exit immediately without attempting connection
+        await monitor._start_upbit_supervisor()
+        # No assertion needed - just verify it returns cleanly
+
+    @pytest.mark.asyncio
+    async def test_upbit_supervisor_reconnects_when_connection_not_established(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import websocket_monitor
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor.is_running = True
+
+        class FakeUpbitWs:
+            def __init__(self, *args, **kwargs):
+                self.is_connected = False
+                self.connect_and_subscribe = AsyncMock(return_value=None)
+
+        fake_ws = FakeUpbitWs()
+
+        def fake_factory(*args, **kwargs):
+            return fake_ws
+
+        async def stop_after_first_sleep(_: float) -> None:
+            monitor.is_running = False
+
+        monkeypatch.setattr(websocket_monitor, "UpbitMyOrderWebSocket", fake_factory)
+        monkeypatch.setattr(websocket_monitor.asyncio, "sleep", stop_after_first_sleep)
+        caplog.set_level("INFO")
+
+        await monitor._start_upbit_supervisor()
+
+        fake_ws.connect_and_subscribe.assert_awaited_once()
+        assert "Upbit WebSocket connected" not in caplog.text
+        assert "Reconnecting Upbit" in caplog.text

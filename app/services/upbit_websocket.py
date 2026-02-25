@@ -5,7 +5,8 @@ import json
 import logging
 import ssl
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import jwt
 from websockets.exceptions import ConnectionClosed, WebSocketException
@@ -24,7 +25,9 @@ class UpbitMyOrderWebSocket:
     """업비트 내 주문 및 체결 WebSocket 클라이언트"""
 
     def __init__(
-        self, on_order_callback: Callable | None = None, verify_ssl: bool = False
+        self,
+        on_order_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        verify_ssl: bool = False,
     ):
         """
         Args:
@@ -40,6 +43,7 @@ class UpbitMyOrderWebSocket:
         self.reconnect_delay = 5  # 재연결 대기 시간 (초)
         self.max_reconnect_attempts = 10
         self.current_attempt = 0
+        self.auth_token: str | None = None
 
     def _create_ssl_context(self):
         """SSL 컨텍스트 생성"""
@@ -72,7 +76,7 @@ class UpbitMyOrderWebSocket:
             logger.error(f"JWT 토큰 생성 실패: {e}")
             return None
 
-    async def connect_and_subscribe(self, coin_pairs: list | None = None):
+    async def connect_and_subscribe(self, coin_pairs: list[str] | None = None):
         """
         WebSocket 연결 및 구독 시작
 
@@ -83,6 +87,8 @@ class UpbitMyOrderWebSocket:
         while self.current_attempt < self.max_reconnect_attempts:
             try:
                 await self._connect_and_subscribe_internal(coin_pairs)
+                if not self.is_connected:
+                    raise RuntimeError("Upbit WebSocket connection not established")
                 # 성공적으로 연결된 경우 재시도 카운터 초기화
                 self.current_attempt = 0
                 break
@@ -101,7 +107,15 @@ class UpbitMyOrderWebSocket:
                 logger.info(f"{self.reconnect_delay}초 후 재연결을 시도합니다...")
                 await asyncio.sleep(self.reconnect_delay)
 
-    async def _connect_and_subscribe_internal(self, coin_pairs: list | None = None):
+        if not self.is_connected:
+            raise RuntimeError(
+                "Upbit WebSocket connection not established "
+                f"({self.current_attempt}/{self.max_reconnect_attempts})"
+            )
+
+    async def _connect_and_subscribe_internal(
+        self, coin_pairs: list[str] | None = None
+    ):
         """내부 연결 및 구독 로직"""
         logger.info("업비트 MyOrder WebSocket 연결을 시작합니다...")
 
@@ -143,10 +157,12 @@ class UpbitMyOrderWebSocket:
         # 메시지 수신 루프 시작
         await self._listen_for_messages()
 
-    def _create_subscribe_message(self, coin_pairs: list | None = None) -> list:
+    def _create_subscribe_message(
+        self, coin_pairs: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """구독 메시지 생성"""
         # 기본 메시지 구조
-        message = [
+        message: list[dict[str, Any]] = [
             {
                 "ticket": str(uuid.uuid4())  # 고유 티켓 ID
             },
@@ -238,7 +254,9 @@ class UpbitOrderAnalysisService:
     """업비트 주문/체결 데이터 기반 자동 분석 서비스"""
 
     def __init__(
-        self, analyzer_callback: Callable | None = None, verify_ssl: bool = False
+        self,
+        analyzer_callback: Callable[[str], Awaitable[None]] | None = None,
+        verify_ssl: bool = False,
     ):
         """
         Args:
@@ -251,7 +269,7 @@ class UpbitOrderAnalysisService:
         self.websocket_client = None
         self.is_running = False
 
-    async def start_monitoring(self, coin_pairs: list | None = None):
+    async def start_monitoring(self, coin_pairs: list[str] | None = None):
         """모니터링 시작"""
         if self.is_running:
             logger.warning("이미 모니터링이 실행 중입니다.")
@@ -286,7 +304,7 @@ class UpbitOrderAnalysisService:
             await self.websocket_client.disconnect()
             self.websocket_client = None
 
-    async def _handle_order_data(self, order_data: dict):
+    async def _handle_order_data(self, order_data: dict[str, Any]):
         """주문/체결 데이터 처리"""
         try:
             # 체결 상태인 경우에만 분석 수행

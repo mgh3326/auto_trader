@@ -31,6 +31,7 @@ class TestUpbitMyOrderWebSocket:
         ):
             await client._connect_and_subscribe_internal()
 
+        assert mock_connect.await_args is not None
         kwargs = mock_connect.await_args.kwargs
         assert kwargs["additional_headers"] == {
             "Authorization": "Bearer token-123",
@@ -54,3 +55,27 @@ class TestUpbitMyOrderWebSocket:
                 await client._connect_and_subscribe_internal()
 
         mock_connect.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_connect_and_subscribe_raises_after_max_attempts(self):
+        client = UpbitMyOrderWebSocket()
+        client.max_reconnect_attempts = 3
+        client.reconnect_delay = 0
+
+        failure = RuntimeError("simulated connection failure")
+
+        with patch.object(
+            client,
+            "_connect_and_subscribe_internal",
+            new=AsyncMock(side_effect=failure),
+        ) as connect_mock:
+            with pytest.raises(
+                RuntimeError,
+                match="Upbit WebSocket connection not established",
+            ) as exc_info:
+                await client.connect_and_subscribe()
+
+        assert connect_mock.await_count == 3
+        assert client.current_attempt == client.max_reconnect_attempts
+        assert client.is_connected is False
+        assert "3/3" in str(exc_info.value)
