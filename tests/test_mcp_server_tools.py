@@ -36,6 +36,11 @@ from app.mcp_server.tooling import (
 )
 from app.mcp_server.tooling.registry import register_all_tools
 from app.services import naver_finance
+from app.services.upbit_symbol_universe_service import (
+    UpbitSymbolInactiveError,
+    UpbitSymbolNotRegisteredError,
+    UpbitSymbolUniverseEmptyError,
+)
 
 # from app.mcp_server.tick_size import adjust_tick_size_kr  # TODO: Remove if not needed
 
@@ -6165,6 +6170,311 @@ async def test_get_holdings_filters_account_market_and_disables_prices(monkeypat
         == "minimum_value filter skipped (include_current_price=False)"
     )
     quote_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lookup_error",
+    [
+        UpbitSymbolNotRegisteredError("KRW-PCI not registered"),
+        UpbitSymbolInactiveError("KRW-PCI is inactive"),
+    ],
+)
+async def test_get_holdings_include_current_price_false_silently_skips_missing_or_inactive_upbit_coins(
+    monkeypatch, lookup_error
+):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return []
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "unit_currency": "KRW",
+                    "balance": "0.1",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                },
+                {
+                    "currency": "PCI",
+                    "unit_currency": "KRW",
+                    "balance": "100",
+                    "locked": "0",
+                    "avg_buy_price": "100",
+                },
+            ]
+        ),
+    )
+
+    async def _lookup(currency: str, quote_currency: str = "KRW", db=None) -> str:
+        _ = quote_currency, db
+        coin = str(currency).upper()
+        if coin == "BTC":
+            return "비트코인"
+        if coin == "PCI":
+            raise lookup_error
+        return coin
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_upbit_korean_name_by_coin",
+        AsyncMock(side_effect=_lookup),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    get_markets_mock = AsyncMock(return_value=["KRW-BTC"])
+    _patch_runtime_attr(monkeypatch, "get_active_upbit_markets", get_markets_mock)
+    quote_mock = AsyncMock(return_value={"KRW-BTC": 61000000.0})
+    monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", quote_mock)
+
+    result = await tools["get_holdings"](
+        account="upbit",
+        market="crypto",
+        include_current_price=False,
+    )
+
+    assert result["total_accounts"] == 1
+    assert result["total_positions"] == 1
+    symbols = [
+        position["symbol"]
+        for account_payload in result["accounts"]
+        for position in account_payload["positions"]
+    ]
+    assert symbols == ["KRW-BTC"]
+    assert "KRW-PCI" not in symbols
+    assert all(error.get("symbol") != "KRW-PCI" for error in result["errors"])
+    quote_mock.assert_not_awaited()
+    get_markets_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lookup_error",
+    [
+        UpbitSymbolNotRegisteredError("KRW-PCI not registered"),
+        UpbitSymbolInactiveError("KRW-PCI is inactive"),
+    ],
+)
+async def test_get_holdings_silently_skips_missing_or_inactive_upbit_coins(
+    monkeypatch, lookup_error
+):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return []
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "unit_currency": "KRW",
+                    "balance": "0.1",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                },
+                {
+                    "currency": "PCI",
+                    "unit_currency": "KRW",
+                    "balance": "100",
+                    "locked": "0",
+                    "avg_buy_price": "100",
+                },
+            ]
+        ),
+    )
+
+    async def _lookup(currency: str, quote_currency: str = "KRW", db=None) -> str:
+        _ = quote_currency, db
+        coin = str(currency).upper()
+        if coin == "BTC":
+            return "비트코인"
+        if coin == "PCI":
+            raise lookup_error
+        return coin
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_upbit_korean_name_by_coin",
+        AsyncMock(side_effect=_lookup),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_active_upbit_markets",
+        AsyncMock(return_value=["KRW-BTC"]),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 61000000.0}),
+    )
+
+    result = await tools["get_holdings"](account="upbit", market="crypto")
+
+    assert result["total_accounts"] == 1
+    assert result["total_positions"] == 1
+    symbols = [
+        position["symbol"]
+        for account_payload in result["accounts"]
+        for position in account_payload["positions"]
+    ]
+    assert symbols == ["KRW-BTC"]
+    assert "KRW-PCI" not in symbols
+    assert all(error.get("symbol") != "KRW-PCI" for error in result["errors"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lookup_error",
+    [
+        UpbitSymbolNotRegisteredError("KRW-PCI not registered"),
+        UpbitSymbolInactiveError("KRW-PCI is inactive"),
+    ],
+)
+async def test_get_position_silently_skips_missing_or_inactive_upbit_coins(
+    monkeypatch, lookup_error
+):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return []
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "unit_currency": "KRW",
+                    "balance": "0.1",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                },
+                {
+                    "currency": "PCI",
+                    "unit_currency": "KRW",
+                    "balance": "100",
+                    "locked": "0",
+                    "avg_buy_price": "100",
+                },
+            ]
+        ),
+    )
+
+    async def _lookup(currency: str, quote_currency: str = "KRW", db=None) -> str:
+        _ = quote_currency, db
+        coin = str(currency).upper()
+        if coin == "BTC":
+            return "비트코인"
+        if coin == "PCI":
+            raise lookup_error
+        return coin
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_upbit_korean_name_by_coin",
+        AsyncMock(side_effect=_lookup),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_active_upbit_markets",
+        AsyncMock(return_value=["KRW-BTC"]),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 61000000.0}),
+    )
+
+    result = await tools["get_position"]("BTC", market="crypto")
+
+    assert result["has_position"] is True
+    assert result["position_count"] == 1
+    assert [position["symbol"] for position in result["positions"]] == ["KRW-BTC"]
+    assert all(error.get("symbol") != "KRW-PCI" for error in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_keeps_fail_fast_on_upbit_universe_empty(monkeypatch):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return []
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[
+                {
+                    "currency": "BTC",
+                    "unit_currency": "KRW",
+                    "balance": "0.1",
+                    "locked": "0",
+                    "avg_buy_price": "50000000",
+                }
+            ]
+        ),
+    )
+
+    async def _lookup(currency: str, quote_currency: str = "KRW", db=None) -> str:
+        _ = currency, quote_currency, db
+        raise UpbitSymbolUniverseEmptyError("upbit_symbol_universe is empty")
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_upbit_korean_name_by_coin",
+        AsyncMock(side_effect=_lookup),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+
+    with pytest.raises(UpbitSymbolUniverseEmptyError):
+        await tools["get_holdings"](account="upbit", market="crypto")
 
 
 @pytest.mark.asyncio

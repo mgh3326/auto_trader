@@ -67,7 +67,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - Upbit crypto symbol/market resolution uses DB table `upbit_symbol_universe` only.
 - Runtime does not call Upbit `/v1/market/all`; that endpoint is sync-path only.
 - If `upbit_symbol_universe` is empty/unavailable, tools fail fast with explicit sync hint.
-- If a coin/market lookup is missing or inactive in `upbit_symbol_universe`, MCP tools propagate explicit lookup errors (no silent fallback/default ticker).
+- If a coin/market lookup is missing or inactive in `upbit_symbol_universe`, MCP tools generally propagate explicit lookup errors (no silent fallback/default ticker).
+- `get_holdings` and `get_position` are exceptions: missing/inactive Upbit holdings coins are silently skipped at collection time, while universe-level fatal states (for example empty/unavailable) still fail fast.
 - `search_symbol` (crypto) uses DB-backed `search_upbit_symbols` only; in-memory map-based search is removed.
 - Upbit prerequisite: run `make sync-upbit-symbol-universe` (or `uv run python scripts/sync_upbit_symbol_universe.py`) right after migrations.
 - Scheduled sync task `symbols.upbit.universe.sync` runs daily at `06:15` KST (`cron: 15 6 * * *`, `cron_offset: Asia/Seoul`).
@@ -450,6 +451,7 @@ Filtering rules:
 - When `minimum_value=None`, per-currency thresholds are automatically applied based on `instrument_type`: `equity_kr` and `crypto` use 5000, `equity_us` uses 10
 - When `minimum_value` is a number, that uniform threshold is applied to all positions
 - Upbit crypto current prices are fetched via batch ticker request (`/v1/ticker?markets=...`)
+- During Upbit holdings collection, coins that raise `UpbitSymbolNotRegisteredError` or `UpbitSymbolInactiveError` on name lookup are silently skipped (not added to `errors`).
 - Before batch ticker request, tradable markets are loaded from `upbit_symbol_universe` and only valid holdings symbols are included in the batch
 - Non-tradable symbols (delisted/unsupported) are excluded from ticker request and treated as 0 value for `minimum_value` filtering (counted in `filtered_count`)
 - Value is primarily based on `evaluation_amount`

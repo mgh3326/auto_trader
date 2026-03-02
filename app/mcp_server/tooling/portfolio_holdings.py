@@ -85,6 +85,8 @@ from app.services.brokers.kis.client import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.screenshot_holdings_service import ScreenshotHoldingsService
 from app.services.upbit_symbol_universe_service import (
+    UpbitSymbolInactiveError,
+    UpbitSymbolNotRegisteredError,
     UpbitSymbolUniverseLookupError,
     get_active_upbit_markets,
     get_upbit_korean_name_by_coin,
@@ -207,10 +209,13 @@ async def _collect_upbit_positions(
                 f"{quote_currency}-{currency}",
                 "crypto",
             )
-            korean_name = await get_upbit_korean_name_by_coin(
-                currency,
-                quote_currency=quote_currency,
-            )
+            try:
+                korean_name = await get_upbit_korean_name_by_coin(
+                    currency,
+                    quote_currency=quote_currency,
+                )
+            except (UpbitSymbolNotRegisteredError, UpbitSymbolInactiveError):
+                continue
 
             positions.append(
                 {
