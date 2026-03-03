@@ -165,6 +165,7 @@ def test_set_asset_profile_hold_only_rejects_invalid_sell_mode() -> None:
             requested_sell_mode="any",
         )
 
+
 @pytest.mark.asyncio
 async def test_get_asset_profile_rejects_invalid_market_type() -> None:
     result = await get_asset_profile(market_type="bond")
@@ -272,9 +273,22 @@ def _build_create_session() -> tuple[MagicMock, list[object]]:
     async def _fake_refresh(_obj: object) -> None:
         # After refresh the handler reads timestamps/id from the instance.
         # We swap the object's attrs so _serialize_profile works.
-        for attr in ("id", "symbol", "instrument_type", "tier", "profile",
-                     "sector", "tags", "max_position_pct", "buy_allowed",
-                     "sell_mode", "note", "updated_by", "created_at", "updated_at"):
+        for attr in (
+            "id",
+            "symbol",
+            "instrument_type",
+            "tier",
+            "profile",
+            "sector",
+            "tags",
+            "max_position_pct",
+            "buy_allowed",
+            "sell_mode",
+            "note",
+            "updated_by",
+            "created_at",
+            "updated_at",
+        ):
             setattr(_obj, attr, getattr(fake_row, attr))
 
     session.flush = AsyncMock(side_effect=_fake_flush)
@@ -325,7 +339,10 @@ async def test_set_asset_profile_create_logs_change_type_asset_profile() -> None
         return_value=factory,
     ):
         result = await set_asset_profile(
-            symbol="AAPL", market_type="us", tier=2, profile="balanced",
+            symbol="AAPL",
+            market_type="us",
+            tier=2,
+            profile="balanced",
         )
 
     assert result["success"] is True
@@ -344,7 +361,9 @@ async def test_set_asset_profile_update_logs_change_type_asset_profile() -> None
         return_value=factory,
     ):
         result = await set_asset_profile(
-            symbol="AAPL", market_type="us", note="updated note",
+            symbol="AAPL",
+            market_type="us",
+            note="updated note",
         )
 
     assert result["success"] is True

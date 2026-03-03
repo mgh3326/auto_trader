@@ -32,7 +32,10 @@ def _parse_market_type(market_type: str | None) -> InstrumentType | None:
         )
     return InstrumentType(normalized)
 
-_VALID_PROFILES = frozenset({"aggressive", "balanced", "conservative", "exit", "hold_only"})
+
+_VALID_PROFILES = frozenset(
+    {"aggressive", "balanced", "conservative", "exit", "hold_only"}
+)
 
 
 def _validate_tier(tier: int | None) -> None:
@@ -48,6 +51,7 @@ def _validate_profile(profile: str | None) -> None:
     normalized = profile.strip().lower()
     if normalized and normalized not in _VALID_PROFILES:
         raise ValueError(f"Invalid profile: {profile!r}")
+
 
 def _normalize_profile(value: str | None) -> str | None:
     if value is None:
@@ -304,9 +308,7 @@ async def set_asset_profile(
                         instrument_type = existing.instrument_type
                         normalized_symbol = existing.symbol
                     else:
-                        raise ValueError(
-                            "market_type is required for new profile"
-                        )
+                        raise ValueError("market_type is required for new profile")
 
                 if existing is None:
                     if tier is None:
