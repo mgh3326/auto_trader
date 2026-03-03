@@ -81,6 +81,13 @@ class AssetProfile(Base):
             "tags IS NULL OR jsonb_typeof(tags) = 'array'",
             name="asset_profiles_tags_array_type",
         ),
+        Index(
+            "uq_asset_profiles_user_symbol_instrument",
+            "user_id",
+            "symbol",
+            "instrument_type",
+            unique=True,
+        ),
         Index("ix_asset_profiles_user_instrument_type", "user_id", "instrument_type"),
         Index("ix_asset_profiles_user_profile", "user_id", "profile"),
         Index("ix_asset_profiles_tags_gin", "tags", postgresql_using="gin"),
@@ -89,9 +96,6 @@ class AssetProfile(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    broker_account_id: Mapped[int | None] = mapped_column(
-        ForeignKey("broker_accounts.id", ondelete="CASCADE"), nullable=True
     )
     symbol: Mapped[str] = mapped_column(Text, nullable=False)
     instrument_type: Mapped[InstrumentType] = mapped_column(
@@ -181,14 +185,18 @@ class MarketFilter(Base):
             "instrument_type",
             "enabled",
         ),
+        Index(
+            "uq_market_filters_user_instrument_filter",
+            "user_id",
+            "instrument_type",
+            "filter_name",
+            unique=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    broker_account_id: Mapped[int | None] = mapped_column(
-        ForeignKey("broker_accounts.id", ondelete="CASCADE"), nullable=True
     )
     instrument_type: Mapped[InstrumentType] = mapped_column(
         Enum(InstrumentType, name="instrument_type", create_type=False), nullable=False
