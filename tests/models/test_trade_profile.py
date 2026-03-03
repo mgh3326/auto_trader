@@ -85,21 +85,20 @@ async def _cleanup_user(user_id: int) -> None:
 @pytest.mark.asyncio
 async def test_sell_mode_and_hold_only_checks() -> None:
     await _ensure_trade_profile_tables()
-    user_id, kis_id, _ = await _create_user_and_accounts()
+    user_id, _, _ = await _create_user_and_accounts()
     try:
         async with SessionLocal() as session:
             await session.execute(
                 text(
                     """
                     INSERT INTO asset_profiles
-                        (user_id, broker_account_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode)
+                        (user_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode)
                     VALUES
-                        (:user_id, :broker_id, '005930', :instrument_type, 2, 'hold_only', true, 'rebalance_only')
+                        (:user_id, '005930', :instrument_type, 2, 'hold_only', true, 'rebalance_only')
                     """
                 ),
                 {
                     "user_id": user_id,
-                    "broker_id": kis_id,
                     "instrument_type": InstrumentType.equity_kr.value,
                 },
             )
@@ -111,14 +110,13 @@ async def test_sell_mode_and_hold_only_checks() -> None:
                     text(
                         """
                         INSERT INTO asset_profiles
-                            (user_id, broker_account_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode)
+                            (user_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode)
                         VALUES
-                            (:user_id, :broker_id, '000660', :instrument_type, 2, 'hold_only', true, 'any')
+                            (:user_id, '000660', :instrument_type, 2, 'hold_only', true, 'any')
                         """
                     ),
                     {
                         "user_id": user_id,
-                        "broker_id": kis_id,
                         "instrument_type": InstrumentType.equity_kr.value,
                     },
                 )
@@ -130,14 +128,13 @@ async def test_sell_mode_and_hold_only_checks() -> None:
                     text(
                         """
                         INSERT INTO asset_profiles
-                            (user_id, broker_account_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode)
+                            (user_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode)
                         VALUES
-                            (:user_id, :broker_id, '035420', :instrument_type, 2, 'balanced', true, 'invalid_mode')
+                            (:user_id, '035420', :instrument_type, 2, 'balanced', true, 'invalid_mode')
                         """
                     ),
                     {
                         "user_id": user_id,
-                        "broker_id": kis_id,
                         "instrument_type": InstrumentType.equity_kr.value,
                     },
                 )
@@ -149,14 +146,13 @@ async def test_sell_mode_and_hold_only_checks() -> None:
                     text(
                         """
                         INSERT INTO asset_profiles
-                            (user_id, broker_account_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode, tags)
+                            (user_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode, tags)
                         VALUES
-                            (:user_id, :broker_id, '051910', :instrument_type, 2, 'balanced', true, 'any', '{"bad": "shape"}'::jsonb)
+                            (:user_id, '051910', :instrument_type, 2, 'balanced', true, 'any', '{"bad": "shape"}'::jsonb)
                         """
                     ),
                     {
                         "user_id": user_id,
-                        "broker_id": kis_id,
                         "instrument_type": InstrumentType.equity_kr.value,
                     },
                 )
@@ -169,7 +165,7 @@ async def test_sell_mode_and_hold_only_checks() -> None:
 @pytest.mark.asyncio
 async def test_param_type_common_and_filter_name_format_and_partial_unique() -> None:
     await _ensure_trade_profile_tables()
-    user_id, kis_id, _ = await _create_user_and_accounts()
+    user_id, _, _ = await _create_user_and_accounts()
     try:
         async with SessionLocal() as session:
             await session.execute(
@@ -190,14 +186,13 @@ async def test_param_type_common_and_filter_name_format_and_partial_unique() -> 
                 text(
                     """
                         INSERT INTO market_filters
-                            (user_id, broker_account_id, instrument_type, filter_name, params, enabled)
+                            (user_id, instrument_type, filter_name, params, enabled)
                         VALUES
-                            (:user_id, :broker_id, :instrument_type, 'liquidity', '{"min": 1}'::jsonb, true)
+                            (:user_id, :instrument_type, 'liquidity', '{"min": 1}'::jsonb, true)
                         """
                 ),
                 {
                     "user_id": user_id,
-                    "broker_id": kis_id,
                     "instrument_type": InstrumentType.equity_kr.value,
                 },
             )
@@ -209,14 +204,13 @@ async def test_param_type_common_and_filter_name_format_and_partial_unique() -> 
                     text(
                         """
                         INSERT INTO market_filters
-                            (user_id, broker_account_id, instrument_type, filter_name, params, enabled)
+                            (user_id, instrument_type, filter_name, params, enabled)
                         VALUES
-                            (:user_id, :broker_id, :instrument_type, 'INVALID-NAME', '{"x": 1}'::jsonb, true)
+                            (:user_id, :instrument_type, 'INVALID-NAME', '{"x": 1}'::jsonb, true)
                         """
                     ),
                     {
                         "user_id": user_id,
-                        "broker_id": kis_id,
                         "instrument_type": InstrumentType.equity_kr.value,
                     },
                 )
@@ -227,9 +221,9 @@ async def test_param_type_common_and_filter_name_format_and_partial_unique() -> 
                 text(
                     """
                     INSERT INTO asset_profiles
-                        (user_id, broker_account_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode)
+                        (user_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode)
                     VALUES
-                        (:user_id, NULL, 'BTC', :instrument_type, 1, 'aggressive', true, 'any')
+                        (:user_id, 'BTC', :instrument_type, 1, 'aggressive', true, 'any')
                     """
                 ),
                 {
@@ -245,9 +239,9 @@ async def test_param_type_common_and_filter_name_format_and_partial_unique() -> 
                     text(
                         """
                         INSERT INTO asset_profiles
-                            (user_id, broker_account_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode)
+                            (user_id, symbol, instrument_type, tier, profile, buy_allowed, sell_mode)
                         VALUES
-                            (:user_id, NULL, 'BTC', :instrument_type, 2, 'balanced', true, 'any')
+                            (:user_id, 'BTC', :instrument_type, 2, 'balanced', true, 'any')
                         """
                     ),
                     {

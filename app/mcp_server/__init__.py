@@ -1,4 +1,4 @@
-from app.mcp_server.tooling import register_all_tools
+from app.mcp_server.tooling.registry import register_all_tools
 
 __all__ = ["register_all_tools"]
 
@@ -41,4 +41,6 @@ AVAILABLE_TOOL_NAMES = [
     "screen_stocks",
     "recommend_stocks",
     "manage_watch_alerts",
+    "get_asset_profile",
+    "set_asset_profile",
 ]
