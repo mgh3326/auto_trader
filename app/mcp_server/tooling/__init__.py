@@ -16,6 +16,7 @@ This package contains the refactored MCP tools split by domain:
 
 from __future__ import annotations
 
+from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.trade_profile_registration import (
     TRADE_PROFILE_TOOL_NAMES,
     register_trade_profile_tools,
@@ -28,6 +29,7 @@ from app.mcp_server.tooling.watch_alerts_registration import (
 __all__ = [
     "WATCH_ALERT_TOOL_NAMES",
     "TRADE_PROFILE_TOOL_NAMES",
+    "register_all_tools",
     "register_trade_profile_tools",
     "register_watch_alert_tools",
 ]

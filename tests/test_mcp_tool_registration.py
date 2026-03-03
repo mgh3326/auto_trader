@@ -9,6 +9,9 @@ from app.mcp_server.tooling import (
     register_trade_profile_tools,
     register_watch_alert_tools,
 )
+from app.mcp_server.tooling import (
+    register_all_tools as register_all_tools_from_tooling,
+)
 from app.mcp_server.tooling.analysis_registration import (
     ANALYSIS_TOOL_NAMES,
     register_analysis_tools,
@@ -142,3 +145,13 @@ def test_domain_registration_is_idempotent(registrar: Any) -> None:
     registrar(mcp)
 
     assert len(mcp.tools) == first_count
+
+
+def test_tooling_exports_register_all_tools() -> None:
+    """Verify that app.mcp_server.tooling re-exports register_all_tools.
+
+    app.mcp_server.main imports register_all_tools from
+    app.mcp_server.tooling — if the re-export is missing the MCP
+    server cannot boot.
+    """
+    assert register_all_tools_from_tooling is register_all_tools

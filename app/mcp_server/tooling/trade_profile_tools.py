@@ -17,12 +17,37 @@ def _session_factory() -> async_sessionmaker[AsyncSession]:
     return cast(async_sessionmaker[AsyncSession], cast(object, AsyncSessionLocal))
 
 
-def _to_instrument_type(market_type: str | None) -> InstrumentType | None:
+def _parse_market_type(market_type: str | None) -> InstrumentType | None:
+    """Parse and validate market_type input.
+
+    Returns None when *market_type* is not supplied.
+    Raises ValueError when the value is provided but unrecognised.
+    """
+    if market_type is None:
+        return None
     normalized = normalize_market(market_type)
     if normalized is None:
-        return None
+        raise ValueError(
+            f"market_type must be one of: kr, us, crypto (got {market_type!r})"
+        )
     return InstrumentType(normalized)
 
+_VALID_PROFILES = frozenset({"aggressive", "balanced", "conservative", "exit", "hold_only"})
+
+
+def _validate_tier(tier: int | None) -> None:
+    """Raise ValueError when *tier* is outside 1-4."""
+    if tier is not None and not (1 <= tier <= 4):
+        raise ValueError("tier must be 1-4")
+
+
+def _validate_profile(profile: str | None) -> None:
+    """Raise ValueError when *profile* is not in the allowed set."""
+    if profile is None:
+        return
+    normalized = profile.strip().lower()
+    if normalized and normalized not in _VALID_PROFILES:
+        raise ValueError(f"Invalid profile: {profile!r}")
 
 def _normalize_profile(value: str | None) -> str | None:
     if value is None:
@@ -47,16 +72,6 @@ def _normalize_symbol_for_instrument(
             return candidate.zfill(6)
         return normalize_kr_symbol(candidate)
     return candidate.upper()
-
-
-def _auto_detect_for_create(symbol: str) -> tuple[InstrumentType, str]:
-    candidate = symbol.strip()
-    if candidate.isdigit() and len(candidate) <= 6:
-        return InstrumentType.equity_kr, candidate.zfill(6)
-    upper = candidate.upper()
-    if upper.startswith("KRW-"):
-        return InstrumentType.crypto, upper
-    return InstrumentType.equity_us, upper
 
 
 def _to_decimal_pct(value: float | None) -> Decimal | None:
@@ -155,7 +170,9 @@ async def get_asset_profile(
     include_rules: bool = False,
 ) -> dict[str, object]:
     try:
-        instrument_type = _to_instrument_type(market_type)
+        instrument_type = _parse_market_type(market_type)
+        _validate_tier(tier)
+        _validate_profile(profile)
         normalized_profile = _normalize_profile(profile)
         normalized_symbol = symbol.strip() if symbol is not None else None
 
@@ -232,11 +249,13 @@ async def set_asset_profile(
         if not symbol_input:
             raise ValueError("symbol is required")
 
+        _validate_tier(tier)
+        _validate_profile(profile)
         requested_profile = _normalize_profile(profile)
         requested_sell_mode = _normalize_sell_mode(sell_mode)
         requested_decimal_pct = _to_decimal_pct(max_position_pct)
 
-        explicit_instrument_type = _to_instrument_type(market_type)
+        explicit_instrument_type = _parse_market_type(market_type)
         existing: AssetProfile | None = None
         instrument_type: InstrumentType
         normalized_symbol: str
@@ -285,8 +304,8 @@ async def set_asset_profile(
                         instrument_type = existing.instrument_type
                         normalized_symbol = existing.symbol
                     else:
-                        instrument_type, normalized_symbol = _auto_detect_for_create(
-                            symbol_input
+                        raise ValueError(
+                            "market_type is required for new profile"
                         )
 
                 if existing is None:
@@ -329,7 +348,7 @@ async def set_asset_profile(
                     db.add(
                         ProfileChangeLog(
                             user_id=MCP_USER_ID,
-                            change_type="create",
+                            change_type="asset_profile",
                             target=f"asset:{instrument_type.value}:{normalized_symbol}",
                             old_value=None,
                             new_value=new_snapshot,
@@ -386,7 +405,7 @@ async def set_asset_profile(
                     db.add(
                         ProfileChangeLog(
                             user_id=MCP_USER_ID,
-                            change_type="update",
+                            change_type="asset_profile",
                             target=(
                                 f"asset:{existing.instrument_type.value}:{existing.symbol}"
                             ),
