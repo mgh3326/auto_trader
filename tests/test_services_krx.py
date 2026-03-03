@@ -505,6 +505,11 @@ class TestKRXValuation:
         monkeypatch.setattr(krx, "_get_cached_data", mock_get_cached_data)
         monkeypatch.setattr(krx, "_set_cached_data", mock_set_cached_data)
 
+        async def mock_fetch_krx_data(**kwargs):
+            return []
+
+        monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
+
         await krx.fetch_valuation_all(market="STK", trd_date="20250101")
 
         assert len(captured_keys) == 1
