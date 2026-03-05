@@ -28,6 +28,8 @@ from app.services.krx import (
     fetch_valuation_all_cached,
 )
 from app.services.upbit_symbol_universe_service import get_upbit_warning_markets
+from app.services.tvscreener_service import TvScreenerService, TvScreenerError
+from app.utils.symbol_mapping import upbit_to_tradingview, SymbolMappingError
 
 logger = logging.getLogger(__name__)
 
@@ -976,6 +978,23 @@ async def _screen_us(
 async def _enrich_crypto_rsi_subset(
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Enrich crypto candidates with RSI values using CryptoScreener.
+
+    This function uses the tvscreener library to bulk query RSI values from
+    TradingView instead of manually calculating them. Symbol conversion from
+    Upbit format (KRW-BTC) to TradingView format (UPBIT:BTCKRW) is handled
+    automatically.
+
+    Parameters
+    ----------
+    candidates : list[dict[str, Any]]
+        List of candidate dictionaries to enrich with RSI values
+
+    Returns
+    -------
+    dict[str, Any]
+        Enrichment diagnostics with counts of succeeded/failed/timeout cases
+    """
     rsi_enrichment = _empty_rsi_enrichment_diagnostics()
     if not candidates:
         return rsi_enrichment
@@ -984,11 +1003,20 @@ async def _enrich_crypto_rsi_subset(
     statuses = ["pending" for _ in candidates]
     errors: list[str | None] = [None for _ in candidates]
 
+    # Map Upbit symbols to TradingView format and track indices
     symbols_by_index: list[str | None] = [None for _ in candidates]
-    batch_symbols: list[str] = []
-    seen_symbols: set[str] = set()
+    tv_symbols_by_index: list[str | None] = [None for _ in candidates]
+    tv_symbols_to_upbit: dict[str, str] = {}  # TradingView -> Upbit mapping
+    unique_tv_symbols: list[str] = []
+    seen_tv_symbols: set[str] = set()
 
     for index, item in enumerate(candidates):
+        # Skip if RSI already exists
+        if item.get("rsi") is not None:
+            statuses[index] = "success"
+            continue
+
+        # Extract and normalize Upbit symbol
         symbol = item.get("original_market") or item.get("symbol") or item.get("market")
         normalized_symbol = _normalize_crypto_symbol(str(symbol or ""))
         if not normalized_symbol:
@@ -997,44 +1025,119 @@ async def _enrich_crypto_rsi_subset(
             continue
 
         symbols_by_index[index] = normalized_symbol
-        if item.get("rsi") is not None:
-            statuses[index] = "success"
+
+        # Convert to TradingView format
+        try:
+            tv_symbol = upbit_to_tradingview(normalized_symbol)
+            tv_symbols_by_index[index] = tv_symbol
+
+            # Track unique TradingView symbols for batch query
+            if tv_symbol not in seen_tv_symbols:
+                seen_tv_symbols.add(tv_symbol)
+                unique_tv_symbols.append(tv_symbol)
+                tv_symbols_to_upbit[tv_symbol] = normalized_symbol
+
+        except SymbolMappingError as exc:
+            statuses[index] = "error"
+            errors[index] = f"Symbol mapping failed: {exc}"
+            logger.warning(
+                "[RSI-Crypto] Failed to map symbol %s: %s",
+                normalized_symbol,
+                exc,
+            )
             continue
 
-        if normalized_symbol not in seen_symbols:
-            seen_symbols.add(normalized_symbol)
-            batch_symbols.append(normalized_symbol)
+    # Query CryptoScreener for RSI values if we have symbols to query
+    if not unique_tv_symbols:
+        logger.info("[RSI-Crypto] No symbols to enrich with CryptoScreener")
+        _finalize_rsi_enrichment_diagnostics(rsi_enrichment, statuses, errors)
+        return rsi_enrichment
 
     try:
-        rsi_map = (
-            await asyncio.wait_for(
+        # Use CryptoScreener to bulk query RSI values from TradingView
+        logger.info(
+            "[RSI-Crypto] Querying CryptoScreener for %d symbols",
+            len(unique_tv_symbols),
+        )
+
+        tvscreener_service = TvScreenerService(timeout=30.0)
+
+        try:
+            from tvscreener import CryptoScreener, CryptoField
+
+            # Query for RSI and symbol (ticker) fields
+            df = await tvscreener_service.query_crypto_screener(
+                columns=[CryptoField.TICKER, CryptoField.RELATIVE_STRENGTH_INDEX_14],
+                where_clause=None,  # Get all, we'll filter client-side
+                limit=None,
+            )
+
+            # Build RSI map from TradingView symbols
+            rsi_map: dict[str, float | None] = {}
+            if not df.empty:
+                # Filter to only the symbols we're interested in
+                # TradingView returns full symbols like "UPBIT:BTCKRW"
+                for _, row in df.iterrows():
+                    ticker = str(row.get("ticker", "")).strip()
+                    if ticker in unique_tv_symbols:
+                        rsi_value = _to_optional_float(
+                            row.get("relative_strength_index_14")
+                        )
+                        rsi_map[ticker] = rsi_value
+
+            logger.info(
+                "[RSI-Crypto] CryptoScreener returned RSI for %d/%d symbols",
+                len(rsi_map),
+                len(unique_tv_symbols),
+            )
+
+        except ImportError:
+            logger.warning(
+                "[RSI-Crypto] tvscreener not installed, falling back to manual calculation"
+            )
+            # Fallback to manual calculation if tvscreener is not available
+            batch_symbols = [symbols_by_index[i] for i in range(len(candidates)) if symbols_by_index[i] is not None]
+            rsi_map_manual = await asyncio.wait_for(
                 compute_crypto_realtime_rsi_map(batch_symbols),
                 timeout=30.0,
             )
-            if batch_symbols
-            else {}
-        )
+            # Convert manual RSI map (Upbit symbols) to match our data structure
+            rsi_map = {}
+            for tv_symbol, upbit_symbol in tv_symbols_to_upbit.items():
+                if upbit_symbol in rsi_map_manual:
+                    rsi_map[tv_symbol] = rsi_map_manual[upbit_symbol]
 
+        # Apply RSI values to candidates
         for index, item in enumerate(candidates):
             if statuses[index] != "pending":
                 continue
 
-            normalized_symbol = symbols_by_index[index]
-            if normalized_symbol is None:
+            tv_symbol = tv_symbols_by_index[index]
+            if tv_symbol is None:
                 statuses[index] = "error"
-                errors[index] = "No valid symbol found"
+                errors[index] = "No valid TradingView symbol"
                 continue
 
-            rsi_value = _to_optional_float(rsi_map.get(normalized_symbol))
+            rsi_value = rsi_map.get(tv_symbol)
             item["rsi"] = rsi_value
             item["rsi_bucket"] = _compute_rsi_bucket(rsi_value)
 
             if rsi_value is None:
                 statuses[index] = "error"
-                errors[index] = "RSI calculation returned None"
+                errors[index] = "RSI not found in CryptoScreener results"
             else:
                 statuses[index] = "success"
 
+    except TvScreenerError as exc:
+        logger.error(
+            "[RSI-Crypto] CryptoScreener query failed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        for index, status in enumerate(statuses):
+            if status == "pending":
+                statuses[index] = "rate_limited" if "rate limit" in str(exc).lower() else "error"
+                errors[index] = f"CryptoScreener error: {exc}"
     except TimeoutError:
         logger.warning("[RSI-Crypto] RSI enrichment timed out after 30 seconds")
         for index, status in enumerate(statuses):
