@@ -1215,6 +1215,189 @@ async def _enrich_crypto_indicators(
     return rsi_enrichment
 
 
+
+
+async def _screen_kr_via_tvscreener(
+    min_rsi: float | None = None,
+    max_rsi: float | None = None,
+    min_adx: float | None = None,
+    sort_by: str = "rsi",
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Screen Korean stocks using TradingView StockScreener API.
+
+    This function uses the tvscreener library to query Korean stocks from
+    TradingView with technical indicators (RSI, ADX, volume, price) instead of
+    relying on KRX data and manual indicator calculation.
+
+    Parameters
+    ----------
+    min_rsi : float | None, optional
+        Minimum RSI_14 value filter (default: None)
+    max_rsi : float | None, optional
+        Maximum RSI_14 value filter (default: None)
+    min_adx : float | None, optional
+        Minimum ADX_14 value filter (default: None)
+    sort_by : str, optional
+        Sort field - one of 'rsi', 'adx', 'volume', 'change' (default: 'rsi')
+    limit : int, optional
+        Maximum number of results to return (default: 50)
+
+    Returns
+    -------
+    dict[str, Any]
+        Dictionary containing:
+        - stocks: List of stock dictionaries with indicator values
+        - source: Data source identifier ('tvscreener')
+        - count: Number of results returned
+        - filters_applied: Dictionary of applied filter parameters
+        - error: Error message if query failed (None on success)
+    """
+    result = {
+        "stocks": [],
+        "source": "tvscreener",
+        "count": 0,
+        "filters_applied": {
+            "min_rsi": min_rsi,
+            "max_rsi": max_rsi,
+            "min_adx": min_adx,
+            "sort_by": sort_by,
+            "limit": limit,
+        },
+        "error": None,
+    }
+
+    try:
+        # Import StockScreener and StockField from tvscreener
+        try:
+            from tvscreener import StockScreener, StockField
+        except ImportError as exc:
+            error_msg = "tvscreener library not installed, cannot use StockScreener"
+            logger.warning("[Screen-KR-TV] %s", error_msg)
+            result["error"] = error_msg
+            return result
+
+        # Build columns list - start with essential fields
+        columns = [
+            StockField.TICKER,
+            StockField.NAME,
+            StockField.PRICE,
+            StockField.RELATIVE_STRENGTH_INDEX_14,
+            StockField.AVERAGE_DIRECTIONAL_INDEX_14,
+            StockField.VOLUME,
+            StockField.CHANGE_PERCENT,
+        ]
+
+        # Try to add COUNTRY field for filtering
+        try:
+            columns.append(StockField.COUNTRY)
+        except AttributeError:
+            logger.warning("[Screen-KR-TV] COUNTRY field not available in StockField")
+
+        # Build WHERE clause for filtering
+        where_conditions = []
+
+        # Filter by country = 'South Korea'
+        where_conditions.append("country = 'South Korea'")
+
+        # Filter by RSI range
+        if min_rsi is not None:
+            where_conditions.append(f"relative_strength_index_14 >= {min_rsi}")
+        if max_rsi is not None:
+            where_conditions.append(f"relative_strength_index_14 <= {max_rsi}")
+
+        # Filter by minimum ADX
+        if min_adx is not None:
+            where_conditions.append(f"average_directional_index_14 >= {min_adx}")
+
+        where_clause = " AND ".join(where_conditions) if where_conditions else None
+
+        logger.info(
+            "[Screen-KR-TV] Querying StockScreener for Korean stocks "
+            "(filters: min_rsi=%s, max_rsi=%s, min_adx=%s, limit=%d)",
+            min_rsi,
+            max_rsi,
+            min_adx,
+            limit,
+        )
+
+        # Query StockScreener
+        tvscreener_service = TvScreenerService(timeout=30.0)
+        df = await tvscreener_service.query_stock_screener(
+            columns=columns,
+            where_clause=where_clause,
+            limit=None,  # Get all matching, we'll limit after sorting
+        )
+
+        if df.empty:
+            logger.info("[Screen-KR-TV] StockScreener returned no results")
+            return result
+
+        logger.info("[Screen-KR-TV] StockScreener returned %d Korean stocks", len(df))
+
+        # Convert DataFrame to list of dictionaries
+        stocks = []
+        for _, row in df.iterrows():
+            stock = {
+                "symbol": str(row.get("ticker", "")).strip(),
+                "name": str(row.get("name", "")).strip(),
+                "price": _to_optional_float(row.get("price")),
+                "rsi": _to_optional_float(row.get("relative_strength_index_14")),
+                "adx": _to_optional_float(row.get("average_directional_index_14")),
+                "volume": _to_optional_float(row.get("volume")),
+                "change_percent": _to_optional_float(row.get("change_percent")),
+                "country": str(row.get("country", "")).strip() if "country" in row else "South Korea",
+            }
+            stocks.append(stock)
+
+        # Sort stocks based on sort_by parameter
+        sort_field_map = {
+            "rsi": "rsi",
+            "adx": "adx",
+            "volume": "volume",
+            "change": "change_percent",
+        }
+        sort_field = sort_field_map.get(sort_by, "rsi")
+
+        # Sort ascending for RSI (lower is more oversold), descending for others
+        reverse = sort_by != "rsi"
+        stocks.sort(
+            key=lambda s: s.get(sort_field) if s.get(sort_field) is not None else (float('inf') if not reverse else float('-inf')),
+            reverse=reverse,
+        )
+
+        # Limit results
+        stocks = stocks[:limit]
+
+        result["stocks"] = stocks
+        result["count"] = len(stocks)
+
+        logger.info(
+            "[Screen-KR-TV] Returning %d Korean stocks sorted by %s",
+            len(stocks),
+            sort_by,
+        )
+
+        return result
+
+    except TvScreenerError as exc:
+        error_msg = f"StockScreener query failed: {exc}"
+        logger.error("[Screen-KR-TV] %s", error_msg)
+        result["error"] = error_msg
+        return result
+
+    except TimeoutError as exc:
+        error_msg = "StockScreener query timed out after 30 seconds"
+        logger.warning("[Screen-KR-TV] %s", error_msg)
+        result["error"] = error_msg
+        return result
+
+    except Exception as exc:
+        error_msg = f"Unexpected error in Korean stock screening: {type(exc).__name__}: {exc}"
+        logger.error("[Screen-KR-TV] %s", error_msg)
+        result["error"] = error_msg
+        return result
+
 async def _screen_crypto(
     market: str,
     asset_type: str | None,
