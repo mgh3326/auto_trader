@@ -21,7 +21,9 @@ from app.mcp_server.tooling.analysis_screen_core import (
     _normalize_sort_order,
     _screen_crypto,
     _screen_kr,
+    _screen_kr_via_tvscreener,
     _screen_us,
+    _screen_us_via_tvscreener,
     _validate_screen_filters,
 )
 from app.mcp_server.tooling.analysis_screening import (
@@ -488,6 +490,36 @@ async def screen_stocks_impl(
     )
 
     if normalized_market in ("kr", "kospi", "kosdaq"):
+        # Try tvscreener implementation first for RSI-based screening
+        if normalized_sort_by == "rsi" or max_rsi is not None:
+            try:
+                tvscreener_result = await _screen_kr_via_tvscreener(
+                    min_rsi=None,
+                    max_rsi=max_rsi,
+                    min_adx=None,
+                    sort_by=normalized_sort_by,
+                    limit=limit,
+                )
+                if tvscreener_result and not tvscreener_result.get("error"):
+                    logger.info(
+                        "Korean stock screening via tvscreener succeeded: %d stocks",
+                        tvscreener_result.get("count", 0),
+                    )
+                    return {
+                        "success": True,
+                        "stocks": tvscreener_result.get("stocks", []),
+                        "count": tvscreener_result.get("count", 0),
+                        "market": normalized_market,
+                        "source": tvscreener_result.get("source", "tvscreener"),
+                        "filters_applied": tvscreener_result.get("filters_applied", {}),
+                    }
+            except Exception as exc:
+                logger.debug(
+                    "tvscreener Korean screening failed, falling back to legacy implementation: %s",
+                    exc,
+                )
+
+        # Fallback to legacy implementation
         return await _screen_kr(
             market=normalized_market,
             asset_type=normalized_asset_type,
@@ -502,6 +534,36 @@ async def screen_stocks_impl(
             limit=limit,
         )
     if normalized_market == "us":
+        # Try tvscreener implementation first for RSI-based screening
+        if normalized_sort_by == "rsi" or max_rsi is not None:
+            try:
+                tvscreener_result = await _screen_us_via_tvscreener(
+                    min_rsi=None,
+                    max_rsi=max_rsi,
+                    min_adx=None,
+                    sort_by=normalized_sort_by,
+                    limit=limit,
+                )
+                if tvscreener_result and not tvscreener_result.get("error"):
+                    logger.info(
+                        "US stock screening via tvscreener succeeded: %d stocks",
+                        tvscreener_result.get("count", 0),
+                    )
+                    return {
+                        "success": True,
+                        "stocks": tvscreener_result.get("stocks", []),
+                        "count": tvscreener_result.get("count", 0),
+                        "market": normalized_market,
+                        "source": tvscreener_result.get("source", "tvscreener"),
+                        "filters_applied": tvscreener_result.get("filters_applied", {}),
+                    }
+            except Exception as exc:
+                logger.debug(
+                    "tvscreener US screening failed, falling back to legacy implementation: %s",
+                    exc,
+                )
+
+        # Fallback to legacy implementation
         return await _screen_us(
             market=normalized_market,
             asset_type=normalized_asset_type,
