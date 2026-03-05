@@ -1113,9 +1113,7 @@ class TestKRXSessionManager:
         success_resp.status_code = 200
         success_resp.text = '{"OutBlock_1": [{"key": "value"}]}'
         success_resp.raise_for_status = MagicMock()
-        success_resp.json = MagicMock(
-            return_value={"OutBlock_1": [{"key": "value"}]}
-        )
+        success_resp.json = MagicMock(return_value={"OutBlock_1": [{"key": "value"}]})
 
         # Login responses
         login_get_resp = MagicMock(status_code=200)
@@ -1151,9 +1149,7 @@ class TestKRXSessionManager:
         success_resp = MagicMock()
         success_resp.status_code = 200
         success_resp.raise_for_status = MagicMock()
-        success_resp.json = MagicMock(
-            return_value={"OutBlock_1": [{"data": "test"}]}
-        )
+        success_resp.json = MagicMock(return_value={"OutBlock_1": [{"data": "test"}]})
         mock_client.post = AsyncMock(return_value=success_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
@@ -1175,9 +1171,7 @@ class TestKRXSessionManager:
         success_resp = MagicMock()
         success_resp.status_code = 200
         success_resp.raise_for_status = MagicMock()
-        success_resp.json = MagicMock(
-            return_value={"OutBlock_1": []}
-        )
+        success_resp.json = MagicMock(return_value={"OutBlock_1": []})
         mock_client.post = AsyncMock(return_value=success_resp)
 
         with patch("httpx.AsyncClient", return_value=mock_client) as mock_cls:
@@ -1198,6 +1192,7 @@ class TestKRXSessionManager:
         )
 
         login_call_count = 0
+
         async def counting_login():
             nonlocal login_call_count
             login_call_count += 1
@@ -1235,7 +1230,9 @@ class TestKRXSessionManager:
 
         monkeypatch.setattr(krx._krx_session, "fetch_data", mock_fetch_data)
 
-        result = await krx._fetch_krx_data(bld="test_bld", mktId="STK", trdDd="20250101")
+        result = await krx._fetch_krx_data(
+            bld="test_bld", mktId="STK", trdDd="20250101"
+        )
 
         assert result == mock_result
 
