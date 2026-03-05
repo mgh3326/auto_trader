@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     kis_ohlcv_cache_max_days: int = 400
     kis_ohlcv_cache_max_hours: int = 400 * 24
     kis_ohlcv_cache_lock_ttl_seconds: int = 10
+    KR_OHLCV_DUAL_ROUTE_ENABLED: bool = False
+    KR_OHLCV_DUAL_ROUTE_CANARY_SYMBOLS: list[str] = []
+    KR_OHLCV_DUAL_ROUTE_CANARY_ALL: bool = False
+    KR_OHLCV_V2_DUAL_WRITE_ENABLED: bool = False
 
     # API Rate Limit Retry Settings (429 handling)
     api_rate_limit_retry_429_max: int = 2  # 429 에러 시 최대 재시도 횟수
@@ -94,6 +98,21 @@ class Settings(BaseSettings):
                 return []
             return [key.strip() for key in v.split(",") if key.strip()]
         return v
+
+    @field_validator("KR_OHLCV_DUAL_ROUTE_CANARY_SYMBOLS", mode="before")
+    @classmethod
+    def split_kr_ohlcv_canary_symbols(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            if not value:
+                return []
+            return [
+                symbol.strip().upper() for symbol in value.split(",") if symbol.strip()
+            ]
+        if isinstance(value, list):
+            return [
+                str(symbol).strip().upper() for symbol in value if str(symbol).strip()
+            ]
+        return []
 
     def _ensure_key_index(self):
         """API 키 인덱스 초기화 (필요시에만)"""
