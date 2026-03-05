@@ -1198,8 +1198,6 @@ class TestKRXSessionManager:
         )
 
         login_call_count = 0
-        original_login = manager._login
-
         async def counting_login():
             nonlocal login_call_count
             login_call_count += 1
