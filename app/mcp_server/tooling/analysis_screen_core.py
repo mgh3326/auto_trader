@@ -975,20 +975,20 @@ async def _screen_us(
         )
 
 
-async def _enrich_crypto_rsi_subset(
+async def _enrich_crypto_indicators(
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Enrich crypto candidates with RSI values using CryptoScreener.
+    """Enrich crypto candidates with RSI, ADX, and volume using CryptoScreener.
 
-    This function uses the tvscreener library to bulk query RSI values from
-    TradingView instead of manually calculating them. Symbol conversion from
+    This function uses the tvscreener library to bulk query technical indicators
+    from TradingView instead of manually calculating them. Symbol conversion from
     Upbit format (KRW-BTC) to TradingView format (UPBIT:BTCKRW) is handled
     automatically.
 
     Parameters
     ----------
     candidates : list[dict[str, Any]]
-        List of candidate dictionaries to enrich with RSI values
+        List of candidate dictionaries to enrich with indicator values
 
     Returns
     -------
@@ -1041,22 +1041,22 @@ async def _enrich_crypto_rsi_subset(
             statuses[index] = "error"
             errors[index] = f"Symbol mapping failed: {exc}"
             logger.warning(
-                "[RSI-Crypto] Failed to map symbol %s: %s",
+                "[Indicators-Crypto] Failed to map symbol %s: %s",
                 normalized_symbol,
                 exc,
             )
             continue
 
-    # Query CryptoScreener for RSI values if we have symbols to query
+    # Query CryptoScreener for indicators if we have symbols to query
     if not unique_tv_symbols:
-        logger.info("[RSI-Crypto] No symbols to enrich with CryptoScreener")
+        logger.info("[Indicators-Crypto] No symbols to enrich with CryptoScreener")
         _finalize_rsi_enrichment_diagnostics(rsi_enrichment, statuses, errors)
         return rsi_enrichment
 
     try:
-        # Use CryptoScreener to bulk query RSI values from TradingView
+        # Use CryptoScreener to bulk query indicators from TradingView
         logger.info(
-            "[RSI-Crypto] Querying CryptoScreener for %d symbols",
+            "[Indicators-Crypto] Querying CryptoScreener for %d symbols",
             len(unique_tv_symbols),
         )
 
@@ -1065,15 +1065,40 @@ async def _enrich_crypto_rsi_subset(
         try:
             from tvscreener import CryptoScreener, CryptoField
 
-            # Query for RSI and symbol (ticker) fields
+            # Build columns list - start with ticker and RSI (guaranteed)
+            columns = [CryptoField.TICKER, CryptoField.RELATIVE_STRENGTH_INDEX_14]
+
+            # Try to add ADX if available (not confirmed for CryptoField)
+            try:
+                adx_field = CryptoField.AVERAGE_DIRECTIONAL_INDEX_14
+                columns.append(adx_field)
+                has_adx = True
+                logger.debug("[Indicators-Crypto] ADX field available for CryptoScreener")
+            except AttributeError:
+                has_adx = False
+                logger.info("[Indicators-Crypto] ADX field not available for CryptoScreener, skipping")
+
+            # Add volume field (confirmed available)
+            try:
+                volume_field = CryptoField.VOLUME
+                columns.append(volume_field)
+                has_volume = True
+            except AttributeError:
+                has_volume = False
+                logger.warning("[Indicators-Crypto] VOLUME field not available for CryptoScreener")
+
+            # Query for indicators
             df = await tvscreener_service.query_crypto_screener(
-                columns=[CryptoField.TICKER, CryptoField.RELATIVE_STRENGTH_INDEX_14],
+                columns=columns,
                 where_clause=None,  # Get all, we'll filter client-side
                 limit=None,
             )
 
-            # Build RSI map from TradingView symbols
+            # Build indicator maps from TradingView symbols
             rsi_map: dict[str, float | None] = {}
+            adx_map: dict[str, float | None] = {}
+            volume_map: dict[str, float | None] = {}
+
             if not df.empty:
                 # Filter to only the symbols we're interested in
                 # TradingView returns full symbols like "UPBIT:BTCKRW"
@@ -1085,15 +1110,31 @@ async def _enrich_crypto_rsi_subset(
                         )
                         rsi_map[ticker] = rsi_value
 
+                        if has_adx:
+                            adx_value = _to_optional_float(
+                                row.get("average_directional_index_14")
+                            )
+                            adx_map[ticker] = adx_value
+
+                        if has_volume:
+                            volume_value = _to_optional_float(
+                                row.get("volume")
+                            )
+                            volume_map[ticker] = volume_value
+
             logger.info(
-                "[RSI-Crypto] CryptoScreener returned RSI for %d/%d symbols",
+                "[Indicators-Crypto] CryptoScreener returned data for %d/%d symbols "
+                "(RSI: %d, ADX: %d, Volume: %d)",
                 len(rsi_map),
                 len(unique_tv_symbols),
+                len(rsi_map),
+                len(adx_map) if has_adx else 0,
+                len(volume_map) if has_volume else 0,
             )
 
         except ImportError:
             logger.warning(
-                "[RSI-Crypto] tvscreener not installed, falling back to manual calculation"
+                "[Indicators-Crypto] tvscreener not installed, falling back to manual calculation for RSI"
             )
             # Fallback to manual calculation if tvscreener is not available
             batch_symbols = [symbols_by_index[i] for i in range(len(candidates)) if symbols_by_index[i] is not None]
@@ -1103,11 +1144,13 @@ async def _enrich_crypto_rsi_subset(
             )
             # Convert manual RSI map (Upbit symbols) to match our data structure
             rsi_map = {}
+            adx_map = {}
+            volume_map = {}
             for tv_symbol, upbit_symbol in tv_symbols_to_upbit.items():
                 if upbit_symbol in rsi_map_manual:
                     rsi_map[tv_symbol] = rsi_map_manual[upbit_symbol]
 
-        # Apply RSI values to candidates
+        # Apply indicator values to candidates
         for index, item in enumerate(candidates):
             if statuses[index] != "pending":
                 continue
@@ -1122,6 +1165,14 @@ async def _enrich_crypto_rsi_subset(
             item["rsi"] = rsi_value
             item["rsi_bucket"] = _compute_rsi_bucket(rsi_value)
 
+            # Apply ADX if available
+            if tv_symbol in adx_map:
+                item["adx"] = adx_map[tv_symbol]
+
+            # Apply volume if available
+            if tv_symbol in volume_map:
+                item["volume_24h"] = volume_map[tv_symbol]
+
             if rsi_value is None:
                 statuses[index] = "error"
                 errors[index] = "RSI not found in CryptoScreener results"
@@ -1130,7 +1181,7 @@ async def _enrich_crypto_rsi_subset(
 
     except TvScreenerError as exc:
         logger.error(
-            "[RSI-Crypto] CryptoScreener query failed: %s: %s",
+            "[Indicators-Crypto] CryptoScreener query failed: %s: %s",
             type(exc).__name__,
             exc,
         )
@@ -1139,14 +1190,14 @@ async def _enrich_crypto_rsi_subset(
                 statuses[index] = "rate_limited" if "rate limit" in str(exc).lower() else "error"
                 errors[index] = f"CryptoScreener error: {exc}"
     except TimeoutError:
-        logger.warning("[RSI-Crypto] RSI enrichment timed out after 30 seconds")
+        logger.warning("[Indicators-Crypto] Indicator enrichment timed out after 30 seconds")
         for index, status in enumerate(statuses):
             if status == "pending":
                 statuses[index] = "timeout"
                 errors[index] = "Timed out after 30 seconds"
     except Exception as exc:
         logger.error(
-            "[RSI-Crypto] RSI enrichment batch failed: %s: %s",
+            "[Indicators-Crypto] Indicator enrichment batch failed: %s: %s",
             type(exc).__name__,
             exc,
         )
@@ -1293,7 +1344,7 @@ async def _screen_crypto(
         if not enrich_rsi or not candidates:
             return _empty_rsi_enrichment_diagnostics()
         try:
-            return await _enrich_crypto_rsi_subset(candidates)
+            return await _enrich_crypto_indicators(candidates)
         except Exception as exc:
             warnings.append(
                 f"Crypto RSI enrichment failed: {type(exc).__name__}: {exc}; partial results returned"
