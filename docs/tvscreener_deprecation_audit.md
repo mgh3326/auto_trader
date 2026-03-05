@@ -371,6 +371,12 @@ async def discover_korean_stock_fields():
 
 ---
 
+---
+
+**📄 Detailed CoinGecko Audit:** For comprehensive analysis of the CoinGecko market cap cache including data accuracy comparison, performance metrics, and detailed migration plan, see **[`coingecko_cache_detailed_audit.md`](./coingecko_cache_detailed_audit.md)**.
+
+---
+
 ## 3. CoinGecko Market Cap Cache Analysis
 
 ### 3.1 Current Usage Patterns
