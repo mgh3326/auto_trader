@@ -10,6 +10,7 @@ Uses Redis caching with in-memory fallback and automatic trading date fallback.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,8 @@ KRX_API_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
 KRX_RESOURCE_URL = (
     "http://data.krx.co.kr/comm/bldAttendant/executeForResourceBundle.cmd"
 )
+KRX_LOGIN_URL = "https://data.krx.co.kr/comm/login/MDCCOMS001D1.cmd"
+KRX_BASE_URL = "https://data.krx.co.kr/"
 KRX_CACHE_TTL = 300  # 5 minutes
 KRX_MAX_RETRY_DATES = 10  # Max days to search back for trading date
 KRX_HEADERS = {
@@ -45,6 +48,172 @@ _MEMORY_CACHE_TTL = 300  # Same as Redis TTL
 _CODE_TO_NAME_CACHE: dict[str, str] = {}
 
 logger = logging.getLogger(__name__)
+
+
+class KRXSessionManager:
+    """KRX 데이터 API 세션 관리자.
+
+    Persistent httpx.AsyncClient with cookie-based authentication.
+    Handles login, session expiry (re-auth), and rate limiting (403 backoff).
+    """
+
+    def __init__(self) -> None:
+        self._client: httpx.AsyncClient | None = None
+        self._authenticated: bool = False
+        self._auth_failed: bool = False
+        self._login_lock: asyncio.Lock = asyncio.Lock()
+
+    async def _ensure_session(self) -> httpx.AsyncClient:
+        """Lazy-create httpx.AsyncClient and authenticate if credentials exist."""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=30,
+                follow_redirects=True,
+                headers=KRX_HEADERS,
+            )
+
+        if (
+            not self._authenticated
+            and not self._auth_failed
+            and settings.krx_member_id
+            and settings.krx_password
+        ):
+            async with self._login_lock:
+                if not self._authenticated and not self._auth_failed:
+                    await self._login()
+
+        return self._client
+
+    async def _login(self) -> None:
+        """Authenticate with KRX data portal using cookie-based login."""
+        if self._client is None:
+            return
+
+        try:
+            # Step 1: GET base page to obtain session cookies
+            await self._client.get(KRX_BASE_URL)
+
+            # Step 2: POST login
+            login_data = {
+                "mbrId": settings.krx_member_id,
+                "pw": settings.krx_password,
+            }
+            resp = await self._client.post(KRX_LOGIN_URL, data=login_data)
+            resp.raise_for_status()
+
+            body = resp.text
+            if "CD001" in body:
+                # Success
+                self._authenticated = True
+                logger.info("KRX 로그인 성공")
+            elif "CD011" in body:
+                # Duplicate login - retry with skipDup
+                logger.warning("KRX 중복 로그인 감지, skipDup으로 재시도")
+                login_data["skipDup"] = "true"
+                resp2 = await self._client.post(KRX_LOGIN_URL, data=login_data)
+                resp2.raise_for_status()
+                if "CD001" in resp2.text:
+                    self._authenticated = True
+                    logger.info("KRX 로그인 성공 (skipDup)")
+                else:
+                    logger.error(f"KRX 로그인 실패 (skipDup 후): {resp2.text[:200]}")
+                    self._auth_failed = True
+            else:
+                logger.error(f"KRX 로그인 실패: {body[:200]}")
+                self._auth_failed = True
+
+        except Exception as e:
+            logger.error(f"KRX 로그인 중 오류: {e}")
+            self._auth_failed = True
+
+    async def fetch_data(
+        self,
+        bld: str,
+        mktId: str | None = None,
+        trdDd: str | None = None,
+        idxIndClssCd: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch data from KRX API using persistent session.
+
+        Handles 400/LOGOUT (re-auth once) and 403 (exponential backoff).
+        """
+        form_data: dict[str, str] = {
+            "bld": bld,
+            "share": "1",
+            "money": "1",
+            "csvxls_isNo": "false",
+        }
+        if mktId is not None:
+            form_data["mktId"] = mktId
+        if trdDd is not None:
+            form_data["trdDd"] = trdDd
+        if idxIndClssCd is not None:
+            form_data["idxIndClssCd"] = idxIndClssCd
+
+        client = await self._ensure_session()
+
+        # Retry logic for 403 rate limiting
+        max_retries = 3
+        base_delay = 5.0
+
+        for attempt in range(max_retries + 1):
+            response = await client.post(KRX_API_URL, data=form_data)
+
+            # Handle 400 + LOGOUT body: re-authenticate once
+            if response.status_code == 400 and "LOGOUT" in response.text:
+                logger.warning("KRX 세션 만료 감지 (400/LOGOUT), 재인증 시도")
+                self._authenticated = False
+                self._auth_failed = False
+                async with self._login_lock:
+                    if not self._authenticated:
+                        await self._login()
+                client = await self._ensure_session()
+                response = await client.post(KRX_API_URL, data=form_data)
+                if response.status_code == 400 and "LOGOUT" in response.text:
+                    logger.error("KRX 재인증 후에도 LOGOUT 응답")
+                    raise httpx.HTTPStatusError(
+                        "KRX session expired after re-auth",
+                        request=response.request,
+                        response=response,
+                    )
+
+            # Handle 403 rate limiting with exponential backoff
+            if response.status_code == 403:
+                if attempt < max_retries:
+                    delay = base_delay * (2**attempt)
+                    logger.warning(
+                        f"KRX 403 rate limit, {delay}초 후 재시도 "
+                        f"(시도 {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error("KRX 403 rate limit, 최대 재시도 초과")
+
+            response.raise_for_status()
+            result = response.json()
+            return result.get("OutBlock_1", []) or result.get("output", [])
+
+        return []
+
+    async def fetch_resource(self, url: str) -> dict[str, Any]:
+        """Fetch resource data (e.g., max working date) using persistent session."""
+        client = await self._ensure_session()
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.json()
+
+    async def close(self) -> None:
+        """Close the httpx.AsyncClient."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+            self._authenticated = False
+            self._auth_failed = False
+
+
+# Module-level singleton
+_krx_session = KRXSessionManager()
 
 
 async def _get_redis_client() -> Redis:
@@ -88,11 +257,8 @@ async def _fetch_max_working_date() -> str:
         Trading date string in YYYYMMDD format.
     """
     url = f"{KRX_RESOURCE_URL}?baseName=krx.mdc.i18n.component&key=B128.bld"
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get(url, headers=KRX_HEADERS)
-        response.raise_for_status()
-        data = response.json()
-        return data["result"]["output"][0]["max_work_dt"]
+    data = await _krx_session.fetch_resource(url)
+    return data["result"]["output"][0]["max_work_dt"]
 
 
 async def _fetch_krx_data(
@@ -112,27 +278,12 @@ async def _fetch_krx_data(
     Returns:
         List of dictionaries with KRX data
     """
-    # KRX API requires POST with form data
-    data: dict[str, str] = {
-        "bld": bld,
-        "share": "1",
-        "money": "1",
-        "csvxls_isNo": "false",
-    }
-    if mktId is not None:
-        data["mktId"] = mktId
-    if trdDd is not None:
-        data["trdDd"] = trdDd
-    if idxIndClssCd is not None:
-        data["idxIndClssCd"] = idxIndClssCd
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(KRX_API_URL, data=data, headers=KRX_HEADERS)
-        response.raise_for_status()
-
-        # KRX returns JSON with "OutBlock_1" or "output" key containing the data
-        result = response.json()
-        return result.get("OutBlock_1", []) or result.get("output", [])
+    return await _krx_session.fetch_data(
+        bld=bld,
+        mktId=mktId,
+        trdDd=trdDd,
+        idxIndClssCd=idxIndClssCd,
+    )
 
 
 async def _get_cache_key(suffix: str, date_str: str | None = None) -> str:
