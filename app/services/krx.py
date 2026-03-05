@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 # Constants
 KRX_API_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
 KRX_RESOURCE_URL = (
-    "http://data.krx.co.kr/comm/bldAttendant/executeForResourceBundle.cmd"
+    "https://data.krx.co.kr/comm/bldAttendant/executeForResourceBundle.cmd"
 )
 KRX_LOGIN_URL = "https://data.krx.co.kr/contents/MDC/COMS/client/MDCCOMS001D1.cmd"
 KRX_LOGIN_PAGE_URL = (
@@ -964,7 +964,7 @@ def classify_etf_category(
 class KRXMarketDataService:
     """KRX 마켓 데이터 서비스"""
 
-    KRX_DOWNLOAD_URL = "http://data.krx.co.kr/comm/fileDn/DownloadOfFileService"
+    KRX_DOWNLOAD_URL = "https://data.krx.co.kr/comm/fileDn/DownloadOfFileService"
 
     async def fetch_kospi200_constituents(self) -> list[dict[str, Any]]:
         """KRX에서 KOSPI200 구성종목 데이터를 가져옵니다.
