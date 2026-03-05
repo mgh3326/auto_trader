@@ -193,6 +193,15 @@ async def cleanup_monitoring() -> None:
     except Exception as e:
         logger.error(f"Error during trade notifier shutdown: {e}", exc_info=True)
 
+    # Close KRX session
+    try:
+        from app.services.krx import _krx_session
+
+        await _krx_session.close()
+        logger.info("KRX session cleanup complete")
+    except Exception as e:
+        logger.error(f"Error during KRX session cleanup: {e}", exc_info=True)
+
 
 # Create app instance
 api = create_app()
