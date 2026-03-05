@@ -30,7 +30,10 @@ KRX_API_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
 KRX_RESOURCE_URL = (
     "http://data.krx.co.kr/comm/bldAttendant/executeForResourceBundle.cmd"
 )
-KRX_LOGIN_URL = "https://data.krx.co.kr/comm/login/MDCCOMS001D1.cmd"
+KRX_LOGIN_URL = "https://data.krx.co.kr/contents/MDC/COMS/client/MDCCOMS001D1.cmd"
+KRX_LOGIN_PAGE_URL = (
+    "https://data.krx.co.kr/contents/MDC/COMS/client/view/login.jsp?site=mdc"
+)
 KRX_BASE_URL = "https://data.krx.co.kr/"
 KRX_CACHE_TTL = 300  # 5 minutes
 KRX_MAX_RETRY_DATES = 10  # Max days to search back for trading date
@@ -62,6 +65,30 @@ class KRXSessionManager:
         self._authenticated: bool = False
         self._auth_failed: bool = False
         self._login_lock: asyncio.Lock = asyncio.Lock()
+        self._last_login_code: str | None = None
+
+    @staticmethod
+    def _extract_login_code(body: str) -> str | None:
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            parsed = None
+
+        if isinstance(parsed, dict):
+            code = parsed.get("code")
+            if isinstance(code, str) and code:
+                return code
+
+        if "CD001" in body:
+            return "CD001"
+        if "CD011" in body:
+            return "CD011"
+        return None
+
+    def _has_jsessionid_cookie(self) -> bool:
+        if self._client is None:
+            return False
+        return any(key.upper() == "JSESSIONID" for key in self._client.cookies.keys())
 
     async def _ensure_session(self) -> httpx.AsyncClient:
         """Lazy-create httpx.AsyncClient and authenticate if credentials exist."""
@@ -90,8 +117,9 @@ class KRXSessionManager:
             return
 
         try:
+            self._last_login_code = None
             # Step 1: GET base page to obtain session cookies
-            await self._client.get(KRX_BASE_URL)
+            await self._client.get(KRX_LOGIN_PAGE_URL)
 
             # Step 2: POST login
             login_data = {
@@ -102,24 +130,52 @@ class KRXSessionManager:
             resp.raise_for_status()
 
             body = resp.text
-            if "CD001" in body:
+            code = self._extract_login_code(body)
+            self._last_login_code = code
+            if code == "CD001":
                 # Success
                 self._authenticated = True
-                logger.info("KRX 로그인 성공")
-            elif "CD011" in body:
+                logger.info(
+                    "KRX 로그인 성공 (status=%s, code=%s, JSESSIONID present=%s)",
+                    resp.status_code,
+                    code,
+                    self._has_jsessionid_cookie(),
+                )
+            elif code == "CD011":
                 # Duplicate login - retry with skipDup
-                logger.warning("KRX 중복 로그인 감지, skipDup으로 재시도")
-                login_data["skipDup"] = "true"
+                logger.warning(
+                    "KRX 중복 로그인 감지 (status=%s, code=%s), skipDup으로 재시도",
+                    resp.status_code,
+                    code,
+                )
+                login_data["skipDup"] = "Y"
                 resp2 = await self._client.post(KRX_LOGIN_URL, data=login_data)
                 resp2.raise_for_status()
-                if "CD001" in resp2.text:
+                code2 = self._extract_login_code(resp2.text)
+                self._last_login_code = code2
+                if code2 == "CD001":
                     self._authenticated = True
-                    logger.info("KRX 로그인 성공 (skipDup)")
+                    logger.info(
+                        "KRX 로그인 성공 (skipDup, status=%s, code=%s, JSESSIONID present=%s)",
+                        resp2.status_code,
+                        code2,
+                        self._has_jsessionid_cookie(),
+                    )
                 else:
-                    logger.error(f"KRX 로그인 실패 (skipDup 후): {resp2.text[:200]}")
+                    logger.error(
+                        "KRX 로그인 실패 (skipDup 후, status=%s, code=%s): %s",
+                        resp2.status_code,
+                        code2 or "unknown",
+                        resp2.text[:200],
+                    )
                     self._auth_failed = True
             else:
-                logger.error(f"KRX 로그인 실패: {body[:200]}")
+                logger.error(
+                    "KRX 로그인 실패 (status=%s, code=%s): %s",
+                    resp.status_code,
+                    code or "unknown",
+                    body[:200],
+                )
                 self._auth_failed = True
 
         except Exception as e:
@@ -170,7 +226,10 @@ class KRXSessionManager:
                 client = await self._ensure_session()
                 response = await client.post(KRX_API_URL, data=form_data)
                 if response.status_code == 400 and "LOGOUT" in response.text:
-                    logger.error("KRX 재인증 후에도 LOGOUT 응답")
+                    logger.error(
+                        "KRX 재인증 후에도 LOGOUT 응답 (login_code=%s)",
+                        self._last_login_code or "unknown",
+                    )
                     raise httpx.HTTPStatusError(
                         "KRX session expired after re-auth",
                         request=response.request,
@@ -907,7 +966,7 @@ class KRXMarketDataService:
 
     KRX_DOWNLOAD_URL = "http://data.krx.co.kr/comm/fileDn/DownloadOfFileService"
 
-    async def fetch_kospi200_constituents(self) -> list[dict]:
+    async def fetch_kospi200_constituents(self) -> list[dict[str, Any]]:
         """KRX에서 KOSPI200 구성종목 데이터를 가져옵니다.
 
         Returns:
@@ -952,7 +1011,7 @@ class KRXMarketDataService:
                 logger.error("KRX 데이터 수집 중 오류 발생: %s", e)
                 return []
 
-    def _parse_krx_csv_content(self, content: str) -> list[dict]:
+    def _parse_krx_csv_content(self, content: str) -> list[dict[str, Any]]:
         """KRX에서 반환된 CSV 형식의 데이터를 파싱합니다."""
         if not content or len(content) < 100:
             logger.warning("KRX 응답 데이터가 비어있거나 너무 짧습니다")
@@ -1040,7 +1099,7 @@ class Kospi200Service:
         return result.scalar_one_or_none()
 
     async def update_constituents(
-        self, constituents_data: list[dict]
+        self, constituents_data: list[dict[str, Any]]
     ) -> dict[str, int]:
         """KOSPI200 구성종목 정보를 업데이트합니다.
 
@@ -1082,7 +1141,7 @@ class Kospi200Service:
 
             if existing:
                 # 기존 종목 업데이트
-                if existing.is_active:
+                if existing.is_active is True:
                     await self.db.execute(
                         update(Kospi200Constituent)
                         .where(Kospi200Constituent.id == existing.id)

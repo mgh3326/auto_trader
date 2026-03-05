@@ -1034,6 +1034,11 @@ class TestKRXSessionManager:
 
         assert manager._authenticated is True
         assert manager._auth_failed is False
+        mock_client.get.assert_called_once_with(krx.KRX_LOGIN_PAGE_URL)
+        mock_client.post.assert_called_once_with(
+            krx.KRX_LOGIN_URL,
+            data={"mbrId": "testuser", "pw": "testpass"},
+        )
 
     @pytest.mark.asyncio
     async def test_session_manager_login_duplicate_cd011(self, monkeypatch):
@@ -1065,7 +1070,51 @@ class TestKRXSessionManager:
         assert manager._authenticated is True
         # Verify second call included skipDup
         second_call = mock_client.post.call_args_list[1]
-        assert second_call[1]["data"]["skipDup"] == "true"
+        assert second_call[1]["data"]["skipDup"] == "Y"
+
+    @pytest.mark.asyncio
+    async def test_session_manager_login_uses_login_endpoint(self, monkeypatch):
+        manager = KRXSessionManager()
+        monkeypatch.setattr(
+            "app.services.krx.settings",
+            MagicMock(krx_member_id="testuser", krx_password="testpass"),
+        )
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=200))
+
+        login_resp = MagicMock()
+        login_resp.text = '{"code":"CD001","message":"success"}'
+        login_resp.raise_for_status = MagicMock()
+        mock_client.post = AsyncMock(return_value=login_resp)
+
+        manager._client = mock_client
+
+        await manager._login()
+
+        assert mock_client.post.call_args[0][0] == krx.KRX_LOGIN_URL
+
+    @pytest.mark.asyncio
+    async def test_session_manager_login_preflight_uses_login_page(self, monkeypatch):
+        manager = KRXSessionManager()
+        monkeypatch.setattr(
+            "app.services.krx.settings",
+            MagicMock(krx_member_id="testuser", krx_password="testpass"),
+        )
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=200))
+
+        login_resp = MagicMock()
+        login_resp.text = '{"code":"CD001","message":"success"}'
+        login_resp.raise_for_status = MagicMock()
+        mock_client.post = AsyncMock(return_value=login_resp)
+
+        manager._client = mock_client
+
+        await manager._login()
+
+        assert mock_client.get.call_args[0][0] == krx.KRX_LOGIN_PAGE_URL
 
     @pytest.mark.asyncio
     async def test_session_manager_login_failure(self, monkeypatch):
