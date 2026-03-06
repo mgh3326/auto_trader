@@ -216,24 +216,21 @@ class KISClient:
         return access_token, expires_in
 
     async def _ensure_token(self):
-        """Redis에서 토큰을 가져오거나 새로 발급"""
-        # Redis에서 토큰 확인
         token = await self._token_manager.get_token()
         if token:
             settings.kis_access_token = token
-            logging.info(f"Redis에서 토큰 사용: {token[:10]}...")
+            logging.debug("KIS access token ready for request")
             return
 
         # 토큰이 없거나 만료된 경우 새로 발급 (분산 락 사용)
         async def token_fetcher():
             access_token, expires_in = await self._fetch_token()
-            logging.info(f"새 토큰 발급: {access_token[:10]}... (만료: {expires_in}초)")
             return access_token, expires_in
 
         settings.kis_access_token = await self._token_manager.refresh_token_with_lock(
             token_fetcher
         )
-        logging.info(f"토큰 설정 완료: {settings.kis_access_token[:10]}...")
+        logging.info("KIS access token refreshed and applied")
 
     @staticmethod
     def _extract_korea_order_orgno(order: dict[str, Any]) -> str | None:

@@ -125,12 +125,20 @@ class RedisTokenManager:
         self._local_redis_miss_cooldown_until = 0.0
         self._local_last_redis_check_at = 0.0
 
+    def _log_token_lookup(self, level: int, message: str, *, token_source: str) -> None:
+        logging.log(level, message, extra={"token_source": token_source})
+
     async def get_token(self, *, force_redis_check: bool = False) -> str | None:
         if self._is_local_token_valid():
             if not force_redis_check and (
                 time.time() - self._local_last_redis_check_at
                 < self._local_redis_revalidate_interval_seconds
             ):
+                self._log_token_lookup(
+                    logging.DEBUG,
+                    "KIS access token ready from local cache",
+                    token_source="local_cache",
+                )
                 return self._local_token
 
         current_time = time.time()
@@ -142,6 +150,11 @@ class RedisTokenManager:
 
         async with self._local_lock:
             if not force_redis_check and self._is_local_token_valid():
+                self._log_token_lookup(
+                    logging.DEBUG,
+                    "KIS access token ready from local cache",
+                    token_source="local_cache",
+                )
                 return self._local_token
 
             current_time = time.time()
@@ -157,7 +170,11 @@ class RedisTokenManager:
                 self._local_last_redis_check_at = time.time()
 
                 if not token_data_str:
-                    logging.info("Redis에 토큰이 없음")
+                    self._log_token_lookup(
+                        logging.INFO,
+                        "KIS access token missing in Redis",
+                        token_source="missing",
+                    )
                     self._local_redis_miss_cooldown_until = (
                         time.time() + self._local_redis_miss_cooldown_seconds
                     )
@@ -169,17 +186,32 @@ class RedisTokenManager:
                     access_token = token_data["access_token"]
                     expires_at = float(token_data["expires_at"])
                     self._update_local_cache(access_token, expires_at)
-                    logging.info("Redis에서 유효한 토큰 사용")
+                    self._log_token_lookup(
+                        logging.INFO,
+                        "KIS access token ready from Redis",
+                        token_source="redis",
+                    )
                     return access_token
 
-                logging.info("Redis의 토큰이 만료됨")
+                self._log_token_lookup(
+                    logging.INFO,
+                    "KIS access token in Redis expired",
+                    token_source="expired",
+                )
                 self._clear_local_cache()
                 return None
 
             except Exception as e:
-                logging.error(f"Redis에서 토큰 조회 실패: {e}")
                 if self._is_local_token_valid():
+                    self._log_token_lookup(
+                        logging.WARNING,
+                        f"Redis token lookup failed; using valid local cache fallback: {e}",
+                        token_source="redis_error_fallback",
+                    )
                     return self._local_token
+                logging.warning(
+                    f"Redis token lookup failed with no valid local cache: {e}"
+                )
                 return None
 
     async def save_token(self, access_token: str, expires_in: int = 3600) -> None:
@@ -222,7 +254,7 @@ class RedisTokenManager:
         for attempt in range(3):
             existing_token = await self.get_token(force_redis_check=True)
             if existing_token:
-                logging.info(f"기존 토큰 사용: {existing_token[:10]}...")
+                logging.info("기존 KIS 토큰 재사용")
                 return existing_token
             if attempt < 2:  # 마지막 시도가 아니면 잠시 대기
                 await asyncio.sleep(0.05)
@@ -236,9 +268,7 @@ class RedisTokenManager:
             await asyncio.sleep(0.2)
             existing_token = await self.get_token(force_redis_check=True)
             if existing_token:
-                logging.info(
-                    f"대기 중 다른 프로세스가 토큰 발급: {existing_token[:10]}..."
-                )
+                logging.info("대기 중 다른 프로세스가 KIS 토큰 발급 완료")
                 return existing_token
 
             # 여전히 토큰이 없으면 락 대기 (더 긴 대기)
@@ -246,7 +276,7 @@ class RedisTokenManager:
                 await asyncio.sleep(0.1)
                 existing_token = await self.get_token(force_redis_check=True)
                 if existing_token:
-                    logging.info(f"대기 중 토큰 발견: {existing_token[:10]}...")
+                    logging.info("대기 중 KIS 토큰 발견")
                     return existing_token
                 if i % 10 == 0:  # 1초마다 로그
                     logging.info(f"토큰 발급 대기 중... ({i / 10 + 1}초)")
@@ -258,7 +288,7 @@ class RedisTokenManager:
             # 락을 획득한 상태에서 다시 한번 확인
             existing_token = await self.get_token(force_redis_check=True)
             if existing_token:
-                logging.info(f"락 획득 후 기존 토큰 발견: {existing_token[:10]}...")
+                logging.info("락 획득 후 기존 KIS 토큰 발견")
                 return existing_token
 
             # 새 토큰 발급
@@ -267,7 +297,7 @@ class RedisTokenManager:
 
             # Redis에 저장
             await self.save_token(access_token, expires_in)
-            logging.info(f"토큰 발급 및 Redis 저장 완료: {access_token[:10]}...")
+            logging.info("KIS 토큰 발급 및 저장 완료")
 
             return access_token
 

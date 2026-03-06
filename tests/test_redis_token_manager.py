@@ -4,6 +4,7 @@ Tests for Redis Token Manager.
 
 import asyncio
 import json
+import logging
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -241,6 +242,69 @@ class TestRedisTokenManagerToken:
         assert first is None
         assert second is None
         assert mock_redis.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_get_token_logs_redis_hit_then_local_cache_hit(self, caplog):
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        mock_redis = AsyncMock()
+        token_data = {
+            "access_token": "loggable_cached_token",
+            "expires_at": time.time() + 7200,
+            "created_at": time.time(),
+        }
+        mock_redis.get.return_value = json.dumps(token_data)
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            with caplog.at_level(logging.DEBUG):
+                first = await manager.get_token()
+                second = await manager.get_token()
+
+        assert first == "loggable_cached_token"
+        assert second == "loggable_cached_token"
+        assert mock_redis.get.await_count == 1
+
+        redis_records = [
+            record
+            for record in caplog.records
+            if getattr(record, "token_source", None) == "redis"
+        ]
+        local_cache_records = [
+            record
+            for record in caplog.records
+            if getattr(record, "token_source", None) == "local_cache"
+        ]
+
+        assert len(redis_records) == 1
+        assert redis_records[0].levelno == logging.INFO
+        assert len(local_cache_records) == 1
+        assert local_cache_records[0].levelno == logging.DEBUG
+
+    @pytest.mark.asyncio
+    async def test_get_token_logs_redis_error_fallback_source(self, caplog):
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        manager._local_token = "fallback_token"
+        manager._local_expires_at = time.time() + 7200
+
+        mock_redis = AsyncMock()
+        mock_redis.get.side_effect = RuntimeError("redis unavailable")
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            with caplog.at_level(logging.DEBUG):
+                result = await manager.get_token(force_redis_check=True)
+
+        assert result == "fallback_token"
+
+        fallback_records = [
+            record
+            for record in caplog.records
+            if getattr(record, "token_source", None) == "redis_error_fallback"
+        ]
+        assert len(fallback_records) == 1
+        assert fallback_records[0].levelno == logging.WARNING
 
     @pytest.mark.asyncio
     async def test_save_token(self):
@@ -617,6 +681,37 @@ class TestKISTokenPathIntegration:
             await asyncio.gather(*[client._ensure_token() for _ in range(50)])
 
         assert mock_redis.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_kis_ensure_token_repeated_calls_avoid_misleading_redis_info(
+        self, caplog
+    ):
+        from app.services.brokers.kis.client import KISClient
+        from app.services.redis_token_manager import RedisTokenManager
+
+        manager = RedisTokenManager()
+        mock_redis = AsyncMock()
+        token_data = {
+            "access_token": "kis_token_for_logging",
+            "expires_at": time.time() + 7200,
+            "created_at": time.time(),
+        }
+        mock_redis.get.return_value = json.dumps(token_data)
+
+        client = KISClient()
+        client._token_manager = manager
+
+        with patch.object(manager, "_get_redis_client", return_value=mock_redis):
+            with caplog.at_level(logging.DEBUG):
+                await client._ensure_token()
+                await client._ensure_token()
+
+        assert mock_redis.get.await_count == 1
+        assert not any(
+            record.levelno >= logging.INFO and "Redis에서 토큰 사용" in record.message
+            for record in caplog.records
+        )
+        assert "kis_token_for_logging" not in caplog.text
 
 
 @pytest.mark.asyncio
