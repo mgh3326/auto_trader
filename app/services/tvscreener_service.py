@@ -11,8 +11,7 @@ import importlib
 import logging
 import re
 import time
-from collections.abc import Iterable
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import pandas as pd
