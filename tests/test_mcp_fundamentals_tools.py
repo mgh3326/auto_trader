@@ -2394,11 +2394,7 @@ async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(
-        analysis_screening,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv,
-    )
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
 
     class MockKISClient:
         pass
