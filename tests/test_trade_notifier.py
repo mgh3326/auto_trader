@@ -30,18 +30,35 @@ def test_singleton_pattern():
 
 @pytest.mark.unit
 def test_configure(trade_notifier):
-    """Test TradeNotifier configuration."""
+    """Test TradeNotifier configuration with Telegram and Discord webhooks."""
     bot_token = "test_token"
     chat_ids = ["123456", "789012"]
+    discord_webhook_us = "https://discord.com/api/webhooks/us"
+    discord_webhook_kr = "https://discord.com/api/webhooks/kr"
+    discord_webhook_crypto = "https://discord.com/api/webhooks/crypto"
+    discord_webhook_alerts = "https://discord.com/api/webhooks/alerts"
 
     trade_notifier.configure(
         bot_token=bot_token,
         chat_ids=chat_ids,
         enabled=True,
+        discord_webhook_us=discord_webhook_us,
+        discord_webhook_kr=discord_webhook_kr,
+        discord_webhook_crypto=discord_webhook_crypto,
+        discord_webhook_alerts=discord_webhook_alerts,
     )
 
+    # Verify Telegram configuration
     assert trade_notifier._bot_token == bot_token
     assert trade_notifier._chat_ids == chat_ids
+
+    # Verify Discord webhook configuration
+    assert trade_notifier._discord_webhook_us == discord_webhook_us
+    assert trade_notifier._discord_webhook_kr == discord_webhook_kr
+    assert trade_notifier._discord_webhook_crypto == discord_webhook_crypto
+    assert trade_notifier._discord_webhook_alerts == discord_webhook_alerts
+
+    # Verify enabled state and HTTP client
     assert trade_notifier._enabled is True
     assert trade_notifier._http_client is not None
 
