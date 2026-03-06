@@ -651,9 +651,9 @@ class TradeNotifier:
         recommended_quantity: int,
         currency: str = "원",
         market_type: str = "국내주식",
-    ) -> str:
+    ) -> dict:
         """
-        Format Toss manual buy recommendation notification.
+        Format Toss manual buy recommendation notification as Discord embed.
 
         Args:
             symbol: Trading symbol
@@ -669,34 +669,54 @@ class TradeNotifier:
             market_type: Type of market
 
         Returns:
-            Markdown-formatted notification message
+            Discord embed dict
         """
+        timestamp = format_datetime()
         is_usd = currency == "$"
 
         def price_fmt(p: float) -> str:
             return f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
 
-        parts = [
-            f"📈 *\\[토스 수동매수\\] {korean_name}*",
-            "",
-            f"*현재가:* {price_fmt(current_price)}",
-            f"*토스 보유:* {toss_quantity}주 (평단가 {price_fmt(toss_avg_price)})",
+        # Build fields list
+        fields = [
+            {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
+            {"name": "시장", "value": market_type, "inline": True},
+            {"name": "현재가", "value": price_fmt(current_price), "inline": False},
+            {
+                "name": "토스 보유",
+                "value": f"{toss_quantity}주 (평단가 {price_fmt(toss_avg_price)})",
+                "inline": False,
+            },
         ]
 
+        # Add KIS holdings if available
         if kis_quantity and kis_quantity > 0 and kis_avg_price:
-            parts.append(
-                f"*한투 보유:* {kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})"
-            )
+            fields.append({
+                "name": "한투 보유",
+                "value": f"{kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})",
+                "inline": False,
+            })
 
-        parts.extend(
-            [
-                "",
-                f"💡 *추천 매수가:* {price_fmt(recommended_price)}",
-                f"*추천 수량:* {recommended_quantity}주",
-            ]
-        )
+        # Add recommendation
+        fields.extend([
+            {
+                "name": "💡 추천 매수가",
+                "value": price_fmt(recommended_price),
+                "inline": False,
+            },
+            {
+                "name": "추천 수량",
+                "value": f"{recommended_quantity}주",
+                "inline": False,
+            },
+        ])
 
-        return "\n".join(parts)
+        return {
+            "title": "📈 [토스 수동매수]",
+            "description": f"🕒 {timestamp}",
+            "color": 0x00FF00,  # Green for buy
+            "fields": fields,
+        }
 
     def _format_toss_sell_recommendation(
         self,
@@ -713,9 +733,9 @@ class TradeNotifier:
         profit_percent: float,
         currency: str = "원",
         market_type: str = "국내주식",
-    ) -> str:
+    ) -> dict:
         """
-        Format Toss manual sell recommendation notification.
+        Format Toss manual sell recommendation notification as Discord embed.
 
         Args:
             symbol: Trading symbol
@@ -733,8 +753,9 @@ class TradeNotifier:
             market_type: Type of market
 
         Returns:
-            Markdown-formatted notification message
+            Discord embed dict
         """
+        timestamp = format_datetime()
         is_usd = currency == "$"
 
         def price_fmt(p: float) -> str:
@@ -742,28 +763,51 @@ class TradeNotifier:
 
         profit_sign = "+" if profit_percent >= 0 else ""
 
-        parts = [
-            f"📉 *\\[토스 수동매도\\] {korean_name}*",
-            "",
-            f"*현재가:* {price_fmt(current_price)}",
-            f"*토스 보유:* {toss_quantity}주 (평단가 {price_fmt(toss_avg_price)})",
+        # Build fields list
+        fields = [
+            {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
+            {"name": "시장", "value": market_type, "inline": True},
+            {"name": "현재가", "value": price_fmt(current_price), "inline": False},
+            {
+                "name": "토스 보유",
+                "value": f"{toss_quantity}주 (평단가 {price_fmt(toss_avg_price)})",
+                "inline": False,
+            },
         ]
 
+        # Add KIS holdings if available
         if kis_quantity and kis_quantity > 0 and kis_avg_price:
-            parts.append(
-                f"*한투 보유:* {kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})"
-            )
+            fields.append({
+                "name": "한투 보유",
+                "value": f"{kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})",
+                "inline": False,
+            })
 
-        parts.extend(
-            [
-                "",
-                f"💡 *추천 매도가:* {price_fmt(recommended_price)} ({profit_sign}{profit_percent:.1f}%)",
-                f"*추천 수량:* {recommended_quantity}주",
-                f"*예상 수익:* {price_fmt(expected_profit)}",
-            ]
-        )
+        # Add recommendation with profit
+        fields.extend([
+            {
+                "name": "💡 추천 매도가",
+                "value": f"{price_fmt(recommended_price)} ({profit_sign}{profit_percent:.1f}%)",
+                "inline": False,
+            },
+            {
+                "name": "추천 수량",
+                "value": f"{recommended_quantity}주",
+                "inline": False,
+            },
+            {
+                "name": "예상 수익",
+                "value": price_fmt(expected_profit),
+                "inline": False,
+            },
+        ])
 
-        return "\n".join(parts)
+        return {
+            "title": "📉 [토스 수동매도]",
+            "description": f"🕒 {timestamp}",
+            "color": 0xFF0000,  # Red for sell
+            "fields": fields,
+        }
 
     async def notify_toss_buy_recommendation(
         self,
@@ -797,7 +841,7 @@ class TradeNotifier:
             return False
 
         try:
-            message = self._format_toss_buy_recommendation(
+            embed = self._format_toss_buy_recommendation(
                 symbol=symbol,
                 korean_name=korean_name,
                 current_price=current_price,
@@ -810,7 +854,7 @@ class TradeNotifier:
                 currency=currency,
                 market_type=market_type,
             )
-            return await self._send_to_telegram(message)
+            return await self._send_to_discord_embed(embed)
         except Exception as e:
             logger.error(f"Failed to send Toss buy recommendation: {e}")
             return False
@@ -849,7 +893,7 @@ class TradeNotifier:
             return False
 
         try:
-            message = self._format_toss_sell_recommendation(
+            embed = self._format_toss_sell_recommendation(
                 symbol=symbol,
                 korean_name=korean_name,
                 current_price=current_price,
@@ -864,14 +908,10 @@ class TradeNotifier:
                 currency=currency,
                 market_type=market_type,
             )
-            return await self._send_to_telegram(message)
+            return await self._send_to_discord_embed(embed)
         except Exception as e:
             logger.error(f"Failed to send Toss sell recommendation: {e}")
             return False
-
-    def _escape_html(self, text: str) -> str:
-        """Escape HTML special characters for Telegram HTML parse mode."""
-        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     def _format_toss_price_recommendation_html(
         self,
@@ -892,10 +932,11 @@ class TradeNotifier:
         sell_target_min: float | None = None,
         sell_target_max: float | None = None,
         currency: str = "원",
-    ) -> str:
+    ) -> dict:
         """
-        Format Toss price recommendation notification with AI analysis (HTML format).
+        Format Toss price recommendation notification with AI analysis as Discord embed.
         """
+        timestamp = format_datetime()
         is_usd = currency == "$"
 
         def price_fmt(p: float) -> str:
@@ -913,31 +954,40 @@ class TradeNotifier:
         emoji = decision_emoji.get(decision.lower(), "⚪")
         decision_kr = decision_text.get(decision.lower(), decision)
 
-        # Escape korean_name for HTML
-        safe_name = self._escape_html(korean_name)
+        # Color based on decision
+        decision_color = {"buy": 0x00FF00, "hold": 0xFFFF00, "sell": 0xFF0000}
+        color = decision_color.get(decision.lower(), 0x0000FF)
 
-        parts = [
-            f"📊 <b>[토스] {safe_name} ({symbol})</b>",
-            "",
-            f"<b>현재가:</b> {price_fmt(current_price)}",
-            f"<b>보유:</b> {toss_quantity}주 (평단가 {price_fmt(toss_avg_price)}, {profit_sign}{profit_percent:.1f}%)",
-            "",
-            f"{emoji} <b>AI 판단:</b> {decision_kr} (신뢰도 {confidence:.0f}%)",
+        # Build fields list
+        fields = [
+            {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
+            {"name": "현재가", "value": price_fmt(current_price), "inline": True},
+            {
+                "name": "보유",
+                "value": f"{toss_quantity}주 (평단가 {price_fmt(toss_avg_price)}, {profit_sign}{profit_percent:.1f}%)",
+                "inline": False,
+            },
+            {
+                "name": "AI 판단",
+                "value": f"{emoji} {decision_kr} (신뢰도 {confidence:.0f}%)",
+                "inline": False,
+            },
         ]
 
         # 근거 추가
         if reasons:
-            parts.append("")
-            parts.append("<b>근거:</b>")
-            for i, reason in enumerate(reasons[:3], 1):
-                # 긴 근거는 줄임
-                short_reason = reason[:80] + "..." if len(reason) > 80 else reason
-                safe_reason = self._escape_html(short_reason)
-                parts.append(f"  {i}. {safe_reason}")
+            reason_text = "\n".join(
+                f"{i}. {reason[:80]}..." if len(reason) > 80 else f"{i}. {reason}"
+                for i, reason in enumerate(reasons[:3], 1)
+            )
+            fields.append({
+                "name": "근거",
+                "value": reason_text,
+                "inline": False,
+            })
 
         # 가격 제안 추가
-        parts.append("")
-        parts.append("<b>가격 제안:</b>")
+        price_suggestions = []
 
         if appropriate_buy_min or appropriate_buy_max:
             buy_range = []
@@ -945,7 +995,7 @@ class TradeNotifier:
                 buy_range.append(price_fmt(appropriate_buy_min))
             if appropriate_buy_max:
                 buy_range.append(price_fmt(appropriate_buy_max))
-            parts.append(f"  • 적정 매수: {' ~ '.join(buy_range)}")
+            price_suggestions.append(f"적정 매수: {' ~ '.join(buy_range)}")
 
         if appropriate_sell_min or appropriate_sell_max:
             sell_range = []
@@ -953,7 +1003,7 @@ class TradeNotifier:
                 sell_range.append(price_fmt(appropriate_sell_min))
             if appropriate_sell_max:
                 sell_range.append(price_fmt(appropriate_sell_max))
-            parts.append(f"  • 적정 매도: {' ~ '.join(sell_range)}")
+            price_suggestions.append(f"적정 매도: {' ~ '.join(sell_range)}")
 
         if buy_hope_min or buy_hope_max:
             hope_range = []
@@ -961,7 +1011,7 @@ class TradeNotifier:
                 hope_range.append(price_fmt(buy_hope_min))
             if buy_hope_max:
                 hope_range.append(price_fmt(buy_hope_max))
-            parts.append(f"  • 매수 희망: {' ~ '.join(hope_range)}")
+            price_suggestions.append(f"매수 희망: {' ~ '.join(hope_range)}")
 
         if sell_target_min or sell_target_max:
             target_range = []
@@ -969,9 +1019,21 @@ class TradeNotifier:
                 target_range.append(price_fmt(sell_target_min))
             if sell_target_max:
                 target_range.append(price_fmt(sell_target_max))
-            parts.append(f"  • 매도 목표: {' ~ '.join(target_range)}")
+            price_suggestions.append(f"매도 목표: {' ~ '.join(target_range)}")
 
-        return "\n".join(parts)
+        if price_suggestions:
+            fields.append({
+                "name": "가격 제안",
+                "value": "\n".join(price_suggestions),
+                "inline": False,
+            })
+
+        return {
+            "title": "📊 [토스] AI 분석",
+            "description": f"🕒 {timestamp}",
+            "color": color,
+            "fields": fields,
+        }
 
     async def notify_toss_price_recommendation(
         self,
@@ -1007,7 +1069,7 @@ class TradeNotifier:
             return False
 
         try:
-            message = self._format_toss_price_recommendation_html(
+            embed = self._format_toss_price_recommendation_html(
                 symbol=symbol,
                 korean_name=korean_name,
                 current_price=current_price,
@@ -1026,7 +1088,7 @@ class TradeNotifier:
                 sell_target_max=sell_target_max,
                 currency=currency,
             )
-            return await self._send_to_telegram(message, parse_mode="HTML")
+            return await self._send_to_discord_embed(embed)
         except Exception as e:
             logger.error(f"Failed to send Toss price recommendation: {e}")
             return False
