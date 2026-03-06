@@ -854,6 +854,174 @@ class TestGetFundingRate:
         assert result["symbol"] == "BTCUSDT"
         assert result["instrument_type"] == "crypto"
 
+    async def test_batch_fetch_when_symbol_is_none(self, monkeypatch):
+        tools = build_tools()
+
+        _patch_runtime_attr(
+            monkeypatch,
+            "_resolve_batch_crypto_symbols",
+            AsyncMock(return_value=["BTC", "ETH"]),
+        )
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                assert "premiumIndex" in url
+                return MockResponse(
+                    [
+                        {
+                            "symbol": "BTCUSDT",
+                            "lastFundingRate": "0.0001",
+                            "nextFundingTime": 1707235200000,
+                        },
+                        {
+                            "symbol": "ETHUSDT",
+                            "lastFundingRate": "-0.0002",
+                            "nextFundingTime": 1707235200000,
+                        },
+                        {
+                            "symbol": "SOLUSDT",
+                            "lastFundingRate": "0.0003",
+                            "nextFundingTime": 1707235200000,
+                        },
+                    ]
+                )
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+
+        result = await tools["get_funding_rate"]()
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["symbol"] == "BTC"
+        assert result[0]["funding_rate"] == 0.0001
+        assert result[0]["next_funding_time"] is not None
+        assert "interpretation" in result[0]
+
+    async def test_limit_capped_at_100(self, monkeypatch):
+        tools = build_tools()
+
+        captured_params = {}
+
+        class MockResponse:
+            def __init__(self, data):
+                self._data = data
+                self.status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "fundingRate" in url and "premiumIndex" not in url:
+                    captured_params.update(params or {})
+                    return MockResponse([])
+                return MockResponse(
+                    {
+                        "symbol": "BTCUSDT",
+                        "lastFundingRate": "0.0001",
+                        "nextFundingTime": 0,
+                    }
+                )
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+
+        await tools["get_funding_rate"]("BTC", limit=200)
+
+        assert captured_params["limit"] == 100
+
+    async def test_avg_funding_rate_calculation(self, monkeypatch):
+        tools = build_tools()
+
+        premium = {
+            "symbol": "BTCUSDT",
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 0,
+        }
+        history = [
+            {
+                "symbol": "BTCUSDT",
+                "fundingRate": "0.0002",
+                "fundingTime": 1707206400000,
+            },
+            {
+                "symbol": "BTCUSDT",
+                "fundingRate": "0.0004",
+                "fundingTime": 1707177600000,
+            },
+        ]
+
+        self._patch_binance(monkeypatch, premium, history)
+
+        result = await tools["get_funding_rate"]("BTC", limit=2)
+
+        assert result["avg_funding_rate_pct"] == 0.03
+
+    async def test_empty_history(self, monkeypatch):
+        tools = build_tools()
+
+        premium = {
+            "symbol": "BTCUSDT",
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 0,
+        }
+
+        self._patch_binance(monkeypatch, premium, [])
+
+        result = await tools["get_funding_rate"]("BTC")
+
+        assert result["funding_history"] == []
+        assert result["avg_funding_rate_pct"] is None
+
+    async def test_interpretation_present(self, monkeypatch):
+        tools = build_tools()
+
+        premium = {
+            "symbol": "BTCUSDT",
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 0,
+        }
+
+        self._patch_binance(monkeypatch, premium, [])
+
+        result = await tools["get_funding_rate"]("BTC")
+
+        assert "interpretation" in result
+        assert "positive" in result["interpretation"]
+        assert "negative" in result["interpretation"]
+
 
 # ---------------------------------------------------------------------------
 # get_market_index Tool
@@ -1105,6 +1273,93 @@ class TestGetMarketIndex:
 
         assert result["indices"][0]["symbol"] == "KOSPI"
 
+    async def test_count_capped_at_100(self, monkeypatch):
+        tools = build_tools()
+        history_items = _naver_price_history(3)
+        self._patch_naver(monkeypatch, _naver_basic_json(), history_items)
+
+        result = await tools["get_market_index"](symbol="KOSPI", count=500)
+
+        assert "indices" in result
+
+    async def test_count_minimum_1(self, monkeypatch):
+        tools = build_tools()
+        self._patch_naver(monkeypatch, _naver_basic_json(), _naver_price_history(1))
+
+        result = await tools["get_market_index"](symbol="KOSPI", count=-5)
+
+        assert "indices" in result
+
+    async def test_period_week(self, monkeypatch):
+        tools = build_tools()
+        self._patch_naver(monkeypatch, _naver_basic_json(), _naver_price_history(2))
+
+        result = await tools["get_market_index"](symbol="KOSDAQ", period="week")
+
+        assert "history" in result
+
+    async def test_period_month(self, monkeypatch):
+        tools = build_tools()
+        self._patch_yfinance(monkeypatch)
+        self._patch_yf_download(monkeypatch, rows=3)
+
+        result = await tools["get_market_index"](symbol="SPX", period="month")
+
+        assert "history" in result
+
+    async def test_error_returns_error_payload(self, monkeypatch):
+        tools = build_tools()
+
+        import httpx as _httpx
+
+        async def fake_get(self_cli, url, **kwargs):
+            raise RuntimeError("naver API down")
+
+        monkeypatch.setattr(_httpx.AsyncClient, "get", fake_get)
+
+        result = await tools["get_market_index"](symbol="KOSPI")
+
+        assert "error" in result
+        assert result["source"] == "naver"
+        assert result["symbol"] == "KOSPI"
+
+    async def test_all_indices_partial_failure(self, monkeypatch):
+        tools = build_tools()
+
+        import httpx as _httpx
+
+        async def fake_get(self_cli, url, **kwargs):
+            raise RuntimeError("naver down")
+
+        monkeypatch.setattr(_httpx.AsyncClient, "get", fake_get)
+        self._patch_yfinance(monkeypatch)
+
+        result = await tools["get_market_index"]()
+
+        assert len(result["indices"]) == 4
+        kr_results = [
+            idx for idx in result["indices"] if idx.get("symbol") in ("KOSPI", "KOSDAQ")
+        ]
+        for kr in kr_results:
+            assert "error" in kr
+
+    async def test_us_history_empty_df(self, monkeypatch):
+        tools = build_tools()
+        self._patch_yfinance(monkeypatch)
+        monkeypatch.setattr("yfinance.download", lambda *a, **kw: pd.DataFrame())
+
+        result = await tools["get_market_index"](symbol="DJI")
+
+        assert result["history"] == []
+
+    async def test_strip_whitespace_symbol(self, monkeypatch):
+        tools = build_tools()
+        self._patch_naver(monkeypatch, _naver_basic_json(), _naver_price_history(2))
+
+        result = await tools["get_market_index"](symbol="  KOSPI  ")
+
+        assert result["indices"][0]["symbol"] == "KOSPI"
+
 
 # ---------------------------------------------------------------------------
 # get_sector_peers Tool
@@ -1298,6 +1553,135 @@ class TestGetSectorPeers:
         assert result["instrument_type"] == "equity_kr"
         mock_fetch.assert_awaited_once_with("005930", limit=5)
 
+    async def test_us_equity_error_returns_payload(self, monkeypatch):
+        tools = build_tools()
+
+        def raise_err():
+            raise RuntimeError("finnhub down")
+
+        _patch_runtime_attr(
+            monkeypatch,
+            "_get_finnhub_client",
+            lambda: type(
+                "C", (), {"company_peers": lambda self, symbol: raise_err()}
+            )(),
+        )
+
+        result = await tools["get_sector_peers"]("AAPL")
+
+        assert "error" in result
+        assert result["source"] == "finnhub+yfinance"
+
+    async def test_limit_capped_at_20(self, monkeypatch):
+        tools = build_tools()
+        mock_fetch = AsyncMock(
+            return_value={
+                "symbol": "005930",
+                "name": "삼성전자",
+                "sector": "반도체",
+                "industry_code": 278,
+                "current_price": 80000,
+                "change_pct": -1.0,
+                "per": 20.0,
+                "pbr": 1.5,
+                "market_cap": 500_0000_0000_0000,
+                "peers": [],
+            }
+        )
+        monkeypatch.setattr(naver_finance, "fetch_sector_peers", mock_fetch)
+
+        await tools["get_sector_peers"]("005930", limit=50)
+
+        mock_fetch.assert_awaited_once_with("005930", limit=20)
+
+    async def test_comparison_ranking_correct(self, monkeypatch):
+        tools = build_tools()
+
+        mock_data = {
+            "symbol": "298040",
+            "name": "효성중공업",
+            "sector": "전기장비",
+            "industry_code": 306,
+            "current_price": 2195000,
+            "change_pct": -5.96,
+            "per": 20.0,
+            "pbr": 5.0,
+            "market_cap": 200000_0000_0000,
+            "peers": [
+                {
+                    "symbol": "A",
+                    "name": "Peer A",
+                    "current_price": 100000,
+                    "change_pct": 1.0,
+                    "per": 30.0,
+                    "pbr": 3.0,
+                    "market_cap": 300000_0000_0000,
+                },
+                {
+                    "symbol": "B",
+                    "name": "Peer B",
+                    "current_price": 200000,
+                    "change_pct": -1.0,
+                    "per": 40.0,
+                    "pbr": 10.0,
+                    "market_cap": 100000_0000_0000,
+                },
+            ],
+        }
+        monkeypatch.setattr(
+            naver_finance,
+            "fetch_sector_peers",
+            AsyncMock(return_value=mock_data),
+        )
+
+        result = await tools["get_sector_peers"]("298040")
+        comp = result["comparison"]
+
+        assert comp["target_per_rank"] == "1/3"
+        assert comp["target_pbr_rank"] == "2/3"
+        assert comp["avg_per"] == 30.0
+        assert comp["avg_pbr"] == 6.0
+
+
+@pytest.mark.asyncio
+async def test_sector_peers_us_dedupes_before_network_call(monkeypatch):
+    tools = build_tools()
+    yf_info_calls = []
+
+    class MockFinnhubClient:
+        def company_peers(self, symbol):
+            return ["AAPL", "BRK.B", "BRK.A", "MSFT"]
+
+    monkeypatch.setattr(
+        fundamentals_sources_naver,
+        "_get_finnhub_client",
+        MockFinnhubClient,
+    )
+
+    def mock_yf_ticker(symbol, session=None):
+        class MockTicker:
+            @property
+            def info(self):
+                yf_info_calls.append(symbol)
+                return {
+                    "shortName": f"{symbol} Inc",
+                    "currentPrice": 100.0,
+                    "previousClose": 99.0,
+                    "trailingPE": 15.0,
+                    "priceToBook": 2.0,
+                    "marketCap": 1000000000,
+                    "industry": "Tech",
+                }
+
+        return MockTicker()
+
+    monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", mock_yf_ticker)
+
+    await tools["get_sector_peers"]("TEST", market="us", limit=5)
+
+    assert len(yf_info_calls) <= 4
+    assert "BRK.B" not in yf_info_calls or "BRK.A" not in yf_info_calls
+
 
 # ---------------------------------------------------------------------------
 # get_crypto_profile Tool
@@ -1422,6 +1806,344 @@ class TestGetCryptoProfile:
         assert "error" in result
         assert result["source"] == "coingecko"
         assert result["symbol"] == "ZZZ"
+
+    async def test_get_crypto_profile_uses_redis_cached_coin_list(self, monkeypatch):
+        tools = build_tools()
+        self._reset_cache()
+
+        class FakeRedis:
+            async def get(self, key):
+                if key == "coingecko:coins:list:v1":
+                    return json.dumps({"etc": ["ethereum-classic"]})
+                return None
+
+        monkeypatch.setattr(
+            fundamentals_sources_coingecko,
+            "_get_redis_client",
+            AsyncMock(return_value=FakeRedis()),
+        )
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    raise AssertionError("coins/list should not be called on redis hit")
+                if "/coins/ethereum-classic" in url:
+                    return MockResponse(
+                        {
+                            "name": "Ethereum Classic",
+                            "symbol": "etc",
+                            "market_data": {},
+                        }
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+        result = await tools["get_crypto_profile"]("ETC")
+
+        assert result["symbol"] == "ETC"
+
+    async def test_get_crypto_profile_writes_coin_list_to_redis_on_miss(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+        self._reset_cache()
+
+        class FakeRedis:
+            def __init__(self):
+                self.setex_calls: list[tuple[str, int, str]] = []
+
+            async def get(self, key):
+                return None
+
+            async def setex(self, key, ttl, payload):
+                self.setex_calls.append((key, ttl, payload))
+
+        fake_redis = FakeRedis()
+        monkeypatch.setattr(
+            fundamentals_sources_coingecko,
+            "_get_redis_client",
+            AsyncMock(return_value=fake_redis),
+        )
+
+        list_calls = {"count": 0}
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    list_calls["count"] += 1
+                    return MockResponse(
+                        [
+                            {
+                                "id": "ethereum-classic",
+                                "symbol": "etc",
+                                "name": "Ethereum Classic",
+                            }
+                        ]
+                    )
+                if "/coins/ethereum-classic" in url:
+                    return MockResponse(
+                        {
+                            "name": "Ethereum Classic",
+                            "symbol": "etc",
+                            "market_data": {},
+                        }
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+        result = await tools["get_crypto_profile"]("ETC")
+
+        assert result["symbol"] == "ETC"
+        assert list_calls["count"] == 1
+        assert fake_redis.setex_calls[0][0] == "coingecko:coins:list:v1"
+        assert fake_redis.setex_calls[0][1] == 86400
+
+    async def test_get_crypto_profile_ignores_invalid_redis_payload_and_refetches(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+        self._reset_cache()
+
+        class FakeRedis:
+            def __init__(self):
+                self.setex_calls: list[tuple[str, int, str]] = []
+
+            async def get(self, key):
+                if key == "coingecko:coins:list:v1":
+                    return json.dumps({"etc": "ethereum-classic"})
+                return None
+
+            async def setex(self, key, ttl, payload):
+                self.setex_calls.append((key, ttl, payload))
+
+        fake_redis = FakeRedis()
+        monkeypatch.setattr(
+            fundamentals_sources_coingecko,
+            "_get_redis_client",
+            AsyncMock(return_value=fake_redis),
+        )
+
+        list_calls = {"count": 0}
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    list_calls["count"] += 1
+                    return MockResponse(
+                        [
+                            {
+                                "id": "ethereum-classic",
+                                "symbol": "etc",
+                                "name": "Ethereum Classic",
+                            }
+                        ]
+                    )
+                if "/coins/ethereum-classic" in url:
+                    return MockResponse(
+                        {
+                            "name": "Ethereum Classic",
+                            "symbol": "etc",
+                            "market_data": {},
+                        }
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+        result = await tools["get_crypto_profile"]("ETC")
+
+        assert result["symbol"] == "ETC"
+        assert list_calls["count"] == 1
+        assert fake_redis.setex_calls[0][0] == "coingecko:coins:list:v1"
+
+    async def test_get_crypto_profile_falls_back_when_redis_errors(self, monkeypatch):
+        tools = build_tools()
+        self._reset_cache()
+
+        class BrokenRedis:
+            async def get(self, key):
+                raise RuntimeError("redis unavailable")
+
+            async def setex(self, key, ttl, payload):
+                raise RuntimeError("redis unavailable")
+
+        monkeypatch.setattr(
+            fundamentals_sources_coingecko,
+            "_get_redis_client",
+            AsyncMock(return_value=BrokenRedis()),
+        )
+
+        list_calls = {"count": 0}
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    list_calls["count"] += 1
+                    return MockResponse(
+                        [
+                            {
+                                "id": "ethereum-classic",
+                                "symbol": "etc",
+                                "name": "Ethereum Classic",
+                            }
+                        ]
+                    )
+                if "/coins/ethereum-classic" in url:
+                    return MockResponse(
+                        {
+                            "name": "Ethereum Classic",
+                            "symbol": "etc",
+                            "market_data": {},
+                        }
+                    )
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+        result = await tools["get_crypto_profile"]("ETC")
+
+        assert "error" not in result
+        assert result["name"] == "Ethereum Classic"
+        assert result["symbol"] == "ETC"
+        assert list_calls["count"] == 1
+
+    async def test_get_crypto_profile_does_not_cache_invalid_coin_list_response(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+        self._reset_cache()
+
+        class FakeRedis:
+            def __init__(self):
+                self.setex_calls: list[tuple[str, int, str]] = []
+
+            async def get(self, key):
+                return None
+
+            async def setex(self, key, ttl, payload):
+                self.setex_calls.append((key, ttl, payload))
+
+        fake_redis = FakeRedis()
+        monkeypatch.setattr(
+            fundamentals_sources_coingecko,
+            "_get_redis_client",
+            AsyncMock(return_value=fake_redis),
+        )
+
+        class MockResponse:
+            status_code = 200
+
+            def __init__(self, data):
+                self._data = data
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._data
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get(self, url, params=None, **kw):
+                if "/coins/list" in url:
+                    return MockResponse({"unexpected": "format"})
+                raise AssertionError(f"Unexpected URL: {url}")
+
+        _patch_httpx_async_client(monkeypatch, MockClient)
+        result = await tools["get_crypto_profile"]("ETC")
+
+        assert "error" in result
+        assert fake_redis.setex_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -1652,6 +2374,90 @@ class TestGetInvestmentOpinions:
         result = await tools["analyze_stock"]("KRW-BTC")
 
         assert "recommendation" not in result
+
+
+@pytest.mark.asyncio
+async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
+    tools = build_tools()
+    yf_info_calls = []
+
+    async def mock_fetch_ohlcv(symbol, market_type, count):
+        return pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=250, freq="D"),
+                "open": [100.0] * 250,
+                "high": [105.0] * 250,
+                "low": [95.0] * 250,
+                "close": [102.0] * 250,
+                "volume": [1000] * 250,
+            }
+        )
+
+    monkeypatch.setattr(
+        market_data_indicators,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv,
+    )
+
+    class MockKISClient:
+        pass
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    def mock_yf_ticker(symbol, session=None):
+        class MockTicker:
+            @property
+            def info(self):
+                yf_info_calls.append(f"info:{symbol}")
+                return {
+                    "shortName": f"{symbol} Inc",
+                    "currentPrice": 150.0,
+                    "fiftyTwoWeekHigh": 200.0,
+                    "fiftyTwoWeekLow": 100.0,
+                    "trailingPE": 25.0,
+                    "priceToBook": 5.0,
+                    "returnOnEquity": 0.15,
+                    "dividendYield": 0.01,
+                }
+
+            @property
+            def analyst_price_targets(self):
+                return {"mean": 180.0, "median": 175.0, "low": 150.0, "high": 200.0}
+
+            @property
+            def upgrades_downgrades(self):
+                return pd.DataFrame()
+
+        return MockTicker()
+
+    monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", mock_yf_ticker)
+
+    class MockFinnhubClient:
+        def company_profile2(self, symbol):
+            return {"name": f"{symbol} Inc", "ticker": symbol}
+
+        def general_news(self, category, min_id=0):
+            return []
+
+        def company_news(self, symbol, _from, to):
+            return []
+
+    monkeypatch.setattr(
+        fundamentals_sources_naver,
+        "_get_finnhub_client",
+        MockFinnhubClient,
+    )
+
+    result = await tools["analyze_stock"]("AAPL", market="us")
+
+    info_calls = [c for c in yf_info_calls if c.startswith("info:")]
+    assert len(info_calls) == 1, (
+        f"Expected 1 info call, got {len(info_calls)}: {info_calls}"
+    )
+
+    assert result["symbol"] == "AAPL"
+    assert "valuation" in result
+    assert "opinions" in result
 
 
 # ---------------------------------------------------------------------------

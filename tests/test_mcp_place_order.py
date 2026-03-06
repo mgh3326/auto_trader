@@ -729,6 +729,23 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
     assert buy_calls[0]["price"] == 150.0
 
 
+@pytest.mark.asyncio
+async def test_kis_overseas_order_payload_fields_buy(monkeypatch):
+    del monkeypatch
+    import inspect
+
+    from app.services.brokers.kis.client import KISClient
+
+    sig = inspect.signature(KISClient.order_overseas_stock)
+    params = list(sig.parameters.keys())
+
+    assert "symbol" in params
+    assert "exchange_code" in params
+    assert "order_type" in params
+    assert "quantity" in params
+    assert "price" in params
+
+
 # ---------------------------------------------------------------------------
 # High-amount order tests
 # ---------------------------------------------------------------------------
@@ -736,6 +753,22 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
 
 class TestPlaceOrderHighAmount:
     """Tests for place_order with high-amount orders."""
+
+    @pytest.mark.asyncio
+    async def test_get_current_price_for_order_crypto_bypasses_ticker_cache(
+        self, monkeypatch
+    ):
+        ticker_mock = AsyncMock(return_value={"KRW-BTC": 50000000.0})
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_current_prices",
+            ticker_mock,
+        )
+
+        price = await order_execution._get_current_price_for_order("KRW-BTC", "crypto")
+
+        assert price == 50000000.0
+        ticker_mock.assert_awaited_once_with(["KRW-BTC"], use_cache=False)
 
     @pytest.mark.asyncio
     async def test_place_order_high_amount_kr_equity(self, monkeypatch):
