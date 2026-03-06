@@ -2657,241 +2657,71 @@ async def _screen_crypto(
     limit: int,
     enrich_rsi: bool = True,
 ) -> dict[str, Any]:
+    """Screen crypto market using staged pipeline.
+
+    Orchestrates the following stages:
+    1. Fetch candidates from Upbit
+    2. Filter by warning markets and crash detection
+    3. Enrich with RSI and CoinGecko market cap data
+    4. Sort and apply final limit
+    """
+    # Normalize dividend yield threshold
     (
         min_dividend_yield_input,
         min_dividend_yield_normalized,
     ) = _normalize_dividend_yield_threshold(min_dividend_yield)
 
-    warnings: list[str] = []
-    filters_applied: dict[str, Any] = {
-        "market": market,
-        "asset_type": asset_type,
-        "category": category,
-    }
+    # Stage 1: Fetch crypto candidates
+    top_candidates, all_candidates, btc_change_24h, warning_markets, filters_applied = (
+        await _stage_fetch_crypto_candidates(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+        )
+    )
 
-    all_candidates = await upbit_service.fetch_top_traded_coins(fiat="KRW")
     total_markets = len(all_candidates)
-    top_candidates = all_candidates[:CRYPTO_TOP_BY_VOLUME]
     top_by_volume = len(top_candidates)
 
-    btc_change_24h = 0.0
-    btc_item = next(
-        (
-            item
-            for item in all_candidates
-            if str(item.get("market") or "").upper() == "KRW-BTC"
-        ),
-        None,
+    # Stage 2: Filter by warning markets and crash detection
+    candidates, filtered_by_warning, filtered_by_crash, filter_warnings = (
+        _stage_filter_crypto(
+            top_candidates=top_candidates,
+            btc_change_24h=btc_change_24h,
+            warning_markets=warning_markets,
+            min_market_cap=min_market_cap,
+        )
     )
-    if btc_item is None:
-        warnings.append(
-            "KRW-BTC ticker not found; crash filter uses btc_change_24h=0.0 fallback."
-        )
-    else:
-        btc_change_24h = _to_optional_float(
-            btc_item.get("signed_change_rate") or btc_item.get("change_rate")
-        )
-        if btc_change_24h is None:
-            btc_change_24h = 0.0
-            warnings.append(
-                "KRW-BTC change rate is missing; crash filter uses btc_change_24h=0.0 fallback."
-            )
 
-    warning_markets: set[str] = set()
-    try:
-        warning_markets = await get_upbit_warning_markets(quote_currency="KRW")
-    except Exception as exc:
-        warnings.append(
-            "market warning details unavailable; warning filter skipped "
-            f"({type(exc).__name__}: {exc})"
+    # Stage 3: Enrich with RSI and CoinGecko market cap data
+    candidates, rsi_enrichment, coingecko_payload, enrich_warnings = (
+        await _stage_enrich_crypto_indicators(
+            candidates=candidates,
+            enrich_rsi=enrich_rsi,
         )
-
-    filtered_by_warning = 0
-    filtered_by_crash = 0
-    candidates: list[dict[str, Any]] = []
-
-    for raw_item in top_candidates:
-        market_code = str(raw_item.get("market") or "").strip().upper()
-        if market_code in warning_markets:
-            filtered_by_warning += 1
-            continue
-
-        coin_change_24h = raw_item.get("signed_change_rate")
-        if coin_change_24h is None:
-            coin_change_24h = raw_item.get("change_rate")
-        if not is_safe_drop(coin_change_24h, btc_change_24h):
-            filtered_by_crash += 1
-            continue
-
-        volume_24h = _to_optional_float(
-            raw_item.get("acc_trade_volume_24h") or raw_item.get("volume")
-        )
-        trade_amount_24h = _to_optional_float(
-            raw_item.get("trade_amount_24h") or raw_item.get("acc_trade_price_24h")
-        )
-
-        item = dict(raw_item)
-        item["original_market"] = raw_item.get("market")
-        item["market"] = "crypto"
-        if market_code:
-            item["symbol"] = market_code
-        item["name"] = (
-            raw_item.get("name")
-            or raw_item.get("korean_name")
-            or raw_item.get("english_name")
-        )
-        item["change_rate"] = (
-            _to_optional_float(
-                raw_item.get("change_rate")
-                if raw_item.get("change_rate") is not None
-                else raw_item.get("signed_change_rate")
-            )
-            or 0.0
-        )
-        item["trade_amount_24h"] = trade_amount_24h or 0.0
-        item.pop("volume", None)
-        item["market_cap"] = None
-        item["market_cap_rank"] = None
-        item["market_warning"] = None
-        item["rsi"] = _to_optional_float(raw_item.get("rsi"))
-        item["volume_24h"] = volume_24h or 0.0
-        item["volume_ratio"] = _to_optional_float(raw_item.get("volume_ratio"))
-        item["candle_type"] = raw_item.get("candle_type") or "flat"
-        item["adx"] = _to_optional_float(raw_item.get("adx"))
-        item["plus_di"] = _to_optional_float(raw_item.get("plus_di"))
-        item["minus_di"] = _to_optional_float(raw_item.get("minus_di"))
-        item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
-        item.pop("score", None)
-        candidates.append(item)
-
-    if min_market_cap is not None:
-        warnings.append(
-            "min_market_cap filter is not supported for crypto market; ignored"
-        )
-
-    async def _run_rsi_enrichment() -> dict[str, Any]:
-        if not enrich_rsi or not candidates:
-            return _empty_rsi_enrichment_diagnostics()
-        try:
-            return await _enrich_crypto_indicators(candidates)
-        except Exception as exc:
-            warnings.append(
-                f"Crypto RSI enrichment failed: {type(exc).__name__}: {exc}; partial results returned"
-            )
-            return _empty_rsi_enrichment_diagnostics()
-
-    try:
-        parallel_results = await asyncio.gather(
-            _run_rsi_enrichment(),
-            _CRYPTO_MARKET_CAP_CACHE.get(),
-        )
-        if len(parallel_results) == 2:
-            rsi_enrichment = parallel_results[0]
-            coingecko_payload = parallel_results[1]
-        else:
-            warnings.append(
-                "Crypto enrichment parallel execution returned unexpected shape; "
-                "partial results returned"
-            )
-            rsi_enrichment = _empty_rsi_enrichment_diagnostics()
-            coingecko_payload = {
-                "data": {},
-                "cached": False,
-                "age_seconds": None,
-                "stale": False,
-                "error": "parallel_result_shape_error",
-            }
-    except Exception as exc:
-        warnings.append(
-            "Crypto enrichment parallel execution failed; partial results returned "
-            f"({type(exc).__name__}: {exc})"
-        )
-        rsi_enrichment = _empty_rsi_enrichment_diagnostics()
-        coingecko_payload = {
-            "data": {},
-            "cached": False,
-            "age_seconds": None,
-            "stale": False,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-
-    timeout_count = int(rsi_enrichment.get("timeout", 0) or 0)
-    if timeout_count > 0:
-        warnings.append(
-            f"Crypto RSI enrichment timed out for {timeout_count} symbols; partial results returned"
-        )
-
-    rate_limited_count = int(rsi_enrichment.get("rate_limited", 0) or 0)
-    if rate_limited_count > 0:
-        warnings.append(
-            "Crypto RSI enrichment hit rate limits for "
-            f"{rate_limited_count} symbols; partial results returned"
-        )
-
-    coingecko_data = cast(
-        dict[str, dict[str, Any]],
-        coingecko_payload.get("data") or {},
     )
-    for item in candidates:
-        symbol = _extract_market_symbol(
-            item.get("symbol") or item.get("original_market")
-        )
-        cap_data = coingecko_data.get(symbol or "") if symbol else None
-        if cap_data:
-            item["market_cap"] = cap_data.get("market_cap")
-            item["market_cap_rank"] = cap_data.get("market_cap_rank")
-        else:
-            item["market_cap"] = None
-            item["market_cap_rank"] = None
-        item["market_warning"] = None
-        item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
-        item.pop("score", None)
 
-    coingecko_error = coingecko_payload.get("error")
-    if coingecko_error:
-        if coingecko_payload.get("stale"):
-            warnings.append(
-                "CoinGecko market-cap refresh failed; stale cache was used."
-            )
-        else:
-            warnings.append(
-                "CoinGecko market-cap data unavailable; market_cap fields remain null."
-            )
-
-    if max_rsi is not None:
-        filtered = [
-            item
-            for item in candidates
-            if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
-        ]
-    else:
-        filtered = candidates
-
-    applied_sort_order = sort_order
-    if sort_by == "rsi":
-        if sort_order == "desc":
-            warnings.append(
-                "crypto sort_by='rsi' always uses ascending order; requested desc was ignored."
-            )
-        applied_sort_order = "asc"
-        ordered = _sort_crypto_by_rsi_bucket(filtered)
-    else:
-        ordered = _sort_and_limit(filtered, sort_by, sort_order, len(filtered))
-
-    results = ordered[:limit]
-    for item in results:
-        item.pop("score", None)
-
-    filters_applied.update(
-        {
-            "min_market_cap": min_market_cap,
-            "max_per": max_per,
-            "min_dividend_yield": min_dividend_yield_normalized,
-            "max_rsi": max_rsi,
-            "sort_by": sort_by,
-            "sort_order": applied_sort_order,
-        }
+    # Stage 4: Sort and limit
+    results, total_count, applied_sort_order, sort_warnings = _stage_sort_crypto(
+        candidates=candidates,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        max_rsi=max_rsi,
     )
+
+    # Aggregate all warnings
+    all_warnings = filter_warnings + enrich_warnings + sort_warnings
+
+    # Build filters_applied for response
+    filters_applied.update({
+        "min_market_cap": min_market_cap,
+        "max_per": max_per,
+        "min_dividend_yield": min_dividend_yield_normalized,
+        "max_rsi": max_rsi,
+        "sort_by": sort_by,
+        "sort_order": applied_sort_order,
+    })
     if min_dividend_yield_input is not None:
         filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
     if min_dividend_yield_normalized is not None:
@@ -2910,11 +2740,11 @@ async def _screen_crypto(
 
     return _build_screen_response(
         results,
-        len(filtered),
+        total_count,
         filters_applied,
         market,
         rsi_enrichment=rsi_enrichment,
-        warnings=warnings if warnings else None,
+        warnings=all_warnings if all_warnings else None,
         meta_fields=meta_fields,
     )
 
