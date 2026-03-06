@@ -780,7 +780,14 @@ class TradeNotifier:
         reason: str,
         market_type: str = "암호화폐",
     ) -> bool:
-        """Send trade failure notification."""
+        """
+        Send trade failure notification to Discord webhook based on market_type.
+
+        Routes to the appropriate Discord webhook:
+        - US/해외주식 → discord_webhook_us
+        - 국내주식 → discord_webhook_kr
+        - 암호화폐 → discord_webhook_crypto
+        """
         if not self._enabled:
             return False
 
@@ -788,7 +795,19 @@ class TradeNotifier:
             embed = self._format_failure_notification(
                 symbol, korean_name, reason, market_type
             )
-            return await self._send_to_discord_embed(embed)
+
+            # Get the appropriate Discord webhook for this market type
+            webhook_url = self._get_webhook_for_market_type(market_type)
+
+            # Send to Discord if webhook is configured
+            if webhook_url:
+                return await self._send_to_discord_embed_single(embed, webhook_url)
+            else:
+                logger.warning(
+                    f"No Discord webhook configured for market type: {market_type}"
+                )
+                return False
+
         except Exception as e:
             logger.error(f"Failed to send failure notification: {e}")
             return False
