@@ -757,7 +757,7 @@ async def _fetch_historical_minutes_via_kis(
     return hour_rows
 
 
-def _log_storage_exception(task: asyncio.Task) -> None:
+def _log_task_exception(task: asyncio.Task) -> None:
     """Callback to log exceptions from background storage tasks."""
     try:
         task.result()
@@ -952,7 +952,7 @@ async def read_kr_hourly_candles_1h(
                 minute_rows=api_minute_candles,
             )
         )
-        task.add_done_callback(_log_storage_exception)
+        task.add_done_callback(_log_task_exception)
         logger.info(
             "Background task created to store %d minute candles for symbol '%s'",
             len(api_minute_candles),
@@ -971,4 +971,4 @@ async def read_kr_hourly_candles_1h(
     return out
 
 
-__all__ = ["read_kr_hourly_candles_1h", "_store_minute_candles_background"]
+__all__ = ["read_kr_hourly_candles_1h", "_store_minute_candles_background", "_log_task_exception"]
