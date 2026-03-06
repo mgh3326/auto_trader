@@ -6,7 +6,7 @@ import asyncio
 import datetime
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import yfinance as yf
@@ -27,9 +27,19 @@ from app.services.krx import (
     fetch_stock_all_cached,
     fetch_valuation_all_cached,
 )
-from app.services.tvscreener_service import TvScreenerError, TvScreenerService
+from app.services.tvscreener_service import (
+    TvScreenerError,
+    TvScreenerRateLimitError,
+    TvScreenerService,
+    TvScreenerTimeoutError,
+    _import_tvscreener,
+)
 from app.services.upbit_symbol_universe_service import get_upbit_warning_markets
-from app.utils.symbol_mapping import SymbolMappingError, upbit_to_tradingview
+from app.utils.symbol_mapping import (
+    SymbolMappingError,
+    tradingview_to_upbit,
+    upbit_to_tradingview,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +52,8 @@ COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 def _to_optional_float(value: Any) -> float | None:
     if value is None:
         return None
+    if value != value:
+        return None
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -50,6 +62,8 @@ def _to_optional_float(value: Any) -> float | None:
 
 def _to_optional_int(value: Any) -> int | None:
     if value is None:
+        return None
+    if value != value:
         return None
     try:
         return int(value)
@@ -88,6 +102,60 @@ def _compute_rsi_bucket(rsi: Any) -> int:
     if rsi_value is None:
         return 999
     return int(rsi_value // 5) * 5
+
+
+def _strip_exchange_prefix(symbol: Any) -> str:
+    text = str(symbol or "").strip()
+    if not text:
+        return ""
+    return text.split(":", maxsplit=1)[-1].strip()
+
+
+def _get_first_present(mapping: Any, *keys: str) -> Any:
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _get_tvscreener_attr(enum_obj: Any, *names: str) -> Any | None:
+    for name in names:
+        value = getattr(enum_obj, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _extract_kr_stock_code(value: Any) -> str:
+    return _strip_exchange_prefix(value).upper()
+
+
+def _kr_market_codes(market: str) -> tuple[list[str], str]:
+    if market == "kospi":
+        return ["STK"], "STK"
+    if market == "kosdaq":
+        return ["KSQ"], "KSQ"
+    return ["STK", "KSQ"], "ALL"
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if value != value:
+        return ""
+    return str(value).strip()
+
+
+def _pick_display_name(row: Any) -> str:
+    description = _clean_text(row.get("description"))
+    if description:
+        return description
+    return _clean_text(row.get("name"))
+
+
+def _tradingview_symbol_name(symbol: str) -> str:
+    return symbol.split(":", maxsplit=1)[-1].strip().upper()
 
 
 def _is_market_warning(value: Any) -> bool:
@@ -483,7 +551,7 @@ async def _screen_kr(
         min_dividend_yield_normalized,
     ) = _normalize_dividend_yield_threshold(min_dividend_yield)
 
-    filters_applied = {
+    filters_applied: dict[str, Any] = {
         "market": market,
         "asset_type": asset_type,
         "category": category,
@@ -701,6 +769,8 @@ async def _screen_kr(
                     )
                     errors[i] = f"{type(result).__name__}: {result}"
                     continue
+                if not isinstance(result, dict):
+                    continue
                 if result.get("rsi") is not None:
                     rsi_subset[i]["rsi"] = result["rsi"]
                     if statuses[i] == "pending":
@@ -780,7 +850,7 @@ async def _screen_us(
         min_dividend_yield_normalized,
     ) = _normalize_dividend_yield_threshold(min_dividend_yield)
 
-    filters_applied = {
+    filters_applied: dict[str, Any] = {
         "market": market,
         "asset_type": asset_type,
         "category": category,
@@ -809,19 +879,32 @@ async def _screen_us(
 
         conditions = []
         if min_market_cap is not None:
-            conditions.append(EquityQuery("gte", ["intradaymarketcap", min_market_cap]))
+            conditions.append(
+                EquityQuery(
+                    "gte",
+                    cast(Any, ["intradaymarketcap", min_market_cap]),
+                )
+            )
         if max_per is not None:
-            conditions.append(EquityQuery("lte", ["peratio.lasttwelvemonths", max_per]))
+            conditions.append(
+                EquityQuery(
+                    "lte",
+                    cast(Any, ["peratio.lasttwelvemonths", max_per]),
+                )
+            )
         if min_dividend_yield is not None:
             conditions.append(
                 EquityQuery(
-                    "gte", ["forward_dividend_yield", min_dividend_yield_normalized]
+                    "gte",
+                    cast(
+                        Any, ["forward_dividend_yield", min_dividend_yield_normalized]
+                    ),
                 )
             )
         if category:
-            conditions.append(EquityQuery("eq", ["sector", category]))
+            conditions.append(EquityQuery("eq", cast(Any, ["sector", category])))
 
-        conditions.append(EquityQuery("eq", ["region", "us"]))
+        conditions.append(EquityQuery("eq", cast(Any, ["region", "us"])))
         if len(conditions) == 1:
             query = conditions[0]
         else:
@@ -940,6 +1023,8 @@ async def _screen_us(
                 )
                 for i, enriched in enumerate(subset_with_rsi):
                     if isinstance(enriched, Exception):
+                        continue
+                    if not isinstance(enriched, dict):
                         continue
                     rsi_value = enriched.get("rsi")
                     if rsi_value is not None:
@@ -1063,12 +1148,11 @@ async def _enrich_crypto_indicators(
         tvscreener_service = TvScreenerService(timeout=30.0)
 
         try:
-            from tvscreener import CryptoField
+            tvscreener = _import_tvscreener()
+            CryptoField = tvscreener.CryptoField
 
-            # Build columns list - start with ticker and RSI (guaranteed)
-            columns = [CryptoField.SYMBOL, CryptoField.RELATIVE_STRENGTH_INDEX_14]
+            columns = [CryptoField.NAME, CryptoField.RELATIVE_STRENGTH_INDEX_14]
 
-            # Try to add ADX if available (not confirmed for CryptoField)
             try:
                 adx_field = CryptoField.AVERAGE_DIRECTIONAL_INDEX_14
                 columns.append(adx_field)
@@ -1082,9 +1166,8 @@ async def _enrich_crypto_indicators(
                     "[Indicators-Crypto] ADX field not available for CryptoScreener, skipping"
                 )
 
-            # Add volume field (confirmed available)
             try:
-                volume_field = CryptoField.VOLUME
+                volume_field = CryptoField.VOLUME_24H_IN_USD
                 columns.append(volume_field)
                 has_volume = True
             except AttributeError:
@@ -1093,38 +1176,63 @@ async def _enrich_crypto_indicators(
                     "[Indicators-Crypto] VOLUME field not available for CryptoScreener"
                 )
 
-            # Query for indicators
+            requested_tv_names = [
+                _tradingview_symbol_name(symbol)
+                for symbol in unique_tv_symbols
+                if _tradingview_symbol_name(symbol)
+            ]
+            where_conditions = []
+            try:
+                where_conditions.append(CryptoField.EXCHANGE == "UPBIT")
+            except AttributeError:
+                logger.warning(
+                    "[Indicators-Crypto] EXCHANGE field not available for CryptoScreener"
+                )
+
+            if requested_tv_names:
+                try:
+                    where_conditions.append(CryptoField.NAME.isin(requested_tv_names))
+                except AttributeError:
+                    logger.warning(
+                        "[Indicators-Crypto] NAME.isin not available for CryptoScreener"
+                    )
+
             df = await tvscreener_service.query_crypto_screener(
                 columns=columns,
-                where_clause=None,  # Get all, we'll filter client-side
-                limit=None,
+                where_clause=where_conditions,
+                limit=300,
             )
 
-            # Build indicator maps from TradingView symbols
             rsi_map: dict[str, float | None] = {}
             adx_map: dict[str, float | None] = {}
             volume_map: dict[str, float | None] = {}
 
             if not df.empty:
-                # Filter to only the symbols we're interested in
-                # TradingView returns full symbols like "UPBIT:BTCKRW"
                 for _, row in df.iterrows():
-                    ticker = str(row.get("symbol", "")).strip()
-                    if ticker in unique_tv_symbols:
-                        rsi_value = _to_optional_float(
-                            row.get("relative_strength_index_14")
+                    tradingview_symbol = str(row.get("symbol", "")).strip().upper()
+                    if not tradingview_symbol:
+                        continue
+                    try:
+                        upbit_symbol = tradingview_to_upbit(tradingview_symbol)
+                    except SymbolMappingError:
+                        continue
+                    if upbit_symbol not in tv_symbols_to_upbit.values():
+                        continue
+
+                    rsi_value = _to_optional_float(
+                        row.get("relative_strength_index_14")
+                    )
+                    rsi_map[upbit_symbol] = rsi_value
+
+                    if has_adx:
+                        adx_value = _to_optional_float(
+                            row.get("average_directional_index_14")
                         )
-                        rsi_map[ticker] = rsi_value
+                        adx_map[upbit_symbol] = adx_value
 
-                        if has_adx:
-                            adx_value = _to_optional_float(
-                                row.get("average_directional_index_14")
-                            )
-                            adx_map[ticker] = adx_value
-
-                        if has_volume:
-                            volume_value = _to_optional_float(row.get("volume"))
-                            volume_map[ticker] = volume_value
+                    if has_volume:
+                        volume_value = _to_optional_float(row.get("volume_24h_in_usd"))
+                        volume_map[upbit_symbol] = volume_value
 
             logger.info(
                 "[Indicators-Crypto] CryptoScreener returned data for %d/%d symbols "
@@ -1141,10 +1249,8 @@ async def _enrich_crypto_indicators(
                 "[Indicators-Crypto] tvscreener not installed, falling back to manual calculation for RSI"
             )
             # Fallback to manual calculation if tvscreener is not available
-            batch_symbols = [
-                symbols_by_index[i]
-                for i in range(len(candidates))
-                if symbols_by_index[i] is not None
+            batch_symbols: list[str] = [
+                symbol for symbol in symbols_by_index if symbol is not None
             ]
             rsi_map_manual = await asyncio.wait_for(
                 compute_crypto_realtime_rsi_map(batch_symbols),
@@ -1154,32 +1260,30 @@ async def _enrich_crypto_indicators(
             rsi_map = {}
             adx_map = {}
             volume_map = {}
-            for tv_symbol, upbit_symbol in tv_symbols_to_upbit.items():
+            for _, upbit_symbol in tv_symbols_to_upbit.items():
                 if upbit_symbol in rsi_map_manual:
-                    rsi_map[tv_symbol] = rsi_map_manual[upbit_symbol]
+                    rsi_map[upbit_symbol] = rsi_map_manual[upbit_symbol]
 
         # Apply indicator values to candidates
         for index, item in enumerate(candidates):
             if statuses[index] != "pending":
                 continue
 
-            tv_symbol = tv_symbols_by_index[index]
-            if tv_symbol is None:
+            upbit_symbol = symbols_by_index[index]
+            if upbit_symbol is None:
                 statuses[index] = "error"
-                errors[index] = "No valid TradingView symbol"
+                errors[index] = "No valid Upbit symbol"
                 continue
 
-            rsi_value = rsi_map.get(tv_symbol)
+            rsi_value = rsi_map.get(upbit_symbol)
             item["rsi"] = rsi_value
             item["rsi_bucket"] = _compute_rsi_bucket(rsi_value)
 
-            # Apply ADX if available
-            if tv_symbol in adx_map:
-                item["adx"] = adx_map[tv_symbol]
+            if upbit_symbol in adx_map:
+                item["adx"] = adx_map[upbit_symbol]
 
-            # Apply volume if available
-            if tv_symbol in volume_map:
-                item["volume_24h"] = volume_map[tv_symbol]
+            if upbit_symbol in volume_map:
+                item["volume_24h"] = volume_map[upbit_symbol]
 
             if rsi_value is None:
                 statuses[index] = "error"
@@ -1187,6 +1291,24 @@ async def _enrich_crypto_indicators(
             else:
                 statuses[index] = "success"
 
+    except TvScreenerTimeoutError as exc:
+        logger.warning(
+            "[Indicators-Crypto] Indicator enrichment timed out: %s",
+            exc,
+        )
+        for index, status in enumerate(statuses):
+            if status == "pending":
+                statuses[index] = "timeout"
+                errors[index] = f"CryptoScreener timeout: {exc}"
+    except TvScreenerRateLimitError as exc:
+        logger.error(
+            "[Indicators-Crypto] CryptoScreener rate limited: %s",
+            exc,
+        )
+        for index, status in enumerate(statuses):
+            if status == "pending":
+                statuses[index] = "rate_limited"
+                errors[index] = f"CryptoScreener error: {exc}"
     except TvScreenerError as exc:
         logger.error(
             "[Indicators-Crypto] CryptoScreener query failed: %s: %s",
@@ -1228,10 +1350,18 @@ async def _enrich_crypto_indicators(
 
 
 async def _screen_kr_via_tvscreener(
+    market: str = "kr",
+    asset_type: str | None = "stock",
+    category: str | None = None,
+    min_market_cap: float | None = None,
+    max_per: float | None = None,
+    max_pbr: float | None = None,
+    min_dividend_yield: float | None = None,
     min_rsi: float | None = None,
     max_rsi: float | None = None,
     min_adx: float | None = None,
     sort_by: str = "rsi",
+    sort_order: str = "desc",
     limit: int = 50,
 ) -> dict[str, Any]:
     """Screen Korean stocks using TradingView StockScreener API.
@@ -1263,33 +1393,53 @@ async def _screen_kr_via_tvscreener(
         - filters_applied: Dictionary of applied filter parameters
         - error: Error message if query failed (None on success)
     """
-    result = {
+    (
+        min_dividend_yield_input,
+        min_dividend_yield_normalized,
+    ) = _normalize_dividend_yield_threshold(min_dividend_yield)
+
+    result: dict[str, Any] = {
         "stocks": [],
         "source": "tvscreener",
         "count": 0,
         "filters_applied": {
+            "market": market,
+            "asset_type": asset_type,
+            "category": category,
+            "min_market_cap": min_market_cap,
+            "max_per": max_per,
+            "max_pbr": max_pbr,
+            "min_dividend_yield": min_dividend_yield_normalized,
             "min_rsi": min_rsi,
             "max_rsi": max_rsi,
             "min_adx": min_adx,
             "sort_by": sort_by,
+            "sort_order": sort_order,
             "limit": limit,
         },
         "error": None,
     }
+    if min_dividend_yield_input is not None:
+        result["filters_applied"]["min_dividend_yield_input"] = min_dividend_yield_input
+    if min_dividend_yield_normalized is not None:
+        result["filters_applied"]["min_dividend_yield_normalized"] = (
+            min_dividend_yield_normalized
+        )
 
     try:
-        # Import StockScreener and StockField from tvscreener
         try:
-            from tvscreener import StockField
+            tvscreener = _import_tvscreener()
+            StockField = tvscreener.StockField
+            Market = tvscreener.Market
         except ImportError:
             error_msg = "tvscreener library not installed, cannot use StockScreener"
             logger.warning("[Screen-KR-TV] %s", error_msg)
             result["error"] = error_msg
             return result
 
-        # Build columns list - start with essential fields
         columns = [
             StockField.ACTIVE_SYMBOL,
+            StockField.DESCRIPTION,
             StockField.NAME,
             StockField.PRICE,
             StockField.RELATIVE_STRENGTH_INDEX_14,
@@ -1298,31 +1448,20 @@ async def _screen_kr_via_tvscreener(
             StockField.CHANGE_PERCENT,
         ]
 
-        # Try to add COUNTRY field for filtering
         try:
             columns.append(StockField.COUNTRY)
         except AttributeError:
             logger.warning("[Screen-KR-TV] COUNTRY field not available in StockField")
 
-        # Build WHERE clause for filtering using Field conditions (not strings)
         where_conditions = []
 
-        # Filter by RSI range using Field conditions
         if min_rsi is not None:
             where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 >= min_rsi)
         if max_rsi is not None:
             where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 <= max_rsi)
 
-        # Filter by minimum ADX using Field conditions
         if min_adx is not None:
             where_conditions.append(StockField.AVERAGE_DIRECTIONAL_INDEX_14 >= min_adx)
-
-        # Combine conditions using & operator (not string concatenation)
-        where_clause = None
-        if where_conditions:
-            where_clause = where_conditions[0]
-            for condition in where_conditions[1:]:
-                where_clause = where_clause & condition
 
         logger.info(
             "[Screen-KR-TV] Querying StockScreener for Korean stocks "
@@ -1333,13 +1472,13 @@ async def _screen_kr_via_tvscreener(
             limit,
         )
 
-        # Query StockScreener with country parameter (service handles country filtering)
         tvscreener_service = TvScreenerService(timeout=30.0)
         df = await tvscreener_service.query_stock_screener(
             columns=columns,
-            where_clause=where_clause,  # Field condition object (not string)
-            country="South Korea",  # Use dedicated country parameter
-            limit=None,  # Get all matching, we'll limit after sorting
+            where_clause=where_conditions,
+            country=None,
+            markets=[Market.KOREA],
+            limit=None,
         )
 
         if df.empty:
@@ -1348,48 +1487,67 @@ async def _screen_kr_via_tvscreener(
 
         logger.info("[Screen-KR-TV] StockScreener returned %d Korean stocks", len(df))
 
-        # Convert DataFrame to list of dictionaries
+        market_codes, valuation_market = _kr_market_codes(market)
+        universe_rows: list[dict[str, Any]] = []
+        for market_code in market_codes:
+            universe_rows.extend(await fetch_stock_all_cached(market=market_code))
+
+        allowed_by_code: dict[str, dict[str, Any]] = {}
+        for item in universe_rows:
+            code = str(item.get("short_code") or item.get("code") or "").strip().upper()
+            if code:
+                allowed_by_code[code] = dict(item)
+
+        valuations: dict[str, dict[str, Any]] = {}
+        try:
+            valuations = await fetch_valuation_all_cached(market=valuation_market)
+        except Exception:
+            valuations = {}
+
         stocks = []
         for _, row in df.iterrows():
+            code = _extract_kr_stock_code(row.get("symbol"))
+            if not code or code not in allowed_by_code:
+                continue
+
+            base = allowed_by_code[code]
+            valuation = valuations.get(code, {})
             stock = {
-                "symbol": str(row.get("active_symbol", "")).strip(),
-                "name": str(row.get("name", "")).strip(),
+                "symbol": code,
+                "short_code": code,
+                "code": base.get("code") or code,
+                "name": _pick_display_name(row),
                 "price": _to_optional_float(row.get("price")),
                 "rsi": _to_optional_float(row.get("relative_strength_index_14")),
                 "adx": _to_optional_float(row.get("average_directional_index_14")),
                 "volume": _to_optional_float(row.get("volume")),
                 "change_percent": _to_optional_float(row.get("change_percent")),
+                "market_cap": _to_optional_float(base.get("market_cap")),
+                "per": _to_optional_float(valuation.get("per")),
+                "pbr": _to_optional_float(valuation.get("pbr")),
+                "dividend_yield": _to_optional_float(valuation.get("dividend_yield")),
+                "market": base.get("market") or market,
                 "country": str(row.get("country", "")).strip()
                 if "country" in row
                 else "South Korea",
             }
+            stock["change_rate"] = stock["change_percent"]
+            if not stock["name"]:
+                stock["name"] = str(base.get("name") or "").strip()
             stocks.append(stock)
 
-        # Sort stocks based on sort_by parameter
-        sort_field_map = {
-            "rsi": "rsi",
-            "adx": "adx",
-            "volume": "volume",
-            "change": "change_percent",
-        }
-        sort_field = sort_field_map.get(sort_by, "rsi")
-
-        # Sort ascending for RSI (lower is more oversold), descending for others
-        reverse = sort_by != "rsi"
-        stocks.sort(
-            key=lambda s: (
-                s.get(sort_field)
-                if s.get(sort_field) is not None
-                else (float("inf") if not reverse else float("-inf"))
-            ),
-            reverse=reverse,
+        filtered = _apply_basic_filters(
+            stocks,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=max_pbr,
+            min_dividend_yield=min_dividend_yield_normalized,
+            max_rsi=max_rsi,
         )
+        ordered = _sort_and_limit(filtered, sort_by, sort_order, limit)
 
-        # Limit results
-        stocks = stocks[:limit]
-
-        result["stocks"] = stocks
-        result["count"] = len(stocks)
+        result["count"] = len(filtered)
+        result["stocks"] = ordered
 
         logger.info(
             "[Screen-KR-TV] Returning %d Korean stocks sorted by %s",
@@ -1421,10 +1579,17 @@ async def _screen_kr_via_tvscreener(
 
 
 async def _screen_us_via_tvscreener(
+    market: str = "us",
+    asset_type: str | None = None,
+    category: str | None = None,
+    min_market_cap: float | None = None,
+    max_per: float | None = None,
+    min_dividend_yield: float | None = None,
     min_rsi: float | None = None,
     max_rsi: float | None = None,
     min_adx: float | None = None,
     sort_by: str = "rsi",
+    sort_order: str = "desc",
     limit: int = 50,
 ) -> dict[str, Any]:
     """Screen US stocks using TradingView StockScreener API.
@@ -1456,33 +1621,84 @@ async def _screen_us_via_tvscreener(
         - filters_applied: Dictionary of applied filter parameters
         - error: Error message if query failed (None on success)
     """
-    result = {
+    (
+        min_dividend_yield_input,
+        min_dividend_yield_normalized,
+    ) = _normalize_dividend_yield_threshold(min_dividend_yield)
+
+    result: dict[str, Any] = {
         "stocks": [],
         "source": "tvscreener",
         "count": 0,
         "filters_applied": {
+            "market": market,
+            "asset_type": asset_type,
+            "category": category,
+            "min_market_cap": min_market_cap,
+            "max_per": max_per,
+            "min_dividend_yield": min_dividend_yield_normalized,
             "min_rsi": min_rsi,
             "max_rsi": max_rsi,
             "min_adx": min_adx,
             "sort_by": sort_by,
+            "sort_order": sort_order,
             "limit": limit,
         },
         "error": None,
     }
+    if min_dividend_yield_input is not None:
+        result["filters_applied"]["min_dividend_yield_input"] = min_dividend_yield_input
+    if min_dividend_yield_normalized is not None:
+        result["filters_applied"]["min_dividend_yield_normalized"] = (
+            min_dividend_yield_normalized
+        )
 
     try:
-        # Import StockScreener and StockField from tvscreener
         try:
-            from tvscreener import StockField
+            tvscreener = _import_tvscreener()
+            StockField = tvscreener.StockField
+            Market = tvscreener.Market
         except ImportError:
             error_msg = "tvscreener library not installed, cannot use StockScreener"
             logger.warning("[Screen-US-TV] %s", error_msg)
             result["error"] = error_msg
             return result
 
-        # Build columns list - start with essential fields
+        market_cap_field = _get_tvscreener_attr(
+            StockField,
+            "MARKET_CAPITALIZATION",
+            "MARKET_CAP_BASIC",
+        )
+        pe_field = _get_tvscreener_attr(
+            StockField,
+            "PRICE_TO_EARNINGS_RATIO_TTM",
+            "PRICE_TO_EARNINGS_TTM",
+        )
+        dividend_field = _get_tvscreener_attr(
+            StockField,
+            "DIVIDEND_YIELD_FORWARD",
+            "DIVIDEND_YIELD_RECENT",
+        )
+
+        if sort_by == "market_cap" and market_cap_field is None:
+            result["error"] = "tvscreener market-cap field unavailable"
+            return result
+        if sort_by == "dividend_yield" and dividend_field is None:
+            result["error"] = "tvscreener dividend-yield field unavailable"
+            return result
+        if min_market_cap is not None and market_cap_field is None:
+            result["error"] = "tvscreener market-cap field unavailable"
+            return result
+        if max_per is not None and pe_field is None:
+            result["error"] = "tvscreener PE field unavailable"
+            return result
+        if min_dividend_yield is not None and dividend_field is None:
+            result["error"] = "tvscreener dividend-yield field unavailable"
+            return result
+
         columns = [
             StockField.ACTIVE_SYMBOL,
+            StockField.DESCRIPTION,
             StockField.NAME,
             StockField.PRICE,
             StockField.RELATIVE_STRENGTH_INDEX_14,
@@ -1490,32 +1706,33 @@ async def _screen_us_via_tvscreener(
             StockField.VOLUME,
             StockField.CHANGE_PERCENT,
         ]
+        if market_cap_field is not None:
+            columns.append(market_cap_field)
+        if pe_field is not None:
+            columns.append(pe_field)
+        if dividend_field is not None:
+            columns.append(dividend_field)
 
-        # Try to add COUNTRY field for filtering
         try:
             columns.append(StockField.COUNTRY)
         except AttributeError:
             logger.warning("[Screen-US-TV] COUNTRY field not available in StockField")
 
-        # Build WHERE clause for filtering using Field conditions (not strings)
         where_conditions = []
 
-        # Filter by RSI range using Field conditions
         if min_rsi is not None:
             where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 >= min_rsi)
         if max_rsi is not None:
             where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 <= max_rsi)
 
-        # Filter by minimum ADX using Field conditions
         if min_adx is not None:
             where_conditions.append(StockField.AVERAGE_DIRECTIONAL_INDEX_14 >= min_adx)
-
-        # Combine conditions using & operator (not string concatenation)
-        where_clause = None
-        if where_conditions:
-            where_clause = where_conditions[0]
-            for condition in where_conditions[1:]:
-                where_clause = where_clause & condition
+        if min_market_cap is not None and market_cap_field is not None:
+            where_conditions.append(market_cap_field >= min_market_cap)
+        if max_per is not None and pe_field is not None:
+            where_conditions.append(pe_field <= max_per)
+        if min_dividend_yield_normalized is not None and dividend_field is not None:
+            where_conditions.append(dividend_field >= min_dividend_yield_normalized)
 
         logger.info(
             "[Screen-US-TV] Querying StockScreener for US stocks "
@@ -1526,13 +1743,13 @@ async def _screen_us_via_tvscreener(
             limit,
         )
 
-        # Query StockScreener with country parameter (service handles country filtering)
         tvscreener_service = TvScreenerService(timeout=30.0)
         df = await tvscreener_service.query_stock_screener(
             columns=columns,
-            where_clause=where_clause,  # Field condition object (not string)
-            country="United States",  # Use dedicated country parameter
-            limit=None,  # Get all matching, we'll limit after sorting
+            where_clause=where_conditions,
+            country="United States",
+            markets=[Market.AMERICA],
+            limit=None,
         )
 
         if df.empty:
@@ -1541,48 +1758,56 @@ async def _screen_us_via_tvscreener(
 
         logger.info("[Screen-US-TV] StockScreener returned %d US stocks", len(df))
 
-        # Convert DataFrame to list of dictionaries
         stocks = []
         for _, row in df.iterrows():
+            price = _to_optional_float(row.get("price"))
+            if price is None or price <= 0:
+                continue
             stock = {
-                "symbol": str(row.get("active_symbol", "")).strip(),
-                "name": str(row.get("name", "")).strip(),
-                "price": _to_optional_float(row.get("price")),
+                "symbol": _strip_exchange_prefix(row.get("symbol")),
+                "name": _pick_display_name(row),
+                "price": price,
                 "rsi": _to_optional_float(row.get("relative_strength_index_14")),
                 "adx": _to_optional_float(row.get("average_directional_index_14")),
                 "volume": _to_optional_float(row.get("volume")),
                 "change_percent": _to_optional_float(row.get("change_percent")),
+                "market_cap": _to_optional_float(
+                    _get_first_present(row, "market_capitalization", "market_cap_basic")
+                ),
+                "per": _to_optional_float(
+                    _get_first_present(
+                        row,
+                        "price_to_earnings_ratio_ttm",
+                        "price_to_earnings_ttm",
+                    )
+                ),
+                "dividend_yield": _to_optional_float(
+                    _get_first_present(
+                        row,
+                        "dividend_yield_forward",
+                        "dividend_yield_recent",
+                    )
+                ),
+                "market": market,
                 "country": str(row.get("country", "")).strip()
                 if "country" in row
                 else "United States",
             }
+            stock["change_rate"] = stock["change_percent"]
             stocks.append(stock)
 
-        # Sort stocks based on sort_by parameter
-        sort_field_map = {
-            "rsi": "rsi",
-            "adx": "adx",
-            "volume": "volume",
-            "change": "change_percent",
-        }
-        sort_field = sort_field_map.get(sort_by, "rsi")
-
-        # Sort ascending for RSI (lower is more oversold), descending for others
-        reverse = sort_by != "rsi"
-        stocks.sort(
-            key=lambda s: (
-                s.get(sort_field)
-                if s.get(sort_field) is not None
-                else (float("inf") if not reverse else float("-inf"))
-            ),
-            reverse=reverse,
+        filtered = _apply_basic_filters(
+            stocks,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=None,
+            min_dividend_yield=min_dividend_yield_normalized,
+            max_rsi=max_rsi,
         )
+        ordered = _sort_and_limit(filtered, sort_by, sort_order, limit)
 
-        # Limit results
-        stocks = stocks[:limit]
-
-        result["stocks"] = stocks
-        result["count"] = len(stocks)
+        result["count"] = len(filtered)
+        result["stocks"] = ordered
 
         logger.info(
             "[Screen-US-TV] Returning %d US stocks sorted by %s",
@@ -1797,7 +2022,10 @@ async def _screen_crypto(
             f"{rate_limited_count} symbols; partial results returned"
         )
 
-    coingecko_data = coingecko_payload.get("data") or {}
+    coingecko_data = cast(
+        dict[str, dict[str, Any]],
+        coingecko_payload.get("data") or {},
+    )
     for item in candidates:
         symbol = _extract_market_symbol(
             item.get("symbol") or item.get("original_market")

@@ -160,7 +160,7 @@ resolved_name = await get_stock_name_by_code(korean_name)
 ```
 
 **StockScreener Capability:**
-- ✅ StockScreener returns both `TICKER` and `NAME` fields
+- ✅ StockScreener returns exchange-prefixed `Symbol`, code-like `Name`, and human `Description` fields
 - ⚠️ Requires querying TradingView API (not a simple lookup)
 - ❌ No offline/cached mapping available
 
@@ -297,14 +297,15 @@ Based on `_screen_kr_via_tvscreener()` implementation:
 
 ```python
 # Fields available from TradingView StockScreener
-StockField.TICKER              # Stock symbol
-StockField.NAME                # Company name
+StockField.ACTIVE_SYMBOL       # Active/inactive flag, not the public ticker
+StockField.DESCRIPTION         # Human-readable company name
+StockField.NAME                # Bare ticker/code
 StockField.PRICE               # Current price
 StockField.RELATIVE_STRENGTH_INDEX_14  # RSI indicator
 StockField.AVERAGE_DIRECTIONAL_INDEX_14  # ADX indicator
 StockField.VOLUME              # Trading volume
 StockField.CHANGE_PERCENT      # Daily % change
-StockField.COUNTRY             # For filtering (e.g., "South Korea")
+StockField.COUNTRY             # Additional country filter for America-market queries
 ```
 
 **Strengths:**
@@ -360,7 +361,7 @@ async def discover_korean_stock_fields():
     available_fields = await service.discover_fields(StockField)
 
     # Test query with extended fields
-    extended_columns = [StockField.TICKER, StockField.NAME]
+    extended_columns = [StockField.DESCRIPTION, StockField.NAME]
     for field_name in ["MARKET_CAP", "SECTOR", "PRICE_EARNINGS_RATIO", ...]:
         if hasattr(StockField, field_name):
             extended_columns.append(getattr(StockField, field_name))
@@ -500,15 +501,15 @@ async def _enrich_crypto_indicators(
     screener = CryptoScreener()
     df = await screener.query(
         columns=[
-            CryptoField.TICKER,
+            CryptoField.NAME,
             CryptoField.RELATIVE_STRENGTH_INDEX_14,
             CryptoField.AVERAGE_DIRECTIONAL_INDEX_14,  # If available
-            CryptoField.VOLUME,
+            CryptoField.VOLUME_24H_IN_USD,
         ],
-        where=f"ticker in ({','.join(symbol_mapping.keys())})",
+        where=CryptoField.EXCHANGE == "UPBIT",
     )
 
-    # 3. Apply RSI, ADX, volume to candidates
+    # 3. Reverse-map df["Symbol"] with tradingview_to_upbit and apply RSI, ADX, volume
     # ...
 ```
 
@@ -538,10 +539,10 @@ Update `_enrich_crypto_indicators()` to include market cap fields:
 ```python
 # Add to CryptoScreener query
 columns=[
-    CryptoField.TICKER,
+    CryptoField.NAME,
     CryptoField.RELATIVE_STRENGTH_INDEX_14,
     CryptoField.AVERAGE_DIRECTIONAL_INDEX_14,
-    CryptoField.VOLUME,
+    CryptoField.VOLUME_24H_IN_USD,
     CryptoField.MARKET_CAP,           # ← ADD THIS
     CryptoField.MARKET_CAP_RANK,      # ← ADD THIS
 ]
@@ -675,8 +676,8 @@ async def test_kr_fundamental_fields():
     for field_name in potential_fields:
         try:
             df = await service.query_stock_screener(
-                columns=[StockField.TICKER, field_name],
-                where="country = 'South Korea'",
+                columns=[StockField.DESCRIPTION, field_name],
+                markets=[Market.KOREA],
                 limit=10,
             )
             if field_name in df.columns and df[field_name].notna().any():

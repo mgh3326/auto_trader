@@ -1,12 +1,7 @@
-"""Integration tests for stock screening using tvscreener.
-
-This module tests the integration of TradingView's StockScreener for Korean
-and US stock screening with bulk indicator queries. Tests cover filtering,
-sorting, error handling, and end-to-end screening flow.
-"""
-
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pandas as pd
@@ -18,687 +13,488 @@ from app.mcp_server.tooling.analysis_screen_core import (
 )
 
 
+class _Condition:
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        return isinstance(other, _Condition) and self.label == other.label
+
+    def __and__(self, other: object) -> object:
+        raise AssertionError("stock filters must not be combined with '&'")
+
+
+class _Field:
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def __ge__(self, other: object) -> _Condition:
+        return _Condition(f"{self.label}>={other}")
+
+    def __le__(self, other: object) -> _Condition:
+        return _Condition(f"{self.label}<={other}")
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        return cast(bool, cast(object, _Condition(f"{self.label}=={other}")))
+
+
 @pytest.fixture
-def sample_kr_stock_df() -> pd.DataFrame:
-    """Sample DataFrame returned by StockScreener for Korean stocks."""
+def fake_tvscreener_module() -> SimpleNamespace:
+    return SimpleNamespace(
+        Market=SimpleNamespace(KOREA="KOREA", AMERICA="AMERICA"),
+        StockField=SimpleNamespace(
+            ACTIVE_SYMBOL=_Field("active_symbol"),
+            DESCRIPTION=_Field("description"),
+            NAME=_Field("name"),
+            PRICE=_Field("price"),
+            RELATIVE_STRENGTH_INDEX_14=_Field("rsi14"),
+            AVERAGE_DIRECTIONAL_INDEX_14=_Field("adx14"),
+            VOLUME=_Field("volume"),
+            CHANGE_PERCENT=_Field("change"),
+            MARKET_CAPITALIZATION=_Field("market_cap"),
+            PRICE_TO_EARNINGS_RATIO_TTM=_Field("pe_ttm"),
+            PRICE_TO_BOOK_FQ=_Field("pbr_fq"),
+            DIVIDEND_YIELD_FORWARD=_Field("dividend_yield_forward"),
+            COUNTRY=_Field("country"),
+        ),
+    )
+
+
+@pytest.fixture
+def normalized_kr_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "ticker": ["005930", "000660", "035420", "051910", "035720"],
-            "name": ["삼성전자", "SK하이닉스", "NAVER", "LG화학", "카카오"],
-            "price": [70000.0, 120000.0, 180000.0, 450000.0, 50000.0],
-            "relative_strength_index_14": [32.5, 28.3, 45.6, 72.8, 38.9],
-            "average_directional_index_14": [22.4, 35.7, 18.2, 42.5, 15.8],
-            "volume": [15000000.0, 8000000.0, 2000000.0, 500000.0, 5000000.0],
-            "change_percent": [2.5, -1.2, 0.8, -3.5, 1.5],
-            "country": ["South Korea"] * 5,
+            "symbol": ["KRX:005930", "KRX:000660"],
+            "description": ["Samsung Electronics Co., Ltd.", "SK hynix Inc."],
+            "name": ["005930", "000660"],
+            "price": [70000.0, 120000.0],
+            "relative_strength_index_14": [32.5, 28.3],
+            "average_directional_index_14": [22.4, 35.7],
+            "volume": [15_000_000.0, 8_000_000.0],
+            "change_percent": [2.5, -1.2],
+            "country": ["South Korea", "South Korea"],
         }
     )
 
 
 @pytest.fixture
-def sample_us_stock_df() -> pd.DataFrame:
-    """Sample DataFrame returned by StockScreener for US stocks."""
+def normalized_us_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
-            "ticker": ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"],
-            "name": [
+            "symbol": ["NASDAQ:AAPL", "NASDAQ:NVDA"],
+            "description": ["Apple Inc.", "NVIDIA Corporation"],
+            "name": ["AAPL", "NVDA"],
+            "price": [175.5, 890.0],
+            "relative_strength_index_14": [35.2, 47.6],
+            "average_directional_index_14": [25.6, 40.1],
+            "volume": [75_000_000.0, 44_000_000.0],
+            "change_percent": [1.2, 0.2],
+            "market_capitalization": [2_800_000_000_000.0, 2_200_000_000_000.0],
+            "price_to_earnings_ratio_ttm": [28.5, 44.1],
+            "dividend_yield_forward": [0.005, 0.0003],
+            "country": ["United States", "United States"],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_screen_kr_uses_market_korea_and_public_symbol_name_mapping(
+    normalized_kr_df: pd.DataFrame,
+    fake_tvscreener_module: SimpleNamespace,
+) -> None:
+    service = AsyncMock()
+    service.query_stock_screener.return_value = normalized_kr_df
+
+    async def mock_fetch_stock_all_cached(market: str):
+        if market == "STK":
+            return [
+                {
+                    "code": "005930",
+                    "short_code": "005930",
+                    "name": "삼성전자",
+                    "market": "KOSPI",
+                    "market_cap": 4800000,
+                },
+                {
+                    "code": "000660",
+                    "short_code": "000660",
+                    "name": "SK하이닉스",
+                    "market": "KOSPI",
+                    "market_cap": 1500000,
+                },
+            ]
+        return []
+
+    with (
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            return_value=service,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.fetch_stock_all_cached",
+            side_effect=mock_fetch_stock_all_cached,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.fetch_valuation_all_cached",
+            AsyncMock(return_value={}),
+        ),
+    ):
+        result = await _screen_kr_via_tvscreener(limit=5)
+
+    kwargs = service.query_stock_screener.await_args.kwargs
+    assert kwargs["markets"] == [fake_tvscreener_module.Market.KOREA]
+    assert kwargs["country"] is None
+    assert result["error"] is None
+    assert [stock["symbol"] for stock in result["stocks"]] == ["005930", "000660"]
+    assert result["stocks"][0]["name"] == "Samsung Electronics Co., Ltd."
+
+
+@pytest.mark.asyncio
+async def test_screen_us_uses_market_america_and_country_filter(
+    normalized_us_df: pd.DataFrame,
+    fake_tvscreener_module: SimpleNamespace,
+) -> None:
+    service = AsyncMock()
+    service.query_stock_screener.return_value = normalized_us_df
+
+    with (
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            return_value=service,
+        ),
+    ):
+        result = await _screen_us_via_tvscreener(limit=5, sort_order="asc")
+
+    kwargs = service.query_stock_screener.await_args.kwargs
+    assert kwargs["markets"] == [fake_tvscreener_module.Market.AMERICA]
+    assert kwargs["country"] == "United States"
+    assert [stock["symbol"] for stock in result["stocks"]] == ["AAPL", "NVDA"]
+    assert result["stocks"][0]["name"] == "Apple Inc."
+
+
+@pytest.mark.asyncio
+async def test_screen_us_passes_combined_filters_without_bitwise_and(
+    normalized_us_df: pd.DataFrame,
+    fake_tvscreener_module: SimpleNamespace,
+) -> None:
+    service = AsyncMock()
+    service.query_stock_screener.return_value = normalized_us_df
+
+    with (
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            return_value=service,
+        ),
+    ):
+        result = await _screen_us_via_tvscreener(max_rsi=40.0, min_adx=25.0, limit=5)
+
+    kwargs = service.query_stock_screener.await_args.kwargs
+    assert kwargs["where_clause"] == [
+        fake_tvscreener_module.StockField.RELATIVE_STRENGTH_INDEX_14 <= 40.0,
+        fake_tvscreener_module.StockField.AVERAGE_DIRECTIONAL_INDEX_14 >= 25.0,
+    ]
+    assert result["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_screen_kr_joins_requested_submarket_and_valuation_data(
+    fake_tvscreener_module: SimpleNamespace,
+) -> None:
+    service = AsyncMock()
+    service.query_stock_screener.return_value = pd.DataFrame(
+        {
+            "symbol": ["KRX:005930", "KRX:035720"],
+            "description": ["Samsung Electronics Co., Ltd.", "Kakao Corp."],
+            "name": ["005930", "035720"],
+            "price": [70000.0, 48000.0],
+            "relative_strength_index_14": [29.5, 18.2],
+            "average_directional_index_14": [20.0, 17.0],
+            "volume": [15_000_000.0, 8_000_000.0],
+            "change_percent": [1.1, 2.3],
+        }
+    )
+
+    async def mock_fetch_stock_all_cached(market: str):
+        if market == "STK":
+            return [
+                {
+                    "code": "005930",
+                    "short_code": "005930",
+                    "name": "삼성전자",
+                    "market": "KOSPI",
+                    "market_cap": 4800000,
+                    "close": 70000.0,
+                }
+            ]
+        if market == "KSQ":
+            return [
+                {
+                    "code": "035720",
+                    "short_code": "035720",
+                    "name": "카카오",
+                    "market": "KOSDAQ",
+                    "market_cap": 220000,
+                    "close": 48000.0,
+                }
+            ]
+        return []
+
+    async def mock_fetch_valuation_all_cached(market: str):
+        assert market == "STK"
+        return {
+            "005930": {"per": 12.5, "pbr": 1.2, "dividend_yield": 0.0256},
+            "035720": {"per": 18.4, "pbr": 1.8, "dividend_yield": 0.0},
+        }
+
+    with (
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            return_value=service,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.fetch_stock_all_cached",
+            side_effect=mock_fetch_stock_all_cached,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.fetch_valuation_all_cached",
+            side_effect=mock_fetch_valuation_all_cached,
+        ),
+    ):
+        result = await _screen_kr_via_tvscreener(
+            market="kospi",
+            max_rsi=35.0,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+    assert result["count"] == 1
+    assert [stock["symbol"] for stock in result["stocks"]] == ["005930"]
+    stock = result["stocks"][0]
+    assert stock["market"] == "KOSPI"
+    assert stock["market_cap"] == 4800000
+    assert stock["per"] == 12.5
+    assert stock["pbr"] == 1.2
+    assert stock["dividend_yield"] == 0.0256
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sort_order", "expected_symbols"),
+    [("asc", ["NVDA", "AAPL"]), ("desc", ["AAPL", "NVDA"])],
+)
+async def test_screen_us_honors_sort_order(
+    normalized_us_df: pd.DataFrame,
+    fake_tvscreener_module: SimpleNamespace,
+    sort_order: str,
+    expected_symbols: list[str],
+) -> None:
+    service = AsyncMock()
+    service.query_stock_screener.return_value = normalized_us_df
+
+    with (
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            return_value=service,
+        ),
+    ):
+        result = await _screen_us_via_tvscreener(
+            sort_by="change_rate",
+            sort_order=sort_order,
+            limit=5,
+        )
+
+    assert [stock["symbol"] for stock in result["stocks"]] == expected_symbols
+    assert result["filters_applied"]["sort_order"] == sort_order
+
+
+@pytest.mark.asyncio
+async def test_screen_us_adds_valuation_filters_and_applies_missing_value_backstop(
+    fake_tvscreener_module: SimpleNamespace,
+) -> None:
+    service = AsyncMock()
+    service.query_stock_screener.return_value = pd.DataFrame(
+        {
+            "symbol": ["NASDAQ:AAPL", "NASDAQ:NVDA", "NASDAQ:TSLA"],
+            "description": ["Apple Inc.", "NVIDIA Corporation", "Tesla, Inc."],
+            "name": ["AAPL", "NVDA", "TSLA"],
+            "price": [175.5, 890.0, 240.0],
+            "relative_strength_index_14": [35.2, 47.6, 28.0],
+            "average_directional_index_14": [25.6, 40.1, 20.0],
+            "volume": [75_000_000.0, 44_000_000.0, 60_000_000.0],
+            "change_percent": [1.2, 0.2, -0.5],
+            "market_capitalization": [2_800_000_000_000.0, 2_200_000_000_000.0, None],
+            "price_to_earnings_ratio_ttm": [28.5, 44.1, None],
+            "dividend_yield_forward": [0.005, 0.0003, None],
+            "country": ["United States", "United States", "United States"],
+        }
+    )
+
+    with (
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            return_value=service,
+        ),
+    ):
+        result = await _screen_us_via_tvscreener(
+            min_market_cap=2_000_000_000_000.0,
+            max_per=30.0,
+            min_dividend_yield=0.004,
+            sort_by="volume",
+            sort_order="desc",
+            limit=1,
+        )
+
+    kwargs = service.query_stock_screener.await_args.kwargs
+    assert kwargs["where_clause"] == [
+        fake_tvscreener_module.StockField.MARKET_CAPITALIZATION >= 2_000_000_000_000.0,
+        fake_tvscreener_module.StockField.PRICE_TO_EARNINGS_RATIO_TTM <= 30.0,
+        fake_tvscreener_module.StockField.DIVIDEND_YIELD_FORWARD >= 0.004,
+    ]
+    assert result["count"] == 1
+    assert [stock["symbol"] for stock in result["stocks"]] == ["AAPL"]
+    assert result["stocks"][0]["market_cap"] == 2_800_000_000_000.0
+    assert result["stocks"][0]["per"] == 28.5
+    assert result["stocks"][0]["dividend_yield"] == 0.005
+
+
+@pytest.mark.asyncio
+async def test_screen_us_drops_rows_without_usable_price(
+    fake_tvscreener_module: SimpleNamespace,
+) -> None:
+    service = AsyncMock()
+    service.query_stock_screener.return_value = pd.DataFrame(
+        {
+            "symbol": ["NASDAQ:AAPL", "NASDAQ:NVDA", "NASDAQ:MSFT"],
+            "description": [
                 "Apple Inc.",
-                "Microsoft Corp.",
-                "Alphabet Inc.",
-                "Amazon.com Inc.",
-                "Tesla Inc.",
+                "NVIDIA Corporation",
+                "Microsoft Corporation",
             ],
-            "price": [175.50, 380.25, 140.80, 155.30, 210.45],
-            "relative_strength_index_14": [35.2, 42.8, 29.5, 68.3, 55.7],
-            "average_directional_index_14": [25.6, 18.9, 32.4, 45.2, 20.1],
-            "volume": [75000000.0, 45000000.0, 32000000.0, 28000000.0, 125000000.0],
-            "change_percent": [1.2, 0.5, -0.8, 3.2, -2.1],
-            "country": ["United States"] * 5,
+            "name": ["AAPL", "NVDA", "MSFT"],
+            "price": [175.5, None, 0.0],
+            "relative_strength_index_14": [35.2, 47.6, 41.0],
+            "average_directional_index_14": [25.6, 40.1, 22.0],
+            "volume": [75_000_000.0, 44_000_000.0, 31_000_000.0],
+            "change_percent": [1.2, 0.2, -0.1],
+            "country": ["United States", "United States", "United States"],
         }
     )
 
+    with (
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            return_value=service,
+        ),
+    ):
+        result = await _screen_us_via_tvscreener(limit=5)
 
-class TestKoreanStockScreening:
-    """Test Korean stock screening via tvscreener."""
+    assert result["count"] == 1
+    assert [stock["symbol"] for stock in result["stocks"]] == ["AAPL"]
+    assert result["stocks"][0]["price"] == 175.5
 
-    @pytest.mark.asyncio
-    async def test_kr_screening_basic_no_filters(self, sample_kr_stock_df):
-        """Test basic Korean stock screening without filters."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                return_value=sample_kr_stock_df
-            )
-            mock_service.return_value = mock_instance
 
-            result = await _screen_kr_via_tvscreener(limit=5)
+@pytest.mark.asyncio
+async def test_screen_kr_falls_back_to_name_when_description_missing(
+    normalized_kr_df: pd.DataFrame,
+    fake_tvscreener_module: SimpleNamespace,
+) -> None:
+    service = AsyncMock()
+    df = normalized_kr_df.copy()
+    df.loc[0, "description"] = None
+    service.query_stock_screener.return_value = df.iloc[[0]]
 
-            assert result["source"] == "tvscreener"
-            assert result["count"] == 5
-            assert len(result["stocks"]) == 5
-            assert result["error"] is None
-
-            # Verify stocks have expected fields
-            first_stock = result["stocks"][0]
-            assert "symbol" in first_stock
-            assert "name" in first_stock
-            assert "price" in first_stock
-            assert "rsi" in first_stock
-            assert "adx" in first_stock
-            assert "volume" in first_stock
-            assert "change_percent" in first_stock
-            assert "country" in first_stock
-
-    @pytest.mark.asyncio
-    async def test_kr_screening_with_rsi_filter(self, sample_kr_stock_df):
-        """Test Korean stock screening with RSI range filter."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            # Filter to only stocks with RSI between 28 and 40
-            filtered_df = sample_kr_stock_df[
-                (sample_kr_stock_df["relative_strength_index_14"] >= 28)
-                & (sample_kr_stock_df["relative_strength_index_14"] <= 40)
+    async def mock_fetch_stock_all_cached(market: str):
+        if market == "STK":
+            return [
+                {
+                    "code": "005930",
+                    "short_code": "005930",
+                    "name": "삼성전자",
+                    "market": "KOSPI",
+                    "market_cap": 4800000,
+                }
             ]
-            mock_instance.query_stock_screener = AsyncMock(return_value=filtered_df)
-            mock_service.return_value = mock_instance
-
-            result = await _screen_kr_via_tvscreener(
-                min_rsi=28.0,
-                max_rsi=40.0,
-                limit=10,
-            )
-
-            assert result["error"] is None
-            assert (
-                result["count"] == 3
-            )  # 삼성전자(32.5), SK하이닉스(28.3), 카카오(38.9)
-            assert result["filters_applied"]["min_rsi"] == 28.0
-            assert result["filters_applied"]["max_rsi"] == 40.0
-
-            # Verify all stocks have RSI in the expected range
-            for stock in result["stocks"]:
-                assert stock["rsi"] >= 28.0
-                assert stock["rsi"] <= 40.0
-
-    @pytest.mark.asyncio
-    async def test_kr_screening_with_adx_filter(self, sample_kr_stock_df):
-        """Test Korean stock screening with minimum ADX filter."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            # Filter to only stocks with ADX >= 30
-            filtered_df = sample_kr_stock_df[
-                sample_kr_stock_df["average_directional_index_14"] >= 30
-            ]
-            mock_instance.query_stock_screener = AsyncMock(return_value=filtered_df)
-            mock_service.return_value = mock_instance
-
-            result = await _screen_kr_via_tvscreener(
-                min_adx=30.0,
-                limit=10,
-            )
-
-            assert result["error"] is None
-            assert result["count"] == 2  # SK하이닉스(35.7), LG화학(42.5)
-            assert result["filters_applied"]["min_adx"] == 30.0
-
-            # Verify all stocks have ADX >= 30
-            for stock in result["stocks"]:
-                assert stock["adx"] >= 30.0
-
-    @pytest.mark.asyncio
-    async def test_kr_screening_sorting_by_rsi(self, sample_kr_stock_df):
-        """Test Korean stock screening sorted by RSI ascending."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                return_value=sample_kr_stock_df
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_kr_via_tvscreener(
-                sort_by="rsi",
-                limit=5,
-            )
-
-            assert result["error"] is None
-            assert result["count"] == 5
-
-            # Verify stocks are sorted by RSI ascending (most oversold first)
-            rsi_values = [stock["rsi"] for stock in result["stocks"]]
-            assert rsi_values == sorted(rsi_values)
-
-    @pytest.mark.asyncio
-    async def test_kr_screening_sorting_by_volume(self, sample_kr_stock_df):
-        """Test Korean stock screening sorted by volume descending."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                return_value=sample_kr_stock_df
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_kr_via_tvscreener(
-                sort_by="volume",
-                limit=5,
-            )
-
-            assert result["error"] is None
-            assert result["count"] == 5
-
-            # Verify stocks are sorted by volume descending (highest first)
-            volume_values = [stock["volume"] for stock in result["stocks"]]
-            assert volume_values == sorted(volume_values, reverse=True)
-
-    @pytest.mark.asyncio
-    async def test_kr_screening_sorting_by_adx(self, sample_kr_stock_df):
-        """Test Korean stock screening sorted by ADX descending."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                return_value=sample_kr_stock_df
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_kr_via_tvscreener(
-                sort_by="adx",
-                limit=5,
-            )
-
-            assert result["error"] is None
-            assert result["count"] == 5
-
-            # Verify stocks are sorted by ADX descending (highest trend first)
-            adx_values = [stock["adx"] for stock in result["stocks"]]
-            assert adx_values == sorted(adx_values, reverse=True)
-
-    @pytest.mark.asyncio
-    async def test_kr_screening_empty_dataframe(self):
-        """Test Korean stock screening when StockScreener returns empty DataFrame."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=pd.DataFrame())
-            mock_service.return_value = mock_instance
-
-            result = await _screen_kr_via_tvscreener(
-                min_rsi=10.0,
-                max_rsi=15.0,
-            )
-
-            assert result["count"] == 0
-            assert len(result["stocks"]) == 0
-            assert result["error"] is None
-
-    @pytest.mark.asyncio
-    async def test_kr_screening_import_error(self):
-        """Test Korean stock screening when tvscreener not installed."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener"
-        ) as mock_screen:
-            # Simulate ImportError
-            result = {
-                "stocks": [],
-                "source": "tvscreener",
-                "count": 0,
-                "filters_applied": {},
-                "error": "tvscreener library not installed, cannot use StockScreener",
-            }
-            mock_screen.return_value = result
-
-            result = await mock_screen()
-
-            assert (
-                result["error"]
-                == "tvscreener library not installed, cannot use StockScreener"
-            )
-            assert result["count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_kr_screening_rate_limit_error(self):
-        """Test Korean stock screening when rate limit is hit."""
-        from app.services.tvscreener_service import TvScreenerError
-
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                side_effect=TvScreenerError("Rate limit exceeded")
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_kr_via_tvscreener(limit=10)
-
-            assert result["error"] is not None
-            assert "StockScreener query failed" in result["error"]
-            assert result["count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_kr_screening_timeout_error(self):
-        """Test Korean stock screening when query times out."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                side_effect=TimeoutError("Query timed out")
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_kr_via_tvscreener(limit=10)
-
-            assert result["error"] is not None
-            assert "timed out" in result["error"]
-            assert result["count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_kr_screening_limit_parameter(self, sample_kr_stock_df):
-        """Test Korean stock screening respects limit parameter."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                return_value=sample_kr_stock_df
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_kr_via_tvscreener(limit=3)
-
-            assert result["count"] == 3
-            assert len(result["stocks"]) == 3
-            assert result["filters_applied"]["limit"] == 3
-
-
-class TestUSStockScreening:
-    """Test US stock screening via tvscreener."""
-
-    @pytest.mark.asyncio
-    async def test_us_screening_basic_no_filters(self, sample_us_stock_df):
-        """Test basic US stock screening without filters."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                return_value=sample_us_stock_df
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_us_via_tvscreener(limit=5)
-
-            assert result["source"] == "tvscreener"
-            assert result["count"] == 5
-            assert len(result["stocks"]) == 5
-            assert result["error"] is None
-
-            # Verify stocks have expected fields
-            first_stock = result["stocks"][0]
-            assert "symbol" in first_stock
-            assert "name" in first_stock
-            assert "price" in first_stock
-            assert "rsi" in first_stock
-            assert "adx" in first_stock
-            assert "volume" in first_stock
-            assert "change_percent" in first_stock
-            assert "country" in first_stock
-
-    @pytest.mark.asyncio
-    async def test_us_screening_with_rsi_filter(self, sample_us_stock_df):
-        """Test US stock screening with RSI range filter."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            # Filter to only stocks with RSI between 25 and 45
-            filtered_df = sample_us_stock_df[
-                (sample_us_stock_df["relative_strength_index_14"] >= 25)
-                & (sample_us_stock_df["relative_strength_index_14"] <= 45)
-            ]
-            mock_instance.query_stock_screener = AsyncMock(return_value=filtered_df)
-            mock_service.return_value = mock_instance
-
-            result = await _screen_us_via_tvscreener(
-                min_rsi=25.0,
-                max_rsi=45.0,
-                limit=10,
-            )
-
-            assert result["error"] is None
-            assert result["count"] == 3  # AAPL(35.2), MSFT(42.8), GOOGL(29.5)
-            assert result["filters_applied"]["min_rsi"] == 25.0
-            assert result["filters_applied"]["max_rsi"] == 45.0
-
-            # Verify all stocks have RSI in the expected range
-            for stock in result["stocks"]:
-                assert stock["rsi"] >= 25.0
-                assert stock["rsi"] <= 45.0
-
-    @pytest.mark.asyncio
-    async def test_us_screening_with_adx_filter(self, sample_us_stock_df):
-        """Test US stock screening with minimum ADX filter."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            # Filter to only stocks with ADX >= 30
-            filtered_df = sample_us_stock_df[
-                sample_us_stock_df["average_directional_index_14"] >= 30
-            ]
-            mock_instance.query_stock_screener = AsyncMock(return_value=filtered_df)
-            mock_service.return_value = mock_instance
-
-            result = await _screen_us_via_tvscreener(
-                min_adx=30.0,
-                limit=10,
-            )
-
-            assert result["error"] is None
-            assert result["count"] == 2  # GOOGL(32.4), AMZN(45.2)
-            assert result["filters_applied"]["min_adx"] == 30.0
-
-            # Verify all stocks have ADX >= 30
-            for stock in result["stocks"]:
-                assert stock["adx"] >= 30.0
-
-    @pytest.mark.asyncio
-    async def test_us_screening_sorting_by_rsi(self, sample_us_stock_df):
-        """Test US stock screening sorted by RSI ascending."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                return_value=sample_us_stock_df
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_us_via_tvscreener(
-                sort_by="rsi",
-                limit=5,
-            )
-
-            assert result["error"] is None
-            assert result["count"] == 5
-
-            # Verify stocks are sorted by RSI ascending (most oversold first)
-            rsi_values = [stock["rsi"] for stock in result["stocks"]]
-            assert rsi_values == sorted(rsi_values)
-
-    @pytest.mark.asyncio
-    async def test_us_screening_sorting_by_volume(self, sample_us_stock_df):
-        """Test US stock screening sorted by volume descending."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                return_value=sample_us_stock_df
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_us_via_tvscreener(
-                sort_by="volume",
-                limit=5,
-            )
-
-            assert result["error"] is None
-            assert result["count"] == 5
-
-            # Verify stocks are sorted by volume descending (highest first)
-            volume_values = [stock["volume"] for stock in result["stocks"]]
-            assert volume_values == sorted(volume_values, reverse=True)
-
-    @pytest.mark.asyncio
-    async def test_us_screening_sorting_by_change(self, sample_us_stock_df):
-        """Test US stock screening sorted by change_percent descending."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                return_value=sample_us_stock_df
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_us_via_tvscreener(
-                sort_by="change",
-                limit=5,
-            )
-
-            assert result["error"] is None
-            assert result["count"] == 5
-
-            # Verify stocks are sorted by change_percent descending (biggest gainers first)
-            change_values = [stock["change_percent"] for stock in result["stocks"]]
-            assert change_values == sorted(change_values, reverse=True)
-
-    @pytest.mark.asyncio
-    async def test_us_screening_empty_dataframe(self):
-        """Test US stock screening when StockScreener returns empty DataFrame."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=pd.DataFrame())
-            mock_service.return_value = mock_instance
-
-            result = await _screen_us_via_tvscreener(
-                min_rsi=10.0,
-                max_rsi=15.0,
-            )
-
-            assert result["count"] == 0
-            assert len(result["stocks"]) == 0
-            assert result["error"] is None
-
-    @pytest.mark.asyncio
-    async def test_us_screening_import_error(self):
-        """Test US stock screening when tvscreener not installed."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener"
-        ) as mock_screen:
-            # Simulate ImportError
-            result = {
-                "stocks": [],
-                "source": "tvscreener",
-                "count": 0,
-                "filters_applied": {},
-                "error": "tvscreener library not installed, cannot use StockScreener",
-            }
-            mock_screen.return_value = result
-
-            result = await mock_screen()
-
-            assert (
-                result["error"]
-                == "tvscreener library not installed, cannot use StockScreener"
-            )
-            assert result["count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_us_screening_rate_limit_error(self):
-        """Test US stock screening when rate limit is hit."""
-        from app.services.tvscreener_service import TvScreenerError
-
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                side_effect=TvScreenerError("Rate limit exceeded")
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_us_via_tvscreener(limit=10)
-
-            assert result["error"] is not None
-            assert "StockScreener query failed" in result["error"]
-            assert result["count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_us_screening_timeout_error(self):
-        """Test US stock screening when query times out."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(
-                side_effect=TimeoutError("Query timed out")
-            )
-            mock_service.return_value = mock_instance
-
-            result = await _screen_us_via_tvscreener(limit=10)
-
-            assert result["error"] is not None
-            assert "timed out" in result["error"]
-            assert result["count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_us_screening_combined_filters(self, sample_us_stock_df):
-        """Test US stock screening with combined RSI and ADX filters."""
-        with patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
-        ) as mock_service:
-            mock_instance = AsyncMock()
-            # Filter stocks with RSI <= 40 AND ADX >= 25
-            filtered_df = sample_us_stock_df[
-                (sample_us_stock_df["relative_strength_index_14"] <= 40)
-                & (sample_us_stock_df["average_directional_index_14"] >= 25)
-            ]
-            mock_instance.query_stock_screener = AsyncMock(return_value=filtered_df)
-            mock_service.return_value = mock_instance
-
-            result = await _screen_us_via_tvscreener(
-                max_rsi=40.0,
-                min_adx=25.0,
-                limit=10,
-            )
-
-            assert result["error"] is None
-            assert result["count"] == 2  # AAPL(35.2, 25.6), GOOGL(29.5, 32.4)
-
-            # Verify all stocks meet both criteria
-            for stock in result["stocks"]:
-                assert stock["rsi"] <= 40.0
-                assert stock["adx"] >= 25.0
+        return []
+
+    with (
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            return_value=service,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.fetch_stock_all_cached",
+            side_effect=mock_fetch_stock_all_cached,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.fetch_valuation_all_cached",
+            AsyncMock(return_value={}),
+        ),
+    ):
+        result = await _screen_kr_via_tvscreener(limit=1)
+
+    assert result["stocks"][0]["name"] == "005930"
 
 
 class TestStockScreeningIntegration:
-    """Integration tests that call real tvscreener API."""
-
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_kr_screening_real_api(self):
-        """Test Korean stock screening with real TradingView API call."""
-        pytest.importorskip("tvscreener", reason="tvscreener not installed")
+    async def test_kr_screening_real_api(self) -> None:
+        pytest.importorskip("tvscreener")
 
-        result = await _screen_kr_via_tvscreener(
-            max_rsi=35.0,
-            limit=5,
-        )
+        result = await _screen_kr_via_tvscreener(limit=5)
 
-        # Verify structure even if no results (depending on market conditions)
-        assert "stocks" in result
-        assert "source" in result
         assert result["source"] == "tvscreener"
-        assert "count" in result
-        assert "filters_applied" in result
-        assert "error" in result
-
-        # If we got results, verify structure
-        if result["count"] > 0:
-            first_stock = result["stocks"][0]
-            assert "symbol" in first_stock
-            assert "name" in first_stock
-            assert "price" in first_stock
-            assert "rsi" in first_stock
-            assert "adx" in first_stock
-            # Verify RSI filter was applied
-            if first_stock["rsi"] is not None:
-                assert first_stock["rsi"] <= 35.0
+        if result["error"] is not None and "KRX session expired" in result["error"]:
+            pytest.skip("KRX universe unavailable for live tvscreener integration test")
+        assert result["error"] is None
+        if result["stocks"]:
+            first = result["stocks"][0]
+            assert ":" not in first["symbol"]
+            assert first["name"]
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_us_screening_real_api(self):
-        """Test US stock screening with real TradingView API call."""
-        pytest.importorskip("tvscreener", reason="tvscreener not installed")
+    async def test_us_screening_real_api(self) -> None:
+        pytest.importorskip("tvscreener")
 
-        result = await _screen_us_via_tvscreener(
-            max_rsi=40.0,
-            sort_by="volume",
-            limit=10,
-        )
+        result = await _screen_us_via_tvscreener(limit=5)
 
-        # Verify structure even if no results
-        assert "stocks" in result
-        assert "source" in result
         assert result["source"] == "tvscreener"
-        assert "count" in result
-        assert "filters_applied" in result
-        assert "error" in result
-
-        # If we got results, verify structure and sorting
-        if result["count"] > 0:
-            first_stock = result["stocks"][0]
-            assert "symbol" in first_stock
-            assert "name" in first_stock
-            assert "price" in first_stock
-            assert "rsi" in first_stock
-            assert "volume" in first_stock
-            # Verify RSI filter was applied
-            if first_stock["rsi"] is not None:
-                assert first_stock["rsi"] <= 40.0
-
-    @pytest.mark.integration
-    @pytest.mark.asyncio
-    async def test_kr_screening_adx_availability(self):
-        """Verify ADX field is available for Korean stocks."""
-        pytest.importorskip("tvscreener", reason="tvscreener not installed")
-
-        result = await _screen_kr_via_tvscreener(
-            min_adx=20.0,
-            limit=5,
-        )
-
-        # Verify we can query with ADX filter without errors
-        assert result["error"] is None or "not available" in str(result["error"])
-
-        # If we got results, verify ADX is populated
-        if result["count"] > 0:
-            first_stock = result["stocks"][0]
-            # ADX should be present (may be None if not available)
-            assert "adx" in first_stock
-
-    @pytest.mark.integration
-    @pytest.mark.asyncio
-    async def test_us_screening_adx_availability(self):
-        """Verify ADX field is available for US stocks."""
-        pytest.importorskip("tvscreener", reason="tvscreener not installed")
-
-        result = await _screen_us_via_tvscreener(
-            min_adx=25.0,
-            limit=5,
-        )
-
-        # Verify we can query with ADX filter without errors
-        assert result["error"] is None or "not available" in str(result["error"])
-
-        # If we got results, verify ADX is populated
-        if result["count"] > 0:
-            first_stock = result["stocks"][0]
-            # ADX should be present and likely populated for US stocks
-            assert "adx" in first_stock
+        assert result["error"] is None
+        if result["stocks"]:
+            first = result["stocks"][0]
+            assert ":" not in first["symbol"]
+            assert first["name"]
