@@ -435,6 +435,7 @@ class TestSymbolNotFound:
 class TestSymbolNormalizationIntegration:
     """Test symbol normalization for all tools that accept int symbols."""
 
+    @pytest.mark.asyncio
     async def test_get_quote_numeric_symbol(self, monkeypatch):
         """Test that get_quote accepts numeric Korean stock symbols."""
         tools = build_tools()
@@ -459,6 +460,7 @@ class TestSymbolNormalizationIntegration:
         result = await tools["get_quote"]("12450", market="kr")
         assert result["symbol"] == "012450"
 
+    @pytest.mark.asyncio
     async def test_get_valuation_numeric_symbol(self, monkeypatch):
         """Test that get_valuation accepts numeric Korean stock symbols."""
         tools = build_tools()
@@ -483,6 +485,7 @@ class TestSymbolNormalizationIntegration:
         result = await tools["get_valuation"]("12450", market="kr")
         assert result["symbol"] == "012450"
 
+    @pytest.mark.asyncio
     async def test_get_news_numeric_symbol(self, monkeypatch):
         """Test that get_news accepts numeric Korean stock symbols."""
         tools = build_tools()
