@@ -279,3 +279,158 @@ class AnalyzeStep(TradingStep):
                 f"분석 실패: {e}",
                 should_continue=False,  # STOP_STOCK
             )
+
+
+class CancelBuyOrdersStep(TradingStep):
+    """
+    Step that cancels pending buy orders for a stock.
+
+    Cancels all pending buy orders before placing new buy orders.
+    Uses CONTINUE failure policy - cancellation failures don't stop processing.
+    """
+
+    @property
+    def name(self) -> str:
+        return "cancel_buy_orders"
+
+    @property
+    def failure_policy(self) -> FailurePolicy:
+        """Cancellation failures should not stop processing."""
+        return FailurePolicy.CONTINUE
+
+    async def execute(self, context: TradingContext) -> StepOutcome:
+        """Cancel all pending buy orders for the stock."""
+        self._log_start(context)
+
+        if not context.open_orders:
+            self._log_skip(context, "미체결 주문 없음")
+            return self._skip("미체결 주문 없음")
+
+        # Determine if domestic or overseas based on exchange_code
+        is_domestic = not context.exchange_code
+
+        # Filter buy orders (sll_buy_dvsn_cd: 01=매도, 02=매수)
+        target_code = "02"  # buy
+        target_orders = []
+
+        for order in context.open_orders:
+            dvsn_code = (
+                order.get("sll_buy_dvsn_cd")
+                or order.get("SLL_BUY_DVSN_CD")
+                or order.get("ord_dvsn_cd")
+                or order.get("ORD_DVSN_CD")
+            )
+            if not dvsn_code:
+                continue
+
+            # For domestic orders
+            if is_domestic:
+                stock_code = order.get("pdno") or order.get("PDNO")
+                if stock_code == context.symbol and str(dvsn_code) == target_code:
+                    target_orders.append(order)
+            # For overseas orders
+            else:
+                order_symbol = order.get("ovrs_pdno") or order.get("OVRS_PDNO")
+                # Normalize symbol for comparison (handle format differences)
+                from app.core.symbol import to_db_symbol
+
+                normalized_order_symbol = to_db_symbol(order_symbol or "")
+                if (
+                    normalized_order_symbol == context.symbol
+                    and str(dvsn_code) == target_code
+                ):
+                    target_orders.append(order)
+
+        if not target_orders:
+            self._log_skip(context, "미체결 매수 주문 없음")
+            return self._skip("미체결 매수 주문 없음")
+
+        cancelled = 0
+        failed = 0
+
+        for order in target_orders:
+            try:
+                if is_domestic:
+                    await self._cancel_domestic_order(context, order)
+                else:
+                    await self._cancel_overseas_order(context, order)
+                cancelled += 1
+            except Exception as e:
+                logger.warning(
+                    "[Step:%s] 주문 취소 실패 (%s): %s",
+                    self.name,
+                    context.symbol,
+                    e,
+                )
+                failed += 1
+
+        result_msg = f"{cancelled}/{len(target_orders)}건 취소 완료"
+        if failed > 0:
+            result_msg += f" ({failed}건 실패)"
+
+        self._log_success(context, result_msg)
+        return self._success(
+            result_msg,
+            data={"cancelled": cancelled, "failed": failed, "total": len(target_orders)},
+        )
+
+    async def _cancel_domestic_order(
+        self, context: TradingContext, order: dict
+    ) -> None:
+        """Cancel a domestic buy order."""
+        order_number = (
+            order.get("odno")
+            or order.get("ODNO")
+            or order.get("orgn_odno")
+            or order.get("ORGN_ODNO")
+        )
+        order_qty = int(
+            float(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
+        )
+        order_price = int(
+            float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0)
+        )
+        order_orgno = (
+            order.get("ord_gno_brno")
+            or order.get("ORD_GNO_BRNO")
+            or order.get("krx_fwdg_ord_orgno")
+            or order.get("KRX_FWDG_ORD_ORGNO")
+        )
+
+        if not order_number:
+            raise ValueError("주문번호 없음")
+
+        await context.kis.cancel_korea_order(
+            order_number=order_number,
+            stock_code=context.symbol,
+            quantity=order_qty,
+            price=order_price,
+            order_type="buy",
+            is_mock=False,
+            krx_fwdg_ord_orgno=str(order_orgno).strip() if order_orgno else None,
+        )
+
+    async def _cancel_overseas_order(
+        self, context: TradingContext, order: dict
+    ) -> None:
+        """Cancel an overseas buy order."""
+        order_number = (
+            order.get("odno")
+            or order.get("ODNO")
+            or order.get("ord_no")
+            or order.get("ORD_NO")
+        )
+        order_qty = int(
+            float(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
+        )
+
+        if not order_number:
+            raise ValueError("주문번호 없음")
+
+        await context.kis.cancel_overseas_order(
+            order_number=order_number,
+            symbol=context.symbol,
+            exchange_code=context.exchange_code,
+            quantity=order_qty,
+            is_mock=False,
+        )
