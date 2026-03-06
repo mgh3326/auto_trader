@@ -19,13 +19,29 @@ class WorkerInitMiddleware(TaskiqMiddleware):
                 enable_httpx=True,
             )
 
-            if settings.telegram_token and settings.telegram_chat_id:
+            # Check if any notification system is configured
+            has_discord = any([
+                settings.discord_webhook_us,
+                settings.discord_webhook_kr,
+                settings.discord_webhook_crypto,
+                settings.discord_webhook_alerts,
+            ])
+            has_telegram = settings.telegram_token and settings.telegram_chat_id
+
+            if has_discord or has_telegram:
                 try:
                     trade_notifier = get_trade_notifier()
+                    bot_token = settings.telegram_token or ""
+                    chat_ids = settings.telegram_chat_ids if has_telegram else []
+
                     trade_notifier.configure(
-                        bot_token=settings.telegram_token,
-                        chat_ids=settings.telegram_chat_ids,
+                        bot_token=bot_token,
+                        chat_ids=chat_ids,
                         enabled=True,
+                        discord_webhook_us=settings.discord_webhook_us,
+                        discord_webhook_kr=settings.discord_webhook_kr,
+                        discord_webhook_crypto=settings.discord_webhook_crypto,
+                        discord_webhook_alerts=settings.discord_webhook_alerts,
                     )
                     logger.info("Worker: Trade notifier initialized")
                 except Exception as exc:

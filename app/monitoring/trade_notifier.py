@@ -530,7 +530,7 @@ class TradeNotifier:
                 headers={"Content-Type": "application/json"},
             )
             response.raise_for_status()
-            logger.info(f"Embed sent to Discord webhook")
+            logger.info("Embed sent to Discord webhook")
             return True
 
         except Exception as e:
@@ -565,10 +565,10 @@ class TradeNotifier:
         timestamp = format_datetime()
 
         lines = [
-            f"*💰 매수 주문 접수*",
-            f"",
+            "*💰 매수 주문 접수*",
+            "",
             f"🕒 {timestamp}",
-            f"",
+            "",
             f"*종목:* {korean_name} \\({symbol}\\)",
             f"*시장:* {market_type}",
             f"*주문 수:* {order_count}건",
@@ -619,10 +619,10 @@ class TradeNotifier:
         timestamp = format_datetime()
 
         lines = [
-            f"*💸 매도 주문 접수*",
-            f"",
+            "*💸 매도 주문 접수*",
+            "",
             f"🕒 {timestamp}",
-            f"",
+            "",
             f"*종목:* {korean_name} \\({symbol}\\)",
             f"*시장:* {market_type}",
             f"*주문 수:* {order_count}건",
@@ -668,10 +668,10 @@ class TradeNotifier:
         timestamp = format_datetime()
 
         return "\n".join([
-            f"*🚫 주문 취소*",
-            f"",
+            "*🚫 주문 취소*",
+            "",
             f"🕒 {timestamp}",
-            f"",
+            "",
             f"*종목:* {korean_name} \\({symbol}\\)",
             f"*시장:* {market_type}",
             f"*취소 유형:* {order_type}",
@@ -711,10 +711,10 @@ class TradeNotifier:
         decision_kr = decision_text.get(decision.lower(), decision)
 
         lines = [
-            f"*📊 AI 분석 완료*",
-            f"",
+            "*📊 AI 분석 완료*",
+            "",
             f"🕒 {timestamp}",
-            f"",
+            "",
             f"*종목:* {korean_name} \\({symbol}\\)",
             f"*시장:* {market_type}",
             f"*판단:* {emoji} {decision_kr}",
@@ -752,10 +752,10 @@ class TradeNotifier:
         timestamp = format_datetime()
 
         return "\n".join([
-            f"*⚠️ 거래 실패*",
-            f"",
+            "*⚠️ 거래 실패*",
+            "",
             f"🕒 {timestamp}",
-            f"",
+            "",
             f"*종목:* {korean_name} \\({symbol}\\)",
             f"*시장:* {market_type}",
             f"*사유:* {reason}",
