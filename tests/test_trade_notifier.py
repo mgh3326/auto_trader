@@ -943,3 +943,350 @@ async def test_telegram_fallback(trade_notifier):
     assert json_data["parse_mode"] == "Markdown"
     assert "💰 매수 주문 접수" in json_data["text"]
     assert "비트코인 \\(BTC\\)" in json_data["text"]
+
+
+# =============================================================================
+# Discord-first tests for notify_openclaw_message and notify_automation_summary
+# =============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_openclaw_message_discord_first(trade_notifier):
+    """Test OpenClaw message sends to Discord alerts webhook first."""
+    webhook_url = "https://discord.com/api/webhooks/alerts"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts=webhook_url,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier.notify_openclaw_message("OpenClaw message")
+
+        assert result is True
+        mock_post.assert_called_once()
+
+        # Verify Discord webhook was called with content (not embeds)
+        call_args = mock_post.call_args
+        assert call_args.args[0] == webhook_url
+        assert call_args.kwargs["json"]["content"] == "OpenClaw message"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_openclaw_message_discord_fallback_to_telegram(trade_notifier):
+    """Test OpenClaw message falls back to Telegram when Discord fails."""
+    webhook_url = "https://discord.com/api/webhooks/alerts"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts=webhook_url,
+    )
+
+    # Discord failure, Telegram success
+    mock_discord_response = MagicMock()
+    mock_discord_response.raise_for_status = MagicMock(
+        side_effect=Exception("Discord error")
+    )
+    mock_telegram_response = MagicMock()
+    mock_telegram_response.raise_for_status = MagicMock()
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        side_effect=[mock_discord_response, mock_telegram_response],
+    ) as mock_post:
+        result = await trade_notifier.notify_openclaw_message(
+            "OpenClaw message", parse_mode="HTML"
+        )
+
+        assert result is True
+        assert mock_post.call_count == 2
+
+        # First call was to Discord
+        discord_call = mock_post.call_args_list[0]
+        assert discord_call.args[0] == webhook_url
+        assert "content" in discord_call.kwargs["json"]
+
+        # Second call was to Telegram
+        telegram_call = mock_post.call_args_list[1]
+        assert "api.telegram.org" in telegram_call.args[0]
+        assert telegram_call.kwargs["json"]["text"] == "OpenClaw message"
+        assert telegram_call.kwargs["json"]["parse_mode"] == "HTML"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_openclaw_message_telegram_only(trade_notifier):
+    """Test OpenClaw message uses Telegram when no Discord webhook configured."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        # No discord_webhook_alerts configured
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier.notify_openclaw_message("OpenClaw message")
+
+        assert result is True
+        mock_post.assert_called_once()
+
+        # Verify Telegram was called directly
+        call_args = mock_post.call_args
+        assert "api.telegram.org" in call_args.args[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_automation_summary_discord_first(trade_notifier):
+    """Test automation summary sends to Discord alerts webhook first."""
+    webhook_url = "https://discord.com/api/webhooks/alerts"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts=webhook_url,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier.notify_automation_summary(
+            total_coins=10,
+            analyzed=10,
+            bought=3,
+            sold=2,
+            errors=0,
+            duration_seconds=45.5,
+        )
+
+        assert result is True
+        mock_post.assert_called_once()
+
+        # Verify Discord webhook was called with embeds
+        call_args = mock_post.call_args
+        assert call_args.args[0] == webhook_url
+        json_data = call_args.kwargs["json"]
+        assert "embeds" in json_data
+        embed = json_data["embeds"][0]
+        assert embed["title"] == "🤖 자동 거래 실행 완료"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_automation_summary_discord_fallback_to_telegram(trade_notifier):
+    """Test automation summary falls back to Telegram when Discord fails."""
+    webhook_url = "https://discord.com/api/webhooks/alerts"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts=webhook_url,
+    )
+
+    # Discord failure, Telegram success
+    mock_discord_response = MagicMock()
+    mock_discord_response.raise_for_status = MagicMock(
+        side_effect=Exception("Discord error")
+    )
+    mock_telegram_response = MagicMock()
+    mock_telegram_response.raise_for_status = MagicMock()
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        side_effect=[mock_discord_response, mock_telegram_response],
+    ) as mock_post:
+        result = await trade_notifier.notify_automation_summary(
+            total_coins=10,
+            analyzed=10,
+            bought=3,
+            sold=2,
+            errors=1,
+            duration_seconds=45.5,
+        )
+
+        assert result is True
+        assert mock_post.call_count == 2
+
+        # First call was to Discord with embeds
+        discord_call = mock_post.call_args_list[0]
+        assert discord_call.args[0] == webhook_url
+        assert "embeds" in discord_call.kwargs["json"]
+
+        # Second call was to Telegram with markdown text
+        telegram_call = mock_post.call_args_list[1]
+        assert "api.telegram.org" in telegram_call.args[0]
+        text = telegram_call.kwargs["json"]["text"]
+        assert "*🤖 자동 거래 실행 완료*" in text
+        assert "*오류 발생:* 1건" in text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_automation_summary_telegram_only(trade_notifier):
+    """Test automation summary uses Telegram when no Discord webhook configured."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        # No discord_webhook_alerts configured
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier.notify_automation_summary(
+            total_coins=10,
+            analyzed=10,
+            bought=3,
+            sold=2,
+            errors=0,
+            duration_seconds=45.5,
+        )
+
+        assert result is True
+        mock_post.assert_called_once()
+
+        # Verify Telegram was called directly
+        call_args = mock_post.call_args
+        assert "api.telegram.org" in call_args.args[0]
+        text = call_args.kwargs["json"]["text"]
+        assert "*🤖 자동 거래 실행 완료*" in text
+
+
+@pytest.mark.unit
+def test_format_automation_summary_telegram(trade_notifier):
+    """Test automation summary formatting for Telegram."""
+    message = trade_notifier._format_automation_summary_telegram(
+        total_coins=10,
+        analyzed=10,
+        bought=3,
+        sold=2,
+        errors=0,
+        duration_seconds=45.5,
+    )
+
+    # Verify markdown formatting
+    assert "*🤖 자동 거래 실행 완료*" in message
+    assert "*처리 종목:* 10개" in message
+    assert "*분석 완료:* 10개" in message
+    assert "*매수 주문:* 3건" in message
+    assert "*매도 주문:* 2건" in message
+    assert "*실행 시간:* 45.5초" in message
+    assert "오류" not in message  # No errors section when errors=0
+
+
+@pytest.mark.unit
+def test_format_automation_summary_telegram_with_errors(trade_notifier):
+    """Test automation summary formatting for Telegram with errors."""
+    message = trade_notifier._format_automation_summary_telegram(
+        total_coins=5,
+        analyzed=5,
+        bought=1,
+        sold=1,
+        errors=2,
+        duration_seconds=30.0,
+    )
+
+    # Verify markdown formatting including errors
+    assert "*🤖 자동 거래 실행 완료*" in message
+    assert "*오류 발생:* 2건" in message
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_to_discord_content_single_success(trade_notifier):
+    """Test sending plain text content to a specific Discord webhook."""
+    webhook_url = "https://discord.com/api/webhooks/alerts"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts=webhook_url,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier._send_to_discord_content_single(
+            "Plain text message", webhook_url
+        )
+
+        assert result is True
+        mock_post.assert_called_once()
+
+        # Verify content format (not embeds)
+        call_args = mock_post.call_args
+        assert call_args.args[0] == webhook_url
+        assert call_args.kwargs["json"]["content"] == "Plain text message"
+        assert "embeds" not in call_args.kwargs["json"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_to_discord_content_single_failure(trade_notifier):
+    """Test Discord content send failure."""
+    webhook_url = "https://discord.com/api/webhooks/alerts"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts=webhook_url,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock(side_effect=Exception("Network error"))
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier._send_to_discord_content_single(
+            "Plain text message", webhook_url
+        )
+
+        assert result is False
+        mock_post.assert_called_once()
