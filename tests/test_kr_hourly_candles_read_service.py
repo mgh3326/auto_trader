@@ -873,3 +873,117 @@ async def test_api_partial_failure_raises(monkeypatch):
             end_date=None,
             now_kst=now_kst,
         )
+
+
+@pytest.mark.asyncio
+async def test_db_first_returns_existing_data(monkeypatch):
+    """Test that DB-first query returns existing data without calling KIS API."""
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    # now_kst is the next day, so all queried hours are historical (no current hour aggregation)
+    now_kst = _dt_kst(2026, 2, 24, 10, 0, 0)
+
+    # DB has 5 hours of historical data (valid trading hours: 08:00-12:00)
+    hour_rows = [
+        _make_hour_row(
+            bucket_kst_naive=datetime.datetime(2026, 2, 23, 8, 0, 0),
+            open=101.0,
+            high=103.0,
+            low=100.5,
+            close=102.0,
+            volume=1200.0,
+            value=120000.0,
+            venues=["KRX"],
+        ),
+        _make_hour_row(
+            bucket_kst_naive=datetime.datetime(2026, 2, 23, 9, 0, 0),
+            open=102.0,
+            high=104.0,
+            low=101.0,
+            close=103.0,
+            volume=1300.0,
+            value=130000.0,
+            venues=["KRX"],
+        ),
+        _make_hour_row(
+            bucket_kst_naive=datetime.datetime(2026, 2, 23, 10, 0, 0),
+            open=103.0,
+            high=105.0,
+            low=102.0,
+            close=104.0,
+            volume=1400.0,
+            value=140000.0,
+            venues=["KRX"],
+        ),
+        _make_hour_row(
+            bucket_kst_naive=datetime.datetime(2026, 2, 23, 11, 0, 0),
+            open=104.0,
+            high=106.0,
+            low=103.0,
+            close=105.0,
+            volume=1500.0,
+            value=150000.0,
+            venues=["KRX"],
+        ),
+        _make_hour_row(
+            bucket_kst_naive=datetime.datetime(2026, 2, 23, 12, 0, 0),
+            open=105.0,
+            high=107.0,
+            low=104.0,
+            close=106.0,
+            volume=1600.0,
+            value=160000.0,
+            venues=["KRX"],
+        ),
+    ]
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [
+                        {
+                            "symbol": symbol,
+                            "nxt_eligible": False,
+                            "is_active": True,
+                        }
+                    ]
+                )
+            if "FROM public.kr_candles_1h" in sql:
+                return _MappingsResult(hour_rows)
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult([])
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+
+    # Mock KIS API to track calls
+    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=pd.DataFrame()))
+    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+
+    # Query with end_date on a previous day - all hours are historical
+    out = await svc.read_kr_hourly_candles_1h(
+        symbol=symbol,
+        count=5,
+        end_date=_dt_kst(2026, 2, 23, 12, 0, 0),
+        now_kst=now_kst,
+    )
+
+    # Verify all 5 hours returned from DB
+    assert len(out) == 5
+    assert list(out["datetime"]) == [
+        datetime.datetime(2026, 2, 23, 8, 0, 0),
+        datetime.datetime(2026, 2, 23, 9, 0, 0),
+        datetime.datetime(2026, 2, 23, 10, 0, 0),
+        datetime.datetime(2026, 2, 23, 11, 0, 0),
+        datetime.datetime(2026, 2, 23, 12, 0, 0),
+    ]
+
+    # Verify KIS API was NOT called (DB had sufficient data, end_date in past)
+    kis.inquire_minute_chart.assert_not_awaited()
