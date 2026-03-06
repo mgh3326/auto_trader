@@ -42,7 +42,11 @@ class UnsupportedQuoteCurrencyError(SymbolMappingError):
     pass
 
 
-def upbit_to_tradingview(upbit_symbol: str, *, target_quote: str | None = None) -> str:
+def upbit_to_tradingview(
+    upbit_symbol: str | None,
+    *,
+    target_quote: str | None = None,
+) -> str:
     """Convert Upbit market symbol to TradingView format.
 
     Parameters
@@ -103,10 +107,9 @@ def upbit_to_tradingview(upbit_symbol: str, *, target_quote: str | None = None) 
             f"Both quote and base currency must be non-empty"
         )
 
-    # Use target quote if specified, otherwise use original quote
-    effective_quote = (
-        str(target_quote).strip().upper() if target_quote else quote_currency
-    )
+    effective_quote = quote_currency
+    if target_quote is not None:
+        effective_quote = str(target_quote).strip().upper()
 
     if not effective_quote:
         raise UnsupportedQuoteCurrencyError(
@@ -125,7 +128,11 @@ def upbit_to_tradingview(upbit_symbol: str, *, target_quote: str | None = None) 
     return tradingview_symbol
 
 
-def tradingview_to_upbit(tradingview_symbol: str, *, default_quote: str = "KRW") -> str:
+def tradingview_to_upbit(
+    tradingview_symbol: str | None,
+    *,
+    default_quote: str = "KRW",
+) -> str:
     """Convert TradingView symbol to Upbit market format.
 
     Parameters
