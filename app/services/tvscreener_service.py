@@ -28,6 +28,13 @@ _COLUMN_NAME_MAP = {
     "volume": "volume",
     "volume 24h in usd": "volume_24h_in_usd",
     "change %": "change_percent",
+    "market capitalization": "market_capitalization",
+    "market cap basic": "market_capitalization",
+    "price to earnings ratio (ttm)": "price_to_earnings_ratio_ttm",
+    "price to earnings ttm": "price_to_earnings_ratio_ttm",
+    "price to book (fq)": "price_to_book_fq",
+    "dividend yield forward": "dividend_yield_forward",
+    "dividend yield recent": "dividend_yield_forward",
     "country": "country",
     "exchange": "exchange",
 }

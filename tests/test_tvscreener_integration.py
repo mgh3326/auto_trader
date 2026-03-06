@@ -124,6 +124,10 @@ async def test_query_stock_screener_sets_markets_and_applies_filters_individuall
             "Average Directional Index (14)": [20.0],
             "Volume": [1000.0],
             "Change %": [0.5],
+            "Market Capitalization": [4800000.0],
+            "Price to Earnings Ratio (TTM)": [12.5],
+            "Price to Book (FQ)": [1.2],
+            "Dividend Yield Forward": [0.0256],
             "Country": ["South Korea"],
         }
     )
@@ -173,6 +177,10 @@ async def test_query_stock_screener_sets_markets_and_applies_filters_individuall
         "average_directional_index_14",
         "volume",
         "change_percent",
+        "market_capitalization",
+        "price_to_earnings_ratio_ttm",
+        "price_to_book_fq",
+        "dividend_yield_forward",
         "country",
     ]
 
