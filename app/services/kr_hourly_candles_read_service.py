@@ -41,6 +41,12 @@ class _UniverseRow:
 
 
 @dataclass(frozen=True, slots=True)
+class _UniverseError:
+    """Represents an error during universe lookup without raising an exception."""
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class _MinuteRow:
     minute_time: datetime.datetime
     venue: VenueType
@@ -108,13 +114,21 @@ def _to_float(value: object) -> float:
     return float(str(value))
 
 
-def _to_venue(value: object) -> VenueType:
+def _to_venue(value: object) -> VenueType | None:
+    """
+    Convert value to VenueType (KRX or NTX).
+
+    Returns None for invalid venues instead of raising ValueError,
+    implementing graceful degradation.
+    """
     text_value = str(value or "").strip().upper()
     if text_value == "KRX":
         return "KRX"
     if text_value == "NTX":
         return "NTX"
-    raise ValueError(f"Unexpected KR venue: {value}")
+    # Log warning but return None instead of raising ValueError
+    logger.warning("Unexpected KR venue: %s, returning None", value)
+    return None
 
 
 def _normalize_venues(value: object) -> list[str]:
@@ -255,7 +269,13 @@ def _api_markets_for_now(
 
 async def _resolve_universe_row(
     symbol: str,
-) -> _UniverseRow:
+) -> _UniverseRow | _UniverseError:
+    """
+    Resolve symbol from kr_symbol_universe table.
+
+    Returns _UniverseRow if found and active, _UniverseError otherwise.
+    Never raises ValueError - uses graceful degradation instead.
+    """
     normalized_symbol = str(symbol or "").strip().upper()
     async with _async_session() as session:
         has_any_rows = (
@@ -269,17 +289,31 @@ async def _resolve_universe_row(
 
     if not rows:
         if has_any_rows is None:
-            raise ValueError(f"kr_symbol_universe is empty. {_kr_universe_sync_hint()}")
-        raise ValueError(
-            f"KR symbol '{normalized_symbol}' is not registered in kr_symbol_universe. "
+            logger.warning(
+                "kr_symbol_universe is empty. %s",
+                _kr_universe_sync_hint(),
+            )
+            return _UniverseError(reason=f"kr_symbol_universe is empty. {_kr_universe_sync_hint()}")
+        logger.warning(
+            "KR symbol '%s' is not registered in kr_symbol_universe. %s",
+            normalized_symbol,
+            _kr_universe_sync_hint(),
+        )
+        return _UniverseError(
+            reason=f"KR symbol '{normalized_symbol}' is not registered in kr_symbol_universe. "
             f"{_kr_universe_sync_hint()}"
         )
 
     row = rows[0]
     is_active = bool(row.get("is_active"))
     if not is_active:
-        raise ValueError(
-            f"KR symbol '{normalized_symbol}' is inactive in kr_symbol_universe. "
+        logger.warning(
+            "KR symbol '%s' is inactive in kr_symbol_universe. %s",
+            normalized_symbol,
+            _kr_universe_sync_hint(),
+        )
+        return _UniverseError(
+            reason=f"KR symbol '{normalized_symbol}' is inactive in kr_symbol_universe. "
             f"{_kr_universe_sync_hint()}"
         )
 
@@ -436,6 +470,9 @@ async def _build_current_hour_row(
         if not isinstance(time_raw, datetime.datetime):
             continue
         venue = _to_venue(venue_raw)
+        # Skip rows with invalid venue (graceful degradation)
+        if venue is None:
+            continue
         minute_time = _to_kst_naive(time_raw).replace(second=0, microsecond=0)
         if not (
             current_bucket_naive
@@ -696,10 +733,56 @@ async def read_kr_hourly_candles_1h(
     end_date: datetime.datetime | None,
     now_kst: datetime.datetime | None = None,
 ) -> pd.DataFrame:
+    """
+    Read Korean stock hourly candles with DB-first query and KIS API fallback.
+
+    Implements graceful degradation: returns partial or empty data instead of raising ValueError.
+    Logs errors for debugging but never propagates exceptions to caller.
+
+    Parameters
+    ----------
+    symbol : str
+        Stock symbol (e.g., "005930" for Samsung Electronics)
+    count : int
+        Number of hourly candles to return
+    end_date : datetime.datetime | None
+        End date for query (None means current time)
+    now_kst : datetime.datetime | None
+        Current time in KST (None means now)
+
+    Returns
+    -------
+    pd.DataFrame
+        Hourly candles with columns: datetime, date, time, open, high, low, close, volume, value, session, venues
+        Returns empty DataFrame if symbol not found or no data available (never raises ValueError)
+    """
     capped_count = max(int(count), 1)
     resolved_now = _ensure_kst_aware(now_kst or datetime.datetime.now(_KST))
 
+    # Resolve universe row - graceful degradation on error
     universe = await _resolve_universe_row(symbol)
+    if isinstance(universe, _UniverseError):
+        # Symbol not found or inactive - return empty DataFrame
+        logger.info(
+            "Symbol '%s' lookup failed: %s. Returning empty DataFrame.",
+            symbol,
+            universe.reason,
+        )
+        return pd.DataFrame(
+            columns=[
+                "datetime",
+                "date",
+                "time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "value",
+                "session",
+                "venues",
+            ]
+        )
 
     if end_date is None:
         end_time_kst = resolved_now
@@ -735,9 +818,13 @@ async def read_kr_hourly_candles_1h(
             for api_row in api_rows:
                 if api_row.get("bucket") not in existing_buckets:
                     hour_rows.append(api_row)
-        except Exception:
+        except Exception as e:
             # API fallback 실패 시 DB 데이터만 사용
-            pass
+            logger.warning(
+                "KIS API fallback failed for symbol '%s': %s. Using DB data only.",
+                symbol,
+                e,
+            )
 
     current_hour_row, current_bucket_start = await _build_current_hour_row(
         symbol=universe.symbol,
