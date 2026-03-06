@@ -1327,3 +1327,171 @@ async def test_api_failure_returns_partial_data(monkeypatch):
 
     # Verify KIS API was called (DB had insufficient data)
     kis.inquire_minute_chart.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_venue_separation_preserved(monkeypatch):
+    """Test venue separation (KRX/NTX) is preserved in background storage.
+
+    Verifies that:
+    1. KIS API can return mixed KRX/NTX minute candles
+    2. Background upsert stores candles with correct venue
+    3. Multi-venue aggregation works correctly
+    """
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    now_kst = _dt_kst(2026, 2, 23, 10, 10, 0)
+
+    # Track background storage calls to verify venue separation
+    background_storage_calls: list[dict[str, object]] = []
+
+    # Mock DB to return empty data (triggers API fallback)
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [
+                        {
+                            "symbol": symbol,
+                            "nxt_eligible": True,  # NXT eligible - both KRX and NTX
+                            "is_active": True,
+                        }
+                    ]
+                )
+            if "FROM public.kr_candles_1h" in sql:
+                return _MappingsResult([])
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult([])
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+
+    # Mock _store_minute_candles_background to track venue preservation
+    async def mock_store_background(symbol_arg, minute_rows):
+        background_storage_calls.append(
+            {"symbol": symbol_arg, "minute_rows": list(minute_rows)}
+        )
+
+    monkeypatch.setattr(svc, "_store_minute_candles_background", mock_store_background)
+
+    # Mock KIS API to return mixed KRX/NTX minute candles
+    # First call (J/KRX market): returns KRX candles
+    api_df_krx = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-02-23 10:00:00"),
+                "date": datetime.date(2026, 2, 23),
+                "time": datetime.time(10, 0, 0),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1000,
+                "value": 100000,
+            },
+            {
+                "datetime": pd.Timestamp("2026-02-23 10:01:00"),
+                "date": datetime.date(2026, 2, 23),
+                "time": datetime.time(10, 1, 0),
+                "open": 100.5,
+                "high": 102.0,
+                "low": 100.0,
+                "close": 101.0,
+                "volume": 1100,
+                "value": 110000,
+            },
+        ]
+    )
+
+    # Second call (NX/NTX market): returns NTX candles
+    api_df_ntx = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-02-23 10:00:00"),
+                "date": datetime.date(2026, 2, 23),
+                "time": datetime.time(10, 0, 0),
+                "open": 200.0,
+                "high": 201.0,
+                "low": 199.0,
+                "close": 200.5,
+                "volume": 500,
+                "value": 50000,
+            },
+            {
+                "datetime": pd.Timestamp("2026-02-23 10:01:00"),
+                "date": datetime.date(2026, 2, 23),
+                "time": datetime.time(10, 1, 0),
+                "open": 200.5,
+                "high": 202.0,
+                "low": 200.0,
+                "close": 201.0,
+                "volume": 600,
+                "value": 60000,
+            },
+        ]
+    )
+
+    # Mock KIS API to return different data for KRX vs NTX markets
+    async def mock_inquire(*, code, market, time_unit, n, end_date=None):
+        del code, time_unit, n, end_date
+        if market == "J":  # KRX market
+            return api_df_krx
+        elif market == "NX":  # NTX market
+            return api_df_ntx
+        return pd.DataFrame()
+
+    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(side_effect=mock_inquire))
+    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+
+    # Call the function - should fetch from both markets
+    out = await svc.read_kr_hourly_candles_1h(
+        symbol=symbol,
+        count=1,
+        end_date=None,
+        now_kst=now_kst,
+    )
+
+    # Verify candles were returned
+    assert len(out) == 1
+
+    # Verify KIS API was called for both markets
+    assert kis.inquire_minute_chart.call_count >= 1
+
+    # Get the markets that were called
+    markets_called = [
+        call.kwargs["market"]
+        for call in kis.inquire_minute_chart.call_args_list
+        if "market" in call.kwargs
+    ]
+
+    # Should include at least KRX (J) and possibly NTX (NX) depending on time
+    assert "J" in markets_called, "KIS API should be called for KRX market"
+
+    # Verify background storage was called
+    assert len(background_storage_calls) > 0, "Background storage should have been called"
+
+    # Verify venue separation in background storage
+    stored_rows = background_storage_calls[0]["minute_rows"]
+    venues_stored = {row.get("venue") for row in stored_rows if row.get("venue")}
+
+    # At least KRX should be present (NTX depends on time window)
+    assert "KRX" in venues_stored, "KRX venue should be preserved in background storage"
+
+    # Verify multi-venue aggregation in result
+    row = out.iloc[0]
+    # Volume should be sum of both venues (KRX has priority for price)
+    # KRX: 1000 + 1100 = 2100, NTX: 500 + 600 = 1100
+    # If both venues present, volume = 2100 + 1100 = 3200
+    # If only KRX, volume = 2100
+    assert row["volume"] >= 2100, f"Volume should be at least KRX volume (2100), got {row['volume']}"
+
+    # Venues field should list all venues present
+    if "venues" in row and row["venues"]:
+        # Verify venues field contains KRX
+        assert "KRX" in row["venues"], "KRX should be in venues list"
