@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 
@@ -150,7 +151,7 @@ class TvScreenerService:
 
                 return result
 
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 elapsed = time.time() - start_time
                 logger.error(
                     "%s timed out after %.2fs (attempt %d/%d)",
@@ -426,7 +427,7 @@ class TvScreenerService:
         """
         try:
             # Import here to avoid import errors if tvscreener not installed
-            from tvscreener import StockScreener, StockField
+            from tvscreener import StockField, StockScreener
 
             def _execute_query() -> pd.DataFrame:
                 """Synchronous query execution."""

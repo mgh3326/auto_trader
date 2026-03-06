@@ -27,9 +27,9 @@ from app.services.krx import (
     fetch_stock_all_cached,
     fetch_valuation_all_cached,
 )
+from app.services.tvscreener_service import TvScreenerError, TvScreenerService
 from app.services.upbit_symbol_universe_service import get_upbit_warning_markets
-from app.services.tvscreener_service import TvScreenerService, TvScreenerError
-from app.utils.symbol_mapping import upbit_to_tradingview, SymbolMappingError
+from app.utils.symbol_mapping import SymbolMappingError, upbit_to_tradingview
 
 logger = logging.getLogger(__name__)
 
@@ -1063,7 +1063,7 @@ async def _enrich_crypto_indicators(
         tvscreener_service = TvScreenerService(timeout=30.0)
 
         try:
-            from tvscreener import CryptoScreener, CryptoField
+            from tvscreener import CryptoField
 
             # Build columns list - start with ticker and RSI (guaranteed)
             columns = [CryptoField.SYMBOL, CryptoField.RELATIVE_STRENGTH_INDEX_14]
@@ -1270,7 +1270,7 @@ async def _screen_kr_via_tvscreener(
     try:
         # Import StockScreener and StockField from tvscreener
         try:
-            from tvscreener import StockScreener, StockField
+            from tvscreener import StockField
         except ImportError:
             error_msg = "tvscreener library not installed, cannot use StockScreener"
             logger.warning("[Screen-KR-TV] %s", error_msg)
@@ -1386,7 +1386,7 @@ async def _screen_kr_via_tvscreener(
         result["error"] = error_msg
         return result
 
-    except TimeoutError as exc:
+    except TimeoutError:
         error_msg = "StockScreener query timed out after 30 seconds"
         logger.warning("[Screen-KR-TV] %s", error_msg)
         result["error"] = error_msg
@@ -1453,7 +1453,7 @@ async def _screen_us_via_tvscreener(
     try:
         # Import StockScreener and StockField from tvscreener
         try:
-            from tvscreener import StockScreener, StockField
+            from tvscreener import StockField
         except ImportError:
             error_msg = "tvscreener library not installed, cannot use StockScreener"
             logger.warning("[Screen-US-TV] %s", error_msg)
@@ -1569,7 +1569,7 @@ async def _screen_us_via_tvscreener(
         result["error"] = error_msg
         return result
 
-    except TimeoutError as exc:
+    except TimeoutError:
         error_msg = "StockScreener query timed out after 30 seconds"
         logger.warning("[Screen-US-TV] %s", error_msg)
         result["error"] = error_msg
