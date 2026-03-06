@@ -1495,3 +1495,180 @@ async def test_venue_separation_preserved(monkeypatch):
     if "venues" in row and row["venues"]:
         # Verify venues field contains KRX
         assert "KRX" in row["venues"], "KRX should be in venues list"
+
+
+@pytest.mark.asyncio
+async def test_partial_db_data_filled_by_api(monkeypatch):
+    """Test that partial DB data is filled by KIS API.
+
+    Verifies that:
+    1. When DB has partial data (some rows but insufficient)
+    2. KIS API successfully returns the missing data
+    3. The result combines DB and API data to return requested count
+    """
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    # Use 14:00 during regular market hours (after market opened at 09:00)
+    now_kst = _dt_kst(2026, 2, 23, 14, 0, 0)
+
+    # DB has only 2 hourly candles (user requested 5)
+    # DB has: 12:00, 13:00
+    # Missing: 10:00, 11:00 (to be filled by API)
+    # Plus current hour 14:00 (built separately from minute candles)
+    hour_rows = [
+        _make_hour_row(
+            bucket_kst_naive=datetime.datetime(2026, 2, 23, 12, 0, 0),
+            open=102.0,
+            high=104.0,
+            low=101.0,
+            close=103.0,
+            volume=1300.0,
+            value=130000.0,
+            venues=["KRX"],
+        ),
+        _make_hour_row(
+            bucket_kst_naive=datetime.datetime(2026, 2, 23, 13, 0, 0),
+            open=103.0,
+            high=105.0,
+            low=102.0,
+            close=104.0,
+            volume=1400.0,
+            value=140000.0,
+            venues=["KRX"],
+        ),
+    ]
+
+    # Add minute candles for current hour (14:00) to build current hour row
+    minute_rows = [
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 2, 23, 14, 0, 0),
+            venue="KRX",
+            open=104.0,
+            high=106.0,
+            low=103.0,
+            close=105.0,
+            volume=10.0,
+            value=1000.0,
+        ),
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 2, 23, 14, 1, 0),
+            venue="KRX",
+            open=105.0,
+            high=107.0,
+            low=104.0,
+            close=106.0,
+            volume=20.0,
+            value=2000.0,
+        ),
+    ]
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [
+                        {
+                            "symbol": symbol,
+                            "nxt_eligible": False,  # Not NXT eligible to avoid venue complexity
+                            "is_active": True,
+                        }
+                    ]
+                )
+            if "FROM public.kr_candles_1h" in sql:
+                return _MappingsResult(hour_rows)
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult(minute_rows)
+            # Handle background storage
+            if "INSERT INTO public.kr_candles_1m" in sql:
+                return None
+            raise AssertionError(f"unexpected sql: {sql}")
+
+        async def commit(self):
+            """Mock commit for background storage."""
+            pass
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+
+    # Mock KIS API to return minute candles for the missing hours (10:00, 11:00)
+    # Build 60 minute candles for 2 hours to ensure proper aggregation
+    api_minute_data = []
+    for hour_offset in range(2):
+        hour = 10 + hour_offset
+        for minute in range(60):
+            base_price = 100.0 + hour_offset * 10 + minute * 0.1
+            api_minute_data.append(
+                {
+                    "datetime": pd.Timestamp(f"2026-02-23 {hour:02d}:{minute:02d}:00"),
+                    "date": datetime.date(2026, 2, 23),
+                    "time": datetime.time(hour, minute, 0),
+                    "open": base_price,
+                    "high": base_price + 1.0,
+                    "low": base_price - 1.0,
+                    "close": base_price + 0.5,
+                    "volume": 1000 + minute * 10,
+                    "value": (1000 + minute * 10) * base_price,
+                }
+            )
+
+    api_df = pd.DataFrame(api_minute_data)
+
+    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=api_df))
+    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+
+    # Request 5 candles but only 2 in DB
+    # API should fill the missing 2 candles (10:00, 11:00)
+    # Plus current hour (14:00) built from minute candles
+    out = await svc.read_kr_hourly_candles_1h(
+        symbol=symbol,
+        count=5,
+        end_date=None,
+        now_kst=now_kst,
+    )
+
+    # Verify we got 5 candles (2 from DB + 2 from API + 1 current)
+    assert len(out) == 5, f"Expected 5 candles (DB + API + current), got {len(out)}"
+
+    # Verify the datetime sequence (oldest to newest)
+    datetimes = list(out["datetime"])
+    assert len(datetimes) == 5
+
+    # Should have candles for: 10:00, 11:00, 12:00, 13:00, 14:00
+    # (10:00, 11:00 from API, 12:00, 13:00 from DB, 14:00 current)
+    expected_buckets = [
+        datetime.datetime(2026, 2, 23, 10, 0, 0),
+        datetime.datetime(2026, 2, 23, 11, 0, 0),
+        datetime.datetime(2026, 2, 23, 12, 0, 0),
+        datetime.datetime(2026, 2, 23, 13, 0, 0),
+        datetime.datetime(2026, 2, 23, 14, 0, 0),
+    ]
+    assert datetimes == expected_buckets, f"Expected {expected_buckets}, got {datetimes}"
+
+    # Verify KIS API was called (DB had insufficient data)
+    kis.inquire_minute_chart.assert_awaited()
+
+    # Verify DB data is preserved (12:00 and 13:00 hours from DB)
+    row_12 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 12, 0, 0)].iloc[0]
+    assert row_12["open"] == 102.0, "DB data for 12:00 should be preserved"
+    assert row_12["close"] == 103.0, "DB data for 12:00 should be preserved"
+
+    row_13 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 13, 0, 0)].iloc[0]
+    assert row_13["open"] == 103.0, "DB data for 13:00 should be preserved"
+    assert row_13["close"] == 104.0, "DB data for 13:00 should be preserved"
+
+    # Verify API data filled the missing hours (10:00, 11:00)
+    # Note: The aggregated hourly close is the last minute's close (minute 59)
+    # For 10:00 hour: last minute (10:59) has close = 100.0 + 0*10 + 59*0.1 + 0.5 = 106.4
+    # For 11:00 hour: last minute (11:59) has close = 100.0 + 1*10 + 59*0.1 + 0.5 = 116.4
+    row_10 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 10, 0, 0)].iloc[0]
+    assert row_10["open"] == 100.0, "API data for 10:00 should be present"
+    assert row_10["close"] == 106.4, f"API data for 10:00 close should be 106.4, got {row_10['close']}"
+
+    row_11 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 11, 0, 0)].iloc[0]
+    assert row_11["open"] == 110.0, "API data for 11:00 should be present"
+    assert row_11["close"] == 116.4, f"API data for 11:00 close should be 116.4, got {row_11['close']}"
