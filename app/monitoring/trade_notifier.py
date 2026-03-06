@@ -102,6 +102,30 @@ class TradeNotifier:
 
         logger.info("TradeNotifier shutdown complete")
 
+    def _get_webhook_for_market_type(self, market_type: str) -> str | None:
+        """
+        Get the appropriate Discord webhook URL for a given market type.
+
+        Args:
+            market_type: Type of market (US, 해외주식, 국내주식, 암호화폐)
+
+        Returns:
+            Discord webhook URL for the market type, or None if not configured
+        """
+        # Normalize market type - handle both English and Korean
+        market_type_normalized = market_type.strip()
+
+        # Map market types to webhooks
+        if market_type_normalized in ("US", "해외주식"):
+            return self._discord_webhook_us
+        elif market_type_normalized == "국내주식":
+            return self._discord_webhook_kr
+        elif market_type_normalized == "암호화폐":
+            return self._discord_webhook_crypto
+        else:
+            logger.warning(f"Unknown market type: {market_type}")
+            return None
+
     def _format_buy_notification(
         self,
         symbol: str,
