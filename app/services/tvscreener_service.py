@@ -328,7 +328,8 @@ class TvScreenerService:
         self,
         columns: list[Any],
         where_clause: Any | None = None,
-        sort_by: str | None = None,
+        sort_by: Any | None = None,
+        ascending: bool = True,
         limit: int | None = None,
     ) -> pd.DataFrame:
         """Query CryptoScreener with specified columns and filters.
@@ -339,8 +340,10 @@ class TvScreenerService:
             List of CryptoField enums to retrieve
         where_clause : Any | None, optional
             WHERE clause for filtering (e.g., CryptoField.RSI_14 < 30)
-        sort_by : str | None, optional
-            Column name to sort by
+        sort_by : Any | None, optional
+            Field enum to sort by (e.g., CryptoField.RSI_14)
+        ascending : bool, optional
+            Sort direction (True for ascending, False for descending), by default True
         limit : int | None, optional
             Maximum number of results
 
@@ -367,10 +370,10 @@ class TvScreenerService:
                     query = query.where(where_clause)
 
                 if sort_by:
-                    query = query.order_by(sort_by)
+                    query = query.sort_by(sort_by, ascending=ascending)
 
                 if limit:
-                    query = query.limit(limit)
+                    query = query.set_range(0, limit)
 
                 return query.get()
 
@@ -396,7 +399,8 @@ class TvScreenerService:
         self,
         columns: list[Any],
         where_clause: Any | None = None,
-        sort_by: str | None = None,
+        sort_by: Any | None = None,
+        ascending: bool = True,
         limit: int | None = None,
         country: str | None = None,
     ) -> pd.DataFrame:
@@ -408,8 +412,10 @@ class TvScreenerService:
             List of StockField enums to retrieve
         where_clause : Any | None, optional
             WHERE clause for filtering
-        sort_by : str | None, optional
-            Column name to sort by
+        sort_by : Any | None, optional
+            Field enum to sort by (e.g., StockField.RSI_14)
+        ascending : bool, optional
+            Sort direction (True for ascending, False for descending), by default True
         limit : int | None, optional
             Maximum number of results
         country : str | None, optional
@@ -445,10 +451,10 @@ class TvScreenerService:
                     query = query.where(where_clause)
 
                 if sort_by:
-                    query = query.order_by(sort_by)
+                    query = query.sort_by(sort_by, ascending=ascending)
 
                 if limit:
-                    query = query.limit(limit)
+                    query = query.set_range(0, limit)
 
                 return query.get()
 
