@@ -300,3 +300,232 @@ class DomesticStrategy(MarketStrategy):
                 e,
             )
             return default_price
+
+
+def _extract_overseas_order_id(order: dict) -> str:
+    """
+    Extract order ID from an overseas order dict.
+
+    Handles various field names used in API responses.
+
+    Args:
+        order: Order dictionary
+
+    Returns:
+        Order ID string or empty string if not found
+    """
+    for key in ("odno", "ODNO", "ord_no", "ORD_NO"):
+        value = order.get(key)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+class OverseasStrategy(MarketStrategy):
+    """
+    Market strategy for overseas (US, etc.) stocks.
+
+    Uses KIS API for overseas market operations:
+    - fetch_my_overseas_stocks() for holdings
+    - inquire_overseas_orders() for open orders (across all exchanges)
+    - YahooAnalyzer for analysis
+    """
+
+    @property
+    def market_name(self) -> str:
+        return "해외주식"
+
+    @property
+    def market_type(self) -> str:
+        return "해외주식"
+
+    async def fetch_holdings(self, kis: "KISClient") -> list[dict[str, Any]]:
+        """
+        Fetch overseas stock holdings from KIS.
+
+        Also merges manual holdings (토스 etc.) from the database.
+
+        Returns:
+            List of stock holdings with keys:
+            - ovrs_pdno: Stock symbol
+            - ovrs_item_name: Stock name
+            - ovrs_cblc_qty: Holding quantity
+            - ord_psbl_qty: Orderable quantity (minus pending orders)
+            - pchs_avg_pric: Average purchase price
+            - now_pric2: Current price
+            - ovrs_excg_cd: Exchange code
+            - _is_manual: True for manual holdings
+        """
+        from app.core.db import AsyncSessionLocal
+        from app.core.symbol import to_db_symbol
+        from app.models.manual_holdings import MarketType
+        from app.services.manual_holdings_service import ManualHoldingsService
+
+        # Fetch KIS holdings
+        my_stocks = await kis.fetch_my_overseas_stocks()
+
+        # Fetch manual holdings (토스 등) and merge
+        async with AsyncSessionLocal() as db:
+            manual_service = ManualHoldingsService(db)
+            user_id = 1  # Fixed for now (multi-user support later)
+            manual_holdings = await manual_service.get_holdings_by_user(
+                user_id=user_id, market_type=MarketType.US
+            )
+
+        # Add manual holdings to the list
+        for holding in manual_holdings:
+            ticker = holding.ticker
+            # Skip if already in KIS holdings (normalize symbol for comparison)
+            if any(
+                to_db_symbol(s.get("ovrs_pdno", "")) == ticker for s in my_stocks
+            ):
+                continue
+
+            # Convert to KIS format
+            qty_str = str(holding.quantity)
+            my_stocks.append(
+                {
+                    "ovrs_pdno": ticker,
+                    "ovrs_item_name": holding.display_name or ticker,
+                    "ovrs_cblc_qty": qty_str,
+                    "ord_psbl_qty": qty_str,  # No pending orders for manual
+                    "pchs_avg_pric": str(holding.avg_price),
+                    "now_pric2": "0",  # Will be updated via API later
+                    "_is_manual": True,
+                }
+            )
+
+        logger.info(
+            "[OverseasStrategy] 보유 종목 조회 완료: KIS %d건 + 수동 %d건",
+            len(my_stocks) - len(manual_holdings),
+            len([s for s in my_stocks if s.get("_is_manual")]),
+        )
+
+        return my_stocks
+
+    async def fetch_open_orders(self, kis: "KISClient") -> list[dict[str, Any]]:
+        """
+        Fetch pending orders for overseas stocks across all exchanges.
+
+        Queries NASD, NYSE, and AMEX exchanges and deduplicates by order ID.
+
+        Returns:
+            List of open orders with overseas market format
+        """
+        orders_by_id: dict[str, dict] = {}
+        anonymous_orders: list[dict] = []
+
+        # Query all three exchanges
+        for exchange_code in ("NASD", "NYSE", "AMEX"):
+            try:
+                open_orders = await kis.inquire_overseas_orders(
+                    exchange_code=exchange_code,
+                    is_mock=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[OverseasStrategy] 미체결 주문 조회 실패 (exchange=%s): %s",
+                    exchange_code,
+                    exc,
+                )
+                continue
+
+            for order in open_orders:
+                order_id = _extract_overseas_order_id(order)
+                if order_id:
+                    orders_by_id[order_id] = order
+                else:
+                    anonymous_orders.append(order)
+
+        orders = list(orders_by_id.values()) + anonymous_orders
+        logger.info("[OverseasStrategy] 미체결 주문 조회 완료: %d건", len(orders))
+        return orders
+
+    def get_exchange_code(self, stock: dict[str, Any]) -> str:
+        """
+        Get exchange code for overseas stock.
+
+        Args:
+            stock: Stock holding dictionary
+
+        Returns:
+            Exchange code (e.g., "NASD", "NYSE", "AMEX")
+        """
+        return str(stock.get("ovrs_excg_cd", "")).strip().upper()
+
+    def get_analyzer(self) -> "Analyzer":
+        """
+        Get YahooAnalyzer for overseas stock analysis.
+        """
+        from app.analysis.service_analyzers import YahooAnalyzer
+
+        return YahooAnalyzer()
+
+    async def resolve_exchange_code(
+        self,
+        symbol: str,
+        stock: dict[str, Any],
+    ) -> str:
+        """
+        Resolve exchange code for overseas stock.
+
+        First checks if stock has a preferred exchange code,
+        otherwise looks up from the database.
+
+        Args:
+            symbol: Stock symbol
+            stock: Stock holding dictionary (may contain ovrs_excg_cd)
+
+        Returns:
+            Exchange code string
+        """
+        from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
+
+        # Check if stock has a preferred exchange code
+        preferred_exchange = stock.get("ovrs_excg_cd")
+        normalized_preferred = str(preferred_exchange or "").strip().upper()
+
+        if normalized_preferred:
+            return normalized_preferred
+
+        # Fall back to database lookup
+        return await get_us_exchange_by_symbol(symbol)
+
+    async def fetch_current_price_for_manual(
+        self,
+        kis: "KISClient",
+        symbol: str,
+        default_price: float,
+    ) -> float:
+        """
+        Fetch current price for a manual overseas holding via KIS API.
+
+        Manual holdings don't have real-time prices from KIS holdings,
+        so we need to fetch them separately.
+
+        Args:
+            kis: KIS client
+            symbol: Stock symbol
+            default_price: Fallback price if API fails
+
+        Returns:
+            Current price from API or default
+        """
+        try:
+            price_df = await kis.inquire_overseas_price(symbol)
+            if not price_df.empty:
+                current_price = float(price_df.iloc[0]["close"])
+                logger.debug(
+                    "[OverseasStrategy] 수동잔고 현재가 조회: %s = $%.2f",
+                    symbol,
+                    current_price,
+                )
+                return current_price
+            return default_price
+        except Exception as e:
+            logger.warning(
+                "[OverseasStrategy] 수동잔고 현재가 조회 실패 (%s): %s, 기본값 사용",
+                symbol,
+                e,
+            )
+            return default_price
