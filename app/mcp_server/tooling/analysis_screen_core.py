@@ -1020,6 +1020,387 @@ async def _screen_kr(
     )
 
 
+async def _stage_fetch_us_candidates(
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    min_market_cap: float | None,
+    max_per: float | None,
+    min_dividend_yield: float | None,
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+    max_rsi: float | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Stage 1: Fetch US stock candidates using yfinance screener.
+
+    Args:
+        market: Market identifier ('us')
+        asset_type: Asset type filter (unused for US, always 'stock')
+        category: Sector category filter
+        min_market_cap: Minimum market cap filter
+        max_per: Maximum P/E ratio filter
+        min_dividend_yield: Minimum dividend yield filter (normalized to decimal)
+        sort_by: Field to sort by
+        sort_order: Sort order ('asc' or 'desc')
+        limit: Maximum number of results
+        max_rsi: Maximum RSI filter (affects fetch size for RSI enrichment)
+
+    Returns:
+        Tuple of (candidates list, filters_applied dict)
+
+    Raises:
+        ImportError: If yfinance screener module not available
+        Exception: If yfinance API call fails
+    """
+    from yfinance.screener import EquityQuery
+
+    filters_applied: dict[str, Any] = {
+        "market": market,
+        "asset_type": asset_type,
+        "category": category,
+    }
+
+    conditions = []
+    if min_market_cap is not None:
+        conditions.append(
+            EquityQuery(
+                "gte",
+                cast(Any, ["intradaymarketcap", min_market_cap]),
+            )
+        )
+    if max_per is not None:
+        conditions.append(
+            EquityQuery(
+                "lte",
+                cast(Any, ["peratio.lasttwelvemonths", max_per]),
+            )
+        )
+    if min_dividend_yield is not None:
+        conditions.append(
+            EquityQuery(
+                "gte",
+                cast(Any, ["forward_dividend_yield", min_dividend_yield]),
+            )
+        )
+    if category:
+        conditions.append(EquityQuery("eq", cast(Any, ["sector", category])))
+
+    conditions.append(EquityQuery("eq", cast(Any, ["region", "us"])))
+    if len(conditions) == 1:
+        query = conditions[0]
+    else:
+        query = EquityQuery("and", conditions)
+
+    sort_field_map = {
+        "volume": "dayvolume",
+        "market_cap": "intradaymarketcap",
+        "change_rate": "percentchange",
+        "dividend_yield": "forward_dividend_yield",
+    }
+    sort_field = sort_field_map.get(sort_by, "dayvolume")
+    fetch_size = min(limit * 3, 150) if max_rsi is not None else limit
+    session = build_yfinance_tracing_session()
+
+    screen_result = await asyncio.to_thread(
+        lambda: yf.screen(
+            query,
+            size=fetch_size,
+            sortField=sort_field,
+            sortAsc=(sort_order == "asc"),
+            session=session,
+        )
+    )
+
+    if screen_result is None:
+        return [], filters_applied
+
+    quotes = (
+        screen_result.get("quotes", []) if isinstance(screen_result, dict) else []
+    )
+    if not quotes:
+        return [], filters_applied
+
+    def _first_value(quote: dict[str, Any], *keys: str) -> Any:
+        for key in keys:
+            value = quote.get(key)
+            if value is not None:
+                return value
+        return None
+
+    candidates: list[dict[str, Any]] = []
+    for quote in quotes:
+        mapped = {
+            "code": quote.get("symbol"),
+            "name": _first_value(
+                quote, "shortName", "longName", "shortname", "longname"
+            ),
+            "close": _first_value(
+                quote, "regularMarketPrice", "lastPrice", "lastprice"
+            ),
+            "change_rate": _first_value(
+                quote,
+                "regularMarketChangePercent",
+                "percentchange",
+            )
+            or 0,
+            "volume": _first_value(
+                quote, "regularMarketVolume", "dayVolume", "dayvolume"
+            )
+            or 0,
+            "market_cap": _first_value(
+                quote, "marketCap", "intradayMarketCap", "intradaymarketcap"
+            )
+            or 0,
+            "per": _first_value(
+                quote,
+                "trailingPE",
+                "forwardPE",
+                "peRatio",
+                "peratio",
+            ),
+            "dividend_yield": _first_value(
+                quote,
+                "dividendYield",
+                "forwardDividendYield",
+                "forward_dividend_yield",
+            ),
+            "market": "us",
+        }
+        # Drop rows without usable price; these often come from stale/partial screener rows.
+        if mapped["close"] in (None, 0):
+            continue
+        candidates.append(mapped)
+
+    return candidates, filters_applied
+
+
+def _stage_filter_us(
+    candidates: list[dict[str, Any]],
+    max_rsi: float | None = None,
+) -> list[dict[str, Any]]:
+    """Stage 2: Apply post-fetch filters to US candidates.
+
+    Note: Most filters (market_cap, per, dividend_yield) are applied in the
+    yfinance screener query itself. This function applies RSI filter if needed.
+
+    Args:
+        candidates: List of candidate items from fetch stage
+        max_rsi: Maximum RSI filter (applied after RSI enrichment)
+
+    Returns:
+        Filtered list of candidates
+    """
+    return _apply_basic_filters(
+        candidates,
+        min_market_cap=None,
+        max_per=None,
+        max_pbr=None,
+        min_dividend_yield=None,
+        max_rsi=max_rsi,
+    )
+
+
+async def _stage_enrich_us_rsi(
+    candidates: list[dict[str, Any]],
+    enrich_rsi: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Stage 3: Enrich US candidates with RSI values.
+
+    Args:
+        candidates: List of filtered candidates
+        enrich_rsi: Whether to perform RSI enrichment
+
+    Returns:
+        Tuple of (enriched candidates list, rsi_enrichment diagnostics dict)
+    """
+    rsi_enrichment = _empty_rsi_enrichment_diagnostics()
+
+    if not enrich_rsi or not candidates:
+        return candidates, rsi_enrichment
+
+    rsi_enrichment["attempted"] = len(candidates)
+    statuses = ["pending" for _ in candidates]
+    errors: list[str | None] = [None for _ in candidates]
+    semaphore = asyncio.Semaphore(10)
+
+    async def calculate_rsi_for_stock(item: dict[str, Any], index: int):
+        async with semaphore:
+            item_copy = item.copy()
+            symbol = item.get("code")
+            logger.info("[RSI-US] Starting calculation for symbol: %s", symbol)
+
+            if not symbol:
+                logger.warning(
+                    "[RSI-US] No valid symbol found in item keys=%s",
+                    sorted(item.keys()),
+                )
+                statuses[index] = "error"
+                errors[index] = "No valid symbol found"
+                return item_copy
+
+            if item_copy.get("rsi") is not None:
+                logger.debug(
+                    "[RSI-US] RSI already exists for %s, skipping recalculation",
+                    symbol,
+                )
+                statuses[index] = "success"
+                return item_copy
+
+            try:
+                logger.debug("[RSI-US] Fetching OHLCV data for %s", symbol)
+                df = await _fetch_ohlcv_for_indicators(symbol, "us", count=50)
+                candle_count = len(df) if df is not None else 0
+                logger.info("[RSI-US] Got %d candles for %s", candle_count, symbol)
+
+                if df is None or df.empty or "close" not in df.columns:
+                    logger.warning(
+                        "[RSI-US] Missing OHLCV close data for %s (columns=%s)",
+                        symbol,
+                        list(df.columns) if df is not None else [],
+                    )
+                    statuses[index] = "error"
+                    errors[index] = "Missing OHLCV close data"
+                    return item_copy
+
+                if candle_count < 14:
+                    logger.warning(
+                        "[RSI-US] Insufficient candles (%d) for %s",
+                        candle_count,
+                        symbol,
+                    )
+                    statuses[index] = "error"
+                    errors[index] = f"Insufficient candles ({candle_count})"
+                    return item_copy
+
+                logger.debug("[RSI-US] Calculating RSI for %s", symbol)
+                rsi_result = _calculate_rsi(df["close"])
+                rsi_value = rsi_result.get("14") if rsi_result else None
+                if rsi_value is None:
+                    logger.warning(
+                        "[RSI-US] RSI calculation returned None for %s", symbol
+                    )
+                    statuses[index] = "error"
+                    errors[index] = "RSI calculation returned None"
+                    return item_copy
+
+                item_copy["rsi"] = rsi_value
+                statuses[index] = "success"
+                logger.info("[RSI-US] ✅ Success: %s RSI=%.2f", symbol, rsi_value)
+            except Exception as exc:
+                logger.error(
+                    "[RSI-US] ❌ Failed for %s: %s: %s",
+                    symbol or "UNKNOWN",
+                    type(exc).__name__,
+                    exc,
+                )
+                statuses[index] = (
+                    "rate_limited"
+                    if isinstance(exc, RateLimitExceededError)
+                    else "error"
+                )
+                errors[index] = f"{type(exc).__name__}: {exc}"
+
+            return item_copy
+
+    try:
+        subset_results = await asyncio.wait_for(
+            asyncio.gather(
+                *[
+                    calculate_rsi_for_stock(item, i)
+                    for i, item in enumerate(candidates)
+                ],
+                return_exceptions=True,
+            ),
+            timeout=30.0,
+        )
+        for i, result in enumerate(subset_results):
+            if isinstance(result, Exception):
+                symbol = candidates[i].get("code")
+                logger.error(
+                    "[RSI-US] gather returned exception for %s: %s: %s",
+                    symbol or "UNKNOWN",
+                    type(result).__name__,
+                    result,
+                )
+                statuses[i] = (
+                    "rate_limited"
+                    if isinstance(result, RateLimitExceededError)
+                    else "error"
+                )
+                errors[i] = f"{type(result).__name__}: {result}"
+                continue
+            if not isinstance(result, dict):
+                continue
+            if result.get("rsi") is not None:
+                candidates[i]["rsi"] = result["rsi"]
+                if statuses[i] == "pending":
+                    statuses[i] = "success"
+            elif statuses[i] == "pending":
+                statuses[i] = "error"
+                errors[i] = "RSI calculation returned None"
+    except TimeoutError:
+        logger.warning("[RSI-US] RSI enrichment timed out after 30 seconds")
+        for i, status in enumerate(statuses):
+            if status == "pending":
+                statuses[i] = "timeout"
+                errors[i] = "Timed out after 30 seconds"
+    except Exception as exc:
+        logger.error(
+            "[RSI-US] RSI enrichment batch failed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        for i, status in enumerate(statuses):
+            if status == "pending":
+                statuses[i] = (
+                    "rate_limited"
+                    if isinstance(exc, RateLimitExceededError)
+                    else "error"
+                )
+                errors[i] = f"{type(exc).__name__}: {exc}"
+    finally:
+        _finalize_rsi_enrichment_diagnostics(rsi_enrichment, statuses, errors)
+
+    return candidates, rsi_enrichment
+
+
+def _stage_sort_us(
+    candidates: list[dict[str, Any]],
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+    max_rsi: float | None = None,
+) -> list[dict[str, Any]]:
+    """Stage 4: Sort and limit US candidates.
+
+    Args:
+        candidates: List of candidates (optionally enriched with RSI)
+        sort_by: Field to sort by
+        sort_order: Sort order ('asc' or 'desc')
+        limit: Maximum number of results
+        max_rsi: Optional RSI filter to apply before final limiting
+
+    Returns:
+        Sorted and limited list of candidates
+    """
+    # Apply RSI filter if specified
+    if max_rsi is not None:
+        filtered = _apply_basic_filters(
+            candidates,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=max_rsi,
+        )
+    else:
+        filtered = candidates
+
+    # Sort and limit using the shared helper
+    return _sort_and_limit(filtered, sort_by, sort_order, limit)
+
+
 async def _screen_us(
     market: str,
     asset_type: str | None,
@@ -1033,7 +1414,14 @@ async def _screen_us(
     limit: int,
     enrich_rsi: bool = True,
 ) -> dict[str, Any]:
-    """Screen US market stocks using yfinance screener."""
+    """Screen US market stocks using staged pipeline.
+
+    Orchestrates the following stages:
+    1. Fetch candidates from yfinance screener
+    2. Apply RSI filter (other filters applied in screener query)
+    3. Enrich with RSI values
+    4. Apply final RSI filter and limit
+    """
     (
         min_dividend_yield_input,
         min_dividend_yield_normalized,
