@@ -14,12 +14,20 @@ The transport layer is designed to be used as a dependency by other API modules
 import logging
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import pandas as pd
 
+from app.core.config import settings
 from app.services.redis_token_manager import redis_token_manager
 
 if TYPE_CHECKING:
     pass  # Forward declarations for type hints
+
+# ============================================================================
+# KIS API BASE URL
+# ============================================================================
+
+BASE = "https://openapi.koreainvestment.com:9443"
 
 # ============================================================================
 # DATA CONSTANTS (for chart data validation)
@@ -248,11 +256,50 @@ class KISTransport:
         Raises:
             RuntimeError: If token fetch fails after retries
         """
-        # TODO: Implement in subtask-1-2
-        # - Check local token cache
-        # - Check Redis token cache
-        # - Fetch new token if needed via _fetch_token()
-        raise NotImplementedError("Transport.ensure_token() will be implemented in subtask-1-2")
+        # First check if we have a valid token in cache
+        token = await self._token_manager.get_token()
+        if token:
+            logging.debug("KIS access token ready from cache")
+            return token
+
+        # Token is missing or expired - refresh with distributed lock
+        async def token_fetcher() -> tuple[str, int]:
+            return await self._fetch_token_with_expiry()
+
+        token = await self._token_manager.refresh_token_with_lock(token_fetcher)
+        logging.info("KIS access token refreshed and ready")
+        return token
+
+    async def _fetch_token_with_expiry(self) -> tuple[str, int]:
+        """Fetch a new access token from KIS API with expiry information.
+
+        This is an internal method that makes the actual HTTP call to
+        obtain a fresh token. It should only be called via ensure_token()
+        through the token manager's refresh_token_with_lock method.
+
+        Returns:
+            Tuple of (access_token, expires_in_seconds)
+
+        Raises:
+            RuntimeError: If token fetch fails
+        """
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{BASE}/oauth2/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "appkey": settings.kis_app_key,
+                    "appsecret": settings.kis_app_secret,
+                },
+                timeout=5.0,
+            )
+
+        response_data = response.json()
+        access_token = response_data["access_token"]
+        expires_in = response_data.get("expires_in", 3600)  # Default 1 hour
+
+        logging.info("KIS new token fetched successfully")
+        return access_token, expires_in
 
     async def _fetch_token(self) -> str:
         """Fetch a new access token from KIS API.
@@ -266,11 +313,8 @@ class KISTransport:
         Raises:
             RuntimeError: If token fetch fails
         """
-        # TODO: Implement in subtask-1-2
-        # - Make HTTP POST to /oauth2/tokenP
-        # - Store token in Redis via token manager
-        # - Return token string
-        raise NotImplementedError("Transport._fetch_token() will be implemented in subtask-1-2")
+        token, _ = await self._fetch_token_with_expiry()
+        return token
 
     def _get_rate_limit_for_api(self, api_name: str, tr_id: str | None) -> tuple[int, int]:
         """Get rate limit configuration for a specific API.
