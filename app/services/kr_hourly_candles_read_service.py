@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
@@ -16,6 +17,8 @@ from app.services.brokers.kis.client import KISClient
 _KST = ZoneInfo("Asia/Seoul")
 
 _KR_UNIVERSE_SYNC_COMMAND = "uv run python scripts/sync_kr_symbol_universe.py"
+
+logger = logging.getLogger(__name__)
 
 
 def _kr_universe_sync_hint() -> str:
@@ -139,6 +142,78 @@ def _session_for_bucket_start(
     if datetime.time(15, 30, 0) <= t <= datetime.time(20, 0, 0):
         return "AFTER_MARKET"
     return None
+
+
+def _aggregate_minutes_to_hourly(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate minute candles to hourly candles using OHLCV math.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Minute candles with columns: datetime, open, high, low, close, volume
+
+    Returns
+    -------
+    pd.DataFrame
+        Hourly candles with columns: datetime, open, high, low, close, volume
+        Empty DataFrame if input is empty or invalid
+
+    Notes
+    -----
+    - datetime is floored to hour (e.g., 2024-01-01 09:00:00)
+    - open: first value in the hour
+    - high: maximum value in the hour
+    - low: minimum value in the hour
+    - close: last value in the hour
+    - volume: sum of volumes in the hour
+    """
+    if df.empty:
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+
+    required_cols = {"datetime", "open", "high", "low", "close", "volume"}
+    missing_cols = required_cols - set(df.columns)
+    if missing_cols:
+        logger.warning(
+            "Missing required columns for aggregation: %s",
+            sorted(missing_cols),
+        )
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+
+    out = df.copy()
+    out["datetime"] = pd.to_datetime(out["datetime"], errors="coerce")
+    out = out.dropna(subset=["datetime"])
+
+    if out.empty:
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+
+    out["hour_bucket"] = out["datetime"].dt.floor("60min")
+
+    try:
+        aggregated = (
+            out.groupby("hour_bucket", as_index=False)
+            .agg(
+                {
+                    "datetime": "first",
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                }
+            )
+            .sort_values("hour_bucket")
+            .reset_index(drop=True)
+        )
+    except Exception as e:
+        logger.error("Error during aggregation: %s", e)
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+
+    result = aggregated.rename(columns={"hour_bucket": "datetime"})
+    result = result[["datetime", "open", "high", "low", "close", "volume"]]
+    result = result.reset_index(drop=True)
+
+    return result
 
 
 def _should_call_api(
