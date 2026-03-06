@@ -166,4 +166,17 @@ To continue building this spec, run:
 - Verified: All 4 webhook fields are accepted and stored correctly
 - Status: COMPLETED
 
+[2026-03-06] subtask-3-3: Update notify_buy_order() to route to Discord webhook based on market_type
+- Added _send_to_discord_embed_single() helper method to send to a specific webhook URL
+- Updated notify_buy_order() to route to appropriate Discord webhook:
+  * US/해외주식 → discord_webhook_us
+  * 국내주식 → discord_webhook_kr
+  * 암호화폐 → discord_webhook_crypto
+- Uses _get_webhook_for_market_type() to determine correct webhook
+- Sends Discord embed to the single appropriate webhook instead of all webhooks
+- Removed Telegram dependency for buy notifications
+- Added proper error handling and logging for missing webhooks
+- Syntax verified with python3 -m py_compile
+- Status: COMPLETED
+
 === END SESSION 1 ===
