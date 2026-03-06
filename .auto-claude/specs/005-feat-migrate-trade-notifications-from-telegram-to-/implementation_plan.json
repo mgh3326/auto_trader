@@ -352,7 +352,9 @@
             "type": "manual",
             "instructions": "Verify notify_trade_failure() routes to correct Discord webhook based on market_type parameter"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Updated notify_trade_failure() to route to Discord webhook based on market_type. Changed from sending to all webhooks to market-type-specific routing following same pattern as notify_buy_order(), notify_sell_order(), notify_cancel_orders(), and notify_analysis_complete(). Routes to appropriate webhook: US/해외주식 → discord_webhook_us, 국내주식 → discord_webhook_kr, 암호화폐 → discord_webhook_crypto. Uses _get_webhook_for_market_type() and _send_to_discord_embed_single() methods.",
+          "updated_at": "2026-03-06T05:10:00.000000+00:00"
         },
         {
           "id": "subtask-3-8",
@@ -369,7 +371,9 @@
             "type": "manual",
             "instructions": "Verify notification methods fall back to Telegram when Discord webhooks are not configured"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Implemented Telegram fallback in all market-type-based notification methods (notify_buy_order, notify_sell_order, notify_cancel_orders, notify_analysis_complete, notify_trade_failure). Each method now tries Discord first and falls back to Telegram if Discord fails or is not configured. Added 5 new Telegram formatter methods that mirror the Discord embed formatters with proper markdown formatting.",
+          "updated_at": "2026-03-06T05:30:00.000000+00:00"
         }
       ]
     },
@@ -398,7 +402,9 @@
             "type": "manual",
             "instructions": "Verify setup_monitoring() passes Discord webhook URLs to trade_notifier.configure()"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Updated setup_monitoring() to configure Discord webhooks from settings. Added check for Discord webhook configuration (us, kr, crypto, alerts). Pass Discord webhook URLs to trade_notifier.configure(). Made Telegram optional - works with Discord only. Updated docstring to reflect Discord (primary) and Telegram (fallback). Improved logging to show configured notification systems. Handles case where neither Discord nor Telegram is configured.",
+          "updated_at": "2026-03-06T05:35:00.000000+00:00"
         },
         {
           "id": "subtask-4-2",
@@ -757,7 +763,7 @@
   "planStatus": "in_progress",
   "xstateState": "coding",
   "executionPhase": "coding",
-  "updated_at": "2026-03-06T04:51:41.025Z",
+  "updated_at": "2026-03-06T04:57:48.442Z",
   "lastEvent": {
     "eventId": "769ea988-43d6-4f4d-984d-f38f0fb16e19",
     "sequence": 0,
