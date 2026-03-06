@@ -537,6 +537,230 @@ class TradeNotifier:
             logger.error(f"Failed to send embed to Discord webhook: {e}")
             return False
 
+    def _format_buy_notification_telegram(
+        self,
+        symbol: str,
+        korean_name: str,
+        order_count: int,
+        total_amount: float,
+        prices: list[float],
+        volumes: list[float],
+        market_type: str = "암호화폐",
+    ) -> str:
+        """
+        Format buy order notification as Telegram markdown message.
+
+        Args:
+            symbol: Trading symbol
+            korean_name: Korean name of asset
+            order_count: Number of orders placed
+            total_amount: Total amount in KRW
+            prices: List of order prices
+            volumes: List of order volumes
+            market_type: Type of market
+
+        Returns:
+            Telegram markdown formatted message
+        """
+        timestamp = format_datetime()
+
+        lines = [
+            f"*💰 매수 주문 접수*",
+            f"",
+            f"🕒 {timestamp}",
+            f"",
+            f"*종목:* {korean_name} \\({symbol}\\)",
+            f"*시장:* {market_type}",
+            f"*주문 수:* {order_count}건",
+            f"*총 금액:* {total_amount:,.0f}원",
+        ]
+
+        # Add order details if available
+        if prices and volumes and len(prices) == len(volumes):
+            lines.append("")
+            lines.append("*주문 상세:*")
+            for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
+                lines.append(f"{i}. {price:,.2f}원 × {volume:.8g}")
+        elif prices:
+            lines.append("")
+            lines.append("*매수 가격대:*")
+            for i, price in enumerate(prices, 1):
+                lines.append(f"{i}. {price:,.2f}원")
+
+        return "\n".join(lines)
+
+    def _format_sell_notification_telegram(
+        self,
+        symbol: str,
+        korean_name: str,
+        order_count: int,
+        total_volume: float,
+        prices: list[float],
+        volumes: list[float],
+        expected_amount: float,
+        market_type: str = "암호화폐",
+    ) -> str:
+        """
+        Format sell order notification as Telegram markdown message.
+
+        Args:
+            symbol: Trading symbol
+            korean_name: Korean name of asset
+            order_count: Number of orders placed
+            total_volume: Total volume being sold
+            prices: List of order prices
+            volumes: List of order volumes
+            expected_amount: Expected total amount in KRW
+            market_type: Type of market
+
+        Returns:
+            Telegram markdown formatted message
+        """
+        timestamp = format_datetime()
+
+        lines = [
+            f"*💸 매도 주문 접수*",
+            f"",
+            f"🕒 {timestamp}",
+            f"",
+            f"*종목:* {korean_name} \\({symbol}\\)",
+            f"*시장:* {market_type}",
+            f"*주문 수:* {order_count}건",
+            f"*총 수량:* {total_volume:.8g}",
+            f"*예상 금액:* {expected_amount:,.0f}원",
+        ]
+
+        # Add order details if available
+        if prices and volumes and len(prices) == len(volumes):
+            lines.append("")
+            lines.append("*주문 상세:*")
+            for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
+                lines.append(f"{i}. {price:,.2f}원 × {volume:.8g}")
+        elif prices:
+            lines.append("")
+            lines.append("*매도 가격대:*")
+            for i, price in enumerate(prices, 1):
+                lines.append(f"{i}. {price:,.2f}원")
+
+        return "\n".join(lines)
+
+    def _format_cancel_notification_telegram(
+        self,
+        symbol: str,
+        korean_name: str,
+        cancel_count: int,
+        order_type: str = "전체",
+        market_type: str = "암호화폐",
+    ) -> str:
+        """
+        Format order cancellation notification as Telegram markdown message.
+
+        Args:
+            symbol: Trading symbol
+            korean_name: Korean name of asset
+            cancel_count: Number of orders cancelled
+            order_type: Type of orders cancelled
+            market_type: Type of market
+
+        Returns:
+            Telegram markdown formatted message
+        """
+        timestamp = format_datetime()
+
+        return "\n".join([
+            f"*🚫 주문 취소*",
+            f"",
+            f"🕒 {timestamp}",
+            f"",
+            f"*종목:* {korean_name} \\({symbol}\\)",
+            f"*시장:* {market_type}",
+            f"*취소 유형:* {order_type}",
+            f"*취소 건수:* {cancel_count}건",
+        ])
+
+    def _format_analysis_notification_telegram(
+        self,
+        symbol: str,
+        korean_name: str,
+        decision: str,
+        confidence: float,
+        reasons: list[str],
+        market_type: str = "암호화폐",
+    ) -> str:
+        """
+        Format AI analysis notification as Telegram markdown message.
+
+        Args:
+            symbol: Trading symbol
+            korean_name: Korean name of asset
+            decision: AI decision (buy, hold, sell)
+            confidence: Confidence score (0-100)
+            reasons: List of decision reasons
+            market_type: Type of market
+
+        Returns:
+            Telegram markdown formatted message
+        """
+        timestamp = format_datetime()
+
+        # Decision emoji mapping
+        decision_emoji = {"buy": "🟢", "hold": "🟡", "sell": "🔴"}
+        decision_text = {"buy": "매수", "hold": "보유", "sell": "매도"}
+
+        emoji = decision_emoji.get(decision.lower(), "⚪")
+        decision_kr = decision_text.get(decision.lower(), decision)
+
+        lines = [
+            f"*📊 AI 분석 완료*",
+            f"",
+            f"🕒 {timestamp}",
+            f"",
+            f"*종목:* {korean_name} \\({symbol}\\)",
+            f"*시장:* {market_type}",
+            f"*판단:* {emoji} {decision_kr}",
+            f"*신뢰도:* {confidence:.1f}%",
+        ]
+
+        # Add reasons if available
+        if reasons:
+            lines.append("")
+            lines.append("*주요 근거:*")
+            for i, reason in enumerate(reasons[:3], 1):
+                lines.append(f"{i}. {reason}")
+
+        return "\n".join(lines)
+
+    def _format_failure_notification_telegram(
+        self,
+        symbol: str,
+        korean_name: str,
+        reason: str,
+        market_type: str = "암호화폐",
+    ) -> str:
+        """
+        Format trade failure notification as Telegram markdown message.
+
+        Args:
+            symbol: Trading symbol
+            korean_name: Korean name of asset
+            reason: Failure reason
+            market_type: Type of market
+
+        Returns:
+            Telegram markdown formatted message
+        """
+        timestamp = format_datetime()
+
+        return "\n".join([
+            f"*⚠️ 거래 실패*",
+            f"",
+            f"🕒 {timestamp}",
+            f"",
+            f"*종목:* {korean_name} \\({symbol}\\)",
+            f"*시장:* {market_type}",
+            f"*사유:* {reason}",
+        ])
+
     async def notify_buy_order(
         self,
         symbol: str,
@@ -549,6 +773,7 @@ class TradeNotifier:
     ) -> bool:
         """
         Send buy order notification to Discord webhook based on market_type.
+        Falls back to Telegram if Discord is not configured.
 
         Routes to the appropriate Discord webhook:
         - US/해외주식 → discord_webhook_us
@@ -572,14 +797,29 @@ class TradeNotifier:
             # Get the appropriate Discord webhook for this market type
             webhook_url = self._get_webhook_for_market_type(market_type)
 
-            # Send to Discord if webhook is configured
+            # Try Discord first
             if webhook_url:
-                return await self._send_to_discord_embed_single(embed, webhook_url)
-            else:
-                logger.warning(
-                    f"No Discord webhook configured for market type: {market_type}"
-                )
-                return False
+                discord_success = await self._send_to_discord_embed_single(embed, webhook_url)
+                if discord_success:
+                    return True
+                logger.info("Discord send failed, falling back to Telegram")
+
+            # Fall back to Telegram
+            telegram_message = self._format_buy_notification_telegram(
+                symbol,
+                korean_name,
+                order_count,
+                total_amount,
+                prices,
+                volumes,
+                market_type,
+            )
+            telegram_success = await self._send_to_telegram(telegram_message)
+            if telegram_success:
+                return True
+
+            logger.warning("Failed to send buy notification via Discord or Telegram")
+            return False
 
         except Exception as e:
             logger.error(f"Failed to send buy notification: {e}")
@@ -598,6 +838,7 @@ class TradeNotifier:
     ) -> bool:
         """
         Send sell order notification to Discord webhook based on market_type.
+        Falls back to Telegram if Discord is not configured.
 
         Routes to the appropriate Discord webhook:
         - US/해외주식 → discord_webhook_us
@@ -622,14 +863,30 @@ class TradeNotifier:
             # Get the appropriate Discord webhook for this market type
             webhook_url = self._get_webhook_for_market_type(market_type)
 
-            # Send to Discord if webhook is configured
+            # Try Discord first
             if webhook_url:
-                return await self._send_to_discord_embed_single(embed, webhook_url)
-            else:
-                logger.warning(
-                    f"No Discord webhook configured for market type: {market_type}"
-                )
-                return False
+                discord_success = await self._send_to_discord_embed_single(embed, webhook_url)
+                if discord_success:
+                    return True
+                logger.info("Discord send failed, falling back to Telegram")
+
+            # Fall back to Telegram
+            telegram_message = self._format_sell_notification_telegram(
+                symbol,
+                korean_name,
+                order_count,
+                total_volume,
+                prices,
+                volumes,
+                expected_amount,
+                market_type,
+            )
+            telegram_success = await self._send_to_telegram(telegram_message)
+            if telegram_success:
+                return True
+
+            logger.warning("Failed to send sell notification via Discord or Telegram")
+            return False
 
         except Exception as e:
             logger.error(f"Failed to send sell notification: {e}")
@@ -645,6 +902,7 @@ class TradeNotifier:
     ) -> bool:
         """
         Send order cancellation notification to Discord webhook based on market_type.
+        Falls back to Telegram if Discord is not configured.
 
         Routes to the appropriate Discord webhook:
         - US/해외주식 → discord_webhook_us
@@ -662,14 +920,23 @@ class TradeNotifier:
             # Get the appropriate Discord webhook for this market type
             webhook_url = self._get_webhook_for_market_type(market_type)
 
-            # Send to Discord if webhook is configured
+            # Try Discord first
             if webhook_url:
-                return await self._send_to_discord_embed_single(embed, webhook_url)
-            else:
-                logger.warning(
-                    f"No Discord webhook configured for market type: {market_type}"
-                )
-                return False
+                discord_success = await self._send_to_discord_embed_single(embed, webhook_url)
+                if discord_success:
+                    return True
+                logger.info("Discord send failed, falling back to Telegram")
+
+            # Fall back to Telegram
+            telegram_message = self._format_cancel_notification_telegram(
+                symbol, korean_name, cancel_count, order_type, market_type
+            )
+            telegram_success = await self._send_to_telegram(telegram_message)
+            if telegram_success:
+                return True
+
+            logger.warning("Failed to send cancel notification via Discord or Telegram")
+            return False
 
         except Exception as e:
             logger.error(f"Failed to send cancel notification: {e}")
@@ -686,6 +953,7 @@ class TradeNotifier:
     ) -> bool:
         """
         Send AI analysis completion notification to Discord webhook based on market_type.
+        Falls back to Telegram if Discord is not configured.
 
         Routes to the appropriate Discord webhook:
         - US/해외주식 → discord_webhook_us
@@ -703,14 +971,23 @@ class TradeNotifier:
             # Get the appropriate Discord webhook for this market type
             webhook_url = self._get_webhook_for_market_type(market_type)
 
-            # Send to Discord if webhook is configured
+            # Try Discord first
             if webhook_url:
-                return await self._send_to_discord_embed_single(embed, webhook_url)
-            else:
-                logger.warning(
-                    f"No Discord webhook configured for market type: {market_type}"
-                )
-                return False
+                discord_success = await self._send_to_discord_embed_single(embed, webhook_url)
+                if discord_success:
+                    return True
+                logger.info("Discord send failed, falling back to Telegram")
+
+            # Fall back to Telegram
+            telegram_message = self._format_analysis_notification_telegram(
+                symbol, korean_name, decision, confidence, reasons, market_type
+            )
+            telegram_success = await self._send_to_telegram(telegram_message)
+            if telegram_success:
+                return True
+
+            logger.warning("Failed to send analysis notification via Discord or Telegram")
+            return False
 
         except Exception as e:
             logger.error(f"Failed to send analysis notification: {e}")
@@ -782,6 +1059,7 @@ class TradeNotifier:
     ) -> bool:
         """
         Send trade failure notification to Discord webhook based on market_type.
+        Falls back to Telegram if Discord is not configured.
 
         Routes to the appropriate Discord webhook:
         - US/해외주식 → discord_webhook_us
@@ -799,14 +1077,23 @@ class TradeNotifier:
             # Get the appropriate Discord webhook for this market type
             webhook_url = self._get_webhook_for_market_type(market_type)
 
-            # Send to Discord if webhook is configured
+            # Try Discord first
             if webhook_url:
-                return await self._send_to_discord_embed_single(embed, webhook_url)
-            else:
-                logger.warning(
-                    f"No Discord webhook configured for market type: {market_type}"
-                )
-                return False
+                discord_success = await self._send_to_discord_embed_single(embed, webhook_url)
+                if discord_success:
+                    return True
+                logger.info("Discord send failed, falling back to Telegram")
+
+            # Fall back to Telegram
+            telegram_message = self._format_failure_notification_telegram(
+                symbol, korean_name, reason, market_type
+            )
+            telegram_success = await self._send_to_telegram(telegram_message)
+            if telegram_success:
+                return True
+
+            logger.warning("Failed to send failure notification via Discord or Telegram")
+            return False
 
         except Exception as e:
             logger.error(f"Failed to send failure notification: {e}")
