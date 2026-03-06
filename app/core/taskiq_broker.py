@@ -20,12 +20,14 @@ class WorkerInitMiddleware(TaskiqMiddleware):
             )
 
             # Check if any notification system is configured
-            has_discord = any([
-                settings.discord_webhook_us,
-                settings.discord_webhook_kr,
-                settings.discord_webhook_crypto,
-                settings.discord_webhook_alerts,
-            ])
+            has_discord = any(
+                [
+                    settings.discord_webhook_us,
+                    settings.discord_webhook_kr,
+                    settings.discord_webhook_crypto,
+                    settings.discord_webhook_alerts,
+                ]
+            )
             has_telegram = settings.telegram_token and settings.telegram_chat_id
 
             if has_discord or has_telegram:

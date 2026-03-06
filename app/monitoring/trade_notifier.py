@@ -83,7 +83,12 @@ class TradeNotifier:
         self._discord_webhook_urls = discord_webhook_urls or []
         # Also build list from individual webhooks if legacy parameter not provided
         if not self._discord_webhook_urls:
-            for webhook in [discord_webhook_us, discord_webhook_kr, discord_webhook_crypto, discord_webhook_alerts]:
+            for webhook in [
+                discord_webhook_us,
+                discord_webhook_kr,
+                discord_webhook_crypto,
+                discord_webhook_alerts,
+            ]:
                 if webhook:
                     self._discord_webhook_urls.append(webhook)
         self._enabled = enabled
@@ -93,14 +98,18 @@ class TradeNotifier:
             logger.info(f"TradeNotifier configured: {len(chat_ids)} chat(s)")
 
             # Log configured Discord webhooks
-            webhook_count = sum([
-                bool(self._discord_webhook_us),
-                bool(self._discord_webhook_kr),
-                bool(self._discord_webhook_crypto),
-                bool(self._discord_webhook_alerts),
-            ])
+            webhook_count = sum(
+                [
+                    bool(self._discord_webhook_us),
+                    bool(self._discord_webhook_kr),
+                    bool(self._discord_webhook_crypto),
+                    bool(self._discord_webhook_alerts),
+                ]
+            )
             if webhook_count > 0:
-                logger.info(f"TradeNotifier Discord webhooks: {webhook_count} webhook(s) configured")
+                logger.info(
+                    f"TradeNotifier Discord webhooks: {webhook_count} webhook(s) configured"
+                )
 
     async def shutdown(self) -> None:
         """Shutdown HTTP client."""
@@ -175,20 +184,24 @@ class TradeNotifier:
             order_details = []
             for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
                 order_details.append(f"{i}. {price:,.2f}원 × {volume:.8g}")
-            fields.append({
-                "name": "주문 상세",
-                "value": "\n".join(order_details),
-                "inline": False,
-            })
+            fields.append(
+                {
+                    "name": "주문 상세",
+                    "value": "\n".join(order_details),
+                    "inline": False,
+                }
+            )
         elif prices:
             price_list = []
             for i, price in enumerate(prices, 1):
                 price_list.append(f"{i}. {price:,.2f}원")
-            fields.append({
-                "name": "매수 가격대",
-                "value": "\n".join(price_list),
-                "inline": False,
-            })
+            fields.append(
+                {
+                    "name": "매수 가격대",
+                    "value": "\n".join(price_list),
+                    "inline": False,
+                }
+            )
 
         return {
             "title": "💰 매수 주문 접수",
@@ -232,7 +245,11 @@ class TradeNotifier:
             {"name": "시장", "value": market_type, "inline": True},
             {"name": "주문 수", "value": f"{order_count}건", "inline": True},
             {"name": "총 수량", "value": f"{total_volume:.8g}", "inline": False},
-            {"name": "예상 금액", "value": f"{expected_amount:,.0f}원", "inline": False},
+            {
+                "name": "예상 금액",
+                "value": f"{expected_amount:,.0f}원",
+                "inline": False,
+            },
         ]
 
         # Add order details if available
@@ -240,20 +257,24 @@ class TradeNotifier:
             order_details = []
             for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
                 order_details.append(f"{i}. {price:,.2f}원 × {volume:.8g}")
-            fields.append({
-                "name": "주문 상세",
-                "value": "\n".join(order_details),
-                "inline": False,
-            })
+            fields.append(
+                {
+                    "name": "주문 상세",
+                    "value": "\n".join(order_details),
+                    "inline": False,
+                }
+            )
         elif prices:
             price_list = []
             for i, price in enumerate(prices, 1):
                 price_list.append(f"{i}. {price:,.2f}원")
-            fields.append({
-                "name": "매도 가격대",
-                "value": "\n".join(price_list),
-                "inline": False,
-            })
+            fields.append(
+                {
+                    "name": "매도 가격대",
+                    "value": "\n".join(price_list),
+                    "inline": False,
+                }
+            )
 
         return {
             "title": "💸 매도 주문 접수",
@@ -343,13 +364,16 @@ class TradeNotifier:
         # Add reasons if available
         if reasons:
             reason_text = "\n".join(
-                f"{i}. {reason}" for i, reason in enumerate(reasons[:3], 1)  # Max 3 reasons
+                f"{i}. {reason}"
+                for i, reason in enumerate(reasons[:3], 1)  # Max 3 reasons
             )
-            fields.append({
-                "name": "주요 근거",
-                "value": reason_text,
-                "inline": False,
-            })
+            fields.append(
+                {
+                    "name": "주요 근거",
+                    "value": reason_text,
+                    "inline": False,
+                }
+            )
 
         return {
             "title": "📊 AI 분석 완료",
@@ -394,11 +418,13 @@ class TradeNotifier:
 
         # Add error count if any errors occurred
         if errors > 0:
-            fields.append({
-                "name": "오류 발생",
-                "value": f"{errors}건",
-                "inline": False,
-            })
+            fields.append(
+                {
+                    "name": "오류 발생",
+                    "value": f"{errors}건",
+                    "inline": False,
+                }
+            )
 
         return {
             "title": "🤖 자동 거래 실행 완료",
@@ -514,7 +540,9 @@ class TradeNotifier:
             return True
         return False
 
-    async def _send_to_discord_embed_single(self, embed: dict, webhook_url: str) -> bool:
+    async def _send_to_discord_embed_single(
+        self, embed: dict, webhook_url: str
+    ) -> bool:
         """
         Send Discord embed to a specific webhook URL.
 
@@ -676,16 +704,18 @@ class TradeNotifier:
         """
         timestamp = format_datetime()
 
-        return "\n".join([
-            "*🚫 주문 취소*",
-            "",
-            f"🕒 {timestamp}",
-            "",
-            f"*종목:* {korean_name} \\({symbol}\\)",
-            f"*시장:* {market_type}",
-            f"*취소 유형:* {order_type}",
-            f"*취소 건수:* {cancel_count}건",
-        ])
+        return "\n".join(
+            [
+                "*🚫 주문 취소*",
+                "",
+                f"🕒 {timestamp}",
+                "",
+                f"*종목:* {korean_name} \\({symbol}\\)",
+                f"*시장:* {market_type}",
+                f"*취소 유형:* {order_type}",
+                f"*취소 건수:* {cancel_count}건",
+            ]
+        )
 
     def _format_analysis_notification_telegram(
         self,
@@ -760,15 +790,17 @@ class TradeNotifier:
         """
         timestamp = format_datetime()
 
-        return "\n".join([
-            "*⚠️ 거래 실패*",
-            "",
-            f"🕒 {timestamp}",
-            "",
-            f"*종목:* {korean_name} \\({symbol}\\)",
-            f"*시장:* {market_type}",
-            f"*사유:* {reason}",
-        ])
+        return "\n".join(
+            [
+                "*⚠️ 거래 실패*",
+                "",
+                f"🕒 {timestamp}",
+                "",
+                f"*종목:* {korean_name} \\({symbol}\\)",
+                f"*시장:* {market_type}",
+                f"*사유:* {reason}",
+            ]
+        )
 
     async def notify_buy_order(
         self,
@@ -808,7 +840,9 @@ class TradeNotifier:
 
             # Try Discord first
             if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(embed, webhook_url)
+                discord_success = await self._send_to_discord_embed_single(
+                    embed, webhook_url
+                )
                 if discord_success:
                     return True
                 logger.info("Discord send failed, falling back to Telegram")
@@ -874,7 +908,9 @@ class TradeNotifier:
 
             # Try Discord first
             if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(embed, webhook_url)
+                discord_success = await self._send_to_discord_embed_single(
+                    embed, webhook_url
+                )
                 if discord_success:
                     return True
                 logger.info("Discord send failed, falling back to Telegram")
@@ -931,7 +967,9 @@ class TradeNotifier:
 
             # Try Discord first
             if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(embed, webhook_url)
+                discord_success = await self._send_to_discord_embed_single(
+                    embed, webhook_url
+                )
                 if discord_success:
                     return True
                 logger.info("Discord send failed, falling back to Telegram")
@@ -982,7 +1020,9 @@ class TradeNotifier:
 
             # Try Discord first
             if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(embed, webhook_url)
+                discord_success = await self._send_to_discord_embed_single(
+                    embed, webhook_url
+                )
                 if discord_success:
                     return True
                 logger.info("Discord send failed, falling back to Telegram")
@@ -995,7 +1035,9 @@ class TradeNotifier:
             if telegram_success:
                 return True
 
-            logger.warning("Failed to send analysis notification via Discord or Telegram")
+            logger.warning(
+                "Failed to send analysis notification via Discord or Telegram"
+            )
             return False
 
         except Exception as e:
@@ -1088,7 +1130,9 @@ class TradeNotifier:
 
             # Try Discord first
             if webhook_url:
-                discord_success = await self._send_to_discord_embed_single(embed, webhook_url)
+                discord_success = await self._send_to_discord_embed_single(
+                    embed, webhook_url
+                )
                 if discord_success:
                     return True
                 logger.info("Discord send failed, falling back to Telegram")
@@ -1101,7 +1145,9 @@ class TradeNotifier:
             if telegram_success:
                 return True
 
-            logger.warning("Failed to send failure notification via Discord or Telegram")
+            logger.warning(
+                "Failed to send failure notification via Discord or Telegram"
+            )
             return False
 
         except Exception as e:
@@ -1161,25 +1207,29 @@ class TradeNotifier:
 
         # Add KIS holdings if available
         if kis_quantity and kis_quantity > 0 and kis_avg_price:
-            fields.append({
-                "name": "한투 보유",
-                "value": f"{kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})",
-                "inline": False,
-            })
+            fields.append(
+                {
+                    "name": "한투 보유",
+                    "value": f"{kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})",
+                    "inline": False,
+                }
+            )
 
         # Add recommendation
-        fields.extend([
-            {
-                "name": "💡 추천 매수가",
-                "value": price_fmt(recommended_price),
-                "inline": False,
-            },
-            {
-                "name": "추천 수량",
-                "value": f"{recommended_quantity}주",
-                "inline": False,
-            },
-        ])
+        fields.extend(
+            [
+                {
+                    "name": "💡 추천 매수가",
+                    "value": price_fmt(recommended_price),
+                    "inline": False,
+                },
+                {
+                    "name": "추천 수량",
+                    "value": f"{recommended_quantity}주",
+                    "inline": False,
+                },
+            ]
+        )
 
         return {
             "title": "📈 [토스 수동매수]",
@@ -1247,30 +1297,34 @@ class TradeNotifier:
 
         # Add KIS holdings if available
         if kis_quantity and kis_quantity > 0 and kis_avg_price:
-            fields.append({
-                "name": "한투 보유",
-                "value": f"{kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})",
-                "inline": False,
-            })
+            fields.append(
+                {
+                    "name": "한투 보유",
+                    "value": f"{kis_quantity}주 (평단가 {price_fmt(kis_avg_price)})",
+                    "inline": False,
+                }
+            )
 
         # Add recommendation with profit
-        fields.extend([
-            {
-                "name": "💡 추천 매도가",
-                "value": f"{price_fmt(recommended_price)} ({profit_sign}{profit_percent:.1f}%)",
-                "inline": False,
-            },
-            {
-                "name": "추천 수량",
-                "value": f"{recommended_quantity}주",
-                "inline": False,
-            },
-            {
-                "name": "예상 수익",
-                "value": price_fmt(expected_profit),
-                "inline": False,
-            },
-        ])
+        fields.extend(
+            [
+                {
+                    "name": "💡 추천 매도가",
+                    "value": f"{price_fmt(recommended_price)} ({profit_sign}{profit_percent:.1f}%)",
+                    "inline": False,
+                },
+                {
+                    "name": "추천 수량",
+                    "value": f"{recommended_quantity}주",
+                    "inline": False,
+                },
+                {
+                    "name": "예상 수익",
+                    "value": price_fmt(expected_profit),
+                    "inline": False,
+                },
+            ]
+        )
 
         return {
             "title": "📉 [토스 수동매도]",
@@ -1454,11 +1508,13 @@ class TradeNotifier:
                 f"{i}. {reason[:80]}..." if len(reason) > 80 else f"{i}. {reason}"
                 for i, reason in enumerate(reasons[:3], 1)
             )
-            fields.append({
-                "name": "근거",
-                "value": reason_text,
-                "inline": False,
-            })
+            fields.append(
+                {
+                    "name": "근거",
+                    "value": reason_text,
+                    "inline": False,
+                }
+            )
 
         # 가격 제안 추가
         price_suggestions = []
@@ -1496,11 +1552,13 @@ class TradeNotifier:
             price_suggestions.append(f"매도 목표: {' ~ '.join(target_range)}")
 
         if price_suggestions:
-            fields.append({
-                "name": "가격 제안",
-                "value": "\n".join(price_suggestions),
-                "inline": False,
-            })
+            fields.append(
+                {
+                    "name": "가격 제안",
+                    "value": "\n".join(price_suggestions),
+                    "inline": False,
+                }
+            )
 
         return {
             "title": "📊 [토스] AI 분석",
@@ -1624,7 +1682,9 @@ class TradeNotifier:
                         "description": f"연결 성공: {format_datetime()}\n거래 알림 시스템이 정상 작동 중입니다.",
                         "color": 0x00FF00,  # Green for success
                     }
-                    return await self._send_to_discord_embed_single(test_embed, webhook_url)
+                    return await self._send_to_discord_embed_single(
+                        test_embed, webhook_url
+                    )
 
             # Fallback to Telegram if no Discord webhooks configured
             if self._bot_token:

@@ -46,6 +46,7 @@ class _UniverseRow:
 @dataclass(frozen=True, slots=True)
 class _UniverseError:
     """Represents an error during universe lookup without raising an exception."""
+
     reason: str
 
 
@@ -64,6 +65,7 @@ class _MinuteRow:
 @dataclass(frozen=True, slots=True)
 class _VenueConfig:
     """Venue-specific configuration for KIS API calls."""
+
     venue: VenueType
     market_code: str
     session_start: time
@@ -148,7 +150,7 @@ def _ensure_kst_aware(value: datetime.datetime) -> datetime.datetime:
 def _convert_kis_datetime_to_utc(kst_dt: datetime.datetime) -> datetime.datetime:
     """Convert KIS API datetime (KST) to UTC for storage."""
     kst_aware = _ensure_kst_aware(kst_dt)
-    return kst_aware.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return kst_aware.astimezone(datetime.UTC).replace(tzinfo=None)
 
 
 def _to_kst_naive(value: datetime.datetime) -> datetime.datetime:
@@ -242,7 +244,9 @@ def _aggregate_minutes_to_hourly(df: pd.DataFrame) -> pd.DataFrame:
     - volume: sum of volumes in the hour
     """
     if df.empty:
-        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(
+            columns=["datetime", "open", "high", "low", "close", "volume"]
+        )
 
     required_cols = {"datetime", "open", "high", "low", "close", "volume"}
     missing_cols = required_cols - set(df.columns)
@@ -251,14 +255,18 @@ def _aggregate_minutes_to_hourly(df: pd.DataFrame) -> pd.DataFrame:
             "Missing required columns for aggregation: %s",
             sorted(missing_cols),
         )
-        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(
+            columns=["datetime", "open", "high", "low", "close", "volume"]
+        )
 
     out = df.copy()
     out["datetime"] = pd.to_datetime(out["datetime"], errors="coerce")
     out = out.dropna(subset=["datetime"])
 
     if out.empty:
-        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(
+            columns=["datetime", "open", "high", "low", "close", "volume"]
+        )
 
     out["hour_bucket"] = out["datetime"].dt.floor("60min")
 
@@ -279,7 +287,9 @@ def _aggregate_minutes_to_hourly(df: pd.DataFrame) -> pd.DataFrame:
         )
     except Exception as e:
         logger.error("Error during aggregation: %s", e)
-        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(
+            columns=["datetime", "open", "high", "low", "close", "volume"]
+        )
 
     result = aggregated.rename(columns={"hour_bucket": "datetime"})
     result = result[["datetime", "open", "high", "low", "close", "volume"]]
@@ -351,7 +361,9 @@ async def _resolve_universe_row(
                 "kr_symbol_universe is empty. %s",
                 _kr_universe_sync_hint(),
             )
-            return _UniverseError(reason=f"kr_symbol_universe is empty. {_kr_universe_sync_hint()}")
+            return _UniverseError(
+                reason=f"kr_symbol_universe is empty. {_kr_universe_sync_hint()}"
+            )
         logger.warning(
             "KR symbol '%s' is not registered in kr_symbol_universe. %s",
             normalized_symbol,
@@ -499,7 +511,7 @@ async def _build_current_hour_row(
     now_kst: datetime.datetime,
     nxt_eligible: bool,
     end_date: datetime.datetime | None,
-) -> tuple[dict[str, object] | None, datetime.datetime | None, list[dict[str, object]]]:
+) -> tuple[dict[str, object] | None, datetime.datetime | None, list[_MinuteRow]]:
     current_bucket_start_kst = now_kst.replace(minute=0, second=0, microsecond=0)
     current_bucket_naive = current_bucket_start_kst.replace(tzinfo=None)
 
@@ -555,23 +567,44 @@ async def _build_current_hour_row(
         end_date=end_date,
     )
 
-    api_minute_candles_for_db: list[dict[str, object]] = []
+    api_minute_candles_for_db: list[_MinuteRow] = []
 
     if markets:
         kis = KISClient()
         api_date = now_kst.date()
+        legacy_end_time = now_kst.strftime("%H%M%S")
 
         async def _fetch_one(market: str) -> pd.DataFrame:
-            return await kis.inquire_minute_chart(
+            minute_chart = getattr(kis, "inquire_minute_chart", None)
+            if callable(minute_chart):
+                return await minute_chart(
+                    code=symbol,
+                    market=market,
+                    time_unit=1,
+                    n=30,
+                    end_date=api_date,
+                )
+            # Support legacy KIS test doubles that only expose the historical intraday method.
+            return await kis.inquire_time_dailychartprice(
                 code=symbol,
                 market=market,
-                time_unit=1,
                 n=30,
                 end_date=api_date,
+                end_time=legacy_end_time,
             )
 
-        frames = await asyncio.gather(*[_fetch_one(m) for m in markets])
+        frames = await asyncio.gather(
+            *[_fetch_one(m) for m in markets], return_exceptions=True
+        )
         for market, frame in zip(markets, frames, strict=False):
+            if isinstance(frame, Exception):
+                logger.warning(
+                    "Current-hour KIS API call failed for %s %s: %s",
+                    symbol,
+                    market,
+                    frame,
+                )
+                continue
             if frame is None or frame.empty:
                 continue
             venue: VenueType = "KRX" if market == "J" else "NTX"
@@ -605,16 +638,16 @@ async def _build_current_hour_row(
                 )
                 # Track minute candles for background DB storage
                 api_minute_candles_for_db.append(
-                    {
-                        "time": minute_time,
-                        "venue": venue,
-                        "open": _to_float(src.get("open")),
-                        "high": _to_float(src.get("high")),
-                        "low": _to_float(src.get("low")),
-                        "close": _to_float(src.get("close")),
-                        "volume": _to_float(src.get("volume")),
-                        "value": _to_float(src.get("value")),
-                    }
+                    _MinuteRow(
+                        minute_time=minute_time,
+                        venue=venue,
+                        open=_to_float(src.get("open")),
+                        high=_to_float(src.get("high")),
+                        low=_to_float(src.get("low")),
+                        close=_to_float(src.get("close")),
+                        volume=_to_float(src.get("volume")),
+                        value=_to_float(src.get("value")),
+                    )
                 )
 
     if not minute_by_key:
@@ -722,7 +755,10 @@ def _normalize_intraday_rows(
             continue
 
         local_clock = time(local_dt.hour, local_dt.minute, local_dt.second)
-        if local_clock < venue_config.session_start or local_clock > venue_config.session_end:
+        if (
+            local_clock < venue_config.session_start
+            or local_clock > venue_config.session_end
+        ):
             continue
 
         open_value = _parse_float(item.get("open"))
@@ -803,7 +839,6 @@ async def _fetch_historical_minutes_via_kis(
     end_time = "200000"
 
     page_calls = 0
-    reached_cutoff = False
 
     # Pagination loop: 최대 30페이지까지 호출
     for _ in range(_MAX_PAGE_CALLS_PER_DAY):
@@ -869,7 +904,9 @@ async def _fetch_historical_minutes_via_kis(
 
         # 데이터를 수집하지 못했으면 종료
         if not all_minute_rows:
-            logger.info("No data collected from KIS API for %s on %s", symbol, target_day)
+            logger.info(
+                "No data collected from KIS API for %s on %s", symbol, target_day
+            )
             break
 
         # 가장 이른 시간을 찾아서 다음 커서 계산 (walk backwards)
@@ -878,7 +915,6 @@ async def _fetch_historical_minutes_via_kis(
 
         # 세션 시작 시간 체크 (가장 이른 세션: NTX 08:00)
         if next_cursor.time() < time(8, 0, 0):
-            reached_cutoff = True
             logger.info(
                 "Reached session boundary at %s for %s, stopping pagination",
                 next_cursor,
@@ -1141,10 +1177,34 @@ async def read_kr_hourly_candles_1h(
         capped_count,
     )
 
+    (
+        current_hour_row,
+        current_bucket_start,
+        current_minute_candles,
+    ) = await _build_current_hour_row(
+        symbol=universe.symbol,
+        now_kst=resolved_now,
+        nxt_eligible=universe.nxt_eligible,
+        end_date=end_date,
+    )
+
+    available_buckets = {
+        _to_kst_naive(bucket_raw)
+        for row in hour_rows
+        if isinstance((bucket_raw := row.get("bucket")), datetime.datetime)
+    }
+    if current_bucket_start is not None:
+        available_buckets.discard(current_bucket_start)
+    if current_hour_row is not None:
+        current_bucket_raw = current_hour_row.get("datetime")
+        if isinstance(current_bucket_raw, datetime.datetime):
+            available_buckets.add(_to_kst_naive(current_bucket_raw))
+
     # DB 데이터가 부족하면 KIS API fallback
-    available_count = len(hour_rows)
+    available_count = len(available_buckets)
     if available_count < capped_count:
         remaining = capped_count - available_count
+        historical_limit = remaining + (1 if current_hour_row is not None else 0)
         logger.info(
             "Fallback to KIS API for symbol '%s': fetching %d missing candles",
             universe.symbol,
@@ -1154,12 +1214,18 @@ async def read_kr_hourly_candles_1h(
             api_hour_rows, api_minute_rows = await _fetch_historical_minutes_via_kis(
                 symbol=universe.symbol,
                 end_date=end_time_kst.date(),
-                limit=remaining,
+                limit=historical_limit,
             )
             # API 데이터 추가 (이미 DB에 있는 시간대는 제외)
             existing_buckets = {row.get("bucket") for row in hour_rows}
             for api_row in api_hour_rows:
-                if api_row.get("bucket") not in existing_buckets:
+                api_bucket = api_row.get("bucket")
+                if (
+                    current_bucket_start is not None
+                    and api_bucket == current_bucket_start
+                ):
+                    continue
+                if api_bucket not in existing_buckets:
                     hour_rows.append(api_row)
 
             # Store API minute candles for background storage
@@ -1175,13 +1241,6 @@ async def read_kr_hourly_candles_1h(
     else:
         fetched_minute_candles = []
 
-    current_hour_row, current_bucket_start, current_minute_candles = await _build_current_hour_row(
-        symbol=universe.symbol,
-        now_kst=resolved_now,
-        nxt_eligible=universe.nxt_eligible,
-        end_date=end_date,
-    )
-
     # Combine historical minute candles with current hour minute candles
     all_api_minute_candles = list(fetched_minute_candles)
     if current_minute_candles:
@@ -1192,16 +1251,19 @@ async def read_kr_hourly_candles_1h(
         task = asyncio.create_task(
             _store_minute_candles_background(
                 symbol=universe.symbol,
-                minute_rows=[{
-                    "time": _convert_kis_datetime_to_utc(r.minute_time),
-                    "venue": r.venue,
-                    "open": r.open,
-                    "high": r.high,
-                    "low": r.low,
-                    "close": r.close,
-                    "volume": r.volume,
-                    "value": r.value,
-                } for r in all_api_minute_candles],
+                minute_rows=[
+                    {
+                        "time": _convert_kis_datetime_to_utc(r.minute_time),
+                        "venue": r.venue,
+                        "open": r.open,
+                        "high": r.high,
+                        "low": r.low,
+                        "close": r.close,
+                        "volume": r.volume,
+                        "value": r.value,
+                    }
+                    for r in all_api_minute_candles
+                ],
             )
         )
         task.add_done_callback(_log_task_exception)
@@ -1223,4 +1285,8 @@ async def read_kr_hourly_candles_1h(
     return out
 
 
-__all__ = ["read_kr_hourly_candles_1h", "_store_minute_candles_background", "_log_task_exception"]
+__all__ = [
+    "read_kr_hourly_candles_1h",
+    "_store_minute_candles_background",
+    "_log_task_exception",
+]

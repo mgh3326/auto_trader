@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
-from typing import TYPE_CHECKING, Any, cast
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.db import AsyncSessionLocal

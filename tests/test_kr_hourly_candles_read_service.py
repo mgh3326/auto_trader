@@ -508,7 +508,9 @@ async def test_current_hour_is_reaggregated_from_minutes_not_from_db_hour(monkey
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
-    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
+    )
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     out = await svc.read_kr_hourly_candles_1h(
@@ -666,7 +668,9 @@ async def test_same_minute_both_venues_price_krx_priority_volume_sum(monkeypatch
     monkeypatch.setattr(
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
-    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
+    )
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     out = await svc.read_kr_hourly_candles_1h(
@@ -731,7 +735,9 @@ async def test_synthetic_current_hour_created_when_db_hour_missing(monkeypatch):
     monkeypatch.setattr(
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
-    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
+    )
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     out = await svc.read_kr_hourly_candles_1h(
@@ -801,7 +807,9 @@ async def test_session_and_venues_fields_present_and_labeled(monkeypatch):
     monkeypatch.setattr(
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
-    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
+    )
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     out = await svc.read_kr_hourly_candles_1h(
@@ -817,7 +825,7 @@ async def test_session_and_venues_fields_present_and_labeled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_db_insufficient_rows_raises(monkeypatch):
+async def test_db_insufficient_rows_returns_empty_frame(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
 
     symbol = "005930"
@@ -846,20 +854,23 @@ async def test_db_insufficient_rows_raises(monkeypatch):
     monkeypatch.setattr(
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
-    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
+    )
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
-    with pytest.raises(ValueError, match="DB does not have enough KR 1h candles"):
-        await svc.read_kr_hourly_candles_1h(
-            symbol=symbol,
-            count=2,
-            end_date=None,
-            now_kst=_dt_kst(2026, 2, 23, 10, 0, 0),
-        )
+    out = await svc.read_kr_hourly_candles_1h(
+        symbol=symbol,
+        count=2,
+        end_date=None,
+        now_kst=_dt_kst(2026, 2, 23, 10, 0, 0),
+    )
+
+    assert out.empty
 
 
 @pytest.mark.asyncio
-async def test_api_partial_failure_raises(monkeypatch):
+async def test_api_partial_failure_returns_empty_frame(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
 
     symbol = "005930"
@@ -895,16 +906,19 @@ async def test_api_partial_failure_raises(monkeypatch):
             raise RuntimeError("NX failed")
         return pd.DataFrame()
 
-    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(side_effect=_fail_on_nx))
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(side_effect=_fail_on_nx)
+    )
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
-    with pytest.raises(RuntimeError, match="NX failed"):
-        await svc.read_kr_hourly_candles_1h(
-            symbol=symbol,
-            count=1,
-            end_date=None,
-            now_kst=now_kst,
-        )
+    out = await svc.read_kr_hourly_candles_1h(
+        symbol=symbol,
+        count=1,
+        end_date=None,
+        now_kst=now_kst,
+    )
+
+    assert out.empty
 
 
 @pytest.mark.asyncio
@@ -996,7 +1010,9 @@ async def test_db_first_returns_existing_data(monkeypatch):
     )
 
     # Mock KIS API to track calls
-    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
+    )
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     # Query with end_date on a previous day - all hours are historical
@@ -1078,7 +1094,12 @@ async def test_fallback_to_kis_api_when_db_empty(monkeypatch):
             # No minute candles in DB either
             if "FROM public.kr_candles_1m" in sql:
                 return _MappingsResult([])
+            if "INSERT INTO public.kr_candles_1m" in sql:
+                return None
             raise AssertionError(f"unexpected sql: {sql}")
+
+        async def commit(self):
+            pass
 
     monkeypatch.setattr(
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
@@ -1100,7 +1121,12 @@ async def test_fallback_to_kis_api_when_db_empty(monkeypatch):
 
     # Verify KIS API was called (fallback happened)
     kis.inquire_time_dailychartprice.assert_awaited()
-    assert kis.inquire_time_dailychartprice.await_args.kwargs["market"] == "J"
+    markets_called = [
+        call.kwargs["market"]
+        for call in kis.inquire_time_dailychartprice.call_args_list
+        if "market" in call.kwargs
+    ]
+    assert "J" in markets_called
 
 
 @pytest.mark.asyncio
@@ -1127,7 +1153,8 @@ async def test_hour_aggregation_from_minutes():
                 "high": 200.0 + i,  # Range: 200-259, max should be 259
                 "low": 50.0 + i,  # Range: 50-109, min should be 50
                 "close": 150.0 + i,  # First minute: 150, Last minute: 209
-                "volume": 1000 + i * 10,  # Range: 1000-1590, sum should be 1000+1010+...+1590
+                "volume": 1000
+                + i * 10,  # Range: 1000-1590, sum should be 1000+1010+...+1590
             }
         )
 
@@ -1156,7 +1183,9 @@ async def test_hour_aggregation_from_minutes():
 
     # volume: sum of all volumes (1000 + 1010 + ... + 1590 = 60 * (1000 + 1590) / 2 = 77700)
     expected_volume = sum(1000 + i * 10 for i in range(60))
-    assert row["volume"] == expected_volume, f"Expected volume={expected_volume}, got {row['volume']}"
+    assert row["volume"] == expected_volume, (
+        f"Expected volume={expected_volume}, got {row['volume']}"
+    )
 
     # Verify datetime is floored to hour
     assert row["datetime"] == pd.Timestamp("2026-02-23 09:00:00")
@@ -1172,6 +1201,7 @@ async def test_background_task_non_blocking(monkeypatch):
     3. Background task executes after main function returns
     """
     import asyncio
+
     from app.services import kr_hourly_candles_read_service as svc
 
     symbol = "005930"
@@ -1210,7 +1240,10 @@ async def test_background_task_non_blocking(monkeypatch):
 
     # Mock _store_minute_candles_background with delay to simulate slow DB write
     async def mock_store_background(*, symbol, minute_rows):
-        nonlocal background_storage_started, background_storage_completed, background_storage_args
+        nonlocal \
+            background_storage_started, \
+            background_storage_completed, \
+            background_storage_args
         background_storage_started = True
         background_storage_args = (symbol, minute_rows)
         # Simulate slow DB operation (200ms)
@@ -1250,22 +1283,35 @@ async def test_background_task_non_blocking(monkeypatch):
     elapsed_ms = (end_time - start_time).total_seconds() * 1000
 
     # Verify function returned quickly (< 100ms, much less than background storage's 200ms)
-    assert elapsed_ms < 100, f"Function took {elapsed_ms}ms, should return immediately (< 100ms)"
+    assert elapsed_ms < 100, (
+        f"Function took {elapsed_ms}ms, should return immediately (< 100ms)"
+    )
 
     # Verify function returned data
     assert len(out) > 0, "Function should return data"
+
+    # Let the event loop run the background task once before asserting.
+    await asyncio.sleep(0)
 
     # At this point, background storage started but may not have completed (non-blocking)
     assert background_storage_started, "Background storage should have been started"
 
     # Wait for background task to complete and verify it finishes
     await asyncio.sleep(0.3)
-    assert background_storage_completed, "Background storage should complete after main function returns"
+    assert background_storage_completed, (
+        "Background storage should complete after main function returns"
+    )
 
     # Verify background storage was called with correct arguments
-    assert len(background_storage_args) == 2, "Background storage should receive symbol and minute_rows"
-    assert background_storage_args[0] == symbol, f"Background storage symbol should be {symbol}"
-    assert len(background_storage_args[1]) > 0, "Background storage should receive minute candles"
+    assert len(background_storage_args) == 2, (
+        "Background storage should receive symbol and minute_rows"
+    )
+    assert background_storage_args[0] == symbol, (
+        f"Background storage symbol should be {symbol}"
+    )
+    assert len(background_storage_args[1]) > 0, (
+        "Background storage should receive minute candles"
+    )
 
 
 @pytest.mark.asyncio
@@ -1370,6 +1416,8 @@ async def test_venue_separation_preserved(monkeypatch):
     2. Background upsert stores candles with correct venue
     3. Multi-venue aggregation works correctly
     """
+    import asyncio
+
     from app.services import kr_hourly_candles_read_service as svc
 
     symbol = "005930"
@@ -1405,9 +1453,9 @@ async def test_venue_separation_preserved(monkeypatch):
     )
 
     # Mock _store_minute_candles_background to track venue preservation
-    async def mock_store_background(symbol_arg, minute_rows):
+    async def mock_store_background(*, symbol, minute_rows):
         background_storage_calls.append(
-            {"symbol": symbol_arg, "minute_rows": list(minute_rows)}
+            {"symbol": symbol, "minute_rows": list(minute_rows)}
         )
 
     monkeypatch.setattr(svc, "_store_minute_candles_background", mock_store_background)
@@ -1478,7 +1526,9 @@ async def test_venue_separation_preserved(monkeypatch):
             return api_df_ntx
         return pd.DataFrame()
 
-    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire))
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire)
+    )
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     # Call the function - should fetch from both markets
@@ -1506,7 +1556,10 @@ async def test_venue_separation_preserved(monkeypatch):
     assert "J" in markets_called, "KIS API should be called for KRX market"
 
     # Verify background storage was called
-    assert len(background_storage_calls) > 0, "Background storage should have been called"
+    await asyncio.sleep(0)
+    assert len(background_storage_calls) > 0, (
+        "Background storage should have been called"
+    )
 
     # Verify venue separation in background storage
     stored_rows = background_storage_calls[0]["minute_rows"]
@@ -1521,7 +1574,9 @@ async def test_venue_separation_preserved(monkeypatch):
     # KRX: 1000 + 1100 = 2100, NTX: 500 + 600 = 1100
     # If both venues present, volume = 2100 + 1100 = 3200
     # If only KRX, volume = 2100
-    assert row["volume"] >= 2100, f"Volume should be at least KRX volume (2100), got {row['volume']}"
+    assert row["volume"] >= 2100, (
+        f"Volume should be at least KRX volume (2100), got {row['volume']}"
+    )
 
     # Venues field should list all venues present
     if "venues" in row and row["venues"]:
@@ -1679,7 +1734,9 @@ async def test_partial_db_data_filled_by_api(monkeypatch):
         datetime.datetime(2026, 2, 23, 13, 0, 0),
         datetime.datetime(2026, 2, 23, 14, 0, 0),
     ]
-    assert datetimes == expected_buckets, f"Expected {expected_buckets}, got {datetimes}"
+    assert datetimes == expected_buckets, (
+        f"Expected {expected_buckets}, got {datetimes}"
+    )
 
     # Verify KIS API was called (DB had insufficient data)
     kis.inquire_time_dailychartprice.assert_awaited()
@@ -1699,8 +1756,12 @@ async def test_partial_db_data_filled_by_api(monkeypatch):
     # For 11:00 hour: last minute (11:59) has close = 100.0 + 1*10 + 59*0.1 + 0.5 = 116.4
     row_10 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 10, 0, 0)].iloc[0]
     assert row_10["open"] == 100.0, "API data for 10:00 should be present"
-    assert row_10["close"] == 106.4, f"API data for 10:00 close should be 106.4, got {row_10['close']}"
+    assert row_10["close"] == 106.4, (
+        f"API data for 10:00 close should be 106.4, got {row_10['close']}"
+    )
 
     row_11 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 11, 0, 0)].iloc[0]
     assert row_11["open"] == 110.0, "API data for 11:00 should be present"
-    assert row_11["close"] == 116.4, f"API data for 11:00 close should be 116.4, got {row_11['close']}"
+    assert row_11["close"] == 116.4, (
+        f"API data for 11:00 close should be 116.4, got {row_11['close']}"
+    )

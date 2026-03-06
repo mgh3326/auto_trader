@@ -12,13 +12,8 @@ import app.core.taskiq_broker as taskiq_broker
 
 def _make_middleware(*, is_worker_process: bool, is_scheduler_process: bool):
     middleware = taskiq_broker.WorkerInitMiddleware()
-    setattr(
-        middleware,
-        "broker",
-        SimpleNamespace(
-            is_worker_process=is_worker_process,
-            is_scheduler_process=is_scheduler_process,
-        ),
+    middleware.broker = SimpleNamespace(
+        is_worker_process=is_worker_process, is_scheduler_process=is_scheduler_process
     )
     return middleware
 

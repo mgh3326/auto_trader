@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-from typing import TYPE_CHECKING, Any
 
 from app.mcp_server.tooling.fundamentals_sources_binance import (
     _fetch_funding_rate,
@@ -54,7 +54,6 @@ from app.mcp_server.tooling.market_data_indicators import (
     _cluster_price_levels,
     _compute_indicators,
     _fetch_ohlcv_for_indicators,
-    _fetch_ohlcv_for_volume_profile,
     _format_fibonacci_source,
     _split_support_resistance_levels,
 )
@@ -123,7 +122,9 @@ async def _get_support_resistance_impl(
         if preloaded_df is not None and not preloaded_df.empty:
             df = preloaded_df
         else:
-            df = await _fetch_ohlcv_for_indicators(normalized_symbol, market_type, count=60)
+            df = await _fetch_ohlcv_for_indicators(
+                normalized_symbol, market_type, count=60
+            )
         if df.empty:
             raise ValueError(f"No data available for symbol '{normalized_symbol}'")
 
