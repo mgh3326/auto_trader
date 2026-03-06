@@ -1589,6 +1589,76 @@ async def test_kis_inquire_time_dailychartprice_uses_end_time_when_provided(
     assert await_args.kwargs["params"]["FID_INPUT_HOUR_1"] == "153000"
 
 
+@pytest.mark.asyncio
+async def test_kis_inquire_daily_itemchartprice_returns_empty_dataframe_on_empty_payload(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(return_value={"rt_cd": "0", "output2": []})
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    df = await client.inquire_daily_itemchartprice("005930", market="UN", n=5)
+
+    assert df.empty
+    assert list(df.columns) == [
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "value",
+    ]
+    request_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_daily_itemchartprice_raises_controlled_error_on_missing_date(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output2": [
+                {
+                    "stck_oprc": "70000",
+                    "stck_hgpr": "70200",
+                    "stck_lwpr": "69900",
+                    "stck_clpr": "70100",
+                    "acml_vol": "100",
+                    "acml_tr_pbmn": "7010000",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    with pytest.raises(RuntimeError, match="stck_bsop_date"):
+        await client.inquire_daily_itemchartprice("005930", market="UN", n=1)
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_daily_itemchartprice_raises_controlled_error_on_non_list_payload(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(return_value={"rt_cd": "0", "output2": {"foo": "bar"}})
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    with pytest.raises(RuntimeError, match="expected list"):
+        await client.inquire_daily_itemchartprice("005930", market="UN", n=1)
+
+
 def test_aggregate_to_hourly_keeps_partial_bucket():
     from app.services.brokers.kis.client import KISClient
 

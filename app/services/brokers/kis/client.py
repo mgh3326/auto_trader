@@ -119,6 +119,17 @@ DOMESTIC_DAILY_ORDER_URL = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
 DOMESTIC_DAILY_ORDER_TR = "TTTC8001R"  # 실전투자 국내주식 체결조회
 DOMESTIC_DAILY_ORDER_TR_MOCK = "VTTC8001R"  # 모의투자 국내주식 체결조회
 
+_DAY_FRAME_COLUMNS = ["date", "open", "high", "low", "close", "volume", "value"]
+_DAILY_ITEMCHARTPRICE_REQUIRED_FIELDS = {
+    "stck_bsop_date",
+    "stck_oprc",
+    "stck_hgpr",
+    "stck_lwpr",
+    "stck_clpr",
+    "acml_vol",
+    "acml_tr_pbmn",
+}
+
 
 def _safe_parse_retry_after(value: str | None) -> float:
     """Safely parse Retry-After header, returning 0 on failure."""
@@ -133,6 +144,34 @@ def _safe_parse_retry_after(value: str | None) -> float:
 def _safe_status_code(response: object, *, default: int = 200) -> int:
     value = getattr(response, "status_code", None)
     return value if isinstance(value, int) else default
+
+
+def _empty_day_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=_DAY_FRAME_COLUMNS)
+
+
+def _validate_daily_itemchartprice_chunk(chunk: list[dict[str, Any]]) -> None:
+    if not isinstance(chunk, list):
+        raise RuntimeError(
+            "Malformed KIS daily chart payload: expected list in output2/output"
+        )
+
+    for index, row in enumerate(chunk):
+        if not isinstance(row, dict):
+            raise RuntimeError(
+                f"Malformed KIS daily chart payload at row {index}: expected object"
+            )
+
+        missing = sorted(
+            field
+            for field in _DAILY_ITEMCHARTPRICE_REQUIRED_FIELDS
+            if row.get(field) is None or row.get(field) == ""
+        )
+        if missing:
+            missing_fields = ", ".join(missing)
+            raise RuntimeError(
+                f"Malformed KIS daily chart payload at row {index}: missing {missing_fields}"
+            )
 
 
 def _log_kis_api_failure(
@@ -938,14 +977,24 @@ class KISClient:
             if not chunk:
                 break  # 더 과거 없음
 
+            _validate_daily_itemchartprice_chunk(chunk)
+
             rows.extend(chunk)
 
             # 다음 루프에서 더 과거로
-            oldest_str = min(c["stck_bsop_date"] for c in chunk)  # 'YYYYMMDD'
-            oldest = datetime.datetime.strptime(oldest_str, "%Y%m%d").date()
+            oldest_str = min(str(c["stck_bsop_date"]) for c in chunk)
+            try:
+                oldest = datetime.datetime.strptime(oldest_str, "%Y%m%d").date()
+            except ValueError as exc:
+                raise RuntimeError(
+                    "Malformed KIS daily chart payload: invalid stck_bsop_date format"
+                ) from exc
             end = oldest - datetime.timedelta(days=1)
 
         # ---- DataFrame 변환 (지표 계산 없음) ----
+        if not rows:
+            return _empty_day_frame()
+
         df = (
             pd.DataFrame(rows)
             .rename(
