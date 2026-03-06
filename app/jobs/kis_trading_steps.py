@@ -181,3 +181,101 @@ class TradingStep(ABC):
             data=data,
             should_continue=True,
         )
+
+
+class AnalyzeStep(TradingStep):
+    """
+    Step that performs AI analysis on a stock.
+
+    Uses KISAnalyzer to analyze the stock and stores the result in context.
+    If analysis fails, processing for this stock is stopped (STOP_STOCK policy).
+    """
+
+    @property
+    def name(self) -> str:
+        return "analyze"
+
+    @property
+    def failure_policy(self) -> FailurePolicy:
+        """Analysis failure stops processing for this stock."""
+        return FailurePolicy.STOP_STOCK
+
+    async def execute(self, context: TradingContext) -> StepOutcome:
+        """Execute AI analysis for the stock."""
+        self._log_start(context)
+
+        # Skip manual holdings (토스 등) - they don't need AI analysis
+        if context.is_manual:
+            self._log_skip(context, "수동 잔고는 분석 스킵")
+            return self._skip("수동 잔고 종목")
+
+        if not context.name:
+            self._log_skip(context, "종목명 없음")
+            return self._skip("종목명을 찾을 수 없음")
+
+        try:
+            from app.analysis.service_analyzers import KISAnalyzer
+
+            analyzer = KISAnalyzer()
+            result, _ = await analyzer.analyze_stock_json(context.name)
+
+            if result is None:
+                self._log_failure(context, Exception("분석 결과 없음"))
+                return self._failure(
+                    "분석 결과를 가져올 수 없습니다.",
+                    should_continue=False,  # STOP_STOCK
+                )
+
+            # Store analysis result in context for later steps
+            analysis_data: dict[str, Any] = {}
+
+            if hasattr(result, "decision"):
+                analysis_data["decision"] = result.decision
+                analysis_data["confidence"] = (
+                    float(result.confidence) if result.confidence else 0.0
+                )
+                analysis_data["reasons"] = (
+                    list(result.reasons)
+                    if hasattr(result, "reasons") and result.reasons
+                    else []
+                )
+
+                # Price ranges
+                for attr in (
+                    "appropriate_buy_min",
+                    "appropriate_buy_max",
+                    "appropriate_sell_min",
+                    "appropriate_sell_max",
+                    "buy_hope_min",
+                    "buy_hope_max",
+                    "sell_target_min",
+                    "sell_target_max",
+                ):
+                    if hasattr(result, attr):
+                        analysis_data[attr] = getattr(result, attr)
+
+                # Store in context
+                context.analysis_result = analysis_data
+
+                decision = result.decision
+                confidence = analysis_data.get("confidence", 0)
+                self._log_success(
+                    context, f"결정: {decision}, 신뢰도: {confidence}%"
+                )
+                return self._success(
+                    f"분석 완료: {decision} ({confidence}%)",
+                    data=analysis_data,
+                )
+            else:
+                # Fallback: text result (no structured decision)
+                analysis_data["raw_result"] = str(result)
+                context.analysis_result = analysis_data
+                self._log_success(context, "분석 완료 (텍스트 응답)")
+                return self._success("분석 완료 (텍스트 응답)", data=analysis_data)
+
+        except Exception as e:
+            self._log_failure(context, e)
+            return self._failure(
+                f"분석 실패: {e}",
+                should_continue=False,  # STOP_STOCK
+            )
