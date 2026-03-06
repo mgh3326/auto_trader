@@ -277,7 +277,7 @@ async def compare_market_cap_sources():
     screener = CryptoScreener()
     df = await screener.query(
         columns=[
-            CryptoField.TICKER,
+            CryptoField.NAME,
             CryptoField.MARKET_CAP,
             CryptoField.MARKET_CAP_RANK,
         ],
@@ -289,7 +289,7 @@ async def compare_market_cap_sources():
     USD_TO_KRW = 1300
     for symbol in ["BTC", "ETH", "XRP", "SOL", "ADA"]:
         cg_data = coingecko_data["data"].get(symbol)
-        tv_row = df[df["ticker"].str.contains(symbol)]
+        tv_row = df[df["Symbol"].str.contains(symbol)]
 
         if not cg_data or tv_row.empty:
             continue
@@ -375,14 +375,14 @@ await asyncio.gather(
 screener = CryptoScreener()
 df = await screener.query(
     columns=[
-        CryptoField.TICKER,
+        CryptoField.NAME,
         CryptoField.RELATIVE_STRENGTH_INDEX_14,
         CryptoField.AVERAGE_DIRECTIONAL_INDEX_14,
-        CryptoField.VOLUME,
+        CryptoField.VOLUME_24H_IN_USD,
         CryptoField.MARKET_CAP,           # ← Add this
         CryptoField.MARKET_CAP_RANK,      # ← Add this
     ],
-    where=CryptoField.TICKER.isin(symbols)
+    where=CryptoField.EXCHANGE == "UPBIT"
 )
 ```
 
@@ -419,7 +419,7 @@ df = await screener.query(
 
 ```python
 # BEFORE (current implementation)
-columns = [CryptoField.TICKER, CryptoField.RELATIVE_STRENGTH_INDEX_14]
+columns = [CryptoField.NAME, CryptoField.RELATIVE_STRENGTH_INDEX_14]
 
 try:
     adx_field = CryptoField.AVERAGE_DIRECTIONAL_INDEX_14
@@ -429,7 +429,7 @@ except AttributeError:
     has_adx = False
 
 try:
-    volume_field = CryptoField.VOLUME
+    volume_field = CryptoField.VOLUME_24H_IN_USD
     columns.append(volume_field)
     has_volume = True
 except AttributeError:
@@ -438,7 +438,7 @@ except AttributeError:
 
 ```python
 # AFTER (add market cap fields)
-columns = [CryptoField.TICKER, CryptoField.RELATIVE_STRENGTH_INDEX_14]
+columns = [CryptoField.NAME, CryptoField.RELATIVE_STRENGTH_INDEX_14]
 
 try:
     adx_field = CryptoField.AVERAGE_DIRECTIONAL_INDEX_14
@@ -826,7 +826,7 @@ async def test_crypto_screening_market_cap_accuracy():
     from tvscreener import CryptoScreener, CryptoField
     screener = CryptoScreener()
     df = await screener.query(
-        columns=[CryptoField.TICKER, CryptoField.MARKET_CAP, CryptoField.MARKET_CAP_RANK],
+        columns=[CryptoField.NAME, CryptoField.MARKET_CAP, CryptoField.MARKET_CAP_RANK],
         limit=50
     )
 
