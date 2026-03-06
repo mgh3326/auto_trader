@@ -2,10 +2,42 @@ from __future__ import annotations
 
 import datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
+
+
+def _create_mock_kis_client(
+    return_df: pd.DataFrame | None = None,
+    side_effect: Any | None = None,
+) -> SimpleNamespace:
+    """
+    Create a mock KISClient with inquire_time_dailychartprice method.
+
+    This helper function creates a mock KIS API client that returns
+    the specified DataFrame or uses the specified side effect.
+
+    Parameters
+    ----------
+    return_df : pd.DataFrame | None
+        The DataFrame to return from the API call
+    side_effect : Any | None
+        The side effect to use (e.g., exception to raise)
+
+    Returns
+    -------
+    SimpleNamespace
+        A mock KIS client with inquire_time_dailychartprice method
+    """
+    mock_method = AsyncMock()
+    if return_df is not None:
+        mock_method.return_value = return_df
+    if side_effect is not None:
+        mock_method.side_effect = side_effect
+
+    return SimpleNamespace(inquire_time_dailychartprice=mock_method)
 
 
 class _ScalarResult:
@@ -180,10 +212,10 @@ async def test_api_prefetch_plan_time_boundaries_for_nxt_eligible(monkeypatch):
         def __init__(self):
             self.calls: list[str] = []
 
-        async def inquire_minute_chart(
-            self, *, code, market, time_unit, n, end_date=None
+        async def inquire_time_dailychartprice(
+            self, *, code, market, n, end_date, end_time
         ):
-            del code, time_unit, n, end_date
+            del code, n, end_date, end_time
             self.calls.append(str(market))
             return pd.DataFrame(
                 columns=[
@@ -318,7 +350,7 @@ async def test_api_prefetch_plan_respects_nxt_ineligible(monkeypatch):
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock())
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock())
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     # 08:00-09:00 NX-only time window but nxt_eligible=false -> API 0
@@ -328,7 +360,7 @@ async def test_api_prefetch_plan_respects_nxt_ineligible(monkeypatch):
         end_date=None,
         now_kst=_dt_kst(2026, 2, 23, 8, 10, 0),
     )
-    kis.inquire_minute_chart.assert_not_awaited()
+    kis.inquire_time_dailychartprice.assert_not_awaited()
 
     await svc.read_kr_hourly_candles_1h(
         symbol=symbol,
@@ -336,10 +368,10 @@ async def test_api_prefetch_plan_respects_nxt_ineligible(monkeypatch):
         end_date=None,
         now_kst=_dt_kst(2026, 2, 23, 10, 0, 0),
     )
-    kis.inquire_minute_chart.assert_awaited_once()
-    assert kis.inquire_minute_chart.await_args.kwargs["market"] == "J"
+    kis.inquire_time_dailychartprice.assert_awaited_once()
+    assert kis.inquire_time_dailychartprice.await_args.kwargs["market"] == "J"
 
-    kis.inquire_minute_chart.reset_mock()
+    kis.inquire_time_dailychartprice.reset_mock()
 
     await svc.read_kr_hourly_candles_1h(
         symbol=symbol,
@@ -347,7 +379,7 @@ async def test_api_prefetch_plan_respects_nxt_ineligible(monkeypatch):
         end_date=None,
         now_kst=_dt_kst(2026, 2, 23, 16, 0, 0),
     )
-    kis.inquire_minute_chart.assert_not_awaited()
+    kis.inquire_time_dailychartprice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -394,7 +426,7 @@ async def test_end_date_in_past_disables_api(monkeypatch):
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock())
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock())
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     await svc.read_kr_hourly_candles_1h(
@@ -404,7 +436,7 @@ async def test_end_date_in_past_disables_api(monkeypatch):
         now_kst=_dt_kst(2026, 2, 23, 10, 0, 0),
     )
 
-    kis.inquire_minute_chart.assert_not_awaited()
+    kis.inquire_time_dailychartprice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -476,7 +508,7 @@ async def test_current_hour_is_reaggregated_from_minutes_not_from_db_hour(monkey
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     out = await svc.read_kr_hourly_candles_1h(
@@ -560,7 +592,7 @@ async def test_api_overrides_db_minutes_for_same_minute_and_venue(monkeypatch):
         ]
     )
 
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=api_df))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=api_df))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     out = await svc.read_kr_hourly_candles_1h(
@@ -634,7 +666,7 @@ async def test_same_minute_both_venues_price_krx_priority_volume_sum(monkeypatch
     monkeypatch.setattr(
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     out = await svc.read_kr_hourly_candles_1h(
@@ -699,7 +731,7 @@ async def test_synthetic_current_hour_created_when_db_hour_missing(monkeypatch):
     monkeypatch.setattr(
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     out = await svc.read_kr_hourly_candles_1h(
@@ -769,7 +801,7 @@ async def test_session_and_venues_fields_present_and_labeled(monkeypatch):
     monkeypatch.setattr(
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     out = await svc.read_kr_hourly_candles_1h(
@@ -814,7 +846,7 @@ async def test_db_insufficient_rows_raises(monkeypatch):
     monkeypatch.setattr(
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     with pytest.raises(ValueError, match="DB does not have enough KR 1h candles"):
@@ -863,7 +895,7 @@ async def test_api_partial_failure_raises(monkeypatch):
             raise RuntimeError("NX failed")
         return pd.DataFrame()
 
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(side_effect=_fail_on_nx))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(side_effect=_fail_on_nx))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     with pytest.raises(RuntimeError, match="NX failed"):
@@ -964,7 +996,7 @@ async def test_db_first_returns_existing_data(monkeypatch):
     )
 
     # Mock KIS API to track calls
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=pd.DataFrame()))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame()))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     # Query with end_date on a previous day - all hours are historical
@@ -986,7 +1018,7 @@ async def test_db_first_returns_existing_data(monkeypatch):
     ]
 
     # Verify KIS API was NOT called (DB had sufficient data, end_date in past)
-    kis.inquire_minute_chart.assert_not_awaited()
+    kis.inquire_time_dailychartprice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1052,7 +1084,7 @@ async def test_fallback_to_kis_api_when_db_empty(monkeypatch):
         svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
     )
 
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=api_df))
+    kis = _create_mock_kis_client(return_df=api_df)
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     # Query with end_date=None (current time) - should fallback to KIS API
@@ -1067,8 +1099,8 @@ async def test_fallback_to_kis_api_when_db_empty(monkeypatch):
     assert len(out) == 2
 
     # Verify KIS API was called (fallback happened)
-    kis.inquire_minute_chart.assert_awaited()
-    assert kis.inquire_minute_chart.await_args.kwargs["market"] == "J"
+    kis.inquire_time_dailychartprice.assert_awaited()
+    assert kis.inquire_time_dailychartprice.await_args.kwargs["market"] == "J"
 
 
 @pytest.mark.asyncio
@@ -1203,7 +1235,7 @@ async def test_background_task_non_blocking(monkeypatch):
             }
         ]
     )
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=api_df))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=api_df))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     # Call the function and measure time
@@ -1300,11 +1332,11 @@ async def test_api_failure_returns_partial_data(monkeypatch):
     )
 
     # Mock KIS API to raise exception (simulating network failure or API error)
-    async def _fail_api(*, code, market, time_unit, n, end_date=None):
-        del code, market, time_unit, n, end_date
+    async def _fail_api(*, code, market, n, end_date, end_time):
+        del code, market, n, end_date, end_time
         raise RuntimeError("KIS API network error")
 
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(side_effect=_fail_api))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(side_effect=_fail_api))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     # Request 5 candles but only 2 in DB and API fails
@@ -1326,7 +1358,7 @@ async def test_api_failure_returns_partial_data(monkeypatch):
     ]
 
     # Verify KIS API was called (DB had insufficient data)
-    kis.inquire_minute_chart.assert_awaited()
+    kis.inquire_time_dailychartprice.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -1438,15 +1470,15 @@ async def test_venue_separation_preserved(monkeypatch):
     )
 
     # Mock KIS API to return different data for KRX vs NTX markets
-    async def mock_inquire(*, code, market, time_unit, n, end_date=None):
-        del code, time_unit, n, end_date
+    async def mock_inquire(*, code, market, n, end_date, end_time):
+        del code, n, end_date, end_time
         if market == "J":  # KRX market
             return api_df_krx
         elif market == "NX":  # NTX market
             return api_df_ntx
         return pd.DataFrame()
 
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(side_effect=mock_inquire))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     # Call the function - should fetch from both markets
@@ -1461,12 +1493,12 @@ async def test_venue_separation_preserved(monkeypatch):
     assert len(out) == 1
 
     # Verify KIS API was called for both markets
-    assert kis.inquire_minute_chart.call_count >= 1
+    assert kis.inquire_time_dailychartprice.call_count >= 1
 
     # Get the markets that were called
     markets_called = [
         call.kwargs["market"]
-        for call in kis.inquire_minute_chart.call_args_list
+        for call in kis.inquire_time_dailychartprice.call_args_list
         if "market" in call.kwargs
     ]
 
@@ -1618,7 +1650,7 @@ async def test_partial_db_data_filled_by_api(monkeypatch):
 
     api_df = pd.DataFrame(api_minute_data)
 
-    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=api_df))
+    kis = SimpleNamespace(inquire_time_dailychartprice=AsyncMock(return_value=api_df))
     monkeypatch.setattr(svc, "KISClient", lambda: kis)
 
     # Request 5 candles but only 2 in DB
@@ -1650,7 +1682,7 @@ async def test_partial_db_data_filled_by_api(monkeypatch):
     assert datetimes == expected_buckets, f"Expected {expected_buckets}, got {datetimes}"
 
     # Verify KIS API was called (DB had insufficient data)
-    kis.inquire_minute_chart.assert_awaited()
+    kis.inquire_time_dailychartprice.assert_awaited()
 
     # Verify DB data is preserved (12:00 and 13:00 hours from DB)
     row_12 = out[out["datetime"] == datetime.datetime(2026, 2, 23, 12, 0, 0)].iloc[0]
