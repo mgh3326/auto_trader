@@ -228,8 +228,8 @@ def test_format_cancel_notification(trade_notifier):
 
 @pytest.mark.unit
 def test_format_analysis_notification(trade_notifier):
-    """Test analysis notification formatting."""
-    message = trade_notifier._format_analysis_notification(
+    """Test analysis notification formatting as Discord embed."""
+    embed = trade_notifier._format_analysis_notification(
         symbol="BTC",
         korean_name="비트코인",
         decision="buy",
@@ -242,17 +242,30 @@ def test_format_analysis_notification(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "🟢 *AI 분석 완료*" in message
-    assert "비트코인 (BTC)" in message
-    assert "매수" in message
-    assert "85.5%" in message
-    assert "상승 추세 지속" in message
+    # Verify embed structure
+    assert embed["title"] == "📊 AI 분석 완료"
+    assert embed["color"] == 0x0000FF  # Blue for analysis
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "비트코인 (BTC)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["판단"] == "🟢 매수"
+    assert fields["신뢰도"] == "85.5%"
+
+    # Verify reasons (numbered list)
+    assert "주요 근거" in fields
+    assert "1. 상승 추세 지속" in fields["주요 근거"]
+    assert "2. 거래량 증가" in fields["주요 근거"]
+    assert "3. 기술적 지표 긍정적" in fields["주요 근거"]
 
 
 @pytest.mark.unit
 def test_format_analysis_notification_hold(trade_notifier):
-    """Test analysis notification formatting for hold decision."""
-    message = trade_notifier._format_analysis_notification(
+    """Test analysis notification formatting for hold decision as Discord embed."""
+    embed = trade_notifier._format_analysis_notification(
         symbol="ETH",
         korean_name="이더리움",
         decision="hold",
@@ -261,15 +274,23 @@ def test_format_analysis_notification_hold(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "🟡 *AI 분석 완료*" in message
-    assert "보유" in message
-    assert "70.0%" in message
+    # Verify embed structure
+    assert embed["title"] == "📊 AI 분석 완료"
+    assert embed["color"] == 0x0000FF  # Blue for analysis
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "이더리움 (ETH)"
+    assert fields["판단"] == "🟡 보유"
+    assert fields["신뢰도"] == "70.0%"
 
 
 @pytest.mark.unit
 def test_format_analysis_notification_sell(trade_notifier):
-    """Test analysis notification formatting for sell decision."""
-    message = trade_notifier._format_analysis_notification(
+    """Test analysis notification formatting for sell decision as Discord embed."""
+    embed = trade_notifier._format_analysis_notification(
         symbol="XRP",
         korean_name="리플",
         decision="sell",
@@ -278,8 +299,17 @@ def test_format_analysis_notification_sell(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "🔴 *AI 분석 완료*" in message
-    assert "매도" in message
+    # Verify embed structure
+    assert embed["title"] == "📊 AI 분석 완료"
+    assert embed["color"] == 0x0000FF  # Blue for analysis
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "리플 (XRP)"
+    assert fields["판단"] == "🔴 매도"
+    assert fields["신뢰도"] == "90.0%"
 
 
 @pytest.mark.unit
