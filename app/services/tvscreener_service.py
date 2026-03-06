@@ -7,14 +7,66 @@ and implements robust error handling, rate limiting, and field discovery utiliti
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+import re
 import time
+from collections.abc import Iterable
 from collections.abc import Callable
 from typing import Any
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+_COLUMN_NAME_MAP = {
+    "symbol": "symbol",
+    "name": "name",
+    "description": "description",
+    "active symbol": "active_symbol",
+    "relative strength index (14)": "relative_strength_index_14",
+    "average directional index (14)": "average_directional_index_14",
+    "volume": "volume",
+    "volume 24h in usd": "volume_24h_in_usd",
+    "change %": "change_percent",
+    "country": "country",
+    "exchange": "exchange",
+}
+
+
+def _import_tvscreener() -> Any:
+    return importlib.import_module("tvscreener")
+
+
+def _normalize_column_name(column_name: Any) -> str:
+    text = str(column_name or "").strip()
+    if not text:
+        return ""
+
+    mapped = _COLUMN_NAME_MAP.get(text.lower())
+    if mapped is not None:
+        return mapped
+
+    normalized = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    return normalized
+
+
+def _normalize_result_frame(result: pd.DataFrame) -> pd.DataFrame:
+    if result.empty and len(result.columns) == 0:
+        return result
+
+    renamed = {column: _normalize_column_name(column) for column in result.columns}
+    return result.rename(columns=renamed)
+
+
+def _normalize_where_clauses(where_clause: Any | None) -> list[Any]:
+    if where_clause is None:
+        return []
+    if isinstance(where_clause, Iterable) and not isinstance(
+        where_clause, (str, bytes)
+    ):
+        return [condition for condition in where_clause if condition is not None]
+    return [where_clause]
 
 
 class TvScreenerError(Exception):
@@ -343,9 +395,9 @@ class TvScreenerService:
         columns : list[Any]
             List of CryptoField enums to retrieve
         where_clause : Any | None, optional
-            WHERE clause for filtering (e.g., CryptoField.RSI_14 < 30)
+            WHERE clause or list of WHERE clauses for filtering
         sort_by : Any | None, optional
-            Field enum to sort by (e.g., CryptoField.RSI_14)
+            Field enum to sort by (e.g., CryptoField.RELATIVE_STRENGTH_INDEX_14)
         ascending : bool, optional
             Sort direction (True for ascending, False for descending), by default True
         limit : int | None, optional
@@ -362,16 +414,16 @@ class TvScreenerService:
             If the query fails
         """
         try:
-            # Import here to avoid import errors if tvscreener not installed
-            from tvscreener import CryptoScreener
+            tvscreener = _import_tvscreener()
+            CryptoScreener = tvscreener.CryptoScreener
+            where_clauses = _normalize_where_clauses(where_clause)
 
             def _execute_query() -> pd.DataFrame:
-                """Synchronous query execution."""
                 screener = CryptoScreener()
                 query = screener.select(*columns)
 
-                if where_clause is not None:
-                    query = query.where(where_clause)
+                for condition in where_clauses:
+                    query = query.where(condition)
 
                 if sort_by:
                     query = query.sort_by(sort_by, ascending=ascending)
@@ -392,7 +444,7 @@ class TvScreenerService:
                 len(result.columns),
             )
 
-            return result
+            return _normalize_result_frame(result)
 
         except ImportError as exc:
             raise TvScreenerError(
@@ -407,6 +459,7 @@ class TvScreenerService:
         ascending: bool = True,
         limit: int | None = None,
         country: str | None = None,
+        markets: list[Any] | tuple[Any, ...] | None = None,
     ) -> pd.DataFrame:
         """Query StockScreener with specified columns and filters.
 
@@ -415,15 +468,17 @@ class TvScreenerService:
         columns : list[Any]
             List of StockField enums to retrieve
         where_clause : Any | None, optional
-            WHERE clause for filtering
+            WHERE clause or list of WHERE clauses for filtering
         sort_by : Any | None, optional
-            Field enum to sort by (e.g., StockField.RSI_14)
+            Field enum to sort by (e.g., StockField.RELATIVE_STRENGTH_INDEX_14)
         ascending : bool, optional
             Sort direction (True for ascending, False for descending), by default True
         limit : int | None, optional
             Maximum number of results
         country : str | None, optional
             Country filter (e.g., "South Korea", "United States")
+        markets : list[Any] | tuple[Any, ...] | None, optional
+            Explicit tvscreener Market values passed to StockScreener.set_markets()
 
         Returns
         -------
@@ -436,23 +491,22 @@ class TvScreenerService:
             If the query fails
         """
         try:
-            # Import here to avoid import errors if tvscreener not installed
-            from tvscreener import StockField, StockScreener
+            tvscreener = _import_tvscreener()
+            StockField = tvscreener.StockField
+            StockScreener = tvscreener.StockScreener
+            where_clauses = _normalize_where_clauses(where_clause)
 
             def _execute_query() -> pd.DataFrame:
-                """Synchronous query execution."""
                 screener = StockScreener()
+                if markets:
+                    screener.set_markets(*markets)
                 query = screener.select(*columns)
 
-                # Apply country filter if specified
                 if country:
-                    country_filter = StockField.COUNTRY == country
-                    if where_clause is not None:
-                        query = query.where(country_filter & where_clause)
-                    else:
-                        query = query.where(country_filter)
-                elif where_clause is not None:
-                    query = query.where(where_clause)
+                    query = query.where(StockField.COUNTRY == country)
+
+                for condition in where_clauses:
+                    query = query.where(condition)
 
                 if sort_by:
                     query = query.sort_by(sort_by, ascending=ascending)
@@ -473,7 +527,7 @@ class TvScreenerService:
                 len(result.columns),
             )
 
-            return result
+            return _normalize_result_frame(result)
 
         except ImportError as exc:
             raise TvScreenerError(
