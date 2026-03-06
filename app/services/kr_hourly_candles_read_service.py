@@ -912,11 +912,22 @@ async def read_kr_hourly_candles_1h(
         end_time_kst=end_time_kst,
         limit=fetch_limit,
     )
+    logger.info(
+        "DB returned %d candles for symbol '%s' (requested %d)",
+        len(hour_rows),
+        universe.symbol,
+        capped_count,
+    )
 
     # DB 데이터가 부족하면 KIS API fallback
     available_count = len(hour_rows)
     if available_count < capped_count:
         remaining = capped_count - available_count
+        logger.info(
+            "Fallback to KIS API for symbol '%s': fetching %d missing candles",
+            universe.symbol,
+            remaining,
+        )
         try:
             api_rows = await _fetch_historical_minutes_via_kis(
                 symbol=universe.symbol,
