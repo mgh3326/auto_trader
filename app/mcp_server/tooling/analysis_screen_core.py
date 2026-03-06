@@ -731,9 +731,7 @@ async def _stage_enrich_kr_rsi(
 
             try:
                 logger.debug("[RSI-KR] Fetching OHLCV data for %s", symbol)
-                df = await _fetch_ohlcv_for_indicators(
-                    symbol, "equity_kr", count=50
-                )
+                df = await _fetch_ohlcv_for_indicators(symbol, "equity_kr", count=50)
                 candle_count = len(df) if df is not None else 0
                 logger.info("[RSI-KR] Got %d candles for %s", candle_count, symbol)
 
@@ -800,9 +798,7 @@ async def _stage_enrich_kr_rsi(
         )
         for i, result in enumerate(subset_results):
             if isinstance(result, Exception):
-                symbol = candidates[i].get("short_code") or candidates[i].get(
-                    "code"
-                )
+                symbol = candidates[i].get("short_code") or candidates[i].get("code")
                 logger.error(
                     "[RSI-KR] gather returned exception for %s: %s: %s",
                     symbol or "UNKNOWN",
@@ -968,15 +964,17 @@ async def _screen_kr(
                 item["rsi"] = rsi_by_code[code]
 
     # Build filters_applied for response
-    filters_applied.update({
-        "min_market_cap": min_market_cap,
-        "max_per": max_per,
-        "max_pbr": max_pbr,
-        "min_dividend_yield": min_dividend_yield_normalized,
-        "max_rsi": max_rsi,
-        "sort_by": sort_by,
-        "sort_order": sort_order,
-    })
+    filters_applied.update(
+        {
+            "min_market_cap": min_market_cap,
+            "max_per": max_per,
+            "max_pbr": max_pbr,
+            "min_dividend_yield": min_dividend_yield_normalized,
+            "max_rsi": max_rsi,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+        }
+    )
     if min_dividend_yield_input is not None:
         filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
     if min_dividend_yield_normalized is not None:
@@ -992,14 +990,16 @@ async def _screen_kr(
             limit=limit,
             max_rsi=max_rsi,
         )
-        total_count = len(_apply_basic_filters(
-            rsi_subset,
-            min_market_cap=None,
-            max_per=None,
-            max_pbr=None,
-            min_dividend_yield=None,
-            max_rsi=max_rsi,
-        ))
+        total_count = len(
+            _apply_basic_filters(
+                rsi_subset,
+                min_market_cap=None,
+                max_per=None,
+                max_pbr=None,
+                min_dividend_yield=None,
+                max_rsi=max_rsi,
+            )
+        )
     else:
         # Use all sorted candidates when no RSI filter
         results = _stage_sort_kr(
@@ -1115,9 +1115,7 @@ async def _stage_fetch_us_candidates(
     if screen_result is None:
         return [], filters_applied
 
-    quotes = (
-        screen_result.get("quotes", []) if isinstance(screen_result, dict) else []
-    )
+    quotes = screen_result.get("quotes", []) if isinstance(screen_result, dict) else []
     if not quotes:
         return [], filters_applied
 
@@ -1454,14 +1452,16 @@ async def _screen_us(
         )
 
     if not candidates:
-        filters_applied.update({
-            "min_market_cap": min_market_cap,
-            "max_per": max_per,
-            "min_dividend_yield": min_dividend_yield_normalized,
-            "max_rsi": max_rsi,
-            "sort_by": sort_by,
-            "sort_order": sort_order,
-        })
+        filters_applied.update(
+            {
+                "min_market_cap": min_market_cap,
+                "max_per": max_per,
+                "min_dividend_yield": min_dividend_yield_normalized,
+                "max_rsi": max_rsi,
+                "sort_by": sort_by,
+                "sort_order": sort_order,
+            }
+        )
         if min_dividend_yield_input is not None:
             filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
         if min_dividend_yield_normalized is not None:
@@ -1484,20 +1484,20 @@ async def _screen_us(
     )
 
     # Build filters_applied for response
-    filters_applied.update({
-        "min_market_cap": min_market_cap,
-        "max_per": max_per,
-        "min_dividend_yield": min_dividend_yield_normalized,
-        "max_rsi": max_rsi,
-        "sort_by": sort_by,
-        "sort_order": sort_order,
-    })
+    filters_applied.update(
+        {
+            "min_market_cap": min_market_cap,
+            "max_per": max_per,
+            "min_dividend_yield": min_dividend_yield_normalized,
+            "max_rsi": max_rsi,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+        }
+    )
     if min_dividend_yield_input is not None:
         filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
     if min_dividend_yield_normalized is not None:
-        filters_applied["min_dividend_yield_normalized"] = (
-            min_dividend_yield_normalized
-        )
+        filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
     # Stage 4: Sort and apply final RSI filter
     results = _stage_sort_us(
@@ -1510,14 +1510,16 @@ async def _screen_us(
 
     # Calculate total count before final limiting
     if max_rsi is not None:
-        total_count = len(_apply_basic_filters(
-            enriched_candidates,
-            min_market_cap=None,
-            max_per=None,
-            max_pbr=None,
-            min_dividend_yield=None,
-            max_rsi=max_rsi,
-        ))
+        total_count = len(
+            _apply_basic_filters(
+                enriched_candidates,
+                min_market_cap=None,
+                max_per=None,
+                max_pbr=None,
+                min_dividend_yield=None,
+                max_rsi=max_rsi,
+            )
+        )
     else:
         total_count = len(enriched_candidates)
 
@@ -1528,6 +1530,340 @@ async def _screen_us(
         market,
         rsi_enrichment=rsi_enrichment,
     )
+
+
+# =============================================================================
+# Crypto Screening Stage Functions
+# =============================================================================
+
+
+async def _stage_fetch_crypto_candidates(
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, Any],
+    float,
+    set[str],
+    dict[str, Any],
+]:
+    """Stage 1: Fetch crypto candidates from Upbit.
+
+    Args:
+        market: Market filter (should be 'crypto')
+        asset_type: Asset type filter (for compatibility, typically None for crypto)
+        category: Category filter (for compatibility, typically None for crypto)
+
+    Returns:
+        Tuple of (
+            top_candidates: List of top traded coins (limited to CRYPTO_TOP_BY_VOLUME),
+            all_candidates: Full list of candidates for BTC reference,
+            btc_change_24h: BTC 24h change rate for crash detection,
+            warning_markets: Set of warning market codes,
+            filters_applied: Dict of applied filters for response metadata
+        )
+    """
+    filters_applied: dict[str, Any] = {
+        "market": market,
+        "asset_type": asset_type,
+        "category": category,
+    }
+
+    all_candidates = await upbit_service.fetch_top_traded_coins(fiat="KRW")
+    top_candidates = all_candidates[:CRYPTO_TOP_BY_VOLUME]
+
+    # Get BTC change rate for crash detection
+    btc_change_24h = 0.0
+    btc_item = next(
+        (
+            item
+            for item in all_candidates
+            if str(item.get("market") or "").upper() == "KRW-BTC"
+        ),
+        None,
+    )
+    if btc_item is not None:
+        btc_change_24h = _to_optional_float(
+            btc_item.get("signed_change_rate") or btc_item.get("change_rate")
+        )
+        if btc_change_24h is None:
+            btc_change_24h = 0.0
+
+    # Get warning markets
+    warning_markets: set[str] = set()
+    try:
+        warning_markets = await get_upbit_warning_markets(quote_currency="KRW")
+    except Exception:
+        pass  # Warning markets filter will be skipped if unavailable
+
+    return (
+        top_candidates,
+        all_candidates,
+        btc_change_24h,
+        warning_markets,
+        filters_applied,
+    )
+
+
+def _stage_filter_crypto(
+    top_candidates: list[dict[str, Any]],
+    btc_change_24h: float,
+    warning_markets: set[str],
+    min_market_cap: float | None,
+) -> tuple[list[dict[str, Any]], int, int, list[str]]:
+    """Stage 2: Filter crypto candidates by warning markets and crash detection.
+
+    Args:
+        top_candidates: List of top traded coins from fetch stage
+        btc_change_24h: BTC 24h change rate for crash detection
+        warning_markets: Set of warning market codes to exclude
+        min_market_cap: Minimum market cap filter (not supported for crypto)
+
+    Returns:
+        Tuple of (
+            candidates: Filtered list of candidates,
+            filtered_by_warning: Count of items filtered by warning status,
+            filtered_by_crash: Count of items filtered by crash detection,
+            warnings: List of warning messages
+        )
+    """
+    warnings: list[str] = []
+    filtered_by_warning = 0
+    filtered_by_crash = 0
+    candidates: list[dict[str, Any]] = []
+
+    for raw_item in top_candidates:
+        market_code = str(raw_item.get("market") or "").strip().upper()
+        if market_code in warning_markets:
+            filtered_by_warning += 1
+            continue
+
+        coin_change_24h = raw_item.get("signed_change_rate")
+        if coin_change_24h is None:
+            coin_change_24h = raw_item.get("change_rate")
+        if not is_safe_drop(coin_change_24h, btc_change_24h):
+            filtered_by_crash += 1
+            continue
+
+        volume_24h = _to_optional_float(
+            raw_item.get("acc_trade_volume_24h") or raw_item.get("volume")
+        )
+        trade_amount_24h = _to_optional_float(
+            raw_item.get("trade_amount_24h") or raw_item.get("acc_trade_price_24h")
+        )
+
+        item = dict(raw_item)
+        item["original_market"] = raw_item.get("market")
+        item["market"] = "crypto"
+        if market_code:
+            item["symbol"] = market_code
+        item["name"] = (
+            raw_item.get("name")
+            or raw_item.get("korean_name")
+            or raw_item.get("english_name")
+        )
+        item["change_rate"] = (
+            _to_optional_float(
+                raw_item.get("change_rate")
+                if raw_item.get("change_rate") is not None
+                else raw_item.get("signed_change_rate")
+            )
+            or 0.0
+        )
+        item["trade_amount_24h"] = trade_amount_24h or 0.0
+        item.pop("volume", None)
+        item["market_cap"] = None
+        item["market_cap_rank"] = None
+        item["market_warning"] = None
+        item["rsi"] = _to_optional_float(raw_item.get("rsi"))
+        item["volume_24h"] = volume_24h or 0.0
+        item["volume_ratio"] = _to_optional_float(raw_item.get("volume_ratio"))
+        item["candle_type"] = raw_item.get("candle_type") or "flat"
+        item["adx"] = _to_optional_float(raw_item.get("adx"))
+        item["plus_di"] = _to_optional_float(raw_item.get("plus_di"))
+        item["minus_di"] = _to_optional_float(raw_item.get("minus_di"))
+        item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
+        item.pop("score", None)
+        candidates.append(item)
+
+    if min_market_cap is not None:
+        warnings.append(
+            "min_market_cap filter is not supported for crypto market; ignored"
+        )
+
+    return candidates, filtered_by_warning, filtered_by_crash, warnings
+
+
+async def _stage_enrich_crypto_indicators(
+    candidates: list[dict[str, Any]],
+    enrich_rsi: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], list[str]]:
+    """Stage 3: Enrich crypto candidates with RSI and market cap data.
+
+    Runs RSI enrichment via CryptoScreener and CoinGecko market cap fetch in parallel.
+
+    Args:
+        candidates: List of filtered candidates
+        enrich_rsi: Whether to perform RSI enrichment
+
+    Returns:
+        Tuple of (
+            candidates: Enriched candidates (modified in place),
+            rsi_enrichment: RSI enrichment diagnostics,
+            coingecko_payload: CoinGecko market cap data and metadata,
+            warnings: List of warning messages
+        )
+    """
+    warnings: list[str] = []
+
+    async def _run_rsi_enrichment() -> dict[str, Any]:
+        if not enrich_rsi or not candidates:
+            return _empty_rsi_enrichment_diagnostics()
+        try:
+            return await _enrich_crypto_indicators(candidates)
+        except Exception as exc:
+            warnings.append(
+                f"Crypto RSI enrichment failed: {type(exc).__name__}: {exc}; partial results returned"
+            )
+            return _empty_rsi_enrichment_diagnostics()
+
+    try:
+        parallel_results = await asyncio.gather(
+            _run_rsi_enrichment(),
+            _CRYPTO_MARKET_CAP_CACHE.get(),
+        )
+        if len(parallel_results) == 2:
+            rsi_enrichment = parallel_results[0]
+            coingecko_payload = parallel_results[1]
+        else:
+            warnings.append(
+                "Crypto enrichment parallel execution returned unexpected shape; "
+                "partial results returned"
+            )
+            rsi_enrichment = _empty_rsi_enrichment_diagnostics()
+            coingecko_payload = {
+                "data": {},
+                "cached": False,
+                "age_seconds": None,
+                "stale": False,
+                "error": "parallel_result_shape_error",
+            }
+    except Exception as exc:
+        warnings.append(
+            "Crypto enrichment parallel execution failed; partial results returned "
+            f"({type(exc).__name__}: {exc})"
+        )
+        rsi_enrichment = _empty_rsi_enrichment_diagnostics()
+        coingecko_payload = {
+            "data": {},
+            "cached": False,
+            "age_seconds": None,
+            "stale": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    timeout_count = int(rsi_enrichment.get("timeout", 0) or 0)
+    if timeout_count > 0:
+        warnings.append(
+            f"Crypto RSI enrichment timed out for {timeout_count} symbols; partial results returned"
+        )
+
+    rate_limited_count = int(rsi_enrichment.get("rate_limited", 0) or 0)
+    if rate_limited_count > 0:
+        warnings.append(
+            "Crypto RSI enrichment hit rate limits for "
+            f"{rate_limited_count} symbols; partial results returned"
+        )
+
+    # Update candidates with CoinGecko market cap data
+    coingecko_data = cast(
+        dict[str, dict[str, Any]],
+        coingecko_payload.get("data") or {},
+    )
+    for item in candidates:
+        symbol = _extract_market_symbol(
+            item.get("symbol") or item.get("original_market")
+        )
+        cap_data = coingecko_data.get(symbol or "") if symbol else None
+        if cap_data:
+            item["market_cap"] = cap_data.get("market_cap")
+            item["market_cap_rank"] = cap_data.get("market_cap_rank")
+        else:
+            item["market_cap"] = None
+            item["market_cap_rank"] = None
+        item["market_warning"] = None
+        item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
+        item.pop("score", None)
+
+    coingecko_error = coingecko_payload.get("error")
+    if coingecko_error:
+        if coingecko_payload.get("stale"):
+            warnings.append(
+                "CoinGecko market-cap refresh failed; stale cache was used."
+            )
+        else:
+            warnings.append(
+                "CoinGecko market-cap data unavailable; market_cap fields remain null."
+            )
+
+    return candidates, rsi_enrichment, coingecko_payload, warnings
+
+
+def _stage_sort_crypto(
+    candidates: list[dict[str, Any]],
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+    max_rsi: float | None = None,
+) -> tuple[list[dict[str, Any]], int, str, list[str]]:
+    """Stage 4: Sort and limit crypto candidates.
+
+    Args:
+        candidates: List of enriched candidates
+        sort_by: Field to sort by
+        sort_order: Sort order ('asc' or 'desc')
+        limit: Maximum number of results
+        max_rsi: Optional RSI filter to apply before final limiting
+
+    Returns:
+        Tuple of (
+            results: Sorted and limited list of candidates,
+            total_count: Count before limiting (after RSI filter if applied),
+            applied_sort_order: Actual sort order used (may differ from input for RSI sort),
+            warnings: List of warning messages
+        )
+    """
+    warnings: list[str] = []
+
+    # Apply RSI filter if specified
+    if max_rsi is not None:
+        filtered = [
+            item
+            for item in candidates
+            if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
+        ]
+    else:
+        filtered = candidates
+
+    applied_sort_order = sort_order
+
+    # Sort by RSI bucket or other criteria
+    if sort_by == "rsi":
+        if sort_order == "desc":
+            warnings.append(
+                "crypto sort_by='rsi' always uses ascending order; requested desc was ignored."
+            )
+        applied_sort_order = "asc"
+        ordered = _sort_crypto_by_rsi_bucket(filtered)
+    else:
+        ordered = _sort_and_limit(filtered, sort_by, sort_order, len(filtered))
+
+    results = ordered[:limit]
+    for item in results:
+        item.pop("score", None)
+
+    return results, len(filtered), applied_sort_order, warnings
 
 
 async def _enrich_crypto_indicators(
@@ -2934,4 +3270,19 @@ __all__ = [
     "_screen_us",
     "_screen_crypto",
     "_screen_crypto_via_tvscreener",
+    # KR stage functions
+    "_stage_fetch_kr_candidates",
+    "_stage_filter_kr",
+    "_stage_enrich_kr_rsi",
+    "_stage_sort_kr",
+    # US stage functions
+    "_stage_fetch_us_candidates",
+    "_stage_filter_us",
+    "_stage_enrich_us_rsi",
+    "_stage_sort_us",
+    # Crypto stage functions
+    "_stage_fetch_crypto_candidates",
+    "_stage_filter_crypto",
+    "_stage_enrich_crypto_indicators",
+    "_stage_sort_crypto",
 ]
