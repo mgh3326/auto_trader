@@ -51,8 +51,15 @@ class Settings(BaseSettings):
     api_rate_limit_retry_429_max: int = 2  # 429 에러 시 최대 재시도 횟수
     api_rate_limit_retry_429_base_delay: float = 0.2  # 지수 백오프 기본 대기 시간 (초)
     # Telegram
-    telegram_token: str
-    telegram_chat_id: str = ""
+    telegram_token: str | None = None
+    telegram_chat_id: str | None = None
+
+    # Discord Webhooks
+    discord_webhook_us: str | None = None
+    discord_webhook_kr: str | None = None
+    discord_webhook_crypto: str | None = None
+    discord_webhook_alerts: str | None = None
+
     # Strategy
     top_n: int = 30
     drop_pct: float = -3.0  # '-3'은 -3 %

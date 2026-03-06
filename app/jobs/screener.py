@@ -19,4 +19,4 @@ async def screen_once_async():
             f"▼{r.prdy_ctrt:+.2f}% · 거래량 {r.acml_vol:,}"
         )
         notifier = get_trade_notifier()
-        await notifier._send_to_telegram(msg)
+        await notifier.notify_openclaw_message(msg)

@@ -30,18 +30,35 @@ def test_singleton_pattern():
 
 @pytest.mark.unit
 def test_configure(trade_notifier):
-    """Test TradeNotifier configuration."""
+    """Test TradeNotifier configuration with Telegram and Discord webhooks."""
     bot_token = "test_token"
     chat_ids = ["123456", "789012"]
+    discord_webhook_us = "https://discord.com/api/webhooks/us"
+    discord_webhook_kr = "https://discord.com/api/webhooks/kr"
+    discord_webhook_crypto = "https://discord.com/api/webhooks/crypto"
+    discord_webhook_alerts = "https://discord.com/api/webhooks/alerts"
 
     trade_notifier.configure(
         bot_token=bot_token,
         chat_ids=chat_ids,
         enabled=True,
+        discord_webhook_us=discord_webhook_us,
+        discord_webhook_kr=discord_webhook_kr,
+        discord_webhook_crypto=discord_webhook_crypto,
+        discord_webhook_alerts=discord_webhook_alerts,
     )
 
+    # Verify Telegram configuration
     assert trade_notifier._bot_token == bot_token
     assert trade_notifier._chat_ids == chat_ids
+
+    # Verify Discord webhook configuration
+    assert trade_notifier._discord_webhook_us == discord_webhook_us
+    assert trade_notifier._discord_webhook_kr == discord_webhook_kr
+    assert trade_notifier._discord_webhook_crypto == discord_webhook_crypto
+    assert trade_notifier._discord_webhook_alerts == discord_webhook_alerts
+
+    # Verify enabled state and HTTP client
     assert trade_notifier._enabled is True
     assert trade_notifier._http_client is not None
 
@@ -66,8 +83,8 @@ async def test_shutdown(trade_notifier):
 
 @pytest.mark.unit
 def test_format_buy_notification(trade_notifier):
-    """Test buy notification formatting."""
-    message = trade_notifier._format_buy_notification(
+    """Test buy notification formatting as Discord embed."""
+    embed = trade_notifier._format_buy_notification(
         symbol="BTC",
         korean_name="비트코인",
         order_count=3,
@@ -77,17 +94,30 @@ def test_format_buy_notification(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💰 *매수 주문 접수*" in message
-    assert "비트코인 (BTC)" in message
-    assert "3건" in message
-    assert "300,000원" in message
-    assert "100,000.00원" in message
+    # Verify embed structure
+    assert embed["title"] == "💰 매수 주문 접수"
+    assert embed["color"] == 0x00FF00  # Green for buy
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "비트코인 (BTC)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["주문 수"] == "3건"
+    assert fields["총 금액"] == "300,000원"
+
+    # Verify order details
+    assert "주문 상세" in fields
+    assert "100,000.00원 × 0.001" in fields["주문 상세"]
+    assert "101,000.00원 × 0.001" in fields["주문 상세"]
+    assert "102,000.00원 × 0.001" in fields["주문 상세"]
 
 
 @pytest.mark.unit
 def test_format_buy_notification_without_details(trade_notifier):
     """Test buy notification formatting without price/volume details."""
-    message = trade_notifier._format_buy_notification(
+    embed = trade_notifier._format_buy_notification(
         symbol="BTC",
         korean_name="비트코인",
         order_count=2,
@@ -97,16 +127,23 @@ def test_format_buy_notification_without_details(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💰 *매수 주문 접수*" in message
-    assert "비트코인 (BTC)" in message
-    assert "2건" in message
-    assert "200,000원" in message
+    # Verify embed structure
+    assert embed["title"] == "💰 매수 주문 접수"
+    assert embed["color"] == 0x00FF00  # Green for buy
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+    assert fields["종목"] == "비트코인 (BTC)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["주문 수"] == "2건"
+    assert fields["총 금액"] == "200,000원"
 
 
 @pytest.mark.unit
 def test_format_sell_notification(trade_notifier):
-    """Test sell notification formatting."""
-    message = trade_notifier._format_sell_notification(
+    """Test sell notification formatting as Discord embed."""
+    embed = trade_notifier._format_sell_notification(
         symbol="ETH",
         korean_name="이더리움",
         order_count=2,
@@ -117,17 +154,30 @@ def test_format_sell_notification(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💸 *매도 주문 접수*" in message
-    assert "이더리움 (ETH)" in message
-    assert "2건" in message
-    assert "0.5" in message
-    assert "1,025,000원" in message
+    # Verify embed structure
+    assert embed["title"] == "💸 매도 주문 접수"
+    assert embed["color"] == 0xFF0000  # Red for sell
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "이더리움 (ETH)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["주문 수"] == "2건"
+    assert fields["총 수량"] == "0.5"
+    assert fields["예상 금액"] == "1,025,000원"
+
+    # Verify order details
+    assert "주문 상세" in fields
+    assert "2,000,000.00원 × 0.25" in fields["주문 상세"]
+    assert "2,100,000.00원 × 0.25" in fields["주문 상세"]
 
 
 @pytest.mark.unit
 def test_format_sell_notification_without_volumes(trade_notifier):
-    """Test sell notification formatting with prices but no volumes."""
-    message = trade_notifier._format_sell_notification(
+    """Test sell notification formatting as Discord embed with prices but no volumes."""
+    embed = trade_notifier._format_sell_notification(
         symbol="ETH",
         korean_name="이더리움",
         order_count=2,
@@ -138,16 +188,30 @@ def test_format_sell_notification_without_volumes(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💸 *매도 주문 접수*" in message
-    assert "이더리움 (ETH)" in message
-    assert "*매도 가격대:*" in message
-    assert "2,000,000.00원" in message
+    # Verify embed structure
+    assert embed["title"] == "💸 매도 주문 접수"
+    assert embed["color"] == 0xFF0000  # Red for sell
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "이더리움 (ETH)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["주문 수"] == "2건"
+    assert fields["총 수량"] == "0.5"
+    assert fields["예상 금액"] == "1,025,000원"
+
+    # Verify price range (no volumes, so shows price range)
+    assert "매도 가격대" in fields
+    assert "2,000,000.00원" in fields["매도 가격대"]
+    assert "2,100,000.00원" in fields["매도 가격대"]
 
 
 @pytest.mark.unit
 def test_format_cancel_notification(trade_notifier):
-    """Test cancel notification formatting."""
-    message = trade_notifier._format_cancel_notification(
+    """Test cancel notification formatting as Discord embed."""
+    embed = trade_notifier._format_cancel_notification(
         symbol="XRP",
         korean_name="리플",
         cancel_count=5,
@@ -155,16 +219,24 @@ def test_format_cancel_notification(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "🚫 *주문 취소*" in message
-    assert "리플 (XRP)" in message
-    assert "5건" in message
-    assert "매수" in message
+    # Verify embed structure
+    assert embed["title"] == "🚫 주문 취소"
+    assert embed["color"] == 0xFFFF00  # Yellow for cancel
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "리플 (XRP)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["취소 유형"] == "매수"
+    assert fields["취소 건수"] == "5건"
 
 
 @pytest.mark.unit
 def test_format_analysis_notification(trade_notifier):
-    """Test analysis notification formatting."""
-    message = trade_notifier._format_analysis_notification(
+    """Test analysis notification formatting as Discord embed."""
+    embed = trade_notifier._format_analysis_notification(
         symbol="BTC",
         korean_name="비트코인",
         decision="buy",
@@ -177,17 +249,30 @@ def test_format_analysis_notification(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "🟢 *AI 분석 완료*" in message
-    assert "비트코인 (BTC)" in message
-    assert "매수" in message
-    assert "85.5%" in message
-    assert "상승 추세 지속" in message
+    # Verify embed structure
+    assert embed["title"] == "📊 AI 분석 완료"
+    assert embed["color"] == 0x0000FF  # Blue for analysis
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "비트코인 (BTC)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["판단"] == "🟢 매수"
+    assert fields["신뢰도"] == "85.5%"
+
+    # Verify reasons (numbered list)
+    assert "주요 근거" in fields
+    assert "1. 상승 추세 지속" in fields["주요 근거"]
+    assert "2. 거래량 증가" in fields["주요 근거"]
+    assert "3. 기술적 지표 긍정적" in fields["주요 근거"]
 
 
 @pytest.mark.unit
 def test_format_analysis_notification_hold(trade_notifier):
-    """Test analysis notification formatting for hold decision."""
-    message = trade_notifier._format_analysis_notification(
+    """Test analysis notification formatting for hold decision as Discord embed."""
+    embed = trade_notifier._format_analysis_notification(
         symbol="ETH",
         korean_name="이더리움",
         decision="hold",
@@ -196,15 +281,23 @@ def test_format_analysis_notification_hold(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "🟡 *AI 분석 완료*" in message
-    assert "보유" in message
-    assert "70.0%" in message
+    # Verify embed structure
+    assert embed["title"] == "📊 AI 분석 완료"
+    assert embed["color"] == 0x0000FF  # Blue for analysis
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "이더리움 (ETH)"
+    assert fields["판단"] == "🟡 보유"
+    assert fields["신뢰도"] == "70.0%"
 
 
 @pytest.mark.unit
 def test_format_analysis_notification_sell(trade_notifier):
-    """Test analysis notification formatting for sell decision."""
-    message = trade_notifier._format_analysis_notification(
+    """Test analysis notification formatting for sell decision as Discord embed."""
+    embed = trade_notifier._format_analysis_notification(
         symbol="XRP",
         korean_name="리플",
         decision="sell",
@@ -213,14 +306,23 @@ def test_format_analysis_notification_sell(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "🔴 *AI 분석 완료*" in message
-    assert "매도" in message
+    # Verify embed structure
+    assert embed["title"] == "📊 AI 분석 완료"
+    assert embed["color"] == 0x0000FF  # Blue for analysis
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "리플 (XRP)"
+    assert fields["판단"] == "🔴 매도"
+    assert fields["신뢰도"] == "90.0%"
 
 
 @pytest.mark.unit
 def test_format_automation_summary(trade_notifier):
-    """Test automation summary notification formatting."""
-    message = trade_notifier._format_automation_summary(
+    """Test automation summary notification formatting as Discord embed."""
+    embed = trade_notifier._format_automation_summary(
         total_coins=10,
         analyzed=10,
         bought=3,
@@ -229,17 +331,24 @@ def test_format_automation_summary(trade_notifier):
         duration_seconds=45.5,
     )
 
-    assert "🤖 *자동 거래 실행 완료*" in message
-    assert "10개" in message
-    assert "3건" in message
-    assert "2건" in message
-    assert "45.5초" in message
+    # Verify embed structure
+    assert embed["title"] == "🤖 자동 거래 실행 완료"
+    assert embed["color"] == 0x00FFFF  # Cyan for automation
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+    assert fields["처리 종목"] == "10개"
+    assert fields["분석 완료"] == "10개"
+    assert fields["매수 주문"] == "3건"
+    assert fields["매도 주문"] == "2건"
+    assert fields["실행 시간"] == "45.5초"
 
 
 @pytest.mark.unit
 def test_format_automation_summary_with_errors(trade_notifier):
-    """Test automation summary notification with errors."""
-    message = trade_notifier._format_automation_summary(
+    """Test automation summary notification with errors as Discord embed."""
+    embed = trade_notifier._format_automation_summary(
         total_coins=5,
         analyzed=5,
         bought=1,
@@ -248,8 +357,19 @@ def test_format_automation_summary_with_errors(trade_notifier):
         duration_seconds=30.0,
     )
 
-    assert "🤖 *자동 거래 실행 완료*" in message
-    assert "⚠️ *오류 발생:* 2건" in message
+    # Verify embed structure
+    assert embed["title"] == "🤖 자동 거래 실행 완료"
+    assert embed["color"] == 0x00FFFF  # Cyan for automation
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+    assert fields["처리 종목"] == "5개"
+    assert fields["분석 완료"] == "5개"
+    assert fields["매수 주문"] == "1건"
+    assert fields["매도 주문"] == "1건"
+    assert fields["실행 시간"] == "30.0초"
+    assert fields["오류 발생"] == "2건"
 
 
 @pytest.mark.unit
@@ -278,10 +398,12 @@ async def test_notify_buy_order_disabled(trade_notifier):
 @pytest.mark.asyncio
 async def test_notify_buy_order_success(trade_notifier):
     """Test successful buy order notification."""
+    webhook_url = "https://discord.com/api/webhooks/crypto"
     trade_notifier.configure(
         bot_token="test_token",
         chat_ids=["123456"],
         enabled=True,
+        discord_webhook_crypto=webhook_url,
     )
 
     mock_response = MagicMock()
@@ -305,18 +427,20 @@ async def test_notify_buy_order_success(trade_notifier):
         assert result is True
         mock_post.assert_called_once()
         call_args = mock_post.call_args
-        assert "chat_id" in call_args.kwargs["json"]
-        assert "text" in call_args.kwargs["json"]
+        assert call_args.args[0] == webhook_url
+        assert "embeds" in call_args.kwargs["json"]
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_test_connection_success(trade_notifier):
     """Test successful connection test."""
+    webhook_url = "https://discord.com/api/webhooks/crypto"
     trade_notifier.configure(
         bot_token="test_token",
         chat_ids=["123456"],
         enabled=True,
+        discord_webhook_crypto=webhook_url,
     )
 
     mock_response = MagicMock()
@@ -332,6 +456,9 @@ async def test_test_connection_success(trade_notifier):
 
         assert result is True
         mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert call_args.args[0] == webhook_url
+        assert "embeds" in call_args.kwargs["json"]
 
 
 @pytest.mark.unit
@@ -350,12 +477,19 @@ async def test_test_connection_disabled(trade_notifier):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_send_to_multiple_chats(trade_notifier):
-    """Test sending notifications to multiple chat IDs."""
+async def test_send_to_correct_webhook_by_market_type(trade_notifier):
+    """Test that notifications are sent to the correct Discord webhook based on market type."""
+    webhook_us = "https://discord.com/api/webhooks/us"
+    webhook_kr = "https://discord.com/api/webhooks/kr"
+    webhook_crypto = "https://discord.com/api/webhooks/crypto"
+
     trade_notifier.configure(
         bot_token="test_token",
-        chat_ids=["123456", "789012", "345678"],
+        chat_ids=["123456"],
         enabled=True,
+        discord_webhook_us=webhook_us,
+        discord_webhook_kr=webhook_kr,
+        discord_webhook_crypto=webhook_crypto,
     )
 
     mock_response = MagicMock()
@@ -367,44 +501,110 @@ async def test_send_to_multiple_chats(trade_notifier):
         new_callable=AsyncMock,
         return_value=mock_response,
     ) as mock_post:
-        result = await trade_notifier.notify_buy_order(
+        # Test crypto market
+        await trade_notifier.notify_buy_order(
             symbol="BTC",
             korean_name="비트코인",
             order_count=1,
             total_amount=100000.0,
-            prices=[],
-            volumes=[],
+            prices=[100000.0],
+            volumes=[0.001],
+            market_type="암호화폐",
         )
+        assert mock_post.call_args.args[0] == webhook_crypto
 
-        assert result is True
-        # Should be called once per chat ID
-        assert mock_post.call_count == 3
+        # Test US market
+        await trade_notifier.notify_buy_order(
+            symbol="AAPL",
+            korean_name="애플",
+            order_count=1,
+            total_amount=1000.0,
+            prices=[180.0],
+            volumes=[5],
+            market_type="해외주식",
+        )
+        assert mock_post.call_args.args[0] == webhook_us
+
+        # Test KR market
+        await trade_notifier.notify_buy_order(
+            symbol="005930",
+            korean_name="삼성전자",
+            order_count=1,
+            total_amount=1000000.0,
+            prices=[80000.0],
+            volumes=[10],
+            market_type="국내주식",
+        )
+        assert mock_post.call_args.args[0] == webhook_kr
+
+
+@pytest.mark.unit
+def test_market_type_routing(trade_notifier):
+    """Test that market_type is correctly routed to appropriate Discord webhook."""
+    webhook_us = "https://discord.com/api/webhooks/us"
+    webhook_kr = "https://discord.com/api/webhooks/kr"
+    webhook_crypto = "https://discord.com/api/webhooks/crypto"
+
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_us=webhook_us,
+        discord_webhook_kr=webhook_kr,
+        discord_webhook_crypto=webhook_crypto,
+    )
+
+    # Test US market (English)
+    assert trade_notifier._get_webhook_for_market_type("US") == webhook_us
+
+    # Test US market (Korean)
+    assert trade_notifier._get_webhook_for_market_type("해외주식") == webhook_us
+
+    # Test KR market
+    assert trade_notifier._get_webhook_for_market_type("국내주식") == webhook_kr
+
+    # Test crypto market
+    assert trade_notifier._get_webhook_for_market_type("암호화폐") == webhook_crypto
+
+    # Test unknown market type
+    assert trade_notifier._get_webhook_for_market_type("unknown") is None
+
+    # Test with whitespace
+    assert trade_notifier._get_webhook_for_market_type("  해외주식  ") == webhook_us
 
 
 @pytest.mark.unit
 def test_format_failure_notification(trade_notifier):
-    """Test failure notification formatting."""
-    message = trade_notifier._format_failure_notification(
+    """Test failure notification formatting as Discord embed."""
+    embed = trade_notifier._format_failure_notification(
         symbol="AAPL",
         korean_name="애플",
         reason="APBK0656 해당종목정보가 없습니다.",
         market_type="해외주식",
     )
 
-    assert "⚠️ *거래 실패 알림*" in message
-    assert "애플 (AAPL)" in message
-    assert "해외주식" in message
-    assert "APBK0656 해당종목정보가 없습니다." in message
+    # Verify embed structure
+    assert embed["title"] == "⚠️ 거래 실패"
+    assert embed["color"] == 0xFF6600  # Orange for failure
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+    assert fields["종목"] == "애플 (AAPL)"
+    assert fields["시장"] == "해외주식"
+    assert fields["사유"] == "APBK0656 해당종목정보가 없습니다."
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_notify_trade_failure_success(trade_notifier):
     """Test successful trade failure notification."""
+    webhook_url = "https://discord.com/api/webhooks/us"
     trade_notifier.configure(
         bot_token="test_token",
         chat_ids=["123456"],
         enabled=True,
+        discord_webhook_us=webhook_url,
     )
 
     mock_response = MagicMock()
@@ -426,7 +626,8 @@ async def test_notify_trade_failure_success(trade_notifier):
         assert result is True
         mock_post.assert_called_once()
         call_args = mock_post.call_args
-        assert "거래 실패 알림" in call_args.kwargs["json"]["text"]
+        assert call_args.args[0] == webhook_url
+        assert "embeds" in call_args.kwargs["json"]
 
 
 @pytest.mark.unit
@@ -453,10 +654,12 @@ async def test_notify_trade_failure_disabled(trade_notifier):
 @pytest.mark.asyncio
 async def test_notify_sell_order_success(trade_notifier):
     """Test successful sell order notification."""
+    webhook_url = "https://discord.com/api/webhooks/us"
     trade_notifier.configure(
         bot_token="test_token",
         chat_ids=["123456"],
         enabled=True,
+        discord_webhook_us=webhook_url,
     )
 
     mock_response = MagicMock()
@@ -482,7 +685,8 @@ async def test_notify_sell_order_success(trade_notifier):
         assert result is True
         mock_post.assert_called_once()
         call_args = mock_post.call_args
-        assert "매도 주문 접수" in call_args.kwargs["json"]["text"]
+        assert call_args.args[0] == webhook_url
+        assert "embeds" in call_args.kwargs["json"]
 
 
 @pytest.mark.unit
@@ -549,3 +753,193 @@ async def test_notify_openclaw_message_disabled(trade_notifier):
     result = await trade_notifier.notify_openclaw_message("scan message")
 
     assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_to_discord_success(trade_notifier):
+    """Test successful Discord webhook HTTP POST behavior."""
+    webhook_url = "https://discord.com/api/webhooks/test"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_crypto=webhook_url,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    # Create a sample embed
+    embed = {
+        "title": "Test Notification",
+        "description": "Test message",
+        "color": 0x00FF00,
+        "fields": [],
+    }
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier._send_to_discord_embed_single(embed, webhook_url)
+
+        # Verify success
+        assert result is True
+
+        # Verify HTTP POST was called
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+
+        # Verify URL
+        assert call_args.args[0] == webhook_url
+
+        # Verify JSON payload
+        assert "json" in call_args.kwargs
+        json_data = call_args.kwargs["json"]
+        assert "embeds" in json_data
+        assert json_data["embeds"] == [embed]
+
+        # Verify headers
+        assert "headers" in call_args.kwargs
+        headers = call_args.kwargs["headers"]
+        assert headers["Content-Type"] == "application/json"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_to_discord_failure(trade_notifier):
+    """Test Discord webhook HTTP POST failure."""
+    webhook_url = "https://discord.com/api/webhooks/test"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_crypto=webhook_url,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock(side_effect=Exception("Network error"))
+
+    # Create a sample embed
+    embed = {
+        "title": "Test Notification",
+        "description": "Test message",
+        "color": 0x00FF00,
+        "fields": [],
+    }
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier._send_to_discord_embed_single(embed, webhook_url)
+
+        # Verify failure returns False
+        assert result is False
+
+        # Verify HTTP POST was attempted
+        mock_post.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_to_discord_disabled(trade_notifier):
+    """Test that Discord webhook is not sent when disabled."""
+    webhook_url = "https://discord.com/api/webhooks/test"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=False,
+    )
+
+    # Create a sample embed
+    embed = {
+        "title": "Test Notification",
+        "description": "Test message",
+        "color": 0x00FF00,
+        "fields": [],
+    }
+
+    result = await trade_notifier._send_to_discord_embed_single(embed, webhook_url)
+
+    # Verify returns False when disabled
+    assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_to_discord_no_webhook(trade_notifier):
+    """Test that Discord webhook is not sent when no webhook URL provided."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+    )
+
+    # Create a sample embed
+    embed = {
+        "title": "Test Notification",
+        "description": "Test message",
+        "color": 0x00FF00,
+        "fields": [],
+    }
+
+    result = await trade_notifier._send_to_discord_embed_single(embed, "")
+
+    # Verify returns False when no webhook URL provided
+    assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_telegram_fallback(trade_notifier):
+    """Test Telegram fallback when Discord is not configured."""
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    # Mock the httpx.AsyncClient to avoid proxy issues
+    with patch("app.monitoring.trade_notifier.httpx.AsyncClient") as mock_client_init:
+        # Create a mock client instance
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.aclose = AsyncMock()
+        mock_client_init.return_value = mock_client
+
+        # Configure with Telegram only (no Discord webhooks)
+        trade_notifier.configure(
+            bot_token="test_token",
+            chat_ids=["123456"],
+            enabled=True,
+        )
+
+    # Call notify_buy_order without Discord configured
+    result = await trade_notifier.notify_buy_order(
+        symbol="BTC",
+        korean_name="비트코인",
+        order_count=2,
+        total_amount=200000.0,
+        prices=[100000.0, 100000.0],
+        volumes=[0.001, 0.001],
+        market_type="암호화폐",
+    )
+
+    # Should succeed via Telegram fallback
+    assert result is True
+    mock_client.post.assert_called_once()
+
+    # Verify Telegram API was called (not Discord webhook)
+    call_args = mock_client.post.call_args
+    url = call_args.args[0]
+    assert url == "https://api.telegram.org/bottest_token/sendMessage"
+
+    # Verify the message contains Telegram markdown formatting
+    json_data = call_args.kwargs["json"]
+    assert "text" in json_data
+    assert json_data["parse_mode"] == "Markdown"
+    assert "💰 매수 주문 접수" in json_data["text"]
+    assert "비트코인 \\(BTC\\)" in json_data["text"]

@@ -93,7 +93,7 @@ class TestTradeNotifierFormatting:
     def test_format_toss_buy_recommendation_toss_only(self):
         """Test buy recommendation format with only Toss holdings."""
         notifier = TradeNotifier()
-        message = notifier._format_toss_buy_recommendation(
+        embed = notifier._format_toss_buy_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=70000,
@@ -107,22 +107,27 @@ class TestTradeNotifierFormatting:
             market_type="국내주식",
         )
 
-        assert "📈" in message
-        assert "토스 수동매수" in message
-        assert "삼성전자" in message
-        assert "70,000원" in message  # current price
-        assert "토스 보유:" in message
-        assert "10주" in message
-        assert "65,000원" in message  # toss avg
-        assert "추천 매수가:" in message
-        assert "68,000원" in message
-        assert "5주" in message
-        assert "한투 보유:" not in message  # KIS should not appear
+        # Verify embed structure
+        assert embed["title"] == "📈 [토스 수동매수]"
+        assert embed["color"] == 0x00FF00  # Green for buy
+        assert "🕒" in embed["description"]
+
+        # Verify fields
+        fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+        assert fields["종목"] == "삼성전자 (005930)"
+        assert fields["시장"] == "국내주식"
+        assert fields["현재가"] == "70,000원"
+        assert "10주" in fields["토스 보유"]
+        assert "65,000원" in fields["토스 보유"]
+        assert fields["💡 추천 매수가"] == "68,000원"
+        assert fields["추천 수량"] == "5주"
+        assert "한투 보유" not in fields  # KIS should not appear
 
     def test_format_toss_buy_recommendation_with_kis(self):
         """Test buy recommendation format with both KIS and Toss holdings."""
         notifier = TradeNotifier()
-        message = notifier._format_toss_buy_recommendation(
+        embed = notifier._format_toss_buy_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=70000,
@@ -136,15 +141,18 @@ class TestTradeNotifierFormatting:
             market_type="국내주식",
         )
 
-        assert "토스 보유:" in message
-        assert "한투 보유:" in message
-        assert "5주" in message  # KIS quantity
-        assert "63,000원" in message  # KIS avg
+        # Verify fields
+        fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+        assert "토스 보유" in fields
+        assert "한투 보유" in fields
+        assert "5주" in fields["한투 보유"]  # KIS quantity
+        assert "63,000원" in fields["한투 보유"]  # KIS avg
 
     def test_format_toss_sell_recommendation_toss_only(self):
         """Test sell recommendation format with only Toss holdings."""
         notifier = TradeNotifier()
-        message = notifier._format_toss_sell_recommendation(
+        embed = notifier._format_toss_sell_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=70000,
@@ -160,20 +168,23 @@ class TestTradeNotifierFormatting:
             market_type="국내주식",
         )
 
-        assert "📉" in message
-        assert "토스 수동매도" in message
-        assert "삼성전자" in message
-        assert "추천 매도가:" in message
-        assert "72,000원" in message
-        assert "+10.8%" in message
-        assert "예상 수익:" in message
-        assert "35,000원" in message
-        assert "한투 보유:" not in message
+        # Verify embed structure
+        assert embed["title"] == "📉 [토스 수동매도]"
+        assert embed["color"] == 0xFF0000  # Red for sell
+        assert "🕒" in embed["description"]
+
+        # Verify fields
+        fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+        assert "72,000원" in fields["💡 추천 매도가"]
+        assert "+10.8%" in fields["💡 추천 매도가"]
+        assert fields["예상 수익"] == "35,000원"
+        assert "한투 보유" not in fields  # KIS should not appear
 
     def test_format_toss_sell_recommendation_with_kis(self):
         """Test sell recommendation format with both KIS and Toss holdings."""
         notifier = TradeNotifier()
-        message = notifier._format_toss_sell_recommendation(
+        embed = notifier._format_toss_sell_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=70000,
@@ -189,13 +200,16 @@ class TestTradeNotifierFormatting:
             market_type="국내주식",
         )
 
-        assert "토스 보유:" in message
-        assert "한투 보유:" in message
+        # Verify fields
+        fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+        assert "토스 보유" in fields
+        assert "한투 보유" in fields
 
     def test_format_toss_buy_recommendation_usd(self):
         """Test buy recommendation format for US stocks (USD)."""
         notifier = TradeNotifier()
-        message = notifier._format_toss_buy_recommendation(
+        embed = notifier._format_toss_buy_recommendation(
             symbol="AAPL",
             korean_name="애플",
             current_price=175.50,
@@ -209,14 +223,17 @@ class TestTradeNotifierFormatting:
             market_type="해외주식",
         )
 
-        assert "$175.50" in message
-        assert "$165.00" in message
-        assert "$170.00" in message
+        # Verify fields
+        fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+        assert "$175.50" in fields["현재가"]
+        assert "$165.00" in fields["토스 보유"]
+        assert "$170.00" in fields["💡 추천 매수가"]
 
     def test_format_toss_sell_recommendation_negative_profit(self):
         """Test sell recommendation format with negative profit."""
         notifier = TradeNotifier()
-        message = notifier._format_toss_sell_recommendation(
+        embed = notifier._format_toss_sell_recommendation(
             symbol="005930",
             korean_name="삼성전자",
             current_price=60000,
@@ -232,8 +249,9 @@ class TestTradeNotifierFormatting:
             market_type="국내주식",
         )
 
-        # Negative profit should not have + sign
-        assert "-4.6%" in message
+        # Verify fields - negative profit should not have + sign
+        fields = {field["name"]: field["value"] for field in embed["fields"]}
+        assert "-4.6%" in fields["💡 추천 매도가"]
 
 
 # =============================================================================
