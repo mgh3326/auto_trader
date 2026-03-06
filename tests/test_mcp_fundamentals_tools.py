@@ -16,7 +16,6 @@ This module contains tests for:
 
 import dataclasses
 import json
-from collections.abc import Callable
 from unittest.mock import AsyncMock
 
 import httpx
@@ -26,8 +25,6 @@ import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import (
-    analysis_screening,
-    fundamentals_sources_binance,
     fundamentals_sources_coingecko,
     fundamentals_sources_indices,
     fundamentals_sources_naver,
@@ -35,16 +32,12 @@ from app.mcp_server.tooling import (
     shared,
 )
 from app.services import naver_finance
-
 from tests._mcp_tooling_support import (
-    DummyMCP,
-    DummySessionManager,
-    build_tools,
-    _patch_runtime_attr,
     _patch_httpx_async_client,
+    _patch_runtime_attr,
     _patch_yf_ticker,
+    build_tools,
 )
-
 
 # ---------------------------------------------------------------------------
 # analyze_stock Tool
@@ -2529,6 +2522,7 @@ class TestIndexMeta:
 def _fib_df_uptrend(n: int = 60) -> pd.DataFrame:
     """Create OHLCV DataFrame where low comes first, then high (uptrend)."""
     import datetime as dt
+
     import numpy as np
 
     dates = [dt.date.today() - dt.timedelta(days=n - 1 - i) for i in range(n)]
@@ -2549,6 +2543,7 @@ def _fib_df_uptrend(n: int = 60) -> pd.DataFrame:
 def _fib_df_downtrend(n: int = 60) -> pd.DataFrame:
     """Create OHLCV DataFrame where high comes first, then low (downtrend)."""
     import datetime as dt
+
     import numpy as np
 
     dates = [dt.date.today() - dt.timedelta(days=n - 1 - i) for i in range(n)]
