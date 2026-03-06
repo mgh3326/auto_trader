@@ -1418,213 +1418,30 @@ async def _screen_us(
 
     Orchestrates the following stages:
     1. Fetch candidates from yfinance screener
-    2. Apply RSI filter (other filters applied in screener query)
+    2. Apply basic filters (RSI filter applied after enrichment)
     3. Enrich with RSI values
     4. Apply final RSI filter and limit
     """
+    # Normalize dividend yield threshold
     (
         min_dividend_yield_input,
         min_dividend_yield_normalized,
     ) = _normalize_dividend_yield_threshold(min_dividend_yield)
 
-    filters_applied: dict[str, Any] = {
-        "market": market,
-        "asset_type": asset_type,
-        "category": category,
-    }
-
-    def _complete_filters_applied():
-        filters_applied.update(
-            {
-                "min_market_cap": min_market_cap,
-                "max_per": max_per,
-                "min_dividend_yield": min_dividend_yield_normalized,
-                "max_rsi": max_rsi,
-                "sort_by": sort_by,
-                "sort_order": sort_order,
-            }
-        )
-        if min_dividend_yield_input is not None:
-            filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
-        if min_dividend_yield_normalized is not None:
-            filters_applied["min_dividend_yield_normalized"] = (
-                min_dividend_yield_normalized
-            )
-
+    # Stage 1: Fetch US candidates
     try:
-        from yfinance.screener import EquityQuery
-
-        conditions = []
-        if min_market_cap is not None:
-            conditions.append(
-                EquityQuery(
-                    "gte",
-                    cast(Any, ["intradaymarketcap", min_market_cap]),
-                )
-            )
-        if max_per is not None:
-            conditions.append(
-                EquityQuery(
-                    "lte",
-                    cast(Any, ["peratio.lasttwelvemonths", max_per]),
-                )
-            )
-        if min_dividend_yield is not None:
-            conditions.append(
-                EquityQuery(
-                    "gte",
-                    cast(
-                        Any, ["forward_dividend_yield", min_dividend_yield_normalized]
-                    ),
-                )
-            )
-        if category:
-            conditions.append(EquityQuery("eq", cast(Any, ["sector", category])))
-
-        conditions.append(EquityQuery("eq", cast(Any, ["region", "us"])))
-        if len(conditions) == 1:
-            query = conditions[0]
-        else:
-            query = EquityQuery("and", conditions)
-
-        sort_field_map = {
-            "volume": "dayvolume",
-            "market_cap": "intradaymarketcap",
-            "change_rate": "percentchange",
-            "dividend_yield": "forward_dividend_yield",
-        }
-        sort_field = sort_field_map.get(sort_by, "dayvolume")
-        fetch_size = min(limit * 3, 150) if max_rsi is not None else limit
-        session = build_yfinance_tracing_session()
-
-        screen_result = await asyncio.to_thread(
-            lambda: yf.screen(
-                query,
-                size=fetch_size,
-                sortField=sort_field,
-                sortAsc=(sort_order == "asc"),
-                session=session,
-            )
+        candidates, filters_applied = await _stage_fetch_us_candidates(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            min_dividend_yield=min_dividend_yield_normalized,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            max_rsi=max_rsi,
         )
-
-        if screen_result is None:
-            _complete_filters_applied()
-            return _build_screen_response([], 0, filters_applied, market)
-
-        quotes = (
-            screen_result.get("quotes", []) if isinstance(screen_result, dict) else []
-        )
-        if not quotes:
-            _complete_filters_applied()
-            return _build_screen_response([], 0, filters_applied, market)
-
-        def _first_value(quote: dict[str, Any], *keys: str) -> Any:
-            for key in keys:
-                value = quote.get(key)
-                if value is not None:
-                    return value
-            return None
-
-        results = []
-        for quote in quotes:
-            mapped = {
-                "code": quote.get("symbol"),
-                "name": _first_value(
-                    quote, "shortName", "longName", "shortname", "longname"
-                ),
-                "close": _first_value(
-                    quote, "regularMarketPrice", "lastPrice", "lastprice"
-                ),
-                "change_rate": _first_value(
-                    quote,
-                    "regularMarketChangePercent",
-                    "percentchange",
-                )
-                or 0,
-                "volume": _first_value(
-                    quote, "regularMarketVolume", "dayVolume", "dayvolume"
-                )
-                or 0,
-                "market_cap": _first_value(
-                    quote, "marketCap", "intradayMarketCap", "intradaymarketcap"
-                )
-                or 0,
-                "per": _first_value(
-                    quote,
-                    "trailingPE",
-                    "forwardPE",
-                    "peRatio",
-                    "peratio",
-                ),
-                "dividend_yield": _first_value(
-                    quote,
-                    "dividendYield",
-                    "forwardDividendYield",
-                    "forward_dividend_yield",
-                ),
-                "market": "us",
-            }
-            # Drop rows without usable price; these often come from stale/partial screener rows.
-            if mapped["close"] in (None, 0):
-                continue
-            results.append(mapped)
-
-        if enrich_rsi and results:
-            semaphore = asyncio.Semaphore(10)
-
-            async def calculate_rsi_for_stock(item: dict[str, Any]):
-                async with semaphore:
-                    item_copy = item.copy()
-                    symbol = item["code"]
-
-                    try:
-                        df = await _fetch_ohlcv_for_indicators(symbol, "us", count=50)
-                        if not df.empty and "close" in df.columns:
-                            rsi_result = _calculate_rsi(df["close"])
-                            if rsi_result and "14" in rsi_result:
-                                item_copy["rsi"] = rsi_result["14"]
-                    except Exception:
-                        pass
-
-                    return item_copy
-
-            subset_limit = min(len(results), limit * 3, 150)
-            subset = results[:subset_limit]
-            try:
-                subset_with_rsi = await asyncio.wait_for(
-                    asyncio.gather(
-                        *[calculate_rsi_for_stock(item) for item in subset],
-                        return_exceptions=True,
-                    ),
-                    timeout=30.0,
-                )
-                for i, enriched in enumerate(subset_with_rsi):
-                    if isinstance(enriched, Exception):
-                        continue
-                    if not isinstance(enriched, dict):
-                        continue
-                    rsi_value = enriched.get("rsi")
-                    if rsi_value is not None:
-                        results[i]["rsi"] = rsi_value
-            except TimeoutError:
-                pass
-            except Exception:
-                pass
-
-        if max_rsi is not None:
-            results = _apply_basic_filters(
-                results,
-                min_market_cap=None,
-                max_per=None,
-                max_pbr=None,
-                min_dividend_yield=None,
-                max_rsi=max_rsi,
-            )
-
-        _complete_filters_applied()
-        pre_limit_count = len(results)
-        results = _sort_and_limit(results, sort_by, sort_order, limit)
-        return _build_screen_response(results, pre_limit_count, filters_applied, market)
     except ImportError:
         return _error_payload(
             source="yfinance",
@@ -1635,6 +1452,82 @@ async def _screen_us(
             source="yfinance",
             message=str(exc),
         )
+
+    if not candidates:
+        filters_applied.update({
+            "min_market_cap": min_market_cap,
+            "max_per": max_per,
+            "min_dividend_yield": min_dividend_yield_normalized,
+            "max_rsi": max_rsi,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+        })
+        if min_dividend_yield_input is not None:
+            filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
+        if min_dividend_yield_normalized is not None:
+            filters_applied["min_dividend_yield_normalized"] = (
+                min_dividend_yield_normalized
+            )
+        return _build_screen_response([], 0, filters_applied, market)
+
+    # Stage 2: Apply basic filters (for US, most filters applied in yfinance query)
+    # Note: RSI filter is applied after enrichment
+    filtered = _stage_filter_us(
+        candidates=candidates,
+        max_rsi=None,  # Don't apply RSI filter yet
+    )
+
+    # Stage 3: Enrich with RSI
+    enriched_candidates, rsi_enrichment = await _stage_enrich_us_rsi(
+        candidates=filtered,
+        enrich_rsi=enrich_rsi,
+    )
+
+    # Build filters_applied for response
+    filters_applied.update({
+        "min_market_cap": min_market_cap,
+        "max_per": max_per,
+        "min_dividend_yield": min_dividend_yield_normalized,
+        "max_rsi": max_rsi,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+    })
+    if min_dividend_yield_input is not None:
+        filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
+    if min_dividend_yield_normalized is not None:
+        filters_applied["min_dividend_yield_normalized"] = (
+            min_dividend_yield_normalized
+        )
+
+    # Stage 4: Sort and apply final RSI filter
+    results = _stage_sort_us(
+        candidates=enriched_candidates,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        max_rsi=max_rsi,
+    )
+
+    # Calculate total count before final limiting
+    if max_rsi is not None:
+        total_count = len(_apply_basic_filters(
+            enriched_candidates,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=max_rsi,
+        ))
+    else:
+        total_count = len(enriched_candidates)
+
+    return _build_screen_response(
+        results,
+        total_count,
+        filters_applied,
+        market,
+        rsi_enrichment=rsi_enrichment,
+    )
 
 
 async def _enrich_crypto_indicators(
