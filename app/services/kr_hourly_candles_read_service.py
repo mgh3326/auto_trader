@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -490,6 +490,130 @@ async def _build_current_hour_row(
     )
 
 
+async def _fetch_historical_minutes_via_kis(
+    *,
+    symbol: str,
+    end_date: datetime.date,
+    limit: int,
+) -> list[dict[str, object]]:
+    """
+    KIS API를 통해 과거 1분봉 데이터를 조회하여 시간봉으로 집계
+
+    Parameters
+    ----------
+    symbol : str
+        종목코드
+    end_date : datetime.date
+        조회 종료일
+    limit : int
+        가져올 시간봉 수
+
+    Returns
+    -------
+    list[dict[str, object]]
+        시간봉 데이터 목록 (bucket, open, high, low, close, volume, value, venues)
+    """
+    kis = KISClient()
+
+    # 1시간 = 60분, 여유있게 80분씩 요청
+    n_minutes = min(limit * 80, 200)
+
+    api_frames: list[pd.DataFrame] = []
+
+    # KRX (J)와 NTX (NX) 시장에서 데이터 조회
+    for market in ["J", "NX"]:
+        try:
+            frame = await kis.inquire_minute_chart(
+                code=symbol,
+                market=market,
+                time_unit=1,
+                n=n_minutes,
+                end_date=end_date,
+            )
+            if frame is not None and not frame.empty:
+                api_frames.append((market, frame))
+        except Exception:
+            # API 호출 실패 시 조용히 스킵
+            pass
+
+    if not api_frames:
+        return []
+
+    # 시간대별로 분봉 집계
+    hourly_by_bucket: dict[datetime.datetime, dict[str, Any]] = {}
+
+    for market, frame in api_frames:
+        venue: VenueType = "KRX" if market == "J" else "NTX"
+
+        if "datetime" not in frame.columns:
+            continue
+
+        for _, row in frame.iterrows():
+            dt_raw = row.get("datetime")
+            if pd.isna(dt_raw):
+                continue
+
+            dt = pd.Timestamp(dt_raw).to_pydatetime()
+            dt_kst = _ensure_kst_aware(dt)
+            bucket_naive = dt_kst.replace(minute=0, second=0, microsecond=0, tzinfo=None)
+
+            # 장 시작 전 8시 이후, 장 마감 후 20시 이전만
+            bucket_time = bucket_naive.time()
+            if not (datetime.time(8, 0, 0) <= bucket_time <= datetime.time(20, 0, 0)):
+                continue
+
+            if bucket_naive not in hourly_by_bucket:
+                hourly_by_bucket[bucket_naive] = {
+                    "minutes": [],
+                    "venues": set(),
+                }
+
+            hourly_by_bucket[bucket_naive]["minutes"].append(
+                {
+                    "open": _to_float(row.get("open")),
+                    "high": _to_float(row.get("high")),
+                    "low": _to_float(row.get("low")),
+                    "close": _to_float(row.get("close")),
+                    "volume": _to_float(row.get("volume")),
+                    "value": _to_float(row.get("value")),
+                }
+            )
+            hourly_by_bucket[bucket_naive]["venues"].add(venue)
+
+    # 집계된 시간봉 생성
+    hour_rows: list[dict[str, object]] = []
+
+    for bucket_naive in sorted(hourly_by_bucket.keys(), reverse=True)[:limit]:
+        data = hourly_by_bucket[bucket_naive]
+        minutes = data["minutes"]
+
+        if not minutes:
+            continue
+
+        open_ = minutes[0]["open"]
+        high_ = max(m["high"] for m in minutes)
+        low_ = min(m["low"] for m in minutes)
+        close_ = minutes[-1]["close"]
+        volume_ = sum(m["volume"] for m in minutes)
+        value_ = sum(m["value"] for m in minutes)
+        venues = _normalize_venues(list(data["venues"]))
+
+        hour_rows.append(
+            {
+                "bucket": bucket_naive,
+                "open": open_,
+                "high": high_,
+                "low": low_,
+                "close": close_,
+                "volume": volume_,
+                "value": value_,
+                "venues": venues,
+            }
+        )
+
+    return hour_rows
+
+
 async def read_kr_hourly_candles_1h(
     *,
     symbol: str,
@@ -521,6 +645,25 @@ async def read_kr_hourly_candles_1h(
         limit=fetch_limit,
     )
 
+    # DB 데이터가 부족하면 KIS API fallback
+    available_count = len(hour_rows)
+    if available_count < capped_count:
+        remaining = capped_count - available_count
+        try:
+            api_rows = await _fetch_historical_minutes_via_kis(
+                symbol=universe.symbol,
+                end_date=end_time_kst.date(),
+                limit=remaining,
+            )
+            # API 데이터 추가 (이미 DB에 있는 시간대는 제외)
+            existing_buckets = {row.get("bucket") for row in hour_rows}
+            for api_row in api_rows:
+                if api_row.get("bucket") not in existing_buckets:
+                    hour_rows.append(api_row)
+        except Exception:
+            # API fallback 실패 시 DB 데이터만 사용
+            pass
+
     current_hour_row, current_bucket_start = await _build_current_hour_row(
         symbol=universe.symbol,
         now_kst=resolved_now,
@@ -535,7 +678,7 @@ async def read_kr_hourly_candles_1h(
         current_bucket_start=current_bucket_start,
     )
 
-    # Return available data (DB-first logic - API fallback will be added in next subtask)
+    # Return available data (DB-first with API fallback)
     # Graceful degradation: return partial or empty data instead of raising ValueError
     return out
 
