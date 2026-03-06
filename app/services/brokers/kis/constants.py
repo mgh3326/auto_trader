@@ -24,6 +24,24 @@ DOMESTIC_MINUTE_CHART_URL = (
 )
 DOMESTIC_MINUTE_CHART_TR = "FHKST03010200"  # 분봉 조회 TR ID
 
+# Domestic Stock - Time Daily Chart (당일분봉)
+TIME_DAILY_CHART_URL = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
+TIME_DAILY_CHART_TR = "FHKST03010230"  # 당일분봉 조회 TR ID
+
+# Domestic Stock - Orderbook
+ORDERBOOK_URL = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+ORDERBOOK_TR = "FHKST01010200"  # 주식현재가호가상체결
+
+# Domestic Stock - Rankings
+MARKET_CAP_RANK_URL = "/uapi/domestic-stock/v1/ranking/market-cap"
+MARKET_CAP_RANK_TR = "FHPST01740000"
+
+FLUCTUATION_RANK_URL = "/uapi/domestic-stock/v1/ranking/fluctuation"
+FLUCTUATION_RANK_TR = "FHPST01700000"
+
+FOREIGN_BUYING_RANK_URL = "/uapi/domestic-stock/v1/quotations/foreign-institution-total"
+FOREIGN_BUYING_RANK_TR = "FHPTJ04400000"
+
 # Domestic Stock - Balance & Orders
 DOMESTIC_BALANCE_URL = "/uapi/domestic-stock/v1/trading/inquire-balance"
 DOMESTIC_BALANCE_TR = "TTTC8434R"  # 실전투자 주식잔고조회
