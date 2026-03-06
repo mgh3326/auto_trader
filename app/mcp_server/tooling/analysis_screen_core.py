@@ -554,6 +554,338 @@ def _build_screen_response(
     return response
 
 
+# =============================================================================
+# KR Screening Stage Functions
+# =============================================================================
+
+
+async def _stage_fetch_kr_candidates(
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Stage 1: Fetch KR stock/ETF candidates based on market and asset_type.
+
+    Args:
+        market: Market filter ('kospi', 'kosdaq', or 'all')
+        asset_type: Asset type filter ('stock', 'etf', or None for both)
+        category: ETF category filter (only applies to ETFs)
+
+    Returns:
+        Tuple of (candidates list, filters_applied dict)
+    """
+    filters_applied: dict[str, Any] = {
+        "market": market,
+        "asset_type": asset_type,
+        "category": category,
+    }
+
+    # If category is specified without asset_type, default to ETF
+    effective_asset_type = asset_type
+    if category is not None and asset_type is None:
+        effective_asset_type = "etf"
+        filters_applied["asset_type"] = "etf"
+
+    candidates: list[dict[str, Any]] = []
+
+    # Fetch stocks if needed
+    if effective_asset_type is None or effective_asset_type == "stock":
+        if market == "kospi":
+            candidates.extend(await fetch_stock_all_cached(market="STK"))
+        elif market == "kosdaq":
+            candidates.extend(await fetch_stock_all_cached(market="KSQ"))
+        else:
+            candidates.extend(await fetch_stock_all_cached(market="STK"))
+            candidates.extend(await fetch_stock_all_cached(market="KSQ"))
+
+    # Fetch ETFs if needed
+    if effective_asset_type is None or effective_asset_type == "etf":
+        etfs: list[dict[str, Any]] = []
+        if market != "kosdaq":
+            etfs = await fetch_etf_all_cached()
+
+            for etf in etfs:
+                etf["asset_type"] = "etf"
+                categories = classify_etf_category(
+                    etf["name"], etf.get("index_name", "")
+                )
+                etf["category"] = categories[0] if categories else "기타"
+                etf["categories"] = categories
+
+            if category:
+                etfs = [
+                    etf
+                    for etf in etfs
+                    if any(
+                        cat.lower() == category.lower()
+                        for cat in etf.get("categories", [])
+                    )
+                ]
+
+        candidates.extend(etfs)
+
+    # Set defaults for missing fields
+    for item in candidates:
+        if "change_rate" not in item:
+            item["change_rate"] = 0.0
+        if "market" not in item:
+            item["market"] = "kr"
+        if "asset_type" not in item:
+            item["asset_type"] = "stock"
+
+    # Fetch valuation data
+    valuation_market = {"kospi": "STK", "kosdaq": "KSQ"}.get(market, "ALL")
+    try:
+        valuations = await fetch_valuation_all_cached(market=valuation_market)
+        for item in candidates:
+            code = item.get("short_code") or item.get("code", "")
+            val = valuations.get(code, {})
+            if item.get("per") is None:
+                item["per"] = val.get("per")
+            if item.get("pbr") is None:
+                item["pbr"] = val.get("pbr")
+            if item.get("dividend_yield") is None:
+                item["dividend_yield"] = val.get("dividend_yield")
+    except Exception:
+        pass
+
+    return candidates, filters_applied
+
+
+def _stage_filter_kr(
+    candidates: list[dict[str, Any]],
+    min_market_cap: float | None,
+    max_per: float | None,
+    max_pbr: float | None,
+    min_dividend_yield: float | None,
+    max_rsi: float | None = None,
+) -> list[dict[str, Any]]:
+    """Stage 2: Apply basic numeric filters to KR candidates.
+
+    Args:
+        candidates: List of candidate items from fetch stage
+        min_market_cap: Minimum market cap filter
+        max_per: Maximum P/E ratio filter
+        max_pbr: Maximum P/B ratio filter
+        min_dividend_yield: Minimum dividend yield filter
+        max_rsi: Maximum RSI filter (optional, typically applied after enrichment)
+
+    Returns:
+        Filtered list of candidates
+    """
+    return _apply_basic_filters(
+        candidates,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        max_pbr=max_pbr,
+        min_dividend_yield=min_dividend_yield,
+        max_rsi=max_rsi,
+    )
+
+
+async def _stage_enrich_kr_rsi(
+    candidates: list[dict[str, Any]],
+    enrich_rsi: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Stage 3: Enrich KR candidates with RSI values.
+
+    Args:
+        candidates: List of filtered candidates
+        enrich_rsi: Whether to perform RSI enrichment
+
+    Returns:
+        Tuple of (enriched candidates list, rsi_enrichment diagnostics dict)
+    """
+    rsi_enrichment = _empty_rsi_enrichment_diagnostics()
+
+    if not enrich_rsi or not candidates:
+        return candidates, rsi_enrichment
+
+    rsi_enrichment["attempted"] = len(candidates)
+    statuses = ["pending" for _ in candidates]
+    errors: list[str | None] = [None for _ in candidates]
+    semaphore = asyncio.Semaphore(10)
+
+    async def calculate_rsi_for_stock(item: dict[str, Any], index: int):
+        async with semaphore:
+            item_copy = item.copy()
+            symbol = item.get("short_code") or item.get("code")
+            logger.info("[RSI-KR] Starting calculation for symbol: %s", symbol)
+
+            if not symbol:
+                logger.warning(
+                    "[RSI-KR] No valid symbol found in item keys=%s",
+                    sorted(item.keys()),
+                )
+                statuses[index] = "error"
+                errors[index] = "No valid symbol found"
+                return item_copy
+
+            if item_copy.get("rsi") is not None:
+                logger.debug(
+                    "[RSI-KR] RSI already exists for %s, skipping recalculation",
+                    symbol,
+                )
+                statuses[index] = "success"
+                return item_copy
+
+            try:
+                logger.debug("[RSI-KR] Fetching OHLCV data for %s", symbol)
+                df = await _fetch_ohlcv_for_indicators(
+                    symbol, "equity_kr", count=50
+                )
+                candle_count = len(df) if df is not None else 0
+                logger.info("[RSI-KR] Got %d candles for %s", candle_count, symbol)
+
+                if df is None or df.empty or "close" not in df.columns:
+                    logger.warning(
+                        "[RSI-KR] Missing OHLCV close data for %s (columns=%s)",
+                        symbol,
+                        list(df.columns) if df is not None else [],
+                    )
+                    statuses[index] = "error"
+                    errors[index] = "Missing OHLCV close data"
+                    return item_copy
+
+                if candle_count < 14:
+                    logger.warning(
+                        "[RSI-KR] Insufficient candles (%d) for %s",
+                        candle_count,
+                        symbol,
+                    )
+                    statuses[index] = "error"
+                    errors[index] = f"Insufficient candles ({candle_count})"
+                    return item_copy
+
+                logger.debug("[RSI-KR] Calculating RSI for %s", symbol)
+                rsi_result = _calculate_rsi(df["close"])
+                rsi_value = rsi_result.get("14") if rsi_result else None
+                if rsi_value is None:
+                    logger.warning(
+                        "[RSI-KR] RSI calculation returned None for %s", symbol
+                    )
+                    statuses[index] = "error"
+                    errors[index] = "RSI calculation returned None"
+                    return item_copy
+
+                item_copy["rsi"] = rsi_value
+                statuses[index] = "success"
+                logger.info("[RSI-KR] ✅ Success: %s RSI=%.2f", symbol, rsi_value)
+            except Exception as exc:
+                logger.error(
+                    "[RSI-KR] ❌ Failed for %s: %s: %s",
+                    symbol or "UNKNOWN",
+                    type(exc).__name__,
+                    exc,
+                )
+                statuses[index] = (
+                    "rate_limited"
+                    if isinstance(exc, RateLimitExceededError)
+                    else "error"
+                )
+                errors[index] = f"{type(exc).__name__}: {exc}"
+
+            return item_copy
+
+    try:
+        subset_results = await asyncio.wait_for(
+            asyncio.gather(
+                *[
+                    calculate_rsi_for_stock(item, i)
+                    for i, item in enumerate(candidates)
+                ],
+                return_exceptions=True,
+            ),
+            timeout=30.0,
+        )
+        for i, result in enumerate(subset_results):
+            if isinstance(result, Exception):
+                symbol = candidates[i].get("short_code") or candidates[i].get(
+                    "code"
+                )
+                logger.error(
+                    "[RSI-KR] gather returned exception for %s: %s: %s",
+                    symbol or "UNKNOWN",
+                    type(result).__name__,
+                    result,
+                )
+                statuses[i] = (
+                    "rate_limited"
+                    if isinstance(result, RateLimitExceededError)
+                    else "error"
+                )
+                errors[i] = f"{type(result).__name__}: {result}"
+                continue
+            if not isinstance(result, dict):
+                continue
+            if result.get("rsi") is not None:
+                candidates[i]["rsi"] = result["rsi"]
+                if statuses[i] == "pending":
+                    statuses[i] = "success"
+            elif statuses[i] == "pending":
+                statuses[i] = "error"
+                errors[i] = "RSI calculation returned None"
+    except TimeoutError:
+        logger.warning("[RSI-KR] RSI enrichment timed out after 30 seconds")
+        for i, status in enumerate(statuses):
+            if status == "pending":
+                statuses[i] = "timeout"
+                errors[i] = "Timed out after 30 seconds"
+    except Exception as exc:
+        logger.error(
+            "[RSI-KR] RSI enrichment batch failed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        for i, status in enumerate(statuses):
+            if status == "pending":
+                statuses[i] = (
+                    "rate_limited"
+                    if isinstance(exc, RateLimitExceededError)
+                    else "error"
+                )
+                errors[i] = f"{type(exc).__name__}: {exc}"
+    finally:
+        _finalize_rsi_enrichment_diagnostics(rsi_enrichment, statuses, errors)
+
+    return candidates, rsi_enrichment
+
+
+def _stage_sort_kr(
+    candidates: list[dict[str, Any]],
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+    max_rsi: float | None = None,
+) -> list[dict[str, Any]]:
+    """Stage 4: Sort and limit KR candidates.
+
+    Args:
+        candidates: List of candidates (optionally enriched with RSI)
+        sort_by: Field to sort by
+        sort_order: Sort order ('asc' or 'desc')
+        limit: Maximum number of results
+        max_rsi: Optional RSI filter to apply before final limiting
+
+    Returns:
+        Sorted and limited list of candidates
+    """
+    # Apply RSI filter if specified
+    if max_rsi is not None:
+        filtered = _apply_basic_filters(
+            candidates,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=max_rsi,
+        )
+    else:
+        filtered = candidates
+
+    return filtered[:limit]
+
+
 async def _screen_kr(
     market: str,
     asset_type: str | None,
