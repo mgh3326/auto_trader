@@ -138,6 +138,7 @@ _PATCH_MODULES = (
     fundamentals_sources_finnhub,
     fundamentals_sources_indices,
     fundamentals_sources_naver,
+    market_data_indicators,
     market_data_quotes,
     order_execution,
     orders_history,
@@ -8763,8 +8764,8 @@ async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
             }
         )
 
-    monkeypatch.setattr(
-        market_data_indicators,
+    _patch_runtime_attr(
+        monkeypatch,
         "_fetch_ohlcv_for_indicators",
         mock_fetch_ohlcv,
     )
