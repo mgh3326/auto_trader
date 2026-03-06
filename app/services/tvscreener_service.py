@@ -125,8 +125,8 @@ class TvScreenerService:
         - Logs all errors and retry attempts for debugging
         """
         for attempt in range(self.max_retries):
+            start_time = time.time()
             try:
-                start_time = time.time()
                 logger.debug(
                     "Executing %s (attempt %d/%d)",
                     operation_name,
