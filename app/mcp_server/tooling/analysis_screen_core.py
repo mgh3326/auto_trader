@@ -1294,23 +1294,25 @@ async def _screen_kr_via_tvscreener(
         except AttributeError:
             logger.warning("[Screen-KR-TV] COUNTRY field not available in StockField")
 
-        # Build WHERE clause for filtering
+        # Build WHERE clause for filtering using Field conditions (not strings)
         where_conditions = []
 
-        # Filter by country = 'South Korea'
-        where_conditions.append("country = 'South Korea'")
-
-        # Filter by RSI range
+        # Filter by RSI range using Field conditions
         if min_rsi is not None:
-            where_conditions.append(f"relative_strength_index_14 >= {min_rsi}")
+            where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 >= min_rsi)
         if max_rsi is not None:
-            where_conditions.append(f"relative_strength_index_14 <= {max_rsi}")
+            where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 <= max_rsi)
 
-        # Filter by minimum ADX
+        # Filter by minimum ADX using Field conditions
         if min_adx is not None:
-            where_conditions.append(f"average_directional_index_14 >= {min_adx}")
+            where_conditions.append(StockField.AVERAGE_DIRECTIONAL_INDEX_14 >= min_adx)
 
-        where_clause = " AND ".join(where_conditions) if where_conditions else None
+        # Combine conditions using & operator (not string concatenation)
+        where_clause = None
+        if where_conditions:
+            where_clause = where_conditions[0]
+            for condition in where_conditions[1:]:
+                where_clause = where_clause & condition
 
         logger.info(
             "[Screen-KR-TV] Querying StockScreener for Korean stocks "
@@ -1321,11 +1323,12 @@ async def _screen_kr_via_tvscreener(
             limit,
         )
 
-        # Query StockScreener
+        # Query StockScreener with country parameter (service handles country filtering)
         tvscreener_service = TvScreenerService(timeout=30.0)
         df = await tvscreener_service.query_stock_screener(
             columns=columns,
-            where_clause=where_clause,
+            where_clause=where_clause,  # Field condition object (not string)
+            country='South Korea',  # Use dedicated country parameter
             limit=None,  # Get all matching, we'll limit after sorting
         )
 
@@ -1477,23 +1480,25 @@ async def _screen_us_via_tvscreener(
         except AttributeError:
             logger.warning("[Screen-US-TV] COUNTRY field not available in StockField")
 
-        # Build WHERE clause for filtering
+        # Build WHERE clause for filtering using Field conditions (not strings)
         where_conditions = []
 
-        # Filter by country = 'United States' or 'USA'
-        where_conditions.append("country = 'United States'")
-
-        # Filter by RSI range
+        # Filter by RSI range using Field conditions
         if min_rsi is not None:
-            where_conditions.append(f"relative_strength_index_14 >= {min_rsi}")
+            where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 >= min_rsi)
         if max_rsi is not None:
-            where_conditions.append(f"relative_strength_index_14 <= {max_rsi}")
+            where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 <= max_rsi)
 
-        # Filter by minimum ADX
+        # Filter by minimum ADX using Field conditions
         if min_adx is not None:
-            where_conditions.append(f"average_directional_index_14 >= {min_adx}")
+            where_conditions.append(StockField.AVERAGE_DIRECTIONAL_INDEX_14 >= min_adx)
 
-        where_clause = " AND ".join(where_conditions) if where_conditions else None
+        # Combine conditions using & operator (not string concatenation)
+        where_clause = None
+        if where_conditions:
+            where_clause = where_conditions[0]
+            for condition in where_conditions[1:]:
+                where_clause = where_clause & condition
 
         logger.info(
             "[Screen-US-TV] Querying StockScreener for US stocks "
@@ -1504,11 +1509,12 @@ async def _screen_us_via_tvscreener(
             limit,
         )
 
-        # Query StockScreener
+        # Query StockScreener with country parameter (service handles country filtering)
         tvscreener_service = TvScreenerService(timeout=30.0)
         df = await tvscreener_service.query_stock_screener(
             columns=columns,
-            where_clause=where_clause,
+            where_clause=where_clause,  # Field condition object (not string)
+            country='United States',  # Use dedicated country parameter
             limit=None,  # Get all matching, we'll limit after sorting
         )
 
