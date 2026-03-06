@@ -95,6 +95,21 @@ _KR_MINUTE_SQL = text(
     """
 )
 
+_UPSERT_SQL = text(
+    """
+    INSERT INTO public.kr_candles_1m (symbol, time, venue, open, high, low, close, volume, value)
+    VALUES (:symbol, :time, :venue, :open, :high, :low, :close, :volume, :value)
+    ON CONFLICT (time, symbol, venue)
+    DO UPDATE SET
+        open = EXCLUDED.open,
+        high = EXCLUDED.high,
+        low = EXCLUDED.low,
+        close = EXCLUDED.close,
+        volume = EXCLUDED.volume,
+        value = EXCLUDED.value
+    """
+)
+
 
 def _ensure_kst_aware(value: datetime.datetime) -> datetime.datetime:
     if value.tzinfo is None:
@@ -765,21 +780,6 @@ async def _store_minute_candles_background(
     if not minute_rows:
         return
 
-    upsert_sql = text(
-        """
-        INSERT INTO public.kr_candles_1m (symbol, time, venue, open, high, low, close, volume, value)
-        VALUES (:symbol, :time, :venue, :open, :high, :low, :close, :volume, :value)
-        ON CONFLICT (symbol, time, venue)
-        DO UPDATE SET
-            open = EXCLUDED.open,
-            high = EXCLUDED.high,
-            low = EXCLUDED.low,
-            close = EXCLUDED.close,
-            volume = EXCLUDED.volume,
-            value = EXCLUDED.value
-        """
-    )
-
     try:
         async with _async_session() as session:
             for row in minute_rows:
@@ -791,7 +791,7 @@ async def _store_minute_candles_background(
                 time_naive = _to_kst_naive(time_val)
 
                 await session.execute(
-                    upsert_sql,
+                    _UPSERT_SQL,
                     {
                         "symbol": symbol,
                         "time": time_naive,
