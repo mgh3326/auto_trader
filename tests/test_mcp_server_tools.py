@@ -1,7 +1,10 @@
+import dataclasses
+import datetime
 import json
 import logging
-from datetime import date, timedelta
-from types import SimpleNamespace
+from collections.abc import Callable
+from datetime import date
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import httpx
@@ -47,10 +50,12 @@ from app.services.upbit_symbol_universe_service import (
 
 class DummyMCP:
     def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
+        self.tools: dict[str, Callable[..., Any]] = {}
 
     def tool(self, name: str, description: str):
-        def decorator(func):
+        del description
+
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             self.tools[name] = func
             return func
 
@@ -96,9 +101,9 @@ class _DummyRouteDB:
 _KR_SYNC_HINT = "uv run python scripts/sync_kr_symbol_universe.py"
 
 
-def build_tools() -> dict[str, object]:
+def build_tools() -> dict[str, Callable[..., Any]]:
     mcp = DummyMCP()
-    register_all_tools(mcp)
+    register_all_tools(cast(Any, mcp))
     return mcp.tools
 
 
@@ -176,7 +181,10 @@ def _patch_httpx_async_client(
         monkeypatch.setattr(module.httpx, "AsyncClient", async_client_class)
 
 
-def _patch_yf_ticker(monkeypatch: pytest.MonkeyPatch, ticker_factory: object) -> None:
+def _patch_yf_ticker(
+    monkeypatch: pytest.MonkeyPatch,
+    ticker_factory: Callable[[str], object],
+) -> None:
     def wrapped_ticker(symbol, session=None):
         assert session is not None
         return ticker_factory(symbol)
@@ -1424,427 +1432,83 @@ async def test_get_ohlcv_crypto_period_1h(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_ohlcv_kr_equity_period_1h(monkeypatch):
+async def test_get_ohlcv_kr_equity_period_1h_includes_session_and_venues(monkeypatch):
     tools = build_tools()
-    df = _single_row_df()
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
-    route_mock = AsyncMock(return_value="UN")
-    monkeypatch.setattr(market_data_quotes, "_resolve_kr_intraday_route", route_mock)
+    df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-02-23 09:00:00"),
+                "date": date(2026, 2, 23),
+                "time": datetime.time(9, 0, 0),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000,
+                "value": 105000.0,
+                "session": "REGULAR",
+                "venues": ["KRX", "NTX"],
+            }
+        ]
+    )
+    read_mock = AsyncMock(return_value=df)
+    monkeypatch.setattr(market_data_quotes, "read_kr_hourly_candles_1h", read_mock)
 
-    class DummyKISClient:
-        async def inquire_time_dailychartprice(
-            self, code, market, n, end_date=None, end_time=None
-        ):
-            del code, market, n, end_date, end_time
-            return df
-
-    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
     result = await tools["get_ohlcv"]("005930", market="kr", count=50, period="1h")
 
+    read_mock.assert_awaited_once_with(symbol="005930", count=50, end_date=None)
     assert result["instrument_type"] == "equity_kr"
     assert result["period"] == "1h"
     assert result["source"] == "kis"
-    route_mock.assert_awaited_once_with("005930")
+    assert result["rows"]
+    row = result["rows"][0]
+    assert row["session"] == "REGULAR"
+    assert row["venues"] == ["KRX", "NTX"]
 
 
 @pytest.mark.asyncio
-async def test_get_ohlcv_kr_equity_period_1h_backfills_multiple_days(monkeypatch):
+async def test_get_ohlcv_kr_1h_does_not_use_kis_ohlcv_cache(monkeypatch):
     tools = build_tools()
-    target_day = date(2026, 2, 19)
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
-    route_mock = AsyncMock(return_value="UN")
-    monkeypatch.setattr(market_data_quotes, "_resolve_kr_intraday_route", route_mock)
-    calls: list[tuple[date | None, str | None, str]] = []
-
-    class DummyKISClient:
-        async def inquire_time_dailychartprice(
-            self, code, market, n, end_date=None, end_time=None
-        ):
-            del code
-            calls.append((end_date, end_time, market))
-            requested_day = end_date or target_day
-            assert n >= 1
-            return pd.DataFrame(
-                [
-                    {
-                        "datetime": pd.Timestamp(f"{requested_day} 09:00:00"),
-                        "date": requested_day,
-                        "time": pd.Timestamp("2026-01-01 09:00:00").time(),
-                        "open": 100.0,
-                        "high": 101.0,
-                        "low": 99.0,
-                        "close": 100.5,
-                        "volume": 1000,
-                        "value": 100500.0,
-                    },
-                    {
-                        "datetime": pd.Timestamp(f"{requested_day} 10:00:00"),
-                        "date": requested_day,
-                        "time": pd.Timestamp("2026-01-01 10:00:00").time(),
-                        "open": 100.5,
-                        "high": 102.0,
-                        "low": 100.0,
-                        "close": 101.5,
-                        "volume": 1100,
-                        "value": 111650.0,
-                    },
-                ]
-            )
-
-    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
-    result = await tools["get_ohlcv"](
-        "005930",
-        market="kr",
-        count=4,
-        period="1h",
-        end_date=target_day.isoformat(),
+    df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-02-23 09:00:00"),
+                "date": date(2026, 2, 23),
+                "time": datetime.time(9, 0, 0),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000,
+                "value": 105000.0,
+                "session": "REGULAR",
+                "venues": ["KRX"],
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        market_data_quotes.kis_ohlcv_cache,
+        "get_candles",
+        AsyncMock(side_effect=AssertionError("KR 1h must not use kis_ohlcv_cache")),
+    )
+    monkeypatch.setattr(
+        market_data_quotes,
+        "read_kr_hourly_candles_1h",
+        AsyncMock(return_value=df),
     )
 
-    assert len(calls) >= 3
-    assert calls[0][2] == "UN"
-    assert calls[0][0] == target_day
-    assert calls[1][0] == target_day
-    assert calls[0][1] == "200000"
-    assert calls[1][1] is not None
-    assert calls[1][1] < calls[0][1]
-    assert any(
-        day == target_day - timedelta(days=1) and end_time == "200000"
-        for day, end_time, _ in calls
-    )
-    assert len(result["rows"]) == 4
+    result = await tools["get_ohlcv"]("005930", market="kr", count=1, period="1h")
+
     assert result["period"] == "1h"
     assert result["instrument_type"] == "equity_kr"
-    route_mock.assert_awaited_once_with("005930")
-
-
-@pytest.mark.asyncio
-async def test_get_ohlcv_kr_equity_period_1h_backfill_uses_j_close_for_history(
-    monkeypatch,
-):
-    tools = build_tools()
-    target_day = date(2026, 2, 19)
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
-    monkeypatch.setattr(
-        market_data_quotes,
-        "_resolve_kr_intraday_route",
-        AsyncMock(return_value="J"),
-    )
-    calls: list[tuple[date | None, str | None, str]] = []
-
-    class DummyKISClient:
-        async def inquire_time_dailychartprice(
-            self, code, market, n, end_date=None, end_time=None
-        ):
-            del code
-            calls.append((end_date, end_time, market))
-            requested_day = end_date or target_day
-            assert n >= 1
-            return pd.DataFrame(
-                [
-                    {
-                        "datetime": pd.Timestamp(f"{requested_day} 09:00:00"),
-                        "date": requested_day,
-                        "time": pd.Timestamp("2026-01-01 09:00:00").time(),
-                        "open": 100.0,
-                        "high": 101.0,
-                        "low": 99.0,
-                        "close": 100.5,
-                        "volume": 1000,
-                        "value": 100500.0,
-                    },
-                    {
-                        "datetime": pd.Timestamp(f"{requested_day} 10:00:00"),
-                        "date": requested_day,
-                        "time": pd.Timestamp("2026-01-01 10:00:00").time(),
-                        "open": 100.5,
-                        "high": 102.0,
-                        "low": 100.0,
-                        "close": 101.5,
-                        "volume": 1100,
-                        "value": 111650.0,
-                    },
-                ]
-            )
-
-    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
-    result = await tools["get_ohlcv"](
-        "005930",
-        market="kr",
-        count=4,
-        period="1h",
-        end_date=target_day.isoformat(),
-    )
-
-    assert len(calls) >= 2
-    assert calls[0][2] == "J"
-    assert calls[0][1] == "153000"
-    assert any(
-        day == target_day - timedelta(days=1) and end_time == "153000"
-        for day, end_time, _ in calls
-    )
-    assert len(result["rows"]) == 4
-    assert result["period"] == "1h"
-    assert result["instrument_type"] == "equity_kr"
-
-
-@pytest.mark.asyncio
-async def test_get_ohlcv_kr_1h_paginates_within_same_day(monkeypatch):
-    tools = build_tools()
-    target_day = date(2026, 2, 19)
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
-    monkeypatch.setattr(
-        market_data_quotes,
-        "_resolve_kr_intraday_route",
-        AsyncMock(return_value="UN"),
-    )
-    calls: list[tuple[date | None, str | None, str]] = []
-
-    class DummyKISClient:
-        async def inquire_time_dailychartprice(
-            self, code, market, n, end_date=None, end_time=None
-        ):
-            del code, n
-            calls.append((end_date, end_time, market))
-            requested_day = end_date or target_day
-            if end_time is None or end_time >= "180000":
-                hours = (19, 18)
-            else:
-                hours = (17, 16)
-            return pd.DataFrame(
-                [
-                    {
-                        "datetime": pd.Timestamp(f"{requested_day} {hour:02d}:00:00"),
-                        "date": requested_day,
-                        "time": pd.Timestamp(f"2026-01-01 {hour:02d}:00:00").time(),
-                        "open": float(hour),
-                        "high": float(hour) + 0.5,
-                        "low": float(hour) - 0.5,
-                        "close": float(hour) + 0.25,
-                        "volume": 1000 + hour,
-                        "value": float((1000 + hour) * hour),
-                    }
-                    for hour in hours
-                ]
-            )
-
-    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
-    result = await tools["get_ohlcv"](
-        "005930",
-        market="kr",
-        count=4,
-        period="1h",
-        end_date=target_day.isoformat(),
-    )
-
-    assert len(calls) >= 2
-    assert len(result["rows"]) == 4
-    assert all(day == target_day for day, _, _ in calls)
-    assert all(market == "UN" for _, _, market in calls)
-    assert calls[0][1] == "200000"
-    assert calls[1][1] is not None
-    assert calls[1][1] < calls[0][1]
-
-
-@pytest.mark.asyncio
-async def test_get_ohlcv_kr_1h_stops_when_cursor_stalls(monkeypatch):
-    tools = build_tools()
-    target_day = date(2026, 2, 19)
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
-    monkeypatch.setattr(
-        market_data_quotes,
-        "_resolve_kr_intraday_route",
-        AsyncMock(return_value="UN"),
-    )
-    calls: list[tuple[date | None, str | None, str]] = []
-
-    class DummyKISClient:
-        async def inquire_time_dailychartprice(
-            self, code, market, n, end_date=None, end_time=None
-        ):
-            del code, n
-            calls.append((end_date, end_time, market))
-            requested_day = end_date or target_day
-            if requested_day != target_day:
-                return pd.DataFrame()
-            return pd.DataFrame(
-                [
-                    {
-                        "datetime": pd.Timestamp(f"{requested_day} 10:00:00"),
-                        "date": requested_day,
-                        "time": pd.Timestamp("2026-01-01 10:00:00").time(),
-                        "open": 100.0,
-                        "high": 101.0,
-                        "low": 99.0,
-                        "close": 100.5,
-                        "volume": 1000,
-                        "value": 100500.0,
-                    },
-                    {
-                        "datetime": pd.Timestamp(f"{requested_day} 09:00:00"),
-                        "date": requested_day,
-                        "time": pd.Timestamp("2026-01-01 09:00:00").time(),
-                        "open": 99.5,
-                        "high": 100.5,
-                        "low": 99.0,
-                        "close": 100.0,
-                        "volume": 900,
-                        "value": 90000.0,
-                    },
-                ]
-            )
-
-    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
-    result = await tools["get_ohlcv"](
-        "005930",
-        market="kr",
-        count=6,
-        period="1h",
-        end_date=target_day.isoformat(),
-    )
-
-    same_day_calls = [call for call in calls if call[0] == target_day]
-    assert len(same_day_calls) == 2
-    assert same_day_calls[0][1] == "200000"
-    assert same_day_calls[1][1] is not None
-    assert same_day_calls[1][1] < same_day_calls[0][1]
-    assert len(result["rows"]) == 2
-
-
-@pytest.mark.asyncio
-async def test_get_ohlcv_kr_1h_respects_daily_page_limit(monkeypatch):
-    tools = build_tools()
-    target_day = date(2026, 2, 19)
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
-    monkeypatch.setattr(
-        market_data_quotes,
-        "_resolve_kr_intraday_route",
-        AsyncMock(return_value="UN"),
-    )
-    daily_call_counts: dict[date, int] = {}
-
-    class DummyKISClient:
-        async def inquire_time_dailychartprice(
-            self, code, market, n, end_date=None, end_time=None
-        ):
-            del code, market, n, end_time
-            requested_day = end_date or target_day
-            index = daily_call_counts.get(requested_day, 0)
-            daily_call_counts[requested_day] = index + 1
-            hour = 20 - index
-            return pd.DataFrame(
-                [
-                    {
-                        "datetime": pd.Timestamp(f"{requested_day} {hour:02d}:00:00"),
-                        "date": requested_day,
-                        "time": pd.Timestamp(f"2026-01-01 {hour:02d}:00:00").time(),
-                        "open": 100.0,
-                        "high": 101.0,
-                        "low": 99.0,
-                        "close": 100.5,
-                        "volume": 1000,
-                        "value": 100500.0,
-                    }
-                ]
-            )
-
-    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
-    result = await tools["get_ohlcv"](
-        "005930",
-        market="kr",
-        count=25,
-        period="1h",
-        end_date=target_day.isoformat(),
-    )
-
-    assert daily_call_counts
-    assert max(daily_call_counts.values()) == 10
-    assert all(count <= 10 for count in daily_call_counts.values())
-    assert len(result["rows"]) == 25
-
-
-@pytest.mark.asyncio
-async def test_resolve_kr_intraday_route_universe_empty_has_sync_hint(monkeypatch):
-    route_db = _DummyRouteDB([None, None])
-    monkeypatch.setattr(
-        market_data_quotes,
-        "AsyncSessionLocal",
-        lambda: DummySessionManager(route_db),
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        await market_data_quotes._resolve_kr_intraday_route("005930")
-
-    assert route_db.calls == 2
-    assert "kr_symbol_universe is empty" in str(exc_info.value)
-    assert _KR_SYNC_HINT in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_resolve_kr_intraday_route_unregistered_has_sync_hint(monkeypatch):
-    route_db = _DummyRouteDB([None, "005930"])
-    monkeypatch.setattr(
-        market_data_quotes,
-        "AsyncSessionLocal",
-        lambda: DummySessionManager(route_db),
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        await market_data_quotes._resolve_kr_intraday_route("005930")
-
-    assert route_db.calls == 2
-    assert "is not registered in kr_symbol_universe" in str(exc_info.value)
-    assert _KR_SYNC_HINT in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_resolve_kr_intraday_route_inactive_has_sync_hint(monkeypatch):
-    route_db = _DummyRouteDB([SimpleNamespace(is_active=False, nxt_eligible=True)])
-    monkeypatch.setattr(
-        market_data_quotes,
-        "AsyncSessionLocal",
-        lambda: DummySessionManager(route_db),
-    )
-
-    with pytest.raises(ValueError) as exc_info:
-        await market_data_quotes._resolve_kr_intraday_route("005930")
-
-    assert route_db.calls == 1
-    assert "is inactive in kr_symbol_universe" in str(exc_info.value)
-    assert _KR_SYNC_HINT in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("nxt_eligible", "expected_route"),
-    ((True, "UN"), (False, "J")),
-)
-async def test_resolve_kr_intraday_route_returns_expected_market(
-    monkeypatch,
-    nxt_eligible,
-    expected_route,
-):
-    route_db = _DummyRouteDB(
-        [SimpleNamespace(is_active=True, nxt_eligible=nxt_eligible)]
-    )
-    monkeypatch.setattr(
-        market_data_quotes,
-        "AsyncSessionLocal",
-        lambda: DummySessionManager(route_db),
-    )
-
-    route = await market_data_quotes._resolve_kr_intraday_route("005930")
-
-    assert route == expected_route
-    assert route_db.calls == 1
 
 
 @pytest.mark.asyncio
 async def test_get_ohlcv_kr_1h_universe_empty_returns_error_payload(monkeypatch):
     tools = build_tools()
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
     monkeypatch.setattr(
         market_data_quotes,
-        "_resolve_kr_intraday_route",
+        "read_kr_hourly_candles_1h",
         AsyncMock(
             side_effect=ValueError(
                 f"kr_symbol_universe is empty. Sync required: {_KR_SYNC_HINT}"
@@ -1863,10 +1527,9 @@ async def test_get_ohlcv_kr_1h_universe_empty_returns_error_payload(monkeypatch)
 @pytest.mark.asyncio
 async def test_get_ohlcv_kr_1h_unregistered_symbol_returns_error_payload(monkeypatch):
     tools = build_tools()
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
     monkeypatch.setattr(
         market_data_quotes,
-        "_resolve_kr_intraday_route",
+        "read_kr_hourly_candles_1h",
         AsyncMock(
             side_effect=ValueError(
                 "KR symbol '005930' is not registered in kr_symbol_universe. "
@@ -1886,10 +1549,9 @@ async def test_get_ohlcv_kr_1h_unregistered_symbol_returns_error_payload(monkeyp
 @pytest.mark.asyncio
 async def test_get_ohlcv_kr_1h_inactive_symbol_returns_error_payload(monkeypatch):
     tools = build_tools()
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
     monkeypatch.setattr(
         market_data_quotes,
-        "_resolve_kr_intraday_route",
+        "read_kr_hourly_candles_1h",
         AsyncMock(
             side_effect=ValueError(
                 "KR symbol '005930' is inactive in kr_symbol_universe. "
@@ -1904,63 +1566,6 @@ async def test_get_ohlcv_kr_1h_inactive_symbol_returns_error_payload(monkeypatch
     assert result["instrument_type"] == "equity_kr"
     assert "inactive" in result["error"]
     assert _KR_SYNC_HINT in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_get_ohlcv_kr_1h_mock_unsupported_returns_error_payload(monkeypatch):
-    tools = build_tools()
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
-    monkeypatch.setattr(
-        market_data_quotes,
-        "_resolve_kr_intraday_route",
-        AsyncMock(return_value="UN"),
-    )
-
-    class DummyKISClient:
-        async def inquire_time_dailychartprice(
-            self, code, market, n, end_date=None, end_time=None
-        ):
-            del code, market, n, end_date, end_time
-            raise RuntimeError(
-                "mock trading does not support inquire-time-dailychartprice"
-            )
-
-    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
-    result = await tools["get_ohlcv"]("005930", market="kr", period="1h")
-
-    assert result["source"] == "kis"
-    assert result["instrument_type"] == "equity_kr"
-    assert "mock" in result["error"].lower()
-
-
-@pytest.mark.asyncio
-async def test_get_ohlcv_kr_1h_opsq2001_field_missing_returns_error_payload(
-    monkeypatch,
-):
-    tools = build_tools()
-    monkeypatch.setattr(settings, "kis_ohlcv_cache_enabled", False, raising=False)
-    monkeypatch.setattr(
-        market_data_quotes,
-        "_resolve_kr_intraday_route",
-        AsyncMock(return_value="UN"),
-    )
-
-    class DummyKISClient:
-        async def inquire_time_dailychartprice(
-            self, code, market, n, end_date=None, end_time=None
-        ):
-            del code, market, n, end_date, end_time
-            raise RuntimeError(
-                "OPSQ2001 ERROR INPUT FIELD NOT FOUND [FID_FAKE_TICK_INCU_YN]"
-            )
-
-    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
-    result = await tools["get_ohlcv"]("005930", market="kr", period="1h")
-
-    assert result["source"] == "kis"
-    assert result["instrument_type"] == "equity_kr"
-    assert "OPSQ2001" in result["error"]
-    assert "FID_FAKE_TICK_INCU_YN" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -3490,8 +3095,16 @@ class TestCalculateOBV:
         n = 30
         close = pd.Series([100.0] * n)
         volume = pd.Series([1000.0] * n)
-        close.iloc[-5:] = [100, 98, 96, 98, 95]
-        volume.iloc[-5:] = [1000, 1000, 1000, 10000, 1000]
+        close.iloc[-5:] = pd.Series(
+            [100.0, 98.0, 96.0, 98.0, 95.0],
+            index=close.iloc[-5:].index,
+            dtype=float,
+        )
+        volume.iloc[-5:] = pd.Series(
+            [1000.0, 1000.0, 1000.0, 10000.0, 1000.0],
+            index=volume.iloc[-5:].index,
+            dtype=float,
+        )
 
         result = market_data_indicators._calculate_obv(close, volume)
 
@@ -3501,8 +3114,16 @@ class TestCalculateOBV:
         n = 30
         close = pd.Series([95.0] * n)
         volume = pd.Series([1000.0] * n)
-        close.iloc[-5:] = [95, 97, 99, 97, 100]
-        volume.iloc[-5:] = [1000, 1000, 1000, 10000, 1000]
+        close.iloc[-5:] = pd.Series(
+            [95.0, 97.0, 99.0, 97.0, 100.0],
+            index=close.iloc[-5:].index,
+            dtype=float,
+        )
+        volume.iloc[-5:] = pd.Series(
+            [1000.0, 1000.0, 1000.0, 10000.0, 1000.0],
+            index=volume.iloc[-5:].index,
+            dtype=float,
+        )
 
         result = market_data_indicators._calculate_obv(close, volume)
 
@@ -3653,7 +3274,7 @@ class TestComputeIndicators:
 
     def test_computes_all_indicators(self):
         df = _sample_ohlcv_df(250)
-        all_indicators = [
+        all_indicators: list[market_data_indicators.IndicatorType] = [
             "sma",
             "ema",
             "rsi",
@@ -4762,11 +4383,13 @@ class _FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                "error",
-                request=None,
-                response=self,  # type: ignore[arg-type]
+            request = httpx.Request("GET", "https://example.invalid")
+            response = httpx.Response(
+                status_code=self.status_code,
+                request=request,
+                json=self._json_data,
             )
+            raise httpx.HTTPStatusError("error", request=request, response=response)
 
     def json(self):
         return self._json_data
@@ -4796,16 +4419,23 @@ class TestGetMarketIndex:
     def _patch_yfinance(self, monkeypatch, last_price=5500.0, prev_close=5450.0):
         """Patch yfinance for US index."""
 
+        @dataclasses.dataclass(frozen=True)
         class MockFastInfo:
-            pass
+            last_price: float
+            regular_market_previous_close: float
+            open: float
+            day_high: float
+            day_low: float
+            last_volume: int
 
-        info = MockFastInfo()
-        info.last_price = last_price
-        info.regular_market_previous_close = prev_close
-        info.open = 5460.0
-        info.day_high = 5510.0
-        info.day_low = 5430.0
-        info.last_volume = 3_500_000_000
+        info = MockFastInfo(
+            last_price=last_price,
+            regular_market_previous_close=prev_close,
+            open=5460.0,
+            day_high=5510.0,
+            day_low=5430.0,
+            last_volume=3_500_000_000,
+        )
 
         class MockTicker:
             fast_info = info
@@ -7804,7 +7434,7 @@ async def test_place_order_nyse_exchange_code(monkeypatch):
     """Test that NYSE stocks (e.g. TSM) use correct exchange code instead of hardcoded NASD."""
     tools = build_tools()
 
-    buy_calls: list[dict] = []
+    buy_calls: list[dict[str, object]] = []
 
     class MockKISClient:
         async def inquire_integrated_margin(self):
@@ -7919,12 +7549,6 @@ class TestComputeRsiWeights:
 
 class TestPlaceOrderHighAmount:
     """Tests for place_order with high-amount orders."""
-
-    @staticmethod
-    def build_tools():
-        mcp = DummyMCP()
-        register_all_tools(mcp)
-        return mcp.tools
 
     @pytest.mark.asyncio
     async def test_get_current_price_for_order_crypto_bypasses_ticker_cache(

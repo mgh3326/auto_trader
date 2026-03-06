@@ -1,0 +1,547 @@
+from __future__ import annotations
+
+import asyncio
+import datetime
+from dataclasses import dataclass
+from typing import Literal, cast
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.db import AsyncSessionLocal
+from app.services.brokers.kis.client import KISClient
+
+_KST = ZoneInfo("Asia/Seoul")
+
+_KR_UNIVERSE_SYNC_COMMAND = "uv run python scripts/sync_kr_symbol_universe.py"
+
+
+def _kr_universe_sync_hint() -> str:
+    return f"Sync required: {_KR_UNIVERSE_SYNC_COMMAND}"
+
+
+SessionType = Literal["PRE_MARKET", "REGULAR", "AFTER_MARKET"]
+VenueType = Literal["KRX", "NTX"]
+
+
+def _async_session() -> AsyncSession:
+    return cast(AsyncSession, cast(object, AsyncSessionLocal()))
+
+
+@dataclass(frozen=True, slots=True)
+class _UniverseRow:
+    symbol: str
+    nxt_eligible: bool
+    is_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _MinuteRow:
+    minute_time: datetime.datetime
+    venue: VenueType
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    value: float
+
+
+_KR_UNIVERSE_HAS_ANY_ROWS_SQL = text(
+    """
+    SELECT symbol
+    FROM public.kr_symbol_universe
+    LIMIT 1
+    """
+)
+
+_KR_UNIVERSE_ROW_SQL = text(
+    """
+    SELECT symbol, nxt_eligible, is_active
+    FROM public.kr_symbol_universe
+    WHERE symbol = :symbol
+    """
+)
+
+_KR_HOURLY_SQL = text(
+    """
+    SELECT bucket, open, high, low, close, volume, value, venues
+    FROM public.kr_candles_1h
+    WHERE symbol = :symbol
+      AND bucket <= :end_time
+    ORDER BY bucket DESC
+    LIMIT :limit
+    """
+)
+
+_KR_MINUTE_SQL = text(
+    """
+    SELECT time, venue, open, high, low, close, volume, value
+    FROM public.kr_candles_1m
+    WHERE symbol = :symbol
+      AND time >= :start_time
+      AND time < :end_time
+    """
+)
+
+
+def _ensure_kst_aware(value: datetime.datetime) -> datetime.datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=_KST)
+    return value.astimezone(_KST)
+
+
+def _to_kst_naive(value: datetime.datetime) -> datetime.datetime:
+    return _ensure_kst_aware(value).replace(tzinfo=None)
+
+
+def _to_float(value: object) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    return float(str(value))
+
+
+def _to_venue(value: object) -> VenueType:
+    text_value = str(value or "").strip().upper()
+    if text_value == "KRX":
+        return "KRX"
+    if text_value == "NTX":
+        return "NTX"
+    raise ValueError(f"Unexpected KR venue: {value}")
+
+
+def _normalize_venues(value: object) -> list[str]:
+    venues: list[str] = []
+    if value is None:
+        return venues
+    if isinstance(value, (list, tuple)):
+        venues = [str(v).strip().upper() for v in value if str(v).strip()]
+    else:
+        venues = [str(value).strip().upper()]
+    order = {"KRX": 0, "NTX": 1}
+    venues = [v for v in venues if v in order]
+    venues.sort(key=lambda v: order[v])
+    return venues
+
+
+def _session_for_bucket_start(
+    bucket_start_kst_naive: datetime.datetime,
+) -> SessionType | None:
+    t = bucket_start_kst_naive.time()
+    if datetime.time(8, 0, 0) <= t < datetime.time(9, 0, 0):
+        return "PRE_MARKET"
+    if datetime.time(9, 0, 0) <= t < datetime.time(15, 30, 0):
+        return "REGULAR"
+    if datetime.time(15, 30, 0) <= t <= datetime.time(20, 0, 0):
+        return "AFTER_MARKET"
+    return None
+
+
+def _should_call_api(
+    *, now_kst: datetime.datetime, end_date: datetime.datetime | None
+) -> bool:
+    if end_date is not None:
+        end_day = (
+            _ensure_kst_aware(end_date).date() if end_date.tzinfo else end_date.date()
+        )
+        if end_day < now_kst.date():
+            return False
+
+    now_clock = now_kst.time()
+    if now_clock < datetime.time(8, 0, 0):
+        return False
+    if now_clock >= datetime.time(20, 0, 0):
+        return False
+    return True
+
+
+def _api_markets_for_now(
+    *,
+    now_kst: datetime.datetime,
+    nxt_eligible: bool,
+    end_date: datetime.datetime | None,
+) -> list[str]:
+    if not _should_call_api(now_kst=now_kst, end_date=end_date):
+        return []
+
+    now_clock = now_kst.time()
+    if datetime.time(8, 0, 0) <= now_clock < datetime.time(9, 0, 0):
+        return ["NX"] if nxt_eligible else []
+    if datetime.time(9, 0, 0) <= now_clock < datetime.time(15, 35, 0):
+        return ["J", "NX"] if nxt_eligible else ["J"]
+    if datetime.time(15, 35, 0) <= now_clock < datetime.time(20, 0, 0):
+        return ["NX"] if nxt_eligible else []
+    return []
+
+
+async def _resolve_universe_row(
+    symbol: str,
+) -> _UniverseRow:
+    normalized_symbol = str(symbol or "").strip().upper()
+    async with _async_session() as session:
+        has_any_rows = (
+            await session.execute(_KR_UNIVERSE_HAS_ANY_ROWS_SQL)
+        ).scalar_one_or_none()
+        result = await session.execute(
+            _KR_UNIVERSE_ROW_SQL,
+            {"symbol": normalized_symbol},
+        )
+        rows = list(result.mappings().all())
+
+    if not rows:
+        if has_any_rows is None:
+            raise ValueError(f"kr_symbol_universe is empty. {_kr_universe_sync_hint()}")
+        raise ValueError(
+            f"KR symbol '{normalized_symbol}' is not registered in kr_symbol_universe. "
+            f"{_kr_universe_sync_hint()}"
+        )
+
+    row = rows[0]
+    is_active = bool(row.get("is_active"))
+    if not is_active:
+        raise ValueError(
+            f"KR symbol '{normalized_symbol}' is inactive in kr_symbol_universe. "
+            f"{_kr_universe_sync_hint()}"
+        )
+
+    return _UniverseRow(
+        symbol=normalized_symbol,
+        nxt_eligible=bool(row.get("nxt_eligible")),
+        is_active=is_active,
+    )
+
+
+async def _fetch_hour_rows(
+    *,
+    symbol: str,
+    end_time_kst: datetime.datetime,
+    limit: int,
+) -> list[dict[str, object]]:
+    async with _async_session() as session:
+        result = await session.execute(
+            _KR_HOURLY_SQL,
+            {
+                "symbol": symbol,
+                "end_time": end_time_kst,
+                "limit": int(limit),
+            },
+        )
+        return [{str(k): v for k, v in row.items()} for row in result.mappings().all()]
+
+
+async def _fetch_minute_rows(
+    *,
+    symbol: str,
+    start_time_kst: datetime.datetime,
+    end_time_kst: datetime.datetime,
+) -> list[dict[str, object]]:
+    async with _async_session() as session:
+        result = await session.execute(
+            _KR_MINUTE_SQL,
+            {
+                "symbol": symbol,
+                "start_time": start_time_kst,
+                "end_time": end_time_kst,
+            },
+        )
+        return [{str(k): v for k, v in row.items()} for row in result.mappings().all()]
+
+
+def _build_hour_frame(
+    *,
+    hour_rows: list[dict[str, object]],
+    current_hour_row: dict[str, object] | None,
+    count: int,
+    current_bucket_start: datetime.datetime | None,
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    drop_bucket = current_bucket_start
+
+    for row in hour_rows:
+        bucket_raw = row.get("bucket")
+        if not isinstance(bucket_raw, datetime.datetime):
+            continue
+        bucket_naive = _to_kst_naive(bucket_raw)
+        if drop_bucket is not None and bucket_naive == drop_bucket:
+            continue
+
+        session = _session_for_bucket_start(bucket_naive)
+        if session is None:
+            continue
+
+        venues = _normalize_venues(row.get("venues"))
+        rows.append(
+            {
+                "datetime": bucket_naive,
+                "date": bucket_naive.date(),
+                "time": bucket_naive.time(),
+                "open": _to_float(row.get("open")),
+                "high": _to_float(row.get("high")),
+                "low": _to_float(row.get("low")),
+                "close": _to_float(row.get("close")),
+                "volume": _to_float(row.get("volume")),
+                "value": _to_float(row.get("value")),
+                "session": session,
+                "venues": venues,
+            }
+        )
+
+    if current_hour_row is not None:
+        bucket_raw = current_hour_row.get("datetime")
+        if isinstance(bucket_raw, datetime.datetime):
+            session = _session_for_bucket_start(bucket_raw)
+            if session is not None:
+                current = dict(current_hour_row)
+                current["session"] = session
+                current["date"] = bucket_raw.date()
+                current["time"] = bucket_raw.time()
+                current["venues"] = _normalize_venues(current_hour_row.get("venues"))
+                rows.append(current)
+
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "datetime",
+                "date",
+                "time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "value",
+                "session",
+                "venues",
+            ]
+        )
+
+    out = pd.DataFrame(rows)
+    out["datetime"] = pd.to_datetime(out["datetime"], errors="coerce")
+    out = out.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+    out = out.tail(max(int(count), 1)).reset_index(drop=True)
+    return out
+
+
+async def _build_current_hour_row(
+    *,
+    symbol: str,
+    now_kst: datetime.datetime,
+    nxt_eligible: bool,
+    end_date: datetime.datetime | None,
+) -> tuple[dict[str, object] | None, datetime.datetime | None]:
+    current_bucket_start_kst = now_kst.replace(minute=0, second=0, microsecond=0)
+    current_bucket_naive = current_bucket_start_kst.replace(tzinfo=None)
+
+    if _session_for_bucket_start(current_bucket_naive) is None:
+        return None, None
+
+    if end_date is not None:
+        end_day = (
+            _ensure_kst_aware(end_date).date() if end_date.tzinfo else end_date.date()
+        )
+        if end_day != now_kst.date():
+            return None, None
+
+    start_time_kst = current_bucket_start_kst
+    end_time_kst = start_time_kst + datetime.timedelta(hours=1)
+    db_minutes = await _fetch_minute_rows(
+        symbol=symbol,
+        start_time_kst=start_time_kst,
+        end_time_kst=end_time_kst,
+    )
+
+    minute_by_key: dict[tuple[datetime.datetime, VenueType], _MinuteRow] = {}
+    for row in db_minutes:
+        time_raw = row.get("time")
+        venue_raw = row.get("venue")
+        if not isinstance(time_raw, datetime.datetime):
+            continue
+        venue = _to_venue(venue_raw)
+        minute_time = _to_kst_naive(time_raw).replace(second=0, microsecond=0)
+        if not (
+            current_bucket_naive
+            <= minute_time
+            < current_bucket_naive + datetime.timedelta(hours=1)
+        ):
+            continue
+        minute_by_key[(minute_time, venue)] = _MinuteRow(
+            minute_time=minute_time,
+            venue=venue,
+            open=_to_float(row.get("open")),
+            high=_to_float(row.get("high")),
+            low=_to_float(row.get("low")),
+            close=_to_float(row.get("close")),
+            volume=_to_float(row.get("volume")),
+            value=_to_float(row.get("value")),
+        )
+
+    markets = _api_markets_for_now(
+        now_kst=now_kst,
+        nxt_eligible=nxt_eligible,
+        end_date=end_date,
+    )
+
+    if markets:
+        kis = KISClient()
+        api_date = now_kst.date()
+
+        async def _fetch_one(market: str) -> pd.DataFrame:
+            return await kis.inquire_minute_chart(
+                code=symbol,
+                market=market,
+                time_unit=1,
+                n=30,
+                end_date=api_date,
+            )
+
+        frames = await asyncio.gather(*[_fetch_one(m) for m in markets])
+        for market, frame in zip(markets, frames, strict=False):
+            if frame is None or frame.empty:
+                continue
+            venue: VenueType = "KRX" if market == "J" else "NTX"
+            if "datetime" not in frame.columns:
+                continue
+            dt_series = pd.to_datetime(frame["datetime"], errors="coerce")
+            for pos, dt_val in enumerate(dt_series.tolist()):
+                if pd.isna(dt_val):
+                    continue
+                minute_time = (
+                    pd.Timestamp(dt_val)
+                    .to_pydatetime()
+                    .replace(second=0, microsecond=0)
+                )
+                if not (
+                    current_bucket_naive
+                    <= minute_time
+                    < current_bucket_naive + datetime.timedelta(hours=1)
+                ):
+                    continue
+                src = frame.iloc[pos]
+                minute_by_key[(minute_time, venue)] = _MinuteRow(
+                    minute_time=minute_time,
+                    venue=venue,
+                    open=_to_float(src.get("open")),
+                    high=_to_float(src.get("high")),
+                    low=_to_float(src.get("low")),
+                    close=_to_float(src.get("close")),
+                    volume=_to_float(src.get("volume")),
+                    value=_to_float(src.get("value")),
+                )
+
+    if not minute_by_key:
+        return None, current_bucket_naive
+
+    minutes_by_time: dict[datetime.datetime, dict[VenueType, _MinuteRow]] = {}
+    venues_seen: set[str] = set()
+    for (minute_time, venue), row in minute_by_key.items():
+        venues_seen.add(venue)
+        minutes_by_time.setdefault(minute_time, {})[venue] = row
+
+    combined: list[_MinuteRow] = []
+    for minute_time in sorted(minutes_by_time):
+        group = minutes_by_time[minute_time]
+        source = group.get("KRX") or group.get("NTX")
+        if source is None:
+            continue
+        volume = sum(r.volume for r in group.values())
+        value = sum(r.value for r in group.values())
+        combined.append(
+            _MinuteRow(
+                minute_time=minute_time,
+                venue=source.venue,
+                open=source.open,
+                high=source.high,
+                low=source.low,
+                close=source.close,
+                volume=volume,
+                value=value,
+            )
+        )
+
+    if not combined:
+        return None, current_bucket_naive
+
+    open_ = combined[0].open
+    high_ = max(m.high for m in combined)
+    low_ = min(m.low for m in combined)
+    close_ = combined[-1].close
+    volume_ = sum(m.volume for m in combined)
+    value_ = sum(m.value for m in combined)
+    venues = _normalize_venues(
+        sorted(venues_seen, key=lambda v: 0 if v == "KRX" else 1)
+    )
+
+    return (
+        {
+            "datetime": current_bucket_naive,
+            "open": float(open_),
+            "high": float(high_),
+            "low": float(low_),
+            "close": float(close_),
+            "volume": float(volume_),
+            "value": float(value_),
+            "venues": venues,
+        },
+        current_bucket_naive,
+    )
+
+
+async def read_kr_hourly_candles_1h(
+    *,
+    symbol: str,
+    count: int,
+    end_date: datetime.datetime | None,
+    now_kst: datetime.datetime | None = None,
+) -> pd.DataFrame:
+    capped_count = max(int(count), 1)
+    resolved_now = _ensure_kst_aware(now_kst or datetime.datetime.now(_KST))
+
+    universe = await _resolve_universe_row(symbol)
+
+    if end_date is None:
+        end_time_kst = resolved_now
+    else:
+        end_day = (
+            _ensure_kst_aware(end_date).date() if end_date.tzinfo else end_date.date()
+        )
+        end_time_kst = datetime.datetime.combine(
+            end_day,
+            datetime.time(20, 0, 0),
+            tzinfo=_KST,
+        )
+
+    fetch_limit = min(max(capped_count * 3, capped_count + 24), 1000)
+    hour_rows = await _fetch_hour_rows(
+        symbol=universe.symbol,
+        end_time_kst=end_time_kst,
+        limit=fetch_limit,
+    )
+
+    current_hour_row, current_bucket_start = await _build_current_hour_row(
+        symbol=universe.symbol,
+        now_kst=resolved_now,
+        nxt_eligible=universe.nxt_eligible,
+        end_date=end_date,
+    )
+
+    out = _build_hour_frame(
+        hour_rows=hour_rows,
+        current_hour_row=current_hour_row,
+        count=capped_count,
+        current_bucket_start=current_bucket_start,
+    )
+
+    if len(out) < capped_count:
+        raise ValueError(
+            f"DB does not have enough KR 1h candles for {universe.symbol}: "
+            f"requested={capped_count} returned={len(out)}"
+        )
+
+    return out
+
+
+__all__ = ["read_kr_hourly_candles_1h"]
