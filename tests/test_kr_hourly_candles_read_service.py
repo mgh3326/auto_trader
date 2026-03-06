@@ -1069,3 +1069,62 @@ async def test_fallback_to_kis_api_when_db_empty(monkeypatch):
     # Verify KIS API was called (fallback happened)
     kis.inquire_minute_chart.assert_awaited()
     assert kis.inquire_minute_chart.await_args.kwargs["market"] == "J"
+
+
+@pytest.mark.asyncio
+async def test_hour_aggregation_from_minutes():
+    """Test 1m → 1h aggregation math (OHLCV).
+
+    Creates 60 1-minute candles with known OHLCV values and verifies that
+    aggregation produces correct hourly candle with:
+    - open: first minute's open
+    - high: max of all highs
+    - low: min of all lows
+    - close: last minute's close
+    - volume: sum of all volumes
+    """
+    from app.services import kr_hourly_candles_read_service as svc
+
+    # Create 60 minute candles for 09:00-09:59 hour with specific OHLCV values
+    minute_data = []
+    for i in range(60):
+        minute_data.append(
+            {
+                "datetime": pd.Timestamp(f"2026-02-23 09:{i:02d}:00"),
+                "open": 100.0 + i,  # First minute: 100, Last minute: 159
+                "high": 200.0 + i,  # Range: 200-259, max should be 259
+                "low": 50.0 + i,  # Range: 50-109, min should be 50
+                "close": 150.0 + i,  # First minute: 150, Last minute: 209
+                "volume": 1000 + i * 10,  # Range: 1000-1590, sum should be 1000+1010+...+1590
+            }
+        )
+
+    df_minutes = pd.DataFrame(minute_data)
+
+    # Call the aggregation function
+    result = svc._aggregate_minutes_to_hourly(df_minutes)
+
+    # Verify we get exactly 1 hourly candle
+    assert len(result) == 1, f"Expected 1 hour, got {len(result)}"
+
+    # Verify the OHLCV aggregation math
+    row = result.iloc[0]
+
+    # open: first minute's open (100.0)
+    assert row["open"] == 100.0, f"Expected open=100.0, got {row['open']}"
+
+    # high: max of all highs (259.0)
+    assert row["high"] == 259.0, f"Expected high=259.0, got {row['high']}"
+
+    # low: min of all lows (50.0)
+    assert row["low"] == 50.0, f"Expected low=50.0, got {row['low']}"
+
+    # close: last minute's close (209.0)
+    assert row["close"] == 209.0, f"Expected close=209.0, got {row['close']}"
+
+    # volume: sum of all volumes (1000 + 1010 + ... + 1590 = 60 * (1000 + 1590) / 2 = 77700)
+    expected_volume = sum(1000 + i * 10 for i in range(60))
+    assert row["volume"] == expected_volume, f"Expected volume={expected_volume}, got {row['volume']}"
+
+    # Verify datetime is floored to hour
+    assert row["datetime"] == pd.Timestamp("2026-02-23 09:00:00")
