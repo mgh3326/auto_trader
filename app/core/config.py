@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # Telegram
     telegram_token: str
     telegram_chat_id: str = ""
+
+    # Discord Webhooks
+    discord_webhook_us: str | None = None
+    discord_webhook_kr: str | None = None
+    discord_webhook_crypto: str | None = None
+    discord_webhook_alerts: str | None = None
+
     # Strategy
     top_n: int = 30
     drop_pct: float = -3.0  # '-3'은 -3 %
