@@ -138,6 +138,7 @@ _PATCH_MODULES = (
     fundamentals_sources_finnhub,
     fundamentals_sources_indices,
     fundamentals_sources_naver,
+    market_data_indicators,
     market_data_quotes,
     order_execution,
     orders_history,
