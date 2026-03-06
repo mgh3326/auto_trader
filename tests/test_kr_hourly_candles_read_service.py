@@ -987,3 +987,85 @@ async def test_db_first_returns_existing_data(monkeypatch):
 
     # Verify KIS API was NOT called (DB had sufficient data, end_date in past)
     kis.inquire_minute_chart.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fallback_to_kis_api_when_db_empty(monkeypatch):
+    """Test fallback to KIS API when DB is empty."""
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    now_kst = _dt_kst(2026, 2, 23, 10, 0, 0)
+
+    # KIS API returns some minute candles
+    api_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-02-23 09:00:00"),
+                "date": datetime.date(2026, 2, 23),
+                "time": datetime.time(9, 0, 0),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1000,
+                "value": 100000,
+            },
+            {
+                "datetime": pd.Timestamp("2026-02-23 10:00:00"),
+                "date": datetime.date(2026, 2, 23),
+                "time": datetime.time(10, 0, 0),
+                "open": 100.5,
+                "high": 102.0,
+                "low": 100.0,
+                "close": 101.0,
+                "volume": 1100,
+                "value": 110000,
+            },
+        ]
+    )
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [
+                        {
+                            "symbol": symbol,
+                            "nxt_eligible": False,
+                            "is_active": True,
+                        }
+                    ]
+                )
+            # DB is empty - no hourly candles
+            if "FROM public.kr_candles_1h" in sql:
+                return _MappingsResult([])
+            # No minute candles in DB either
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult([])
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+
+    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=api_df))
+    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+
+    # Query with end_date=None (current time) - should fallback to KIS API
+    out = await svc.read_kr_hourly_candles_1h(
+        symbol=symbol,
+        count=2,
+        end_date=None,
+        now_kst=now_kst,
+    )
+
+    # Verify candles were returned from KIS API
+    assert len(out) == 2
+
+    # Verify KIS API was called (fallback happened)
+    kis.inquire_minute_chart.assert_awaited()
+    assert kis.inquire_minute_chart.await_args.kwargs["market"] == "J"
