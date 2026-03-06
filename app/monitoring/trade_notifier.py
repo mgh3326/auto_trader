@@ -433,6 +433,48 @@ class TradeNotifier:
             "fields": fields,
         }
 
+    def _format_automation_summary_telegram(
+        self,
+        total_coins: int,
+        analyzed: int,
+        bought: int,
+        sold: int,
+        errors: int,
+        duration_seconds: float,
+    ) -> str:
+        """
+        Format automation execution summary as Telegram markdown message.
+
+        Args:
+            total_coins: Total number of coins processed
+            analyzed: Number of coins analyzed
+            bought: Number of buy orders placed
+            sold: Number of sell orders placed
+            errors: Number of errors occurred
+            duration_seconds: Total execution time
+
+        Returns:
+            Telegram markdown formatted message
+        """
+        timestamp = format_datetime()
+
+        lines = [
+            "*🤖 자동 거래 실행 완료*",
+            "",
+            f"🕒 {timestamp}",
+            "",
+            f"*처리 종목:* {total_coins}개",
+            f"*분석 완료:* {analyzed}개",
+            f"*매수 주문:* {bought}건",
+            f"*매도 주문:* {sold}건",
+            f"*실행 시간:* {duration_seconds:.1f}초",
+        ]
+
+        if errors > 0:
+            lines.append(f"*오류 발생:* {errors}건")
+
+        return "\n".join(lines)
+
     async def _send_to_telegram(
         self, message: str, parse_mode: str = "Markdown"
     ) -> bool:
@@ -572,6 +614,40 @@ class TradeNotifier:
 
         except Exception as e:
             logger.error(f"Failed to send embed to Discord webhook: {e}")
+            return False
+
+    async def _send_to_discord_content_single(
+        self, content: str, webhook_url: str
+    ) -> bool:
+        """
+        Send plain text content to a specific Discord webhook URL.
+
+        Args:
+            content: Plain text content to send
+            webhook_url: Specific Discord webhook URL to send to
+
+        Returns:
+            True if message was sent successfully
+        """
+        if not self._enabled or not self._http_client:
+            return False
+
+        if not webhook_url:
+            logger.warning("No Discord webhook URL provided")
+            return False
+
+        try:
+            response = await self._http_client.post(
+                webhook_url,
+                json={"content": content},
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            logger.info("Content sent to Discord webhook")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to send content to Discord webhook: {e}")
             return False
 
     def _format_buy_notification_telegram(
@@ -1053,15 +1129,44 @@ class TradeNotifier:
         errors: int,
         duration_seconds: float,
     ) -> bool:
-        """Send automation execution summary notification."""
+        """
+        Send automation execution summary notification.
+
+        Sends to Discord alerts webhook first, falls back to Telegram
+        if Discord is not configured or fails.
+
+        Args:
+            total_coins: Total number of coins processed
+            analyzed: Number of coins analyzed
+            bought: Number of buy orders placed
+            sold: Number of sell orders placed
+            errors: Number of errors occurred
+            duration_seconds: Total execution time
+
+        Returns:
+            True if notification sent successfully
+        """
         if not self._enabled:
             return False
 
         try:
-            message = self._format_automation_summary(
+            # Try Discord first
+            if self._discord_webhook_alerts:
+                embed = self._format_automation_summary(
+                    total_coins, analyzed, bought, sold, errors, duration_seconds
+                )
+                discord_success = await self._send_to_discord_embed_single(
+                    embed, self._discord_webhook_alerts
+                )
+                if discord_success:
+                    return True
+                logger.info("Discord send failed, falling back to Telegram")
+
+            # Fall back to Telegram
+            telegram_message = self._format_automation_summary_telegram(
                 total_coins, analyzed, bought, sold, errors, duration_seconds
             )
-            return await self._send_to_telegram(message)
+            return await self._send_to_telegram(telegram_message)
         except Exception as e:
             logger.error(f"Failed to send summary notification: {e}")
             return False
@@ -1634,11 +1739,14 @@ class TradeNotifier:
         parse_mode: str = "Markdown",
     ) -> bool:
         """
-        Forward an OpenClaw outbound message to Telegram.
+        Forward an OpenClaw outbound message to Discord or Telegram.
+
+        Sends plain text to Discord alerts webhook first, falls back to Telegram
+        if Discord is not configured or fails.
 
         Args:
             message: Original message payload sent to OpenClaw
-            parse_mode: Telegram parse mode ("Markdown" or "HTML")
+            parse_mode: Telegram parse mode ("Markdown" or "HTML") for fallback
 
         Returns:
             True if notification sent successfully
@@ -1647,6 +1755,16 @@ class TradeNotifier:
             return False
 
         try:
+            # Try Discord first
+            if self._discord_webhook_alerts:
+                discord_success = await self._send_to_discord_content_single(
+                    message, self._discord_webhook_alerts
+                )
+                if discord_success:
+                    return True
+                logger.info("Discord send failed, falling back to Telegram")
+
+            # Fall back to Telegram
             return await self._send_to_telegram(message, parse_mode=parse_mode)
         except Exception as e:
             logger.error(f"Failed to forward OpenClaw message: {e}")
