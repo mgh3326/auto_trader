@@ -1066,7 +1066,7 @@ async def _enrich_crypto_indicators(
             from tvscreener import CryptoScreener, CryptoField
 
             # Build columns list - start with ticker and RSI (guaranteed)
-            columns = [CryptoField.TICKER, CryptoField.RELATIVE_STRENGTH_INDEX_14]
+            columns = [CryptoField.SYMBOL, CryptoField.RELATIVE_STRENGTH_INDEX_14]
 
             # Try to add ADX if available (not confirmed for CryptoField)
             try:
@@ -1103,7 +1103,7 @@ async def _enrich_crypto_indicators(
                 # Filter to only the symbols we're interested in
                 # TradingView returns full symbols like "UPBIT:BTCKRW"
                 for _, row in df.iterrows():
-                    ticker = str(row.get("ticker", "")).strip()
+                    ticker = str(row.get("symbol", "")).strip()
                     if ticker in unique_tv_symbols:
                         rsi_value = _to_optional_float(
                             row.get("relative_strength_index_14")
@@ -1279,7 +1279,7 @@ async def _screen_kr_via_tvscreener(
 
         # Build columns list - start with essential fields
         columns = [
-            StockField.TICKER,
+            StockField.ACTIVE_SYMBOL,
             StockField.NAME,
             StockField.PRICE,
             StockField.RELATIVE_STRENGTH_INDEX_14,
@@ -1339,7 +1339,7 @@ async def _screen_kr_via_tvscreener(
         stocks = []
         for _, row in df.iterrows():
             stock = {
-                "symbol": str(row.get("ticker", "")).strip(),
+                "symbol": str(row.get("active_symbol", "")).strip(),
                 "name": str(row.get("name", "")).strip(),
                 "price": _to_optional_float(row.get("price")),
                 "rsi": _to_optional_float(row.get("relative_strength_index_14")),
@@ -1462,7 +1462,7 @@ async def _screen_us_via_tvscreener(
 
         # Build columns list - start with essential fields
         columns = [
-            StockField.TICKER,
+            StockField.ACTIVE_SYMBOL,
             StockField.NAME,
             StockField.PRICE,
             StockField.RELATIVE_STRENGTH_INDEX_14,
@@ -1522,7 +1522,7 @@ async def _screen_us_via_tvscreener(
         stocks = []
         for _, row in df.iterrows():
             stock = {
-                "symbol": str(row.get("ticker", "")).strip(),
+                "symbol": str(row.get("active_symbol", "")).strip(),
                 "name": str(row.get("name", "")).strip(),
                 "price": _to_optional_float(row.get("price")),
                 "rsi": _to_optional_float(row.get("relative_strength_index_14")),
