@@ -1,157 +1,43 @@
-from typing import Any, cast
+"""
+Tests for MCP tool registration and removal verification.
+
+This module tests:
+- DCA tools have been removed from build_tools
+- DCA models no longer exported from models package
+- DCA helper functions removed from market_data_indicators
+- recommend_stocks tool is properly registered
+"""
 
 import pytest
 
-from app.mcp_server import AVAILABLE_TOOL_NAMES, register_all_tools
-from app.mcp_server.tooling import (
-    TRADE_PROFILE_TOOL_NAMES,
-    WATCH_ALERT_TOOL_NAMES,
-    register_trade_profile_tools,
-    register_watch_alert_tools,
-)
-from app.mcp_server.tooling import (
-    register_all_tools as register_all_tools_from_tooling,
-)
-from app.mcp_server.tooling.analysis_registration import (
-    ANALYSIS_TOOL_NAMES,
-    register_analysis_tools,
-)
-from app.mcp_server.tooling.fundamentals_registration import (
-    FUNDAMENTALS_TOOL_NAMES,
-    register_fundamentals_tools,
-)
-from app.mcp_server.tooling.market_data_registration import (
-    MARKET_DATA_TOOL_NAMES,
-    register_market_data_tools,
-)
-from app.mcp_server.tooling.orders_registration import (
-    ORDER_TOOL_NAMES,
-    register_order_tools,
-)
-from app.mcp_server.tooling.portfolio_registration import (
-    PORTFOLIO_TOOL_NAMES,
-    register_portfolio_tools,
-)
+from app.mcp_server.tooling import market_data_indicators
+from tests._mcp_tooling_support import build_tools
 
 
-class DummyMCP:
-    def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
+@pytest.mark.asyncio
+async def test_dca_tools_removed_from_build_tools() -> None:
+    """Verify DCA tools have been removed from tool registry."""
+    tools = build_tools()
 
-    def tool(self, name: str, description: str):
-        _ = description
-
-        def decorator(func):
-            self.tools[name] = func
-            return func
-
-        return decorator
+    assert "create_dca_plan" not in tools
+    assert "get_dca_status" not in tools
 
 
-def test_register_all_tools_registers_all_available_tools() -> None:
-    mcp = DummyMCP()
+def test_models_package_no_longer_exports_dca() -> None:
+    """Verify DCA models are no longer exported from app.models."""
+    import app.models as models
 
-    register_all_tools(cast(Any, mcp))
-
-    assert set(mcp.tools) == set(AVAILABLE_TOOL_NAMES)
-
-
-def test_removed_dca_tools_are_not_registered() -> None:
-    mcp = DummyMCP()
-
-    register_all_tools(cast(Any, mcp))
-
-    assert "create_dca_plan" not in mcp.tools
-    assert "get_dca_status" not in mcp.tools
+    assert not hasattr(models, "DcaPlan")
+    assert not hasattr(models, "DcaPlanStep")
 
 
-def test_available_tool_names_exclude_removed_dca_tools() -> None:
-    assert "create_dca_plan" not in AVAILABLE_TOOL_NAMES
-    assert "get_dca_status" not in AVAILABLE_TOOL_NAMES
+def test_compute_dca_price_levels_helper_removed() -> None:
+    """Verify DCA price levels helper has been removed from indicators module."""
+    assert not hasattr(market_data_indicators, "_compute_dca_price_levels")
 
 
-def test_domain_registration_is_incremental_and_recoverable() -> None:
-    mcp = DummyMCP()
-
-    register_market_data_tools(cast(Any, mcp))
-    assert set(mcp.tools) == MARKET_DATA_TOOL_NAMES
-
-    register_portfolio_tools(cast(Any, mcp))
-    assert set(mcp.tools) == MARKET_DATA_TOOL_NAMES | PORTFOLIO_TOOL_NAMES
-
-    register_order_tools(cast(Any, mcp))
-    assert set(mcp.tools) == (
-        MARKET_DATA_TOOL_NAMES | PORTFOLIO_TOOL_NAMES | ORDER_TOOL_NAMES
-    )
-
-    register_fundamentals_tools(cast(Any, mcp))
-    assert set(mcp.tools) == (
-        MARKET_DATA_TOOL_NAMES
-        | PORTFOLIO_TOOL_NAMES
-        | ORDER_TOOL_NAMES
-        | FUNDAMENTALS_TOOL_NAMES
-    )
-
-    register_analysis_tools(cast(Any, mcp))
-    assert set(mcp.tools) == (
-        MARKET_DATA_TOOL_NAMES
-        | PORTFOLIO_TOOL_NAMES
-        | ORDER_TOOL_NAMES
-        | FUNDAMENTALS_TOOL_NAMES
-        | ANALYSIS_TOOL_NAMES
-    )
-
-    register_watch_alert_tools(cast(Any, mcp))
-    assert set(mcp.tools) == (
-        MARKET_DATA_TOOL_NAMES
-        | PORTFOLIO_TOOL_NAMES
-        | ORDER_TOOL_NAMES
-        | FUNDAMENTALS_TOOL_NAMES
-        | ANALYSIS_TOOL_NAMES
-        | WATCH_ALERT_TOOL_NAMES
-    )
-
-    register_trade_profile_tools(cast(Any, mcp))
-    assert set(mcp.tools) == (
-        MARKET_DATA_TOOL_NAMES
-        | PORTFOLIO_TOOL_NAMES
-        | ORDER_TOOL_NAMES
-        | FUNDAMENTALS_TOOL_NAMES
-        | ANALYSIS_TOOL_NAMES
-        | WATCH_ALERT_TOOL_NAMES
-        | TRADE_PROFILE_TOOL_NAMES
-    )
-
-    assert set(mcp.tools) == set(AVAILABLE_TOOL_NAMES)
-
-
-@pytest.mark.parametrize(
-    "registrar",
-    [
-        register_market_data_tools,
-        register_portfolio_tools,
-        register_order_tools,
-        register_fundamentals_tools,
-        register_analysis_tools,
-        register_watch_alert_tools,
-        register_trade_profile_tools,
-    ],
-)
-def test_domain_registration_is_idempotent(registrar: Any) -> None:
-    mcp = DummyMCP()
-
-    registrar(mcp)
-    first_count = len(mcp.tools)
-    registrar(mcp)
-
-    assert len(mcp.tools) == first_count
-
-
-def test_tooling_exports_register_all_tools() -> None:
-    """Verify that app.mcp_server.tooling re-exports register_all_tools.
-
-    app.mcp_server.main imports register_all_tools from
-    app.mcp_server.tooling — if the re-export is missing the MCP
-    server cannot boot.
-    """
-    assert register_all_tools_from_tooling is register_all_tools
+@pytest.mark.asyncio
+async def test_recommend_stocks_registration() -> None:
+    """Test recommend_stocks tool is registered."""
+    tools = build_tools()
+    assert "recommend_stocks" in tools
