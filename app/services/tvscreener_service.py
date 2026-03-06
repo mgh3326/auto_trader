@@ -175,7 +175,10 @@ class TvScreenerService:
                 exc_msg = str(exc)
 
                 # Check for rate limiting indicators
-                if "malformed" in exc_msg.lower() or exc_type == "MalformedRequestException":
+                if (
+                    "malformed" in exc_msg.lower()
+                    or exc_type == "MalformedRequestException"
+                ):
                     logger.warning(
                         "%s received malformed request error (attempt %d/%d): %s: %s",
                         operation_name,
@@ -196,7 +199,10 @@ class TvScreenerService:
                     ) from exc
 
                 # Check for explicit rate limit errors
-                if "rate limit" in exc_msg.lower() or "too many requests" in exc_msg.lower():
+                if (
+                    "rate limit" in exc_msg.lower()
+                    or "too many requests" in exc_msg.lower()
+                ):
                     logger.warning(
                         "%s hit rate limit (attempt %d/%d): %s",
                         operation_name,
@@ -265,9 +271,7 @@ class TvScreenerService:
 
         # Return cached results if available
         if cache_key in self._field_cache:
-            logger.debug(
-                "Returning cached field discovery for %s", cache_key
-            )
+            logger.debug("Returning cached field discovery for %s", cache_key)
             return self._field_cache[cache_key]
 
         logger.info(

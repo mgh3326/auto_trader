@@ -212,6 +212,7 @@ class BlogImageGenerator(ABC):
 
 # ========== 썸네일 템플릿 ==========
 
+
 class ThumbnailTemplate:
     """블로그 썸네일 템플릿"""
 
@@ -254,13 +255,13 @@ class ThumbnailTemplate:
     <rect width="{width}" height="{height}" fill="url(#bgGradient)"/>
 
     <!-- 제목 -->
-    <text x="{width//2}" y="140" font-family="Arial, sans-serif" font-size="52" font-weight="bold" fill="#ffffff" text-anchor="middle">
+    <text x="{width // 2}" y="140" font-family="Arial, sans-serif" font-size="52" font-weight="bold" fill="#ffffff" text-anchor="middle">
         {title_line1}
     </text>
 '''
 
         if title_line2:
-            svg += f'''    <text x="{width//2}" y="210" font-family="Arial, sans-serif" font-size="52" font-weight="bold" fill="{accent_color}" text-anchor="middle">
+            svg += f'''    <text x="{width // 2}" y="210" font-family="Arial, sans-serif" font-size="52" font-weight="bold" fill="{accent_color}" text-anchor="middle">
         {title_line2}
     </text>
 '''
@@ -270,7 +271,7 @@ class ThumbnailTemplate:
 
         if subtitle:
             svg += f'''    <!-- 부제목 -->
-    <text x="{width//2}" y="{subtitle_y}" font-family="Arial, sans-serif" font-size="30" fill="#778da9" text-anchor="middle">
+    <text x="{width // 2}" y="{subtitle_y}" font-family="Arial, sans-serif" font-size="30" fill="#778da9" text-anchor="middle">
         {subtitle}
     </text>
 '''
@@ -290,7 +291,7 @@ class ThumbnailTemplate:
 
         if tech_stack:
             svg += f'''    <!-- 하단 기술 스택 -->
-    <text x="{width//2}" y="590" font-family="Arial, sans-serif" font-size="20" fill="#778da9" text-anchor="middle">
+    <text x="{width // 2}" y="590" font-family="Arial, sans-serif" font-size="20" fill="#778da9" text-anchor="middle">
         {tech_stack}
     </text>
 '''

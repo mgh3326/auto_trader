@@ -28,7 +28,8 @@ def _atomic_write(p: Path, obj: dict):
 
 
 def _load_cache() -> dict | None:
-    if not CACHE_FILE.exists(): return None
+    if not CACHE_FILE.exists():
+        return None
     data = json.loads(CACHE_FILE.read_text("utf-8"))
     if time.time() - data.get("cached_at", 0) < TTL:
         return data["name_to_corp"]
@@ -55,7 +56,6 @@ async def prime_index() -> None:
         _apply(cached)
         return
     await refresh_index()
-
 
 
 def _fetch_corp_index_sync() -> dict[str, str]:
@@ -97,6 +97,7 @@ def _fetch_corp_index_sync() -> dict[str, str]:
         listed_flag[name] = listed
 
     return name_to_corp
+
 
 async def fetch_and_parse_corp_code() -> dict[str, str]:
     """OpenDART corpCode를 dart-fss로 받아 회사명→corp_code 매핑 반환 (async 래퍼)."""

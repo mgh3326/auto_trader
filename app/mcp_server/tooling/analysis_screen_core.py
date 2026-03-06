@@ -1073,10 +1073,14 @@ async def _enrich_crypto_indicators(
                 adx_field = CryptoField.AVERAGE_DIRECTIONAL_INDEX_14
                 columns.append(adx_field)
                 has_adx = True
-                logger.debug("[Indicators-Crypto] ADX field available for CryptoScreener")
+                logger.debug(
+                    "[Indicators-Crypto] ADX field available for CryptoScreener"
+                )
             except AttributeError:
                 has_adx = False
-                logger.info("[Indicators-Crypto] ADX field not available for CryptoScreener, skipping")
+                logger.info(
+                    "[Indicators-Crypto] ADX field not available for CryptoScreener, skipping"
+                )
 
             # Add volume field (confirmed available)
             try:
@@ -1085,7 +1089,9 @@ async def _enrich_crypto_indicators(
                 has_volume = True
             except AttributeError:
                 has_volume = False
-                logger.warning("[Indicators-Crypto] VOLUME field not available for CryptoScreener")
+                logger.warning(
+                    "[Indicators-Crypto] VOLUME field not available for CryptoScreener"
+                )
 
             # Query for indicators
             df = await tvscreener_service.query_crypto_screener(
@@ -1117,9 +1123,7 @@ async def _enrich_crypto_indicators(
                             adx_map[ticker] = adx_value
 
                         if has_volume:
-                            volume_value = _to_optional_float(
-                                row.get("volume")
-                            )
+                            volume_value = _to_optional_float(row.get("volume"))
                             volume_map[ticker] = volume_value
 
             logger.info(
@@ -1137,7 +1141,11 @@ async def _enrich_crypto_indicators(
                 "[Indicators-Crypto] tvscreener not installed, falling back to manual calculation for RSI"
             )
             # Fallback to manual calculation if tvscreener is not available
-            batch_symbols = [symbols_by_index[i] for i in range(len(candidates)) if symbols_by_index[i] is not None]
+            batch_symbols = [
+                symbols_by_index[i]
+                for i in range(len(candidates))
+                if symbols_by_index[i] is not None
+            ]
             rsi_map_manual = await asyncio.wait_for(
                 compute_crypto_realtime_rsi_map(batch_symbols),
                 timeout=30.0,
@@ -1187,10 +1195,14 @@ async def _enrich_crypto_indicators(
         )
         for index, status in enumerate(statuses):
             if status == "pending":
-                statuses[index] = "rate_limited" if "rate limit" in str(exc).lower() else "error"
+                statuses[index] = (
+                    "rate_limited" if "rate limit" in str(exc).lower() else "error"
+                )
                 errors[index] = f"CryptoScreener error: {exc}"
     except TimeoutError:
-        logger.warning("[Indicators-Crypto] Indicator enrichment timed out after 30 seconds")
+        logger.warning(
+            "[Indicators-Crypto] Indicator enrichment timed out after 30 seconds"
+        )
         for index, status in enumerate(statuses):
             if status == "pending":
                 statuses[index] = "timeout"
@@ -1213,8 +1225,6 @@ async def _enrich_crypto_indicators(
         _finalize_rsi_enrichment_diagnostics(rsi_enrichment, statuses, errors)
 
     return rsi_enrichment
-
-
 
 
 async def _screen_kr_via_tvscreener(
@@ -1328,7 +1338,7 @@ async def _screen_kr_via_tvscreener(
         df = await tvscreener_service.query_stock_screener(
             columns=columns,
             where_clause=where_clause,  # Field condition object (not string)
-            country='South Korea',  # Use dedicated country parameter
+            country="South Korea",  # Use dedicated country parameter
             limit=None,  # Get all matching, we'll limit after sorting
         )
 
@@ -1349,7 +1359,9 @@ async def _screen_kr_via_tvscreener(
                 "adx": _to_optional_float(row.get("average_directional_index_14")),
                 "volume": _to_optional_float(row.get("volume")),
                 "change_percent": _to_optional_float(row.get("change_percent")),
-                "country": str(row.get("country", "")).strip() if "country" in row else "South Korea",
+                "country": str(row.get("country", "")).strip()
+                if "country" in row
+                else "South Korea",
             }
             stocks.append(stock)
 
@@ -1365,7 +1377,11 @@ async def _screen_kr_via_tvscreener(
         # Sort ascending for RSI (lower is more oversold), descending for others
         reverse = sort_by != "rsi"
         stocks.sort(
-            key=lambda s: s.get(sort_field) if s.get(sort_field) is not None else (float('inf') if not reverse else float('-inf')),
+            key=lambda s: (
+                s.get(sort_field)
+                if s.get(sort_field) is not None
+                else (float("inf") if not reverse else float("-inf"))
+            ),
             reverse=reverse,
         )
 
@@ -1396,11 +1412,12 @@ async def _screen_kr_via_tvscreener(
         return result
 
     except Exception as exc:
-        error_msg = f"Unexpected error in Korean stock screening: {type(exc).__name__}: {exc}"
+        error_msg = (
+            f"Unexpected error in Korean stock screening: {type(exc).__name__}: {exc}"
+        )
         logger.error("[Screen-KR-TV] %s", error_msg)
         result["error"] = error_msg
         return result
-
 
 
 async def _screen_us_via_tvscreener(
@@ -1514,7 +1531,7 @@ async def _screen_us_via_tvscreener(
         df = await tvscreener_service.query_stock_screener(
             columns=columns,
             where_clause=where_clause,  # Field condition object (not string)
-            country='United States',  # Use dedicated country parameter
+            country="United States",  # Use dedicated country parameter
             limit=None,  # Get all matching, we'll limit after sorting
         )
 
@@ -1535,7 +1552,9 @@ async def _screen_us_via_tvscreener(
                 "adx": _to_optional_float(row.get("average_directional_index_14")),
                 "volume": _to_optional_float(row.get("volume")),
                 "change_percent": _to_optional_float(row.get("change_percent")),
-                "country": str(row.get("country", "")).strip() if "country" in row else "United States",
+                "country": str(row.get("country", "")).strip()
+                if "country" in row
+                else "United States",
             }
             stocks.append(stock)
 
@@ -1551,7 +1570,11 @@ async def _screen_us_via_tvscreener(
         # Sort ascending for RSI (lower is more oversold), descending for others
         reverse = sort_by != "rsi"
         stocks.sort(
-            key=lambda s: s.get(sort_field) if s.get(sort_field) is not None else (float('inf') if not reverse else float('-inf')),
+            key=lambda s: (
+                s.get(sort_field)
+                if s.get(sort_field) is not None
+                else (float("inf") if not reverse else float("-inf"))
+            ),
             reverse=reverse,
         )
 
@@ -1582,7 +1605,9 @@ async def _screen_us_via_tvscreener(
         return result
 
     except Exception as exc:
-        error_msg = f"Unexpected error in US stock screening: {type(exc).__name__}: {exc}"
+        error_msg = (
+            f"Unexpected error in US stock screening: {type(exc).__name__}: {exc}"
+        )
         logger.error("[Screen-US-TV] %s", error_msg)
         result["error"] = error_msg
         return result

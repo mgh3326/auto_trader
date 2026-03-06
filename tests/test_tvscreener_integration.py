@@ -83,6 +83,7 @@ class TestFetchWithRetry:
             if call_count < 2:
                 # Simulate slow operation on first call
                 import time
+
                 time.sleep(0.1)
             return pd.DataFrame({"col1": [1]})
 
@@ -106,6 +107,7 @@ class TestFetchWithRetry:
 
         def always_slow_callable():
             import time
+
             time.sleep(0.1)
             return pd.DataFrame()
 
@@ -278,7 +280,9 @@ class TestQueryCryptoScreener:
         """Test ImportError when tvscreener not installed."""
         service = TvScreenerService()
 
-        with patch("app.services.tvscreener_service.CryptoScreener", side_effect=ImportError):
+        with patch(
+            "app.services.tvscreener_service.CryptoScreener", side_effect=ImportError
+        ):
             with pytest.raises(TvScreenerError, match="not installed"):
                 await service.query_crypto_screener(columns=[])
 
@@ -358,7 +362,9 @@ class TestQueryStockScreener:
         """Test ImportError when tvscreener not installed."""
         service = TvScreenerService()
 
-        with patch("app.services.tvscreener_service.StockScreener", side_effect=ImportError):
+        with patch(
+            "app.services.tvscreener_service.StockScreener", side_effect=ImportError
+        ):
             with pytest.raises(TvScreenerError, match="not installed"):
                 await service.query_stock_screener(columns=[])
 
@@ -480,6 +486,7 @@ class TestSingletonPattern:
         """Test get_tvscreener_service returns same instance (singleton)."""
         # Reset singleton for testing
         import app.services.tvscreener_service as module
+
         module._default_service = None
 
         service1 = get_tvscreener_service()

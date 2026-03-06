@@ -41,7 +41,13 @@ def sample_us_stock_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "ticker": ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"],
-            "name": ["Apple Inc.", "Microsoft Corp.", "Alphabet Inc.", "Amazon.com Inc.", "Tesla Inc."],
+            "name": [
+                "Apple Inc.",
+                "Microsoft Corp.",
+                "Alphabet Inc.",
+                "Amazon.com Inc.",
+                "Tesla Inc.",
+            ],
             "price": [175.50, 380.25, 140.80, 155.30, 210.45],
             "relative_strength_index_14": [35.2, 42.8, 29.5, 68.3, 55.7],
             "average_directional_index_14": [25.6, 18.9, 32.4, 45.2, 20.1],
@@ -58,9 +64,13 @@ class TestKoreanStockScreening:
     @pytest.mark.asyncio
     async def test_kr_screening_basic_no_filters(self, sample_kr_stock_df):
         """Test basic Korean stock screening without filters."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=sample_kr_stock_df)
+            mock_instance.query_stock_screener = AsyncMock(
+                return_value=sample_kr_stock_df
+            )
             mock_service.return_value = mock_instance
 
             result = await _screen_kr_via_tvscreener(limit=5)
@@ -84,12 +94,14 @@ class TestKoreanStockScreening:
     @pytest.mark.asyncio
     async def test_kr_screening_with_rsi_filter(self, sample_kr_stock_df):
         """Test Korean stock screening with RSI range filter."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             # Filter to only stocks with RSI between 28 and 40
             filtered_df = sample_kr_stock_df[
-                (sample_kr_stock_df["relative_strength_index_14"] >= 28) &
-                (sample_kr_stock_df["relative_strength_index_14"] <= 40)
+                (sample_kr_stock_df["relative_strength_index_14"] >= 28)
+                & (sample_kr_stock_df["relative_strength_index_14"] <= 40)
             ]
             mock_instance.query_stock_screener = AsyncMock(return_value=filtered_df)
             mock_service.return_value = mock_instance
@@ -101,7 +113,9 @@ class TestKoreanStockScreening:
             )
 
             assert result["error"] is None
-            assert result["count"] == 3  # 삼성전자(32.5), SK하이닉스(28.3), 카카오(38.9)
+            assert (
+                result["count"] == 3
+            )  # 삼성전자(32.5), SK하이닉스(28.3), 카카오(38.9)
             assert result["filters_applied"]["min_rsi"] == 28.0
             assert result["filters_applied"]["max_rsi"] == 40.0
 
@@ -113,7 +127,9 @@ class TestKoreanStockScreening:
     @pytest.mark.asyncio
     async def test_kr_screening_with_adx_filter(self, sample_kr_stock_df):
         """Test Korean stock screening with minimum ADX filter."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             # Filter to only stocks with ADX >= 30
             filtered_df = sample_kr_stock_df[
@@ -138,9 +154,13 @@ class TestKoreanStockScreening:
     @pytest.mark.asyncio
     async def test_kr_screening_sorting_by_rsi(self, sample_kr_stock_df):
         """Test Korean stock screening sorted by RSI ascending."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=sample_kr_stock_df)
+            mock_instance.query_stock_screener = AsyncMock(
+                return_value=sample_kr_stock_df
+            )
             mock_service.return_value = mock_instance
 
             result = await _screen_kr_via_tvscreener(
@@ -158,9 +178,13 @@ class TestKoreanStockScreening:
     @pytest.mark.asyncio
     async def test_kr_screening_sorting_by_volume(self, sample_kr_stock_df):
         """Test Korean stock screening sorted by volume descending."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=sample_kr_stock_df)
+            mock_instance.query_stock_screener = AsyncMock(
+                return_value=sample_kr_stock_df
+            )
             mock_service.return_value = mock_instance
 
             result = await _screen_kr_via_tvscreener(
@@ -178,9 +202,13 @@ class TestKoreanStockScreening:
     @pytest.mark.asyncio
     async def test_kr_screening_sorting_by_adx(self, sample_kr_stock_df):
         """Test Korean stock screening sorted by ADX descending."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=sample_kr_stock_df)
+            mock_instance.query_stock_screener = AsyncMock(
+                return_value=sample_kr_stock_df
+            )
             mock_service.return_value = mock_instance
 
             result = await _screen_kr_via_tvscreener(
@@ -198,7 +226,9 @@ class TestKoreanStockScreening:
     @pytest.mark.asyncio
     async def test_kr_screening_empty_dataframe(self):
         """Test Korean stock screening when StockScreener returns empty DataFrame."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             mock_instance.query_stock_screener = AsyncMock(return_value=pd.DataFrame())
             mock_service.return_value = mock_instance
@@ -215,7 +245,9 @@ class TestKoreanStockScreening:
     @pytest.mark.asyncio
     async def test_kr_screening_import_error(self):
         """Test Korean stock screening when tvscreener not installed."""
-        with patch("app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener") as mock_screen:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener"
+        ) as mock_screen:
             # Simulate ImportError
             result = {
                 "stocks": [],
@@ -228,7 +260,10 @@ class TestKoreanStockScreening:
 
             result = await mock_screen()
 
-            assert result["error"] == "tvscreener library not installed, cannot use StockScreener"
+            assert (
+                result["error"]
+                == "tvscreener library not installed, cannot use StockScreener"
+            )
             assert result["count"] == 0
 
     @pytest.mark.asyncio
@@ -236,7 +271,9 @@ class TestKoreanStockScreening:
         """Test Korean stock screening when rate limit is hit."""
         from app.services.tvscreener_service import TvScreenerError
 
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             mock_instance.query_stock_screener = AsyncMock(
                 side_effect=TvScreenerError("Rate limit exceeded")
@@ -252,7 +289,9 @@ class TestKoreanStockScreening:
     @pytest.mark.asyncio
     async def test_kr_screening_timeout_error(self):
         """Test Korean stock screening when query times out."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             mock_instance.query_stock_screener = AsyncMock(
                 side_effect=TimeoutError("Query timed out")
@@ -268,9 +307,13 @@ class TestKoreanStockScreening:
     @pytest.mark.asyncio
     async def test_kr_screening_limit_parameter(self, sample_kr_stock_df):
         """Test Korean stock screening respects limit parameter."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=sample_kr_stock_df)
+            mock_instance.query_stock_screener = AsyncMock(
+                return_value=sample_kr_stock_df
+            )
             mock_service.return_value = mock_instance
 
             result = await _screen_kr_via_tvscreener(limit=3)
@@ -286,9 +329,13 @@ class TestUSStockScreening:
     @pytest.mark.asyncio
     async def test_us_screening_basic_no_filters(self, sample_us_stock_df):
         """Test basic US stock screening without filters."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=sample_us_stock_df)
+            mock_instance.query_stock_screener = AsyncMock(
+                return_value=sample_us_stock_df
+            )
             mock_service.return_value = mock_instance
 
             result = await _screen_us_via_tvscreener(limit=5)
@@ -312,12 +359,14 @@ class TestUSStockScreening:
     @pytest.mark.asyncio
     async def test_us_screening_with_rsi_filter(self, sample_us_stock_df):
         """Test US stock screening with RSI range filter."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             # Filter to only stocks with RSI between 25 and 45
             filtered_df = sample_us_stock_df[
-                (sample_us_stock_df["relative_strength_index_14"] >= 25) &
-                (sample_us_stock_df["relative_strength_index_14"] <= 45)
+                (sample_us_stock_df["relative_strength_index_14"] >= 25)
+                & (sample_us_stock_df["relative_strength_index_14"] <= 45)
             ]
             mock_instance.query_stock_screener = AsyncMock(return_value=filtered_df)
             mock_service.return_value = mock_instance
@@ -341,7 +390,9 @@ class TestUSStockScreening:
     @pytest.mark.asyncio
     async def test_us_screening_with_adx_filter(self, sample_us_stock_df):
         """Test US stock screening with minimum ADX filter."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             # Filter to only stocks with ADX >= 30
             filtered_df = sample_us_stock_df[
@@ -366,9 +417,13 @@ class TestUSStockScreening:
     @pytest.mark.asyncio
     async def test_us_screening_sorting_by_rsi(self, sample_us_stock_df):
         """Test US stock screening sorted by RSI ascending."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=sample_us_stock_df)
+            mock_instance.query_stock_screener = AsyncMock(
+                return_value=sample_us_stock_df
+            )
             mock_service.return_value = mock_instance
 
             result = await _screen_us_via_tvscreener(
@@ -386,9 +441,13 @@ class TestUSStockScreening:
     @pytest.mark.asyncio
     async def test_us_screening_sorting_by_volume(self, sample_us_stock_df):
         """Test US stock screening sorted by volume descending."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=sample_us_stock_df)
+            mock_instance.query_stock_screener = AsyncMock(
+                return_value=sample_us_stock_df
+            )
             mock_service.return_value = mock_instance
 
             result = await _screen_us_via_tvscreener(
@@ -406,9 +465,13 @@ class TestUSStockScreening:
     @pytest.mark.asyncio
     async def test_us_screening_sorting_by_change(self, sample_us_stock_df):
         """Test US stock screening sorted by change_percent descending."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
-            mock_instance.query_stock_screener = AsyncMock(return_value=sample_us_stock_df)
+            mock_instance.query_stock_screener = AsyncMock(
+                return_value=sample_us_stock_df
+            )
             mock_service.return_value = mock_instance
 
             result = await _screen_us_via_tvscreener(
@@ -426,7 +489,9 @@ class TestUSStockScreening:
     @pytest.mark.asyncio
     async def test_us_screening_empty_dataframe(self):
         """Test US stock screening when StockScreener returns empty DataFrame."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             mock_instance.query_stock_screener = AsyncMock(return_value=pd.DataFrame())
             mock_service.return_value = mock_instance
@@ -443,7 +508,9 @@ class TestUSStockScreening:
     @pytest.mark.asyncio
     async def test_us_screening_import_error(self):
         """Test US stock screening when tvscreener not installed."""
-        with patch("app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener") as mock_screen:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener"
+        ) as mock_screen:
             # Simulate ImportError
             result = {
                 "stocks": [],
@@ -456,7 +523,10 @@ class TestUSStockScreening:
 
             result = await mock_screen()
 
-            assert result["error"] == "tvscreener library not installed, cannot use StockScreener"
+            assert (
+                result["error"]
+                == "tvscreener library not installed, cannot use StockScreener"
+            )
             assert result["count"] == 0
 
     @pytest.mark.asyncio
@@ -464,7 +534,9 @@ class TestUSStockScreening:
         """Test US stock screening when rate limit is hit."""
         from app.services.tvscreener_service import TvScreenerError
 
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             mock_instance.query_stock_screener = AsyncMock(
                 side_effect=TvScreenerError("Rate limit exceeded")
@@ -480,7 +552,9 @@ class TestUSStockScreening:
     @pytest.mark.asyncio
     async def test_us_screening_timeout_error(self):
         """Test US stock screening when query times out."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             mock_instance.query_stock_screener = AsyncMock(
                 side_effect=TimeoutError("Query timed out")
@@ -496,12 +570,14 @@ class TestUSStockScreening:
     @pytest.mark.asyncio
     async def test_us_screening_combined_filters(self, sample_us_stock_df):
         """Test US stock screening with combined RSI and ADX filters."""
-        with patch("app.mcp_server.tooling.analysis_screen_core.TvScreenerService") as mock_service:
+        with patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService"
+        ) as mock_service:
             mock_instance = AsyncMock()
             # Filter stocks with RSI <= 40 AND ADX >= 25
             filtered_df = sample_us_stock_df[
-                (sample_us_stock_df["relative_strength_index_14"] <= 40) &
-                (sample_us_stock_df["average_directional_index_14"] >= 25)
+                (sample_us_stock_df["relative_strength_index_14"] <= 40)
+                & (sample_us_stock_df["average_directional_index_14"] >= 25)
             ]
             mock_instance.query_stock_screener = AsyncMock(return_value=filtered_df)
             mock_service.return_value = mock_instance

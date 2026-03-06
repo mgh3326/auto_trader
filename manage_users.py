@@ -10,6 +10,7 @@
     python manage_users.py activate <username>     # 사용자 활성화
     python manage_users.py deactivate <username>   # 사용자 비활성화
 """
+
 import asyncio
 import logging
 import sys
@@ -59,7 +60,9 @@ async def list_users():
                 return
 
             print("\n" + "=" * 80)
-            print(f"{'ID':<5} {'사용자명':<20} {'이메일':<30} {'권한':<10} {'상태':<10}")
+            print(
+                f"{'ID':<5} {'사용자명':<20} {'이메일':<30} {'권한':<10} {'상태':<10}"
+            )
             print("=" * 80)
 
             for user in users:
@@ -81,9 +84,7 @@ async def change_role(username: str, new_role: UserRole):
     """사용자 권한 변경"""
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(User).where(User.username == username)
-            )
+            result = await db.execute(select(User).where(User.username == username))
             user = result.scalar_one_or_none()
 
             if not user:
@@ -113,9 +114,7 @@ async def toggle_active(username: str, active: bool):
     """사용자 활성화/비활성화"""
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(User).where(User.username == username)
-            )
+            result = await db.execute(select(User).where(User.username == username))
             user = result.scalar_one_or_none()
 
             if not user:
@@ -185,8 +184,7 @@ async def main():
     elif command in commands_with_args:
         if len(sys.argv) < 3:
             print(
-                f"❌ 사용자명을 입력하세요: "
-                f"python manage_users.py {command} <username>"
+                f"❌ 사용자명을 입력하세요: python manage_users.py {command} <username>"
             )
             return
         handler, arg = commands_with_args[command]

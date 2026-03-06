@@ -74,7 +74,9 @@ class TestUpbitToTradingView:
 
     def test_missing_separator_raises_error(self):
         """Test that symbol without hyphen raises InvalidUpbitSymbolError."""
-        with pytest.raises(InvalidUpbitSymbolError, match="Invalid Upbit symbol format"):
+        with pytest.raises(
+            InvalidUpbitSymbolError, match="Invalid Upbit symbol format"
+        ):
             upbit_to_tradingview("KRWBTC")
 
     def test_empty_quote_currency_raises_error(self):
@@ -157,7 +159,9 @@ class TestTradingViewToUpbit:
 
     def test_wrong_exchange_raises_error(self):
         """Test that non-Upbit exchange raises InvalidTradingViewSymbolError."""
-        with pytest.raises(InvalidTradingViewSymbolError, match="Invalid TradingView symbol"):
+        with pytest.raises(
+            InvalidTradingViewSymbolError, match="Invalid TradingView symbol"
+        ):
             tradingview_to_upbit("BINANCE:BTCUSDT")
 
     def test_missing_prefix_raises_error(self):
@@ -167,7 +171,9 @@ class TestTradingViewToUpbit:
 
     def test_empty_pair_raises_error(self):
         """Test that empty pair after prefix raises InvalidTradingViewSymbolError."""
-        with pytest.raises(InvalidTradingViewSymbolError, match="Pair component is empty"):
+        with pytest.raises(
+            InvalidTradingViewSymbolError, match="Pair component is empty"
+        ):
             tradingview_to_upbit("UPBIT:")
 
     def test_whitespace_handling(self):

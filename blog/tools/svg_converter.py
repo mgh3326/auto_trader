@@ -225,7 +225,9 @@ async def main():
         """,
     )
     parser.add_argument("files", nargs="+", help="변환할 SVG 파일들")
-    parser.add_argument("-w", "--width", type=int, default=1200, help="출력 너비 (기본값: 1200)")
+    parser.add_argument(
+        "-w", "--width", type=int, default=1200, help="출력 너비 (기본값: 1200)"
+    )
     parser.add_argument("-o", "--output", help="출력 파일명 (단일 파일 변환 시)")
     parser.add_argument("-d", "--dir", help="이미지 디렉토리")
 

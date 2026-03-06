@@ -125,9 +125,7 @@ def upbit_to_tradingview(upbit_symbol: str, *, target_quote: str | None = None) 
     return tradingview_symbol
 
 
-def tradingview_to_upbit(
-    tradingview_symbol: str, *, default_quote: str = "KRW"
-) -> str:
+def tradingview_to_upbit(tradingview_symbol: str, *, default_quote: str = "KRW") -> str:
     """Convert TradingView symbol to Upbit market format.
 
     Parameters

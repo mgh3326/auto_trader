@@ -32,7 +32,7 @@ class Python314Images(BlogImageGenerator):
             title_line2="Pi Release",
             subtitle="t-strings, Free-threading, 그리고 성능 개선",
             icons=[
-                ("t\"\"", "t-strings", "#3776AB"),
+                ('t""', "t-strings", "#3776AB"),
                 ("//", "Free-thread", "#FFD43B"),
                 ("5%", "성능 향상", "#4CAF50"),
                 ("zstd", "압축", "#FF9800"),
