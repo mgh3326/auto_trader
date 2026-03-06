@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
+import pandas as pd
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
@@ -1872,6 +1873,84 @@ class TestScreenStocksRsiLogging:
         assert result["results"][0].get("rsi") is None
         assert any("[RSI-KR] ❌ Failed" in record.message for record in caplog.records)
         assert any("RuntimeError" in record.message for record in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_kr_rsi_empty_or_malformed_ohlcv_keeps_base_rows(self, monkeypatch):
+        async def mock_fetch_stock_all_cached(market):
+            if market == "STK":
+                return [
+                    {
+                        "code": "KR7005930003",
+                        "short_code": "005930",
+                        "name": "삼성전자",
+                        "close": 80000.0,
+                        "volume": 1000,
+                        "market_cap": 1_000_000,
+                    },
+                    {
+                        "code": "KR7000660001",
+                        "short_code": "000660",
+                        "name": "SK하이닉스",
+                        "close": 150000.0,
+                        "volume": 900,
+                        "market_cap": 900_000,
+                    },
+                ]
+            return []
+
+        async def mock_fetch_valuation_all_cached(market):
+            return {}
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            assert market_type == "equity_kr"
+            assert count == 50
+            if symbol == "005930":
+                return pd.DataFrame()
+            return pd.DataFrame(
+                {
+                    "date": pd.to_datetime(["2026-03-07"]),
+                    "open": [1.0],
+                }
+            )
+
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "fetch_valuation_all_cached",
+            mock_fetch_valuation_all_cached,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kospi",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["returned_count"] == 2
+        assert [item["code"] for item in result["results"]] == [
+            "KR7005930003",
+            "KR7000660001",
+        ]
+        assert all(item.get("rsi") is None for item in result["results"])
+        diagnostics = result["meta"]["rsi_enrichment"]
+        assert diagnostics["attempted"] == 2
+        assert diagnostics["succeeded"] == 0
+        assert diagnostics["failed"] == 2
+        assert diagnostics["error_samples"]
+        assert diagnostics["error_samples"][0] == "Missing OHLCV close data"
 
     @pytest.mark.asyncio
     async def test_crypto_rsi_ohlcv_exception_logs_error(self, monkeypatch, caplog):
