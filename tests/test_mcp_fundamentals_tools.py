@@ -26,6 +26,7 @@ import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import (
+    analysis_screening,
     fundamentals_sources_binance,
     fundamentals_sources_coingecko,
     fundamentals_sources_indices,
@@ -2394,7 +2395,7 @@ async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
         )
 
     monkeypatch.setattr(
-        market_data_indicators,
+        analysis_screening,
         "_fetch_ohlcv_for_indicators",
         mock_fetch_ohlcv,
     )
