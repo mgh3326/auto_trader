@@ -12,14 +12,26 @@ The MarketStrategy ABC defines the interface for market-specific operations:
 
 The DomesticStrategy and OverseasStrategy implement these for Korean and
 US/overseas markets respectively.
+
+The TradingOrchestrator class executes trading automation steps sequentially
+with failure policy handling and result aggregation.
 """
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+from app.jobs.kis_trading_types import (
+    FailurePolicy,
+    StepOutcome,
+    StepResult,
+    TradingContext,
+)
+
 if TYPE_CHECKING:
     from app.analysis.analyzer import Analyzer
+    from app.jobs.kis_trading_steps import TradingStep
     from app.services.brokers.kis.client import KISClient
 
 logger = logging.getLogger(__name__)
@@ -529,3 +541,237 @@ class OverseasStrategy(MarketStrategy):
                 e,
             )
             return default_price
+
+
+class TradingOrchestrator:
+    """
+    Executes trading automation steps sequentially.
+
+    The orchestrator manages the execution of steps for each stock holding,
+    handling failure policies, skip conditions, and aggregating results.
+
+    Usage:
+        steps = [
+            AnalyzeStep(),
+            CancelBuyOrdersStep(),
+            BuyStep(),
+            RefreshStep(),
+            CancelSellOrdersStep(),
+            SellStep(),
+        ]
+
+        orchestrator = TradingOrchestrator(
+            strategy=DomesticStrategy(),
+            steps=steps,
+        )
+
+        result = await orchestrator.run(kis_client)
+    """
+
+    def __init__(
+        self,
+        strategy: MarketStrategy,
+        steps: list["TradingStep"],
+    ) -> None:
+        self.strategy = strategy
+        self.steps = steps
+
+    async def run(self, kis: "KISClient") -> dict:
+        """
+        Execute all steps for all holdings.
+
+        Args:
+            kis: KIS client for API calls
+
+        Returns:
+            Dictionary with status and results:
+            - status: "completed", "stopped", or "partial"
+            - message: Human-readable summary
+            - results: List of per-stock step results
+        """
+        # Fetch holdings and open orders using strategy
+        holdings = await self.strategy.fetch_holdings(kis)
+        open_orders = await self.strategy.fetch_open_orders(kis)
+
+        # Check for empty holdings
+        if not holdings:
+            logger.info(
+                "[%s] 보유 종목 없음",
+                self.strategy.market_name,
+            )
+            return {
+                "status": "completed",
+                "message": f"보유 중인 {self.strategy.market_name}이 없습니다.",
+                "results": [],
+            }
+
+        logger.info(
+            "[%s] %d개 종목 처리 시작",
+            self.strategy.market_name,
+            len(holdings),
+        )
+
+        results = []
+        global_stop = False
+
+        # Process each stock
+        for stock in holdings:
+            if global_stop:
+                logger.warning(
+                    "[%s] 전체 자동화 중지됨 (STOP_ALL)",
+                    self.strategy.market_name,
+                )
+                break
+
+            # Create context for this stock
+            context = TradingContext(
+                stock=stock,
+                open_orders=open_orders,
+                kis=kis,
+                strategy=self.strategy,
+            )
+
+            # Execute steps for this stock
+            stock_steps, should_stop_all = await self._run_stock_automation(context)
+
+            results.append({
+                "symbol": context.symbol,
+                "name": context.name,
+                "steps": stock_steps,
+            })
+
+            # Check for STOP_ALL
+            if should_stop_all:
+                global_stop = True
+
+            # Rate limiting between stocks
+            await asyncio.sleep(0.2)
+
+        logger.info(
+            "[%s] %d개 종목 처리 완료",
+            self.strategy.market_name,
+            len(results),
+        )
+
+        if global_stop:
+            logger.warning(
+                "[%s] 전체 자동화 중지 (STOP_ALL)",
+                self.strategy.market_name,
+            )
+            return {
+                "status": "stopped",
+                "message": "STOP_ALL failure policy triggered",
+                "results": results,
+            }
+
+        return {
+            "status": "completed",
+            "message": f"{len(results)}개 종목 처리 완료",
+            "results": results,
+        }
+
+    async def _run_stock_automation(
+        self,
+        context: TradingContext,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """
+        Execute all steps for a single stock.
+
+        Args:
+            context: Trading context for this stock
+
+        Returns:
+            Tuple of (stock_steps, should_stop_all)
+            - stock_steps: List of step result dictionaries
+            - should_stop_all: True if STOP_ALL was triggered
+        """
+        stock_steps: list[dict[str, Any]] = []
+        should_stop_all = False
+
+        logger.info(
+            "[%s] 종목 처리 시작: %s (%s)",
+            self.strategy.market_name,
+            context.name,
+            context.symbol,
+        )
+
+        # Execute each step sequentially
+        for step in self.steps:
+            # Check skip conditions
+            if step.should_skip(context):
+                skip_reason = "Skip condition met"
+                step._log_skip(context, skip_reason)
+                stock_steps.append({
+                    "step": step.name,
+                    "result": {
+                        "skipped": True,
+                        "reason": skip_reason,
+                    },
+                })
+                continue
+
+            # Execute step
+            try:
+                outcome = await step.execute(context)
+
+                # Record step result
+                stock_steps.append({
+                    "step": step.name,
+                    "result": {
+                        "success": outcome.result == StepResult.SUCCESS,
+                        "skipped": outcome.result == StepResult.SKIP,
+                        "message": outcome.message,
+                        "data": outcome.data,
+                    },
+                })
+
+                # Handle failure policy
+                if outcome.result == StepResult.FAILURE:
+                    if step.failure_policy == FailurePolicy.STOP_STOCK:
+                        logger.warning(
+                            "[%s] %s 단계 실패 - 종목 처리 중단 (STOP_STOCK)",
+                            self.strategy.market_name,
+                            step.name,
+                        )
+                        break  # Stop processing this stock
+                    elif step.failure_policy == FailurePolicy.STOP_ALL:
+                        logger.error(
+                            "[%s] %s 단계 실패 - 전체 자동화 중단 (STOP_ALL)",
+                            self.strategy.market_name,
+                            step.name,
+                        )
+                        should_stop_all = True
+                        break  # Stop processing this stock
+                    # else: CONTINUE - just log and continue
+                    logger.warning(
+                        "[%s] %s 단계 실패 - 계속 진행 (CONTINUE): %s",
+                        self.strategy.market_name,
+                        step.name,
+                        outcome.message,
+                    )
+
+            except Exception as e:
+                # Unexpected error during step execution
+                logger.error(
+                    "[%s] %s 단계 예외 발생: %s",
+                    self.strategy.market_name,
+                    step.name,
+                    e,
+                    exc_info=e,
+                )
+                stock_steps.append({
+                    "step": step.name,
+                    "result": {
+                        "success": False,
+                        "error": str(e),
+                    },
+                })
+
+                # Treat unexpected errors according to step's failure policy
+                if step.failure_policy == FailurePolicy.STOP_STOCK:
+                    break
+                elif step.failure_policy == FailurePolicy.STOP_ALL:
+                    should_stop_all = True
+                    break
+
+        return stock_steps, should_stop_all
