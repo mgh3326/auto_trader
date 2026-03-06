@@ -46,7 +46,7 @@ from app.monitoring import build_yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
 
 logger = logging.getLogger(__name__)
-_TVSCREENER_STOCK_SORTS = {"rsi", "volume", "change_rate"}
+_TVSCREENER_STOCK_SORTS = {"volume", "change_rate", "market_cap", "dividend_yield"}
 name_to_corp_map: dict[str, Any]
 prime_index: Any | None
 
@@ -84,10 +84,24 @@ async def get_stock_name_by_code(code: str) -> str | None:
         return None
 
 
-def _can_use_tvscreener_stock_path(sort_by: str, max_rsi: float | None) -> bool:
-    return (
-        sort_by == "rsi" or max_rsi is not None
-    ) and sort_by in _TVSCREENER_STOCK_SORTS
+def _can_use_tvscreener_stock_path(
+    *,
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    sort_by: str,
+    max_rsi: float | None,
+) -> bool:
+    if max_rsi is None or sort_by not in _TVSCREENER_STOCK_SORTS:
+        return False
+
+    if market in {"kr", "kospi", "kosdaq"}:
+        return asset_type == "stock" and category is None
+
+    if market == "us":
+        return asset_type in {None, "stock"} and category is None
+
+    return False
 
 
 def _map_tvscreener_stock_row(
@@ -101,14 +115,14 @@ def _map_tvscreener_stock_row(
         "close": row.get("price"),
         "change_rate": row.get("change_percent"),
         "volume": row.get("volume"),
-        "market_cap": None,
-        "per": None,
-        "dividend_yield": None,
+        "market_cap": row.get("market_cap"),
+        "per": row.get("per"),
+        "dividend_yield": row.get("dividend_yield"),
         "rsi": row.get("rsi"),
-        "market": market,
+        "market": row.get("market") or market,
     }
-    if market in {"kr", "kospi", "kosdaq"}:
-        mapped["pbr"] = None
+    if row.get("pbr") is not None or market in {"kr", "kospi", "kosdaq"}:
+        mapped["pbr"] = row.get("pbr")
     return mapped
 
 
@@ -130,6 +144,8 @@ def _adapt_tvscreener_stock_response(
     normalized_filters.setdefault("market", market)
     normalized_filters.setdefault("asset_type", "stock")
     normalized_filters.setdefault("category", None)
+    normalized_filters.setdefault("sort_by", None)
+    normalized_filters.setdefault("sort_order", "desc")
     total_count = int(tvscreener_result.get("count", len(rows)) or 0)
     return _build_screen_response(rows, total_count, normalized_filters, market)
 
@@ -553,13 +569,27 @@ async def screen_stocks_impl(
 
     if normalized_market in ("kr", "kospi", "kosdaq"):
         # Try tvscreener implementation first for RSI-based screening
-        if _can_use_tvscreener_stock_path(normalized_sort_by, max_rsi):
+        if _can_use_tvscreener_stock_path(
+            market=normalized_market,
+            asset_type=normalized_asset_type,
+            category=category,
+            sort_by=normalized_sort_by,
+            max_rsi=max_rsi,
+        ):
             try:
                 tvscreener_result = await _screen_kr_via_tvscreener(
+                    market=normalized_market,
+                    asset_type=normalized_asset_type,
+                    category=category,
+                    min_market_cap=min_market_cap,
+                    max_per=max_per,
+                    max_pbr=max_pbr,
+                    min_dividend_yield=min_dividend_yield,
                     min_rsi=None,
                     max_rsi=max_rsi,
                     min_adx=None,
                     sort_by=normalized_sort_by,
+                    sort_order=normalized_sort_order,
                     limit=limit,
                 )
                 if tvscreener_result and not tvscreener_result.get("error"):
@@ -593,13 +623,26 @@ async def screen_stocks_impl(
         )
     if normalized_market == "us":
         # Try tvscreener implementation first for RSI-based screening
-        if _can_use_tvscreener_stock_path(normalized_sort_by, max_rsi):
+        if _can_use_tvscreener_stock_path(
+            market=normalized_market,
+            asset_type=normalized_asset_type,
+            category=category,
+            sort_by=normalized_sort_by,
+            max_rsi=max_rsi,
+        ):
             try:
                 tvscreener_result = await _screen_us_via_tvscreener(
+                    market=normalized_market,
+                    asset_type=normalized_asset_type,
+                    category=category,
+                    min_market_cap=min_market_cap,
+                    max_per=max_per,
+                    min_dividend_yield=min_dividend_yield,
                     min_rsi=None,
                     max_rsi=max_rsi,
                     min_adx=None,
                     sort_by=normalized_sort_by,
+                    sort_order=normalized_sort_order,
                     limit=limit,
                 )
                 if tvscreener_result and not tvscreener_result.get("error"):

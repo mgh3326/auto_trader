@@ -52,6 +52,8 @@ COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 def _to_optional_float(value: Any) -> float | None:
     if value is None:
         return None
+    if value != value:
+        return None
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -60,6 +62,8 @@ def _to_optional_float(value: Any) -> float | None:
 
 def _to_optional_int(value: Any) -> int | None:
     if value is None:
+        return None
+    if value != value:
         return None
     try:
         return int(value)
@@ -105,6 +109,34 @@ def _strip_exchange_prefix(symbol: Any) -> str:
     if not text:
         return ""
     return text.split(":", maxsplit=1)[-1].strip()
+
+
+def _get_first_present(mapping: Any, *keys: str) -> Any:
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _get_tvscreener_attr(enum_obj: Any, *names: str) -> Any | None:
+    for name in names:
+        value = getattr(enum_obj, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _extract_kr_stock_code(value: Any) -> str:
+    return _strip_exchange_prefix(value).upper()
+
+
+def _kr_market_codes(market: str) -> tuple[list[str], str]:
+    if market == "kospi":
+        return ["STK"], "STK"
+    if market == "kosdaq":
+        return ["KSQ"], "KSQ"
+    return ["STK", "KSQ"], "ALL"
 
 
 def _clean_text(value: Any) -> str:
@@ -1318,10 +1350,18 @@ async def _enrich_crypto_indicators(
 
 
 async def _screen_kr_via_tvscreener(
+    market: str = "kr",
+    asset_type: str | None = "stock",
+    category: str | None = None,
+    min_market_cap: float | None = None,
+    max_per: float | None = None,
+    max_pbr: float | None = None,
+    min_dividend_yield: float | None = None,
     min_rsi: float | None = None,
     max_rsi: float | None = None,
     min_adx: float | None = None,
     sort_by: str = "rsi",
+    sort_order: str = "desc",
     limit: int = 50,
 ) -> dict[str, Any]:
     """Screen Korean stocks using TradingView StockScreener API.
@@ -1353,19 +1393,38 @@ async def _screen_kr_via_tvscreener(
         - filters_applied: Dictionary of applied filter parameters
         - error: Error message if query failed (None on success)
     """
-    result = {
+    (
+        min_dividend_yield_input,
+        min_dividend_yield_normalized,
+    ) = _normalize_dividend_yield_threshold(min_dividend_yield)
+
+    result: dict[str, Any] = {
         "stocks": [],
         "source": "tvscreener",
         "count": 0,
         "filters_applied": {
+            "market": market,
+            "asset_type": asset_type,
+            "category": category,
+            "min_market_cap": min_market_cap,
+            "max_per": max_per,
+            "max_pbr": max_pbr,
+            "min_dividend_yield": min_dividend_yield_normalized,
             "min_rsi": min_rsi,
             "max_rsi": max_rsi,
             "min_adx": min_adx,
             "sort_by": sort_by,
+            "sort_order": sort_order,
             "limit": limit,
         },
         "error": None,
     }
+    if min_dividend_yield_input is not None:
+        result["filters_applied"]["min_dividend_yield_input"] = min_dividend_yield_input
+    if min_dividend_yield_normalized is not None:
+        result["filters_applied"]["min_dividend_yield_normalized"] = (
+            min_dividend_yield_normalized
+        )
 
     try:
         try:
@@ -1428,43 +1487,67 @@ async def _screen_kr_via_tvscreener(
 
         logger.info("[Screen-KR-TV] StockScreener returned %d Korean stocks", len(df))
 
+        market_codes, valuation_market = _kr_market_codes(market)
+        universe_rows: list[dict[str, Any]] = []
+        for market_code in market_codes:
+            universe_rows.extend(await fetch_stock_all_cached(market=market_code))
+
+        allowed_by_code: dict[str, dict[str, Any]] = {}
+        for item in universe_rows:
+            code = str(item.get("short_code") or item.get("code") or "").strip().upper()
+            if code:
+                allowed_by_code[code] = dict(item)
+
+        valuations: dict[str, dict[str, Any]] = {}
+        try:
+            valuations = await fetch_valuation_all_cached(market=valuation_market)
+        except Exception:
+            valuations = {}
+
         stocks = []
         for _, row in df.iterrows():
+            code = _extract_kr_stock_code(row.get("symbol"))
+            if not code or code not in allowed_by_code:
+                continue
+
+            base = allowed_by_code[code]
+            valuation = valuations.get(code, {})
             stock = {
-                "symbol": _strip_exchange_prefix(row.get("symbol")),
+                "symbol": code,
+                "short_code": code,
+                "code": base.get("code") or code,
                 "name": _pick_display_name(row),
                 "price": _to_optional_float(row.get("price")),
                 "rsi": _to_optional_float(row.get("relative_strength_index_14")),
                 "adx": _to_optional_float(row.get("average_directional_index_14")),
                 "volume": _to_optional_float(row.get("volume")),
                 "change_percent": _to_optional_float(row.get("change_percent")),
+                "market_cap": _to_optional_float(base.get("market_cap")),
+                "per": _to_optional_float(valuation.get("per")),
+                "pbr": _to_optional_float(valuation.get("pbr")),
+                "dividend_yield": _to_optional_float(valuation.get("dividend_yield")),
+                "market": base.get("market") or market,
                 "country": str(row.get("country", "")).strip()
                 if "country" in row
                 else "South Korea",
             }
+            stock["change_rate"] = stock["change_percent"]
+            if not stock["name"]:
+                stock["name"] = str(base.get("name") or "").strip()
             stocks.append(stock)
 
-        sort_field_map = {
-            "rsi": "rsi",
-            "adx": "adx",
-            "volume": "volume",
-            "change": "change_percent",
-            "change_rate": "change_percent",
-        }
-        sort_field = sort_field_map.get(sort_by, "rsi")
-
-        reverse = sort_by != "rsi"
-        stocks.sort(
-            key=lambda s: (
-                s.get(sort_field)
-                if s.get(sort_field) is not None
-                else (float("inf") if not reverse else float("-inf"))
-            ),
-            reverse=reverse,
+        filtered = _apply_basic_filters(
+            stocks,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=max_pbr,
+            min_dividend_yield=min_dividend_yield_normalized,
+            max_rsi=max_rsi,
         )
+        ordered = _sort_and_limit(filtered, sort_by, sort_order, limit)
 
-        result["count"] = len(stocks)
-        result["stocks"] = stocks[:limit]
+        result["count"] = len(filtered)
+        result["stocks"] = ordered
 
         logger.info(
             "[Screen-KR-TV] Returning %d Korean stocks sorted by %s",
@@ -1496,10 +1579,17 @@ async def _screen_kr_via_tvscreener(
 
 
 async def _screen_us_via_tvscreener(
+    market: str = "us",
+    asset_type: str | None = None,
+    category: str | None = None,
+    min_market_cap: float | None = None,
+    max_per: float | None = None,
+    min_dividend_yield: float | None = None,
     min_rsi: float | None = None,
     max_rsi: float | None = None,
     min_adx: float | None = None,
     sort_by: str = "rsi",
+    sort_order: str = "desc",
     limit: int = 50,
 ) -> dict[str, Any]:
     """Screen US stocks using TradingView StockScreener API.
@@ -1531,19 +1621,37 @@ async def _screen_us_via_tvscreener(
         - filters_applied: Dictionary of applied filter parameters
         - error: Error message if query failed (None on success)
     """
-    result = {
+    (
+        min_dividend_yield_input,
+        min_dividend_yield_normalized,
+    ) = _normalize_dividend_yield_threshold(min_dividend_yield)
+
+    result: dict[str, Any] = {
         "stocks": [],
         "source": "tvscreener",
         "count": 0,
         "filters_applied": {
+            "market": market,
+            "asset_type": asset_type,
+            "category": category,
+            "min_market_cap": min_market_cap,
+            "max_per": max_per,
+            "min_dividend_yield": min_dividend_yield_normalized,
             "min_rsi": min_rsi,
             "max_rsi": max_rsi,
             "min_adx": min_adx,
             "sort_by": sort_by,
+            "sort_order": sort_order,
             "limit": limit,
         },
         "error": None,
     }
+    if min_dividend_yield_input is not None:
+        result["filters_applied"]["min_dividend_yield_input"] = min_dividend_yield_input
+    if min_dividend_yield_normalized is not None:
+        result["filters_applied"]["min_dividend_yield_normalized"] = (
+            min_dividend_yield_normalized
+        )
 
     try:
         try:
@@ -1556,6 +1664,38 @@ async def _screen_us_via_tvscreener(
             result["error"] = error_msg
             return result
 
+        market_cap_field = _get_tvscreener_attr(
+            StockField,
+            "MARKET_CAPITALIZATION",
+            "MARKET_CAP_BASIC",
+        )
+        pe_field = _get_tvscreener_attr(
+            StockField,
+            "PRICE_TO_EARNINGS_RATIO_TTM",
+            "PRICE_TO_EARNINGS_TTM",
+        )
+        dividend_field = _get_tvscreener_attr(
+            StockField,
+            "DIVIDEND_YIELD_FORWARD",
+            "DIVIDEND_YIELD_RECENT",
+        )
+
+        if sort_by == "market_cap" and market_cap_field is None:
+            result["error"] = "tvscreener market-cap field unavailable"
+            return result
+        if sort_by == "dividend_yield" and dividend_field is None:
+            result["error"] = "tvscreener dividend-yield field unavailable"
+            return result
+        if min_market_cap is not None and market_cap_field is None:
+            result["error"] = "tvscreener market-cap field unavailable"
+            return result
+        if max_per is not None and pe_field is None:
+            result["error"] = "tvscreener PE field unavailable"
+            return result
+        if min_dividend_yield is not None and dividend_field is None:
+            result["error"] = "tvscreener dividend-yield field unavailable"
+            return result
+
         columns = [
             StockField.ACTIVE_SYMBOL,
             StockField.DESCRIPTION,
@@ -1566,6 +1706,12 @@ async def _screen_us_via_tvscreener(
             StockField.VOLUME,
             StockField.CHANGE_PERCENT,
         ]
+        if market_cap_field is not None:
+            columns.append(market_cap_field)
+        if pe_field is not None:
+            columns.append(pe_field)
+        if dividend_field is not None:
+            columns.append(dividend_field)
 
         try:
             columns.append(StockField.COUNTRY)
@@ -1581,6 +1727,12 @@ async def _screen_us_via_tvscreener(
 
         if min_adx is not None:
             where_conditions.append(StockField.AVERAGE_DIRECTIONAL_INDEX_14 >= min_adx)
+        if min_market_cap is not None and market_cap_field is not None:
+            where_conditions.append(market_cap_field >= min_market_cap)
+        if max_per is not None and pe_field is not None:
+            where_conditions.append(pe_field <= max_per)
+        if min_dividend_yield_normalized is not None and dividend_field is not None:
+            where_conditions.append(dividend_field >= min_dividend_yield_normalized)
 
         logger.info(
             "[Screen-US-TV] Querying StockScreener for US stocks "
@@ -1608,41 +1760,54 @@ async def _screen_us_via_tvscreener(
 
         stocks = []
         for _, row in df.iterrows():
+            price = _to_optional_float(row.get("price"))
+            if price is None or price <= 0:
+                continue
             stock = {
                 "symbol": _strip_exchange_prefix(row.get("symbol")),
                 "name": _pick_display_name(row),
-                "price": _to_optional_float(row.get("price")),
+                "price": price,
                 "rsi": _to_optional_float(row.get("relative_strength_index_14")),
                 "adx": _to_optional_float(row.get("average_directional_index_14")),
                 "volume": _to_optional_float(row.get("volume")),
                 "change_percent": _to_optional_float(row.get("change_percent")),
+                "market_cap": _to_optional_float(
+                    _get_first_present(row, "market_capitalization", "market_cap_basic")
+                ),
+                "per": _to_optional_float(
+                    _get_first_present(
+                        row,
+                        "price_to_earnings_ratio_ttm",
+                        "price_to_earnings_ttm",
+                    )
+                ),
+                "dividend_yield": _to_optional_float(
+                    _get_first_present(
+                        row,
+                        "dividend_yield_forward",
+                        "dividend_yield_recent",
+                    )
+                ),
+                "market": market,
                 "country": str(row.get("country", "")).strip()
                 if "country" in row
                 else "United States",
             }
+            stock["change_rate"] = stock["change_percent"]
             stocks.append(stock)
 
-        sort_field_map = {
-            "rsi": "rsi",
-            "adx": "adx",
-            "volume": "volume",
-            "change": "change_percent",
-            "change_rate": "change_percent",
-        }
-        sort_field = sort_field_map.get(sort_by, "rsi")
-
-        reverse = sort_by != "rsi"
-        stocks.sort(
-            key=lambda s: (
-                s.get(sort_field)
-                if s.get(sort_field) is not None
-                else (float("inf") if not reverse else float("-inf"))
-            ),
-            reverse=reverse,
+        filtered = _apply_basic_filters(
+            stocks,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=None,
+            min_dividend_yield=min_dividend_yield_normalized,
+            max_rsi=max_rsi,
         )
+        ordered = _sort_and_limit(filtered, sort_by, sort_order, limit)
 
-        result["count"] = len(stocks)
-        result["stocks"] = stocks[:limit]
+        result["count"] = len(filtered)
+        result["stocks"] = ordered
 
         logger.info(
             "[Screen-US-TV] Returning %d US stocks sorted by %s",
