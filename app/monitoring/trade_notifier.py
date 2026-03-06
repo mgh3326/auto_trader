@@ -38,7 +38,11 @@ class TradeNotifier:
         if not self._initialized:
             self._bot_token: str | None = None
             self._chat_ids: list[str] = []
-            self._discord_webhook_urls: list[str] = []
+            # Discord webhooks for different market types
+            self._discord_webhook_us: str | None = None
+            self._discord_webhook_kr: str | None = None
+            self._discord_webhook_crypto: str | None = None
+            self._discord_webhook_alerts: str | None = None
             self._enabled: bool = False
             self._http_client: httpx.AsyncClient | None = None
             TradeNotifier._initialized = True
@@ -49,6 +53,10 @@ class TradeNotifier:
         chat_ids: list[str],
         enabled: bool = True,
         discord_webhook_urls: list[str] | None = None,
+        discord_webhook_us: str | None = None,
+        discord_webhook_kr: str | None = None,
+        discord_webhook_crypto: str | None = None,
+        discord_webhook_alerts: str | None = None,
     ) -> None:
         """
         Configure the trade notifier.
@@ -57,18 +65,33 @@ class TradeNotifier:
             bot_token: Telegram bot token
             chat_ids: List of Telegram chat IDs to send notifications to
             enabled: Whether trade notifications are enabled
-            discord_webhook_urls: List of Discord webhook URLs to send notifications to
+            discord_webhook_urls: List of Discord webhook URLs (deprecated, use specific webhooks)
+            discord_webhook_us: Discord webhook URL for US stocks
+            discord_webhook_kr: Discord webhook URL for Korean stocks
+            discord_webhook_crypto: Discord webhook URL for crypto
+            discord_webhook_alerts: Discord webhook URL for alerts/analysis
         """
         self._bot_token = bot_token
         self._chat_ids = chat_ids
-        self._discord_webhook_urls = discord_webhook_urls or []
+        self._discord_webhook_us = discord_webhook_us
+        self._discord_webhook_kr = discord_webhook_kr
+        self._discord_webhook_crypto = discord_webhook_crypto
+        self._discord_webhook_alerts = discord_webhook_alerts
         self._enabled = enabled
 
         if enabled and not self._http_client:
             self._http_client = httpx.AsyncClient(timeout=10.0)
             logger.info(f"TradeNotifier configured: {len(chat_ids)} chat(s)")
-            if self._discord_webhook_urls:
-                logger.info(f"TradeNotifier Discord webhooks: {len(self._discord_webhook_urls)} webhook(s)")
+
+            # Log configured Discord webhooks
+            webhook_count = sum([
+                bool(self._discord_webhook_us),
+                bool(self._discord_webhook_kr),
+                bool(self._discord_webhook_crypto),
+                bool(self._discord_webhook_alerts),
+            ])
+            if webhook_count > 0:
+                logger.info(f"TradeNotifier Discord webhooks: {webhook_count} webhook(s) configured")
 
     async def shutdown(self) -> None:
         """Shutdown HTTP client."""
