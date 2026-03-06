@@ -456,19 +456,19 @@ async def _build_current_hour_row(
     now_kst: datetime.datetime,
     nxt_eligible: bool,
     end_date: datetime.datetime | None,
-) -> tuple[dict[str, object] | None, datetime.datetime | None]:
+) -> tuple[dict[str, object] | None, datetime.datetime | None, list[dict[str, object]]]:
     current_bucket_start_kst = now_kst.replace(minute=0, second=0, microsecond=0)
     current_bucket_naive = current_bucket_start_kst.replace(tzinfo=None)
 
     if _session_for_bucket_start(current_bucket_naive) is None:
-        return None, None
+        return None, None, []
 
     if end_date is not None:
         end_day = (
             _ensure_kst_aware(end_date).date() if end_date.tzinfo else end_date.date()
         )
         if end_day != now_kst.date():
-            return None, None
+            return None, None, []
 
     start_time_kst = current_bucket_start_kst
     end_time_kst = start_time_kst + datetime.timedelta(hours=1)
@@ -511,6 +511,8 @@ async def _build_current_hour_row(
         nxt_eligible=nxt_eligible,
         end_date=end_date,
     )
+
+    api_minute_candles_for_db: list[dict[str, object]] = []
 
     if markets:
         kis = KISClient()
@@ -558,9 +560,22 @@ async def _build_current_hour_row(
                     volume=_to_float(src.get("volume")),
                     value=_to_float(src.get("value")),
                 )
+                # Track minute candles for background DB storage
+                api_minute_candles_for_db.append(
+                    {
+                        "time": minute_time,
+                        "venue": venue,
+                        "open": _to_float(src.get("open")),
+                        "high": _to_float(src.get("high")),
+                        "low": _to_float(src.get("low")),
+                        "close": _to_float(src.get("close")),
+                        "volume": _to_float(src.get("volume")),
+                        "value": _to_float(src.get("value")),
+                    }
+                )
 
     if not minute_by_key:
-        return None, current_bucket_naive
+        return None, current_bucket_naive, api_minute_candles_for_db
 
     minutes_by_time: dict[datetime.datetime, dict[VenueType, _MinuteRow]] = {}
     venues_seen: set[str] = set()
@@ -590,7 +605,7 @@ async def _build_current_hour_row(
         )
 
     if not combined:
-        return None, current_bucket_naive
+        return None, current_bucket_naive, api_minute_candles_for_db
 
     open_ = combined[0].open
     high_ = max(m.high for m in combined)
@@ -614,6 +629,7 @@ async def _build_current_hour_row(
             "venues": venues,
         },
         current_bucket_naive,
+        api_minute_candles_for_db,
     )
 
 
@@ -921,12 +937,27 @@ async def read_kr_hourly_candles_1h(
                 e,
             )
 
-    current_hour_row, current_bucket_start = await _build_current_hour_row(
+    current_hour_row, current_bucket_start, api_minute_candles = await _build_current_hour_row(
         symbol=universe.symbol,
         now_kst=resolved_now,
         nxt_eligible=universe.nxt_eligible,
         end_date=end_date,
     )
+
+    # Schedule background storage of API-fetched minute candles (fire-and-forget)
+    if api_minute_candles:
+        task = asyncio.create_task(
+            _store_minute_candles_background(
+                symbol=universe.symbol,
+                minute_rows=api_minute_candles,
+            )
+        )
+        task.add_done_callback(_log_storage_exception)
+        logger.info(
+            "Background task created to store %d minute candles for symbol '%s'",
+            len(api_minute_candles),
+            universe.symbol,
+        )
 
     out = _build_hour_frame(
         hour_rows=hour_rows,
