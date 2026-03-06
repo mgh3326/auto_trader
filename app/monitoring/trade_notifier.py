@@ -80,7 +80,7 @@ class TradeNotifier:
         self._enabled = enabled
 
         if enabled and not self._http_client:
-            self._http_client = httpx.AsyncClient(timeout=10.0)
+            self._http_client = httpx.AsyncClient(timeout=10.0, trust_env=False)
             logger.info(f"TradeNotifier configured: {len(chat_ids)} chat(s)")
 
             # Log configured Discord webhooks
@@ -394,7 +394,7 @@ class TradeNotifier:
         return {
             "title": "🤖 자동 거래 실행 완료",
             "description": f"🕒 {timestamp}",
-            "color": 0x00BFFF,  # Deep Sky Blue for automation
+            "color": 0x00FFFF,  # Cyan for automation
             "fields": fields,
         }
 
@@ -1580,26 +1580,50 @@ class TradeNotifier:
 
     async def test_connection(self) -> bool:
         """
-        Test Telegram connection by sending a test message.
+        Test notification connection by sending a test message.
+
+        Tests Discord webhook if configured, otherwise falls back to Telegram.
 
         Returns:
             True if successful, False otherwise
         """
-        if not self._enabled or not self._http_client or not self._bot_token:
+        if not self._enabled or not self._http_client:
             logger.warning("TradeNotifier is not configured")
             return False
 
         try:
-            test_message = (
-                "✅ *거래 알림 테스트*\n\n"
-                f"연결 성공: {format_datetime()}\n"
-                "거래 알림 시스템이 정상 작동 중입니다."
-            )
+            # Test Discord webhooks first (any configured webhook)
+            discord_webhooks = [
+                self._discord_webhook_alerts,
+                self._discord_webhook_us,
+                self._discord_webhook_kr,
+                self._discord_webhook_crypto,
+            ]
 
-            return await self._send_to_telegram(test_message)
+            # Use first available Discord webhook for testing
+            for webhook_url in discord_webhooks:
+                if webhook_url:
+                    test_embed = {
+                        "title": "✅ 거래 알림 테스트",
+                        "description": f"연결 성공: {format_datetime()}\n거래 알림 시스템이 정상 작동 중입니다.",
+                        "color": 0x00FF00,  # Green for success
+                    }
+                    return await self._send_to_discord_embed_single(test_embed, webhook_url)
+
+            # Fallback to Telegram if no Discord webhooks configured
+            if self._bot_token:
+                test_message = (
+                    "✅ *거래 알림 테스트*\n\n"
+                    f"연결 성공: {format_datetime()}\n"
+                    "거래 알림 시스템이 정상 작동 중입니다."
+                )
+                return await self._send_to_telegram(test_message)
+
+            logger.warning("No notification system configured")
+            return False
 
         except Exception as e:
-            logger.error(f"Telegram connection test failed: {e}", exc_info=True)
+            logger.error(f"Connection test failed: {e}", exc_info=True)
             return False
 
 
