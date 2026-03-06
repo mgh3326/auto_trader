@@ -434,3 +434,139 @@ class CancelBuyOrdersStep(TradingStep):
             quantity=order_qty,
             is_mock=False,
         )
+
+
+class BuyStep(TradingStep):
+    """
+    Step that executes buy orders based on AI analysis.
+
+    Uses the trading service to place buy orders according to analysis
+    results and trade settings. Sends notifications on success or failure.
+    Uses CONTINUE failure policy - buy failures don't stop processing.
+    """
+
+    @property
+    def name(self) -> str:
+        return "buy"
+
+    @property
+    def failure_policy(self) -> FailurePolicy:
+        """Buy failures should not stop processing."""
+        return FailurePolicy.CONTINUE
+
+    async def execute(self, context: TradingContext) -> StepOutcome:
+        """Execute buy orders for the stock."""
+        self._log_start(context)
+
+        # Skip manual holdings (토스 등) - they don't need KIS trading
+        if context.is_manual:
+            self._log_skip(context, "수동 잔고는 매수 스킵")
+            return self._skip("수동 잔고 종목")
+
+        # Determine if domestic or overseas based on exchange_code
+        is_domestic = not context.exchange_code
+
+        try:
+            if is_domestic:
+                result = await self._execute_domestic_buy(context)
+            else:
+                result = await self._execute_overseas_buy(context)
+
+            # Handle notification
+            await self._send_notification(context, result, is_domestic)
+
+            if result.get("success"):
+                orders_placed = result.get("orders_placed", 0)
+                if orders_placed > 0:
+                    self._log_success(
+                        context,
+                        f"{orders_placed}건 매수 주문 완료",
+                    )
+                    return self._success(
+                        f"매수 주문 {orders_placed}건 성공",
+                        data=result,
+                    )
+                else:
+                    self._log_skip(context, result.get("message", "매수 조건 미충족"))
+                    return self._skip(result.get("message", "매수 조건 미충족"))
+            else:
+                self._log_failure(
+                    context,
+                    Exception(result.get("message", "매수 실패")),
+                )
+                return self._failure(result.get("message", "매수 실패"), data=result)
+
+        except Exception as e:
+            self._log_failure(context, e, "매수 주문 실패")
+            # Send failure notification
+            try:
+                from app.monitoring.trade_notifier import get_trade_notifier
+
+                notifier = get_trade_notifier()
+                await notifier.notify_trade_failure(
+                    symbol=context.symbol,
+                    korean_name=context.name or context.symbol,
+                    trade_type="매수",
+                    error_message=str(e),
+                    market_type="국내주식" if is_domestic else "해외주식",
+                )
+            except Exception as notify_error:
+                logger.warning("매수 실패 알림 전송 실패: %s", notify_error)
+
+            return self._failure(f"매수 주문 실패: {e}")
+
+    async def _execute_domestic_buy(
+        self, context: TradingContext
+    ) -> dict[str, Any]:
+        """Execute domestic buy orders."""
+        from app.services.kis_trading_service import (
+            process_kis_domestic_buy_orders_with_analysis,
+        )
+
+        return await process_kis_domestic_buy_orders_with_analysis(
+            kis_client=context.kis,
+            symbol=context.symbol,
+            current_price=context.current_price,
+            avg_buy_price=context.avg_price,
+        )
+
+    async def _execute_overseas_buy(
+        self, context: TradingContext
+    ) -> dict[str, Any]:
+        """Execute overseas buy orders."""
+        from app.services.kis_trading_service import (
+            process_kis_overseas_buy_orders_with_analysis,
+        )
+
+        return await process_kis_overseas_buy_orders_with_analysis(
+            kis_client=context.kis,
+            symbol=context.symbol,
+            current_price=context.current_price,
+            avg_buy_price=context.avg_price,
+            exchange_code=context.exchange_code,
+        )
+
+    async def _send_notification(
+        self,
+        context: TradingContext,
+        result: dict[str, Any],
+        is_domestic: bool,
+    ) -> None:
+        """Send buy notification on success."""
+        if not result.get("success") or result.get("orders_placed", 0) <= 0:
+            return
+
+        try:
+            from app.monitoring.trade_notifier import get_trade_notifier
+
+            notifier = get_trade_notifier()
+            await notifier.notify_buy_order(
+                symbol=context.symbol,
+                korean_name=context.name or context.symbol,
+                order_count=result.get("orders_placed", 0),
+                total_amount=result.get("total_amount", 0.0),
+                prices=result.get("prices", []),
+                market_type="국내주식" if is_domestic else "해외주식",
+            )
+        except Exception as notify_error:
+            logger.warning("매수 성공 알림 전송 실패: %s", notify_error)
