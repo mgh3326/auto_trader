@@ -88,9 +88,9 @@ class TradeNotifier:
         prices: list[float],
         volumes: list[float],
         market_type: str = "암호화폐",
-    ) -> str:
+    ) -> dict:
         """
-        Format buy order notification.
+        Format buy order notification as Discord embed.
 
         Args:
             symbol: Trading symbol (e.g., "BTC", "005930")
@@ -102,33 +102,44 @@ class TradeNotifier:
             market_type: Type of market (암호화폐, 국내주식, 해외주식)
 
         Returns:
-            Markdown-formatted notification message
+            Discord embed dict
         """
         timestamp = format_datetime()
 
-        parts = [
-            "💰 *매수 주문 접수*",
-            f"🕒 {timestamp}",
-            "",
-            f"*종목:* {korean_name} ({symbol})",
-            f"*시장:* {market_type}",
-            f"*주문 수:* {order_count}건",
-            f"*총 금액:* {total_amount:,.0f}원",
+        # Build fields list
+        fields = [
+            {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
+            {"name": "시장", "value": market_type, "inline": True},
+            {"name": "주문 수", "value": f"{order_count}건", "inline": True},
+            {"name": "총 금액", "value": f"{total_amount:,.0f}원", "inline": False},
         ]
 
         # Add order details if available
         if prices and volumes and len(prices) == len(volumes):
-            parts.append("")
-            parts.append("*주문 상세:*")
+            order_details = []
             for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
-                parts.append(f"  {i}. 가격: {price:,.2f}원 × 수량: {volume:.8g}")
+                order_details.append(f"{i}. {price:,.2f}원 × {volume:.8g}")
+            fields.append({
+                "name": "주문 상세",
+                "value": "\n".join(order_details),
+                "inline": False,
+            })
         elif prices:
-            parts.append("")
-            parts.append("*매수 가격대:*")
+            price_list = []
             for i, price in enumerate(prices, 1):
-                parts.append(f"  {i}. {price:,.2f}원")
+                price_list.append(f"{i}. {price:,.2f}원")
+            fields.append({
+                "name": "매수 가격대",
+                "value": "\n".join(price_list),
+                "inline": False,
+            })
 
-        return "\n".join(parts)
+        return {
+            "title": "💰 매수 주문 접수",
+            "description": f"🕒 {timestamp}",
+            "color": 0x00FF00,  # Green for buy
+            "fields": fields,
+        }
 
     def _format_sell_notification(
         self,
