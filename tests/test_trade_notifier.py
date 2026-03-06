@@ -135,8 +135,8 @@ def test_format_buy_notification_without_details(trade_notifier):
 
 @pytest.mark.unit
 def test_format_sell_notification(trade_notifier):
-    """Test sell notification formatting."""
-    message = trade_notifier._format_sell_notification(
+    """Test sell notification formatting as Discord embed."""
+    embed = trade_notifier._format_sell_notification(
         symbol="ETH",
         korean_name="이더리움",
         order_count=2,
@@ -147,17 +147,30 @@ def test_format_sell_notification(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💸 *매도 주문 접수*" in message
-    assert "이더리움 (ETH)" in message
-    assert "2건" in message
-    assert "0.5" in message
-    assert "1,025,000원" in message
+    # Verify embed structure
+    assert embed["title"] == "💸 매도 주문 접수"
+    assert embed["color"] == 0xFF0000  # Red for sell
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "이더리움 (ETH)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["주문 수"] == "2건"
+    assert fields["총 수량"] == "0.5"
+    assert fields["예상 금액"] == "1,025,000원"
+
+    # Verify order details
+    assert "주문 상세" in fields
+    assert "2,000,000.00원 × 0.25" in fields["주문 상세"]
+    assert "2,100,000.00원 × 0.25" in fields["주문 상세"]
 
 
 @pytest.mark.unit
 def test_format_sell_notification_without_volumes(trade_notifier):
-    """Test sell notification formatting with prices but no volumes."""
-    message = trade_notifier._format_sell_notification(
+    """Test sell notification formatting as Discord embed with prices but no volumes."""
+    embed = trade_notifier._format_sell_notification(
         symbol="ETH",
         korean_name="이더리움",
         order_count=2,
@@ -168,10 +181,24 @@ def test_format_sell_notification_without_volumes(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💸 *매도 주문 접수*" in message
-    assert "이더리움 (ETH)" in message
-    assert "*매도 가격대:*" in message
-    assert "2,000,000.00원" in message
+    # Verify embed structure
+    assert embed["title"] == "💸 매도 주문 접수"
+    assert embed["color"] == 0xFF0000  # Red for sell
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "이더리움 (ETH)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["주문 수"] == "2건"
+    assert fields["총 수량"] == "0.5"
+    assert fields["예상 금액"] == "1,025,000원"
+
+    # Verify price range (no volumes, so shows price range)
+    assert "매도 가격대" in fields
+    assert "2,000,000.00원" in fields["매도 가격대"]
+    assert "2,100,000.00원" in fields["매도 가격대"]
 
 
 @pytest.mark.unit
