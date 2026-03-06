@@ -1177,10 +1177,10 @@ async def test_background_task_non_blocking(monkeypatch):
     )
 
     # Mock _store_minute_candles_background with delay to simulate slow DB write
-    async def mock_store_background(symbol_arg, minute_rows):
+    async def mock_store_background(*, symbol, minute_rows):
         nonlocal background_storage_started, background_storage_completed, background_storage_args
         background_storage_started = True
-        background_storage_args = (symbol_arg, minute_rows)
+        background_storage_args = (symbol, minute_rows)
         # Simulate slow DB operation (200ms)
         await asyncio.sleep(0.2)
         background_storage_completed = True

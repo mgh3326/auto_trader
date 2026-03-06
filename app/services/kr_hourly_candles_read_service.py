@@ -223,7 +223,6 @@ def _aggregate_minutes_to_hourly(df: pd.DataFrame) -> pd.DataFrame:
             out.groupby("hour_bucket", as_index=False)
             .agg(
                 {
-                    "datetime": "first",
                     "open": "first",
                     "high": "max",
                     "low": "min",
