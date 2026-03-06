@@ -726,6 +726,101 @@ async def _fetch_historical_minutes_via_kis(
     return hour_rows
 
 
+def _log_storage_exception(task: asyncio.Task) -> None:
+    """Callback to log exceptions from background storage tasks."""
+    try:
+        task.result()
+    except Exception:
+        logger.exception("Background minute candle storage task crashed")
+
+
+async def _store_minute_candles_background(
+    *,
+    symbol: str,
+    minute_rows: list[dict[str, object]],
+) -> None:
+    """
+    Store minute candles to the database in the background (fire-and-forget).
+
+    This function performs an upsert operation on the kr_candles_1m table.
+    It is designed to be called as a background task using asyncio.create_task().
+
+    Parameters
+    ----------
+    symbol : str
+        Stock symbol (e.g., "005930" for Samsung Electronics)
+    minute_rows : list[dict[str, object]]
+        List of minute candle rows to upsert. Each row should contain:
+        - time: datetime (KST naive)
+        - venue: str ("KRX" or "NTX")
+        - open, high, low, close: float
+        - volume, value: float
+
+    Notes
+    -----
+    - Uses ON CONFLICT DO UPDATE to handle duplicates gracefully
+    - Errors are logged but not raised (fire-and-forget pattern)
+    - Commits changes before returning to ensure data persistence
+    """
+    if not minute_rows:
+        return
+
+    upsert_sql = text(
+        """
+        INSERT INTO public.kr_candles_1m (symbol, time, venue, open, high, low, close, volume, value)
+        VALUES (:symbol, :time, :venue, :open, :high, :low, :close, :volume, :value)
+        ON CONFLICT (symbol, time, venue)
+        DO UPDATE SET
+            open = EXCLUDED.open,
+            high = EXCLUDED.high,
+            low = EXCLUDED.low,
+            close = EXCLUDED.close,
+            volume = EXCLUDED.volume,
+            value = EXCLUDED.value
+        """
+    )
+
+    try:
+        async with _async_session() as session:
+            for row in minute_rows:
+                time_val = row.get("time")
+                if not isinstance(time_val, datetime.datetime):
+                    continue
+
+                # Ensure time is KST naive (as stored in DB)
+                time_naive = _to_kst_naive(time_val)
+
+                await session.execute(
+                    upsert_sql,
+                    {
+                        "symbol": symbol,
+                        "time": time_naive,
+                        "venue": str(row.get("venue", "KRX")),
+                        "open": _to_float(row.get("open")),
+                        "high": _to_float(row.get("high")),
+                        "low": _to_float(row.get("low")),
+                        "close": _to_float(row.get("close")),
+                        "volume": _to_float(row.get("volume")),
+                        "value": _to_float(row.get("value")),
+                    },
+                )
+
+            await session.commit()
+            logger.debug(
+                "Stored %d minute candles for symbol '%s' in background",
+                len(minute_rows),
+                symbol,
+            )
+
+    except Exception as e:
+        logger.error(
+            "Failed to store minute candles for symbol '%s' in background: %s",
+            symbol,
+            e,
+            exc_info=True,
+        )
+
+
 async def read_kr_hourly_candles_1h(
     *,
     symbol: str,
@@ -845,4 +940,4 @@ async def read_kr_hourly_candles_1h(
     return out
 
 
-__all__ = ["read_kr_hourly_candles_1h"]
+__all__ = ["read_kr_hourly_candles_1h", "_store_minute_candles_background"]
