@@ -27,7 +27,9 @@ from app.services.krx import (
     fetch_stock_all_cached,
     fetch_valuation_all_cached,
 )
+from app.services.tvscreener_service import TvScreenerError, TvScreenerService
 from app.services.upbit_symbol_universe_service import get_upbit_warning_markets
+from app.utils.symbol_mapping import SymbolMappingError, upbit_to_tradingview
 
 logger = logging.getLogger(__name__)
 
@@ -973,9 +975,26 @@ async def _screen_us(
         )
 
 
-async def _enrich_crypto_rsi_subset(
+async def _enrich_crypto_indicators(
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Enrich crypto candidates with RSI, ADX, and volume using CryptoScreener.
+
+    This function uses the tvscreener library to bulk query technical indicators
+    from TradingView instead of manually calculating them. Symbol conversion from
+    Upbit format (KRW-BTC) to TradingView format (UPBIT:BTCKRW) is handled
+    automatically.
+
+    Parameters
+    ----------
+    candidates : list[dict[str, Any]]
+        List of candidate dictionaries to enrich with indicator values
+
+    Returns
+    -------
+    dict[str, Any]
+        Enrichment diagnostics with counts of succeeded/failed/timeout cases
+    """
     rsi_enrichment = _empty_rsi_enrichment_diagnostics()
     if not candidates:
         return rsi_enrichment
@@ -984,11 +1003,20 @@ async def _enrich_crypto_rsi_subset(
     statuses = ["pending" for _ in candidates]
     errors: list[str | None] = [None for _ in candidates]
 
+    # Map Upbit symbols to TradingView format and track indices
     symbols_by_index: list[str | None] = [None for _ in candidates]
-    batch_symbols: list[str] = []
-    seen_symbols: set[str] = set()
+    tv_symbols_by_index: list[str | None] = [None for _ in candidates]
+    tv_symbols_to_upbit: dict[str, str] = {}  # TradingView -> Upbit mapping
+    unique_tv_symbols: list[str] = []
+    seen_tv_symbols: set[str] = set()
 
     for index, item in enumerate(candidates):
+        # Skip if RSI already exists
+        if item.get("rsi") is not None:
+            statuses[index] = "success"
+            continue
+
+        # Extract and normalize Upbit symbol
         symbol = item.get("original_market") or item.get("symbol") or item.get("market")
         normalized_symbol = _normalize_crypto_symbol(str(symbol or ""))
         if not normalized_symbol:
@@ -997,53 +1025,191 @@ async def _enrich_crypto_rsi_subset(
             continue
 
         symbols_by_index[index] = normalized_symbol
-        if item.get("rsi") is not None:
-            statuses[index] = "success"
+
+        # Convert to TradingView format
+        try:
+            tv_symbol = upbit_to_tradingview(normalized_symbol)
+            tv_symbols_by_index[index] = tv_symbol
+
+            # Track unique TradingView symbols for batch query
+            if tv_symbol not in seen_tv_symbols:
+                seen_tv_symbols.add(tv_symbol)
+                unique_tv_symbols.append(tv_symbol)
+                tv_symbols_to_upbit[tv_symbol] = normalized_symbol
+
+        except SymbolMappingError as exc:
+            statuses[index] = "error"
+            errors[index] = f"Symbol mapping failed: {exc}"
+            logger.warning(
+                "[Indicators-Crypto] Failed to map symbol %s: %s",
+                normalized_symbol,
+                exc,
+            )
             continue
 
-        if normalized_symbol not in seen_symbols:
-            seen_symbols.add(normalized_symbol)
-            batch_symbols.append(normalized_symbol)
+    # Query CryptoScreener for indicators if we have symbols to query
+    if not unique_tv_symbols:
+        logger.info("[Indicators-Crypto] No symbols to enrich with CryptoScreener")
+        _finalize_rsi_enrichment_diagnostics(rsi_enrichment, statuses, errors)
+        return rsi_enrichment
 
     try:
-        rsi_map = (
-            await asyncio.wait_for(
+        # Use CryptoScreener to bulk query indicators from TradingView
+        logger.info(
+            "[Indicators-Crypto] Querying CryptoScreener for %d symbols",
+            len(unique_tv_symbols),
+        )
+
+        tvscreener_service = TvScreenerService(timeout=30.0)
+
+        try:
+            from tvscreener import CryptoField
+
+            # Build columns list - start with ticker and RSI (guaranteed)
+            columns = [CryptoField.SYMBOL, CryptoField.RELATIVE_STRENGTH_INDEX_14]
+
+            # Try to add ADX if available (not confirmed for CryptoField)
+            try:
+                adx_field = CryptoField.AVERAGE_DIRECTIONAL_INDEX_14
+                columns.append(adx_field)
+                has_adx = True
+                logger.debug(
+                    "[Indicators-Crypto] ADX field available for CryptoScreener"
+                )
+            except AttributeError:
+                has_adx = False
+                logger.info(
+                    "[Indicators-Crypto] ADX field not available for CryptoScreener, skipping"
+                )
+
+            # Add volume field (confirmed available)
+            try:
+                volume_field = CryptoField.VOLUME
+                columns.append(volume_field)
+                has_volume = True
+            except AttributeError:
+                has_volume = False
+                logger.warning(
+                    "[Indicators-Crypto] VOLUME field not available for CryptoScreener"
+                )
+
+            # Query for indicators
+            df = await tvscreener_service.query_crypto_screener(
+                columns=columns,
+                where_clause=None,  # Get all, we'll filter client-side
+                limit=None,
+            )
+
+            # Build indicator maps from TradingView symbols
+            rsi_map: dict[str, float | None] = {}
+            adx_map: dict[str, float | None] = {}
+            volume_map: dict[str, float | None] = {}
+
+            if not df.empty:
+                # Filter to only the symbols we're interested in
+                # TradingView returns full symbols like "UPBIT:BTCKRW"
+                for _, row in df.iterrows():
+                    ticker = str(row.get("symbol", "")).strip()
+                    if ticker in unique_tv_symbols:
+                        rsi_value = _to_optional_float(
+                            row.get("relative_strength_index_14")
+                        )
+                        rsi_map[ticker] = rsi_value
+
+                        if has_adx:
+                            adx_value = _to_optional_float(
+                                row.get("average_directional_index_14")
+                            )
+                            adx_map[ticker] = adx_value
+
+                        if has_volume:
+                            volume_value = _to_optional_float(row.get("volume"))
+                            volume_map[ticker] = volume_value
+
+            logger.info(
+                "[Indicators-Crypto] CryptoScreener returned data for %d/%d symbols "
+                "(RSI: %d, ADX: %d, Volume: %d)",
+                len(rsi_map),
+                len(unique_tv_symbols),
+                len(rsi_map),
+                len(adx_map) if has_adx else 0,
+                len(volume_map) if has_volume else 0,
+            )
+
+        except ImportError:
+            logger.warning(
+                "[Indicators-Crypto] tvscreener not installed, falling back to manual calculation for RSI"
+            )
+            # Fallback to manual calculation if tvscreener is not available
+            batch_symbols = [
+                symbols_by_index[i]
+                for i in range(len(candidates))
+                if symbols_by_index[i] is not None
+            ]
+            rsi_map_manual = await asyncio.wait_for(
                 compute_crypto_realtime_rsi_map(batch_symbols),
                 timeout=30.0,
             )
-            if batch_symbols
-            else {}
-        )
+            # Convert manual RSI map (Upbit symbols) to match our data structure
+            rsi_map = {}
+            adx_map = {}
+            volume_map = {}
+            for tv_symbol, upbit_symbol in tv_symbols_to_upbit.items():
+                if upbit_symbol in rsi_map_manual:
+                    rsi_map[tv_symbol] = rsi_map_manual[upbit_symbol]
 
+        # Apply indicator values to candidates
         for index, item in enumerate(candidates):
             if statuses[index] != "pending":
                 continue
 
-            normalized_symbol = symbols_by_index[index]
-            if normalized_symbol is None:
+            tv_symbol = tv_symbols_by_index[index]
+            if tv_symbol is None:
                 statuses[index] = "error"
-                errors[index] = "No valid symbol found"
+                errors[index] = "No valid TradingView symbol"
                 continue
 
-            rsi_value = _to_optional_float(rsi_map.get(normalized_symbol))
+            rsi_value = rsi_map.get(tv_symbol)
             item["rsi"] = rsi_value
             item["rsi_bucket"] = _compute_rsi_bucket(rsi_value)
 
+            # Apply ADX if available
+            if tv_symbol in adx_map:
+                item["adx"] = adx_map[tv_symbol]
+
+            # Apply volume if available
+            if tv_symbol in volume_map:
+                item["volume_24h"] = volume_map[tv_symbol]
+
             if rsi_value is None:
                 statuses[index] = "error"
-                errors[index] = "RSI calculation returned None"
+                errors[index] = "RSI not found in CryptoScreener results"
             else:
                 statuses[index] = "success"
 
+    except TvScreenerError as exc:
+        logger.error(
+            "[Indicators-Crypto] CryptoScreener query failed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        for index, status in enumerate(statuses):
+            if status == "pending":
+                statuses[index] = (
+                    "rate_limited" if "rate limit" in str(exc).lower() else "error"
+                )
+                errors[index] = f"CryptoScreener error: {exc}"
     except TimeoutError:
-        logger.warning("[RSI-Crypto] RSI enrichment timed out after 30 seconds")
+        logger.warning(
+            "[Indicators-Crypto] Indicator enrichment timed out after 30 seconds"
+        )
         for index, status in enumerate(statuses):
             if status == "pending":
                 statuses[index] = "timeout"
                 errors[index] = "Timed out after 30 seconds"
     except Exception as exc:
         logger.error(
-            "[RSI-Crypto] RSI enrichment batch failed: %s: %s",
+            "[Indicators-Crypto] Indicator enrichment batch failed: %s: %s",
             type(exc).__name__,
             exc,
         )
@@ -1059,6 +1225,392 @@ async def _enrich_crypto_rsi_subset(
         _finalize_rsi_enrichment_diagnostics(rsi_enrichment, statuses, errors)
 
     return rsi_enrichment
+
+
+async def _screen_kr_via_tvscreener(
+    min_rsi: float | None = None,
+    max_rsi: float | None = None,
+    min_adx: float | None = None,
+    sort_by: str = "rsi",
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Screen Korean stocks using TradingView StockScreener API.
+
+    This function uses the tvscreener library to query Korean stocks from
+    TradingView with technical indicators (RSI, ADX, volume, price) instead of
+    relying on KRX data and manual indicator calculation.
+
+    Parameters
+    ----------
+    min_rsi : float | None, optional
+        Minimum RSI_14 value filter (default: None)
+    max_rsi : float | None, optional
+        Maximum RSI_14 value filter (default: None)
+    min_adx : float | None, optional
+        Minimum ADX_14 value filter (default: None)
+    sort_by : str, optional
+        Sort field - one of 'rsi', 'adx', 'volume', 'change' (default: 'rsi')
+    limit : int, optional
+        Maximum number of results to return (default: 50)
+
+    Returns
+    -------
+    dict[str, Any]
+        Dictionary containing:
+        - stocks: List of stock dictionaries with indicator values
+        - source: Data source identifier ('tvscreener')
+        - count: Number of results returned
+        - filters_applied: Dictionary of applied filter parameters
+        - error: Error message if query failed (None on success)
+    """
+    result = {
+        "stocks": [],
+        "source": "tvscreener",
+        "count": 0,
+        "filters_applied": {
+            "min_rsi": min_rsi,
+            "max_rsi": max_rsi,
+            "min_adx": min_adx,
+            "sort_by": sort_by,
+            "limit": limit,
+        },
+        "error": None,
+    }
+
+    try:
+        # Import StockScreener and StockField from tvscreener
+        try:
+            from tvscreener import StockField
+        except ImportError:
+            error_msg = "tvscreener library not installed, cannot use StockScreener"
+            logger.warning("[Screen-KR-TV] %s", error_msg)
+            result["error"] = error_msg
+            return result
+
+        # Build columns list - start with essential fields
+        columns = [
+            StockField.ACTIVE_SYMBOL,
+            StockField.NAME,
+            StockField.PRICE,
+            StockField.RELATIVE_STRENGTH_INDEX_14,
+            StockField.AVERAGE_DIRECTIONAL_INDEX_14,
+            StockField.VOLUME,
+            StockField.CHANGE_PERCENT,
+        ]
+
+        # Try to add COUNTRY field for filtering
+        try:
+            columns.append(StockField.COUNTRY)
+        except AttributeError:
+            logger.warning("[Screen-KR-TV] COUNTRY field not available in StockField")
+
+        # Build WHERE clause for filtering using Field conditions (not strings)
+        where_conditions = []
+
+        # Filter by RSI range using Field conditions
+        if min_rsi is not None:
+            where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 >= min_rsi)
+        if max_rsi is not None:
+            where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 <= max_rsi)
+
+        # Filter by minimum ADX using Field conditions
+        if min_adx is not None:
+            where_conditions.append(StockField.AVERAGE_DIRECTIONAL_INDEX_14 >= min_adx)
+
+        # Combine conditions using & operator (not string concatenation)
+        where_clause = None
+        if where_conditions:
+            where_clause = where_conditions[0]
+            for condition in where_conditions[1:]:
+                where_clause = where_clause & condition
+
+        logger.info(
+            "[Screen-KR-TV] Querying StockScreener for Korean stocks "
+            "(filters: min_rsi=%s, max_rsi=%s, min_adx=%s, limit=%d)",
+            min_rsi,
+            max_rsi,
+            min_adx,
+            limit,
+        )
+
+        # Query StockScreener with country parameter (service handles country filtering)
+        tvscreener_service = TvScreenerService(timeout=30.0)
+        df = await tvscreener_service.query_stock_screener(
+            columns=columns,
+            where_clause=where_clause,  # Field condition object (not string)
+            country="South Korea",  # Use dedicated country parameter
+            limit=None,  # Get all matching, we'll limit after sorting
+        )
+
+        if df.empty:
+            logger.info("[Screen-KR-TV] StockScreener returned no results")
+            return result
+
+        logger.info("[Screen-KR-TV] StockScreener returned %d Korean stocks", len(df))
+
+        # Convert DataFrame to list of dictionaries
+        stocks = []
+        for _, row in df.iterrows():
+            stock = {
+                "symbol": str(row.get("active_symbol", "")).strip(),
+                "name": str(row.get("name", "")).strip(),
+                "price": _to_optional_float(row.get("price")),
+                "rsi": _to_optional_float(row.get("relative_strength_index_14")),
+                "adx": _to_optional_float(row.get("average_directional_index_14")),
+                "volume": _to_optional_float(row.get("volume")),
+                "change_percent": _to_optional_float(row.get("change_percent")),
+                "country": str(row.get("country", "")).strip()
+                if "country" in row
+                else "South Korea",
+            }
+            stocks.append(stock)
+
+        # Sort stocks based on sort_by parameter
+        sort_field_map = {
+            "rsi": "rsi",
+            "adx": "adx",
+            "volume": "volume",
+            "change": "change_percent",
+        }
+        sort_field = sort_field_map.get(sort_by, "rsi")
+
+        # Sort ascending for RSI (lower is more oversold), descending for others
+        reverse = sort_by != "rsi"
+        stocks.sort(
+            key=lambda s: (
+                s.get(sort_field)
+                if s.get(sort_field) is not None
+                else (float("inf") if not reverse else float("-inf"))
+            ),
+            reverse=reverse,
+        )
+
+        # Limit results
+        stocks = stocks[:limit]
+
+        result["stocks"] = stocks
+        result["count"] = len(stocks)
+
+        logger.info(
+            "[Screen-KR-TV] Returning %d Korean stocks sorted by %s",
+            len(stocks),
+            sort_by,
+        )
+
+        return result
+
+    except TvScreenerError as exc:
+        error_msg = f"StockScreener query failed: {exc}"
+        logger.error("[Screen-KR-TV] %s", error_msg)
+        result["error"] = error_msg
+        return result
+
+    except TimeoutError:
+        error_msg = "StockScreener query timed out after 30 seconds"
+        logger.warning("[Screen-KR-TV] %s", error_msg)
+        result["error"] = error_msg
+        return result
+
+    except Exception as exc:
+        error_msg = (
+            f"Unexpected error in Korean stock screening: {type(exc).__name__}: {exc}"
+        )
+        logger.error("[Screen-KR-TV] %s", error_msg)
+        result["error"] = error_msg
+        return result
+
+
+async def _screen_us_via_tvscreener(
+    min_rsi: float | None = None,
+    max_rsi: float | None = None,
+    min_adx: float | None = None,
+    sort_by: str = "rsi",
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Screen US stocks using TradingView StockScreener API.
+
+    This function uses the tvscreener library to query US stocks from
+    TradingView with technical indicators (RSI, ADX, volume, price) instead of
+    relying on yfinance screener and manual indicator calculation.
+
+    Parameters
+    ----------
+    min_rsi : float | None, optional
+        Minimum RSI_14 value filter (default: None)
+    max_rsi : float | None, optional
+        Maximum RSI_14 value filter (default: None)
+    min_adx : float | None, optional
+        Minimum ADX_14 value filter (default: None)
+    sort_by : str, optional
+        Sort field - one of 'rsi', 'adx', 'volume', 'change' (default: 'rsi')
+    limit : int, optional
+        Maximum number of results to return (default: 50)
+
+    Returns
+    -------
+    dict[str, Any]
+        Dictionary containing:
+        - stocks: List of stock dictionaries with indicator values
+        - source: Data source identifier ('tvscreener')
+        - count: Number of results returned
+        - filters_applied: Dictionary of applied filter parameters
+        - error: Error message if query failed (None on success)
+    """
+    result = {
+        "stocks": [],
+        "source": "tvscreener",
+        "count": 0,
+        "filters_applied": {
+            "min_rsi": min_rsi,
+            "max_rsi": max_rsi,
+            "min_adx": min_adx,
+            "sort_by": sort_by,
+            "limit": limit,
+        },
+        "error": None,
+    }
+
+    try:
+        # Import StockScreener and StockField from tvscreener
+        try:
+            from tvscreener import StockField
+        except ImportError:
+            error_msg = "tvscreener library not installed, cannot use StockScreener"
+            logger.warning("[Screen-US-TV] %s", error_msg)
+            result["error"] = error_msg
+            return result
+
+        # Build columns list - start with essential fields
+        columns = [
+            StockField.ACTIVE_SYMBOL,
+            StockField.NAME,
+            StockField.PRICE,
+            StockField.RELATIVE_STRENGTH_INDEX_14,
+            StockField.AVERAGE_DIRECTIONAL_INDEX_14,
+            StockField.VOLUME,
+            StockField.CHANGE_PERCENT,
+        ]
+
+        # Try to add COUNTRY field for filtering
+        try:
+            columns.append(StockField.COUNTRY)
+        except AttributeError:
+            logger.warning("[Screen-US-TV] COUNTRY field not available in StockField")
+
+        # Build WHERE clause for filtering using Field conditions (not strings)
+        where_conditions = []
+
+        # Filter by RSI range using Field conditions
+        if min_rsi is not None:
+            where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 >= min_rsi)
+        if max_rsi is not None:
+            where_conditions.append(StockField.RELATIVE_STRENGTH_INDEX_14 <= max_rsi)
+
+        # Filter by minimum ADX using Field conditions
+        if min_adx is not None:
+            where_conditions.append(StockField.AVERAGE_DIRECTIONAL_INDEX_14 >= min_adx)
+
+        # Combine conditions using & operator (not string concatenation)
+        where_clause = None
+        if where_conditions:
+            where_clause = where_conditions[0]
+            for condition in where_conditions[1:]:
+                where_clause = where_clause & condition
+
+        logger.info(
+            "[Screen-US-TV] Querying StockScreener for US stocks "
+            "(filters: min_rsi=%s, max_rsi=%s, min_adx=%s, limit=%d)",
+            min_rsi,
+            max_rsi,
+            min_adx,
+            limit,
+        )
+
+        # Query StockScreener with country parameter (service handles country filtering)
+        tvscreener_service = TvScreenerService(timeout=30.0)
+        df = await tvscreener_service.query_stock_screener(
+            columns=columns,
+            where_clause=where_clause,  # Field condition object (not string)
+            country="United States",  # Use dedicated country parameter
+            limit=None,  # Get all matching, we'll limit after sorting
+        )
+
+        if df.empty:
+            logger.info("[Screen-US-TV] StockScreener returned no results")
+            return result
+
+        logger.info("[Screen-US-TV] StockScreener returned %d US stocks", len(df))
+
+        # Convert DataFrame to list of dictionaries
+        stocks = []
+        for _, row in df.iterrows():
+            stock = {
+                "symbol": str(row.get("active_symbol", "")).strip(),
+                "name": str(row.get("name", "")).strip(),
+                "price": _to_optional_float(row.get("price")),
+                "rsi": _to_optional_float(row.get("relative_strength_index_14")),
+                "adx": _to_optional_float(row.get("average_directional_index_14")),
+                "volume": _to_optional_float(row.get("volume")),
+                "change_percent": _to_optional_float(row.get("change_percent")),
+                "country": str(row.get("country", "")).strip()
+                if "country" in row
+                else "United States",
+            }
+            stocks.append(stock)
+
+        # Sort stocks based on sort_by parameter
+        sort_field_map = {
+            "rsi": "rsi",
+            "adx": "adx",
+            "volume": "volume",
+            "change": "change_percent",
+        }
+        sort_field = sort_field_map.get(sort_by, "rsi")
+
+        # Sort ascending for RSI (lower is more oversold), descending for others
+        reverse = sort_by != "rsi"
+        stocks.sort(
+            key=lambda s: (
+                s.get(sort_field)
+                if s.get(sort_field) is not None
+                else (float("inf") if not reverse else float("-inf"))
+            ),
+            reverse=reverse,
+        )
+
+        # Limit results
+        stocks = stocks[:limit]
+
+        result["stocks"] = stocks
+        result["count"] = len(stocks)
+
+        logger.info(
+            "[Screen-US-TV] Returning %d US stocks sorted by %s",
+            len(stocks),
+            sort_by,
+        )
+
+        return result
+
+    except TvScreenerError as exc:
+        error_msg = f"StockScreener query failed: {exc}"
+        logger.error("[Screen-US-TV] %s", error_msg)
+        result["error"] = error_msg
+        return result
+
+    except TimeoutError:
+        error_msg = "StockScreener query timed out after 30 seconds"
+        logger.warning("[Screen-US-TV] %s", error_msg)
+        result["error"] = error_msg
+        return result
+
+    except Exception as exc:
+        error_msg = (
+            f"Unexpected error in US stock screening: {type(exc).__name__}: {exc}"
+        )
+        logger.error("[Screen-US-TV] %s", error_msg)
+        result["error"] = error_msg
+        return result
 
 
 async def _screen_crypto(
@@ -1190,7 +1742,7 @@ async def _screen_crypto(
         if not enrich_rsi or not candidates:
             return _empty_rsi_enrichment_diagnostics()
         try:
-            return await _enrich_crypto_rsi_subset(candidates)
+            return await _enrich_crypto_indicators(candidates)
         except Exception as exc:
             warnings.append(
                 f"Crypto RSI enrichment failed: {type(exc).__name__}: {exc}; partial results returned"

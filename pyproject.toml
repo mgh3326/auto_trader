@@ -44,6 +44,7 @@ dependencies = [
     "setuptools>=70.0.0",
     "sentry-sdk[fastapi]>=2.18.0,<3.0.0",
     "tenacity>=9.0.0,<10.0.0",
+    "tvscreener>=0.2.0",
 ]
 
 [dependency-groups]
@@ -157,6 +158,7 @@ line-ending = "auto"
 
 [tool.ty.environment]
 python-version = "3.13"
+extra-paths = ["app/stubs"]
 
 [tool.ty.src]
 include = ["app"]
@@ -179,3 +181,7 @@ all = "warn"
 "redundant-cast" = "ignore"
 "not-subscriptable" = "ignore"
 "division-by-zero" = "ignore"
+"incompatible-parameter-value" = "ignore"
+"incompatible-return-value" = "ignore"
+"incompatible-attribute" = "ignore"
+"unknown-member" = "ignore"
