@@ -11,12 +11,16 @@ The transport layer is designed to be used as a dependency by other API modules
 (HoldingsAPI, OrdersAPI, MarketDataAPI) via constructor injection.
 """
 
+import asyncio
 import logging
+import random
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import httpx
 import pandas as pd
 
+from app.core.async_rate_limiter import RateLimitExceededError, get_limiter
 from app.core.config import settings
 from app.services.redis_token_manager import redis_token_manager
 
@@ -236,12 +240,170 @@ class KISTransport:
             httpx.HTTPStatusError: For non-retryable HTTP errors
             RuntimeError: For API-level errors
         """
-        # TODO: Implement in subtask-1-3
-        # - Rate limiting via get_limiter()
-        # - HTTP request via httpx
-        # - Token expiry handling (EGW00123/EGW00121)
-        # - 429 retry with exponential backoff
-        raise NotImplementedError("Transport.request() will be implemented in subtask-1-3")
+        # Extract path from URL for per-API rate limiting
+        parsed_url = urlparse(url)
+        api_path = parsed_url.path or "/unknown"
+
+        # Build API key for per-API rate limiting: "TR_ID|/path"
+        api_key = f"{tr_id or 'unknown'}|{api_path}"
+
+        # Get rate limit for this specific API
+        rate, period = self._get_rate_limit_for_api(api_key)
+
+        limiter = await get_limiter("kis", api_key, rate=rate, period=period)
+        max_retries = settings.api_rate_limit_retry_429_max
+        base_delay = settings.api_rate_limit_retry_429_base_delay
+
+        last_error: Exception | None = None
+
+        for attempt in range(max_retries + 1):
+            await limiter.acquire(
+                blocking_callback=lambda w: logging.warning(
+                    "[%s] Rate limit wait: %.3fs (api=%s)",
+                    "kis",
+                    w,
+                    api_name,
+                )
+            )
+
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    if method.upper() == "GET":
+                        response = await client.get(
+                            url,
+                            headers=headers,
+                            params=params,
+                            timeout=timeout,
+                        )
+                    else:
+                        response = await client.post(
+                            url,
+                            headers=headers,
+                            json=json_body,
+                            timeout=timeout,
+                        )
+
+                status_code = _safe_status_code(response)
+
+                if status_code == 429:
+                    retry_after = _safe_parse_retry_after(
+                        response.headers.get("Retry-After")
+                    )
+                    wait_time = (
+                        retry_after
+                        if retry_after > 0
+                        else base_delay * (2**attempt) + random.uniform(0, 0.1)
+                    )
+                    logging.warning(
+                        "[%s] 429 received for %s, attempt %d/%d, waiting %.3fs",
+                        "kis",
+                        api_name,
+                        attempt + 1,
+                        max_retries + 1,
+                        wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+
+                try:
+                    data = response.json()
+                except ValueError as exc:
+                    if status_code >= 400:
+                        response.raise_for_status()
+                    raise RuntimeError(
+                        f"KIS API non-JSON response: {api_name}"
+                    ) from exc
+
+                if not isinstance(data, dict):
+                    if status_code >= 400:
+                        response.raise_for_status()
+                    raise RuntimeError(f"KIS API non-JSON response: {api_name}")
+
+                if status_code >= 400 and status_code != 500:
+                    response.raise_for_status()
+
+                rt_cd = data.get("rt_cd")
+                msg_cd = str(data.get("msg_cd", ""))
+                msg1 = str(data.get("msg1", ""))
+
+                # Handle token expiry errors - signal for refresh
+                if msg_cd in ("EGW00123", "EGW00121"):
+                    logging.warning(
+                        "[kis] Token expired for %s (msg_cd=%s), signaling refresh",
+                        api_name,
+                        msg_cd,
+                    )
+                    # Clear token in manager so next call refreshes
+                    await self._token_manager.clear_token()
+                    if attempt < max_retries:
+                        wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                        await asyncio.sleep(wait_time)
+                        continue
+
+                if rt_cd != "0":
+                    rate_limit_heuristics = [
+                        "RATE",
+                        "LIMIT",
+                        "요청제한",
+                        "초과",
+                    ]
+                    is_rate_limit = any(
+                        h in msg_cd.upper() or h in msg1.upper()
+                        for h in rate_limit_heuristics
+                    )
+
+                    if is_rate_limit and attempt < max_retries:
+                        wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                        logging.warning(
+                            "[%s] Rate limit heuristic triggered for %s: %s %s, attempt %d/%d, waiting %.3fs",
+                            "kis",
+                            api_name,
+                            msg_cd,
+                            msg1,
+                            attempt + 1,
+                            max_retries + 1,
+                            wait_time,
+                        )
+                        await asyncio.sleep(wait_time)
+                        continue
+
+                return data
+
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                if e.response.status_code == 429 and attempt < max_retries:
+                    wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                    logging.warning(
+                        "[%s] HTTP 429 for %s, attempt %d/%d, waiting %.3fs",
+                        "kis",
+                        api_name,
+                        attempt + 1,
+                        max_retries + 1,
+                        wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                raise
+            except httpx.RequestError as e:
+                last_error = e
+                if attempt < max_retries:
+                    wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
+                    logging.warning(
+                        "[%s] Request error for %s: %s, attempt %d/%d, retrying in %.3fs",
+                        "kis",
+                        api_name,
+                        e,
+                        attempt + 1,
+                        max_retries + 1,
+                        wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                raise
+
+        raise RateLimitExceededError(
+            f"KIS rate limit retries exhausted for {api_name}: {last_error}"
+        )
 
     async def ensure_token(self) -> str:
         """Ensure a valid access token exists, refreshing if necessary.
@@ -316,20 +478,54 @@ class KISTransport:
         token, _ = await self._fetch_token_with_expiry()
         return token
 
-    def _get_rate_limit_for_api(self, api_name: str, tr_id: str | None) -> tuple[int, int]:
-        """Get rate limit configuration for a specific API.
+    def _get_rate_limit_for_api(self, api_key: str) -> tuple[int, float]:
+        """Get rate limit for a specific API key, falling back to defaults.
 
-        Rate limits vary by API endpoint. This method maps API names and
-        transaction IDs to their corresponding rate limit configurations.
+        Rate limits can be configured per-API via settings.kis_api_rate_limits.
+        If no specific limit is configured, defaults from settings are used.
 
         Args:
-            api_name: Human-readable API name
-            tr_id: KIS transaction ID
+            api_key: API key in format "TR_ID|/path" (e.g., "FHKST03010100|/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice")
 
         Returns:
-            Tuple of (requests_per_second, burst_size) for rate limiting
+            Tuple of (rate, period) where:
+            - rate: Maximum requests per period
+            - period: Time window in seconds
         """
-        # TODO: Implement in subtask-1-3
-        # - Map API names to rate limit configs
-        # - Default to conservative limits if unknown
-        return (1, 1)  # Default: 1 request per second, no burst
+
+        def _safe_rate(value: object, default: int) -> int:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return default
+            return parsed if parsed > 0 else default
+
+        def _safe_period(value: object, default: float) -> float:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return default
+            return parsed if parsed > 0 else default
+
+        default_rate = _safe_rate(getattr(settings, "kis_rate_limit_rate", 19), 19)
+        default_period = _safe_period(
+            getattr(settings, "kis_rate_limit_period", 1.0), 1.0
+        )
+
+        api_limits = getattr(settings, "kis_api_rate_limits", {})
+        if isinstance(api_limits, dict) and api_key in api_limits:
+            limit_config = api_limits[api_key]
+            if isinstance(limit_config, dict):
+                rate = _safe_rate(limit_config.get("rate"), default_rate)
+                period = _safe_period(limit_config.get("period"), default_period)
+                return rate, period
+
+        if api_key not in self._unmapped_rate_limit_keys_logged:
+            logging.warning(
+                "[kis] Unmapped API rate limit for %s, using defaults (%s/%ss)",
+                api_key,
+                default_rate,
+                default_period,
+            )
+            self._unmapped_rate_limit_keys_logged.add(api_key)
+        return default_rate, default_period
