@@ -8,8 +8,6 @@ This module tests the utility functions in app.mcp_server.tooling.shared includi
 - Symbol normalization integration with tools
 """
 
-from collections.abc import Callable
-from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -17,61 +15,9 @@ import pytest
 
 import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
-from app.mcp_server.tooling import (
-    fundamentals_handlers,
-    market_data_quotes,
-    order_execution,
-    orders_history,
-    orders_modify_cancel,
-    portfolio_cash,
-    portfolio_holdings,
-    shared,
-)
-from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling import shared
 from app.services import naver_finance
-
-
-class DummyMCP:
-    def __init__(self) -> None:
-        self.tools: dict[str, Callable[..., Any]] = {}
-
-    def tool(self, name: str, description: str):
-        del description
-
-        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-            self.tools[name] = func
-            return func
-
-        return decorator
-
-
-def build_tools() -> dict[str, Callable[..., Any]]:
-    mcp = DummyMCP()
-    register_all_tools(cast(Any, mcp))
-    return mcp.tools
-
-
-_PATCH_MODULES = (
-    fundamentals_handlers,
-    market_data_quotes,
-    order_execution,
-    orders_history,
-    orders_modify_cancel,
-    portfolio_cash,
-    portfolio_holdings,
-)
-
-
-def _patch_runtime_attr(
-    monkeypatch: pytest.MonkeyPatch, attr_name: str, value: object
-) -> None:
-    matched = False
-    for module in _PATCH_MODULES:
-        if hasattr(module, attr_name):
-            monkeypatch.setattr(module, attr_name, value)
-            matched = True
-    if not matched:
-        raise AttributeError(f"No runtime module exposes attribute '{attr_name}'")
+from tests._mcp_tooling_support import build_tools, _patch_runtime_attr
 
 
 # ---------------------------------------------------------------------------
