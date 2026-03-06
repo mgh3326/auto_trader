@@ -570,3 +570,154 @@ class BuyStep(TradingStep):
             )
         except Exception as notify_error:
             logger.warning("매수 성공 알림 전송 실패: %s", notify_error)
+
+
+class RefreshStep(TradingStep):
+    """
+    Step that refreshes holdings data after buy orders.
+
+    Fetches the latest holdings from KIS API to update quantity, average price,
+    and current price in the context. This ensures subsequent steps (like sell)
+    use up-to-date data.
+
+    Uses CONTINUE failure policy - refresh failures don't stop processing,
+    and existing values are kept on error.
+    """
+
+    @property
+    def name(self) -> str:
+        return "refresh"
+
+    @property
+    def failure_policy(self) -> FailurePolicy:
+        """Refresh failures should not stop processing."""
+        return FailurePolicy.CONTINUE
+
+    async def execute(self, context: TradingContext) -> StepOutcome:
+        """Refresh holdings data for the stock."""
+        self._log_start(context)
+
+        # Skip manual holdings (토스 등) - they don't need KIS refresh
+        if context.is_manual:
+            self._log_skip(context, "수동 잔고는 리프레시 스킵")
+            return self._skip("수동 잔고 종목")
+
+        # Determine if domestic or overseas based on exchange_code
+        is_domestic = not context.exchange_code
+
+        try:
+            if is_domestic:
+                refreshed_data = await self._refresh_domestic_holdings(context)
+            else:
+                refreshed_data = await self._refresh_overseas_holdings(context)
+
+            if refreshed_data:
+                # Update context with refreshed values
+                context.quantity = refreshed_data.get("quantity", context.quantity)
+                context.avg_price = refreshed_data.get("avg_price", context.avg_price)
+                context.current_price = refreshed_data.get(
+                    "current_price", context.current_price
+                )
+
+                self._log_success(
+                    context,
+                    f"수량: {context.quantity}, 평단가: {context.avg_price}, "
+                    f"현재가: {context.current_price}",
+                )
+                return self._success(
+                    "잔고 정보 갱신 완료",
+                    data=refreshed_data,
+                )
+            else:
+                self._log_skip(context, "갱신된 잔고 정보 없음")
+                return self._skip("갱신된 잔고 정보 없음")
+
+        except Exception as e:
+            # On failure, keep existing values and continue
+            self._log_failure(context, e, "잔고 재조회 실패")
+            logger.warning(
+                "[Step:%s] 잔고 재조회 실패 - 기존 값 사용 (%s)",
+                self.name,
+                e,
+            )
+            return self._success(
+                "잔고 재조회 실패, 기존 값 사용",
+                data={
+                    "quantity": context.quantity,
+                    "avg_price": context.avg_price,
+                    "current_price": context.current_price,
+                    "refresh_failed": True,
+                    "error": str(e),
+                },
+            )
+
+    async def _refresh_domestic_holdings(
+        self, context: TradingContext
+    ) -> dict[str, Any] | None:
+        """Refresh domestic holdings from KIS API."""
+        latest_holdings = await context.kis.fetch_my_stocks()
+
+        # Find the stock in the refreshed holdings
+        latest = next(
+            (s for s in latest_holdings if s.get("pdno") == context.symbol),
+            None,
+        )
+
+        if not latest:
+            return None
+
+        # Use ord_psbl_qty (orderable quantity) for sell, fallback to hldg_qty
+        quantity = int(
+            float(
+                latest.get("ord_psbl_qty")
+                or latest.get("hldg_qty")
+                or context.quantity
+            )
+        )
+        avg_price = float(latest.get("pchs_avg_pric") or context.avg_price)
+        current_price = float(latest.get("prpr") or context.current_price)
+
+        return {
+            "quantity": quantity,
+            "avg_price": avg_price,
+            "current_price": current_price,
+        }
+
+    async def _refresh_overseas_holdings(
+        self, context: TradingContext
+    ) -> dict[str, Any] | None:
+        """Refresh overseas holdings from KIS API."""
+        latest_holdings = await context.kis.fetch_my_overseas_stocks()
+
+        # Find the stock in the refreshed holdings (normalize symbol for comparison)
+        from app.core.symbol import to_db_symbol
+
+        latest = next(
+            (
+                s
+                for s in latest_holdings
+                if to_db_symbol(s.get("ovrs_pdno", "")) == context.symbol
+            ),
+            None,
+        )
+
+        if not latest:
+            return None
+
+        # Use ord_psbl_qty (orderable quantity) for sell, fallback to ovrs_cblc_qty
+        quantity = int(
+            float(
+                latest.get("ord_psbl_qty")
+                or latest.get("ovrs_cblc_qty")
+                or context.quantity
+            )
+        )
+        avg_price = float(latest.get("pchs_avg_pric") or context.avg_price)
+        # now_pric2 is the current price field for overseas stocks
+        current_price = float(latest.get("now_pric2") or context.current_price)
+
+        return {
+            "quantity": quantity,
+            "avg_price": avg_price,
+            "current_price": current_price,
+        }
