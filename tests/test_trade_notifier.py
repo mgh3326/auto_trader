@@ -203,8 +203,8 @@ def test_format_sell_notification_without_volumes(trade_notifier):
 
 @pytest.mark.unit
 def test_format_cancel_notification(trade_notifier):
-    """Test cancel notification formatting."""
-    message = trade_notifier._format_cancel_notification(
+    """Test cancel notification formatting as Discord embed."""
+    embed = trade_notifier._format_cancel_notification(
         symbol="XRP",
         korean_name="리플",
         cancel_count=5,
@@ -212,10 +212,18 @@ def test_format_cancel_notification(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "🚫 *주문 취소*" in message
-    assert "리플 (XRP)" in message
-    assert "5건" in message
-    assert "매수" in message
+    # Verify embed structure
+    assert embed["title"] == "🚫 주문 취소"
+    assert embed["color"] == 0xFFFF00  # Yellow for cancel
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "리플 (XRP)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["취소 유형"] == "매수"
+    assert fields["취소 건수"] == "5건"
 
 
 @pytest.mark.unit

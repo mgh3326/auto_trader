@@ -261,4 +261,23 @@ To continue building this spec, run:
 - Test logic is correct and matches Discord embed implementation
 - Status: COMPLETED
 
+[2026-03-06] subtask-5-3: Update test_format_sell_notification() to verify Discord embed with red color
+- Updated test_format_sell_notification() to verify Discord embed structure instead of Telegram markdown format
+- Updated test_format_sell_notification_without_volumes() to verify Discord embed structure with price range
+- Tests now validate:
+  * Embed title: "💸 매도 주문 접수"
+  * Embed color: 0xFF0000 (red for sell)
+  * Description contains timestamp emoji "🕒"
+  * Fields dictionary with correct values:
+    - 종목: "이더리움 (ETH)"
+    - 시장: "암호화폐"
+    - 주문 수: "2건"
+    - 총 수량: "0.5"
+    - 예상 금액: "1,025,000원"
+    - 주문 상세 contains formatted order details with prices × volumes (when both provided)
+    - 매도 가격대 contains price list (when only prices provided, no volumes)
+- Test follows same pattern as test_format_buy_notification()
+- Committed: auto-claude: subtask-5-3 - Update test_format_sell_notification() to verify Discord embed with red color
+- Status: COMPLETED
+
 === END SESSION 1 ===
