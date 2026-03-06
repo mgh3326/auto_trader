@@ -179,4 +179,69 @@ To continue building this spec, run:
 - Syntax verified with python3 -m py_compile
 - Status: COMPLETED
 
+[2026-03-06] subtask-3-4: Update notify_sell_order() to route to Discord webhook based on market_type
+- Updated notify_sell_order() to route to appropriate Discord webhook:
+  * US/해외주식 → discord_webhook_us
+  * 국내주식 → discord_webhook_kr
+  * 암호화폐 → discord_webhook_crypto
+- Uses _get_webhook_for_market_type() to determine correct webhook
+- Sends Discord embed to the single appropriate webhook instead of all webhooks
+- Removed Telegram dependency for sell notifications
+- Added proper error handling and logging for missing webhooks
+- Follows same pattern as notify_buy_order()
+- Status: COMPLETED
+
+[2026-03-06] subtask-3-5: Update notify_cancel_orders() to route to Discord webhook based on market_type
+- Updated notify_cancel_orders() to route to appropriate Discord webhook:
+  * US/해외주식 → discord_webhook_us
+  * 국내주식 → discord_webhook_kr
+  * 암호화폐 → discord_webhook_crypto
+- Uses _get_webhook_for_market_type() to determine correct webhook
+- Sends Discord embed to the single appropriate webhook
+- Changed from Telegram to Discord notification
+- Follows same pattern as notify_buy_order() and notify_sell_order()
+- Status: COMPLETED
+
+[2026-03-06] subtask-3-6: Update notify_analysis_complete() to route to Discord webhook based on market_type
+- Updated notify_analysis_complete() to route to appropriate Discord webhook:
+  * US/해외주식 → discord_webhook_us
+  * 국내주식 → discord_webhook_kr
+  * 암호화폐 → discord_webhook_crypto
+- Uses _get_webhook_for_market_type() to determine correct webhook
+- Sends Discord embed to the single appropriate webhook
+- Changed from Telegram to Discord notification
+- Follows same pattern as other market-type-based notification methods
+- Status: COMPLETED
+
+[2026-03-06] subtask-3-7: Update notify_trade_failure() to route to Discord webhook based on market_type
+- Updated notify_trade_failure() to route to appropriate Discord webhook:
+  * US/해외주식 → discord_webhook_us
+  * 국내주식 → discord_webhook_kr
+  * 암호화폐 → discord_webhook_crypto
+- Uses _get_webhook_for_market_type() to determine correct webhook
+- Sends Discord embed to the single appropriate webhook
+- Changed from sending to all webhooks to market-type-specific routing
+- Follows same pattern as other market-type-based notification methods
+- Status: COMPLETED
+
+[2026-03-06] subtask-3-8: Implement Telegram fallback in notification methods
+- Added 5 new Telegram formatter methods that mirror Discord embed formatters:
+  * _format_buy_notification_telegram()
+  * _format_sell_notification_telegram()
+  * _format_cancel_notification_telegram()
+  * _format_analysis_notification_telegram()
+  * _format_failure_notification_telegram()
+- Updated 5 notification methods with Discord-first + Telegram fallback logic:
+  * notify_buy_order()
+  * notify_sell_order()
+  * notify_cancel_orders()
+  * notify_analysis_complete()
+  * notify_trade_failure()
+- Each method now:
+  * Tries Discord first (if webhook is configured)
+  * Falls back to Telegram if Discord fails or is not configured
+  * Returns True if either method succeeds, False if both fail
+- Telegram formatters use proper markdown formatting with escaped special characters
+- Status: COMPLETED
+
 === END SESSION 1 ===

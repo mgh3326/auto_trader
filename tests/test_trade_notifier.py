@@ -83,8 +83,8 @@ async def test_shutdown(trade_notifier):
 
 @pytest.mark.unit
 def test_format_buy_notification(trade_notifier):
-    """Test buy notification formatting."""
-    message = trade_notifier._format_buy_notification(
+    """Test buy notification formatting as Discord embed."""
+    embed = trade_notifier._format_buy_notification(
         symbol="BTC",
         korean_name="비트코인",
         order_count=3,
@@ -94,11 +94,24 @@ def test_format_buy_notification(trade_notifier):
         market_type="암호화폐",
     )
 
-    assert "💰 *매수 주문 접수*" in message
-    assert "비트코인 (BTC)" in message
-    assert "3건" in message
-    assert "300,000원" in message
-    assert "100,000.00원" in message
+    # Verify embed structure
+    assert embed["title"] == "💰 매수 주문 접수"
+    assert embed["color"] == 0x00FF00  # Green for buy
+    assert "🕒" in embed["description"]
+
+    # Verify fields
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+
+    assert fields["종목"] == "비트코인 (BTC)"
+    assert fields["시장"] == "암호화폐"
+    assert fields["주문 수"] == "3건"
+    assert fields["총 금액"] == "300,000원"
+
+    # Verify order details
+    assert "주문 상세" in fields
+    assert "100,000.00원 × 0.001" in fields["주문 상세"]
+    assert "101,000.00원 × 0.001" in fields["주문 상세"]
+    assert "102,000.00원 × 0.001" in fields["주문 상세"]
 
 
 @pytest.mark.unit
