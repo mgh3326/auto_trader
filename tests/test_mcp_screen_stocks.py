@@ -10,6 +10,7 @@ from app.core.async_rate_limiter import RateLimitExceededError
 from app.mcp_server.tooling import analysis_screen_core
 from app.mcp_server.tooling.registry import register_all_tools
 from app.services import naver_finance
+from tests._mcp_tooling_support import _patch_runtime_attr
 
 
 class DummyMCP:
@@ -86,6 +87,64 @@ def mock_valuation_data():
         "000660": {"per": None, "pbr": None, "dividend_yield": None},
         "035420": {"per": 0, "pbr": 0.8, "dividend_yield": 0.035},
     }
+
+
+# ----------------------------------------------------------------------
+# Smoke Test
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_screen_stocks_smoke(monkeypatch):
+    """Smoke test for screen_stocks tool registration and basic invocation."""
+    tools = build_tools()
+
+    assert "screen_stocks" in tools
+
+    mock_krx_stocks = [
+        {
+            "code": "005930",
+            "name": "삼성전자",
+            "close": 80000.0,
+            "market": "KOSPI",
+            "market_cap": 480000000000000,
+        },
+        {
+            "code": "000660",
+            "name": "SK하이닉스",
+            "close": 150000.0,
+            "market": "KOSPI",
+            "market_cap": 15000000000000,
+        },
+    ]
+
+    async def mock_fetch_stock_all_cached(market):
+        return mock_krx_stocks
+
+    async def mock_fetch_etf_all_cached():
+        return []
+
+    _patch_runtime_attr(
+        monkeypatch, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+    )
+    _patch_runtime_attr(monkeypatch, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
+
+    result = await tools["screen_stocks"](market="kr", limit=5)
+
+    assert isinstance(result, dict)
+    assert "results" in result
+    assert "total_count" in result
+    assert "returned_count" in result
+    assert "filters_applied" in result
+    assert "timestamp" in result
+    assert "market" in result
+
+    # Verify filters_applied includes required keys
+    assert "market" in result["filters_applied"]
+    assert "sort_by" in result["filters_applied"]
+    assert "sort_order" in result["filters_applied"]
+
+    assert isinstance(result["results"], list)
 
 
 class TestScreenStocksKRRegression:
