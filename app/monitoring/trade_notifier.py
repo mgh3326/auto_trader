@@ -252,9 +252,9 @@ class TradeNotifier:
         confidence: float,
         reasons: list[str],
         market_type: str = "암호화폐",
-    ) -> str:
+    ) -> dict:
         """
-        Format AI analysis notification.
+        Format AI analysis notification as Discord embed.
 
         Args:
             symbol: Trading symbol
@@ -265,7 +265,7 @@ class TradeNotifier:
             market_type: Type of market
 
         Returns:
-            Markdown-formatted notification message
+            Discord embed dict
         """
         timestamp = format_datetime()
 
@@ -276,23 +276,31 @@ class TradeNotifier:
         emoji = decision_emoji.get(decision.lower(), "⚪")
         decision_kr = decision_text.get(decision.lower(), decision)
 
-        parts = [
-            f"{emoji} *AI 분석 완료*",
-            f"🕒 {timestamp}",
-            "",
-            f"*종목:* {korean_name} ({symbol})",
-            f"*시장:* {market_type}",
-            f"*판단:* {decision_kr}",
-            f"*신뢰도:* {confidence:.1f}%",
-            "",
-            "*주요 근거:*",
+        # Build fields list
+        fields = [
+            {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
+            {"name": "시장", "value": market_type, "inline": True},
+            {"name": "판단", "value": f"{emoji} {decision_kr}", "inline": True},
+            {"name": "신뢰도", "value": f"{confidence:.1f}%", "inline": False},
         ]
 
-        # Add reasons
-        for i, reason in enumerate(reasons[:3], 1):  # Max 3 reasons
-            parts.append(f"  {i}. {reason}")
+        # Add reasons if available
+        if reasons:
+            reason_text = "\n".join(
+                f"{i}. {reason}" for i, reason in enumerate(reasons[:3], 1)  # Max 3 reasons
+            )
+            fields.append({
+                "name": "주요 근거",
+                "value": reason_text,
+                "inline": False,
+            })
 
-        return "\n".join(parts)
+        return {
+            "title": "📊 AI 분석 완료",
+            "description": f"🕒 {timestamp}",
+            "color": 0x0000FF,  # Blue for analysis
+            "fields": fields,
+        }
 
     def _format_automation_summary(
         self,
