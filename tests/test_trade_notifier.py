@@ -539,6 +539,41 @@ async def test_send_to_correct_webhook_by_market_type(trade_notifier):
 
 
 @pytest.mark.unit
+def test_market_type_routing(trade_notifier):
+    """Test that market_type is correctly routed to appropriate Discord webhook."""
+    webhook_us = "https://discord.com/api/webhooks/us"
+    webhook_kr = "https://discord.com/api/webhooks/kr"
+    webhook_crypto = "https://discord.com/api/webhooks/crypto"
+
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_us=webhook_us,
+        discord_webhook_kr=webhook_kr,
+        discord_webhook_crypto=webhook_crypto,
+    )
+
+    # Test US market (English)
+    assert trade_notifier._get_webhook_for_market_type("US") == webhook_us
+
+    # Test US market (Korean)
+    assert trade_notifier._get_webhook_for_market_type("해외주식") == webhook_us
+
+    # Test KR market
+    assert trade_notifier._get_webhook_for_market_type("국내주식") == webhook_kr
+
+    # Test crypto market
+    assert trade_notifier._get_webhook_for_market_type("암호화폐") == webhook_crypto
+
+    # Test unknown market type
+    assert trade_notifier._get_webhook_for_market_type("unknown") is None
+
+    # Test with whitespace
+    assert trade_notifier._get_webhook_for_market_type("  해외주식  ") == webhook_us
+
+
+@pytest.mark.unit
 def test_format_failure_notification(trade_notifier):
     """Test failure notification formatting as Discord embed."""
     embed = trade_notifier._format_failure_notification(
