@@ -10,6 +10,7 @@ This module tests the get_ohlcv tool functionality including:
 - Error handling and validation
 """
 
+import datetime
 from datetime import date
 from typing import Any
 from unittest.mock import AsyncMock
@@ -260,7 +261,7 @@ async def test_get_ohlcv_kr_equity_period_1h_includes_session_and_venues(monkeyp
             {
                 "datetime": pd.Timestamp("2026-02-23 09:00:00"),
                 "date": date(2026, 2, 23),
-                "time": __import__("datetime").datetime.time(9, 0, 0),
+                "time": datetime.time(9, 0, 0),
                 "open": 100.0,
                 "high": 110.0,
                 "low": 90.0,
@@ -295,7 +296,7 @@ async def test_get_ohlcv_kr_1h_does_not_use_kis_ohlcv_cache(monkeypatch):
             {
                 "datetime": pd.Timestamp("2026-02-23 09:00:00"),
                 "date": date(2026, 2, 23),
-                "time": __import__("datetime").datetime.time(9, 0, 0),
+                "time": datetime.time(9, 0, 0),
                 "open": 100.0,
                 "high": 110.0,
                 "low": 90.0,
