@@ -505,6 +505,38 @@ class TradeNotifier:
             return True
         return False
 
+    async def _send_to_discord_embed_single(self, embed: dict, webhook_url: str) -> bool:
+        """
+        Send Discord embed to a specific webhook URL.
+
+        Args:
+            embed: Discord embed dict
+            webhook_url: Specific Discord webhook URL to send to
+
+        Returns:
+            True if message was sent successfully
+        """
+        if not self._enabled or not self._http_client:
+            return False
+
+        if not webhook_url:
+            logger.warning("No Discord webhook URL provided")
+            return False
+
+        try:
+            response = await self._http_client.post(
+                webhook_url,
+                json={"embeds": [embed]},
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            logger.info(f"Embed sent to Discord webhook")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to send embed to Discord webhook: {e}")
+            return False
+
     async def notify_buy_order(
         self,
         symbol: str,
@@ -515,12 +547,19 @@ class TradeNotifier:
         volumes: list[float],
         market_type: str = "암호화폐",
     ) -> bool:
-        """Send buy order notification."""
+        """
+        Send buy order notification to Discord webhook based on market_type.
+
+        Routes to the appropriate Discord webhook:
+        - US/해외주식 → discord_webhook_us
+        - 국내주식 → discord_webhook_kr
+        - 암호화폐 → discord_webhook_crypto
+        """
         if not self._enabled:
             return False
 
         try:
-            message = self._format_buy_notification(
+            embed = self._format_buy_notification(
                 symbol,
                 korean_name,
                 order_count,
@@ -529,7 +568,19 @@ class TradeNotifier:
                 volumes,
                 market_type,
             )
-            return await self._send_to_telegram(message)
+
+            # Get the appropriate Discord webhook for this market type
+            webhook_url = self._get_webhook_for_market_type(market_type)
+
+            # Send to Discord if webhook is configured
+            if webhook_url:
+                return await self._send_to_discord_embed_single(embed, webhook_url)
+            else:
+                logger.warning(
+                    f"No Discord webhook configured for market type: {market_type}"
+                )
+                return False
+
         except Exception as e:
             logger.error(f"Failed to send buy notification: {e}")
             return False
