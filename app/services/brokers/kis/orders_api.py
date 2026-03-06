@@ -767,8 +767,101 @@ class OrdersAPI:
             - odno: 주문번호
             - ord_tmd: 주문시각
         """
-        # TODO: Implement in subtask-3-4
-        raise NotImplementedError("Will be implemented in subtask-3-4")
+        await self._transport.ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        # TR_ID 선택
+        if order_type.lower() == "buy":
+            tr_id = DOMESTIC_ORDER_BUY_TR_MOCK if is_mock else DOMESTIC_ORDER_BUY_TR
+            order_type_korean = "매수"
+        elif order_type.lower() == "sell":
+            tr_id = DOMESTIC_ORDER_SELL_TR_MOCK if is_mock else DOMESTIC_ORDER_SELL_TR
+            order_type_korean = "매도"
+        else:
+            raise ValueError(
+                f"order_type은 'buy' 또는 'sell'이어야 합니다: {order_type}"
+            )
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {settings.kis_access_token}",
+            "tr_id": tr_id,
+        }
+
+        # 주문 구분: 00(지정가), 01(시장가)
+        ord_dvsn = "01" if price == 0 else "00"
+
+        body = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": acnt_prdt_cd,
+            "PDNO": stock_code,  # 종목코드
+            "ORD_DVSN": ord_dvsn,  # 주문구분 (00:지정가, 01:시장가)
+            "ORD_QTY": str(quantity),  # 주문수량
+            "ORD_UNPR": str(price),  # 주문단가 (시장가일 경우 0)
+            "EXCG_ID_DVSN_CD": "SOR",
+        }
+
+        logging.info(
+            f"국내주식 {order_type_korean} 주문 - stock_code: {stock_code}, "
+            f"수량: {quantity}주, 가격: {price if price > 0 else '시장가'}, "
+            f"tr_id: {tr_id}, routing: {body['EXCG_ID_DVSN_CD']}"
+        )
+
+        js = await self._transport.request(
+            "POST",
+            f"{BASE_URL}{DOMESTIC_ORDER_URL}",
+            headers=hdr,
+            json_body=body,
+            timeout=10,
+            api_name="order_korea_stock",
+            tr_id=tr_id,
+        )
+
+        if js.get("rt_cd") != "0":
+            msg_cd = js.get("msg_cd", "")
+            msg1 = js.get("msg1", "")
+            _log_kis_api_failure(
+                api_name="order_korea_stock",
+                endpoint=DOMESTIC_ORDER_URL,
+                tr_id=tr_id,
+                request_keys=list(body.keys()),
+                msg_cd=msg_cd,
+                msg1=msg1,
+            )
+            if msg_cd in ["EGW00123", "EGW00121"]:
+                await self._transport._token_manager.clear_token()
+                await self._transport.ensure_token()
+                return await self.order_korea_stock(
+                    stock_code, order_type, quantity, price, is_mock
+                )
+
+            error_msg = f"{msg_cd} {msg1}"
+            raise RuntimeError(error_msg)
+
+        output = js.get("output", {})
+
+        result = {
+            "odno": output.get("ODNO") or output.get("ORD_NO"),  # 주문번호
+            "ord_tmd": output.get("ORD_TMD"),  # 주문시각
+            "msg": js.get("msg1"),  # 응답메시지
+        }
+
+        logging.info(
+            f"국내주식 주문 완료 - 주문번호: {result['odno']}, 시각: {result['ord_tmd']}"
+        )
+
+        return result
 
     async def sell_korea_stock(
         self,
@@ -788,8 +881,9 @@ class OrdersAPI:
         Returns:
             주문 결과
         """
-        # TODO: Implement in subtask-3-4
-        raise NotImplementedError("Will be implemented in subtask-3-4")
+        return await self.order_korea_stock(
+            stock_code, "sell", quantity, price, is_mock
+        )
 
     async def inquire_korea_orders(
         self,
@@ -814,8 +908,112 @@ class OrdersAPI:
             - ord_unpr: 주문단가
             - ord_tmd: 주문시각
         """
-        # TODO: Implement in subtask-3-4
-        raise NotImplementedError("Will be implemented in subtask-3-4")
+        await self._transport.ensure_token()
+
+        # 계좌번호 확인
+        if not settings.kis_account_no:
+            raise ValueError("KIS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
+
+        account_no = settings.kis_account_no.replace("-", "")
+        if len(account_no) < 10:
+            raise ValueError(
+                f"계좌번호 형식이 올바르지 않습니다: {settings.kis_account_no}"
+            )
+
+        cano = account_no[:8]
+        acnt_prdt_cd = account_no[8:10]
+
+        # 정정취소가능주문 조회는 실전/모의 구분 없이 동일한 TR_ID 사용
+        tr_id = DOMESTIC_ORDER_INQUIRY_TR
+
+        all_orders = []
+        ctx_area_fk100 = ""
+        ctx_area_nk100 = ""
+        tr_cont = ""  # 연속조회 구분: 최초 조회 시 공백, 연속 조회 시 "N"
+        page = 1
+
+        logging.info("국내주식 미체결 주문 조회 시작")
+
+        while page <= MAX_PAGES:
+            hdr = self._hdr_base | {
+                "authorization": f"Bearer {settings.kis_access_token}",
+                "tr_id": tr_id,
+                "tr_cont": tr_cont,  # 연속조회 여부 (첫 조회: "", 이후: "N")
+            }
+
+            params = {
+                "CANO": cano,
+                "ACNT_PRDT_CD": acnt_prdt_cd,
+                "CTX_AREA_FK100": ctx_area_fk100,  # 연속조회검색조건100
+                "CTX_AREA_NK100": ctx_area_nk100,  # 연속조회키100
+                "INQR_DVSN_1": "0",  # 조회구분1 (0:조회순서, 1:주문순, 2:종목순)
+                "INQR_DVSN_2": "0",  # 조회구분2 (0:전체, 1:매도, 2:매수)
+            }
+
+            logging.info(
+                f"페이지 {page} 조회 (tr_cont: '{tr_cont}', NK100: "
+                f"'{ctx_area_nk100[:20] if ctx_area_nk100 else 'empty'}...')"
+            )
+
+            js = await self._transport.request(
+                "GET",
+                f"{BASE_URL}{DOMESTIC_ORDER_INQUIRY_URL}",
+                headers=hdr,
+                params=params,
+                timeout=10,
+                api_name="inquire_korea_orders",
+                tr_id=tr_id,
+            )
+
+            if js.get("rt_cd") != "0":
+                if js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                    await self._transport._token_manager.clear_token()
+                    await self._transport.ensure_token()
+                    continue
+
+                error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+                logging.error(f"미체결 주문 조회 실패: {error_msg}")
+                raise RuntimeError(error_msg)
+
+            # output: 미체결 주문 목록
+            orders = js.get("output", [])
+
+            if not orders:
+                logging.info(f"페이지 {page}에서 더 이상 주문이 없음")
+                break
+
+            all_orders.extend(orders)
+            logging.info(
+                f"페이지 {page}: {len(orders)}건 조회 (누적: {len(all_orders)}건)"
+            )
+
+            # 다음 페이지 키 확인
+            new_ctx_area_fk100 = js.get("ctx_area_fk100", "")
+            new_ctx_area_nk100 = js.get("ctx_area_nk100", "")
+
+            logging.info(
+                f"  반환된 FK100: '{new_ctx_area_fk100[:20] if new_ctx_area_fk100 else 'empty'}...'"
+            )
+            logging.info(
+                f"  반환된 NK100: '{new_ctx_area_nk100[:20] if new_ctx_area_nk100 else 'empty'}...'"
+            )
+
+            # 연속조회 키가 없거나 이전과 동일하면 마지막 페이지
+            if not new_ctx_area_nk100 or new_ctx_area_nk100 == ctx_area_nk100:
+                logging.info("마지막 페이지 도달 (연속조회 키 없음 또는 동일)")
+                break
+
+            # 다음 페이지를 위한 설정
+            ctx_area_fk100 = new_ctx_area_fk100
+            ctx_area_nk100 = new_ctx_area_nk100
+            tr_cont = "N"  # 두 번째 페이지부터는 "N" 설정
+
+            page += 1
+            await asyncio.sleep(PAGE_DELAY)  # API 호출 제한 방지
+
+        logging.info(f"미체결 주문 조회 완료: 총 {len(all_orders)}건")
+
+        return all_orders
 
     async def cancel_korea_order(
         self,
