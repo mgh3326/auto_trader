@@ -535,12 +535,8 @@ async def read_kr_hourly_candles_1h(
         current_bucket_start=current_bucket_start,
     )
 
-    if len(out) < capped_count:
-        raise ValueError(
-            f"DB does not have enough KR 1h candles for {universe.symbol}: "
-            f"requested={capped_count} returned={len(out)}"
-        )
-
+    # Return available data (DB-first logic - API fallback will be added in next subtask)
+    # Graceful degradation: return partial or empty data instead of raising ValueError
     return out
 
 
