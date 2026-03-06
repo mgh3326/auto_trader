@@ -1234,3 +1234,96 @@ async def test_background_task_non_blocking(monkeypatch):
     assert len(background_storage_args) == 2, "Background storage should receive symbol and minute_rows"
     assert background_storage_args[0] == symbol, f"Background storage symbol should be {symbol}"
     assert len(background_storage_args[1]) > 0, "Background storage should receive minute candles"
+
+
+@pytest.mark.asyncio
+async def test_api_failure_returns_partial_data(monkeypatch):
+    """Test graceful degradation when KIS API fails.
+
+    Verifies that:
+    1. When DB has partial data (insufficient rows)
+    2. And KIS API call fails (raises exception)
+    3. Function returns available DB data instead of raising error
+    """
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    now_kst = _dt_kst(2026, 2, 23, 10, 0, 0)
+
+    # DB has only 2 hourly candles (user requested 5)
+    hour_rows = [
+        _make_hour_row(
+            bucket_kst_naive=datetime.datetime(2026, 2, 23, 8, 0, 0),
+            open=101.0,
+            high=103.0,
+            low=100.5,
+            close=102.0,
+            volume=1200.0,
+            value=120000.0,
+            venues=["KRX"],
+        ),
+        _make_hour_row(
+            bucket_kst_naive=datetime.datetime(2026, 2, 23, 9, 0, 0),
+            open=102.0,
+            high=104.0,
+            low=101.0,
+            close=103.0,
+            volume=1300.0,
+            value=130000.0,
+            venues=["KRX"],
+        ),
+    ]
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [
+                        {
+                            "symbol": symbol,
+                            "nxt_eligible": False,
+                            "is_active": True,
+                        }
+                    ]
+                )
+            if "FROM public.kr_candles_1h" in sql:
+                return _MappingsResult(hour_rows)
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult([])
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+
+    # Mock KIS API to raise exception (simulating network failure or API error)
+    async def _fail_api(*, code, market, time_unit, n, end_date=None):
+        del code, market, time_unit, n, end_date
+        raise RuntimeError("KIS API network error")
+
+    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(side_effect=_fail_api))
+    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+
+    # Request 5 candles but only 2 in DB and API fails
+    # Should return 2 candles from DB (graceful degradation)
+    out = await svc.read_kr_hourly_candles_1h(
+        symbol=symbol,
+        count=5,
+        end_date=None,
+        now_kst=now_kst,
+    )
+
+    # Verify partial data returned (no exception raised)
+    assert len(out) == 2, f"Expected 2 partial candles from DB, got {len(out)}"
+
+    # Verify the data is from DB
+    assert list(out["datetime"]) == [
+        datetime.datetime(2026, 2, 23, 8, 0, 0),
+        datetime.datetime(2026, 2, 23, 9, 0, 0),
+    ]
+
+    # Verify KIS API was called (DB had insufficient data)
+    kis.inquire_minute_chart.assert_awaited()
