@@ -12,7 +12,6 @@ This module tests the get_ohlcv tool functionality including:
 
 import datetime
 from datetime import date
-from typing import Any
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -28,7 +27,6 @@ from tests._mcp_tooling_support import (
     _single_row_df,
     build_tools,
 )
-
 
 # ============================================================================
 # Crypto OHLCV Tests

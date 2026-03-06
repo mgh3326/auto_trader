@@ -5,14 +5,12 @@ This module tests the _calculate_* functions from market_data_indicators module.
 """
 
 import datetime as dt
-from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from app.mcp_server.tooling import market_data_indicators
-
 
 # ---------------------------------------------------------------------------
 # Helper functions

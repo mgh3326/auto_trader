@@ -17,8 +17,7 @@ import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 from app.mcp_server.tooling import shared
 from app.services import naver_finance
-from tests._mcp_tooling_support import build_tools, _patch_runtime_attr
-
+from tests._mcp_tooling_support import _patch_runtime_attr, build_tools
 
 # ---------------------------------------------------------------------------
 # Market Normalization Tests

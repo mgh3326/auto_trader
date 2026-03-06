@@ -6,7 +6,6 @@ and support/resistance indicator functionality.
 """
 
 from datetime import date
-from typing import Any
 from unittest.mock import AsyncMock
 
 import numpy as np
@@ -19,10 +18,9 @@ from app.mcp_server.tooling import (
     portfolio_holdings,
 )
 from tests._mcp_tooling_support import (
-    DummyMCP,
-    build_tools,
     _patch_runtime_attr,
     _single_row_df,
+    build_tools,
 )
 
 
