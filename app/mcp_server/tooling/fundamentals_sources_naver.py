@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+from dataclasses import dataclass
 from typing import Any
 
 try:
@@ -27,6 +28,20 @@ from app.services.analyst_normalizer import (
     rating_to_bucket,
 )
 
+
+
+# ---------------------------------------------------------------------------
+# YFinance Snapshot (internal dedupe helper)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _YFinanceSnapshot:
+    """Internal container for yfinance data to avoid duplicate ticker.info calls."""
+
+    info: dict[str, Any] | None = None
+    analyst_price_targets: dict[str, Any] | None = None
+    upgrades_downgrades: Any = None  # DataFrame or None
 # ---------------------------------------------------------------------------
 # Local Parse/Normalize Helpers (kept here to avoid circular imports)
 # ---------------------------------------------------------------------------
@@ -425,10 +440,14 @@ async def _fetch_investment_opinions_naver(symbol: str, limit: int) -> dict[str,
 
 
 async def _fetch_investment_opinions_yfinance(
-    symbol: str, limit: int
+    symbol: str,
+    limit: int,
+    snapshot: _YFinanceSnapshot | None = None,
+    session: Any | None = None,
 ) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    session = build_yfinance_tracing_session()
+    if session is None:
+        session = build_yfinance_tracing_session()
     ticker = yf.Ticker(symbol, session=session)
 
     def _collect() -> tuple[dict | None, Any, dict | None]:
@@ -451,7 +470,13 @@ async def _fetch_investment_opinions_yfinance(
             pass
         return targets, ud, info
 
-    targets, ud, info = await loop.run_in_executor(None, _collect)
+    # Use pre-fetched snapshot if available
+    if snapshot is not None:
+        targets = snapshot.analyst_price_targets
+        ud = snapshot.upgrades_downgrades
+        info = snapshot.info
+    else:
+        targets, ud, info = await loop.run_in_executor(None, _collect)
     current_price = (info or {}).get("currentPrice")
 
     if isinstance(targets, dict) and current_price is None:
@@ -525,11 +550,19 @@ async def _fetch_valuation_naver(symbol: str) -> dict[str, Any]:
     }
 
 
-async def _fetch_valuation_yfinance(symbol: str) -> dict[str, Any]:
+async def _fetch_valuation_yfinance(
+    symbol: str,
+    snapshot: _YFinanceSnapshot | None = None,
+    session: Any | None = None,
+) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    session = build_yfinance_tracing_session()
+    if session is None:
+        session = build_yfinance_tracing_session()
     ticker = yf.Ticker(symbol, session=session)
-    info: dict[str, Any] = await loop.run_in_executor(None, lambda: ticker.info)
+    if snapshot is not None and snapshot.info is not None:
+        info = snapshot.info
+    else:
+        info: dict[str, Any] = await loop.run_in_executor(None, lambda: ticker.info)
 
     current_price = info.get("currentPrice")
     high_52w = info.get("fiftyTwoWeekHigh")
@@ -621,15 +654,38 @@ async def _fetch_sector_peers_us(
     client = _get_finnhub_client()
     upper_symbol = symbol.upper()
 
+    def get_base_ticker(ticker: str) -> str:
+        if "." in ticker:
+            return ticker.split(".")[0]
+        return ticker
+
     if manual_peers:
         peer_tickers = [t.upper() for t in manual_peers if t.upper() != upper_symbol]
-        peer_tickers = peer_tickers[:limit]
+        # Dedupe by base ticker BEFORE network call
+        target_base = get_base_ticker(upper_symbol)
+        seen_bases = {target_base}
+        deduped_peer_tickers = []
+        for ticker in peer_tickers:
+            peer_base = get_base_ticker(ticker)
+            if peer_base not in seen_bases:
+                seen_bases.add(peer_base)
+                deduped_peer_tickers.append(ticker)
+        peer_tickers = deduped_peer_tickers[:limit]
     else:
         peer_tickers: list[str] = await asyncio.to_thread(
             client.company_peers, upper_symbol
         )
         peer_tickers = [t for t in peer_tickers if t.upper() != upper_symbol]
-        peer_tickers = peer_tickers[: limit + 5]
+        # Dedupe by base ticker BEFORE network call
+        target_base = get_base_ticker(upper_symbol)
+        seen_bases = {target_base}
+        deduped_peer_tickers = []
+        for ticker in peer_tickers:
+            peer_base = get_base_ticker(ticker)
+            if peer_base not in seen_bases:
+                seen_bases.add(peer_base)
+                deduped_peer_tickers.append(ticker)
+        peer_tickers = deduped_peer_tickers[: limit + 5]
 
     all_tickers = [upper_symbol] + peer_tickers
 
@@ -671,16 +727,9 @@ async def _fetch_sector_peers_us(
         return ticker
 
     target_base = get_base_ticker(upper_symbol)
-    seen_bases = {target_base}
-    filtered_tickers = []
-    for ticker in peer_tickers:
-        peer_base = get_base_ticker(ticker)
-        if peer_base not in seen_bases:
-            seen_bases.add(peer_base)
-            filtered_tickers.append(ticker)
-
+    # Dedupe already applied before network call, use peer_tickers directly
     peers: list[dict[str, Any]] = []
-    for ticker in filtered_tickers:
+    for ticker in peer_tickers:
         info = info_map.get(ticker)
         if info is None:
             continue
@@ -855,4 +904,5 @@ __all__ = [
     "_fetch_valuation_yfinance",
     "_parse_naver_int",
     "_parse_naver_num",
+    "_YFinanceSnapshot",
 ]
