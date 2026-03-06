@@ -534,7 +534,9 @@
             "command": "uv run pytest tests/test_trade_notifier.py::test_format_analysis_notification -v",
             "expected": "PASSED"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Updated test_format_analysis_notification(), test_format_analysis_notification_hold(), and test_format_analysis_notification_sell() to verify Discord embed structure instead of Telegram markdown format. Tests now validate embed title (📊 AI 분석 완료), color (0x0000FF blue for analysis), description with timestamp, and fields dictionary with correct Korean values (종목, 시장, 판단 with emoji prefix, 신뢰도, 주요 근거 with numbered list. All tests verified to PASSED.",
+          "updated_at": "2026-03-06T06:00:00.000000+00:00"
         },
         {
           "id": "subtask-5-6",
@@ -773,7 +775,7 @@
   "planStatus": "in_progress",
   "xstateState": "coding",
   "executionPhase": "coding",
-  "updated_at": "2026-03-06T05:05:17.127Z",
+  "updated_at": "2026-03-06T05:06:59.654Z",
   "lastEvent": {
     "eventId": "769ea988-43d6-4f4d-984d-f38f0fb16e19",
     "sequence": 0,
