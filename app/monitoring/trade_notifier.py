@@ -43,6 +43,8 @@ class TradeNotifier:
             self._discord_webhook_kr: str | None = None
             self._discord_webhook_crypto: str | None = None
             self._discord_webhook_alerts: str | None = None
+            # Legacy list of all Discord webhooks (for backward compatibility)
+            self._discord_webhook_urls: list[str] = []
             self._enabled: bool = False
             self._http_client: httpx.AsyncClient | None = None
             TradeNotifier._initialized = True
@@ -77,6 +79,13 @@ class TradeNotifier:
         self._discord_webhook_kr = discord_webhook_kr
         self._discord_webhook_crypto = discord_webhook_crypto
         self._discord_webhook_alerts = discord_webhook_alerts
+        # Store legacy webhook URLs list for backward compatibility
+        self._discord_webhook_urls = discord_webhook_urls or []
+        # Also build list from individual webhooks if legacy parameter not provided
+        if not self._discord_webhook_urls:
+            for webhook in [discord_webhook_us, discord_webhook_kr, discord_webhook_crypto, discord_webhook_alerts]:
+                if webhook:
+                    self._discord_webhook_urls.append(webhook)
         self._enabled = enabled
 
         if enabled and not self._http_client:
@@ -1315,7 +1324,8 @@ class TradeNotifier:
                 currency=currency,
                 market_type=market_type,
             )
-            return await self._send_to_discord_embed(embed)
+            webhook_url = self._get_webhook_for_market_type(market_type)
+            return await self._send_to_discord_embed_single(embed, webhook_url)
         except Exception as e:
             logger.error(f"Failed to send Toss buy recommendation: {e}")
             return False
@@ -1369,7 +1379,8 @@ class TradeNotifier:
                 currency=currency,
                 market_type=market_type,
             )
-            return await self._send_to_discord_embed(embed)
+            webhook_url = self._get_webhook_for_market_type(market_type)
+            return await self._send_to_discord_embed_single(embed, webhook_url)
         except Exception as e:
             logger.error(f"Failed to send Toss sell recommendation: {e}")
             return False
@@ -1393,6 +1404,7 @@ class TradeNotifier:
         sell_target_min: float | None = None,
         sell_target_max: float | None = None,
         currency: str = "원",
+        market_type: str = "국내주식",
     ) -> dict:
         """
         Format Toss price recommendation notification with AI analysis as Discord embed.
@@ -1422,6 +1434,7 @@ class TradeNotifier:
         # Build fields list
         fields = [
             {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
+            {"name": "시장", "value": market_type, "inline": True},
             {"name": "현재가", "value": price_fmt(current_price), "inline": True},
             {
                 "name": "보유",
@@ -1515,6 +1528,7 @@ class TradeNotifier:
         sell_target_min: float | None = None,
         sell_target_max: float | None = None,
         currency: str = "원",
+        market_type: str = "국내주식",
     ) -> bool:
         """
         Send Toss price recommendation notification with AI analysis.
@@ -1548,8 +1562,10 @@ class TradeNotifier:
                 sell_target_min=sell_target_min,
                 sell_target_max=sell_target_max,
                 currency=currency,
+                market_type=market_type,
             )
-            return await self._send_to_discord_embed(embed)
+            webhook_url = self._get_webhook_for_market_type(market_type)
+            return await self._send_to_discord_embed_single(embed, webhook_url)
         except Exception as e:
             logger.error(f"Failed to send Toss price recommendation: {e}")
             return False
