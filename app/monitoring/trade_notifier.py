@@ -213,9 +213,9 @@ class TradeNotifier:
         cancel_count: int,
         order_type: str = "전체",
         market_type: str = "암호화폐",
-    ) -> str:
+    ) -> dict:
         """
-        Format order cancellation notification.
+        Format order cancellation notification as Discord embed.
 
         Args:
             symbol: Trading symbol
@@ -225,21 +225,24 @@ class TradeNotifier:
             market_type: Type of market
 
         Returns:
-            Markdown-formatted notification message
+            Discord embed dict
         """
         timestamp = format_datetime()
 
-        parts = [
-            "🚫 *주문 취소*",
-            f"🕒 {timestamp}",
-            "",
-            f"*종목:* {korean_name} ({symbol})",
-            f"*시장:* {market_type}",
-            f"*취소 유형:* {order_type}",
-            f"*취소 건수:* {cancel_count}건",
+        # Build fields list
+        fields = [
+            {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
+            {"name": "시장", "value": market_type, "inline": True},
+            {"name": "취소 유형", "value": order_type, "inline": True},
+            {"name": "취소 건수", "value": f"{cancel_count}건", "inline": False},
         ]
 
-        return "\n".join(parts)
+        return {
+            "title": "🚫 주문 취소",
+            "description": f"🕒 {timestamp}",
+            "color": 0xFFFF00,  # Yellow for cancel
+            "fields": fields,
+        }
 
     def _format_analysis_notification(
         self,
