@@ -422,7 +422,9 @@
             "command": "grep -n '_send_to_telegram' app/jobs/screener.py || echo 'OK'",
             "expected": "OK"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Replaced private method _send_to_telegram() with public method notify_openclaw_message() in screener.py. The notify_openclaw_message() method is designed for forwarding simple markdown messages to Telegram, which is exactly what the screener needs for sending stock screening notifications. This change improves code maintainability by using the proper public API instead of accessing private methods.",
+          "updated_at": "2026-03-06T05:40:00.000000+00:00"
         }
       ]
     },
@@ -763,7 +765,7 @@
   "planStatus": "in_progress",
   "xstateState": "coding",
   "executionPhase": "coding",
-  "updated_at": "2026-03-06T04:57:48.442Z",
+  "updated_at": "2026-03-06T04:59:08.570Z",
   "lastEvent": {
     "eventId": "769ea988-43d6-4f4d-984d-f38f0fb16e19",
     "sequence": 0,
