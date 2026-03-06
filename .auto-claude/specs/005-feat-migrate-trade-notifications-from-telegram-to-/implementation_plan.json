@@ -297,7 +297,7 @@
             "type": "manual",
             "instructions": "Verify notify_sell_order() routes to correct Discord webhook based on market_type parameter"
           },
-          "status": "pending"
+          "status": "completed"
         },
         {
           "id": "subtask-3-5",
@@ -314,7 +314,9 @@
             "type": "manual",
             "instructions": "Verify notify_cancel_orders() routes to correct Discord webhook based on market_type parameter"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Updated notify_cancel_orders() to route to Discord webhook based on market_type. Changed from Telegram to Discord notification following same pattern as notify_buy_order() and notify_sell_order(). Routes to appropriate webhook: US/해외주식 → discord_webhook_us, 국내주식 → discord_webhook_kr, 암호화폐 → discord_webhook_crypto. Uses _get_webhook_for_market_type() and _send_to_discord_embed_single() methods.",
+          "updated_at": "2026-03-06T04:51:18.225768+00:00"
         },
         {
           "id": "subtask-3-6",
@@ -331,7 +333,9 @@
             "type": "manual",
             "instructions": "Verify notify_analysis_complete() routes to correct Discord webhook based on market_type parameter"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Updated notify_analysis_complete() to route to Discord webhook based on market_type. Changed from Telegram to Discord notification following same pattern as notify_buy_order(), notify_sell_order(), and notify_cancel_orders(). Routes to appropriate webhook: US/해외주식 → discord_webhook_us, 국내주식 → discord_webhook_kr, 암호화폐 → discord_webhook_crypto. Uses _get_webhook_for_market_type() and _send_to_discord_embed_single() methods.",
+          "updated_at": "2026-03-06T05:00:00.000000+00:00"
         },
         {
           "id": "subtask-3-7",
@@ -753,11 +757,12 @@
   "planStatus": "in_progress",
   "xstateState": "coding",
   "executionPhase": "coding",
-  "updated_at": "2026-03-06T04:47:33.422Z",
+  "updated_at": "2026-03-06T04:51:41.025Z",
   "lastEvent": {
     "eventId": "769ea988-43d6-4f4d-984d-f38f0fb16e19",
     "sequence": 0,
     "type": "PLANNING_COMPLETE",
     "timestamp": "2026-03-06T04:26:04.784690+00:00"
-  }
+  },
+  "last_updated": "2026-03-06T04:51:18.225778+00:00"
 }
