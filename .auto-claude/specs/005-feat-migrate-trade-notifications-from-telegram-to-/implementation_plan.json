@@ -659,7 +659,9 @@
             "command": "timeout 10 uv run uvicorn app.main:app --host localhost --port 8001 2>&1 | grep -i 'trade notifier' || true",
             "expected": "Logs show Discord webhook configuration or graceful skip"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Verified application starts and initializes Discord webhooks correctly. Fixed env.example Discord webhook field names to match spec (DISCORD_WEBHOOK_US, DISCORD_WEBHOOK_KR, DISCORD_WEBHOOK_CRYPTO, DISCORD_WEBHOOK_ALERTS). Tested both scenarios: 1) With Discord webhooks configured: logs show 'Trade notifier initialized: Discord (4 webhook(s)), Telegram (chat_id=xxx)', 2) Without Discord webhooks: logs show 'Trade notifier initialized: Telegram (chat_id=xxx)'. Both scenarios complete without errors.",
+          "updated_at": "2026-03-06T14:22:00.000000+00:00"
         },
         {
           "id": "subtask-6-3",
@@ -785,7 +787,7 @@
   "planStatus": "in_progress",
   "xstateState": "coding",
   "executionPhase": "coding",
-  "updated_at": "2026-03-06T05:17:36.045Z",
+  "updated_at": "2026-03-06T05:20:30.315Z",
   "lastEvent": {
     "eventId": "769ea988-43d6-4f4d-984d-f38f0fb16e19",
     "sequence": 0,

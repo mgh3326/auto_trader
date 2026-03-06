@@ -280,4 +280,19 @@ To continue building this spec, run:
 - Committed: auto-claude: subtask-5-3 - Update test_format_sell_notification() to verify Discord embed with red color
 - Status: COMPLETED
 
+[2026-03-06] subtask-6-2: Verify application starts and initializes Discord webhooks without errors
+- Fixed env.example Discord webhook field names to match spec requirements:
+  * Changed DISCORD_WEBHOOK_URL → DISCORD_WEBHOOK_US
+  * Changed DISCORD_TRADE_WEBHOOK_URL → DISCORD_WEBHOOK_KR
+  * Changed DISCORD_WEBHOOK_ERROR_URL → DISCORD_WEBHOOK_CRYPTO
+  * Added DISCORD_WEBHOOK_ALERTS (missing)
+- Updated comments to clarify each webhook's purpose (US stocks, KR stocks, Crypto, Alerts)
+- Added thread_id parameter examples for forum thread routing
+- Verified application startup with setup_monitoring():
+  * With Discord webhooks configured: "Trade notifier initialized: Discord (4 webhook(s)), Telegram (chat_id=xxx)"
+  * Without Discord webhooks: "Trade notifier initialized: Telegram (chat_id=xxx)"
+- Both scenarios complete without errors
+- Committed: auto-claude: subtask-6-2 - Fix Discord webhook field names in env.example to match spec
+- Status: COMPLETED
+
 === END SESSION 1 ===
