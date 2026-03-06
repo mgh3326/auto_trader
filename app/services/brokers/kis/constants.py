@@ -44,6 +44,10 @@ DOMESTIC_ORDER_CANCEL_URL = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 DOMESTIC_ORDER_CANCEL_TR = "TTTC0013U"  # 실전투자 국내주식 정정취소주문
 DOMESTIC_ORDER_CANCEL_TR_MOCK = "VTTC0013U"  # 모의투자 국내주식 정정취소주문
 
+DOMESTIC_DAILY_ORDER_URL = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+DOMESTIC_DAILY_ORDER_TR = "TTTC8001R"  # 실전투자 국내주식 체결조회
+DOMESTIC_DAILY_ORDER_TR_MOCK = "VTTC8001R"  # 모의투자 국내주식 체결조회
+
 # ============================================================================
 # OVERSEAS STOCK CONSTANTS
 # ============================================================================
