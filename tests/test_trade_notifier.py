@@ -757,6 +757,146 @@ async def test_notify_openclaw_message_disabled(trade_notifier):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_send_to_discord_success(trade_notifier):
+    """Test successful Discord webhook HTTP POST behavior."""
+    webhook_url = "https://discord.com/api/webhooks/test"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_crypto=webhook_url,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    # Create a sample embed
+    embed = {
+        "title": "Test Notification",
+        "description": "Test message",
+        "color": 0x00FF00,
+        "fields": [],
+    }
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier._send_to_discord_embed_single(embed, webhook_url)
+
+        # Verify success
+        assert result is True
+
+        # Verify HTTP POST was called
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+
+        # Verify URL
+        assert call_args.args[0] == webhook_url
+
+        # Verify JSON payload
+        assert "json" in call_args.kwargs
+        json_data = call_args.kwargs["json"]
+        assert "embeds" in json_data
+        assert json_data["embeds"] == [embed]
+
+        # Verify headers
+        assert "headers" in call_args.kwargs
+        headers = call_args.kwargs["headers"]
+        assert headers["Content-Type"] == "application/json"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_to_discord_failure(trade_notifier):
+    """Test Discord webhook HTTP POST failure."""
+    webhook_url = "https://discord.com/api/webhooks/test"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_crypto=webhook_url,
+    )
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock(side_effect=Exception("Network error"))
+
+    # Create a sample embed
+    embed = {
+        "title": "Test Notification",
+        "description": "Test message",
+        "color": 0x00FF00,
+        "fields": [],
+    }
+
+    with patch.object(
+        trade_notifier._http_client,
+        "post",
+        new_callable=AsyncMock,
+        return_value=mock_response,
+    ) as mock_post:
+        result = await trade_notifier._send_to_discord_embed_single(embed, webhook_url)
+
+        # Verify failure returns False
+        assert result is False
+
+        # Verify HTTP POST was attempted
+        mock_post.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_to_discord_disabled(trade_notifier):
+    """Test that Discord webhook is not sent when disabled."""
+    webhook_url = "https://discord.com/api/webhooks/test"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=False,
+    )
+
+    # Create a sample embed
+    embed = {
+        "title": "Test Notification",
+        "description": "Test message",
+        "color": 0x00FF00,
+        "fields": [],
+    }
+
+    result = await trade_notifier._send_to_discord_embed_single(embed, webhook_url)
+
+    # Verify returns False when disabled
+    assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_to_discord_no_webhook(trade_notifier):
+    """Test that Discord webhook is not sent when no webhook URL provided."""
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+    )
+
+    # Create a sample embed
+    embed = {
+        "title": "Test Notification",
+        "description": "Test message",
+        "color": 0x00FF00,
+        "fields": [],
+    }
+
+    result = await trade_notifier._send_to_discord_embed_single(embed, "")
+
+    # Verify returns False when no webhook URL provided
+    assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_telegram_fallback(trade_notifier):
     """Test Telegram fallback when Discord is not configured."""
     mock_response = MagicMock()

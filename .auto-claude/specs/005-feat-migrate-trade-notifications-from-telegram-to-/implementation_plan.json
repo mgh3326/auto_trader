@@ -594,7 +594,9 @@
             "command": "uv run pytest tests/test_trade_notifier.py::test_telegram_fallback -v",
             "expected": "PASSED"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Added test_telegram_fallback() to verify Telegram fallback when Discord is not configured. Test configures TradeNotifier with Telegram only (no Discord webhooks), mocks httpx.AsyncClient to avoid proxy issues, calls notify_buy_order(), and verifies that Telegram API is called instead of Discord webhook. Test validates: 1) Notification succeeds via Telegram fallback, 2) Telegram API endpoint is called (not Discord webhook), 3) Message contains Telegram markdown formatting with proper escapes (\\(BTC\\)), 4) parse_mode is set to 'Markdown'. Test follows existing patterns with pytest.mark.unit and pytest.mark.asyncio decorators. Note: httpx.AsyncClient mock required due to SOCKS proxy environment configuration.",
+          "updated_at": "2026-03-06T06:20:00.000000+00:00"
         },
         {
           "id": "subtask-5-9",
