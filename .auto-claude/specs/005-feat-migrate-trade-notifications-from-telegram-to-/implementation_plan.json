@@ -1,0 +1,763 @@
+{
+  "feature": "Migrate trade notifications from Telegram to Discord Webhooks",
+  "workflow_type": "feature",
+  "workflow_rationale": "This is a new feature that adds Discord webhook integration while preserving existing Telegram functionality. The implementation involves adding new configuration options, implementing Discord embed formatting, and refactoring the notification routing logic to support multiple platforms. All changes are contained within the notification layer.",
+  "phases": [
+    {
+      "id": "phase-1-config",
+      "name": "Configuration Layer",
+      "type": "implementation",
+      "description": "Add Discord webhook URL configuration to Settings and make Telegram optional",
+      "depends_on": [],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-1-1",
+          "description": "Add 4 Discord webhook URL fields to Settings class (DISCORD_WEBHOOK_US, DISCORD_WEBHOOK_KR, DISCORD_WEBHOOK_CRYPTO, DISCORD_WEBHOOK_ALERTS)",
+          "service": "main",
+          "files_to_modify": [
+            "app/core/config.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/core/config.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from app.core.config import settings; assert hasattr(settings, 'discord_webhook_us'); print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-1-2",
+          "description": "Make Telegram settings optional (change telegram_token and telegram_chat_id from required to Optional[str])",
+          "service": "main",
+          "files_to_modify": [
+            "app/core/config.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/core/config.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from app.core.config import Settings; s = Settings.model_construct(telegram_token=None, telegram_chat_id=None); print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-1-3",
+          "description": "Update .env.example with Discord webhook URL examples and mark Telegram as optional",
+          "service": "main",
+          "files_to_modify": [
+            "env.example"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "env.example"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify env.example contains DISCORD_WEBHOOK_* examples and Telegram is marked as optional"
+          },
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-discord-integration",
+      "name": "Discord Webhook Integration",
+      "type": "implementation",
+      "description": "Implement Discord webhook sending and embed formatting in TradeNotifier",
+      "depends_on": [
+        "phase-1-config"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Add _send_to_discord() method to TradeNotifier for posting to Discord webhooks",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify _send_to_discord() method exists with correct signature and error handling"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-2",
+          "description": "Convert _format_buy_notification() to return Discord embed dict instead of markdown string",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from app.monitoring.trade_notifier import TradeNotifier; tn = TradeNotifier(); result = tn._format_buy_notification('BTC', '비트코인', 1, 100000, [100000], [0.001], '암호화폐'); assert isinstance(result, dict) and 'title' in result; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-3",
+          "description": "Convert _format_sell_notification() to return Discord embed dict with red color (0xFF0000)",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from app.monitoring.trade_notifier import TradeNotifier; tn = TradeNotifier(); result = tn._format_sell_notification('BTC', '비트코인', 1, 0.001, [100000], [0.001], 100000, '암호화폐'); assert result.get('color') == 0xFF0000; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-4",
+          "description": "Convert _format_cancel_notification() to return Discord embed dict with yellow color (0xFFFF00)",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from app.monitoring.trade_notifier import TradeNotifier; tn = TradeNotifier(); result = tn._format_cancel_notification('BTC', '비트코인', 1, '매수', '암호화폐'); assert result.get('color') == 0xFFFF00; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-5",
+          "description": "Convert _format_analysis_notification() to return Discord embed dict with blue color (0x0000FF)",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from app.monitoring.trade_notifier import TradeNotifier; tn = TradeNotifier(); result = tn._format_analysis_notification('BTC', '비트코인', 'buy', 85, ['이유'], '암호화폐'); assert result.get('color') == 0x0000FF; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-6",
+          "description": "Convert _format_automation_summary() to return Discord embed dict",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from app.monitoring.trade_notifier import TradeNotifier; tn = TradeNotifier(); result = tn._format_automation_summary(10, 10, 3, 2, 0, 45.5); assert isinstance(result, dict) and 'title' in result; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-7",
+          "description": "Convert _format_failure_notification() to return Discord embed dict with orange color (0xFF6600)",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from app.monitoring.trade_notifier import TradeNotifier; tn = TradeNotifier(); result = tn._format_failure_notification('AAPL', '애플', '실패사유', '해외주식'); assert result.get('color') == 0xFF6600; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-2-8",
+          "description": "Convert Toss notification methods to Discord embed format (_format_toss_buy_recommendation, _format_toss_sell_recommendation, _format_toss_price_recommendation_html)",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify all Toss notification methods return Discord embed dicts with proper formatting"
+          },
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-routing",
+      "name": "Market Type Routing",
+      "type": "implementation",
+      "description": "Implement market_type-based routing logic and configure Discord webhooks",
+      "depends_on": [
+        "phase-2-discord-integration"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-3-1",
+          "description": "Add discord_webhook_urls fields to TradeNotifier.__init__() and configure() method",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify TradeNotifier accepts discord_webhook_us, discord_webhook_kr, discord_webhook_crypto, discord_webhook_alerts in configure()"
+          },
+          "status": "completed"
+        },
+        {
+          "id": "subtask-3-2",
+          "description": "Implement _get_webhook_for_market_type() helper method to route notifications to correct Discord channel",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "python -c \"from app.monitoring.trade_notifier import TradeNotifier; tn = TradeNotifier(); tn.configure(discord_webhook_us='url1', discord_webhook_kr='url2', discord_webhook_crypto='url3', discord_webhook_alerts='url4', enabled=True); assert tn._get_webhook_for_market_type('US') == 'url1'; assert tn._get_webhook_for_market_type('국내주식') == 'url2'; assert tn._get_webhook_for_market_type('암호화폐') == 'url3'; print('OK')\"",
+            "expected": "OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-3-3",
+          "description": "Update notify_buy_order() to route to Discord webhook based on market_type",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify notify_buy_order() routes to correct Discord webhook based on market_type parameter"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-3-4",
+          "description": "Update notify_sell_order() to route to Discord webhook based on market_type",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify notify_sell_order() routes to correct Discord webhook based on market_type parameter"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-3-5",
+          "description": "Update notify_cancel_orders() to route to Discord webhook based on market_type",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify notify_cancel_orders() routes to correct Discord webhook based on market_type parameter"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-3-6",
+          "description": "Update notify_analysis_complete() to route to Discord webhook based on market_type",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify notify_analysis_complete() routes to correct Discord webhook based on market_type parameter"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-3-7",
+          "description": "Update notify_trade_failure() to route to Discord webhook based on market_type",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify notify_trade_failure() routes to correct Discord webhook based on market_type parameter"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-3-8",
+          "description": "Implement Telegram fallback in notification methods (try Discord first, fall back to Telegram)",
+          "service": "main",
+          "files_to_modify": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify notification methods fall back to Telegram when Discord webhooks are not configured"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-4-initialization",
+      "name": "Initialization Updates",
+      "type": "implementation",
+      "description": "Update application initialization to configure Discord webhooks",
+      "depends_on": [
+        "phase-3-routing"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-4-1",
+          "description": "Update setup_monitoring() in main.py to configure Discord webhooks from settings",
+          "service": "main",
+          "files_to_modify": [
+            "app/main.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/main.py"
+          ],
+          "verification": {
+            "type": "manual",
+            "instructions": "Verify setup_monitoring() passes Discord webhook URLs to trade_notifier.configure()"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-4-2",
+          "description": "Remove dead Telegram import in screener.py (replace notifier._send_to_telegram() with public method)",
+          "service": "main",
+          "files_to_modify": [
+            "app/jobs/screener.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/monitoring/trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "grep -n '_send_to_telegram' app/jobs/screener.py || echo 'OK'",
+            "expected": "OK"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-5-tests",
+      "name": "Test Updates",
+      "type": "implementation",
+      "description": "Update all tests to use Discord webhook mocks instead of Telegram",
+      "depends_on": [
+        "phase-4-initialization"
+      ],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-5-1",
+          "description": "Update test_configure() to test Discord webhook configuration",
+          "service": "main",
+          "files_to_modify": [
+            "tests/test_trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/test_trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "uv run pytest tests/test_trade_notifier.py::test_configure -v",
+            "expected": "PASSED"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-2",
+          "description": "Update test_format_buy_notification() to verify Discord embed format",
+          "service": "main",
+          "files_to_modify": [
+            "tests/test_trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/test_trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "uv run pytest tests/test_trade_notifier.py::test_format_buy_notification -v",
+            "expected": "PASSED"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-3",
+          "description": "Update test_format_sell_notification() to verify Discord embed with red color",
+          "service": "main",
+          "files_to_modify": [
+            "tests/test_trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/test_trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "uv run pytest tests/test_trade_notifier.py::test_format_sell_notification -v",
+            "expected": "PASSED"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-4",
+          "description": "Update test_format_cancel_notification() to verify Discord embed with yellow color",
+          "service": "main",
+          "files_to_modify": [
+            "tests/test_trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/test_trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "uv run pytest tests/test_trade_notifier.py::test_format_cancel_notification -v",
+            "expected": "PASSED"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-5",
+          "description": "Update test_format_analysis_notification() to verify Discord embed with blue color",
+          "service": "main",
+          "files_to_modify": [
+            "tests/test_trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/test_trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "uv run pytest tests/test_trade_notifier.py::test_format_analysis_notification -v",
+            "expected": "PASSED"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-6",
+          "description": "Update all notification tests to mock Discord webhook POST instead of Telegram API",
+          "service": "main",
+          "files_to_modify": [
+            "tests/test_trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/test_trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "uv run pytest tests/test_trade_notifier.py::test_notify_buy_order_success -v",
+            "expected": "PASSED"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-7",
+          "description": "Add test_market_type_routing() to verify market_type-based webhook routing",
+          "service": "main",
+          "files_to_modify": [
+            "tests/test_trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/test_trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "uv run pytest tests/test_trade_notifier.py::test_market_type_routing -v",
+            "expected": "PASSED"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-8",
+          "description": "Add test_telegram_fallback() to verify Telegram fallback when Discord not configured",
+          "service": "main",
+          "files_to_modify": [
+            "tests/test_trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/test_trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "uv run pytest tests/test_trade_notifier.py::test_telegram_fallback -v",
+            "expected": "PASSED"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-5-9",
+          "description": "Add test_send_to_discord() to verify Discord webhook HTTP POST behavior",
+          "service": "main",
+          "files_to_modify": [
+            "tests/test_trade_notifier.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/test_trade_notifier.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "uv run pytest tests/test_trade_notifier.py::test_send_to_discord_success -v",
+            "expected": "PASSED"
+          },
+          "status": "pending"
+        }
+      ]
+    },
+    {
+      "id": "phase-6-integration",
+      "name": "Integration & Verification",
+      "type": "integration",
+      "description": "End-to-end verification of Discord webhook integration",
+      "depends_on": [
+        "phase-4-initialization",
+        "phase-5-tests"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-6-1",
+          "description": "Run full test suite to ensure all tests pass with Discord integration",
+          "all_services": false,
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "uv run pytest tests/test_trade_notifier.py -v",
+            "expected": "All tests pass"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-6-2",
+          "description": "Verify application starts and initializes Discord webhooks without errors",
+          "all_services": false,
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "timeout 10 uv run uvicorn app.main:app --host localhost --port 8001 2>&1 | grep -i 'trade notifier' || true",
+            "expected": "Logs show Discord webhook configuration or graceful skip"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-6-3",
+          "description": "End-to-end verification: Send test notification and verify Discord webhook receives it",
+          "all_services": false,
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "e2e",
+            "steps": [
+              "Configure Discord webhook URLs in .env",
+              "Start the application",
+              "Trigger a test notification via API or test endpoint",
+              "Verify Discord channel receives message with correct format and routing"
+            ]
+          },
+          "status": "pending"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_phases": 6,
+    "total_subtasks": 34,
+    "services_involved": [
+      "main"
+    ],
+    "parallelism": {
+      "max_parallel_phases": 2,
+      "parallel_groups": [
+        {
+          "phases": [
+            "phase-4-initialization",
+            "phase-5-tests"
+          ],
+          "reason": "Both depend only on phase-3, operate on different files (main.py/screener.py vs tests)"
+        }
+      ],
+      "recommended_workers": 1,
+      "speedup_estimate": "Sequential execution recommended due to tight dependencies between phases"
+    },
+    "startup_command": "source .venv/bin/activate && python auto-claude/run.py --spec 005 --parallel 1"
+  },
+  "verification_strategy": {
+    "risk_level": "medium",
+    "skip_validation": false,
+    "test_creation_phase": "post_implementation",
+    "test_types_required": [
+      "unit",
+      "integration"
+    ],
+    "security_scanning_required": false,
+    "staging_deployment_required": false,
+    "acceptance_criteria": [
+      "All existing tests pass with Discord mocks",
+      "New tests cover Discord-specific functionality",
+      "Discord webhooks receive messages with correct routing",
+      "Telegram fallback works when Discord unavailable",
+      "No regressions in existing functionality"
+    ],
+    "verification_steps": [
+      {
+        "name": "Unit Tests",
+        "command": "uv run pytest tests/test_trade_notifier.py -v",
+        "expected_outcome": "All unit tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Integration Tests",
+        "command": "uv run pytest tests/ -k 'trade_notifier or discord' -v",
+        "expected_outcome": "All integration tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Configuration Validation",
+        "command": "python -c \"from app.core.config import settings; assert hasattr(settings, 'discord_webhook_us'); print('Config OK')\"",
+        "expected_outcome": "Config fields exist",
+        "type": "command",
+        "required": true,
+        "blocking": true
+      }
+    ],
+    "reasoning": "Medium risk change requires unit and integration test coverage. Discord webhooks are well-documented HTTP endpoints, no security scanning needed. Can be tested in development environment without staging deployment."
+  },
+  "qa_acceptance": {
+    "unit_tests": {
+      "required": true,
+      "commands": [
+        "uv run pytest tests/test_trade_notifier.py -v"
+      ],
+      "minimum_coverage": null
+    },
+    "integration_tests": {
+      "required": true,
+      "commands": [
+        "uv run pytest tests/test_trade_notifier.py -v -m integration"
+      ],
+      "services_to_test": [
+        "main"
+      ]
+    },
+    "e2e_tests": {
+      "required": false,
+      "commands": [],
+      "flows": []
+    },
+    "browser_verification": {
+      "required": false,
+      "pages": []
+    },
+    "database_verification": {
+      "required": false,
+      "checks": []
+    }
+  },
+  "qa_signoff": null,
+  "status": "in_progress",
+  "planStatus": "in_progress",
+  "xstateState": "coding",
+  "executionPhase": "coding",
+  "updated_at": "2026-03-06T04:44:50.393Z",
+  "lastEvent": {
+    "eventId": "769ea988-43d6-4f4d-984d-f38f0fb16e19",
+    "sequence": 0,
+    "type": "PLANNING_COMPLETE",
+    "timestamp": "2026-03-06T04:26:04.784690+00:00"
+  }
+}
