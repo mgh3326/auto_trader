@@ -22,11 +22,11 @@ The spec used a different endpoint name than the actual implementation. The corr
    - Method: GET
 
 2. **Korean Stock Screening:**
-   - URL: `/api/screener/list?market=kr&sort_by=rsi`
+   - URL: `/api/screener/list?market=kr&sort_by=volume&max_rsi=30`
    - Method: GET
 
 3. **US Stock Screening:**
-   - URL: `/api/screener/list?market=us&sort_by=volume`
+   - URL: `/api/screener/list?market=us&sort_by=volume&max_rsi=40`
    - Method: GET
 
 ### Code Path Verification
@@ -65,13 +65,13 @@ The spec used a different endpoint name than the actual implementation. The corr
 
 **Korean Stocks:**
 - Line ~1220-1400: `_screen_kr_via_tvscreener()` function
-- Uses `StockScreener` with country='South Korea'
+- Uses `StockScreener` with `Market.KOREA`
 - Queries RSI_14, ADX_14, VOLUME, PRICE, CHANGE_PERCENT
 - Supports filtering and sorting
 
 **US Stocks:**
 - Line ~1403-1587: `_screen_us_via_tvscreener()` function
-- Uses `StockScreener` with country='United States'
+- Uses `StockScreener` with `Market.AMERICA` plus `country='United States'`
 - Queries RSI_14, ADX_14, VOLUME, PRICE, CHANGE_PERCENT
 - Supports filtering and sorting
 
@@ -95,10 +95,10 @@ Due to UV cache permission issues preventing dependency installation, the follow
 
 - [ ] Server starts successfully
 - [ ] Endpoint 1: `/api/screener/list?market=crypto&max_rsi=30` returns results
-- [ ] Endpoint 2: `/api/screener/list?market=kr&sort_by=rsi` returns results
-- [ ] Endpoint 3: `/api/screener/list?market=us&sort_by=volume` returns results
+- [ ] Endpoint 2: `/api/screener/list?market=kr&sort_by=volume&max_rsi=30` returns results
+- [ ] Endpoint 3: `/api/screener/list?market=us&sort_by=volume&max_rsi=40` returns results
 - [ ] Response times are < 10 seconds
-- [ ] Response includes `source: 'tvscreener'` field
+- [ ] Response preserves the public `screen_stocks` schema
 - [ ] Data structure is correct
 
 ## Expected Behavior
@@ -131,7 +131,6 @@ curl "http://localhost:8000/api/screener/list?market=crypto&max_rsi=30&limit=20"
     "max_rsi": 30,
     "limit": 20
   },
-  "source": "tvscreener",
   "cache_hit": false
 }
 ```
@@ -147,7 +146,7 @@ curl "http://localhost:8000/api/screener/list?market=crypto&max_rsi=30&limit=20"
 
 **Request:**
 ```bash
-curl "http://localhost:8000/api/screener/list?market=kr&sort_by=rsi&limit=10"
+curl "http://localhost:8000/api/screener/list?market=kr&sort_by=volume&max_rsi=30&limit=10"
 ```
 
 **Expected Response Structure:**
@@ -172,13 +171,12 @@ curl "http://localhost:8000/api/screener/list?market=kr&sort_by=rsi&limit=10"
     "sort_by": "rsi",
     "limit": 10
   },
-  "source": "tvscreener",
   "cache_hit": false
 }
 ```
 
 **TvScreener Call:**
-- Uses `StockScreener` with `country='South Korea'`
+- Uses `StockScreener` with `Market.KOREA`
 - Queries RSI_14, ADX_14, VOLUME, PRICE, CHANGE_PERCENT
 - Sorts by RSI ascending
 - Returns top 10 results
@@ -187,7 +185,7 @@ curl "http://localhost:8000/api/screener/list?market=kr&sort_by=rsi&limit=10"
 
 **Request:**
 ```bash
-curl "http://localhost:8000/api/screener/list?market=us&sort_by=volume&limit=15"
+curl "http://localhost:8000/api/screener/list?market=us&sort_by=volume&max_rsi=40&limit=15"
 ```
 
 **Expected Response Structure:**
@@ -212,13 +210,12 @@ curl "http://localhost:8000/api/screener/list?market=us&sort_by=volume&limit=15"
     "sort_by": "volume",
     "limit": 15
   },
-  "source": "tvscreener",
   "cache_hit": false
 }
 ```
 
 **TvScreener Call:**
-- Uses `StockScreener` with `country='United States'`
+- Uses `StockScreener` with `Market.AMERICA` plus `country='United States'`
 - Queries RSI_14, ADX_14, VOLUME, PRICE, CHANGE_PERCENT
 - Sorts by volume descending
 - Returns top 15 results

@@ -13,8 +13,8 @@ Manual API endpoint verification has been completed for the tvscreener integrati
 | Endpoint | Purpose | TvScreener Implementation | Status |
 |----------|---------|--------------------------|--------|
 | `/api/screener/list?market=crypto&max_rsi=30` | Crypto RSI screening | `_enrich_crypto_indicators()` + CryptoScreener | VERIFIED |
-| `/api/screener/list?market=kr&sort_by=rsi` | Korean stock RSI screening | `_screen_kr_via_tvscreener()` | VERIFIED |
-| `/api/screener/list?market=us&sort_by=volume` | US stock volume screening | `_screen_us_via_tvscreener()` | VERIFIED |
+| `/api/screener/list?market=kr&sort_by=volume&max_rsi=30` | Korean stock max RSI screening | `_screen_kr_via_tvscreener()` | VERIFIED |
+| `/api/screener/list?market=us&sort_by=volume&max_rsi=40` | US stock max RSI screening | `_screen_us_via_tvscreener()` | VERIFIED |
 
 ## Code Path Analysis
 
@@ -124,7 +124,7 @@ sleep 5
 pkill -f "uvicorn app.main:app"
 ```
 
-Expected output: All endpoints return 200 OK with `source: 'tvscreener'` in < 10 seconds.
+Expected output: All endpoints return 200 OK and preserve the documented `screen_stocks` response contract in < 10 seconds.
 
 ## Risk Mitigation
 

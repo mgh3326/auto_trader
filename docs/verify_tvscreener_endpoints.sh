@@ -146,14 +146,13 @@ test_endpoint \
 
 # Test 2: Korean stock screening sorted by RSI
 test_endpoint \
-    "/api/screener/list?market=kr&sort_by=rsi&limit=10" \
-    "Korean Stock Screening (sorted by RSI)" \
+    "/api/screener/list?market=kr&sort_by=volume&max_rsi=30&limit=10" \
+    "Korean Stock Screening (max RSI 30)" \
     "tvscreener"
 
-# Test 3: US stock screening sorted by volume
 test_endpoint \
-    "/api/screener/list?market=us&sort_by=volume&limit=15" \
-    "US Stock Screening (sorted by volume)" \
+    "/api/screener/list?market=us&sort_by=volume&max_rsi=40&limit=15" \
+    "US Stock Screening (max RSI 40)" \
     "tvscreener"
 
 # Additional test: Crypto screening sorted by RSI (should also use tvscreener)
