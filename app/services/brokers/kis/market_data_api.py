@@ -102,7 +102,49 @@ class MarketDataAPI:
         Returns:
             거래량 순위 리스트
         """
-        raise NotImplementedError("volume_rank will be implemented in subtask-4-2")
+        token = await self._transport.ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {token}",
+            "tr_id": DOMESTIC_VOLUME_TR,
+        }
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": "1",
+            "FID_TRGT_CLS_CODE": "11111111",
+            "FID_TRGT_EXLS_CLS_CODE": "0000001100",
+            "FID_INPUT_PRICE_1": "0",
+            "FID_INPUT_PRICE_2": "1000000",
+            "FID_VOL_CNT": "100000",
+            "FID_INPUT_DATE_1": "",
+        }
+
+        js = await self._transport.request(
+            "GET",
+            f"{BASE_URL}{DOMESTIC_VOLUME_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="volume_rank",
+            tr_id=DOMESTIC_VOLUME_TR,
+        )
+        if js["rt_cd"] == "0":
+            results = js["output"][:limit]
+            # Safe debug sample without float conversion that could fail
+            sample_data = [
+                (r.get("hts_kor_isnm", ""), r.get("acml_vol", "0")) for r in results[:3]
+            ]
+            logging.debug(
+                f"volume_rank: Received {len(js['output'])} results, "
+                f"returning {len(results)}. Sample: {sample_data}"
+            )
+            return results
+        raise RuntimeError(
+            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+        )
 
     async def market_cap_rank(
         self, market: str = "J", limit: int = 30
@@ -116,7 +158,35 @@ class MarketDataAPI:
         Returns:
             시가총액 순위 리스트
         """
-        raise NotImplementedError("market_cap_rank will be implemented in subtask-4-2")
+        token = await self._transport.ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {token}",
+            "tr_id": MARKET_CAP_RANK_TR,
+        }
+        js = await self._transport.request(
+            "GET",
+            f"{BASE_URL}{MARKET_CAP_RANK_URL}",
+            headers=hdr,
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_COND_SCR_DIV_CODE": "20174",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_TRGT_CLS_CODE": "0",
+                "FID_TRGT_EXLS_CLS_CODE": "0",
+                "FID_INPUT_PRICE_1": "",
+                "FID_INPUT_PRICE_2": "",
+                "FID_VOL_CNT": "",
+            },
+            timeout=5,
+            api_name="market_cap_rank",
+            tr_id=MARKET_CAP_RANK_TR,
+        )
+        if js["rt_cd"] == "0":
+            return js["output"][:limit]
+        raise RuntimeError(
+            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+        )
 
     async def fluctuation_rank(
         self, market: str = "J", direction: str = "up", limit: int = 30
@@ -131,7 +201,64 @@ class MarketDataAPI:
         Returns:
             등락률 순위 리스트
         """
-        raise NotImplementedError("fluctuation_rank will be implemented in subtask-4-2")
+        token = await self._transport.ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {token}",
+            "tr_id": FLUCTUATION_RANK_TR,
+        }
+
+        # FID_PRC_CLS_CODE: "0"=전체 (공식 API 문서 기준)
+        prc_cls_code = "0"
+        # FID_RANK_SORT_CLS_CODE: "0"=상승률, "3"=하락율 (공식 API 문서 기준)
+        rank_sort_cls_code = "3" if direction == "down" else "0"
+
+        logging.debug(
+            f"fluctuation_rank: direction={direction}, "
+            f"FID_PRC_CLS_CODE={prc_cls_code}, "
+            f"FID_RANK_SORT_CLS_CODE={rank_sort_cls_code}"
+        )
+
+        js = await self._transport.request(
+            "GET",
+            f"{BASE_URL}{FLUCTUATION_RANK_URL}",
+            headers=hdr,
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_COND_SCR_DIV_CODE": "20170",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_RANK_SORT_CLS_CODE": rank_sort_cls_code,
+                "FID_INPUT_CNT_1": "0",
+                "FID_PRC_CLS_CODE": prc_cls_code,
+                "FID_INPUT_PRICE_1": "",
+                "FID_INPUT_PRICE_2": "",
+                "FID_VOL_CNT": "",
+                "FID_TRGT_CLS_CODE": "0",
+                "FID_TRGT_EXLS_CLS_CODE": "0",
+                "FID_RSFL_RATE1": "",
+                "FID_RSFL_RATE2": "",
+            },
+            timeout=5,
+            api_name="fluctuation_rank",
+            tr_id=FLUCTUATION_RANK_TR,
+        )
+
+        if js["rt_cd"] == "0":
+            results = js["output"]
+            # Sort: up → descending (highest first), down → ascending (lowest first).
+            if direction == "up":
+                results.sort(key=lambda x: float(x.get("prdy_ctrt", 0)), reverse=True)
+                return results[:limit]
+
+            negatives = [
+                item for item in results if float(item.get("prdy_ctrt", 0)) < 0
+            ]
+            negatives.sort(key=lambda x: float(x.get("prdy_ctrt", 0)))
+            return negatives[:limit]
+
+        raise RuntimeError(
+            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+        )
 
     async def foreign_buying_rank(
         self, market: str = "J", limit: int = 30
@@ -145,7 +272,32 @@ class MarketDataAPI:
         Returns:
             외국인 순매수 순위 리스트
         """
-        raise NotImplementedError("foreign_buying_rank will be implemented in subtask-4-2")
+        token = await self._transport.ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {token}",
+            "tr_id": FOREIGN_BUYING_RANK_TR,
+        }
+        js = await self._transport.request(
+            "GET",
+            f"{BASE_URL}{FOREIGN_BUYING_RANK_URL}",
+            headers=hdr,
+            params={
+                "FID_COND_MRKT_DIV_CODE": "V",
+                "FID_COND_SCR_DIV_CODE": "16449",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_RANK_SORT_CLS_CODE": "0",
+                "FID_ETC_CLS_CODE": "1",
+            },
+            timeout=5,
+            api_name="foreign_buying_rank",
+            tr_id=FOREIGN_BUYING_RANK_TR,
+        )
+        if js["rt_cd"] == "0":
+            return js["output"][:limit]
+        raise RuntimeError(
+            js.get("msg1") or f"KIS API error (msg_cd={js.get('msg_cd', 'unknown')})"
+        )
 
     # =========================================================================
     # Price & Orderbook Methods
