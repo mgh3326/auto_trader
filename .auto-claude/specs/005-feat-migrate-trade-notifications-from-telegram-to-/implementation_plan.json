@@ -554,7 +554,9 @@
             "command": "uv run pytest tests/test_trade_notifier.py::test_notify_buy_order_success -v",
             "expected": "PASSED"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Updated all notification tests to mock Discord webhook POST instead of Telegram API:\n- Updated test_notify_buy_order_success() to configure discord_webhook_crypto and verify embeds in JSON payload\n- Updated test_test_connection_success() to configure discord_webhook_crypto and verify embeds in JSON payload\n- Replaced test_send_to_multiple_chats() with test_send_to_correct_webhook_by_market_type() to test market_type-based routing to correct webhooks (US/KR/Crypto)\n- Updated test_notify_trade_failure_success() to configure discord_webhook_us and verify embeds in JSON payload\n- Updated test_notify_sell_order_success() to configure discord_webhook_us and verify embeds in JSON payload\n- Updated test_format_buy_notification_without_details() to check Discord embed dict format (title, color, fields)\n- Updated test_format_automation_summary() to check Discord embed dict format with cyan color\n- Updated test_format_automation_summary_with_errors() to check Discord embed dict format with error field\n- Updated test_format_failure_notification() to check Discord embed dict format with orange color\n- Left test_notify_openclaw_message_success() and test_notify_openclaw_message_disabled() unchanged as OpenClaw message forwarding still uses Telegram\n\nAll tests now properly mock Discord webhook POST requests with embeds payload instead of Telegram API calls with chat_id and text.",
+          "updated_at": "2026-03-06T05:11:06.222555+00:00"
         },
         {
           "id": "subtask-5-7",
@@ -572,7 +574,9 @@
             "command": "uv run pytest tests/test_trade_notifier.py::test_market_type_routing -v",
             "expected": "PASSED"
           },
-          "status": "pending"
+          "status": "completed",
+          "notes": "Added test_market_type_routing() to verify market_type-based webhook routing. Test directly validates the _get_webhook_for_market_type() method to ensure correct routing logic. Tests cover: US market (English 'US'), US market (Korean '해외주식'), KR market ('국내주식'), crypto market ('암호화폐'), unknown market types (returns None), and whitespace handling. All test cases verify the correct webhook URL is returned for each market type. Test follows existing patterns with pytest.mark.unit decorator and uses trade_notifier fixture.",
+          "updated_at": "2026-03-06T06:15:00.000000+00:00"
         },
         {
           "id": "subtask-5-8",
@@ -775,12 +779,12 @@
   "planStatus": "in_progress",
   "xstateState": "coding",
   "executionPhase": "coding",
-  "updated_at": "2026-03-06T05:06:59.654Z",
+  "updated_at": "2026-03-06T05:13:13.449Z",
   "lastEvent": {
     "eventId": "769ea988-43d6-4f4d-984d-f38f0fb16e19",
     "sequence": 0,
     "type": "PLANNING_COMPLETE",
     "timestamp": "2026-03-06T04:26:04.784690+00:00"
   },
-  "last_updated": "2026-03-06T05:01:11.457773+00:00"
+  "last_updated": "2026-03-06T05:11:06.222561+00:00"
 }

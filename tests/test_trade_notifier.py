@@ -753,3 +753,53 @@ async def test_notify_openclaw_message_disabled(trade_notifier):
     result = await trade_notifier.notify_openclaw_message("scan message")
 
     assert result is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_telegram_fallback(trade_notifier):
+    """Test Telegram fallback when Discord is not configured."""
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    # Mock the httpx.AsyncClient to avoid proxy issues
+    with patch("app.monitoring.trade_notifier.httpx.AsyncClient") as mock_client_init:
+        # Create a mock client instance
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.aclose = AsyncMock()
+        mock_client_init.return_value = mock_client
+
+        # Configure with Telegram only (no Discord webhooks)
+        trade_notifier.configure(
+            bot_token="test_token",
+            chat_ids=["123456"],
+            enabled=True,
+        )
+
+    # Call notify_buy_order without Discord configured
+    result = await trade_notifier.notify_buy_order(
+        symbol="BTC",
+        korean_name="비트코인",
+        order_count=2,
+        total_amount=200000.0,
+        prices=[100000.0, 100000.0],
+        volumes=[0.001, 0.001],
+        market_type="암호화폐",
+    )
+
+    # Should succeed via Telegram fallback
+    assert result is True
+    mock_client.post.assert_called_once()
+
+    # Verify Telegram API was called (not Discord webhook)
+    call_args = mock_client.post.call_args
+    url = call_args.args[0]
+    assert url == "https://api.telegram.org/bottest_token/sendMessage"
+
+    # Verify the message contains Telegram markdown formatting
+    json_data = call_args.kwargs["json"]
+    assert "text" in json_data
+    assert json_data["parse_mode"] == "Markdown"
+    assert "💰 매수 주문 접수" in json_data["text"]
+    assert "비트코인 \\(BTC\\)" in json_data["text"]
