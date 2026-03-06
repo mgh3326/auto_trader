@@ -9,6 +9,7 @@ Steps are executed sequentially by the TradingOrchestrator, with explicit
 failure policies and skip conditions.
 """
 
+import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Any
@@ -876,3 +877,269 @@ class RefreshStep(TradingStep):
             "avg_price": avg_price,
             "current_price": current_price,
         }
+
+
+class SellStep(TradingStep):
+    """
+    Step that executes sell orders based on AI analysis.
+
+    Uses the trading service to place sell orders according to analysis
+    results and trade settings. For manual holdings (토스 etc.), sends
+    a price recommendation notification instead of executing a sell order.
+
+    Uses CONTINUE failure policy - sell failures don't stop processing.
+    """
+
+    @property
+    def name(self) -> str:
+        return "sell"
+
+    @property
+    def failure_policy(self) -> FailurePolicy:
+        """Sell failures should not stop processing."""
+        return FailurePolicy.CONTINUE
+
+    @property
+    def skip_conditions(self) -> list[SkipCondition]:
+        """
+        Conditions under which sell step should be skipped.
+
+        Manual holdings (토스 등) should be skipped since they cannot be sold
+        via KIS API. The notification is handled separately by the orchestrator
+        or via the execute() method's manual holding branch.
+        """
+
+        def is_manual_holding(context: TradingContext) -> bool:
+            """Check if this is a manual holding (토스 등)."""
+            return context.is_manual
+
+        return [is_manual_holding]
+
+    async def execute(self, context: TradingContext) -> StepOutcome:
+        """Execute sell orders for the stock."""
+        self._log_start(context)
+
+        # Determine if domestic or overseas based on exchange_code
+        is_domestic = not context.exchange_code
+
+        # Manual holdings (토스 등) need special handling - send recommendation notification
+        if context.is_manual:
+            return await self._handle_manual_holding(context, is_domestic)
+
+        try:
+            if is_domestic:
+                result = await self._execute_domestic_sell(context)
+            else:
+                result = await self._execute_overseas_sell(context)
+
+            # Handle notification
+            await self._send_notification(context, result, is_domestic)
+
+            if result.get("success"):
+                orders_placed = result.get("orders_placed", 0)
+                if orders_placed > 0:
+                    self._log_success(
+                        context,
+                        f"{orders_placed}건 매도 주문 완료",
+                    )
+                    return self._success(
+                        f"매도 주문 {orders_placed}건 성공",
+                        data=result,
+                    )
+                else:
+                    self._log_skip(context, result.get("message", "매도 조건 미충족"))
+                    return self._skip(result.get("message", "매도 조건 미충족"))
+            else:
+                self._log_failure(
+                    context,
+                    Exception(result.get("message", "매도 실패")),
+                )
+                return self._failure(result.get("message", "매도 실패"), data=result)
+
+        except Exception as e:
+            self._log_failure(context, e, "매도 주문 실패")
+            # Send failure notification
+            try:
+                from app.monitoring.trade_notifier import get_trade_notifier
+
+                notifier = get_trade_notifier()
+                await notifier.notify_trade_failure(
+                    symbol=context.symbol,
+                    korean_name=context.name or context.symbol,
+                    trade_type="매도",
+                    error_message=str(e),
+                    market_type="국내주식" if is_domestic else "해외주식",
+                )
+            except Exception as notify_error:
+                logger.warning("매도 실패 알림 전송 실패: %s", notify_error)
+
+            return self._failure(f"매도 주문 실패: {e}")
+
+    async def _handle_manual_holding(
+        self, context: TradingContext, is_domestic: bool
+    ) -> StepOutcome:
+        """
+        Handle manual holdings by sending Toss recommendation notification.
+
+        Manual holdings (토스 etc.) cannot be sold via KIS API, so we send
+        a price recommendation notification instead.
+        """
+        self._log_skip(context, "수동 잔고 - KIS 매도 불가, 추천 알림 발송")
+
+        try:
+            await self._send_toss_recommendation(context, is_domestic)
+            return self._skip(
+                "수동 잔고 종목 - 추천 알림 발송",
+                data={"notification_sent": True, "is_manual": True},
+            )
+        except Exception as e:
+            logger.warning(
+                "[Step:%s] 수동 잔고 추천 알림 발송 실패 (%s): %s",
+                self.name,
+                context.symbol,
+                e,
+            )
+            # Still return skip (not failure) - manual holdings shouldn't block processing
+            return self._skip(
+                "수동 잔고 종목 - 매도 스킵",
+                data={"notification_sent": False, "error": str(e), "is_manual": True},
+            )
+
+    async def _send_toss_recommendation(
+        self, context: TradingContext, is_domestic: bool
+    ) -> None:
+        """Send Toss recommendation notification for manual holdings."""
+        from app.core.db import AsyncSessionLocal
+        from app.services.stock_info_service import StockAnalysisService
+
+        from app.monitoring.trade_notifier import get_trade_notifier
+
+        notifier = get_trade_notifier()
+        if not notifier._enabled:
+            logger.debug(
+                "[토스추천] %s(%s) - 알림 비활성화됨",
+                context.name,
+                context.symbol,
+            )
+            return
+
+        async with AsyncSessionLocal() as db:
+            service = StockAnalysisService(db)
+            analysis = await service.get_latest_analysis_by_symbol(context.symbol)
+
+            if not analysis:
+                logger.warning(
+                    "[토스추천] %s(%s) - 분석 결과 없음, 알림 스킵",
+                    context.name,
+                    context.symbol,
+                )
+                return
+
+            # Parse decision and reasons
+            decision = analysis.decision.lower() if analysis.decision else "hold"
+            confidence = analysis.confidence if analysis.confidence else 0
+
+            raw_reasons = analysis.reasons
+            if isinstance(raw_reasons, list):
+                reasons = [str(r) for r in raw_reasons]
+            elif isinstance(raw_reasons, str):
+                try:
+                    parsed = json.loads(raw_reasons)
+                    reasons = (
+                        [str(r) for r in parsed]
+                        if isinstance(parsed, list)
+                        else [str(parsed)]
+                    )
+                except Exception:
+                    reasons = [raw_reasons]
+            else:
+                reasons = []
+
+            currency = "원" if is_domestic else "$"
+
+            await notifier.notify_toss_price_recommendation(
+                symbol=context.symbol,
+                korean_name=context.name or context.symbol,
+                current_price=context.current_price,
+                toss_quantity=context.quantity,
+                toss_avg_price=context.avg_price,
+                decision=decision,
+                confidence=confidence,
+                reasons=reasons,
+                appropriate_buy_min=analysis.appropriate_buy_min,
+                appropriate_buy_max=analysis.appropriate_buy_max,
+                appropriate_sell_min=analysis.appropriate_sell_min,
+                appropriate_sell_max=analysis.appropriate_sell_max,
+                buy_hope_min=analysis.buy_hope_min,
+                buy_hope_max=analysis.buy_hope_max,
+                sell_target_min=analysis.sell_target_min,
+                sell_target_max=analysis.sell_target_max,
+                currency=currency,
+            )
+            logger.info(
+                "[토스추천] %s(%s) - 가격 제안 알림 발송 (AI 판단: %s, 신뢰도: %s%%)",
+                context.name,
+                context.symbol,
+                decision,
+                confidence,
+            )
+
+    async def _execute_domestic_sell(
+        self, context: TradingContext
+    ) -> dict[str, Any]:
+        """Execute domestic sell orders."""
+        from app.services.kis_trading_service import (
+            process_kis_domestic_sell_orders_with_analysis,
+        )
+
+        return await process_kis_domestic_sell_orders_with_analysis(
+            kis_client=context.kis,
+            symbol=context.symbol,
+            current_price=context.current_price,
+            avg_buy_price=context.avg_price,
+            quantity=context.quantity,
+        )
+
+    async def _execute_overseas_sell(
+        self, context: TradingContext
+    ) -> dict[str, Any]:
+        """Execute overseas sell orders."""
+        from app.services.kis_trading_service import (
+            process_kis_overseas_sell_orders_with_analysis,
+        )
+
+        return await process_kis_overseas_sell_orders_with_analysis(
+            kis_client=context.kis,
+            symbol=context.symbol,
+            current_price=context.current_price,
+            avg_buy_price=context.avg_price,
+            quantity=context.quantity,
+            exchange_code=context.exchange_code,
+        )
+
+    async def _send_notification(
+        self,
+        context: TradingContext,
+        result: dict[str, Any],
+        is_domestic: bool,
+    ) -> None:
+        """Send sell notification on success."""
+        if not result.get("success") or result.get("orders_placed", 0) <= 0:
+            return
+
+        try:
+            from app.monitoring.trade_notifier import get_trade_notifier
+
+            notifier = get_trade_notifier()
+            await notifier.notify_sell_order(
+                symbol=context.symbol,
+                korean_name=context.name or context.symbol,
+                order_count=result.get("orders_placed", 0),
+                total_volume=result.get("total_volume", 0),
+                prices=result.get("prices", []),
+                volumes=result.get("quantities", []),
+                expected_amount=result.get("expected_amount", 0.0),
+                market_type="국내주식" if is_domestic else "해외주식",
+            )
+        except Exception as notify_error:
+            logger.warning("매도 성공 알림 전송 실패: %s", notify_error)
