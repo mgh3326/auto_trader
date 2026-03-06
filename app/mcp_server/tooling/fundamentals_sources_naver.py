@@ -28,8 +28,6 @@ from app.services.analyst_normalizer import (
     rating_to_bucket,
 )
 
-
-
 # ---------------------------------------------------------------------------
 # YFinance Snapshot (internal dedupe helper)
 # ---------------------------------------------------------------------------
@@ -42,6 +40,8 @@ class _YFinanceSnapshot:
     info: dict[str, Any] | None = None
     analyst_price_targets: dict[str, Any] | None = None
     upgrades_downgrades: Any = None  # DataFrame or None
+
+
 # ---------------------------------------------------------------------------
 # Local Parse/Normalize Helpers (kept here to avoid circular imports)
 # ---------------------------------------------------------------------------

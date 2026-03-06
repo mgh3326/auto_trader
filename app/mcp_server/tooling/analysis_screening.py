@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pandas as pd
+import yfinance as yf
+
 from app.mcp_server.tooling.analysis_rankings import (
     calculate_pearson_correlation as _calculate_pearson_correlation_impl,
 )
@@ -25,11 +28,7 @@ from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
     _fetch_news_finnhub,
 )
-import pandas as pd
-import yfinance as yf
-
 from app.mcp_server.tooling.fundamentals_sources_naver import (
-    _YFinanceSnapshot,
     _fetch_investment_opinions_naver,
     _fetch_investment_opinions_yfinance,
     _fetch_news_naver,
@@ -37,11 +36,11 @@ from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_sector_peers_us,
     _fetch_valuation_naver,
     _fetch_valuation_yfinance,
+    _YFinanceSnapshot,
 )
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
-from app.monitoring import build_yfinance_tracing_session
 from app.mcp_server.tooling.market_data_quotes import (
     _fetch_quote_crypto,
     _fetch_quote_equity_kr,
@@ -68,6 +67,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_optional_float as _to_optional_float,
 )
+from app.monitoring import build_yfinance_tracing_session
 
 
 def _error_payload(
@@ -262,7 +262,9 @@ async def _analyze_stock_impl(
 
     # Fetch OHLCV once for indicators and support/resistance (avoid duplicate fetch)
     loop = asyncio.get_running_loop()
-    ohlcv_df = await _fetch_ohlcv_for_indicators(normalized_symbol, market_type, count=250)
+    ohlcv_df = await _fetch_ohlcv_for_indicators(
+        normalized_symbol, market_type, count=250
+    )
     # Use last 60 days for support/resistance (slice from the 250-day df)
     ohlcv_60d = ohlcv_df.tail(60) if len(ohlcv_df) >= 60 else ohlcv_df
 
@@ -271,7 +273,9 @@ async def _analyze_stock_impl(
 
     indicators_task = asyncio.create_task(
         _get_indicators_impl(
-            normalized_symbol, ["rsi", "macd", "bollinger", "sma"], None,
+            normalized_symbol,
+            ["rsi", "macd", "bollinger", "sma"],
+            None,
             preloaded_df=ohlcv_df,
         ),
     )
@@ -319,12 +323,16 @@ async def _analyze_stock_impl(
                 ud = yf_ticker.upgrades_downgrades
             except Exception:
                 pass
-            return _YFinanceSnapshot(info=info, analyst_price_targets=targets, upgrades_downgrades=ud)
+            return _YFinanceSnapshot(
+                info=info, analyst_price_targets=targets, upgrades_downgrades=ud
+            )
 
         yf_snapshot = await loop.run_in_executor(None, _collect_yf_snapshot)
 
         valuation_task = asyncio.create_task(
-            _fetch_valuation_yfinance(normalized_symbol, snapshot=yf_snapshot, session=yf_session),
+            _fetch_valuation_yfinance(
+                normalized_symbol, snapshot=yf_snapshot, session=yf_session
+            ),
         )
         tasks.append(valuation_task)
 
@@ -339,7 +347,9 @@ async def _analyze_stock_impl(
         tasks.append(news_task)
 
         opinions_task = asyncio.create_task(
-            _fetch_investment_opinions_yfinance(normalized_symbol, 10, snapshot=yf_snapshot, session=yf_session),
+            _fetch_investment_opinions_yfinance(
+                normalized_symbol, 10, snapshot=yf_snapshot, session=yf_session
+            ),
         )
         tasks.append(opinions_task)
 

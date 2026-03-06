@@ -8716,8 +8716,6 @@ async def test_sector_peers_us_dedupes_before_network_call(monkeypatch):
     )
 
     def mock_yf_ticker(symbol, session=None):
-        calls = {"symbol": symbol}
-
         class MockTicker:
             @property
             def info(self):
@@ -8736,7 +8734,7 @@ async def test_sector_peers_us_dedupes_before_network_call(monkeypatch):
 
     monkeypatch.setattr(fundamentals_sources_naver.yf, "Ticker", mock_yf_ticker)
 
-    result = await tools["get_sector_peers"]("TEST", market="us", limit=5)
+    await tools["get_sector_peers"]("TEST", market="us", limit=5)
 
     # BRK.B and BRK.A share base ticker "BRK", so only one should be fetched
     # Total calls: 1 for target (TEST) + deduped peers (AAPL, BRK.B or BRK.A, MSFT)
@@ -8778,8 +8776,6 @@ async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     # Mock yfinance to count info calls
-    original_ticker = fundamentals_sources_naver.yf.Ticker
-
     def mock_yf_ticker(symbol, session=None):
         class MockTicker:
             @property
@@ -8830,7 +8826,9 @@ async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
 
     # ticker.info should be called only once (via snapshot) for both valuation and opinions
     info_calls = [c for c in yf_info_calls if c.startswith("info:")]
-    assert len(info_calls) == 1, f"Expected 1 info call, got {len(info_calls)}: {info_calls}"
+    assert len(info_calls) == 1, (
+        f"Expected 1 info call, got {len(info_calls)}: {info_calls}"
+    )
 
     assert result["symbol"] == "AAPL"
     assert "valuation" in result
