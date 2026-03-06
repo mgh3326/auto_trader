@@ -425,6 +425,39 @@ class TradeNotifier:
             return True
         return False
 
+    async def _send_to_discord_embed(self, embed: dict) -> bool:
+        """
+        Send Discord embed to all configured Discord webhooks.
+
+        Args:
+            embed: Discord embed dict
+
+        Returns:
+            True if at least one message was sent successfully
+        """
+        if not self._enabled or not self._http_client or not self._discord_webhook_urls:
+            return False
+
+        success_count = 0
+
+        for webhook_url in self._discord_webhook_urls:
+            try:
+                response = await self._http_client.post(
+                    webhook_url,
+                    json={"embeds": [embed]},
+                    headers={"Content-Type": "application/json"},
+                )
+                response.raise_for_status()
+                success_count += 1
+
+            except Exception as e:
+                logger.error(f"Failed to send embed to Discord webhook: {e}")
+
+        if success_count > 0:
+            logger.info(f"Embed sent to {success_count} Discord webhook(s)")
+            return True
+        return False
+
     async def notify_buy_order(
         self,
         symbol: str,
@@ -556,9 +589,9 @@ class TradeNotifier:
         korean_name: str,
         reason: str,
         market_type: str = "암호화폐",
-    ) -> str:
+    ) -> dict:
         """
-        Format trade failure notification.
+        Format trade failure notification as Discord embed.
 
         Args:
             symbol: Trading symbol
@@ -567,20 +600,23 @@ class TradeNotifier:
             market_type: Type of market
 
         Returns:
-            Markdown-formatted notification message
+            Discord embed dict
         """
         timestamp = format_datetime()
 
-        parts = [
-            "⚠️ *거래 실패 알림*",
-            f"🕒 {timestamp}",
-            "",
-            f"*종목:* {korean_name} ({symbol})",
-            f"*시장:* {market_type}",
-            f"*사유:* {reason}",
+        # Build fields list
+        fields = [
+            {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
+            {"name": "시장", "value": market_type, "inline": True},
+            {"name": "사유", "value": reason, "inline": False},
         ]
 
-        return "\n".join(parts)
+        return {
+            "title": "⚠️ 거래 실패",
+            "description": f"🕒 {timestamp}",
+            "color": 0xFF6600,  # Orange for failure
+            "fields": fields,
+        }
 
     async def notify_trade_failure(
         self,
@@ -594,10 +630,10 @@ class TradeNotifier:
             return False
 
         try:
-            message = self._format_failure_notification(
+            embed = self._format_failure_notification(
                 symbol, korean_name, reason, market_type
             )
-            return await self._send_to_telegram(message)
+            return await self._send_to_discord_embed(embed)
         except Exception as e:
             logger.error(f"Failed to send failure notification: {e}")
             return False
