@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
-from typing import Any, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 import httpx
 import yfinance as yf
@@ -156,6 +156,69 @@ def _adapt_tvscreener_stock_response(
         market,
         meta_fields={"source": "tvscreener"},
     )
+
+
+async def _execute_screening_with_fallback(
+    *,
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    sort_by: str,
+    max_rsi: float | None,
+    tvscreener_fn: Callable[..., Awaitable[dict[str, Any]]],
+    legacy_fn: Callable[..., Awaitable[dict[str, Any]]],
+    tvscreener_kwargs: dict[str, Any],
+    legacy_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Execute screening with tvscreener → legacy fallback logic.
+
+    This function consolidates the fallback decision logic that was previously
+    duplicated for KR and US markets. It attempts tvscreener first when conditions
+    are met, then falls back to legacy implementation on failure.
+
+    Args:
+        market: Normalized market (kr, kospi, kosdaq, us)
+        asset_type: Asset type filter
+        category: Category filter
+        sort_by: Sort field
+        max_rsi: Maximum RSI filter
+        tvscreener_fn: Async function for tvscreener screening
+        legacy_fn: Async function for legacy screening
+        tvscreener_kwargs: Keyword arguments for tvscreener function
+        legacy_kwargs: Keyword arguments for legacy function
+
+    Returns:
+        Screening result dictionary
+    """
+    # Try tvscreener implementation first for RSI-based screening
+    if _can_use_tvscreener_stock_path(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sort_by=sort_by,
+        max_rsi=max_rsi,
+    ):
+        try:
+            tvscreener_result = await tvscreener_fn(**tvscreener_kwargs)
+            if tvscreener_result and not tvscreener_result.get("error"):
+                logger.info(
+                    "%s stock screening via tvscreener succeeded: %d stocks",
+                    market.upper(),
+                    tvscreener_result.get("count", 0),
+                )
+                return _adapt_tvscreener_stock_response(
+                    tvscreener_result,
+                    market=market,
+                )
+        except Exception as exc:
+            logger.debug(
+                "tvscreener %s screening failed, falling back to legacy implementation: %s",
+                market.upper(),
+                exc,
+            )
+
+    # Fallback to legacy implementation
+    return await legacy_fn(**legacy_kwargs)
 
 
 # ---------------------------------------------------------------------------
