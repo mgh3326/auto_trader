@@ -1128,3 +1128,109 @@ async def test_hour_aggregation_from_minutes():
 
     # Verify datetime is floored to hour
     assert row["datetime"] == pd.Timestamp("2026-02-23 09:00:00")
+
+
+@pytest.mark.asyncio
+async def test_background_task_non_blocking(monkeypatch):
+    """Test that background storage task is non-blocking.
+
+    Verifies that:
+    1. Background storage is scheduled when API minute candles are fetched
+    2. The main function returns immediately without waiting for DB write
+    3. Background task executes after main function returns
+    """
+    import asyncio
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    now_kst = _dt_kst(2026, 2, 23, 10, 10, 0)
+
+    # Track whether background storage was called and if it completed
+    background_storage_started = False
+    background_storage_completed = False
+    background_storage_args = []
+
+    # Mock DB to return empty data (triggers API fallback via _build_current_hour_row)
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [
+                        {
+                            "symbol": symbol,
+                            "nxt_eligible": False,
+                            "is_active": True,
+                        }
+                    ]
+                )
+            if "FROM public.kr_candles_1h" in sql:
+                return _MappingsResult([])
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult([])
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+
+    # Mock _store_minute_candles_background with delay to simulate slow DB write
+    async def mock_store_background(symbol_arg, minute_rows):
+        nonlocal background_storage_started, background_storage_completed, background_storage_args
+        background_storage_started = True
+        background_storage_args = (symbol_arg, minute_rows)
+        # Simulate slow DB operation (200ms)
+        await asyncio.sleep(0.2)
+        background_storage_completed = True
+
+    monkeypatch.setattr(svc, "_store_minute_candles_background", mock_store_background)
+
+    # Mock KIS API to return minute candles (triggers background storage)
+    api_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-02-23 10:00:00"),
+                "date": datetime.date(2026, 2, 23),
+                "time": datetime.time(10, 0, 0),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1000,
+                "value": 100000,
+            }
+        ]
+    )
+    kis = SimpleNamespace(inquire_minute_chart=AsyncMock(return_value=api_df))
+    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+
+    # Call the function and measure time
+    start_time = datetime.datetime.now()
+    out = await svc.read_kr_hourly_candles_1h(
+        symbol=symbol,
+        count=1,
+        end_date=None,
+        now_kst=now_kst,
+    )
+    end_time = datetime.datetime.now()
+    elapsed_ms = (end_time - start_time).total_seconds() * 1000
+
+    # Verify function returned quickly (< 100ms, much less than background storage's 200ms)
+    assert elapsed_ms < 100, f"Function took {elapsed_ms}ms, should return immediately (< 100ms)"
+
+    # Verify function returned data
+    assert len(out) > 0, "Function should return data"
+
+    # At this point, background storage started but may not have completed (non-blocking)
+    assert background_storage_started, "Background storage should have been started"
+
+    # Wait for background task to complete and verify it finishes
+    await asyncio.sleep(0.3)
+    assert background_storage_completed, "Background storage should complete after main function returns"
+
+    # Verify background storage was called with correct arguments
+    assert len(background_storage_args) == 2, "Background storage should receive symbol and minute_rows"
+    assert background_storage_args[0] == symbol, f"Background storage symbol should be {symbol}"
+    assert len(background_storage_args[1]) > 0, "Background storage should receive minute candles"
