@@ -1,11 +1,12 @@
 """
-Telegram trade notification system with rich formatting.
+Trade notification system with Telegram and Discord integration.
 
 Features:
 - Singleton pattern for TradeNotifier
 - Rich trade event formatting with markdown
 - Support for buy, sell, cancel, and analysis notifications
-- Multiple chat ID support
+- Multiple Telegram chat ID support
+- Multiple Discord webhook URL support
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class TradeNotifier:
     """
-    Singleton trade notifier with Telegram integration.
+    Singleton trade notifier with Telegram and Discord integration.
     """
 
     _instance: TradeNotifier | None = None
@@ -37,6 +38,7 @@ class TradeNotifier:
         if not self._initialized:
             self._bot_token: str | None = None
             self._chat_ids: list[str] = []
+            self._discord_webhook_urls: list[str] = []
             self._enabled: bool = False
             self._http_client: httpx.AsyncClient | None = None
             TradeNotifier._initialized = True
@@ -46,6 +48,7 @@ class TradeNotifier:
         bot_token: str,
         chat_ids: list[str],
         enabled: bool = True,
+        discord_webhook_urls: list[str] | None = None,
     ) -> None:
         """
         Configure the trade notifier.
@@ -54,14 +57,18 @@ class TradeNotifier:
             bot_token: Telegram bot token
             chat_ids: List of Telegram chat IDs to send notifications to
             enabled: Whether trade notifications are enabled
+            discord_webhook_urls: List of Discord webhook URLs to send notifications to
         """
         self._bot_token = bot_token
         self._chat_ids = chat_ids
+        self._discord_webhook_urls = discord_webhook_urls or []
         self._enabled = enabled
 
         if enabled and not self._http_client:
             self._http_client = httpx.AsyncClient(timeout=10.0)
             logger.info(f"TradeNotifier configured: {len(chat_ids)} chat(s)")
+            if self._discord_webhook_urls:
+                logger.info(f"TradeNotifier Discord webhooks: {len(self._discord_webhook_urls)} webhook(s)")
 
     async def shutdown(self) -> None:
         """Shutdown HTTP client."""
@@ -341,6 +348,39 @@ class TradeNotifier:
 
         if success_count > 0:
             logger.info(f"Notification sent to {success_count} chat(s)")
+            return True
+        return False
+
+    async def _send_to_discord(self, message: str) -> bool:
+        """
+        Send message to all configured Discord webhooks.
+
+        Args:
+            message: Message to send
+
+        Returns:
+            True if at least one message was sent successfully
+        """
+        if not self._enabled or not self._http_client or not self._discord_webhook_urls:
+            return False
+
+        success_count = 0
+
+        for webhook_url in self._discord_webhook_urls:
+            try:
+                response = await self._http_client.post(
+                    webhook_url,
+                    json={"content": message},
+                    headers={"Content-Type": "application/json"},
+                )
+                response.raise_for_status()
+                success_count += 1
+
+            except Exception as e:
+                logger.error(f"Failed to send notification to Discord webhook: {e}")
+
+        if success_count > 0:
+            logger.info(f"Notification sent to {success_count} Discord webhook(s)")
             return True
         return False
 
