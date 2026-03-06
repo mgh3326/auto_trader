@@ -310,9 +310,9 @@ class TradeNotifier:
         sold: int,
         errors: int,
         duration_seconds: float,
-    ) -> str:
+    ) -> dict:
         """
-        Format automation execution summary.
+        Format automation execution summary as Discord embed.
 
         Args:
             total_coins: Total number of coins processed
@@ -323,25 +323,33 @@ class TradeNotifier:
             duration_seconds: Total execution time
 
         Returns:
-            Markdown-formatted summary message
+            Discord embed dict
         """
         timestamp = format_datetime()
 
-        parts = [
-            "🤖 *자동 거래 실행 완료*",
-            f"🕒 {timestamp}",
-            "",
-            f"*처리 종목:* {total_coins}개",
-            f"*분석 완료:* {analyzed}개",
-            f"*매수 주문:* {bought}건",
-            f"*매도 주문:* {sold}건",
-            f"*실행 시간:* {duration_seconds:.1f}초",
+        # Build fields list
+        fields = [
+            {"name": "처리 종목", "value": f"{total_coins}개", "inline": True},
+            {"name": "분석 완료", "value": f"{analyzed}개", "inline": True},
+            {"name": "매수 주문", "value": f"{bought}건", "inline": True},
+            {"name": "매도 주문", "value": f"{sold}건", "inline": True},
+            {"name": "실행 시간", "value": f"{duration_seconds:.1f}초", "inline": True},
         ]
 
+        # Add error count if any errors occurred
         if errors > 0:
-            parts.append(f"⚠️ *오류 발생:* {errors}건")
+            fields.append({
+                "name": "오류 발생",
+                "value": f"{errors}건",
+                "inline": False,
+            })
 
-        return "\n".join(parts)
+        return {
+            "title": "🤖 자동 거래 실행 완료",
+            "description": f"🕒 {timestamp}",
+            "color": 0x00BFFF,  # Deep Sky Blue for automation
+            "fields": fields,
+        }
 
     async def _send_to_telegram(
         self, message: str, parse_mode: str = "Markdown"
