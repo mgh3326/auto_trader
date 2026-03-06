@@ -7,7 +7,7 @@ sorting, error handling, and end-to-end screening flow.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pandas as pd
 import pytest

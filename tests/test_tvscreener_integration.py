@@ -7,8 +7,7 @@ This module contains both unit tests (with mocks) and integration tests
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 import pytest
@@ -543,7 +542,7 @@ class TestEdgeCases:
 
         async def mock_fetch(callable_fn, operation_name):
             # Execute the callable to verify it doesn't error
-            result = callable_fn()
+            _ = callable_fn()
             return mock_df
 
         service.fetch_with_retry = mock_fetch

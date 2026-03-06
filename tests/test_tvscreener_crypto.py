@@ -19,7 +19,6 @@ from app.mcp_server.tooling.analysis_screen_core import (
 )
 from app.utils.symbol_mapping import (
     SymbolMappingError,
-    upbit_to_tradingview,
 )
 
 

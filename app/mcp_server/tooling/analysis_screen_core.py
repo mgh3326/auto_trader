@@ -1271,7 +1271,7 @@ async def _screen_kr_via_tvscreener(
         # Import StockScreener and StockField from tvscreener
         try:
             from tvscreener import StockScreener, StockField
-        except ImportError as exc:
+        except ImportError:
             error_msg = "tvscreener library not installed, cannot use StockScreener"
             logger.warning("[Screen-KR-TV] %s", error_msg)
             result["error"] = error_msg
@@ -1454,7 +1454,7 @@ async def _screen_us_via_tvscreener(
         # Import StockScreener and StockField from tvscreener
         try:
             from tvscreener import StockScreener, StockField
-        except ImportError as exc:
+        except ImportError:
             error_msg = "tvscreener library not installed, cannot use StockScreener"
             logger.warning("[Screen-US-TV] %s", error_msg)
             result["error"] = error_msg
