@@ -15,10 +15,10 @@ Usage:
 
 from collections.abc import Callable
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
-from unittest.mock import AsyncMock
 
 from app.mcp_server.tooling import (
     analysis_rankings,
@@ -176,6 +176,7 @@ def _upbit_name_lookup_mock(name_map: dict[str, str]) -> AsyncMock:
     Returns:
         AsyncMock that implements the lookup function
     """
+
     async def _lookup(currency: str, quote_currency: str = "KRW", db=None) -> str:
         _ = quote_currency, db
         key = str(currency).upper()
@@ -215,6 +216,7 @@ def _patch_yf_ticker(
         monkeypatch: pytest monkeypatch fixture
         ticker_factory: Factory function that creates Ticker mock objects
     """
+
     def wrapped_ticker(symbol, session=None):
         assert session is not None
         return ticker_factory(symbol)
