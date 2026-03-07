@@ -1222,297 +1222,101 @@ async def _cancel_overseas_pending_orders(
 
 
 async def run_per_overseas_stock_automation() -> dict:
-    """해외 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)"""
+    """해외 주식 종목별 자동 실행 (미체결취소 -> 분석 -> 매수 -> 매도)
+
+    Refactored to use TradingOrchestrator with OverseasStrategy.
+    Maintains backward compatibility with existing test expectations.
+    """
 
     async def _run() -> dict:
-        from app.core.db import AsyncSessionLocal
-        from app.models.manual_holdings import MarketType
-        from app.services.manual_holdings_service import ManualHoldingsService
+        from app.analysis.service_analyzers import YahooAnalyzer
+        from app.jobs.kis_trading_orchestrator import (
+            OverseasStrategy,
+            TradingOrchestrator,
+        )
+        from app.jobs.kis_trading_steps import (
+            AnalyzeStep,
+            BuyStep,
+            CancelBuyOrdersStep,
+            CancelSellOrdersStep,
+            RefreshStep,
+            SellStep,
+        )
 
         kis = KISClient()
-        from app.analysis.service_analyzers import YahooAnalyzer
-
-        analyzer = YahooAnalyzer()
 
         try:
-            # 1. KIS 보유 종목 조회
-            my_stocks = await kis.fetch_my_overseas_stocks()
+            # Create strategy and steps with trading function dependencies
+            # This allows tests to patch the module-level functions
+            strategy = OverseasStrategy()
 
-            # 2. 수동 잔고(토스 등) 해외 주식 조회
-            async with AsyncSessionLocal() as db:
-                manual_service = ManualHoldingsService(db)
-                user_id = 1  # USER_ID는 현재 1로 고정
-                manual_holdings = await manual_service.get_holdings_by_user(
-                    user_id=user_id, market_type=MarketType.US
-                )
+            # Create analyzer instance from module-level class (can be patched by tests)
+            analyzer = YahooAnalyzer()
 
-            # 3. 수동 잔고 종목을 KIS 형식으로 변환하여 병합
-            for holding in manual_holdings:
-                ticker = holding.ticker
-                # KIS에 이미 있는 종목은 건너뛰기 (심볼 형식 정규화하여 비교)
-                if any(
-                    to_db_symbol(s.get("ovrs_pdno", "")) == ticker for s in my_stocks
-                ):
-                    continue
+            # Create steps with dependencies injected from this module
+            # This ensures that monkeypatch patches work correctly in tests
+            steps = [
+                AnalyzeStep(analyzer=analyzer),
+                CancelBuyOrdersStep(),
+                BuyStep(
+                    domestic_buy_func=None,  # Overseas strategy doesn't use domestic
+                    overseas_buy_func=process_kis_overseas_buy_orders_with_analysis,
+                ),
+                RefreshStep(),
+                CancelSellOrdersStep(),
+                SellStep(
+                    domestic_sell_func=None,  # Overseas strategy doesn't use domestic
+                    overseas_sell_func=process_kis_overseas_sell_orders_with_analysis,
+                ),
+            ]
 
-                # 수동 잔고 종목을 my_stocks에 추가 (KIS 형식으로 변환)
-                qty_str = str(holding.quantity)
-                my_stocks.append(
-                    {
-                        "ovrs_pdno": ticker,
-                        "ovrs_item_name": holding.display_name or ticker,
-                        "ovrs_cblc_qty": qty_str,
-                        "ord_psbl_qty": qty_str,  # 수동 잔고는 미체결 없음
-                        "pchs_avg_pric": str(holding.avg_price),
-                        "now_pric2": "0",  # 현재가는 나중에 API로 조회
-                        "_is_manual": True,  # 수동 잔고 표시
+            # Create and run orchestrator
+            orchestrator = TradingOrchestrator(strategy=strategy, steps=steps)
+            result = await orchestrator.run(kis)
+
+            # Transform result to match original format for backward compatibility
+            # Original format: {"name", "symbol", "steps"} with Korean step names
+            transformed_results = []
+            for stock_result in result.get("results", []):
+                # Transform step names from English to Korean for backward compatibility
+                transformed_steps = []
+                for step in stock_result.get("steps", []):
+                    step_name = step.get("step", "")
+                    # Map English step names to Korean
+                    step_name_map = {
+                        "analyze": "분석",
+                        "cancel_buy_orders": "매수취소",
+                        "buy": "매수",
+                        "refresh": "리프레시",
+                        "cancel_sell_orders": "매도취소",
+                        "sell": "매도",
                     }
-                )
+                    korean_name = step_name_map.get(step_name, step_name)
+                    transformed_steps.append({
+                        "step": korean_name,
+                        "result": step.get("result", {}),
+                    })
 
-            if not my_stocks:
-                return {
-                    "status": "completed",
-                    "message": NO_OVERSEAS_STOCKS_MESSAGE,
-                    "results": [],
-                }
-
-            results = []
-
-            # 미체결 주문 조회 (한 번만 조회하여 재사용)
-            all_open_orders = await _load_overseas_open_orders_all_exchanges(kis)
-            logger.info(f"미체결 주문 조회 완료: {len(all_open_orders)}건")
-
-            for _index, stock in enumerate(my_stocks, 1):
-                symbol = stock.get("ovrs_pdno")
-                name = stock.get("ovrs_item_name")
-                avg_price = float(stock.get("pchs_avg_pric", 0))
-                current_price = float(stock.get("now_pric2", 0))
-                # 매도 시 미체결 주문을 제외한 주문 가능 수량(ord_psbl_qty)을 사용
-                qty = int(
-                    float(stock.get("ord_psbl_qty", stock.get("ovrs_cblc_qty", 0)))
-                )
-                exchange_code = await _resolve_overseas_exchange_code(
-                    symbol,
-                    stock.get("ovrs_excg_cd"),
-                )
-                is_manual = stock.get("_is_manual", False)
-
-                # 수동 잔고 종목인 경우 현재가를 API로 조회
-                if is_manual:
-                    try:
-                        price_df = await kis.inquire_overseas_price(symbol)
-                        if not price_df.empty:
-                            current_price = float(price_df.iloc[0]["close"])
-                            logger.info(
-                                f"[수동잔고] {name}({symbol}) 현재가 조회: ${current_price:.2f}"
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            f"[수동잔고] {name}({symbol}) 현재가 조회 실패, 평단가 사용: {e}"
-                        )
-                        current_price = avg_price
-
-                stock_steps = []
-
-                # 1. 분석
-                try:
-                    await analyzer.analyze_stock_json(symbol)
-                    stock_steps.append(
-                        {
-                            "step": "분석",
-                            "result": {"success": True, "message": "분석 완료"},
-                        }
-                    )
-                except Exception as e:
-                    stock_steps.append(
-                        {"step": "분석", "result": {"success": False, "error": str(e)}}
-                    )
-                    results.append(
-                        {"name": name, "symbol": symbol, "steps": stock_steps}
-                    )
-                    continue
-
-                # 2. 기존 미체결 매수 주문 취소
-                try:
-                    cancel_result = await _cancel_overseas_pending_orders(
-                        kis, symbol, exchange_code, "buy", all_open_orders
-                    )
-                    if cancel_result["total"] > 0:
-                        logger.info(
-                            f"{symbol} 미체결 매수 주문 취소: {cancel_result['cancelled']}/{cancel_result['total']}건"
-                        )
-                        stock_steps.append(
-                            {
-                                "step": "매수취소",
-                                "result": {"success": True, **cancel_result},
-                            }
-                        )
-                        # 취소 후 API 동기화를 위해 잠시 대기
-                        await asyncio.sleep(0.5)
-                except Exception as e:
-                    logger.warning(f"{symbol} 미체결 매수 주문 취소 실패: {e}")
-                    stock_steps.append(
-                        {
-                            "step": "매수취소",
-                            "result": {"success": False, "error": str(e)},
-                        }
-                    )
-
-                # 3. 매수
-                try:
-                    res = await process_kis_overseas_buy_orders_with_analysis(
-                        kis,
-                        symbol,
-                        current_price,
-                        avg_price,
-                        exchange_code,
-                    )
-                    stock_steps.append({"step": "매수", "result": res})
-                    # 매수 성공 시 텔레그램 알림
-                    if res.get("success") and res.get("orders_placed", 0) > 0:
-                        try:
-                            notifier = get_trade_notifier()
-                            await notifier.notify_buy_order(
-                                symbol=symbol,
-                                korean_name=name or symbol,
-                                order_count=res.get("orders_placed", 0),
-                                total_amount=res.get("total_amount", 0.0),
-                                prices=res.get("prices", []),
-                                volumes=res.get("quantities", []),
-                                market_type="해외주식",
-                            )
-                        except Exception as notify_error:
-                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-                except Exception as e:
-                    stock_steps.append(
-                        {"step": "매수", "result": {"success": False, "error": str(e)}}
-                    )
-                    # 매수 실패 시 텔레그램 알림
-                    try:
-                        notifier = get_trade_notifier()
-                        await notifier.notify_trade_failure(
-                            symbol=symbol,
-                            korean_name=name or symbol,
-                            reason=f"매수 주문 실패: {str(e)}",
-                            market_type="해외주식",
-                        )
-                    except Exception as notify_error:
-                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-
-                # 수동 잔고(토스 등)는 KIS에서 매도할 수 없으므로 텔레그램 추천 알림만 발송
-                if is_manual:
-                    logger.info(
-                        f"[수동잔고] {name}({symbol}) - KIS 매도 불가, 토스 추천 알림 발송"
-                    )
-                    try:
-                        await _send_toss_recommendation_async(
-                            code=symbol,
-                            name=name or symbol,
-                            current_price=current_price,
-                            toss_quantity=qty,
-                            toss_avg_price=avg_price,
-                        )
-                        stock_steps.append(
-                            {
-                                "step": "매도",
-                                "result": {
-                                    "success": True,
-                                    "message": "수동잔고 - 토스 추천 알림 발송",
-                                    "orders_placed": 0,
-                                },
-                            }
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"[수동잔고] {name}({symbol}) 토스 추천 알림 발송 실패: {e}"
-                        )
-                        stock_steps.append(
-                            {
-                                "step": "매도",
-                                "result": {
-                                    "success": True,
-                                    "message": "수동잔고 - 매도 스킵",
-                                    "orders_placed": 0,
-                                },
-                            }
-                        )
-                    results.append(
-                        {"name": name, "symbol": symbol, "steps": stock_steps}
-                    )
-                    continue
-
-                # 4. 기존 미체결 매도 주문 취소
-                try:
-                    cancel_result = await _cancel_overseas_pending_orders(
-                        kis, symbol, exchange_code, "sell", all_open_orders
-                    )
-                    if cancel_result["total"] > 0:
-                        logger.info(
-                            f"{symbol} 미체결 매도 주문 취소: {cancel_result['cancelled']}/{cancel_result['total']}건"
-                        )
-                        stock_steps.append(
-                            {
-                                "step": "매도취소",
-                                "result": {"success": True, **cancel_result},
-                            }
-                        )
-                        # 취소 후 API 동기화를 위해 잠시 대기
-                        await asyncio.sleep(0.5)
-                except Exception as e:
-                    logger.warning(f"{symbol} 미체결 매도 주문 취소 실패: {e}")
-                    stock_steps.append(
-                        {
-                            "step": "매도취소",
-                            "result": {"success": False, "error": str(e)},
-                        }
-                    )
-
-                # 5. 매도
-                try:
-                    res = await process_kis_overseas_sell_orders_with_analysis(
-                        kis, symbol, current_price, avg_price, qty, exchange_code
-                    )
-                    stock_steps.append({"step": "매도", "result": res})
-                    # 매도 성공 시 텔레그램 알림
-                    if res.get("success") and res.get("orders_placed", 0) > 0:
-                        try:
-                            notifier = get_trade_notifier()
-                            await notifier.notify_sell_order(
-                                symbol=symbol,
-                                korean_name=name or symbol,
-                                order_count=res.get("orders_placed", 0),
-                                total_volume=res.get("total_volume", 0),
-                                prices=res.get("prices", []),
-                                volumes=res.get("quantities", []),
-                                expected_amount=res.get("expected_amount", 0.0),
-                                market_type="해외주식",
-                            )
-                        except Exception as notify_error:
-                            logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-                except Exception as e:
-                    stock_steps.append(
-                        {"step": "매도", "result": {"success": False, "error": str(e)}}
-                    )
-                    # 매도 실패 시 텔레그램 알림
-                    try:
-                        notifier = get_trade_notifier()
-                        await notifier.notify_trade_failure(
-                            symbol=symbol,
-                            korean_name=name or symbol,
-                            reason=f"매도 주문 실패: {str(e)}",
-                            market_type="해외주식",
-                        )
-                    except Exception as notify_error:
-                        logger.warning("텔레그램 알림 전송 실패: %s", notify_error)
-
-                results.append({"name": name, "symbol": symbol, "steps": stock_steps})
+                transformed_results.append({
+                    "name": stock_result.get("name", ""),
+                    "symbol": stock_result.get("symbol", ""),
+                    "steps": transformed_steps,
+                })
 
             return {
-                "status": "completed",
-                "message": "종목별 자동 실행 완료",
-                "results": results,
+                "status": result.get("status", "completed"),
+                "message": "종목별 자동 실행 완료"
+                if result.get("status") == "completed"
+                else result.get("message", ""),
+                "results": transformed_results,
             }
+
         except Exception as e:
+            # 태스크 전체 실패 시 로깅
+            logger.error(
+                f"[태스크 실패] kis.run_per_overseas_stock_automation: {e}",
+                exc_info=True,
+            )
             return {"status": "failed", "error": str(e)}
         finally:
             await analyzer.close()

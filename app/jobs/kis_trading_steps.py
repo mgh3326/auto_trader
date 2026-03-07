@@ -627,6 +627,7 @@ class BuyStep(TradingStep):
         self,
         domestic_buy_func: TradingBuyFunc | None = None,
         overseas_buy_func: TradingBuyFunc | None = None,
+        notifier_factory: Any = None,
     ) -> None:
         """
         Initialize BuyStep with optional trading function dependencies.
@@ -636,9 +637,20 @@ class BuyStep(TradingStep):
                 If None, imports from kis_trading_service.
             overseas_buy_func: Function to execute overseas buy orders.
                 If None, imports from kis_trading_service.
+            notifier_factory: Factory function to get trade notifier.
+                If None, imports from app.monitoring.trade_notifier.
         """
         self._domestic_buy_func = domestic_buy_func
         self._overseas_buy_func = overseas_buy_func
+        self._notifier_factory = notifier_factory
+
+    def _get_notifier(self) -> Any:
+        """Get the trade notifier instance."""
+        if self._notifier_factory is not None:
+            return self._notifier_factory()
+        from app.monitoring.trade_notifier import get_trade_notifier
+
+        return get_trade_notifier()
 
     @property
     def name(self) -> str:
@@ -695,14 +707,11 @@ class BuyStep(TradingStep):
             self._log_failure(context, e, "매수 주문 실패")
             # Send failure notification
             try:
-                from app.monitoring.trade_notifier import get_trade_notifier
-
-                notifier = get_trade_notifier()
+                notifier = self._get_notifier()
                 await notifier.notify_trade_failure(
                     symbol=context.symbol,
                     korean_name=context.name or context.symbol,
-                    trade_type="매수",
-                    error_message=str(e),
+                    reason=f"매수 주문 실패: {e}",
                     market_type="국내주식" if is_domestic else "해외주식",
                 )
             except Exception as notify_error:
@@ -762,9 +771,7 @@ class BuyStep(TradingStep):
             return
 
         try:
-            from app.monitoring.trade_notifier import get_trade_notifier
-
-            notifier = get_trade_notifier()
+            notifier = self._get_notifier()
             await notifier.notify_buy_order(
                 symbol=context.symbol,
                 korean_name=context.name or context.symbol,
@@ -943,6 +950,7 @@ class SellStep(TradingStep):
         self,
         domestic_sell_func: TradingSellFunc | None = None,
         overseas_sell_func: TradingSellFunc | None = None,
+        notifier_factory: Any = None,
     ) -> None:
         """
         Initialize SellStep with optional trading function dependencies.
@@ -952,9 +960,20 @@ class SellStep(TradingStep):
                 If None, imports from kis_trading_service.
             overseas_sell_func: Function to execute overseas sell orders.
                 If None, imports from kis_trading_service.
+            notifier_factory: Factory function to get trade notifier.
+                If None, imports from app.monitoring.trade_notifier.
         """
         self._domestic_sell_func = domestic_sell_func
         self._overseas_sell_func = overseas_sell_func
+        self._notifier_factory = notifier_factory
+
+    def _get_notifier(self) -> Any:
+        """Get the trade notifier instance."""
+        if self._notifier_factory is not None:
+            return self._notifier_factory()
+        from app.monitoring.trade_notifier import get_trade_notifier
+
+        return get_trade_notifier()
 
     @property
     def name(self) -> str:
@@ -1026,14 +1045,11 @@ class SellStep(TradingStep):
             self._log_failure(context, e, "매도 주문 실패")
             # Send failure notification
             try:
-                from app.monitoring.trade_notifier import get_trade_notifier
-
-                notifier = get_trade_notifier()
+                notifier = self._get_notifier()
                 await notifier.notify_trade_failure(
                     symbol=context.symbol,
                     korean_name=context.name or context.symbol,
-                    trade_type="매도",
-                    error_message=str(e),
+                    reason=f"매도 주문 실패: {e}",
                     market_type="국내주식" if is_domestic else "해외주식",
                 )
             except Exception as notify_error:
@@ -1204,9 +1220,7 @@ class SellStep(TradingStep):
             return
 
         try:
-            from app.monitoring.trade_notifier import get_trade_notifier
-
-            notifier = get_trade_notifier()
+            notifier = self._get_notifier()
             await notifier.notify_sell_order(
                 symbol=context.symbol,
                 korean_name=context.name or context.symbol,
