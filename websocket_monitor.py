@@ -461,21 +461,24 @@ async def main(mode: str = "both") -> None:
     }[mode]
     init_sentry(service_name=service_name)
 
-    # Configure trade notifier with Telegram and/or Discord
     has_telegram = bool(settings.telegram_token and settings.telegram_chat_id)
-    has_discord = any([
-        settings.discord_webhook_us,
-        settings.discord_webhook_kr,
-        settings.discord_webhook_crypto,
-        settings.discord_webhook_alerts,
-    ])
-    
+    has_discord = any(
+        [
+            settings.discord_webhook_us,
+            settings.discord_webhook_kr,
+            settings.discord_webhook_crypto,
+            settings.discord_webhook_alerts,
+        ]
+    )
+
     if has_telegram or has_discord:
         try:
             trade_notifier = get_trade_notifier()
             trade_notifier.configure(
                 bot_token=settings.telegram_token or "",
-                chat_ids=settings.telegram_chat_ids if settings.telegram_chat_ids else [],
+                chat_ids=settings.telegram_chat_ids
+                if settings.telegram_chat_ids
+                else [],
                 enabled=True,
                 discord_webhook_us=settings.discord_webhook_us,
                 discord_webhook_kr=settings.discord_webhook_kr,
