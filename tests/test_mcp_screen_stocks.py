@@ -2601,6 +2601,102 @@ class TestScreenStocksRsiLogging:
         assert result["results"][0]["rsi"] == 42.0
 
     @pytest.mark.asyncio
+    async def test_kr_cached_rows_are_copied_before_enrichment(self, monkeypatch):
+        stock_rows = [
+            {
+                "code": "005930",
+                "name": "삼성전자",
+                "close": 80_000.0,
+                "volume": 1_000,
+                "market_cap": 1_000_000,
+            }
+        ]
+        etf_rows = [
+            {
+                "code": "069500",
+                "name": "KODEX 200",
+                "close": 45_000.0,
+                "volume": 800,
+                "market_cap": 45_000,
+                "index_name": "KOSPI 200",
+            }
+        ]
+
+        async def mock_fetch_stock_all_cached(market):
+            if market == "STK":
+                return stock_rows
+            return []
+
+        async def mock_fetch_etf_all_cached():
+            return etf_rows
+
+        async def mock_fetch_valuation_all_cached(market):
+            _ = market
+            return {
+                "005930": {"per": 12.5, "pbr": 1.2, "dividend_yield": 0.025},
+                "069500": {"per": None, "pbr": None, "dividend_yield": 0.01},
+            }
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            _ = (symbol, market_type, count)
+            return pd.DataFrame({"close": [100.0 + i for i in range(50)]})
+
+        def mock_calculate_rsi(close):
+            _ = close
+            return {"14": 42.0}
+
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "fetch_valuation_all_cached",
+            mock_fetch_valuation_all_cached,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+        monkeypatch.setattr(analysis_screen_core, "_calculate_rsi", mock_calculate_rsi)
+
+        first_candidates, _ = await analysis_screen_core._stage_fetch_kr_candidates(
+            market="kr",
+            asset_type=None,
+            category=None,
+        )
+        first, _ = await analysis_screen_core._stage_enrich_kr_rsi(
+            first_candidates,
+            enrich_rsi=True,
+        )
+        second_candidates, _ = await analysis_screen_core._stage_fetch_kr_candidates(
+            market="kr",
+            asset_type=None,
+            category=None,
+        )
+        second, _ = await analysis_screen_core._stage_enrich_kr_rsi(
+            second_candidates,
+            enrich_rsi=True,
+        )
+
+        assert {item["code"] for item in first} == {"005930", "069500"}
+        assert {item["code"] for item in second} == {"005930", "069500"}
+        assert all(item["rsi"] == 42.0 for item in first)
+        assert all(item["rsi"] == 42.0 for item in second)
+
+        assert "asset_type" not in stock_rows[0]
+        assert "per" not in stock_rows[0]
+        assert "pbr" not in stock_rows[0]
+        assert "dividend_yield" not in stock_rows[0]
+        assert "rsi" not in stock_rows[0]
+        assert "asset_type" not in etf_rows[0]
+        assert "category" not in etf_rows[0]
+        assert "categories" not in etf_rows[0]
+        assert "dividend_yield" not in etf_rows[0]
+        assert "rsi" not in etf_rows[0]
+
+    @pytest.mark.asyncio
     async def test_crypto_rsi_falls_back_to_market_field(self, monkeypatch, caplog):
         async def mock_fetch_top_traded_coins(fiat):
             return [

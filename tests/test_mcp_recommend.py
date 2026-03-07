@@ -334,6 +334,37 @@ class TestRecommendStocksIntegration:
         return build_tools()["recommend_stocks"]
 
     @pytest.mark.asyncio
+    async def test_screen_error_preserves_screen_diagnostics(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        async def mock_stage_screen_candidates(**kwargs: Any):
+            _ = kwargs
+            return [], {
+                "raw_candidates": 7,
+                "market": "kr",
+                "screen_error": "kr screening offline",
+            }
+
+        monkeypatch.setattr(
+            analysis_recommend,
+            "_stage_screen_candidates",
+            mock_stage_screen_candidates,
+        )
+
+        result = await recommend_stocks(
+            budget=500_000,
+            market="kr",
+            strategy="balanced",
+            max_positions=3,
+        )
+
+        assert result["recommendations"] == []
+        assert result["diagnostics"]["raw_candidates"] == 7
+        assert result["diagnostics"]["market"] == "kr"
+        assert result["diagnostics"]["screen_error"] == "kr screening offline"
+        assert any("KR 후보 스크리닝 실패" in warning for warning in result["warnings"])
+
+    @pytest.mark.asyncio
     async def test_rejects_unsupported_market(self, recommend_stocks):
         with pytest.raises(ValueError, match="market must be one of"):
             await recommend_stocks(budget=100_000, market="jp")
@@ -1523,32 +1554,35 @@ class TestRecommendStocksIntegration:
     ):
         _mock_empty_holdings(monkeypatch)
 
-        async def mock_get_top_stocks(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        async def mock_screen_us(**kwargs: Any) -> dict[str, Any]:
+            _ = kwargs
             return {
-                "rankings": [
+                "results": [
                     {
-                        "symbol": "AAPL",
+                        "code": "AAPL",
                         "name": "Apple",
-                        "price": 200.0,
+                        "close": 200.0,
                         "change_rate": 1.1,
                         "volume": 10_000_000,
                         "market_cap": 3_000_000_000_000,
+                        "market": "us",
                     },
                     {
-                        "symbol": "MSFT",
+                        "code": "MSFT",
                         "name": "Microsoft",
-                        "price": 400.0,
+                        "close": 400.0,
                         "change_rate": 0.8,
                         "volume": 8_000_000,
                         "market_cap": 2_500_000_000_000,
+                        "market": "us",
                     },
                 ]
             }
 
         monkeypatch.setattr(
-            analysis_tool_handlers,
-            "get_top_stocks_impl",
-            mock_get_top_stocks,
+            analysis_screening,
+            "_screen_us",
+            mock_screen_us,
         )
 
         result = await recommend_stocks(

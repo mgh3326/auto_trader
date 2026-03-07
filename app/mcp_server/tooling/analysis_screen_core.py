@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import logging
 import time
+from importlib import import_module
 from typing import Any, cast
 
 import httpx
@@ -37,10 +38,6 @@ from app.services.tvscreener_service import (
     TvScreenerTimeoutError,
     _import_tvscreener,
 )
-from app.services.upbit_symbol_universe_service import (
-    get_upbit_market_display_names,
-    get_upbit_warning_markets,
-)
 from app.utils.symbol_mapping import (
     SymbolMappingError,
     tradingview_to_upbit,
@@ -53,6 +50,28 @@ DROP_THRESHOLD = -0.30
 MARKET_PANIC = -0.10
 CRYPTO_TOP_BY_VOLUME = 100
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
+_UPBIT_DISPLAY_NAMES_FUNC = "get_upbit_market_display_names"
+_UPBIT_WARNING_MARKETS_FUNC = "get_upbit_warning_markets"
+
+
+async def get_upbit_market_display_names(
+    markets: list[str],
+) -> dict[str, dict[str, str | None]]:
+    module = import_module("app.services.upbit_symbol_universe_service")
+    fetch_display_names = getattr(module, _UPBIT_DISPLAY_NAMES_FUNC)
+    return await fetch_display_names(markets)
+
+
+async def get_upbit_warning_markets(
+    *, quote_currency: str | None = None, fiat: str | None = None, db: Any = None
+) -> set[str]:
+    module = import_module("app.services.upbit_symbol_universe_service")
+    fetch_warning_markets = getattr(module, _UPBIT_WARNING_MARKETS_FUNC)
+    return await fetch_warning_markets(
+        db=db,
+        quote_currency=quote_currency,
+        fiat=fiat,
+    )
 
 
 def _to_optional_float(value: Any) -> float | None:
@@ -188,6 +207,16 @@ def _is_market_warning(value: Any) -> bool:
         return True
     normalized = str(value or "").strip().upper()
     return normalized in {"CAUTION", "WARNING", "TRUE", "Y", "1"}
+
+
+def _sort_crypto_by_rsi_bucket(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        items,
+        key=lambda item: (
+            int(item.get("rsi_bucket", 999)),
+            -float(item.get("trade_amount_24h") or 0.0),
+        ),
+    )
 
 
 def _sort_crypto_by_rsi_value(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -582,6 +611,9 @@ async def _stage_fetch_kr_candidates(
         "category": category,
     }
 
+    def copy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [dict(item) for item in rows]
+
     # If category is specified without asset_type, default to ETF
     effective_asset_type = asset_type
     if category is not None and asset_type is None:
@@ -593,18 +625,18 @@ async def _stage_fetch_kr_candidates(
     # Fetch stocks if needed
     if effective_asset_type is None or effective_asset_type == "stock":
         if market == "kospi":
-            candidates.extend(await fetch_stock_all_cached(market="STK"))
+            candidates.extend(copy_rows(await fetch_stock_all_cached(market="STK")))
         elif market == "kosdaq":
-            candidates.extend(await fetch_stock_all_cached(market="KSQ"))
+            candidates.extend(copy_rows(await fetch_stock_all_cached(market="KSQ")))
         else:
-            candidates.extend(await fetch_stock_all_cached(market="STK"))
-            candidates.extend(await fetch_stock_all_cached(market="KSQ"))
+            candidates.extend(copy_rows(await fetch_stock_all_cached(market="STK")))
+            candidates.extend(copy_rows(await fetch_stock_all_cached(market="KSQ")))
 
     # Fetch ETFs if needed
     if effective_asset_type is None or effective_asset_type == "etf":
         etfs: list[dict[str, Any]] = []
         if market != "kosdaq":
-            etfs = await fetch_etf_all_cached()
+            etfs = copy_rows(await fetch_etf_all_cached())
 
             for etf in etfs:
                 etf["asset_type"] = "etf"

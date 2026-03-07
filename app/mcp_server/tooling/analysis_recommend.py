@@ -1186,6 +1186,7 @@ async def recommend_stocks_impl(
             sectors=sectors,
             warnings=warnings,
         )
+        diagnostics.update(screen_diagnostics)
 
         # Handle screening errors
         if screen_diagnostics.get("screen_error"):
@@ -1205,8 +1206,6 @@ async def recommend_stocks_impl(
                 ],
                 "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
             }
-
-        diagnostics["raw_candidates"] = screen_diagnostics.get("raw_candidates", 0)
 
         # Crypto has a special simplified flow
         if normalized_market == "crypto":
