@@ -778,6 +778,7 @@ class BuyStep(TradingStep):
                 order_count=result.get("orders_placed", 0),
                 total_amount=result.get("total_amount", 0.0),
                 prices=result.get("prices", []),
+                volumes=result.get("quantities", []),
                 market_type="국내주식" if is_domestic else "해외주식",
             )
         except Exception as notify_error:

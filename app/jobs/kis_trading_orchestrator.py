@@ -714,15 +714,24 @@ class TradingOrchestrator:
             try:
                 outcome = await step.execute(context)
 
-                # Record step result
+                # Record step result - flatten common data fields for backward compatibility
+                step_result: dict[str, Any] = {
+                    "success": outcome.result == StepResult.SUCCESS,
+                    "skipped": outcome.result == StepResult.SKIP,
+                    "message": outcome.message,
+                    "data": outcome.data,
+                }
+                # Include data fields at top level for backward compatibility
+                if outcome.data:
+                    for key in ["orders_placed", "prices", "quantities", "total_amount"]:
+                        if key in outcome.data:
+                            step_result[key] = outcome.data[key]
+                # Include error key for failures to maintain backward compatibility
+                if outcome.result == StepResult.FAILURE:
+                    step_result["error"] = outcome.message
                 stock_steps.append({
                     "step": step.name,
-                    "result": {
-                        "success": outcome.result == StepResult.SUCCESS,
-                        "skipped": outcome.result == StepResult.SKIP,
-                        "message": outcome.message,
-                        "data": outcome.data,
-                    },
+                    "result": step_result,
                 })
 
                 # Handle failure policy
