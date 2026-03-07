@@ -21,6 +21,7 @@ from app.mcp_server.tooling.analysis_screen_core import (
     _normalize_sort_by,
     _normalize_sort_order,
     _screen_crypto,
+    _screen_crypto_via_tvscreener,
     _screen_kr,
     _screen_kr_via_tvscreener,
     _screen_us,
@@ -92,11 +93,11 @@ def _can_use_tvscreener_stock_path(
     sort_by: str,
     max_rsi: float | None,
 ) -> bool:
-    if max_rsi is None or sort_by not in _TVSCREENER_STOCK_SORTS:
+    if sort_by not in _TVSCREENER_STOCK_SORTS:
         return False
 
     if market in {"kr", "kospi", "kosdaq"}:
-        return asset_type == "stock" and category is None
+        return asset_type in {None, "stock"} and category is None
 
     if market == "us":
         return asset_type in {None, "stock"} and category is None
@@ -119,6 +120,7 @@ def _map_tvscreener_stock_row(
         "per": row.get("per"),
         "dividend_yield": row.get("dividend_yield"),
         "rsi": row.get("rsi"),
+        "adx": row.get("adx"),
         "market": row.get("market") or market,
     }
     if row.get("pbr") is not None or market in {"kr", "kospi", "kosdaq"}:
@@ -147,7 +149,13 @@ def _adapt_tvscreener_stock_response(
     normalized_filters.setdefault("sort_by", None)
     normalized_filters.setdefault("sort_order", "desc")
     total_count = int(tvscreener_result.get("count", len(rows)) or 0)
-    return _build_screen_response(rows, total_count, normalized_filters, market)
+    return _build_screen_response(
+        rows,
+        total_count,
+        normalized_filters,
+        market,
+        meta_fields={"source": "tvscreener"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +576,6 @@ async def screen_stocks_impl(
     )
 
     if normalized_market in ("kr", "kospi", "kosdaq"):
-        # Try tvscreener implementation first for RSI-based screening
         if _can_use_tvscreener_stock_path(
             market=normalized_market,
             asset_type=normalized_asset_type,
@@ -579,7 +586,7 @@ async def screen_stocks_impl(
             try:
                 tvscreener_result = await _screen_kr_via_tvscreener(
                     market=normalized_market,
-                    asset_type=normalized_asset_type,
+                    asset_type=normalized_asset_type or "stock",
                     category=category,
                     min_market_cap=min_market_cap,
                     max_per=max_per,
@@ -622,7 +629,6 @@ async def screen_stocks_impl(
             limit=limit,
         )
     if normalized_market == "us":
-        # Try tvscreener implementation first for RSI-based screening
         if _can_use_tvscreener_stock_path(
             market=normalized_market,
             asset_type=normalized_asset_type,
@@ -674,21 +680,37 @@ async def screen_stocks_impl(
             limit=limit,
         )
     if normalized_market == "crypto":
-        # Intentional for this scope: keep crypto enrichment call policy unchanged.
-        # 429/distributed rate-limit optimization is handled as a follow-up task.
-        return await _screen_crypto(
-            market=normalized_market,
-            asset_type=normalized_asset_type,
-            category=category,
-            min_market_cap=min_market_cap,
-            max_per=max_per,
-            min_dividend_yield=min_dividend_yield,
-            max_rsi=max_rsi,
-            sort_by=normalized_sort_by,
-            sort_order=normalized_sort_order,
-            limit=limit,
-            enrich_rsi=True,
-        )
+        try:
+            return await _screen_crypto_via_tvscreener(
+                market=normalized_market,
+                asset_type=normalized_asset_type,
+                category=category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                min_dividend_yield=min_dividend_yield,
+                max_rsi=max_rsi,
+                sort_by=normalized_sort_by,
+                sort_order=normalized_sort_order,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.debug(
+                "tvscreener crypto screening failed, falling back to legacy implementation: %s",
+                exc,
+            )
+            return await _screen_crypto(
+                market=normalized_market,
+                asset_type=normalized_asset_type,
+                category=category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                min_dividend_yield=min_dividend_yield,
+                max_rsi=max_rsi,
+                sort_by=normalized_sort_by,
+                sort_order=normalized_sort_order,
+                limit=limit,
+                enrich_rsi=True,
+            )
 
     return _error_payload(
         source="screen_stocks",

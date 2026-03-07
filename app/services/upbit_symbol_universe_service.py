@@ -403,6 +403,48 @@ async def get_upbit_korean_name_by_market(
     return row.korean_name
 
 
+async def _get_upbit_market_display_names_impl(
+    db: AsyncSession,
+    markets: list[str],
+) -> dict[str, dict[str, str | None]]:
+    normalized_markets = [
+        normalized
+        for normalized in {_normalize_symbol(market) for market in markets}
+        if normalized
+    ]
+    if not normalized_markets:
+        return {}
+
+    stmt = select(UpbitSymbolUniverse).where(
+        UpbitSymbolUniverse.market.in_(normalized_markets),
+        UpbitSymbolUniverse.is_active.is_(True),
+    )
+    rows = list((await db.execute(stmt)).scalars().all())
+    if not rows and not await _has_any_rows(db):
+        raise UpbitSymbolUniverseEmptyError(
+            f"upbit_symbol_universe is empty. {_sync_hint()}"
+        )
+
+    return {
+        row.market: {
+            "korean_name": row.korean_name or None,
+            "english_name": row.english_name or None,
+        }
+        for row in rows
+    }
+
+
+async def get_upbit_market_display_names(
+    markets: list[str],
+    db: AsyncSession | None = None,
+) -> dict[str, dict[str, str | None]]:
+    if db is not None:
+        return await _get_upbit_market_display_names_impl(db, markets)
+
+    async with _internal_session() as session:
+        return await _get_upbit_market_display_names_impl(session, markets)
+
+
 async def get_upbit_coin_by_market(
     market: str,
     db: AsyncSession | None = None,
@@ -603,6 +645,7 @@ __all__ = [
     "get_upbit_coin_by_market",
     "get_upbit_korean_name_by_coin",
     "get_upbit_korean_name_by_market",
+    "get_upbit_market_display_names",
     "get_upbit_market_by_coin",
     "get_upbit_warning_markets",
     "get_upbit_symbol_by_name",

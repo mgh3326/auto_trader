@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any, cast
+
 import pandas as pd
 import pytest
+from unittest.mock import AsyncMock
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import analysis_screen_core
@@ -29,7 +33,7 @@ from app.mcp_server.tooling.registry import register_all_tools
 
 class DummyMCP:
     def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
+        self.tools: dict[str, Any] = {}
 
     def tool(self, name: str, description: str):
         def decorator(func):
@@ -39,10 +43,47 @@ class DummyMCP:
         return decorator
 
 
-def build_tools() -> dict[str, object]:
+def build_tools() -> dict[str, Any]:
     mcp = DummyMCP()
-    register_all_tools(mcp)
+    register_all_tools(cast(Any, mcp))
     return mcp.tools
+
+
+class _TvCondition:
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        return isinstance(other, _TvCondition) and self.label == other.label
+
+    def __and__(self, other: object) -> object:
+        raise AssertionError("crypto filters must not be combined with '&'")
+
+
+class _TvField:
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        return cast(bool, cast(object, _TvCondition(f"{self.label}=={other}")))
+
+
+@pytest.fixture
+def fake_crypto_tvscreener_module() -> SimpleNamespace:
+    return SimpleNamespace(
+        CryptoField=SimpleNamespace(
+            NAME=_TvField("name"),
+            DESCRIPTION=_TvField("description"),
+            PRICE=_TvField("price"),
+            CHANGE_PERCENT=_TvField("change_percent"),
+            RELATIVE_STRENGTH_INDEX_14=_TvField("rsi14"),
+            AVERAGE_DIRECTIONAL_INDEX_14=_TvField("adx14"),
+            VOLUME_24H_IN_USD=_TvField("volume24h"),
+            VALUE_TRADED=_TvField("value_traded"),
+            MARKET_CAP=_TvField("market_cap"),
+            EXCHANGE=_TvField("exchange"),
+        )
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -538,6 +579,120 @@ class TestRsiSortingNoneValues:
         if none_indices:
             assert none_indices[-1] == len(rsi_values) - 1
 
+
+class TestCryptoScreenStocksTvScreenerContract:
+    @pytest.mark.asyncio
+    async def test_screen_stocks_keeps_composite_fields_on_tvscreener_success(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:BTCKRW"],
+                "name": ["BTCKRW"],
+                "description": ["Bitcoin"],
+                "price": [150_000_000.0],
+                "change_percent": [1.0],
+                "relative_strength_index_14": [42.0],
+                "average_directional_index_14": [24.0],
+                "value_traded": [900_000_000_000.0],
+                "market_cap": [2_500_000_000_000_000.0],
+                "exchange": ["UPBIT"],
+            }
+        )
+
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, object]]:
+            assert market_codes == ["KRW-BTC"]
+            return [{"market": "KRW-BTC", "acc_trade_volume_24h": 10_000.0}]
+
+        async def mock_fetch_ohlcv(symbol: str, market_type: str, count: int):
+            assert symbol == "KRW-BTC"
+            assert market_type == "crypto"
+            assert count == 50
+            return pd.DataFrame(
+                {
+                    "open": [100.0 + i for i in range(50)],
+                    "high": [110.0 + i for i in range(50)],
+                    "low": [90.0 + i for i in range(50)],
+                    "close": [101.0 + i for i in range(50)],
+                    "volume": [1_000.0] * 49 + [1_500.0],
+                }
+            )
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_tickers",
+            mock_fetch_multiple_tickers,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            AsyncMock(
+                return_value={
+                    "data": {},
+                    "cached": True,
+                    "age_seconds": 0.0,
+                    "stale": False,
+                    "error": None,
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_market_display_names",
+            AsyncMock(
+                return_value={
+                    "KRW-BTC": {
+                        "korean_name": "비트코인",
+                        "english_name": "Bitcoin",
+                    }
+                }
+            ),
+            raising=False,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="rsi",
+            sort_order="asc",
+            limit=5,
+        )
+
+        item = result["results"][0]
+        assert item["name"] == "비트코인"
+        assert item["trade_amount_24h"] == 900_000_000_000.0
+        assert item["volume_24h"] == 10_000.0
+        assert "rsi_bucket" in item
+        assert "volume_ratio" in item
+        assert "candle_type" in item
+        assert "plus_di" in item
+        assert "minus_di" in item
+        assert "score" not in item
+
     @pytest.mark.asyncio
     async def test_rsi_none_sorts_to_end_desc(self, monkeypatch):
         from app.mcp_server.tooling import analysis_screen_core
@@ -751,6 +906,9 @@ class TestCryptoEnrichmentGracefulDegradation:
 
         import asyncio
 
+        def mock_import_tvscreener():
+            raise ImportError("force manual RSI fallback")
+
         async def mock_fetch_ohlcv_slow(symbol, market_type, count):
             await asyncio.sleep(60)
             return pd.DataFrame()
@@ -773,6 +931,11 @@ class TestCryptoEnrichmentGracefulDegradation:
             portfolio_holdings,
             "_collect_portfolio_positions",
             mock_collect_portfolio_positions,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            mock_import_tvscreener,
         )
 
         tools = build_tools()
