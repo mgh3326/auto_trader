@@ -156,7 +156,7 @@ Parameters:
 - `market`: Market to screen - "kr", "us", "crypto" (default: "kr")
 - `asset_type`: Asset type - "stock", "etf", "etn" (only applicable to KR, default: None)
 - `category`: Category filter - ETF categories for KR, sector for US (default: None)
-- `sort_by`: Sort criteria - "volume", "trade_amount", "market_cap", "change_rate", "dividend_yield" (default: crypto="trade_amount", KR/US="volume")
+- `sort_by`: Sort criteria - "volume", "trade_amount", "market_cap", "change_rate", "dividend_yield", "rsi" (default: crypto="rsi", KR/US="volume")
 - `sort_order`: Sort order - "asc" or "desc" (default: "desc")
 - `min_market_cap`: Minimum market cap (억원 for KR, USD for US; not supported for crypto)
 - `max_per`: Maximum P/E ratio filter (not applicable to crypto)
@@ -165,31 +165,39 @@ Parameters:
 - `limit`: Maximum results 1-50 (default: 20)
 
 Market-specific behavior:
-- **KR market**: Uses KRX API for stocks/ETFs + Naver Finance for PER/dividend yield + RSI calculation
+- **KR market**:
+  - Default `asset_type in {None, "stock"}` + `category=None` requests use tvscreener first
+  - Successful stock responses expose `meta.source = "tvscreener"` and include `adx` in each result row
+  - ETF/category requests stay on the legacy KRX/Naver path
   - KRX data cached with 300s TTL (Redis) + in-memory fallback
   - Trading date auto-fallback (up to 10 days back)
   - Category filter auto-limits to ETFs if `asset_type=None`
   - ETN (`asset_type="etn"`) not supported - returns error
 
-- **US market**: Uses yfinance screener with EquityQuery
-  - Maps: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio.lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
-  - Sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
+- **US market**:
+  - Default `asset_type in {None, "stock"}` + `category=None` requests use tvscreener first
+  - Successful stock responses expose `meta.source = "tvscreener"` and include `adx` in each result row
+  - Category/unsupported requests fall back to the legacy yfinance path
+  - Legacy yfinance maps: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio.lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
+  - Legacy yfinance sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
   - Yahoo OHLCV (`day/week/month`) requests use Redis closed-candle cache at the service boundary
   - Closed-bucket cutoff uses NYSE session close via `exchange_calendars` (`XNYS`), including DST/holidays/early close
 
-- **Crypto market**: Uses Upbit `fetch_top_traded_coins`
-  - `sort_by="trade_amount"` uses `acc_trade_price_24h` (24h traded value in KRW)
+- **Crypto market**:
+  - Default success path uses tvscreener `CryptoScreener` filtered by `EXCHANGE == "UPBIT"`
+  - Default sort remains `sort_by="rsi"`, `sort_order="asc"`; a requested crypto `sort_by="rsi", sort_order="desc"` is coerced to ascending and reported in `warnings` plus `filters_applied.sort_order`
+  - `trade_amount_24h` maps to TradingView `CryptoField.VALUE_TRADED` and keeps the public KRW traded-value contract
+  - `volume_24h` keeps the legacy Upbit 24h volume meaning (`acc_trade_volume_24h`); `VOLUME_24H_IN_USD` is never used as a public replacement for either `trade_amount_24h` or `volume_24h`
+  - Result symbols are normalized back to Upbit format such as `KRW-BTC`
+  - Successful tvscreener responses still restore legacy public crypto fields including `rsi_bucket`, `market_cap_rank`, `market_warning`, `volume_ratio`, `candle_type`, `plus_di`, and `minus_di`
+  - Warning/crash metadata (`filtered_by_warning`, `filtered_by_crash`) and CoinGecko cache metadata are preserved on the tvscreener success path
   - `sort_by="volume"` is not supported for crypto and returns an error
-  - `trade_amount_24h` uses `acc_trade_price_24h` (24h traded value in KRW)
   - Crypto response payload does not include `volume`; use `trade_amount_24h`
-  - `market_cap` is not available and returned as `null`
+  - `market_cap` sorting is supported; public `market_cap` prefers CoinGecko cache values and falls back to TradingView `MARKET_CAP`, and final ordering uses that public value without silently falling back to `trade_amount_24h`
   - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
-  - `min_market_cap` filter is not supported; warning added and filter ignored
-  - RSI/composite enrichment uses OHLCV fetch for subset `min(max(limit*3, 30), 60)`
-  - Composite score calculated using dedicated crypto formula (see below)
-  - Each result includes: `score`, `rsi`, `volume_24h`, `volume_ratio`, `candle_type`, `adx`, `plus_di`, `minus_di`
+  - `min_market_cap` filter is not supported; crypto responses return a warning that it was ignored
 
-#### Crypto Composite Score Formula
+#### Crypto Composite Score Formula (`recommend_stocks`)
 
 Crypto market uses a dedicated composite score formula instead of strategy-weighted scoring:
 
@@ -254,6 +262,7 @@ Response format:
       "per": 15.0,
       "dividend_yield": 0.03,
       "rsi": 45.5,
+      "adx": 23.1,
       "market": "kr"
     }
   ],
@@ -268,6 +277,17 @@ Response format:
     "min_dividend_yield_input": 3.0,
     "min_dividend_yield_normalized": 0.03,
     "max_rsi": 70
+  },
+  "meta": {
+    "source": "tvscreener",
+    "rsi_enrichment": {
+      "attempted": 0,
+      "succeeded": 0,
+      "failed": 0,
+      "rate_limited": 0,
+      "timeout": 0,
+      "error_samples": []
+    }
   },
   "timestamp": "2026-02-10T14:20:59.123456"
 }
