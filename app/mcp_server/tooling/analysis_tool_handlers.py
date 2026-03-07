@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
-from typing import Any, Awaitable, Callable, Literal
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal
 
 import httpx
 import yfinance as yf

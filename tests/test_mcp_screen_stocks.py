@@ -2051,6 +2051,146 @@ class TestScreenStocksCrypto:
         assert all(item["market_warning"] is None for item in result["results"])
 
     @pytest.mark.asyncio
+    async def test_crypto_missing_btc_ticker_adds_degraded_mode_warning(
+        self, monkeypatch
+    ):
+        async def mock_fetch_top_traded_coins(fiat):
+            return [
+                {
+                    "market": "KRW-ETH",
+                    "korean_name": "이더리움",
+                    "trade_price": 5_000_000,
+                    "signed_change_rate": 0.02,
+                    "acc_trade_price_24h": 800_000_000_000,
+                }
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="trade_amount",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert any(
+            "KRW-BTC" in warning and "btc_change_24h=0.0 fallback" in warning
+            for warning in result.get("warnings", [])
+        )
+
+    @pytest.mark.asyncio
+    async def test_crypto_missing_btc_change_rate_adds_fallback_warning(
+        self, monkeypatch
+    ):
+        async def mock_fetch_top_traded_coins(fiat):
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000_000,
+                    "acc_trade_price_24h": 1_000_000_000_000,
+                },
+                {
+                    "market": "KRW-ETH",
+                    "korean_name": "이더리움",
+                    "trade_price": 5_000_000,
+                    "signed_change_rate": 0.02,
+                    "acc_trade_price_24h": 800_000_000_000,
+                },
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="trade_amount",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert any(
+            "KRW-BTC" in warning and "btc_change_24h=0.0 fallback" in warning
+            for warning in result.get("warnings", [])
+        )
+
+    @pytest.mark.asyncio
+    async def test_crypto_warning_market_lookup_failure_adds_warning(self, monkeypatch):
+        async def mock_fetch_top_traded_coins(fiat):
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_price_24h": 1_000_000_000_000,
+                },
+                {
+                    "market": "KRW-ETH",
+                    "korean_name": "이더리움",
+                    "trade_price": 5_000_000,
+                    "signed_change_rate": 0.02,
+                    "acc_trade_price_24h": 800_000_000_000,
+                },
+            ]
+
+        async def mock_get_upbit_warning_markets(*, quote_currency: str):
+            _ = quote_currency
+            raise RuntimeError("warning lookup unavailable")
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_warning_markets",
+            mock_get_upbit_warning_markets,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="trade_amount",
+            sort_order="desc",
+            limit=20,
+        )
+
+        assert any(
+            "warning filter skipped" in warning
+            for warning in result.get("warnings", [])
+        )
+
+    @pytest.mark.asyncio
     async def test_crypto_crash_filter_applies_isolated_drop(self, monkeypatch):
         async def mock_fetch_top_traded_coins(fiat):
             return [

@@ -1543,32 +1543,18 @@ async def _stage_fetch_crypto_candidates(
     category: str | None,
 ) -> tuple[
     list[dict[str, Any]],
-    dict[str, Any],
+    list[dict[str, Any]],
     float,
     set[str],
     dict[str, Any],
+    list[str],
 ]:
-    """Stage 1: Fetch crypto candidates from Upbit.
-
-    Args:
-        market: Market filter (should be 'crypto')
-        asset_type: Asset type filter (for compatibility, typically None for crypto)
-        category: Category filter (for compatibility, typically None for crypto)
-
-    Returns:
-        Tuple of (
-            top_candidates: List of top traded coins (limited to CRYPTO_TOP_BY_VOLUME),
-            all_candidates: Full list of candidates for BTC reference,
-            btc_change_24h: BTC 24h change rate for crash detection,
-            warning_markets: Set of warning market codes,
-            filters_applied: Dict of applied filters for response metadata
-        )
-    """
     filters_applied: dict[str, Any] = {
         "market": market,
         "asset_type": asset_type,
         "category": category,
     }
+    warnings: list[str] = []
 
     all_candidates = await upbit_service.fetch_top_traded_coins(fiat="KRW")
     top_candidates = all_candidates[:CRYPTO_TOP_BY_VOLUME]
@@ -1585,17 +1571,29 @@ async def _stage_fetch_crypto_candidates(
     )
     if btc_item is not None:
         btc_change_24h = _to_optional_float(
-            btc_item.get("signed_change_rate") or btc_item.get("change_rate")
+            btc_item.get("signed_change_rate")
+            if btc_item.get("signed_change_rate") is not None
+            else btc_item.get("change_rate")
         )
         if btc_change_24h is None:
             btc_change_24h = 0.0
+            warnings.append(
+                "KRW-BTC change rate missing; btc_change_24h=0.0 fallback applied for crash detection."
+            )
+    else:
+        warnings.append(
+            "KRW-BTC ticker missing; btc_change_24h=0.0 fallback applied for crash detection."
+        )
 
     # Get warning markets
     warning_markets: set[str] = set()
     try:
         warning_markets = await get_upbit_warning_markets(quote_currency="KRW")
-    except Exception:
-        pass  # Warning markets filter will be skipped if unavailable
+    except Exception as exc:
+        warnings.append(
+            "warning filter skipped: "
+            f"get_upbit_warning_markets failed ({type(exc).__name__}: {exc})"
+        )
 
     return (
         top_candidates,
@@ -1603,6 +1601,7 @@ async def _stage_fetch_crypto_candidates(
         btc_change_24h,
         warning_markets,
         filters_applied,
+        warnings,
     )
 
 
@@ -2672,12 +2671,17 @@ async def _screen_crypto(
     ) = _normalize_dividend_yield_threshold(min_dividend_yield)
 
     # Stage 1: Fetch crypto candidates
-    top_candidates, all_candidates, btc_change_24h, warning_markets, filters_applied = (
-        await _stage_fetch_crypto_candidates(
-            market=market,
-            asset_type=asset_type,
-            category=category,
-        )
+    (
+        top_candidates,
+        all_candidates,
+        btc_change_24h,
+        warning_markets,
+        filters_applied,
+        fetch_warnings,
+    ) = await _stage_fetch_crypto_candidates(
+        market=market,
+        asset_type=asset_type,
+        category=category,
     )
 
     total_markets = len(all_candidates)
@@ -2694,11 +2698,14 @@ async def _screen_crypto(
     )
 
     # Stage 3: Enrich with RSI and CoinGecko market cap data
-    candidates, rsi_enrichment, coingecko_payload, enrich_warnings = (
-        await _stage_enrich_crypto_indicators(
-            candidates=candidates,
-            enrich_rsi=enrich_rsi,
-        )
+    (
+        candidates,
+        rsi_enrichment,
+        coingecko_payload,
+        enrich_warnings,
+    ) = await _stage_enrich_crypto_indicators(
+        candidates=candidates,
+        enrich_rsi=enrich_rsi,
     )
 
     # Stage 4: Sort and limit
@@ -2711,17 +2718,19 @@ async def _screen_crypto(
     )
 
     # Aggregate all warnings
-    all_warnings = filter_warnings + enrich_warnings + sort_warnings
+    all_warnings = fetch_warnings + filter_warnings + enrich_warnings + sort_warnings
 
     # Build filters_applied for response
-    filters_applied.update({
-        "min_market_cap": min_market_cap,
-        "max_per": max_per,
-        "min_dividend_yield": min_dividend_yield_normalized,
-        "max_rsi": max_rsi,
-        "sort_by": sort_by,
-        "sort_order": applied_sort_order,
-    })
+    filters_applied.update(
+        {
+            "min_market_cap": min_market_cap,
+            "max_per": max_per,
+            "min_dividend_yield": min_dividend_yield_normalized,
+            "max_rsi": max_rsi,
+            "sort_by": sort_by,
+            "sort_order": applied_sort_order,
+        }
+    )
     if min_dividend_yield_input is not None:
         filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
     if min_dividend_yield_normalized is not None:
