@@ -192,6 +192,16 @@ class AnalyzeStep(TradingStep):
     If analysis fails, processing for this stock is stopped (STOP_STOCK policy).
     """
 
+    def __init__(self, analyzer: Any = None) -> None:
+        """
+        Initialize AnalyzeStep with optional analyzer dependency.
+
+        Args:
+            analyzer: Analyzer instance to use. If None, uses the strategy's
+                analyzer from context or creates a new KISAnalyzer.
+        """
+        self._analyzer = analyzer
+
     @property
     def name(self) -> str:
         return "analyze"
@@ -215,9 +225,16 @@ class AnalyzeStep(TradingStep):
             return self._skip("종목명을 찾을 수 없음")
 
         try:
-            from app.analysis.service_analyzers import KISAnalyzer
+            # Use injected analyzer, or get from strategy, or create new
+            if self._analyzer is not None:
+                analyzer = self._analyzer
+            elif hasattr(context.strategy, "get_analyzer"):
+                analyzer = context.strategy.get_analyzer()
+            else:
+                from app.analysis.service_analyzers import KISAnalyzer
 
-            analyzer = KISAnalyzer()
+                analyzer = KISAnalyzer()
+
             result, _ = await analyzer.analyze_stock_json(context.name)
 
             if result is None:
@@ -592,6 +609,11 @@ class CancelSellOrdersStep(TradingStep):
         )
 
 
+# Type aliases for trading functions
+TradingBuyFunc = Any  # Callable for buy orders
+TradingSellFunc = Any  # Callable for sell orders
+
+
 class BuyStep(TradingStep):
     """
     Step that executes buy orders based on AI analysis.
@@ -600,6 +622,23 @@ class BuyStep(TradingStep):
     results and trade settings. Sends notifications on success or failure.
     Uses CONTINUE failure policy - buy failures don't stop processing.
     """
+
+    def __init__(
+        self,
+        domestic_buy_func: TradingBuyFunc | None = None,
+        overseas_buy_func: TradingBuyFunc | None = None,
+    ) -> None:
+        """
+        Initialize BuyStep with optional trading function dependencies.
+
+        Args:
+            domestic_buy_func: Function to execute domestic buy orders.
+                If None, imports from kis_trading_service.
+            overseas_buy_func: Function to execute overseas buy orders.
+                If None, imports from kis_trading_service.
+        """
+        self._domestic_buy_func = domestic_buy_func
+        self._overseas_buy_func = overseas_buy_func
 
     @property
     def name(self) -> str:
@@ -675,31 +714,41 @@ class BuyStep(TradingStep):
         self, context: TradingContext
     ) -> dict[str, Any]:
         """Execute domestic buy orders."""
-        from app.services.kis_trading_service import (
-            process_kis_domestic_buy_orders_with_analysis,
-        )
+        if self._domestic_buy_func is not None:
+            func = self._domestic_buy_func
+        else:
+            from app.services.kis_trading_service import (
+                process_kis_domestic_buy_orders_with_analysis,
+            )
+            func = process_kis_domestic_buy_orders_with_analysis
 
-        return await process_kis_domestic_buy_orders_with_analysis(
-            kis_client=context.kis,
-            symbol=context.symbol,
-            current_price=context.current_price,
-            avg_buy_price=context.avg_price,
+        # Call with positional args for backward compatibility with tests
+        return await func(
+            context.kis,
+            context.symbol,
+            context.current_price,
+            context.avg_price,
         )
 
     async def _execute_overseas_buy(
         self, context: TradingContext
     ) -> dict[str, Any]:
         """Execute overseas buy orders."""
-        from app.services.kis_trading_service import (
-            process_kis_overseas_buy_orders_with_analysis,
-        )
+        if self._overseas_buy_func is not None:
+            func = self._overseas_buy_func
+        else:
+            from app.services.kis_trading_service import (
+                process_kis_overseas_buy_orders_with_analysis,
+            )
+            func = process_kis_overseas_buy_orders_with_analysis
 
-        return await process_kis_overseas_buy_orders_with_analysis(
-            kis_client=context.kis,
-            symbol=context.symbol,
-            current_price=context.current_price,
-            avg_buy_price=context.avg_price,
-            exchange_code=context.exchange_code,
+        # Call with positional args for backward compatibility
+        return await func(
+            context.kis,
+            context.symbol,
+            context.current_price,
+            context.avg_price,
+            context.exchange_code,
         )
 
     async def _send_notification(
@@ -889,6 +938,23 @@ class SellStep(TradingStep):
 
     Uses CONTINUE failure policy - sell failures don't stop processing.
     """
+
+    def __init__(
+        self,
+        domestic_sell_func: TradingSellFunc | None = None,
+        overseas_sell_func: TradingSellFunc | None = None,
+    ) -> None:
+        """
+        Initialize SellStep with optional trading function dependencies.
+
+        Args:
+            domestic_sell_func: Function to execute domestic sell orders.
+                If None, imports from kis_trading_service.
+            overseas_sell_func: Function to execute overseas sell orders.
+                If None, imports from kis_trading_service.
+        """
+        self._domestic_sell_func = domestic_sell_func
+        self._overseas_sell_func = overseas_sell_func
 
     @property
     def name(self) -> str:
@@ -1088,33 +1154,43 @@ class SellStep(TradingStep):
         self, context: TradingContext
     ) -> dict[str, Any]:
         """Execute domestic sell orders."""
-        from app.services.kis_trading_service import (
-            process_kis_domestic_sell_orders_with_analysis,
-        )
+        if self._domestic_sell_func is not None:
+            func = self._domestic_sell_func
+        else:
+            from app.services.kis_trading_service import (
+                process_kis_domestic_sell_orders_with_analysis,
+            )
+            func = process_kis_domestic_sell_orders_with_analysis
 
-        return await process_kis_domestic_sell_orders_with_analysis(
-            kis_client=context.kis,
-            symbol=context.symbol,
-            current_price=context.current_price,
-            avg_buy_price=context.avg_price,
-            quantity=context.quantity,
+        # Call with positional args for backward compatibility with tests
+        return await func(
+            context.kis,
+            context.symbol,
+            context.current_price,
+            context.avg_price,
+            context.quantity,
         )
 
     async def _execute_overseas_sell(
         self, context: TradingContext
     ) -> dict[str, Any]:
         """Execute overseas sell orders."""
-        from app.services.kis_trading_service import (
-            process_kis_overseas_sell_orders_with_analysis,
-        )
+        if self._overseas_sell_func is not None:
+            func = self._overseas_sell_func
+        else:
+            from app.services.kis_trading_service import (
+                process_kis_overseas_sell_orders_with_analysis,
+            )
+            func = process_kis_overseas_sell_orders_with_analysis
 
-        return await process_kis_overseas_sell_orders_with_analysis(
-            kis_client=context.kis,
-            symbol=context.symbol,
-            current_price=context.current_price,
-            avg_buy_price=context.avg_price,
-            quantity=context.quantity,
-            exchange_code=context.exchange_code,
+        # Call with positional args for backward compatibility
+        return await func(
+            context.kis,
+            context.symbol,
+            context.current_price,
+            context.avg_price,
+            context.quantity,
+            context.exchange_code,
         )
 
     async def _send_notification(
