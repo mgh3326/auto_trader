@@ -23,6 +23,7 @@ from app.mcp_server.tooling.analysis_recommend import (
 from app.mcp_server.tooling.analysis_screen_core import (
     _screen_crypto,
     _screen_kr,
+    _screen_us,
 )
 from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
@@ -109,7 +110,7 @@ def _normalize_change_rate_crypto(value: Any) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _map_kr_row(row: dict, rank: int) -> dict[str, Any]:
+def _map_kr_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
     symbol = row.get("stck_shrn_iscd") or row.get("mksc_shrn_iscd", "")
     name = row.get("hts_kor_isnm", "")
     price = _to_float(row.get("stck_prpr"))
@@ -130,7 +131,7 @@ def _map_kr_row(row: dict, rank: int) -> dict[str, Any]:
     }
 
 
-def _map_us_row(row: dict, rank: int) -> dict[str, Any]:
+def _map_us_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
     symbol = row.get("symbol", "")
     name = row.get("longName", "") or row.get("shortName", symbol)
     price = _to_float(row.get("regularMarketPrice"))
@@ -157,7 +158,7 @@ def _map_us_row(row: dict, rank: int) -> dict[str, Any]:
     }
 
 
-def _map_crypto_row(row: dict, rank: int) -> dict[str, Any]:
+def _map_crypto_row(row: dict[str, Any], rank: int) -> dict[str, Any]:
     symbol = row.get("market", "")
     name = symbol.replace("KRW-", "") if symbol.startswith("KRW-") else symbol
     price = _to_float(row.get("trade_price"))
@@ -474,6 +475,7 @@ async def _recommend_stocks_impl(
         exclude_held=exclude_held,
         top_stocks_fallback=top_stocks_fallback,
         screen_kr_fn=_screen_kr,
+        screen_us_fn=_screen_us,
         screen_crypto_fn=_screen_crypto,
         top_stocks_override=top_stocks_fallback,
     )

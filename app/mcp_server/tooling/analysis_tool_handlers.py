@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 import httpx
@@ -48,27 +49,27 @@ from app.services.brokers.kis.client import KISClient
 
 logger = logging.getLogger(__name__)
 _TVSCREENER_STOCK_SORTS = {"volume", "change_rate", "market_cap", "dividend_yield"}
-name_to_corp_map: dict[str, Any]
-prime_index: Any | None
-
 try:
     from app.services.disclosures.dart import list_filings
 except ImportError:
     list_filings = None
 
-try:
-    from data.disclosures.dart_corp_index import (
-        NAME_TO_CORP as _NAME_TO_CORP,
-    )
-    from data.disclosures.dart_corp_index import (
-        prime_index as _prime_index,
-    )
 
-    name_to_corp_map = _NAME_TO_CORP
-    prime_index = _prime_index
-except ImportError:
-    name_to_corp_map = {}
-    prime_index = None
+def _load_dart_index() -> tuple[dict[str, Any], Any | None]:
+    try:
+        from data.disclosures.dart_corp_index import (
+            NAME_TO_CORP as loaded_name_to_corp,
+        )
+        from data.disclosures.dart_corp_index import (
+            prime_index as loaded_prime_index,
+        )
+
+        return loaded_name_to_corp, loaded_prime_index
+    except ImportError:
+        return {}, None
+
+
+NAME_TO_CORP, prime_index = _load_dart_index()
 
 
 async def get_stock_name_by_code(code: str) -> str | None:
@@ -156,6 +157,69 @@ def _adapt_tvscreener_stock_response(
         market,
         meta_fields={"source": "tvscreener"},
     )
+
+
+async def _execute_screening_with_fallback(
+    *,
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    sort_by: str,
+    max_rsi: float | None,
+    tvscreener_fn: Callable[..., Awaitable[dict[str, Any]]],
+    legacy_fn: Callable[..., Awaitable[dict[str, Any]]],
+    tvscreener_kwargs: dict[str, Any],
+    legacy_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Execute screening with tvscreener → legacy fallback logic.
+
+    This function consolidates the fallback decision logic that was previously
+    duplicated for KR and US markets. It attempts tvscreener first when conditions
+    are met, then falls back to legacy implementation on failure.
+
+    Args:
+        market: Normalized market (kr, kospi, kosdaq, us)
+        asset_type: Asset type filter
+        category: Category filter
+        sort_by: Sort field
+        max_rsi: Maximum RSI filter
+        tvscreener_fn: Async function for tvscreener screening
+        legacy_fn: Async function for legacy screening
+        tvscreener_kwargs: Keyword arguments for tvscreener function
+        legacy_kwargs: Keyword arguments for legacy function
+
+    Returns:
+        Screening result dictionary
+    """
+    # Try tvscreener implementation first for RSI-based screening
+    if _can_use_tvscreener_stock_path(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sort_by=sort_by,
+        max_rsi=max_rsi,
+    ):
+        try:
+            tvscreener_result = await tvscreener_fn(**tvscreener_kwargs)
+            if tvscreener_result and not tvscreener_result.get("error"):
+                logger.info(
+                    "%s stock screening via tvscreener succeeded: %d stocks",
+                    market.upper(),
+                    tvscreener_result.get("count", 0),
+                )
+                return _adapt_tvscreener_stock_response(
+                    tvscreener_result,
+                    market=market,
+                )
+        except Exception as exc:
+            logger.debug(
+                "tvscreener %s screening failed, falling back to legacy implementation: %s",
+                market.upper(),
+                exc,
+            )
+
+    # Fallback to legacy implementation
+    return await legacy_fn(**legacy_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +372,7 @@ async def get_disclosures_impl(
             )
             pass
 
-    if not name_to_corp_map:
+    if not NAME_TO_CORP:
         if prime_index is None:
             return {
                 "success": False,
@@ -576,108 +640,78 @@ async def screen_stocks_impl(
     )
 
     if normalized_market in ("kr", "kospi", "kosdaq"):
-        if _can_use_tvscreener_stock_path(
+        return await _execute_screening_with_fallback(
             market=normalized_market,
             asset_type=normalized_asset_type,
             category=category,
             sort_by=normalized_sort_by,
             max_rsi=max_rsi,
-        ):
-            try:
-                tvscreener_result = await _screen_kr_via_tvscreener(
-                    market=normalized_market,
-                    asset_type=normalized_asset_type or "stock",
-                    category=category,
-                    min_market_cap=min_market_cap,
-                    max_per=max_per,
-                    max_pbr=max_pbr,
-                    min_dividend_yield=min_dividend_yield,
-                    min_rsi=None,
-                    max_rsi=max_rsi,
-                    min_adx=None,
-                    sort_by=normalized_sort_by,
-                    sort_order=normalized_sort_order,
-                    limit=limit,
-                )
-                if tvscreener_result and not tvscreener_result.get("error"):
-                    logger.info(
-                        "Korean stock screening via tvscreener succeeded: %d stocks",
-                        tvscreener_result.get("count", 0),
-                    )
-                    return _adapt_tvscreener_stock_response(
-                        tvscreener_result,
-                        market=normalized_market,
-                    )
-            except Exception as exc:
-                logger.debug(
-                    "tvscreener Korean screening failed, falling back to legacy implementation: %s",
-                    exc,
-                )
-
-        # Fallback to legacy implementation
-        return await _screen_kr(
-            market=normalized_market,
-            asset_type=normalized_asset_type,
-            category=category,
-            min_market_cap=min_market_cap,
-            max_per=max_per,
-            max_pbr=max_pbr,
-            min_dividend_yield=min_dividend_yield,
-            max_rsi=max_rsi,
-            sort_by=normalized_sort_by,
-            sort_order=normalized_sort_order,
-            limit=limit,
+            tvscreener_fn=_screen_kr_via_tvscreener,
+            legacy_fn=_screen_kr,
+            tvscreener_kwargs={
+                "market": normalized_market,
+                "asset_type": normalized_asset_type or "stock",
+                "category": category,
+                "min_market_cap": min_market_cap,
+                "max_per": max_per,
+                "max_pbr": max_pbr,
+                "min_dividend_yield": min_dividend_yield,
+                "min_rsi": None,
+                "max_rsi": max_rsi,
+                "min_adx": None,
+                "sort_by": normalized_sort_by,
+                "sort_order": normalized_sort_order,
+                "limit": limit,
+            },
+            legacy_kwargs={
+                "market": normalized_market,
+                "asset_type": normalized_asset_type,
+                "category": category,
+                "min_market_cap": min_market_cap,
+                "max_per": max_per,
+                "max_pbr": max_pbr,
+                "min_dividend_yield": min_dividend_yield,
+                "max_rsi": max_rsi,
+                "sort_by": normalized_sort_by,
+                "sort_order": normalized_sort_order,
+                "limit": limit,
+            },
         )
     if normalized_market == "us":
-        if _can_use_tvscreener_stock_path(
+        return await _execute_screening_with_fallback(
             market=normalized_market,
             asset_type=normalized_asset_type,
             category=category,
             sort_by=normalized_sort_by,
             max_rsi=max_rsi,
-        ):
-            try:
-                tvscreener_result = await _screen_us_via_tvscreener(
-                    market=normalized_market,
-                    asset_type=normalized_asset_type,
-                    category=category,
-                    min_market_cap=min_market_cap,
-                    max_per=max_per,
-                    min_dividend_yield=min_dividend_yield,
-                    min_rsi=None,
-                    max_rsi=max_rsi,
-                    min_adx=None,
-                    sort_by=normalized_sort_by,
-                    sort_order=normalized_sort_order,
-                    limit=limit,
-                )
-                if tvscreener_result and not tvscreener_result.get("error"):
-                    logger.info(
-                        "US stock screening via tvscreener succeeded: %d stocks",
-                        tvscreener_result.get("count", 0),
-                    )
-                    return _adapt_tvscreener_stock_response(
-                        tvscreener_result,
-                        market=normalized_market,
-                    )
-            except Exception as exc:
-                logger.debug(
-                    "tvscreener US screening failed, falling back to legacy implementation: %s",
-                    exc,
-                )
-
-        # Fallback to legacy implementation
-        return await _screen_us(
-            market=normalized_market,
-            asset_type=normalized_asset_type,
-            category=category,
-            min_market_cap=min_market_cap,
-            max_per=max_per,
-            min_dividend_yield=min_dividend_yield,
-            max_rsi=max_rsi,
-            sort_by=normalized_sort_by,
-            sort_order=normalized_sort_order,
-            limit=limit,
+            tvscreener_fn=_screen_us_via_tvscreener,
+            legacy_fn=_screen_us,
+            tvscreener_kwargs={
+                "market": normalized_market,
+                "asset_type": normalized_asset_type,
+                "category": category,
+                "min_market_cap": min_market_cap,
+                "max_per": max_per,
+                "min_dividend_yield": min_dividend_yield,
+                "min_rsi": None,
+                "max_rsi": max_rsi,
+                "min_adx": None,
+                "sort_by": normalized_sort_by,
+                "sort_order": normalized_sort_order,
+                "limit": limit,
+            },
+            legacy_kwargs={
+                "market": normalized_market,
+                "asset_type": normalized_asset_type,
+                "category": category,
+                "min_market_cap": min_market_cap,
+                "max_per": max_per,
+                "min_dividend_yield": min_dividend_yield,
+                "max_rsi": max_rsi,
+                "sort_by": normalized_sort_by,
+                "sort_order": normalized_sort_order,
+                "limit": limit,
+            },
         )
     if normalized_market == "crypto":
         try:
