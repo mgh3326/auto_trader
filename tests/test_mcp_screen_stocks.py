@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
@@ -16,6 +17,29 @@ from app.services import naver_finance
 from tests._mcp_tooling_support import _patch_runtime_attr
 
 ToolFunc = Callable[..., Awaitable[Any]]
+
+
+class _TvCondition:
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        return isinstance(other, _TvCondition) and self.label == other.label
+
+    def __and__(self, other: object) -> object:
+        raise AssertionError("crypto filters must not be combined with '&'")
+
+
+class _TvField:
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        return cast(bool, cast(object, _TvCondition(f"{self.label}=={other}")))
+
+    def isin(self, other: object) -> _TvCondition:
+        values = list(cast(Any, other))
+        return _TvCondition(f"{self.label} in {values}")
 
 
 class DummyMCP:
@@ -36,6 +60,24 @@ def build_tools() -> dict[str, ToolFunc]:
     mcp = DummyMCP()
     register_all_tools(cast(Any, mcp))
     return mcp.tools
+
+
+@pytest.fixture
+def fake_crypto_tvscreener_module() -> SimpleNamespace:
+    return SimpleNamespace(
+        CryptoField=SimpleNamespace(
+            NAME=_TvField("name"),
+            DESCRIPTION=_TvField("description"),
+            PRICE=_TvField("price"),
+            CHANGE_PERCENT=_TvField("change_percent"),
+            RELATIVE_STRENGTH_INDEX_14=_TvField("rsi14"),
+            AVERAGE_DIRECTIONAL_INDEX_14=_TvField("adx14"),
+            VOLUME_24H_IN_USD=_TvField("volume24h"),
+            VALUE_TRADED=_TvField("value_traded"),
+            MARKET_CAP=_TvField("market_cap"),
+            EXCHANGE=_TvField("exchange"),
+        )
+    )
 
 
 @pytest.fixture
@@ -161,13 +203,42 @@ class TestScreenStocksKRRegression:
     async def test_kr_change_rate_sort_desc(self, mock_krx_stocks, monkeypatch):
         """KR change_rate sorting should preserve positive/negative ordering."""
 
-        async def mock_fetch_stock_all_cached(market):
-            if market == "STK":
-                return mock_krx_stocks
-            return []
+        async def mock_screen_kr_via_tvscreener(**kwargs):
+            assert kwargs["market"] == "kospi"
+            assert kwargs["sort_by"] == "change_rate"
+            assert kwargs["sort_order"] == "desc"
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "name": "Samsung Electronics Co., Ltd.",
+                        "price": 80000.0,
+                        "change_percent": 2.5,
+                        "volume": 1000.0,
+                        "market_cap": 4_800_000,
+                        "adx": 20.0,
+                        "market": "KOSPI",
+                    },
+                    {
+                        "symbol": "000660",
+                        "name": "SK hynix Inc.",
+                        "price": 150000.0,
+                        "change_percent": -1.2,
+                        "volume": 900.0,
+                        "market_cap": 150_000,
+                        "adx": 18.0,
+                        "market": "KOSPI",
+                    },
+                ],
+                "count": 2,
+                "filters_applied": {"sort_by": "change_rate", "sort_order": "desc"},
+                "source": "tvscreener",
+                "error": None,
+            }
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            mock_screen_kr_via_tvscreener,
         )
 
         tools = build_tools()
@@ -558,6 +629,7 @@ class TestScreenStocksTvScreenerContract:
             assert kwargs["sort_order"] == "desc"
             assert kwargs["market"] == "kr"
             assert kwargs["asset_type"] == "stock"
+            assert kwargs["max_rsi"] is None
             return {
                 "stocks": [
                     {
@@ -571,6 +643,7 @@ class TestScreenStocksTvScreenerContract:
                         "pbr": 1.2,
                         "dividend_yield": 0.0256,
                         "rsi": 28.1,
+                        "adx": 24.8,
                         "market": "KOSPI",
                     }
                 ],
@@ -603,7 +676,7 @@ class TestScreenStocksTvScreenerContract:
             max_per=15.0,
             max_pbr=2.0,
             min_dividend_yield=0.02,
-            max_rsi=30.0,
+            max_rsi=None,
             sort_by="volume",
             sort_order="desc",
             limit=20,
@@ -628,11 +701,14 @@ class TestScreenStocksTvScreenerContract:
         assert result["results"][0]["per"] == 12.5
         assert result["results"][0]["pbr"] == 1.2
         assert result["results"][0]["dividend_yield"] == 0.0256
+        assert result["results"][0]["adx"] == 24.8
         assert result["filters_applied"]["sort_order"] == "desc"
         assert result["filters_applied"]["min_market_cap"] == 300000
         assert result["filters_applied"]["max_per"] == 15.0
         assert result["filters_applied"]["max_pbr"] == 2.0
         assert result["filters_applied"]["min_dividend_yield"] == 0.02
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["meta"]["rsi_enrichment"]["error_samples"] == []
 
     @pytest.mark.asyncio
     async def test_us_tvscreener_path_preserves_public_response_contract(
@@ -642,6 +718,7 @@ class TestScreenStocksTvScreenerContract:
             assert kwargs["sort_by"] == "volume"
             assert kwargs["sort_order"] == "asc"
             assert kwargs["asset_type"] is None
+            assert kwargs["max_rsi"] is None
             return {
                 "stocks": [
                     {
@@ -654,6 +731,7 @@ class TestScreenStocksTvScreenerContract:
                         "per": 28.5,
                         "dividend_yield": 0.005,
                         "rsi": 35.2,
+                        "adx": 31.4,
                     }
                 ],
                 "count": 4,
@@ -683,7 +761,7 @@ class TestScreenStocksTvScreenerContract:
             min_market_cap=1000000000,
             max_per=30.0,
             min_dividend_yield=0.004,
-            max_rsi=40.0,
+            max_rsi=None,
             sort_by="volume",
             sort_order="asc",
             limit=20,
@@ -698,10 +776,262 @@ class TestScreenStocksTvScreenerContract:
         assert result["results"][0]["market_cap"] == 2800000000000
         assert result["results"][0]["per"] == 28.5
         assert result["results"][0]["dividend_yield"] == 0.005
+        assert result["results"][0]["adx"] == 31.4
         assert result["filters_applied"]["sort_order"] == "asc"
         assert result["filters_applied"]["min_market_cap"] == 1000000000
         assert result["filters_applied"]["max_per"] == 30.0
         assert result["filters_applied"]["min_dividend_yield"] == 0.004
+        assert result["meta"]["source"] == "tvscreener"
+
+    @pytest.mark.asyncio
+    async def test_kr_default_stock_request_uses_tvscreener_without_legacy_rsi_path(
+        self, monkeypatch
+    ):
+        async def mock_screen_kr_via_tvscreener(**kwargs):
+            assert kwargs["market"] == "kr"
+            assert kwargs["asset_type"] == "stock"
+            assert kwargs["category"] is None
+            assert kwargs["max_rsi"] is None
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "name": "Samsung Electronics Co., Ltd.",
+                        "price": 70000.0,
+                        "change_percent": 2.5,
+                        "volume": 15000000.0,
+                        "market_cap": 4800000,
+                        "rsi": 41.2,
+                        "adx": 23.5,
+                        "market": "KOSPI",
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {"sort_by": "volume", "sort_order": "desc"},
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_kr(**kwargs):
+            raise AssertionError(
+                "legacy KR path should not run for default stock requests"
+            )
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            mock_screen_kr_via_tvscreener,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr",
+            fail_legacy_kr,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["results"][0]["rsi"] == 41.2
+        assert result["results"][0]["adx"] == 23.5
+        assert result["meta"]["rsi_enrichment"]["error_samples"] == []
+
+    @pytest.mark.asyncio
+    async def test_us_default_stock_request_uses_tvscreener_without_legacy_path(
+        self, monkeypatch
+    ):
+        async def mock_screen_us_via_tvscreener(**kwargs):
+            assert kwargs["market"] == "us"
+            assert kwargs["asset_type"] is None
+            assert kwargs["category"] is None
+            assert kwargs["max_rsi"] is None
+            return {
+                "stocks": [
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple Inc.",
+                        "price": 175.5,
+                        "change_percent": 1.2,
+                        "volume": 75000000.0,
+                        "market_cap": 2800000000000,
+                        "rsi": 35.2,
+                        "adx": 31.4,
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {"sort_by": "volume", "sort_order": "desc"},
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_us(**kwargs):
+            raise AssertionError(
+                "legacy US path should not run for default stock requests"
+            )
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_tool_handlers._screen_us_via_tvscreener",
+            mock_screen_us_via_tvscreener,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_tool_handlers._screen_us",
+            fail_legacy_us,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["results"][0]["adx"] == 31.4
+
+    @pytest.mark.asyncio
+    async def test_kr_stock_request_with_max_rsi_still_uses_tvscreener(
+        self, monkeypatch
+    ):
+        async def mock_screen_kr_via_tvscreener(**kwargs):
+            assert kwargs["market"] == "kr"
+            assert kwargs["asset_type"] == "stock"
+            assert kwargs["max_rsi"] == 35.0
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "name": "Samsung Electronics Co., Ltd.",
+                        "price": 70000.0,
+                        "change_percent": 1.1,
+                        "volume": 12345.0,
+                        "market_cap": 4_800_000,
+                        "rsi": 32.0,
+                        "adx": 21.5,
+                        "market": "KOSPI",
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {
+                    "sort_by": "volume",
+                    "sort_order": "desc",
+                    "max_rsi": 35.0,
+                },
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_kr(**kwargs):
+            raise AssertionError(
+                "legacy KR path should not run when max_rsi is provided"
+            )
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            mock_screen_kr_via_tvscreener,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr",
+            fail_legacy_kr,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=35.0,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["results"][0]["rsi"] == 32.0
+        assert result["results"][0]["adx"] == 21.5
+
+    @pytest.mark.asyncio
+    async def test_us_stock_request_with_max_rsi_still_uses_tvscreener(
+        self, monkeypatch
+    ):
+        async def mock_screen_us_via_tvscreener(**kwargs):
+            assert kwargs["market"] == "us"
+            assert kwargs["asset_type"] is None
+            assert kwargs["max_rsi"] == 40.0
+            return {
+                "stocks": [
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple Inc.",
+                        "price": 175.5,
+                        "change_percent": 1.2,
+                        "volume": 75000000.0,
+                        "market_cap": 2_800_000_000_000,
+                        "rsi": 35.2,
+                        "adx": 31.4,
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {
+                    "sort_by": "volume",
+                    "sort_order": "desc",
+                    "max_rsi": 40.0,
+                },
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_us(**kwargs):
+            raise AssertionError(
+                "legacy US path should not run when max_rsi is provided"
+            )
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_tool_handlers._screen_us_via_tvscreener",
+            mock_screen_us_via_tvscreener,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_tool_handlers._screen_us",
+            fail_legacy_us,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=40.0,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["results"][0]["rsi"] == 35.2
+        assert result["results"][0]["adx"] == 31.4
 
     @pytest.mark.asyncio
     async def test_us_tvscreener_error_falls_back_to_legacy_path(self, monkeypatch):
@@ -982,16 +1312,121 @@ class TestScreenStocksCrypto:
     """Test Crypto market functionality."""
 
     @pytest.mark.asyncio
-    async def test_crypto_default(self, mock_upbit_coins, monkeypatch):
-        """Test crypto screening with default parameters."""
+    async def test_crypto_default_restores_public_contract_on_tvscreener_success(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:BTCKRW", "UPBIT:ETHKRW", "UPBIT:XRPKRW"],
+                "name": ["BTCKRW", "ETHKRW", "XRPKRW"],
+                "description": ["Bitcoin TV", "Ethereum TV", "Ripple TV"],
+                "price": [150_000_000.0, 5_000_000.0, 3_000.0],
+                "change_percent": [-0.01, -0.02, -0.31],
+                "relative_strength_index_14": [45.5, 32.1, 28.2],
+                "average_directional_index_14": [25.3, 18.7, 42.1],
+                "volume_24h_in_usd": [156_000_000.0, 95_000_000.0, 44_000_000.0],
+                "value_traded": [900_000_000_000.0, 1_200_000_000_000.0, 700_000_000.0],
+                "market_cap": [
+                    2_500_000_000_000_000.0,
+                    500_000_000_000_000.0,
+                    50_000_000_000_000.0,
+                ],
+                "exchange": ["UPBIT", "UPBIT", "UPBIT"],
+            }
+        )
 
-        async def mock_fetch_top_traded_coins(fiat):
-            return mock_upbit_coins
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, Any]]:
+            assert market_codes == ["KRW-BTC", "KRW-ETH", "KRW-XRP"]
+            return [
+                {"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0},
+                {"market": "KRW-ETH", "acc_trade_volume_24h": 54_321.0},
+                {"market": "KRW-XRP", "acc_trade_volume_24h": 99_999.0},
+            ]
+
+        async def mock_warning_markets(*, quote_currency: str) -> set[str]:
+            assert quote_currency == "KRW"
+            return {"KRW-ETH"}
+
+        async def mock_market_cap_cache_get() -> dict[str, Any]:
+            return {
+                "data": {
+                    "BTC": {
+                        "market_cap": 3_000_000_000_000_000,
+                        "market_cap_rank": 1,
+                    }
+                },
+                "cached": True,
+                "age_seconds": 1.5,
+                "stale": False,
+                "error": None,
+            }
+
+        async def mock_fetch_ohlcv(
+            symbol: str, market_type: str, count: int
+        ) -> pd.DataFrame:
+            assert market_type == "crypto"
+            assert count == 50
+            close = [100.0 + i for i in range(50)]
+            volume = [1_000.0] * 49 + [1_500.0]
+            return pd.DataFrame(
+                {
+                    "open": close,
+                    "high": [value + 10.0 for value in close],
+                    "low": [value - 10.0 for value in close],
+                    "close": close,
+                    "volume": volume,
+                }
+            )
 
         monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
             upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
+            "fetch_multiple_tickers",
+            mock_fetch_multiple_tickers,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_warning_markets",
+            mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            mock_market_cap_cache_get,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_market_display_names",
+            AsyncMock(
+                return_value={
+                    "KRW-BTC": {
+                        "korean_name": "비트코인",
+                        "english_name": "Bitcoin",
+                    },
+                    "KRW-ETH": {
+                        "korean_name": "이더리움",
+                        "english_name": "Ethereum",
+                    },
+                }
+            ),
+            raising=False,
         )
 
         tools = build_tools()
@@ -1005,19 +1440,43 @@ class TestScreenStocksCrypto:
             min_dividend_yield=None,
             max_rsi=None,
             sort_order="desc",
-            limit=20,
+            limit=1,
+        )
+
+        query_kwargs = tv_service.query_crypto_screener.await_args.kwargs
+        assert query_kwargs["limit"] == 50
+        assert (
+            fake_crypto_tvscreener_module.CryptoField.DESCRIPTION
+            in query_kwargs["columns"]
+        )
+        assert (
+            fake_crypto_tvscreener_module.CryptoField.MARKET_CAP
+            in query_kwargs["columns"]
         )
 
         assert result is not None
         assert result["market"] == "crypto"
-        assert len(result["results"]) > 0
-        # Verify sort_by and sort_order are always recorded
+        assert len(result["results"]) == 1
         assert result["filters_applied"]["sort_by"] == "rsi"
         assert result["filters_applied"]["sort_order"] == "asc"
-        assert result["meta"]["top_by_volume"] == 2
-        assert "rsi_bucket" in result["results"][0]
-        assert "trade_amount_24h" in result["results"][0]
-        assert "volume" not in result["results"][0]
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["meta"]["filtered_by_warning"] == 1
+        assert result["meta"]["filtered_by_crash"] == 1
+
+        first = result["results"][0]
+        assert first["symbol"] == "KRW-BTC"
+        assert first["name"] == "비트코인"
+        assert first["trade_amount_24h"] == 900_000_000_000.0
+        assert first["volume_24h"] == 12_345.0
+        assert first["market_cap"] == 3_000_000_000_000_000
+        assert first["market_cap_rank"] == 1
+        assert first["rsi_bucket"] == 45
+        assert first["market_warning"] is None
+        assert "volume_ratio" in first
+        assert "candle_type" in first
+        assert "plus_di" in first
+        assert "minus_di" in first
+        assert "volume" not in first
 
     @pytest.mark.asyncio
     async def test_crypto_sort_by_volume_raises_error(
@@ -1357,27 +1816,68 @@ class TestScreenStocksCrypto:
 
     @pytest.mark.asyncio
     async def test_crypto_sort_by_rsi_desc_forces_asc_with_warning(
-        self, mock_upbit_coins, monkeypatch
+        self, fake_crypto_tvscreener_module, monkeypatch
     ):
-        async def mock_fetch_top_traded_coins(fiat):
-            return mock_upbit_coins
-
-        realtime_rsi_mock = AsyncMock(
-            return_value={
-                "KRW-BTC": 55.0,
-                "KRW-ETH": 31.0,
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:AKRW", "UPBIT:BKRW", "UPBIT:CKRW"],
+                "name": ["AKRW", "BKRW", "CKRW"],
+                "description": ["A coin", "B coin", "C coin"],
+                "price": [1_000.0, 1_000.0, 1_000.0],
+                "change_percent": [-0.01, -0.02, -0.03],
+                "relative_strength_index_14": [24.0, 22.0, 27.0],
+                "average_directional_index_14": [20.0, 20.0, 20.0],
+                "value_traded": [100.0, 300.0, 1_000.0],
+                "market_cap": [10.0, 20.0, 30.0],
+                "exchange": ["UPBIT", "UPBIT", "UPBIT"],
             }
         )
 
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, Any]]:
+            return [
+                {"market": code, "acc_trade_volume_24h": 1.0} for code in market_codes
+            ]
+
+        async def mock_warning_markets(*, quote_currency: str) -> set[str]:
+            assert quote_currency == "KRW"
+            return set()
+
+        async def mock_market_cap_cache_get() -> dict[str, Any]:
+            return {
+                "data": {},
+                "cached": True,
+                "age_seconds": 0.0,
+                "stale": False,
+                "error": None,
+            }
+
         monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
             analysis_screen_core,
-            "compute_crypto_realtime_rsi_map",
-            realtime_rsi_mock,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_tickers",
+            mock_fetch_multiple_tickers,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_warning_markets",
+            mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            mock_market_cap_cache_get,
         )
 
         tools = build_tools()
@@ -1396,6 +1896,106 @@ class TestScreenStocksCrypto:
 
         assert result["filters_applied"]["sort_order"] == "asc"
         assert any("requested desc was ignored" in w for w in result["warnings"])
+        assert [item["symbol"] for item in result["results"]] == [
+            "KRW-B",
+            "KRW-A",
+            "KRW-C",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_crypto_market_cap_sort_uses_public_market_cap(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:BTCKRW", "UPBIT:ETHKRW", "UPBIT:XRPKRW"],
+                "name": ["BTCKRW", "ETHKRW", "XRPKRW"],
+                "description": ["BTC TV", "ETH TV", "XRP TV"],
+                "price": [150_000_000.0, 5_000_000.0, 3_000.0],
+                "change_percent": [1.0, 1.0, 1.0],
+                "relative_strength_index_14": [45.5, 32.1, 68.9],
+                "average_directional_index_14": [25.3, 18.7, 42.1],
+                "value_traded": [9_000.0, 1_000.0, 2_000.0],
+                "market_cap": [20.0, 10.0, 50.0],
+                "exchange": ["UPBIT", "UPBIT", "UPBIT"],
+            }
+        )
+
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, Any]]:
+            return [
+                {"market": code, "acc_trade_volume_24h": 1.0} for code in market_codes
+            ]
+
+        async def mock_warning_markets(*, quote_currency: str) -> set[str]:
+            assert quote_currency == "KRW"
+            return set()
+
+        async def mock_market_cap_cache_get() -> dict[str, Any]:
+            return {
+                "data": {
+                    "ETH": {
+                        "market_cap": 100.0,
+                        "market_cap_rank": 2,
+                    }
+                },
+                "cached": True,
+                "age_seconds": 0.0,
+                "stale": False,
+                "error": None,
+            }
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_tickers",
+            mock_fetch_multiple_tickers,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_warning_markets",
+            mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            mock_market_cap_cache_get,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="market_cap",
+            sort_order="desc",
+            limit=3,
+        )
+
+        assert tv_service.query_crypto_screener.await_args.kwargs["sort_by"] == (
+            fake_crypto_tvscreener_module.CryptoField.MARKET_CAP
+        )
+        assert [item["symbol"] for item in result["results"]] == [
+            "KRW-ETH",
+            "KRW-XRP",
+            "KRW-BTC",
+        ]
+        assert [item["market_cap"] for item in result["results"]] == [100.0, 50.0, 20.0]
 
     @pytest.mark.asyncio
     async def test_crypto_market_warning_filter_counts(self, monkeypatch):
@@ -1756,13 +2356,13 @@ class TestScreenStocksRsiLogging:
         )
         monkeypatch.setattr(analysis_screen_core, "_calculate_rsi", mock_calculate_rsi)
 
-        tools = build_tools()
-        result = await tools["screen_stocks"](
+        result = await analysis_screen_core._screen_kr(
             market="kospi",
             asset_type="stock",
             category=None,
             min_market_cap=None,
             max_per=None,
+            max_pbr=None,
             min_dividend_yield=None,
             max_rsi=None,
             sort_by="volume",
@@ -1855,13 +2455,13 @@ class TestScreenStocksRsiLogging:
         )
 
         caplog.set_level(logging.ERROR)
-        tools = build_tools()
-        result = await tools["screen_stocks"](
+        result = await analysis_screen_core._screen_kr(
             market="kospi",
             asset_type="stock",
             category=None,
             min_market_cap=None,
             max_per=None,
+            max_pbr=None,
             min_dividend_yield=None,
             max_rsi=None,
             sort_by="volume",
@@ -1925,13 +2525,13 @@ class TestScreenStocksRsiLogging:
             analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
-        tools = build_tools()
-        result = await tools["screen_stocks"](
+        result = await analysis_screen_core._screen_kr(
             market="kospi",
             asset_type="stock",
             category=None,
             min_market_cap=None,
             max_per=None,
+            max_pbr=None,
             min_dividend_yield=None,
             max_rsi=None,
             sort_by="volume",
@@ -2044,13 +2644,13 @@ class TestScreenStocksRsiLogging:
             analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
-        tools = build_tools()
-        result = await tools["screen_stocks"](
+        result = await analysis_screen_core._screen_kr(
             market="kospi",
             asset_type="stock",
             category=None,
             min_market_cap=None,
             max_per=None,
+            max_pbr=None,
             min_dividend_yield=None,
             max_rsi=None,
             sort_by="volume",
@@ -2701,16 +3301,36 @@ class TestScreenStocksPhase2Spec:
     async def test_kr_market_cap_unit_100m_won(self, mock_krx_stocks, monkeypatch):
         """Test KR min_market_cap filter uses 억원 (100 million KRW) unit."""
 
-        async def mock_fetch_stock_all_cached(market):
-            # Return different stocks for different markets to avoid duplicates
-            if market == "STK":  # KOSPI
-                return [mock_krx_stocks[0]]  # 삼성전자 only
-            elif market == "KSQ":  # KOSDAQ
-                return [mock_krx_stocks[1]]  # SK하이닉스 only
-            return []
+        async def mock_screen_kr_via_tvscreener(**kwargs):
+            assert kwargs["min_market_cap"] == 200000
+            assert kwargs["sort_by"] == "market_cap"
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "name": "Samsung Electronics Co., Ltd.",
+                        "price": 80000.0,
+                        "change_percent": 2.5,
+                        "volume": 1000.0,
+                        "market_cap": 4_800_000,
+                        "rsi": 35.0,
+                        "adx": 20.0,
+                        "market": "KOSPI",
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {
+                    "min_market_cap": 200000,
+                    "sort_by": "market_cap",
+                    "sort_order": "desc",
+                },
+                "source": "tvscreener",
+                "error": None,
+            }
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            mock_screen_kr_via_tvscreener,
         )
 
         tools = build_tools()
@@ -2735,7 +3355,7 @@ class TestScreenStocksPhase2Spec:
         assert result["total_count"] == 1, "Only 삼성전자 should pass filter"
         assert len(result["results"]) == 1
         assert result["results"][0]["code"] == "005930"
-        assert result["results"][0]["name"] == "삼성전자"
+        assert result["results"][0]["name"] == "Samsung Electronics Co., Ltd."
         assert result["results"][0]["market_cap"] == 4800000
 
     @pytest.mark.asyncio
