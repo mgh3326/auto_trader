@@ -190,11 +190,13 @@ class UnifiedWebSocketMonitor:
         filled_price = self._to_float(event.get("filled_price"))
         filled_qty = self._to_float(event.get("filled_qty"))
         if filled_price <= 0 or filled_qty <= 0:
-            logger.debug(
-                "Skip KIS domestic notification due to invalid fill values: symbol=%s price=%s qty=%s",
+            logger.error(
+                "Invalid KIS domestic fill values: symbol=%s market=%s filled_price=%s filled_qty=%s fill_yn=%s",
                 event.get("symbol"),
+                event.get("market"),
                 event.get("filled_price"),
                 event.get("filled_qty"),
+                fill_yn,
             )
             return False
         return True
@@ -459,16 +461,39 @@ async def main(mode: str = "both") -> None:
     }[mode]
     init_sentry(service_name=service_name)
 
-    if settings.telegram_token and settings.telegram_chat_id:
+    has_telegram = bool(settings.telegram_token and settings.telegram_chat_id)
+    has_discord = any(
+        [
+            settings.discord_webhook_us,
+            settings.discord_webhook_kr,
+            settings.discord_webhook_crypto,
+            settings.discord_webhook_alerts,
+        ]
+    )
+
+    if has_telegram or has_discord:
         try:
             trade_notifier = get_trade_notifier()
             trade_notifier.configure(
-                bot_token=settings.telegram_token,
-                chat_ids=settings.telegram_chat_ids,
+                bot_token=settings.telegram_token or "",
+                chat_ids=settings.telegram_chat_ids
+                if settings.telegram_chat_ids
+                else [],
                 enabled=True,
+                discord_webhook_us=settings.discord_webhook_us,
+                discord_webhook_kr=settings.discord_webhook_kr,
+                discord_webhook_crypto=settings.discord_webhook_crypto,
+                discord_webhook_alerts=settings.discord_webhook_alerts,
+            )
+            logger.info(
+                "Trade notifier configured: telegram=%s discord=%s",
+                has_telegram,
+                has_discord,
             )
         except Exception as e:
             logger.warning("Failed to configure trade notifier: %s", e, exc_info=True)
+    else:
+        logger.info("Trade notifier disabled: no Telegram or Discord configured")
 
     monitor = UnifiedWebSocketMonitor(mode=mode)
 

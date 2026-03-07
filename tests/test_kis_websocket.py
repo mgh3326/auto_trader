@@ -45,8 +45,8 @@ def _build_overseas_message(
     cntg_yn: str = "2",
 ) -> str:
     payload = (
-        f"mgh3326^6762259301^0030145286^{order_qty}^02^{rctf_cls}^{acpt_yn}^"
-        f"AMZN^{filled_qty}^{filled_price}^093001^{rfus_yn}^{cntg_yn}"
+        f"mgh3326^6762259301^0030145286^PROD^02^{rctf_cls}^RESERVED^"
+        f"AMZN^{filled_qty}^{filled_price}^093001^{rfus_yn}^{cntg_yn}^{acpt_yn}^RESERVED^{order_qty}"
     )
     return f"0|H0GSCNI0|1|{payload}"
 
@@ -1053,6 +1053,74 @@ class TestKISWebSocketClient:
         assert client.is_connected is False
         assert client.websocket is None
         close_redis_mock.assert_awaited_once()
+
+    def test_extract_symbol_rejects_pure_digit_us_symbol(self, execution_callback):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        fields = ["1234567890", "01", "0030145286", "100", "50.5", "093001"]
+
+        assert client._extract_symbol(fields, "us") is None
+
+    def test_extract_symbol_accepts_alphanumeric_us_symbol(self, execution_callback):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        fields = ["AAPL", "02", "ORDER123", "100", "150.5", "093001"]
+
+        assert client._extract_symbol(fields, "us") == "AAPL"
+
+    def test_parse_overseas_execution_logs_error_on_insufficient_fields(
+        self, execution_callback, caplog
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        payload = "mgh3326^6762259301^0030145286^prod^02"
+        message = f"0|H0GSCNI0|1|{payload}"
+
+        with caplog.at_level("ERROR"):
+            result = client._parse_message(message)
+
+        assert result is not None
+        assert result.get("symbol") == ""
+        assert client._is_execution_event(result) is False
+        assert "insufficient fields" in caplog.text.lower()
+
+    def test_parse_overseas_execution_with_empty_symbol_slot_drops_payload(
+        self, execution_callback, caplog
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        payload = "mgh3326^6762259301^0030145286^prod^02^0^^^3^201.5^093001^0^2^00^^10"
+        message = f"0|H0GSCNI0|1|{payload}"
+
+        with caplog.at_level("ERROR"):
+            result = client._parse_message(message)
+
+        assert result is not None
+        assert result.get("symbol") == ""
+        assert not result.get("filled_price")
+        assert not result.get("filled_qty")
+        assert client._is_execution_event(result) is False
+        assert "missing symbol" in caplog.text.lower()
+
+    def test_is_execution_event_logs_error_on_rejected_overseas_fill(
+        self, execution_callback, caplog
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        data = {
+            "tr_code": OVERSEAS_EXECUTION_TR_REAL,
+            "execution_type": 1,
+            "fill_yn": "1",
+            "filled_qty": 10,
+            "filled_price": 201.5,
+            "symbol": "AMZN",
+        }
+
+        with caplog.at_level("ERROR"):
+            result = client._is_execution_event(data)
+
+        assert result is False
+        assert "overseas execution event rejected" in caplog.text.lower()
 
 
 @pytest.mark.unit
