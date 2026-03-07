@@ -95,6 +95,8 @@ def test_screener_dashboard_page(
     assert 'class="results-table-wrap screener-results-table-wrap"' in body
     assert "<th>RSI</th>" in body
     assert 'id="report-panel"' in body
+    assert 'class="d-flex flex-wrap gap-2 mb-3 report-actions"' in body
+    assert 'class="report-table-wrap"' in body
     assert 'id="open-detail-link"' in body
     assert 'id="order-form"' in body
     assert 'id="order-side-tabs"' in body

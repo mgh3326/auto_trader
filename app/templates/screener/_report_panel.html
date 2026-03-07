@@ -54,7 +54,7 @@
     <p class="status-value mb-2">Job: <span class="mono" id="report-job-id">{{ initial_job_id or "not-set" }}</span></p>
     <p class="status-value mb-2">Selected: <span id="selected-symbol">none</span></p>
 
-    <div class="d-flex gap-2 mb-3">
+    <div class="d-flex flex-wrap gap-2 mb-3 report-actions">
         <button class="btn btn-dark btn-sm" type="button" id="generate-report-button">
             Generate Report
         </button>
@@ -80,15 +80,17 @@
     <ul class="list-compact mb-2" id="report-reasons"></ul>
 
     <h3 class="mb-1">Price Analysis</h3>
-    <table class="table table-sm ranges-table" id="report-ranges-table">
-        <thead>
-        <tr>
-            <th>Range</th>
-            <th>Min</th>
-            <th>Max</th>
-        </tr>
-        </thead>
-        <tbody id="report-ranges-body"></tbody>
-    </table>
+    <div class="report-table-wrap">
+        <table class="table table-sm ranges-table" id="report-ranges-table">
+            <thead>
+            <tr>
+                <th>Range</th>
+                <th>Min</th>
+                <th>Max</th>
+            </tr>
+            </thead>
+            <tbody id="report-ranges-body"></tbody>
+        </table>
+    </div>
 </article>
 {% endif %}
