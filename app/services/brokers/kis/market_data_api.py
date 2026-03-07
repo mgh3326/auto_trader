@@ -47,7 +47,6 @@ from app.services.brokers.kis.constants import (
 )
 from app.services.brokers.kis.transport import (
     _empty_day_frame,
-    _log_kis_api_failure,
     _validate_daily_itemchartprice_chunk,
 )
 
