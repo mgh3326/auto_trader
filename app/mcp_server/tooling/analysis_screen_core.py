@@ -190,11 +190,13 @@ def _is_market_warning(value: Any) -> bool:
     return normalized in {"CAUTION", "WARNING", "TRUE", "Y", "1"}
 
 
-def _sort_crypto_by_rsi_bucket(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _sort_crypto_by_rsi_value(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         items,
         key=lambda item: (
-            int(item.get("rsi_bucket", 999)),
+            _to_optional_float(item.get("rsi"))
+            if _to_optional_float(item.get("rsi")) is not None
+            else 999.0,
             -float(item.get("trade_amount_24h") or 0.0),
         ),
     )
@@ -936,11 +938,12 @@ async def _screen_kr(
         sort_order,
         len(filtered_non_rsi),
     )
+    effective_max_rsi = max_rsi if enrich_rsi else None
 
     # Determine subset for RSI enrichment
     rsi_subset_limit = (
         min(len(sorted_candidates), limit)
-        if max_rsi is None
+        if effective_max_rsi is None
         else min(len(sorted_candidates), limit * 3, 150)
     )
     rsi_subset = sorted_candidates[:rsi_subset_limit]
@@ -981,14 +984,14 @@ async def _screen_kr(
         filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
     # Stage 4: Apply RSI filter and final limit
-    if max_rsi is not None:
+    if effective_max_rsi is not None:
         # Use enriched subset when RSI filter is applied
         results = _stage_sort_kr(
             candidates=rsi_subset,
             sort_by=sort_by,
             sort_order=sort_order,
             limit=limit,
-            max_rsi=max_rsi,
+            max_rsi=effective_max_rsi,
         )
         total_count = len(
             _apply_basic_filters(
@@ -997,7 +1000,7 @@ async def _screen_kr(
                 max_per=None,
                 max_pbr=None,
                 min_dividend_yield=None,
-                max_rsi=max_rsi,
+                max_rsi=effective_max_rsi,
             )
         )
     else:
@@ -1476,6 +1479,7 @@ async def _screen_us(
         candidates=candidates,
         max_rsi=None,  # Don't apply RSI filter yet
     )
+    effective_max_rsi = max_rsi if enrich_rsi else None
 
     # Stage 3: Enrich with RSI
     enriched_candidates, rsi_enrichment = await _stage_enrich_us_rsi(
@@ -1505,11 +1509,11 @@ async def _screen_us(
         sort_by=sort_by,
         sort_order=sort_order,
         limit=limit,
-        max_rsi=max_rsi,
+        max_rsi=effective_max_rsi,
     )
 
     # Calculate total count before final limiting
-    if max_rsi is not None:
+    if effective_max_rsi is not None:
         total_count = len(
             _apply_basic_filters(
                 enriched_candidates,
@@ -1517,7 +1521,7 @@ async def _screen_us(
                 max_per=None,
                 max_pbr=None,
                 min_dividend_yield=None,
-                max_rsi=max_rsi,
+                max_rsi=effective_max_rsi,
             )
         )
     else:
@@ -1854,7 +1858,7 @@ def _stage_sort_crypto(
                 "crypto sort_by='rsi' always uses ascending order; requested desc was ignored."
             )
         applied_sort_order = "asc"
-        ordered = _sort_crypto_by_rsi_bucket(filtered)
+        ordered = _sort_crypto_by_rsi_value(filtered)
     else:
         ordered = _sort_and_limit(filtered, sort_by, sort_order, len(filtered))
 

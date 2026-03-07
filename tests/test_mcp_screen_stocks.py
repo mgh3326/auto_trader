@@ -586,6 +586,55 @@ class TestScreenStocksKR:
                 limit=20,
             )
 
+    @pytest.mark.asyncio
+    async def test_kr_max_rsi_ignored_when_enrich_rsi_disabled(self, monkeypatch):
+        async def mock_fetch_stock_all_cached(market):
+            if market == "STK":
+                return [
+                    {
+                        "code": "005930",
+                        "name": "삼성전자",
+                        "close": 80_000.0,
+                        "volume": 1_000_000,
+                        "change_rate": 2.5,
+                        "market_cap": 4_800_000,
+                    }
+                ]
+            return []
+
+        async def mock_fetch_valuation_all_cached(market):
+            _ = market
+            return {}
+
+        monkeypatch.setattr(
+            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "fetch_valuation_all_cached",
+            mock_fetch_valuation_all_cached,
+        )
+
+        result = await analysis_screen_core._screen_kr(
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=30.0,
+            sort_by="volume",
+            sort_order="desc",
+            limit=10,
+            enrich_rsi=False,
+        )
+
+        assert result["returned_count"] == 1
+        assert result["total_count"] == 1
+        assert result["filters_applied"]["max_rsi"] == 30.0
+        assert result["results"][0].get("rsi") is None
+
 
 class TestScreenStocksUS:
     """Test US market functionality."""
@@ -617,6 +666,43 @@ class TestScreenStocksUS:
         assert result["market"] == "us"
         assert len(result["results"]) >= 0
         assert "error" not in result, f"Unexpected error: {result.get('error')}"
+
+    @pytest.mark.asyncio
+    async def test_us_max_rsi_ignored_when_enrich_rsi_disabled(self, monkeypatch):
+        def mock_screen(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {
+                "quotes": [
+                    {
+                        "symbol": "AAPL",
+                        "shortName": "Apple Inc.",
+                        "regularMarketPrice": 175.5,
+                        "regularMarketChangePercent": 1.2,
+                        "regularMarketVolume": 50_000_000,
+                        "marketCap": 2_800_000_000_000,
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(analysis_screen_core.yf, "screen", mock_screen)
+
+        result = await analysis_screen_core._screen_us(
+            market="us",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=30.0,
+            sort_by="volume",
+            sort_order="desc",
+            limit=10,
+            enrich_rsi=False,
+        )
+
+        assert result["returned_count"] == 1
+        assert result["total_count"] == 1
+        assert result["filters_applied"]["max_rsi"] == 30.0
+        assert result["results"][0].get("rsi") is None
 
 
 class TestScreenStocksTvScreenerContract:
@@ -2279,7 +2365,7 @@ class TestScreenStocksCrypto:
         assert result["meta"]["filtered_by_crash"] == 0
 
     @pytest.mark.asyncio
-    async def test_crypto_rsi_bucket_sort_tiebreaks_with_trade_amount(
+    async def test_crypto_sort_by_rsi_uses_actual_numeric_rsi_ascending(
         self, monkeypatch
     ):
         async def mock_fetch_top_traded_coins(fiat):
@@ -2288,14 +2374,14 @@ class TestScreenStocksCrypto:
                     "market": "KRW-A",
                     "trade_price": 1_000,
                     "signed_change_rate": -0.01,
-                    "acc_trade_price_24h": 100,
+                    "acc_trade_price_24h": 300,
                     "rsi": 24.0,
                 },
                 {
                     "market": "KRW-B",
                     "trade_price": 1_000,
                     "signed_change_rate": -0.02,
-                    "acc_trade_price_24h": 300,
+                    "acc_trade_price_24h": 100,
                     "rsi": 22.0,
                 },
                 {
@@ -2329,8 +2415,7 @@ class TestScreenStocksCrypto:
 
         symbols = [item["symbol"] for item in result["results"]]
         assert symbols == ["KRW-B", "KRW-A", "KRW-C"]
-        buckets = [item["rsi_bucket"] for item in result["results"]]
-        assert buckets == [20, 20, 25]
+        assert [item["rsi"] for item in result["results"]] == [22.0, 24.0, 27.0]
 
     @pytest.mark.asyncio
     async def test_crypto_coingecko_enrichment_sets_market_cap_and_meta(
