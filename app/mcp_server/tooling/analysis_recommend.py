@@ -10,6 +10,7 @@ from typing import Any
 
 from app.mcp_server.scoring import calc_composite_score, generate_reason
 from app.mcp_server.strategies import (
+    StrategyType,
     get_strategy_description,
     get_strategy_scoring_weights,
     get_strategy_screen_params,
@@ -407,9 +408,10 @@ async def _stage_screen_candidates(
     market: str,
     strategy: str,
     screen_kr_fn: Callable[..., Awaitable[dict[str, Any]]],
+    screen_us_fn: Callable[..., Awaitable[dict[str, Any]]],
     screen_crypto_fn: Callable[..., Awaitable[dict[str, Any]]],
-    top_stocks_fallback: Any,
-    top_stocks_override: Any = None,
+    top_stocks_fallback: Callable[..., Awaitable[dict[str, Any]]],
+    top_stocks_override: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     candidate_limit: int = 100,
     sectors: list[str] | None = None,
     strategy_screen_params: dict[str, Any] | None = None,
@@ -499,44 +501,103 @@ async def _stage_screen_candidates(
         screen_error = screen_result.get("error")
         if screen_error is not None:
             error_msg = str(screen_error).strip() or "unknown error"
-            logger.warning("_stage_screen_candidates KR screening failed: %s", error_msg)
+            logger.warning(
+                "_stage_screen_candidates KR screening failed: %s", error_msg
+            )
             diagnostics["screen_error"] = error_msg
             return [], diagnostics
         raw_candidates = screen_result.get("results", [])
 
     elif normalized_market == "us":
         us_limit = min(candidate_limit, 50)
-        top_stocks_fn = (
-            top_stocks_override if callable(top_stocks_override) else None
-        )
-        if top_stocks_fn is None:
-            top_stocks_fn = top_stocks_fallback
-        try:
-            top_result = await top_stocks_fn(
-                market="us",
-                ranking_type="volume",
-                limit=us_limit,
+
+        fallback_sort_by = sort_by
+        fallback_sort_order = sort_order
+        fallback_ranking_type = "volume"
+
+        if fallback_sort_by == "market_cap":
+            fallback_ranking_type = "market_cap"
+        elif fallback_sort_by == "change_rate":
+            fallback_ranking_type = (
+                "losers" if fallback_sort_order == "asc" else "gainers"
             )
-            if top_result.get("error"):
-                error_msg = str(top_result.get("error")).strip() or "unknown error"
+        elif fallback_sort_by == "dividend_yield":
+            if warnings is not None:
+                warnings.append(
+                    "US top-stocks fallback does not support dividend_yield ranking; volume ranking used instead."
+                )
+
+        top_stocks_fn = top_stocks_override or top_stocks_fallback
+
+        try:
+            screen_result = await screen_us_fn(
+                market="us",
+                asset_type=None,
+                category=screen_category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                min_dividend_yield=min_dividend_yield,
+                max_rsi=max_rsi,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=us_limit,
+                enrich_rsi=False,
+            )
+
+            if screen_result.get("error"):
+                error_msg = str(screen_result.get("error")).strip() or "unknown error"
                 logger.warning(
-                    "_stage_screen_candidates US get_top_stocks failed: %s", error_msg
+                    "_stage_screen_candidates US screening failed: %s", error_msg
                 )
                 if warnings is not None:
-                    warnings.append(f"US 후보 수집 실패: {error_msg}")
-                diagnostics["screen_error"] = error_msg
+                    warnings.append(
+                        f"US screening unavailable: {error_msg}; top-stocks fallback used."
+                    )
             else:
-                raw_candidates = top_result.get("rankings", [])
+                screen_warnings = screen_result.get("warnings")
+                if isinstance(screen_warnings, list) and warnings is not None:
+                    warnings.extend(str(w) for w in screen_warnings if w)
+                raw_candidates = screen_result.get("results", [])
         except Exception as exc:
             error_msg = str(exc).strip() or exc.__class__.__name__
             logger.warning(
-                "_stage_screen_candidates US get_top_stocks exception: %s",
+                "_stage_screen_candidates US screening exception: %s",
                 error_msg,
                 exc_info=True,
             )
             if warnings is not None:
-                warnings.append(f"US 후보 수집 실패: {error_msg}")
-            diagnostics["screen_error"] = error_msg
+                warnings.append(
+                    f"US screening unavailable: {error_msg}; top-stocks fallback used."
+                )
+
+        if not raw_candidates:
+            try:
+                top_result = await top_stocks_fn(
+                    market="us",
+                    ranking_type=fallback_ranking_type,
+                    limit=us_limit,
+                )
+                if top_result.get("error"):
+                    error_msg = str(top_result.get("error")).strip() or "unknown error"
+                    logger.warning(
+                        "_stage_screen_candidates US get_top_stocks failed: %s",
+                        error_msg,
+                    )
+                    if warnings is not None:
+                        warnings.append(f"US 후보 수집 실패: {error_msg}")
+                    diagnostics["screen_error"] = error_msg
+                else:
+                    raw_candidates = top_result.get("rankings", [])
+            except Exception as exc:
+                error_msg = str(exc).strip() or exc.__class__.__name__
+                logger.warning(
+                    "_stage_screen_candidates US get_top_stocks exception: %s",
+                    error_msg,
+                    exc_info=True,
+                )
+                if warnings is not None:
+                    warnings.append(f"US 후보 수집 실패: {error_msg}")
+                diagnostics["screen_error"] = error_msg
 
     else:  # crypto
         screen_result = await screen_crypto_fn(
@@ -708,7 +769,9 @@ async def _stage_filter_by_strategy(
             if symbol is not None and str(symbol).strip()
         ]
         exclude_set.update(manual_excludes)
-        logger.debug("_stage_filter_by_strategy manual exclusions=%d", len(manual_excludes))
+        logger.debug(
+            "_stage_filter_by_strategy manual exclusions=%d", len(manual_excludes)
+        )
 
     # Exclude held positions
     if exclude_held:
@@ -753,7 +816,9 @@ async def _stage_filter_by_strategy(
 
     # Filter by exclude set
     filtered_candidates = [
-        c for c in normalized_candidates if c.get("symbol", "").upper() not in exclude_set
+        c
+        for c in normalized_candidates
+        if c.get("symbol", "").upper() not in exclude_set
     ]
     if normalized_candidates and not filtered_candidates:
         warnings.append("제외 조건 적용 후 추천 가능한 종목이 없습니다.")
@@ -800,9 +865,13 @@ async def _stage_filter_by_strategy(
             diagnostics["pbr_none_count"] = diagnostics.get("pbr_none_count", 0) + 1
         dy = c.get("dividend_yield")
         if dy is None:
-            diagnostics["dividend_none_count"] = diagnostics.get("dividend_none_count", 0) + 1
+            diagnostics["dividend_none_count"] = (
+                diagnostics.get("dividend_none_count", 0) + 1
+            )
         elif dy <= 0:
-            diagnostics["dividend_zero_count"] = diagnostics.get("dividend_zero_count", 0) + 1
+            diagnostics["dividend_zero_count"] = (
+                diagnostics.get("dividend_zero_count", 0) + 1
+            )
 
     # Fallback for value/dividend strategies
     needs_fallback = (
@@ -839,8 +908,11 @@ async def _stage_filter_by_strategy(
         max_rsi = strategy_screen_params.get("max_rsi")
         candidate_limit = min(100, max(50, max_positions * 20))
 
+        fallback_screen_kr_fn = screen_kr_fn
+        if fallback_screen_kr_fn is None:
+            raise RuntimeError("screen_kr_fn is required for KR fallback screening")
         try:
-            fallback_result = await screen_kr_fn(
+            fallback_result = await fallback_screen_kr_fn(
                 market="kr",
                 asset_type=screen_asset_type,
                 category=screen_category,
@@ -888,9 +960,7 @@ async def _stage_filter_by_strategy(
                         "min_market_cap": fallback_params.get("min_market_cap"),
                         "max_per": fallback_params.get("max_per"),
                         "max_pbr": fallback_params.get("max_pbr"),
-                        "min_dividend_yield": fallback_params.get(
-                            "min_dividend_yield"
-                        ),
+                        "min_dividend_yield": fallback_params.get("min_dividend_yield"),
                     }
                     warnings.append(
                         f"{validated_strategy} strict 단계에서 후보가 부족해 fallback을 적용했습니다 (추가 {added_count}건)"
@@ -956,8 +1026,9 @@ async def _stage_filter_by_strategy(
                 return_exceptions=True,
             )
             for i, updated in enumerate(updated_candidates):
-                if not isinstance(updated, Exception):
-                    rsi_missing_candidates[i].update(updated)
+                if isinstance(updated, dict):
+                    payload = updated
+                    rsi_missing_candidates[i].update(payload)
         except Exception as exc:
             logger.debug("_stage_filter_by_strategy RSI batch fetch failed: %s", exc)
 
@@ -997,9 +1068,7 @@ async def _stage_allocate_budget(
         max_positions,
     )
 
-    allocated, remaining_budget = _allocate_budget(
-        candidates, budget, max_positions
-    )
+    allocated, remaining_budget = _allocate_budget(candidates, budget, max_positions)
 
     # Handle case where no allocation was possible
     if not allocated and candidates:
@@ -1020,9 +1089,7 @@ async def _stage_allocate_budget(
     # Build recommendations with reasons
     recommendations = []
     for item in allocated:
-        reason = _build_recommend_reason(
-            item, validated_strategy, item.get("score", 0)
-        )
+        reason = _build_recommend_reason(item, validated_strategy, item.get("score", 0))
         recommendations.append(
             {
                 "symbol": item.get("symbol"),
@@ -1057,10 +1124,11 @@ async def recommend_stocks_impl(
     exclude_symbols: list[str] | None,
     sectors: list[str] | None,
     max_positions: int,
-    top_stocks_fallback: Any,
+    top_stocks_fallback: Callable[..., Awaitable[dict[str, Any]]],
     screen_kr_fn: Callable[..., Awaitable[dict[str, Any]]],
+    screen_us_fn: Callable[..., Awaitable[dict[str, Any]]],
     screen_crypto_fn: Callable[..., Awaitable[dict[str, Any]]],
-    top_stocks_override: Any = None,
+    top_stocks_override: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     exclude_held: bool = True,
 ) -> dict[str, Any]:
     """Orchestrate recommendation pipeline through staged functions.
@@ -1110,6 +1178,7 @@ async def recommend_stocks_impl(
             market=normalized_market,
             strategy=validated_strategy,
             screen_kr_fn=screen_kr_fn,
+            screen_us_fn=screen_us_fn,
             screen_crypto_fn=screen_crypto_fn,
             top_stocks_fallback=top_stocks_fallback,
             top_stocks_override=top_stocks_override,
@@ -1261,7 +1330,7 @@ async def _handle_crypto_recommendation(
     max_positions: int,
     exclude_symbols: list[str] | None,
     exclude_held: bool,
-    validated_strategy: str,
+    validated_strategy: StrategyType,
     diagnostics: dict[str, Any],
     warnings: list[str],
 ) -> dict[str, Any]:
@@ -1279,18 +1348,14 @@ async def _handle_crypto_recommendation(
     )
 
     # Normalize candidates
-    crypto_candidates = [
-        _normalize_candidate(c, "crypto") for c in raw_candidates
-    ]
+    crypto_candidates = [_normalize_candidate(c, "crypto") for c in raw_candidates]
     diagnostics["raw_candidates"] = len(crypto_candidates)
 
     # Build exclude set
     crypto_exclude_set: set[str] = set()
     if exclude_symbols:
         crypto_exclude_set.update(
-            str(s).strip().upper()
-            for s in exclude_symbols
-            if s and str(s).strip()
+            str(s).strip().upper() for s in exclude_symbols if s and str(s).strip()
         )
 
     # Exclude held positions
@@ -1312,11 +1377,11 @@ async def _handle_crypto_recommendation(
                 if sym:
                     crypto_exclude_set.add(str(sym).upper())
             if held_errors:
-                warnings.append(
-                    f"보유 종목 조회 중 일부 오류: {len(held_errors)}건"
-                )
+                warnings.append(f"보유 종목 조회 중 일부 오류: {len(held_errors)}건")
         except Exception as exc:
             warnings.append(f"보유 종목 조회 실패: {exc}")
+    else:
+        warnings.append("exclude_held=False: 보유 종목도 추천 대상에 포함됩니다.")
 
     # Filter by exclude set
     crypto_candidates = [

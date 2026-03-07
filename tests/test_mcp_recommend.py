@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -23,6 +24,7 @@ from app.mcp_server.strategies import (
 from app.mcp_server.tooling import (
     analysis_recommend,
     analysis_screen_core,
+    analysis_screening,
     analysis_tool_handlers,
     portfolio_holdings,
 )
@@ -43,7 +45,7 @@ class DummyMCP:
 
 def build_tools() -> dict[str, object]:
     mcp = DummyMCP()
-    register_all_tools(mcp)
+    register_all_tools(cast(Any, mcp))
     return mcp.tools
 
 
@@ -617,34 +619,35 @@ class TestRecommendStocksIntegration:
     ):
         _mock_empty_holdings(monkeypatch)
 
-        async def mock_get_us_rankings(
-            ranking_type: str, limit: int
-        ) -> tuple[list[dict[str, Any]], str]:
-            return [
-                {
-                    "symbol": "AAPL",
-                    "name": "Apple",
-                    "price": 200.0,
-                    "change_rate": 1.1,
-                    "volume": 10_000_000,
-                    "market_cap": 3_000_000_000_000,
-                    "rank": 1,
-                },
-                {
-                    "symbol": "MSFT",
-                    "name": "Microsoft",
-                    "price": 400.0,
-                    "change_rate": 0.8,
-                    "volume": 8_000_000,
-                    "market_cap": 2_500_000_000_000,
-                    "rank": 2,
-                },
-            ], "yfinance"
+        async def mock_screen_us(**kwargs: Any) -> dict[str, Any]:
+            _ = kwargs
+            return {
+                "results": [
+                    {
+                        "code": "AAPL",
+                        "name": "Apple",
+                        "close": 200.0,
+                        "change_rate": 1.1,
+                        "volume": 10_000_000,
+                        "market_cap": 3_000_000_000_000,
+                        "market": "us",
+                    },
+                    {
+                        "code": "MSFT",
+                        "name": "Microsoft",
+                        "close": 400.0,
+                        "change_rate": 0.8,
+                        "volume": 8_000_000,
+                        "market_cap": 2_500_000_000_000,
+                        "market": "us",
+                    },
+                ]
+            }
 
         monkeypatch.setattr(
-            analysis_tool_handlers,
-            "_get_us_rankings",
-            mock_get_us_rankings,
+            analysis_screening,
+            "_screen_us",
+            mock_screen_us,
         )
 
         result = await recommend_stocks(
@@ -666,10 +669,20 @@ class TestRecommendStocksIntegration:
     ):
         _mock_empty_holdings(monkeypatch)
 
+        async def mock_screen_us_raises(**kwargs: Any) -> dict[str, Any]:
+            _ = kwargs
+            raise RuntimeError("US screener timeout")
+
         async def mock_get_top_stocks_raises(
             *args: Any, **kwargs: Any
         ) -> dict[str, Any]:
             raise RuntimeError("US source timeout")
+
+        monkeypatch.setattr(
+            analysis_screening,
+            "_screen_us",
+            mock_screen_us_raises,
+        )
 
         monkeypatch.setattr(
             analysis_tool_handlers,
@@ -688,6 +701,148 @@ class TestRecommendStocksIntegration:
         assert result["total_amount"] == 0
         assert result["remaining_budget"] == 2_000
         assert any("US 후보 수집 실패" in warning for warning in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_us_value_strategy_uses_screen_us_before_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        _mock_empty_holdings(monkeypatch)
+
+        captured: dict[str, Any] = {}
+
+        async def mock_screen_us_fn(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "results": [
+                    {
+                        "code": "AAPL",
+                        "name": "Apple",
+                        "close": 200.0,
+                        "change_rate": 1.2,
+                        "volume": 10_000_000,
+                        "market_cap": 3_000_000_000_000,
+                        "per": 18.0,
+                        "dividend_yield": 0.005,
+                        "market": "us",
+                    }
+                ]
+            }
+
+        async def mock_top_stocks_fallback(**kwargs: Any) -> dict[str, Any]:
+            raise AssertionError(
+                "top_stocks_fallback should not run on screen_us success"
+            )
+
+        result = await analysis_recommend.recommend_stocks_impl(
+            budget=1_000,
+            market="us",
+            strategy="value",
+            exclude_symbols=None,
+            sectors=None,
+            max_positions=1,
+            exclude_held=True,
+            top_stocks_fallback=mock_top_stocks_fallback,
+            screen_kr_fn=AsyncMock(),
+            screen_us_fn=mock_screen_us_fn,
+            screen_crypto_fn=AsyncMock(),
+        )
+
+        assert result["recommendations"]
+        assert captured["market"] == "us"
+        assert captured["sort_by"] == "market_cap"
+        assert captured["sort_order"] == "desc"
+        assert captured["max_per"] == 20.0
+        assert captured["min_market_cap"] == 300
+        assert captured["min_dividend_yield"] is None
+        assert captured["max_rsi"] is None
+        assert captured["enrich_rsi"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("strategy", "expected_ranking_type"),
+        [("value", "market_cap"), ("growth", "gainers")],
+    )
+    async def test_us_screen_failure_uses_strategy_specific_fallback_ranking(
+        self,
+        strategy: str,
+        expected_ranking_type: str,
+    ):
+        warnings: list[str] = []
+        captured: dict[str, Any] = {}
+
+        async def mock_screen_us_fn(**kwargs: Any) -> dict[str, Any]:
+            _ = kwargs
+            raise RuntimeError("screen us unavailable")
+
+        async def mock_top_stocks_fallback(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "rankings": [
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple",
+                        "price": 200.0,
+                        "change_rate": 1.2,
+                        "volume": 10_000_000,
+                        "market_cap": 3_000_000_000_000,
+                    }
+                ]
+            }
+
+        raw_candidates, diagnostics = await analysis_recommend._stage_screen_candidates(
+            market="us",
+            strategy=strategy,
+            screen_kr_fn=AsyncMock(),
+            screen_us_fn=mock_screen_us_fn,
+            screen_crypto_fn=AsyncMock(),
+            top_stocks_fallback=mock_top_stocks_fallback,
+            candidate_limit=20,
+            warnings=warnings,
+        )
+
+        assert diagnostics["raw_candidates"] == 1
+        assert raw_candidates[0]["symbol"] == "AAPL"
+        assert captured["market"] == "us"
+        assert captured["limit"] == 20
+        assert captured["ranking_type"] == expected_ranking_type
+        assert any("US screening unavailable" in warning for warning in warnings)
+
+    @pytest.mark.asyncio
+    async def test_crypto_exclude_held_false_adds_exact_warning(
+        self, recommend_stocks, monkeypatch: pytest.MonkeyPatch
+    ):
+        async def mock_fetch_top_traded_coins(
+            fiat: str = "KRW",
+        ) -> list[dict[str, Any]]:
+            assert fiat == "KRW"
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "korean_name": "비트코인",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": 0.01,
+                    "acc_trade_price_24h": 1_000_000_000_000,
+                }
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        result = await recommend_stocks(
+            budget=100_000_000,
+            market="crypto",
+            strategy="balanced",
+            max_positions=1,
+            exclude_held=False,
+        )
+
+        assert (
+            "exclude_held=False: 보유 종목도 추천 대상에 포함됩니다."
+            in result["warnings"]
+        )
 
     @pytest.mark.asyncio
     async def test_rsi_enrichment_populates_missing_rsi(
