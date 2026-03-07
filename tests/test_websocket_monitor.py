@@ -342,6 +342,11 @@ class TestUnifiedWebSocketMonitor:
 
         monkeypatch.setattr(settings, "telegram_token", "telegram-token")
         monkeypatch.setattr(settings, "telegram_chat_id", "123456")
+        # Set Discord webhooks to None/empty to test Telegram-only config
+        monkeypatch.setattr(settings, "discord_webhook_us", None)
+        monkeypatch.setattr(settings, "discord_webhook_kr", None)
+        monkeypatch.setattr(settings, "discord_webhook_crypto", None)
+        monkeypatch.setattr(settings, "discord_webhook_alerts", None)
         monkeypatch.setattr(websocket_monitor, "init_sentry", lambda **_: None)
         monkeypatch.setattr(
             websocket_monitor,
@@ -361,6 +366,10 @@ class TestUnifiedWebSocketMonitor:
             bot_token="telegram-token",
             chat_ids=["123456"],
             enabled=True,
+            discord_webhook_us=None,
+            discord_webhook_kr=None,
+            discord_webhook_crypto=None,
+            discord_webhook_alerts=None,
         )
         notifier.shutdown.assert_awaited_once()
         monitor.start.assert_awaited_once()

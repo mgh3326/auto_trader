@@ -123,9 +123,7 @@ _SIDE_MAP = {
 
 OVERSEAS_FILL_FIELDS = {
     "side": 4,
-    "order_qty": 3,
     "rctf_cls": 5,
-    "acpt_yn": 6,
     "symbol": 7,
     "filled_qty": 8,
     "filled_price": 9,
@@ -133,6 +131,8 @@ OVERSEAS_FILL_FIELDS = {
     "rfus_yn": 11,
     "cntg_yn": 12,
     "fill_yn": 12,
+    "acpt_yn": 13,
+    "order_qty": 15,
 }
 
 OVERSEAS_SIDE_MAP = {
@@ -576,11 +576,20 @@ class KISExecutionWebSocket:
             status = str(data.get("execution_status", "")).strip().lower()
             if status:
                 return status in {"filled", "partial"}
-            return (
-                str(data.get("fill_yn", "")).strip() == "2"
-                and self._to_float(data.get("filled_qty")) > 0
-                and self._to_float(data.get("filled_price")) > 0
-            )
+            is_filled = str(data.get("fill_yn", "")).strip() == "2"
+            has_qty = self._to_float(data.get("filled_qty")) > 0
+            has_price = self._to_float(data.get("filled_price")) > 0
+            if not (is_filled and has_qty and has_price):
+                logger.error(
+                    "Overseas execution event rejected: tr_code=%s symbol=%s fill_yn=%s filled_qty=%s filled_price=%s execution_status=%s",
+                    tr_code,
+                    data.get("symbol"),
+                    data.get("fill_yn"),
+                    data.get("filled_qty"),
+                    data.get("filled_price"),
+                    data.get("execution_status"),
+                )
+            return is_filled and has_qty and has_price
         if tr_code in DOMESTIC_EXECUTION_TR_CODES:
             fill_yn = str(data.get("fill_yn") or data.get("cntg_yn") or "").strip()
             if fill_yn:
@@ -932,10 +941,20 @@ class KISExecutionWebSocket:
 
     def _parse_overseas_execution(self, fields: list[str]) -> dict[str, Any] | None:
         if len(fields) <= max(OVERSEAS_FILL_FIELDS.values()):
+            logger.error(
+                "Overseas execution payload has insufficient fields: field_count=%d required=%d",
+                len(fields),
+                max(OVERSEAS_FILL_FIELDS.values()) + 1,
+            )
             return None
 
         symbol = fields[OVERSEAS_FILL_FIELDS["symbol"]].strip()
         if not symbol:
+            logger.error(
+                "Overseas execution payload missing symbol at index %d: field_count=%d",
+                OVERSEAS_FILL_FIELDS["symbol"],
+                len(fields),
+            )
             return None
 
         side_token = fields[OVERSEAS_FILL_FIELDS["side"]].strip().upper()
@@ -1123,11 +1142,11 @@ class KISExecutionWebSocket:
             if (
                 market == "us"
                 and stripped.replace(".", "").replace("-", "").isalnum()
+                and not stripped.replace(".", "").replace("-", "").isdigit()
                 and stripped.upper() == stripped
                 and 1 <= len(stripped) <= 10
             ):
                 return stripped
-        return None
 
     def _extract_timestamp(self, value: str | None) -> str:
         if not value:
