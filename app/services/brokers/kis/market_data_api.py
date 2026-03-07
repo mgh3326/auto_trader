@@ -19,6 +19,7 @@ import pandas as pd
 from pandas import DataFrame
 
 from app.core.config import settings
+from app.core.symbol import to_kis_symbol
 from app.services.brokers.kis.constants import (
     BASE_URL,
     DOMESTIC_DAILY_CHART_TR,
@@ -1107,15 +1108,125 @@ class MarketDataAPI:
         n: int = 200,
         period: str = "D",
     ) -> pd.DataFrame:
-        """해외주식 일봉/주봉/월봉 조회
+        """해외주식 일봉/주봉/월봉 조회 (국내주식처럼 충분한 데이터 확보)
 
         Args:
             symbol: 종목 심볼 (예: "AAPL")
-            exchange_code: 거래소 코드 (NASD, NYSE, AMEX 등)
-            n: 조회할 캔들 수 (최소 200개 권장)
+            exchange_code: 거래소 코드 (NASD/NYSE/AMEX 등)
+            n: 조회할 캔들 수 (최소 200개 권장, 이동평균선 계산용)
             period: D(일봉)/W(주봉)/M(월봉)
 
         Returns:
-            OHLCV DataFrame (columns: date, open, high, low, close, volume)
+            DataFrame with columns: date, open, high, low, close, volume
         """
-        raise NotImplementedError("inquire_overseas_daily_price will be implemented in subtask-4-5")
+        token = await self._transport.ensure_token()
+
+        # KIS API는 거래소 코드를 3자리로 사용: NASD -> NAS, NYSE -> NYS, AMEX -> AMS
+        excd_map = {"NASD": "NAS", "NYSE": "NYS", "AMEX": "AMS"}
+        excd = excd_map.get(exchange_code, exchange_code[:3])
+
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {token}",
+            "tr_id": OVERSEAS_DAILY_CHART_TR,
+        }
+
+        rows: list[dict] = []
+        max_iterations = 5  # 최대 5번 반복 (충분한 데이터 확보)
+        iteration = 0
+
+        # 국내주식처럼 충분한 데이터를 확보할 때까지 반복 조회
+        while len(rows) < n and iteration < max_iterations:
+            # BYMD 파라미터: 빈 값이면 최근, 날짜를 지정하면 해당 날짜부터 과거로
+            if rows:
+                # 이전에 가져온 데이터의 가장 오래된 날짜 찾기
+                oldest_date = min(r.get("xymd", "99999999") for r in rows)
+                # 하루 전으로 설정
+                try:
+                    oldest_dt = datetime.datetime.strptime(oldest_date, "%Y%m%d")
+                    bymd = (oldest_dt - datetime.timedelta(days=1)).strftime("%Y%m%d")
+                except Exception:
+                    bymd = ""
+            else:
+                bymd = ""  # 첫 요청은 최신 데이터부터
+
+            params = {
+                "AUTH": "",
+                "EXCD": excd,  # 거래소코드 (3자리)
+                "SYMB": to_kis_symbol(symbol),  # 심볼 (DB형식 . -> KIS형식 /)
+                "GUBN": {"D": "0", "W": "1", "M": "2"}.get(period.upper(), "0"),
+                "BYMD": bymd,  # 조회기준일자
+                "MODP": "1",  # 0:수정주가 미반영, 1:수정주가 반영
+            }
+
+            logging.info(
+                f"해외주식 일봉 조회 요청 (반복 {iteration + 1}/{max_iterations}) - symbol: {symbol}, exchange: {excd}, bymd: {bymd}"
+            )
+
+            js = await self._transport.request(
+                "GET",
+                f"{BASE_URL}{OVERSEAS_DAILY_CHART_URL}",
+                headers=hdr,
+                params=params,
+                timeout=10,
+                api_name="inquire_overseas_daily_price",
+                tr_id=OVERSEAS_DAILY_CHART_TR,
+            )
+
+            if js.get("rt_cd") != "0":
+                if js.get("msg_cd") in [ERROR_TOKEN_EXPIRED, ERROR_TOKEN_INVALID]:
+                    # Token expired - transport layer handles refresh, retry once
+                    token = await self._transport.ensure_token()
+                    hdr = self._hdr_base | {
+                        "authorization": f"Bearer {token}",
+                        "tr_id": OVERSEAS_DAILY_CHART_TR,
+                    }
+                    continue
+                raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
+
+            chunk = js.get("output2") or js.get("output") or []
+            if not chunk:
+                logging.info(
+                    f"더 이상 과거 데이터가 없음. 현재까지 수집: {len(rows)}개"
+                )
+                break
+
+            rows.extend(chunk)
+            iteration += 1
+            logging.info(f"누적 데이터: {len(rows)}개 / 목표: {n}개")
+
+        if not rows:
+            return pd.DataFrame(
+                columns=["date", "open", "high", "low", "close", "volume"]
+            )
+
+        df = (
+            pd.DataFrame(rows)
+            .rename(
+                columns={
+                    "xymd": "date",
+                    "open": "open",
+                    "high": "high",
+                    "low": "low",
+                    "clos": "close",
+                    "tvol": "volume",
+                }
+            )
+            .astype(
+                {
+                    "date": "str",
+                    "open": "float",
+                    "high": "float",
+                    "low": "float",
+                    "close": "float",
+                    "volume": "int",
+                },
+                errors="ignore",
+            )
+            .assign(date=lambda d: pd.to_datetime(d["date"], format="%Y%m%d"))
+            .drop_duplicates(subset=["date"], keep="first")
+            .sort_values("date")
+            .tail(n)
+            .reset_index(drop=True)
+        )
+        logging.info(f"해외주식 일봉 조회 완료: {len(df)}개 데이터 반환")
+        return df
