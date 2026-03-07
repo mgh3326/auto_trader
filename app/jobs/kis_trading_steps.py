@@ -990,16 +990,11 @@ class SellStep(TradingStep):
         """
         Conditions under which sell step should be skipped.
 
-        Manual holdings (토스 등) should be skipped since they cannot be sold
-        via KIS API. The notification is handled separately by the orchestrator
-        or via the execute() method's manual holding branch.
+        Note: Manual holdings (토스 등) are handled inside execute() method
+        with proper messaging and notification logic, not via skip conditions.
+        This ensures the step result contains the expected "수동잔고" message.
         """
-
-        def is_manual_holding(context: TradingContext) -> bool:
-            """Check if this is a manual holding (토스 등)."""
-            return context.is_manual
-
-        return [is_manual_holding]
+        return []
 
     async def execute(self, context: TradingContext) -> StepOutcome:
         """Execute sell orders for the stock."""

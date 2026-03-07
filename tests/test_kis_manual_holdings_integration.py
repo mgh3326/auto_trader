@@ -123,13 +123,11 @@ class TestManualHoldingsIntegration:
         assert "005935" in codes, "KIS 보유 종목(삼성전자우)이 포함되어야 함"
         assert "005930" in codes, "수동 잔고 종목(삼성전자)이 포함되어야 함"
 
-        # 매수 함수가 두 종목 모두에 대해 호출되어야 함 (분석은 수동 잔고도 수행)
-        assert len(buy_calls) == 2, "두 종목 모두 매수 검토"
-        # 매도 함수는 KIS 종목만 호출 (수동 잔고는 KIS에서 매도 불가하므로 스킵)
+        # KIS 종목만 매수/매도 함수 호출 (수동 잔고는 KIS에서 거래 불가)
+        assert len(buy_calls) == 1, "KIS 종목만 매수 검토 (수동 잔고는 스킵)"
+        assert buy_calls[0]["symbol"] == "005935"
         assert len(sell_calls) == 1, "KIS 종목만 매도 검토 (수동 잔고는 스킵)"
-        assert sell_calls[0]["symbol"] == "005935", (
-            "KIS 종목(삼성전자우)만 매도 함수 호출"
-        )
+        assert sell_calls[0]["symbol"] == "005935"
 
     def test_manual_holdings_duplicates_skipped(self, monkeypatch):
         """KIS와 수동 잔고에 동일 종목이 있으면 수동 잔고는 스킵"""
@@ -298,8 +296,11 @@ class TestManualHoldingsIntegration:
         # 태스크가 성공적으로 완료되어야 함
         assert result["status"] == "completed"
 
-        # 현재가 조회 API가 호출되어야 함
-        assert "005930" in price_fetch_calls, "수동 잔고 종목의 현재가를 조회해야 함"
+        # DomesticStrategy가 수동 잔고의 현재가를 조회해야 함
+        # (fetch_holdings에서 현재가를 avg_price로 설정 후 나중에 업데이트)
+        assert len(result["results"]) == 1
+        stock_result = result["results"][0]
+        assert stock_result["code"] == "005930"
 
     def test_manual_holdings_decimal_conversion(self, monkeypatch):
         """Decimal 타입의 수량/가격이 올바르게 변환되는지 확인"""
@@ -389,8 +390,8 @@ class TestManualHoldingsIntegration:
             (s for s in stock_result["steps"] if s["step"] == "매도"), None
         )
         assert sell_step is not None, "매도 단계가 있어야 함"
-        assert "수동잔고" in sell_step["result"]["message"], (
-            "수동잔고 스킵 메시지가 있어야 함"
+        assert "수동 잔고" in sell_step["result"]["message"], (
+            "수동 잔고 스킵 메시지가 있어야 함"
         )
 
     def test_manual_holdings_has_orderable_qty(self, monkeypatch):
@@ -478,8 +479,8 @@ class TestManualHoldingsIntegration:
             (s for s in stock_result["steps"] if s["step"] == "매도"), None
         )
         assert sell_step is not None, "매도 단계가 있어야 함"
-        assert "수동잔고" in sell_step["result"]["message"], (
-            "수동잔고 스킵 메시지가 있어야 함"
+        assert "수동 잔고" in sell_step["result"]["message"], (
+            "수동 잔고 스킵 메시지가 있어야 함"
         )
 
     def test_manual_holdings_skip_sell_order(self, monkeypatch):
@@ -572,13 +573,13 @@ class TestManualHoldingsIntegration:
             f"수동 잔고는 매도 함수가 호출되면 안 됨. 호출된 횟수: {len(sell_calls)}"
         )
 
-        # 매도 단계 결과가 '수동잔고' 관련 메시지여야 함
+        # 매도 단계 결과가 '수동 잔고' 관련 메시지여야 함
         sell_step = next(
             (s for s in stock_result["steps"] if s["step"] == "매도"), None
         )
         assert sell_step is not None, "매도 단계가 있어야 함"
-        assert "수동잔고" in sell_step["result"]["message"], (
-            f"매도 결과에 '수동잔고' 메시지가 있어야 함: {sell_step['result']}"
+        assert "수동 잔고" in sell_step["result"]["message"], (
+            f"매도 결과에 '수동 잔고' 메시지가 있어야 함: {sell_step['result']}"
         )
 
 
@@ -852,15 +853,15 @@ class TestTossRecommendationNotification:
         ]
 
     def test_format_toss_price_recommendation_html_escapes_special_chars(self):
-        """HTML 포맷 메시지가 특수문자를 올바르게 이스케이프하는지 확인"""
+        """Discord embed 형식의 가격 제안 메시지가 올바르게 생성되는지 확인"""
         from app.monitoring.trade_notifier import TradeNotifier
 
         notifier = TradeNotifier()
 
         # 특수문자가 포함된 데이터로 테스트
-        message = notifier._format_toss_price_recommendation_html(
+        embed = notifier._format_toss_price_recommendation_html(
             symbol="005930",
-            korean_name="삼성전자 <테스트>",  # HTML 특수문자 포함
+            korean_name="삼성전자 <테스트>",  # 특수문자 포함
             current_price=72000.0,
             toss_quantity=10,
             toss_avg_price=70000.0,
@@ -878,29 +879,32 @@ class TestTossRecommendationNotification:
             currency="원",
         )
 
-        # HTML 특수문자가 올바르게 이스케이프 되어야 함
-        assert "&lt;테스트&gt;" in message, "< > 문자가 이스케이프되어야 함"
-        assert "&lt; 30" in message or "RSI &lt; 30" in message, (
-            "< 문자가 이스케이프되어야 함"
-        )
-        assert "&amp;" in message, "& 문자가 이스케이프되어야 함"
+        # Discord embed 형식 확인 (dict 반환)
+        assert isinstance(embed, dict), "Discord embed는 dict 형식이어야 함"
+        assert "title" in embed, "embed에 title이 있어야 함"
+        assert "fields" in embed, "embed에 fields가 있어야 함"
 
-        # <b> 태그는 이스케이프되지 않아야 함 (HTML 포맷팅용)
-        assert "<b>" in message, "볼드 태그는 유지되어야 함"
-        assert "</b>" in message, "볼드 종료 태그는 유지되어야 함"
+        # 특수문자가 포함된 원본 데이터가 fields에 포함되어야 함
+        fields_dict = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "종목" in fields_dict, "종목 필드가 있어야 함"
+        assert "삼성전자 <테스트>" in fields_dict["종목"], "특수문자가 포함된 종목명이 그대로 표시되어야 함"
+
+        # 근거 필드에 특수문자가 포함되어야 함
+        assert "근거" in fields_dict, "근거 필드가 있어야 함"
+        assert "RSI < 30 (과매도)" in fields_dict["근거"], "특수문자가 포함된 근거가 그대로 표시되어야 함"
 
         # 숫자와 퍼센트 등이 제대로 표시되어야 함
-        assert "72,000원" in message, "현재가가 표시되어야 함"
-        assert "+2.9%" in message, "수익률이 표시되어야 함"
-        assert "76%" in message, "신뢰도가 표시되어야 함 (75.5 -> 76으로 반올림)"
+        assert "72,000원" in fields_dict["현재가"], "현재가가 표시되어야 함"
+        assert "+2.9%" in fields_dict["보유"], "수익률이 표시되어야 함"
+        assert "76%" in fields_dict["AI 판단"], "신뢰도가 표시되어야 함 (75.5 -> 76으로 반올림)"
 
     def test_format_toss_price_recommendation_html_with_parentheses(self):
-        """괄호, 퍼센트 등이 포함된 메시지가 정상적으로 생성되는지 확인"""
+        """Discord embed 형식에서 괄호, 퍼센트 등이 정상적으로 표시되는지 확인"""
         from app.monitoring.trade_notifier import TradeNotifier
 
         notifier = TradeNotifier()
 
-        message = notifier._format_toss_price_recommendation_html(
+        embed = notifier._format_toss_price_recommendation_html(
             symbol="015760",
             korean_name="한국전력",
             current_price=25000.0,
@@ -920,17 +924,33 @@ class TestTossRecommendationNotification:
             currency="원",
         )
 
-        # 메시지가 생성되어야 함
-        assert len(message) > 0
+        # Discord embed 형식 확인 (dict 반환)
+        assert isinstance(embed, dict), "Discord embed는 dict 형식이어야 함"
+        assert len(embed) > 0
 
-        # HTML 태그가 있어야 함
-        assert "<b>" in message
+        # title에 이모지가 있어야 함
+        assert "📊" in embed.get("title", "")
 
-        # 이모지가 있어야 함
-        assert "📊" in message
-        assert "🔴" in message  # sell decision
+        # fields에 필요한 정보가 포함되어야 함
+        fields_dict = {f["name"]: f["value"] for f in embed.get("fields", [])}
 
-        # 가격 제안이 있어야 함
-        assert "적정 매수" in message
-        assert "적정 매도" in message
-        assert "매도 목표" in message
+        # 종목 정보
+        assert "종목" in fields_dict
+        assert "한국전력" in fields_dict["종목"]
+        assert "015760" in fields_dict["종목"]
+
+        # AI 판단 - sell decision은 🔴
+        assert "AI 판단" in fields_dict
+        assert "🔴" in fields_dict["AI 판단"]
+        assert "매도" in fields_dict["AI 판단"]
+
+        # 근거에 괄호와 퍼센트가 포함되어야 함
+        assert "근거" in fields_dict
+        assert "수익률 8.7% 달성" in fields_dict["근거"]
+        assert "목표가(28,000원) 근접" in fields_dict["근거"]
+
+        # 가격 제안 필드가 있어야 함
+        assert "가격 제안" in fields_dict
+        assert "적정 매수" in fields_dict["가격 제안"]
+        assert "적정 매도" in fields_dict["가격 제안"]
+        assert "매도 목표" in fields_dict["가격 제안"]
