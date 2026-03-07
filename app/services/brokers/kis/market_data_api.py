@@ -29,6 +29,8 @@ from app.services.brokers.kis.constants import (
     DOMESTIC_PRICE_URL,
     DOMESTIC_VOLUME_TR,
     DOMESTIC_VOLUME_URL,
+    ERROR_TOKEN_EXPIRED,
+    ERROR_TOKEN_INVALID,
     FLUCTUATION_RANK_TR,
     FLUCTUATION_RANK_URL,
     FOREIGN_BUYING_RANK_TR,
@@ -311,9 +313,81 @@ class MarketDataAPI:
             market: K(코스피)/Q(코스닥)/UN(통합)
 
         Returns:
-            현재가 정보 DataFrame
+            현재가 정보 DataFrame (columns: code, date, time, open, high, low, close, volume, value)
         """
-        raise NotImplementedError("inquire_price will be implemented in subtask-4-3")
+        token = await self._transport.ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {token}",
+            "tr_id": DOMESTIC_PRICE_TR,
+        }
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_INPUT_ISCD": code.zfill(6),  # 000000 형태도 OK
+        }
+
+        js = await self._transport.request(
+            "GET",
+            f"{BASE_URL}{DOMESTIC_PRICE_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="inquire_price",
+            tr_id=DOMESTIC_PRICE_TR,
+        )
+
+        if js["rt_cd"] != "0":
+            if js.get("msg_cd") in [
+                ERROR_TOKEN_EXPIRED,
+                ERROR_TOKEN_INVALID,
+            ]:
+                # Token expired - transport layer handles refresh, retry once
+                token = await self._transport.ensure_token()
+                hdr = self._hdr_base | {
+                    "authorization": f"Bearer {token}",
+                    "tr_id": DOMESTIC_PRICE_TR,
+                }
+                js = await self._transport.request(
+                    "GET",
+                    f"{BASE_URL}{DOMESTIC_PRICE_URL}",
+                    headers=hdr,
+                    params=params,
+                    timeout=5,
+                    api_name="inquire_price",
+                    tr_id=DOMESTIC_PRICE_TR,
+                )
+                if js["rt_cd"] != "0":
+                    raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
+            else:
+                raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
+
+        out = js["output"]  # 단일 dict
+        trade_date_str = out.get("stck_bsop_date")  # 예: '20250805'
+        if trade_date_str:
+            trade_date = pd.to_datetime(trade_date_str, format="%Y%m%d")
+        else:
+            # 필드가 없으면 오늘 날짜
+            trade_date = pd.Timestamp(datetime.date.today())
+
+        # 체결 시각
+        time_str = out.get("stck_cntg_hour") or out.get("stck_cntg_time")  # 'HHMMSS'
+        if time_str:
+            trade_time = pd.to_datetime(time_str, format="%H%M%S").time()
+        else:
+            trade_time = datetime.datetime.now().time()  # 필드가 없으면 현재 시각
+
+        row = {
+            "code": out["stck_shrn_iscd"],
+            "date": trade_date,
+            "time": trade_time,
+            "open": float(out["stck_oprc"]),
+            "high": float(out["stck_hgpr"]),
+            "low": float(out["stck_lwpr"]),
+            "close": float(out["stck_prpr"]),
+            "volume": int(out["acml_vol"]),
+            "value": int(out["acml_tr_pbmn"]),
+        }
+        return pd.DataFrame([row]).set_index("code")  # index = 종목코드
 
     async def inquire_orderbook(self, code: str, market: str = "UN") -> dict:
         """주식 호가(orderbook) 조회 - 10단계 매수/매도 호가
@@ -323,9 +397,60 @@ class MarketDataAPI:
             market: K(코스피)/Q(코스닥)/UN(통합)
 
         Returns:
-            호가 정보 딕셔너리
+            호가 정보 딕셔너리 (매수/매도 10단계 호가 포함)
         """
-        raise NotImplementedError("inquire_orderbook will be implemented in subtask-4-3")
+        token = await self._transport.ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {token}",
+            "tr_id": ORDERBOOK_TR,
+        }
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_INPUT_ISCD": code.zfill(6),
+        }
+
+        js = await self._transport.request(
+            "GET",
+            f"{BASE_URL}{ORDERBOOK_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="inquire_orderbook",
+            tr_id=ORDERBOOK_TR,
+        )
+
+        if js["rt_cd"] != "0":
+            if js.get("msg_cd") in [
+                ERROR_TOKEN_EXPIRED,
+                ERROR_TOKEN_INVALID,
+            ]:
+                # Token expired - transport layer handles refresh, retry once
+                token = await self._transport.ensure_token()
+                hdr = self._hdr_base | {
+                    "authorization": f"Bearer {token}",
+                    "tr_id": ORDERBOOK_TR,
+                }
+                js = await self._transport.request(
+                    "GET",
+                    f"{BASE_URL}{ORDERBOOK_URL}",
+                    headers=hdr,
+                    params=params,
+                    timeout=5,
+                    api_name="inquire_orderbook",
+                    tr_id=ORDERBOOK_TR,
+                )
+                if js["rt_cd"] != "0":
+                    raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
+            else:
+                raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
+
+        output = js.get("output1")
+        if output is None:
+            output = js.get("output")
+        if not isinstance(output, dict):
+            raise RuntimeError("inquire_orderbook: missing valid output1/output dict")
+        return output
 
     async def fetch_fundamental_info(self, code: str, market: str = "UN") -> dict:
         """종목의 기본 정보를 가져와 딕셔너리로 반환
@@ -335,9 +460,74 @@ class MarketDataAPI:
             market: K(코스피)/Q(코스닥)/UN(통합)
 
         Returns:
-            기본 정보 딕셔너리
+            기본 정보 딕셔너리 (종목코드, 종목명, 현재가, 등락률, 거래량, 시가총액 등)
         """
-        raise NotImplementedError("fetch_fundamental_info will be implemented in subtask-4-3")
+        token = await self._transport.ensure_token()
+        hdr = self._hdr_base | {
+            "authorization": f"Bearer {token}",
+            "tr_id": DOMESTIC_PRICE_TR,
+        }
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_INPUT_ISCD": code.zfill(6),  # 000000 형태도 OK
+        }
+
+        js = await self._transport.request(
+            "GET",
+            f"{BASE_URL}{DOMESTIC_PRICE_URL}",
+            headers=hdr,
+            params=params,
+            timeout=5,
+            api_name="fetch_fundamental_info",
+            tr_id=DOMESTIC_PRICE_TR,
+        )
+
+        if js["rt_cd"] != "0":
+            if js.get("msg_cd") in [
+                ERROR_TOKEN_EXPIRED,
+                ERROR_TOKEN_INVALID,
+            ]:
+                # Token expired - transport layer handles refresh, retry once
+                token = await self._transport.ensure_token()
+                hdr = self._hdr_base | {
+                    "authorization": f"Bearer {token}",
+                    "tr_id": DOMESTIC_PRICE_TR,
+                }
+                js = await self._transport.request(
+                    "GET",
+                    f"{BASE_URL}{DOMESTIC_PRICE_URL}",
+                    headers=hdr,
+                    params=params,
+                    timeout=5,
+                    api_name="fetch_fundamental_info",
+                    tr_id=DOMESTIC_PRICE_TR,
+                )
+                if js["rt_cd"] != "0":
+                    raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
+            else:
+                raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
+
+        out = js["output"]  # 단일 dict
+
+        # 기본 정보 구성
+        fundamental_data = {
+            "종목코드": out.get("stck_shrn_iscd"),
+            "종목명": out.get("hts_kor_isnm"),
+            "현재가": out.get("stck_prpr"),
+            "전일대비": out.get("prdy_vrss"),
+            "등락률": out.get("prdy_ctrt"),
+            "거래량": out.get("acml_vol"),
+            "거래대금": out.get("acml_tr_pbmn"),
+            "시가총액": out.get("hts_avls"),
+            "상장주수": out.get("lstn_stcn"),
+            "외국인비율": out.get("frgn_hlg"),
+            "52주최고": out.get("w52_hgpr"),
+            "52주최저": out.get("w52_lwpr"),
+        }
+
+        # None이 아닌 값만 반환
+        return {k: v for k, v in fundamental_data.items() if v is not None}
 
     # =========================================================================
     # Chart Methods
