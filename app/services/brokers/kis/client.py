@@ -11,6 +11,10 @@ from pandas import DataFrame
 from app.core.async_rate_limiter import RateLimitExceededError, get_limiter
 from app.core.config import settings
 from app.core.symbol import to_kis_symbol
+from app.services.brokers.kis.holdings_api import HoldingsAPI
+from app.services.brokers.kis.market_data_api import MarketDataAPI
+from app.services.brokers.kis.orders_api import OrdersAPI
+from app.services.brokers.kis.transport import KISTransport
 from app.services.redis_token_manager import redis_token_manager
 
 BASE = "https://openapi.koreainvestment.com:9443"
@@ -224,7 +228,28 @@ def extract_domestic_cash_summary_from_integrated_margin(
 
 
 class KISClient:
-    def __init__(self):
+    """KIS (Korea Investment & Securities) API client.
+
+    This is the main facade class that provides access to all KIS API operations
+    through composition of specialized internal modules:
+    - _transport: HTTP communication, rate limiting, token management
+    - _holdings: Balance and holdings operations
+    - _orders: Order placement, cancellation, and inquiry
+    - _market_data: Price, chart, and ranking data
+
+    The internal modules are instantiated in __init__ and delegate actual
+    operations to the appropriate specialized classes.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the KIS client with internal modules."""
+        # Internal modules - composed from specialized classes
+        self._transport = KISTransport()
+        self._holdings = HoldingsAPI(self._transport)
+        self._orders = OrdersAPI(self._transport)
+        self._market_data = MarketDataAPI(self._transport)
+
+        # Legacy attributes kept for backward compatibility
         self._hdr_base = {
             "appkey": settings.kis_app_key,
             "appsecret": settings.kis_app_secret,
