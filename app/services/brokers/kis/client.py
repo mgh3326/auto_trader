@@ -16,6 +16,107 @@ import pandas as pd
 from pandas import DataFrame
 
 from app.core.config import settings
+from app.services.brokers.kis.constants import (
+    BASE_URL,
+    CHART_PERIOD_DAY,
+    CHART_PERIOD_MONTH,
+    CHART_PERIOD_WEEK,
+    CHART_REQUEST_TIMEOUT,
+    CHART_TIME_UNIT_10MIN,
+    CHART_TIME_UNIT_15MIN,
+    CHART_TIME_UNIT_1MIN,
+    CHART_TIME_UNIT_30MIN,
+    CHART_TIME_UNIT_3MIN,
+    CHART_TIME_UNIT_45MIN,
+    CHART_TIME_UNIT_5MIN,
+    CHART_TIME_UNIT_60MIN,
+    DEFAULT_CANDLES,
+    DEFAULT_CHART_DAYS,
+    DEFAULT_TIMEOUT,
+    DOMESTIC_BALANCE_TR,
+    DOMESTIC_BALANCE_TR_MOCK,
+    DOMESTIC_BALANCE_URL,
+    DOMESTIC_DAILY_CHART_TR,
+    DOMESTIC_DAILY_CHART_URL,
+    DOMESTIC_DAILY_ORDER_TR,
+    DOMESTIC_DAILY_ORDER_TR_MOCK,
+    DOMESTIC_DAILY_ORDER_URL,
+    DOMESTIC_MARKET_CODES,
+    DOMESTIC_MINUTE_CHART_TR,
+    DOMESTIC_MINUTE_CHART_URL,
+    DOMESTIC_ORDER_BUY_TR,
+    DOMESTIC_ORDER_BUY_TR_MOCK,
+    DOMESTIC_ORDER_CANCEL_TR,
+    DOMESTIC_ORDER_CANCEL_TR_MOCK,
+    DOMESTIC_ORDER_CANCEL_URL,
+    DOMESTIC_ORDER_INQUIRY_TR,
+    DOMESTIC_ORDER_INQUIRY_URL,
+    DOMESTIC_ORDER_SELL_TR,
+    DOMESTIC_ORDER_SELL_TR_MOCK,
+    DOMESTIC_ORDER_URL,
+    DOMESTIC_PRICE_TR,
+    DOMESTIC_PRICE_URL,
+    DOMESTIC_VOLUME_TR,
+    DOMESTIC_VOLUME_URL,
+    ERROR_TOKEN_EXPIRED,
+    ERROR_TOKEN_INVALID,
+    FLUCTUATION_RANK_TR,
+    FLUCTUATION_RANK_URL,
+    FOREIGN_BUYING_RANK_TR,
+    FOREIGN_BUYING_RANK_URL,
+    INTEGRATED_MARGIN_TR,
+    INTEGRATED_MARGIN_TR_MOCK,
+    INTEGRATED_MARGIN_URL,
+    MARKET_CAP_RANK_TR,
+    MARKET_CAP_RANK_URL,
+    MAX_CHART_ITERATIONS,
+    MAX_PAGES,
+    MAX_TOKEN_RETRIES,
+    ORDERBOOK_TR,
+    ORDERBOOK_URL,
+    OVERSEAS_BALANCE_TR,
+    OVERSEAS_BALANCE_TR_MOCK,
+    OVERSEAS_BALANCE_URL,
+    OVERSEAS_BUYABLE_AMOUNT_TR,
+    OVERSEAS_BUYABLE_AMOUNT_TR_MOCK,
+    OVERSEAS_BUYABLE_AMOUNT_URL,
+    OVERSEAS_CURRENCIES,
+    OVERSEAS_DAILY_CHART_TR,
+    OVERSEAS_DAILY_CHART_URL,
+    OVERSEAS_DAILY_ORDER_TR,
+    OVERSEAS_DAILY_ORDER_TR_MOCK,
+    OVERSEAS_DAILY_ORDER_URL,
+    OVERSEAS_EXCHANGE_MAP,
+    OVERSEAS_EXCHANGE_NAMES,
+    OVERSEAS_MARGIN_TR,
+    OVERSEAS_MARGIN_TR_MOCK,
+    OVERSEAS_MARGIN_URL,
+    OVERSEAS_MINUTE_CHART_TR,
+    OVERSEAS_MINUTE_CHART_URL,
+    OVERSEAS_ORDER_BUY_TR,
+    OVERSEAS_ORDER_BUY_TR_MOCK,
+    OVERSEAS_ORDER_CANCEL_TR,
+    OVERSEAS_ORDER_CANCEL_TR_MOCK,
+    OVERSEAS_ORDER_CANCEL_URL,
+    OVERSEAS_ORDER_INQUIRY_TR,
+    OVERSEAS_ORDER_INQUIRY_URL,
+    OVERSEAS_ORDER_SELL_TR,
+    OVERSEAS_ORDER_SELL_TR_MOCK,
+    OVERSEAS_ORDER_URL,
+    OVERSEAS_PERIOD_CHART_TR,
+    OVERSEAS_PERIOD_CHART_URL,
+    OVERSEAS_PRICE_TR,
+    OVERSEAS_PRICE_URL,
+    PAGE_DELAY,
+    PRICE_ADJUSTED,
+    PRICE_ORIGINAL,
+    SUCCESS_CODE,
+    TIME_DAILY_CHART_TR,
+    TIME_DAILY_CHART_URL,
+    TOKEN_RETRY_DELAY,
+    get_exchange_code_3digit,
+    get_mock_tr_id,
+)
 from app.services.brokers.kis.holdings_api import HoldingsAPI
 from app.services.brokers.kis.market_data_api import MarketDataAPI
 from app.services.brokers.kis.orders_api import OrdersAPI
@@ -414,3 +515,48 @@ class KISClient:
 
 
 kis = KISClient()  # 싱글턴
+
+
+# ============================================================================
+# BACKWARD COMPATIBILITY ALIASES
+# ============================================================================
+# These aliases ensure existing code importing from client.py continues to work
+
+# Balance aliases (tests use these shorter names)
+BALANCE_TR = DOMESTIC_BALANCE_TR
+BALANCE_TR_MOCK = DOMESTIC_BALANCE_TR_MOCK
+BALANCE_URL = DOMESTIC_BALANCE_URL
+
+# Order aliases
+KOREA_ORDER_URL = DOMESTIC_ORDER_URL
+
+# ============================================================================
+# HELPER FUNCTIONS (Backward Compatibility)
+# ============================================================================
+
+def extract_domestic_cash_summary_from_integrated_margin(
+    margin_data: dict[str, Any],
+) -> dict[str, Any]:
+    """Extract domestic cash summary from integrated margin data.
+
+    Args:
+        margin_data: Raw margin data from inquire_integrated_margin()
+
+    Returns:
+        Dict with 'balance', 'orderable', and 'raw' keys
+    """
+    raw = margin_data.get("raw", margin_data)
+
+    # Extract cash amounts from various possible key locations
+    balance_str = margin_data.get(
+        "stck_cash_objt_amt"
+    ) or raw.get("stck_cash_objt_amt", "0")
+    orderable_str = margin_data.get(
+        "stck_itgr_cash100_ord_psbl_amt"
+    ) or raw.get("stck_itgr_cash100_ord_psbl_amt", "0")
+
+    return {
+        "balance": float(balance_str) if balance_str else 0.0,
+        "orderable": float(orderable_str) if orderable_str else 0.0,
+        "raw": raw,
+    }
