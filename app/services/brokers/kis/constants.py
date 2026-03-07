@@ -24,6 +24,24 @@ DOMESTIC_MINUTE_CHART_URL = (
 )
 DOMESTIC_MINUTE_CHART_TR = "FHKST03010200"  # 분봉 조회 TR ID
 
+# Domestic Stock - Time Daily Chart (당일분봉)
+TIME_DAILY_CHART_URL = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
+TIME_DAILY_CHART_TR = "FHKST03010230"  # 당일분봉 조회 TR ID
+
+# Domestic Stock - Orderbook
+ORDERBOOK_URL = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+ORDERBOOK_TR = "FHKST01010200"  # 주식현재가호가상체결
+
+# Domestic Stock - Rankings
+MARKET_CAP_RANK_URL = "/uapi/domestic-stock/v1/ranking/market-cap"
+MARKET_CAP_RANK_TR = "FHPST01740000"
+
+FLUCTUATION_RANK_URL = "/uapi/domestic-stock/v1/ranking/fluctuation"
+FLUCTUATION_RANK_TR = "FHPST01700000"
+
+FOREIGN_BUYING_RANK_URL = "/uapi/domestic-stock/v1/quotations/foreign-institution-total"
+FOREIGN_BUYING_RANK_TR = "FHPTJ04400000"
+
 # Domestic Stock - Balance & Orders
 DOMESTIC_BALANCE_URL = "/uapi/domestic-stock/v1/trading/inquire-balance"
 DOMESTIC_BALANCE_TR = "TTTC8434R"  # 실전투자 주식잔고조회
@@ -43,6 +61,10 @@ DOMESTIC_ORDER_INQUIRY_TR = (
 DOMESTIC_ORDER_CANCEL_URL = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 DOMESTIC_ORDER_CANCEL_TR = "TTTC0013U"  # 실전투자 국내주식 정정취소주문
 DOMESTIC_ORDER_CANCEL_TR_MOCK = "VTTC0013U"  # 모의투자 국내주식 정정취소주문
+
+DOMESTIC_DAILY_ORDER_URL = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+DOMESTIC_DAILY_ORDER_TR = "TTTC8001R"  # 실전투자 국내주식 체결조회
+DOMESTIC_DAILY_ORDER_TR_MOCK = "VTTC8001R"  # 모의투자 국내주식 체결조회
 
 # ============================================================================
 # OVERSEAS STOCK CONSTANTS
@@ -90,6 +112,10 @@ OVERSEAS_ORDER_INQUIRY_TR = "TTTS3018R"  # 해외주식 미체결내역 조회
 OVERSEAS_ORDER_CANCEL_URL = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
 OVERSEAS_ORDER_CANCEL_TR = "TTTT1004U"  # 실전투자 해외주식 정정취소주문
 OVERSEAS_ORDER_CANCEL_TR_MOCK = "VTTT1004U"  # 모의투자 해외주식 정정취소주문
+
+OVERSEAS_DAILY_ORDER_URL = "/uapi/overseas-stock/v1/trading/inquire-ccnl"
+OVERSEAS_DAILY_ORDER_TR = "TTTS3035R"  # 실전투자 해외주식 체결조회
+OVERSEAS_DAILY_ORDER_TR_MOCK = "VTTS3035R"  # 모의투자 해외주식 체결조회
 
 # ============================================================================
 # MARGIN & INTEGRATED MARGIN
