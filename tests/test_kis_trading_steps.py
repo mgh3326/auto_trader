@@ -1,18 +1,9 @@
 """Unit tests for KIS trading step functions."""
 
-import asyncio
-from dataclasses import dataclass
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.jobs.kis_trading_types import (
-    FailurePolicy,
-    StepOutcome,
-    StepResult,
-    TradingContext,
-)
 from app.jobs.kis_trading_steps import (
     AnalyzeStep,
     BuyStep,
@@ -21,6 +12,12 @@ from app.jobs.kis_trading_steps import (
     RefreshStep,
     SellStep,
     TradingStep,
+)
+from app.jobs.kis_trading_types import (
+    FailurePolicy,
+    StepOutcome,
+    StepResult,
+    TradingContext,
 )
 
 
@@ -210,15 +207,39 @@ class TestAnalyzeStep:
         assert step.failure_policy == FailurePolicy.STOP_STOCK
 
     @pytest.mark.asyncio
-    async def test_execute_skips_manual_holdings(self):
-        """Manual holdings should be skipped."""
-        step = AnalyzeStep()
-        context = create_mock_context(is_manual=True)
+    async def test_execute_domestic_analysis_uses_name(self):
+        mock_analyzer = AsyncMock()
+        mock_analyzer.analyze_stock_json = AsyncMock(
+            return_value=({"decision": "hold", "confidence": 65}, "gemini-2.5-pro")
+        )
+
+        step = AnalyzeStep(analyzer=mock_analyzer)
+        context = create_mock_context(name="삼성전자우", exchange_code="")
 
         outcome = await step.execute(context)
 
-        assert outcome.result == StepResult.SKIP
-        assert "수동 잔고" in outcome.message
+        assert outcome.result == StepResult.SUCCESS
+        mock_analyzer.analyze_stock_json.assert_awaited_once_with("삼성전자우")
+
+    @pytest.mark.asyncio
+    async def test_execute_overseas_analysis_uses_symbol_even_for_manual_holdings(self):
+        mock_analyzer = AsyncMock()
+        mock_analyzer.analyze_stock_json = AsyncMock(
+            return_value=({"decision": "buy", "confidence": 72}, "gemini-2.5-pro")
+        )
+
+        step = AnalyzeStep(analyzer=mock_analyzer)
+        context = create_mock_context(
+            symbol="AAPL",
+            name="애플",
+            exchange_code="NASD",
+            is_manual=True,
+        )
+
+        outcome = await step.execute(context)
+
+        assert outcome.result == StepResult.SUCCESS
+        mock_analyzer.analyze_stock_json.assert_awaited_once_with("AAPL")
 
     @pytest.mark.asyncio
     async def test_execute_skips_missing_name(self):
@@ -268,9 +289,7 @@ class TestAnalyzeStep:
     async def test_execute_failure_on_analyzer_exception(self):
         """Analyzer exception should return failure with STOP_STOCK."""
         mock_analyzer = AsyncMock()
-        mock_analyzer.analyze_stock_json = AsyncMock(
-            side_effect=Exception("API 오류")
-        )
+        mock_analyzer.analyze_stock_json = AsyncMock(side_effect=Exception("API 오류"))
 
         step = AnalyzeStep(analyzer=mock_analyzer)
         context = create_mock_context()
@@ -328,9 +347,7 @@ class TestCancelBuyOrdersStep:
         """Should skip when there are no buy orders for this stock."""
         step = CancelBuyOrdersStep()
         # Only sell orders (sll_buy_dvsn_cd: 01=sell, 02=buy)
-        open_orders = [
-            {"pdno": "005935", "sll_buy_dvsn_cd": "01", "odno": "123"}
-        ]
+        open_orders = [{"pdno": "005935", "sll_buy_dvsn_cd": "01", "odno": "123"}]
         context = create_mock_context(open_orders=open_orders)
 
         outcome = await step.execute(context)
@@ -423,9 +440,7 @@ class TestCancelSellOrdersStep:
         """Should skip when there are no sell orders for this stock."""
         step = CancelSellOrdersStep()
         # Only buy orders (sll_buy_dvsn_cd: 02=buy)
-        open_orders = [
-            {"pdno": "005935", "sll_buy_dvsn_cd": "02", "odno": "123"}
-        ]
+        open_orders = [{"pdno": "005935", "sll_buy_dvsn_cd": "02", "odno": "123"}]
         context = create_mock_context(open_orders=open_orders)
 
         outcome = await step.execute(context)
@@ -474,15 +489,23 @@ class TestBuyStep:
         assert step.failure_policy == FailurePolicy.CONTINUE
 
     @pytest.mark.asyncio
-    async def test_execute_skips_manual_holdings(self):
-        """Manual holdings should be skipped."""
-        step = BuyStep()
+    async def test_execute_manual_holdings_still_attempt_buy(self):
+        mock_buy_func = AsyncMock(
+            return_value={
+                "success": True,
+                "orders_placed": 0,
+                "message": "매수 조건 미충족",
+            }
+        )
+
+        step = BuyStep(domestic_buy_func=mock_buy_func)
         context = create_mock_context(is_manual=True)
 
         outcome = await step.execute(context)
 
         assert outcome.result == StepResult.SKIP
-        assert "수동 잔고" in outcome.message
+        assert outcome.message == "매수 조건 미충족"
+        mock_buy_func.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_execute_domestic_buy_success(self):
@@ -636,15 +659,26 @@ class TestRefreshStep:
         assert step.failure_policy == FailurePolicy.CONTINUE
 
     @pytest.mark.asyncio
-    async def test_execute_skips_manual_holdings(self):
-        """Manual holdings should be skipped."""
+    async def test_execute_refreshes_manual_holdings_when_stock_is_found(self):
         step = RefreshStep()
         context = create_mock_context(is_manual=True)
+        context.kis.fetch_my_stocks = AsyncMock(
+            return_value=[
+                {
+                    "pdno": "005935",
+                    "ord_psbl_qty": "8",
+                    "pchs_avg_pric": "74000",
+                    "prpr": "76000",
+                }
+            ]
+        )
 
         outcome = await step.execute(context)
 
-        assert outcome.result == StepResult.SKIP
-        assert "수동 잔고" in outcome.message
+        assert outcome.result == StepResult.SUCCESS
+        assert context.quantity == 8
+        assert context.avg_price == 74000.0
+        assert context.current_price == 76000.0
 
     @pytest.mark.asyncio
     async def test_execute_refreshes_domestic_holdings(self):
@@ -720,7 +754,9 @@ class TestRefreshStep:
     async def test_execute_keeps_existing_values_on_failure(self):
         """Should keep existing values on refresh failure."""
         step = RefreshStep()
-        context = create_mock_context(quantity=5, avg_price=73800.0, current_price=75850.0)
+        context = create_mock_context(
+            quantity=5, avg_price=73800.0, current_price=75850.0
+        )
 
         context.kis.fetch_my_stocks = AsyncMock(side_effect=Exception("API 오류"))
 
@@ -751,17 +787,16 @@ class TestSellStep:
         step = SellStep()
         assert step.failure_policy == FailurePolicy.CONTINUE
 
-    def test_skip_conditions_includes_manual_holdings(self):
-        """Skip conditions should include manual holdings check."""
+    def test_skip_conditions_empty_manual_holdings_handled_in_execute(self):
+        """Skip conditions should be empty - manual holdings handled in execute().
+
+        Manual holdings are handled inside execute() method with proper messaging
+        and notification logic, not via skip conditions. This ensures the step
+        result contains the expected "수동잔고" message.
+        """
         step = SellStep()
-        assert len(step.skip_conditions) == 1
-
-        # Test the skip condition
-        manual_context = create_mock_context(is_manual=True)
-        normal_context = create_mock_context(is_manual=False)
-
-        assert step.skip_conditions[0](manual_context) is True
-        assert step.skip_conditions[0](normal_context) is False
+        # skip_conditions is intentionally empty - manual holdings handled in execute()
+        assert len(step.skip_conditions) == 0
 
     @pytest.mark.asyncio
     async def test_execute_handles_manual_holdings(self):

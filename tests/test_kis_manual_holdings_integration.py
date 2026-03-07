@@ -33,8 +33,11 @@ class TestManualHoldingsIntegration:
 
         from app.jobs import kis_trading as kis_tasks
 
+        analyzed_targets = []
+
         class DummyAnalyzer:
             async def analyze_stock_json(self, name):
+                analyzed_targets.append(name)
                 return {"decision": "hold", "confidence": 65}, "gemini-2.5-pro"
 
             async def close(self):
@@ -123,9 +126,9 @@ class TestManualHoldingsIntegration:
         assert "005935" in codes, "KIS 보유 종목(삼성전자우)이 포함되어야 함"
         assert "005930" in codes, "수동 잔고 종목(삼성전자)이 포함되어야 함"
 
-        # KIS 종목만 매수/매도 함수 호출 (수동 잔고는 KIS에서 거래 불가)
-        assert len(buy_calls) == 1, "KIS 종목만 매수 검토 (수동 잔고는 스킵)"
-        assert buy_calls[0]["symbol"] == "005935"
+        assert analyzed_targets == ["삼성전자우", "삼성전자"]
+        assert len(buy_calls) == 2, "KIS 종목과 수동 잔고 모두 매수 검토해야 함"
+        assert {call["symbol"] for call in buy_calls} == {"005935", "005930"}
         assert len(sell_calls) == 1, "KIS 종목만 매도 검토 (수동 잔고는 스킵)"
         assert sell_calls[0]["symbol"] == "005935"
 
@@ -887,16 +890,22 @@ class TestTossRecommendationNotification:
         # 특수문자가 포함된 원본 데이터가 fields에 포함되어야 함
         fields_dict = {f["name"]: f["value"] for f in embed["fields"]}
         assert "종목" in fields_dict, "종목 필드가 있어야 함"
-        assert "삼성전자 <테스트>" in fields_dict["종목"], "특수문자가 포함된 종목명이 그대로 표시되어야 함"
+        assert "삼성전자 <테스트>" in fields_dict["종목"], (
+            "특수문자가 포함된 종목명이 그대로 표시되어야 함"
+        )
 
         # 근거 필드에 특수문자가 포함되어야 함
         assert "근거" in fields_dict, "근거 필드가 있어야 함"
-        assert "RSI < 30 (과매도)" in fields_dict["근거"], "특수문자가 포함된 근거가 그대로 표시되어야 함"
+        assert "RSI < 30 (과매도)" in fields_dict["근거"], (
+            "특수문자가 포함된 근거가 그대로 표시되어야 함"
+        )
 
         # 숫자와 퍼센트 등이 제대로 표시되어야 함
         assert "72,000원" in fields_dict["현재가"], "현재가가 표시되어야 함"
         assert "+2.9%" in fields_dict["보유"], "수익률이 표시되어야 함"
-        assert "76%" in fields_dict["AI 판단"], "신뢰도가 표시되어야 함 (75.5 -> 76으로 반올림)"
+        assert "76%" in fields_dict["AI 판단"], (
+            "신뢰도가 표시되어야 함 (75.5 -> 76으로 반올림)"
+        )
 
     def test_format_toss_price_recommendation_html_with_parentheses(self):
         """Discord embed 형식에서 괄호, 퍼센트 등이 정상적으로 표시되는지 확인"""

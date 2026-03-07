@@ -11,6 +11,7 @@ failure policies and skip conditions.
 
 import json
 import logging
+import sys
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -215,12 +216,9 @@ class AnalyzeStep(TradingStep):
         """Execute AI analysis for the stock."""
         self._log_start(context)
 
-        # Skip manual holdings (토스 등) - they don't need AI analysis
-        if context.is_manual:
-            self._log_skip(context, "수동 잔고는 분석 스킵")
-            return self._skip("수동 잔고 종목")
+        analysis_target = context.symbol if context.exchange_code else context.name
 
-        if not context.name:
+        if not analysis_target:
             self._log_skip(context, "종목명 없음")
             return self._skip("종목명을 찾을 수 없음")
 
@@ -235,7 +233,7 @@ class AnalyzeStep(TradingStep):
 
                 analyzer = KISAnalyzer()
 
-            result, _ = await analyzer.analyze_stock_json(context.name)
+            result, _ = await analyzer.analyze_stock_json(analysis_target)
 
             if result is None:
                 self._log_failure(context, Exception("분석 결과 없음"))
@@ -277,9 +275,7 @@ class AnalyzeStep(TradingStep):
 
                 decision = result.decision
                 confidence = analysis_data.get("confidence", 0)
-                self._log_success(
-                    context, f"결정: {decision}, 신뢰도: {confidence}%"
-                )
+                self._log_success(context, f"결정: {decision}, 신뢰도: {confidence}%")
                 return self._success(
                     f"분석 완료: {decision} ({confidence}%)",
                     data=analysis_data,
@@ -389,7 +385,11 @@ class CancelBuyOrdersStep(TradingStep):
         self._log_success(context, result_msg)
         return self._success(
             result_msg,
-            data={"cancelled": cancelled, "failed": failed, "total": len(target_orders)},
+            data={
+                "cancelled": cancelled,
+                "failed": failed,
+                "total": len(target_orders),
+            },
         )
 
     async def _cancel_domestic_order(
@@ -401,13 +401,19 @@ class CancelBuyOrdersStep(TradingStep):
             or order.get("ODNO")
             or order.get("orgn_odno")
             or order.get("ORGN_ODNO")
+            or order.get("ord_no")
+            or order.get("ORD_NO")
         )
         order_qty = int(
-            float(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
+            float(
+                order.get("ft_ord_qty")
+                or order.get("FT_ORD_QTY")
+                or order.get("ord_qty")
+                or order.get("ORD_QTY")
+                or 0
+            )
         )
-        order_price = int(
-            float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0)
-        )
+        order_price = int(float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0))
         order_orgno = (
             order.get("ord_gno_brno")
             or order.get("ORD_GNO_BRNO")
@@ -438,9 +444,7 @@ class CancelBuyOrdersStep(TradingStep):
             or order.get("ord_no")
             or order.get("ORD_NO")
         )
-        order_qty = int(
-            float(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
-        )
+        order_qty = int(float(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0))
 
         if not order_number:
             raise ValueError("주문번호 없음")
@@ -544,7 +548,11 @@ class CancelSellOrdersStep(TradingStep):
         self._log_success(context, result_msg)
         return self._success(
             result_msg,
-            data={"cancelled": cancelled, "failed": failed, "total": len(target_orders)},
+            data={
+                "cancelled": cancelled,
+                "failed": failed,
+                "total": len(target_orders),
+            },
         )
 
     async def _cancel_domestic_order(
@@ -556,13 +564,19 @@ class CancelSellOrdersStep(TradingStep):
             or order.get("ODNO")
             or order.get("orgn_odno")
             or order.get("ORGN_ODNO")
+            or order.get("ord_no")
+            or order.get("ORD_NO")
         )
         order_qty = int(
-            float(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
+            float(
+                order.get("ft_ord_qty")
+                or order.get("FT_ORD_QTY")
+                or order.get("ord_qty")
+                or order.get("ORD_QTY")
+                or 0
+            )
         )
-        order_price = int(
-            float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0)
-        )
+        order_price = int(float(order.get("ord_unpr") or order.get("ORD_UNPR") or 0))
         order_orgno = (
             order.get("ord_gno_brno")
             or order.get("ORD_GNO_BRNO")
@@ -593,9 +607,7 @@ class CancelSellOrdersStep(TradingStep):
             or order.get("ord_no")
             or order.get("ORD_NO")
         )
-        order_qty = int(
-            float(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0)
-        )
+        order_qty = int(float(order.get("ft_ord_qty") or order.get("FT_ORD_QTY") or 0))
 
         if not order_number:
             raise ValueError("주문번호 없음")
@@ -665,11 +677,6 @@ class BuyStep(TradingStep):
         """Execute buy orders for the stock."""
         self._log_start(context)
 
-        # Skip manual holdings (토스 등) - they don't need KIS trading
-        if context.is_manual:
-            self._log_skip(context, "수동 잔고는 매수 스킵")
-            return self._skip("수동 잔고 종목")
-
         # Determine if domestic or overseas based on exchange_code
         is_domestic = not context.exchange_code
 
@@ -719,9 +726,7 @@ class BuyStep(TradingStep):
 
             return self._failure(f"매수 주문 실패: {e}")
 
-    async def _execute_domestic_buy(
-        self, context: TradingContext
-    ) -> dict[str, Any]:
+    async def _execute_domestic_buy(self, context: TradingContext) -> dict[str, Any]:
         """Execute domestic buy orders."""
         if self._domestic_buy_func is not None:
             func = self._domestic_buy_func
@@ -729,6 +734,7 @@ class BuyStep(TradingStep):
             from app.services.kis_trading_service import (
                 process_kis_domestic_buy_orders_with_analysis,
             )
+
             func = process_kis_domestic_buy_orders_with_analysis
 
         # Call with positional args for backward compatibility with tests
@@ -739,9 +745,7 @@ class BuyStep(TradingStep):
             context.avg_price,
         )
 
-    async def _execute_overseas_buy(
-        self, context: TradingContext
-    ) -> dict[str, Any]:
+    async def _execute_overseas_buy(self, context: TradingContext) -> dict[str, Any]:
         """Execute overseas buy orders."""
         if self._overseas_buy_func is not None:
             func = self._overseas_buy_func
@@ -749,6 +753,7 @@ class BuyStep(TradingStep):
             from app.services.kis_trading_service import (
                 process_kis_overseas_buy_orders_with_analysis,
             )
+
             func = process_kis_overseas_buy_orders_with_analysis
 
         # Call with positional args for backward compatibility
@@ -809,11 +814,6 @@ class RefreshStep(TradingStep):
     async def execute(self, context: TradingContext) -> StepOutcome:
         """Refresh holdings data for the stock."""
         self._log_start(context)
-
-        # Skip manual holdings (토스 등) - they don't need KIS refresh
-        if context.is_manual:
-            self._log_skip(context, "수동 잔고는 리프레시 스킵")
-            return self._skip("수동 잔고 종목")
 
         # Determine if domestic or overseas based on exchange_code
         is_domestic = not context.exchange_code
@@ -882,9 +882,7 @@ class RefreshStep(TradingStep):
         # Use ord_psbl_qty (orderable quantity) for sell, fallback to hldg_qty
         quantity = int(
             float(
-                latest.get("ord_psbl_qty")
-                or latest.get("hldg_qty")
-                or context.quantity
+                latest.get("ord_psbl_qty") or latest.get("hldg_qty") or context.quantity
             )
         )
         avg_price = float(latest.get("pchs_avg_pric") or context.avg_price)
@@ -1068,7 +1066,11 @@ class SellStep(TradingStep):
             await self._send_toss_recommendation(context, is_domestic)
             return self._skip(
                 "수동 잔고 종목 - 추천 알림 발송",
-                data={"notification_sent": True, "is_manual": True},
+                data={
+                    "notification_sent": True,
+                    "is_manual": True,
+                    "orders_placed": 0,
+                },
             )
         except Exception as e:
             logger.warning(
@@ -1080,20 +1082,39 @@ class SellStep(TradingStep):
             # Still return skip (not failure) - manual holdings shouldn't block processing
             return self._skip(
                 "수동 잔고 종목 - 매도 스킵",
-                data={"notification_sent": False, "error": str(e), "is_manual": True},
+                data={
+                    "notification_sent": False,
+                    "error": str(e),
+                    "is_manual": True,
+                    "orders_placed": 0,
+                },
             )
 
     async def _send_toss_recommendation(
         self, context: TradingContext, is_domestic: bool
     ) -> None:
         """Send Toss recommendation notification for manual holdings."""
+        helper = getattr(
+            sys.modules.get("app.jobs.kis_trading"),
+            "_send_toss_recommendation_async",
+            None,
+        )
+        if callable(helper):
+            await helper(
+                code=context.symbol,
+                name=context.name or context.symbol,
+                current_price=context.current_price,
+                toss_quantity=context.quantity,
+                toss_avg_price=context.avg_price,
+            )
+            return
+
         from app.core.db import AsyncSessionLocal
+        from app.monitoring.trade_notifier import get_trade_notifier
         from app.services.stock_info_service import StockAnalysisService
 
-        from app.monitoring.trade_notifier import get_trade_notifier
-
         notifier = get_trade_notifier()
-        if not notifier._enabled:
+        if not getattr(notifier, "_enabled", True):
             logger.debug(
                 "[토스추천] %s(%s) - 알림 비활성화됨",
                 context.name,
@@ -1113,7 +1134,6 @@ class SellStep(TradingStep):
                 )
                 return
 
-            # Parse decision and reasons
             decision = analysis.decision.lower() if analysis.decision else "hold"
             confidence = analysis.confidence if analysis.confidence else 0
 
@@ -1162,9 +1182,7 @@ class SellStep(TradingStep):
                 confidence,
             )
 
-    async def _execute_domestic_sell(
-        self, context: TradingContext
-    ) -> dict[str, Any]:
+    async def _execute_domestic_sell(self, context: TradingContext) -> dict[str, Any]:
         """Execute domestic sell orders."""
         if self._domestic_sell_func is not None:
             func = self._domestic_sell_func
@@ -1172,6 +1190,7 @@ class SellStep(TradingStep):
             from app.services.kis_trading_service import (
                 process_kis_domestic_sell_orders_with_analysis,
             )
+
             func = process_kis_domestic_sell_orders_with_analysis
 
         # Call with positional args for backward compatibility with tests
@@ -1183,9 +1202,7 @@ class SellStep(TradingStep):
             context.quantity,
         )
 
-    async def _execute_overseas_sell(
-        self, context: TradingContext
-    ) -> dict[str, Any]:
+    async def _execute_overseas_sell(self, context: TradingContext) -> dict[str, Any]:
         """Execute overseas sell orders."""
         if self._overseas_sell_func is not None:
             func = self._overseas_sell_func
@@ -1193,6 +1210,7 @@ class SellStep(TradingStep):
             from app.services.kis_trading_service import (
                 process_kis_overseas_sell_orders_with_analysis,
             )
+
             func = process_kis_overseas_sell_orders_with_analysis
 
         # Call with positional args for backward compatibility
