@@ -85,10 +85,14 @@ def test_screener_dashboard_page(
     assert "text/html" in response.headers.get("content-type", "")
     body = response.text
     assert 'id="screener-main-page"' in body
+    assert 'class="page-grid screener-page-grid"' in body
+    assert 'class="controls page-primary"' in body
+    assert 'class="stack page-sidebar"' in body
     assert 'id="filter-form"' in body
     assert 'id="min-volume"' in body
     assert 'id="results-table"' in body
     assert 'id="results-cards"' in body
+    assert 'class="results-table-wrap screener-results-table-wrap"' in body
     assert "<th>RSI</th>" in body
     assert 'id="report-panel"' in body
     assert 'id="open-detail-link"' in body

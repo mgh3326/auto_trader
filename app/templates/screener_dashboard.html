@@ -23,7 +23,7 @@
         }
 
         .shell {
-            max-width: 1240px;
+            max-width: 1480px;
             margin: 1.6rem auto;
             border: 1px solid var(--border-light);
             background: #fff;
@@ -52,9 +52,13 @@
 
         .page-grid {
             display: grid;
-            grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+            grid-template-columns: minmax(0, 1fr) clamp(320px, 28vw, 380px);
             gap: 1rem;
             padding: 1rem;
+        }
+
+        .page-grid > * {
+            min-width: 0;
         }
 
         .panel {
@@ -84,12 +88,13 @@
         .controls {
             display: grid;
             gap: 0.8rem;
+            min-width: 0;
         }
 
         .controls-grid {
             display: grid;
             gap: 0.6rem;
-            grid-template-columns: repeat(5, minmax(0, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
         }
 
         .results-table-wrap {
@@ -98,6 +103,7 @@
             border-radius: 0.6rem;
             background: #fff;
             min-height: 280px;
+            min-width: 0;
         }
 
         .results-table {
@@ -166,6 +172,12 @@
         .stack {
             display: grid;
             gap: 0.9rem;
+            align-content: start;
+            min-width: 0;
+        }
+
+        #results-panel {
+            min-width: 0;
         }
 
         .status-row {
@@ -265,7 +277,7 @@
             margin: 0;
         }
 
-        @media (max-width: 1100px) {
+        @media (max-width: 1280px) {
             .page-grid {
                 grid-template-columns: 1fr;
             }
@@ -276,10 +288,6 @@
                 margin: 0;
                 border-radius: 0;
                 min-height: 100vh;
-            }
-
-            .controls-grid {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
             }
 
             .report-grid {
@@ -308,13 +316,13 @@
         <p>Run filters, generate symbol reports, and execute orders from one Jinja page.</p>
     </header>
 
-    <section class="page-grid">
-        <section class="controls" aria-label="screener controls">
+    <section class="page-grid screener-page-grid">
+        <section class="controls page-primary" aria-label="screener controls">
             {% include "screener/_filters.html" %}
             {% include "screener/_table.html" %}
         </section>
 
-        <section class="stack">
+        <section class="stack page-sidebar">
             {% set report_mode = "dashboard" %}
             {% include "screener/_report_panel.html" %}
             {% set order_mode = "dashboard" %}
