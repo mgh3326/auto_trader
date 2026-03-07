@@ -49,27 +49,27 @@ from app.services.brokers.kis.client import KISClient
 
 logger = logging.getLogger(__name__)
 _TVSCREENER_STOCK_SORTS = {"volume", "change_rate", "market_cap", "dividend_yield"}
-name_to_corp_map: dict[str, Any]
-prime_index: Any | None
-
 try:
     from app.services.disclosures.dart import list_filings
 except ImportError:
     list_filings = None
 
-try:
-    from data.disclosures.dart_corp_index import (
-        NAME_TO_CORP as _NAME_TO_CORP,
-    )
-    from data.disclosures.dart_corp_index import (
-        prime_index as _prime_index,
-    )
 
-    name_to_corp_map = _NAME_TO_CORP
-    prime_index = _prime_index
-except ImportError:
-    name_to_corp_map = {}
-    prime_index = None
+def _load_dart_index() -> tuple[dict[str, Any], Any | None]:
+    try:
+        from data.disclosures.dart_corp_index import (
+            NAME_TO_CORP as loaded_name_to_corp,
+        )
+        from data.disclosures.dart_corp_index import (
+            prime_index as loaded_prime_index,
+        )
+
+        return loaded_name_to_corp, loaded_prime_index
+    except ImportError:
+        return {}, None
+
+
+NAME_TO_CORP, prime_index = _load_dart_index()
 
 
 async def get_stock_name_by_code(code: str) -> str | None:
@@ -372,7 +372,7 @@ async def get_disclosures_impl(
             )
             pass
 
-    if not name_to_corp_map:
+    if not NAME_TO_CORP:
         if prime_index is None:
             return {
                 "success": False,
@@ -650,7 +650,7 @@ async def screen_stocks_impl(
             legacy_fn=_screen_kr,
             tvscreener_kwargs={
                 "market": normalized_market,
-                "asset_type": normalized_asset_type,
+                "asset_type": normalized_asset_type or "stock",
                 "category": category,
                 "min_market_cap": min_market_cap,
                 "max_per": max_per,
