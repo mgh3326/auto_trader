@@ -13,6 +13,9 @@ import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.async_rate_limiter import RateLimitExceededError
+from app.mcp_server.tooling.analysis_crypto_score import (
+    calculate_crypto_metrics_from_ohlcv,
+)
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_rsi,
     _fetch_ohlcv_for_indicators,
@@ -34,7 +37,10 @@ from app.services.tvscreener_service import (
     TvScreenerTimeoutError,
     _import_tvscreener,
 )
-from app.services.upbit_symbol_universe_service import get_upbit_warning_markets
+from app.services.upbit_symbol_universe_service import (
+    get_upbit_market_display_names,
+    get_upbit_warning_markets,
+)
 from app.utils.symbol_mapping import (
     SymbolMappingError,
     tradingview_to_upbit,
@@ -152,6 +158,25 @@ def _pick_display_name(row: Any) -> str:
     if description:
         return description
     return _clean_text(row.get("name"))
+
+
+def _resolve_crypto_display_name(
+    upbit_symbol: str,
+    row: Any,
+    display_names: dict[str, dict[str, str | None]],
+) -> str:
+    display_name_data = display_names.get(upbit_symbol) if display_names else None
+    for value in (
+        display_name_data.get("korean_name") if display_name_data else None,
+        display_name_data.get("english_name") if display_name_data else None,
+        row.get("description"),
+        row.get("name"),
+        upbit_symbol,
+    ):
+        cleaned = _clean_text(value)
+        if cleaned:
+            return cleaned
+    return upbit_symbol
 
 
 def _tradingview_symbol_name(symbol: str) -> str:
@@ -440,8 +465,6 @@ def _sort_and_limit(
 
     def sort_value(item: dict[str, Any]) -> float:
         value = item.get(field)
-        if field == "market_cap" and (value is None or value == 0):
-            value = item.get("trade_amount_24h")
         if field in {"rsi", "score"} and value is None:
             return -999.0 if reverse else 999.0
         return float(value or 0)
@@ -2113,6 +2136,342 @@ async def _screen_crypto(
     )
 
 
+async def _screen_crypto_via_tvscreener(
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    min_market_cap: float | None,
+    max_per: float | None,
+    min_dividend_yield: float | None,
+    max_rsi: float | None,
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+) -> dict[str, Any]:
+    (
+        min_dividend_yield_input,
+        min_dividend_yield_normalized,
+    ) = _normalize_dividend_yield_threshold(min_dividend_yield)
+
+    filters_applied: dict[str, Any] = {
+        "market": market,
+        "asset_type": asset_type,
+        "category": category,
+        "min_market_cap": min_market_cap,
+        "max_per": max_per,
+        "min_dividend_yield": min_dividend_yield_normalized,
+        "max_rsi": max_rsi,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+    }
+    if min_dividend_yield_input is not None:
+        filters_applied["min_dividend_yield_input"] = min_dividend_yield_input
+    if min_dividend_yield_normalized is not None:
+        filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
+
+    tvscreener = _import_tvscreener()
+    CryptoField = tvscreener.CryptoField
+
+    value_traded_field = _get_tvscreener_attr(CryptoField, "VALUE_TRADED")
+    if value_traded_field is None:
+        raise TvScreenerError("CryptoScreener VALUE_TRADED field unavailable")
+    description_field = _get_tvscreener_attr(CryptoField, "DESCRIPTION")
+    market_cap_field = _get_tvscreener_attr(CryptoField, "MARKET_CAP")
+
+    columns = [
+        CryptoField.NAME,
+        *([description_field] if description_field is not None else []),
+        CryptoField.PRICE,
+        CryptoField.CHANGE_PERCENT,
+        value_traded_field,
+        *([market_cap_field] if market_cap_field is not None else []),
+        CryptoField.RELATIVE_STRENGTH_INDEX_14,
+        CryptoField.AVERAGE_DIRECTIONAL_INDEX_14,
+    ]
+    volume_usd_field = _get_tvscreener_attr(CryptoField, "VOLUME_24H_IN_USD")
+    if volume_usd_field is not None:
+        columns.append(volume_usd_field)
+
+    where_conditions = [CryptoField.EXCHANGE == "UPBIT"]
+    if max_rsi is not None:
+        where_conditions.append(CryptoField.RELATIVE_STRENGTH_INDEX_14 <= max_rsi)
+
+    sort_field_map = {
+        "trade_amount": value_traded_field,
+        "market_cap": market_cap_field or value_traded_field,
+        "rsi": CryptoField.RELATIVE_STRENGTH_INDEX_14,
+        "change_rate": CryptoField.CHANGE_PERCENT,
+    }
+    sort_field = sort_field_map.get(sort_by, value_traded_field)
+    query_limit = max(limit * 5, 50)
+
+    tvscreener_service = TvScreenerService(timeout=30.0)
+    df = await tvscreener_service.query_crypto_screener(
+        columns=columns,
+        where_clause=where_conditions,
+        sort_by=sort_field,
+        ascending=(sort_order == "asc"),
+        limit=query_limit,
+    )
+
+    warnings: list[str] = []
+    if min_market_cap is not None:
+        warnings.append(
+            "min_market_cap filter is not supported for crypto market; ignored"
+        )
+
+    raw_results: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
+        tradingview_symbol = _clean_text(row.get("symbol")).upper()
+        if not tradingview_symbol:
+            continue
+        try:
+            upbit_symbol = tradingview_to_upbit(tradingview_symbol)
+        except SymbolMappingError:
+            continue
+
+        raw_results.append(
+            {
+                "symbol": upbit_symbol,
+                "market": upbit_symbol,
+                "name": _clean_text(row.get("name")),
+                "description": _clean_text(row.get("description")),
+                "trade_price": _to_optional_float(row.get("price")),
+                "signed_change_rate": _to_optional_float(row.get("change_percent")),
+                "change_rate": _to_optional_float(row.get("change_percent")),
+                "acc_trade_price_24h": _to_optional_float(row.get("value_traded")),
+                "tv_market_cap": _to_optional_float(row.get("market_cap")),
+                "rsi": _to_optional_float(row.get("relative_strength_index_14")),
+                "adx": _to_optional_float(row.get("average_directional_index_14")),
+                "tv_volume_24h_in_usd": _to_optional_float(
+                    row.get("volume_24h_in_usd")
+                ),
+            }
+        )
+
+    market_codes = [
+        str(item.get("symbol") or "").strip().upper() for item in raw_results
+    ]
+    try:
+        display_names = await get_upbit_market_display_names(market_codes)
+    except Exception as exc:
+        display_names = {}
+        warnings.append(
+            "Upbit symbol-universe names unavailable; TradingView description/name fallback used "
+            f"({type(exc).__name__}: {exc})"
+        )
+
+    ticker_volume_map: dict[str, float] = {}
+    if market_codes:
+        try:
+            ticker_rows = await upbit_service.fetch_multiple_tickers(market_codes)
+            ticker_volume_map = {
+                str(row.get("market") or "").strip().upper(): (
+                    _to_optional_float(row.get("acc_trade_volume_24h")) or 0.0
+                )
+                for row in ticker_rows
+                if str(row.get("market") or "").strip()
+            }
+        except Exception as exc:
+            warnings.append(
+                "Upbit 24h volume enrichment failed; volume_24h defaulted to 0.0 "
+                f"({type(exc).__name__}: {exc})"
+            )
+
+    btc_item = next(
+        (
+            item
+            for item in raw_results
+            if str(item.get("symbol") or "").upper() == "KRW-BTC"
+        ),
+        None,
+    )
+    btc_change_24h: float | None = None
+    if btc_item is None:
+        warnings.append(
+            "KRW-BTC ticker not found; crash filter uses btc_change_24h=0.0 fallback."
+        )
+    else:
+        btc_change_24h = _to_optional_float(
+            btc_item.get("signed_change_rate") or btc_item.get("change_rate")
+        )
+        if btc_change_24h is None:
+            btc_change_24h = 0.0
+            warnings.append(
+                "KRW-BTC change rate is missing; crash filter uses btc_change_24h=0.0 fallback."
+            )
+
+    warning_markets: set[str] = set()
+    try:
+        warning_markets = await get_upbit_warning_markets(quote_currency="KRW")
+    except Exception as exc:
+        warnings.append(
+            "market warning details unavailable; warning filter skipped "
+            f"({type(exc).__name__}: {exc})"
+        )
+
+    filtered_by_warning = 0
+    filtered_by_crash = 0
+    candidates: list[dict[str, Any]] = []
+    for raw_item in raw_results:
+        market_code = str(raw_item.get("symbol") or "").strip().upper()
+        if market_code in warning_markets:
+            filtered_by_warning += 1
+            continue
+
+        coin_change_24h = raw_item.get("signed_change_rate")
+        if coin_change_24h is None:
+            coin_change_24h = raw_item.get("change_rate")
+        if not is_safe_drop(coin_change_24h, btc_change_24h):
+            filtered_by_crash += 1
+            continue
+
+        trade_amount_24h = _to_optional_float(
+            raw_item.get("acc_trade_price_24h") or raw_item.get("trade_amount_24h")
+        )
+        item = {
+            "symbol": market_code,
+            "original_market": market_code,
+            "market": market,
+            "name": _resolve_crypto_display_name(market_code, raw_item, display_names),
+            "close": _to_optional_float(raw_item.get("trade_price")),
+            "change_rate": _to_optional_float(
+                raw_item.get("change_rate")
+                if raw_item.get("change_rate") is not None
+                else raw_item.get("signed_change_rate")
+            )
+            or 0.0,
+            "trade_amount_24h": trade_amount_24h or 0.0,
+            "volume_24h": ticker_volume_map.get(market_code, 0.0),
+            "market_cap": _to_optional_float(raw_item.get("tv_market_cap")),
+            "market_cap_rank": None,
+            "market_warning": None,
+            "rsi": _to_optional_float(raw_item.get("rsi")),
+            "volume_ratio": None,
+            "candle_type": "flat",
+            "adx": _to_optional_float(raw_item.get("adx")),
+            "plus_di": None,
+            "minus_di": None,
+        }
+        item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
+        candidates.append(item)
+
+    coingecko_payload = await _CRYPTO_MARKET_CAP_CACHE.get()
+    coingecko_data = cast(
+        dict[str, dict[str, Any]],
+        coingecko_payload.get("data") or {},
+    )
+    for item in candidates:
+        symbol = _extract_market_symbol(
+            item.get("symbol") or item.get("original_market")
+        )
+        cap_data = coingecko_data.get(symbol or "") if symbol else None
+        if cap_data:
+            item["market_cap"] = cap_data.get("market_cap") or item.get("market_cap")
+            item["market_cap_rank"] = cap_data.get("market_cap_rank")
+        item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
+
+    coingecko_error = coingecko_payload.get("error")
+    if coingecko_error:
+        if coingecko_payload.get("stale"):
+            warnings.append(
+                "CoinGecko market-cap refresh failed; stale cache was used."
+            )
+        else:
+            warnings.append(
+                "CoinGecko market-cap data unavailable; market_cap fields remain null."
+            )
+
+    if max_rsi is not None:
+        filtered = [
+            item
+            for item in candidates
+            if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
+        ]
+    else:
+        filtered = candidates
+
+    metric_diagnostics = _empty_rsi_enrichment_diagnostics()
+    metric_diagnostics["attempted"] = len(filtered[:limit])
+    timeout_count = 0
+    for item in filtered[:limit]:
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        try:
+            df = await asyncio.wait_for(
+                _fetch_ohlcv_for_indicators(symbol, "crypto", count=50),
+                timeout=30.0,
+            )
+            metrics = calculate_crypto_metrics_from_ohlcv(df)
+        except TimeoutError:
+            timeout_count += 1
+            error_samples = cast(list[str], metric_diagnostics["error_samples"])
+            if len(error_samples) < 3:
+                error_samples.append(f"TimeoutError: {symbol}")
+            continue
+        except Exception as exc:
+            metric_diagnostics["failed"] = int(metric_diagnostics["failed"] or 0) + 1
+            error_samples = cast(list[str], metric_diagnostics["error_samples"])
+            if len(error_samples) < 3:
+                error_samples.append(f"{type(exc).__name__}: {exc}"[:100])
+            continue
+        metric_diagnostics["succeeded"] = int(metric_diagnostics["succeeded"] or 0) + 1
+        item["volume_ratio"] = metrics.get("volume_ratio")
+        item["candle_type"] = metrics.get("candle_type") or "flat"
+        item["plus_di"] = metrics.get("plus_di")
+        item["minus_di"] = metrics.get("minus_di")
+        if item.get("adx") is None:
+            item["adx"] = metrics.get("adx")
+        if item.get("rsi") is None:
+            item["rsi"] = metrics.get("rsi")
+            item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
+
+    if timeout_count > 0:
+        metric_diagnostics["timeout"] = timeout_count
+        warnings.append(
+            f"Crypto RSI enrichment timed out for {timeout_count} symbols; partial results returned"
+        )
+
+    applied_sort_order = sort_order
+    if sort_by == "rsi":
+        if sort_order == "desc":
+            warnings.append(
+                "crypto sort_by='rsi' always uses ascending order; requested desc was ignored."
+            )
+        applied_sort_order = "asc"
+        ordered = _sort_crypto_by_rsi_bucket(filtered)
+    elif sort_by == "market_cap":
+        ordered = sorted(
+            filtered,
+            key=lambda item: float(item.get("market_cap") or 0.0),
+            reverse=(sort_order == "desc"),
+        )
+    else:
+        ordered = _sort_and_limit(filtered, sort_by, sort_order, len(filtered))
+
+    results = ordered[:limit]
+    filters_applied["sort_order"] = applied_sort_order
+    return _build_screen_response(
+        results,
+        len(filtered),
+        filters_applied,
+        market,
+        rsi_enrichment=metric_diagnostics,
+        warnings=warnings if warnings else None,
+        meta_fields={
+            "source": "tvscreener",
+            "total_markets": len(raw_results),
+            "top_by_volume": len(raw_results),
+            "filtered_by_warning": filtered_by_warning,
+            "filtered_by_crash": filtered_by_crash,
+            "final_count": len(results),
+            "coingecko_cached": bool(coingecko_payload.get("cached")),
+            "coingecko_age_seconds": coingecko_payload.get("age_seconds"),
+        },
+    )
+
+
 __all__ = [
     "is_safe_drop",
     "_normalize_screen_market",
@@ -2127,4 +2486,5 @@ __all__ = [
     "_screen_kr",
     "_screen_us",
     "_screen_crypto",
+    "_screen_crypto_via_tvscreener",
 ]
