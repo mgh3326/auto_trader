@@ -828,31 +828,31 @@ class KISExecutionWebSocket:
     def _parse_execution_payload(
         self, payload_fields: list[str], market: str
     ) -> dict[str, Any]:
-        fields = [field.strip() for field in payload_fields if field and field.strip()]
-        if not fields:
+        raw_fields = [field.strip() for field in payload_fields]
+        compact_fields = [field for field in raw_fields if field]
+        if not compact_fields:
             return {}
 
         if market == "us":
-            parsed_overseas = self._parse_overseas_execution(fields)
+            parsed_overseas = self._parse_overseas_execution(raw_fields)
             if parsed_overseas is not None:
                 return parsed_overseas
 
         if market == "kr":
-            parsed_domestic = self._parse_domestic_execution(fields)
+            parsed_domestic = self._parse_domestic_execution(raw_fields)
             if parsed_domestic is not None:
                 return parsed_domestic
 
         kv: dict[str, str] = {}
-        for token in fields:
+        for token in compact_fields:
             if "=" in token:
                 key, value = token.split("=", 1)
                 kv[key.strip().lower()] = value.strip()
 
-        # 국내 체결 payload가 전용 파서에서 해석되지 않고 key=value 구조도 아니면
-        # generic numeric fallback으로 오탐 가격/수량을 만들지 않도록 차단한다.
-        if market == "kr" and not kv:
+        if market in {"kr", "us"} and payload_fields and not kv:
             return {}
 
+        fields = compact_fields
         symbol = self._extract_symbol(fields, market)
 
         side_token = self._first_token(
@@ -1147,6 +1147,7 @@ class KISExecutionWebSocket:
                 and 1 <= len(stripped) <= 10
             ):
                 return stripped
+        return None
 
     def _extract_timestamp(self, value: str | None) -> str:
         if not value:
