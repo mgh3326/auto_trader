@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from typing import Any
 
 from app.analysis.service_analyzers import KISAnalyzer
 from app.core.symbol import to_db_symbol
@@ -15,6 +16,46 @@ from app.services.kis_trading_service import (
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 logger = logging.getLogger(__name__)
+
+
+def _to_public_step_result(step_name: str, result: dict[str, Any]) -> dict[str, Any]:
+    public_result = dict(result)
+    if (
+        step_name == "sell"
+        and public_result.get("skipped")
+        and isinstance(public_result.get("data"), dict)
+        and public_result["data"].get("is_manual")
+    ):
+        public_result["success"] = True
+        public_result["skipped"] = False
+        public_result.setdefault("orders_placed", 0)
+    return public_result
+
+
+def _transform_public_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    step_name_map = {
+        "analyze": "분석",
+        "cancel_buy_orders": "매수취소",
+        "buy": "매수",
+        "cancel_sell_orders": "매도취소",
+        "sell": "매도",
+    }
+    transformed_steps = []
+    for step in steps:
+        step_name = step.get("step", "")
+        if step_name == "refresh":
+            continue
+        transformed_steps.append(
+            {
+                "step": step_name_map.get(step_name, step_name),
+                "result": _to_public_step_result(
+                    step_name,
+                    step.get("result", {}),
+                ),
+            }
+        )
+    return transformed_steps
+
 
 STATUS_FETCHING_HOLDINGS = "보유 주식 조회 중..."
 NO_DOMESTIC_STOCKS_MESSAGE = "보유 중인 국내 주식이 없습니다."
@@ -569,34 +610,15 @@ async def run_per_domestic_stock_automation() -> dict:
             orchestrator = TradingOrchestrator(strategy=strategy, steps=steps)
             result = await orchestrator.run(kis)
 
-            # Transform result to match original format for backward compatibility
-            # Original format: {"name", "code", "steps"} with Korean step names
             transformed_results = []
             for stock_result in result.get("results", []):
-                # Transform step names from English to Korean for backward compatibility
-                transformed_steps = []
-                for step in stock_result.get("steps", []):
-                    step_name = step.get("step", "")
-                    # Map English step names to Korean
-                    step_name_map = {
-                        "analyze": "분석",
-                        "cancel_buy_orders": "매수취소",
-                        "buy": "매수",
-                        "refresh": "리프레시",
-                        "cancel_sell_orders": "매도취소",
-                        "sell": "매도",
+                transformed_results.append(
+                    {
+                        "name": stock_result.get("name", ""),
+                        "code": stock_result.get("symbol", ""),
+                        "steps": _transform_public_steps(stock_result.get("steps", [])),
                     }
-                    korean_name = step_name_map.get(step_name, step_name)
-                    transformed_steps.append({
-                        "step": korean_name,
-                        "result": step.get("result", {}),
-                    })
-
-                transformed_results.append({
-                    "name": stock_result.get("name", ""),
-                    "code": stock_result.get("symbol", ""),
-                    "steps": transformed_steps,
-                })
+                )
 
             return {
                 "status": result.get("status", "completed"),
@@ -613,6 +635,8 @@ async def run_per_domestic_stock_automation() -> dict:
                 exc_info=True,
             )
             return {"status": "failed", "error": str(e)}
+        finally:
+            await analyzer.close()
 
     return await _run()
 
@@ -1274,34 +1298,15 @@ async def run_per_overseas_stock_automation() -> dict:
             orchestrator = TradingOrchestrator(strategy=strategy, steps=steps)
             result = await orchestrator.run(kis)
 
-            # Transform result to match original format for backward compatibility
-            # Original format: {"name", "symbol", "steps"} with Korean step names
             transformed_results = []
             for stock_result in result.get("results", []):
-                # Transform step names from English to Korean for backward compatibility
-                transformed_steps = []
-                for step in stock_result.get("steps", []):
-                    step_name = step.get("step", "")
-                    # Map English step names to Korean
-                    step_name_map = {
-                        "analyze": "분석",
-                        "cancel_buy_orders": "매수취소",
-                        "buy": "매수",
-                        "refresh": "리프레시",
-                        "cancel_sell_orders": "매도취소",
-                        "sell": "매도",
+                transformed_results.append(
+                    {
+                        "name": stock_result.get("name", ""),
+                        "symbol": stock_result.get("symbol", ""),
+                        "steps": _transform_public_steps(stock_result.get("steps", [])),
                     }
-                    korean_name = step_name_map.get(step_name, step_name)
-                    transformed_steps.append({
-                        "step": korean_name,
-                        "result": step.get("result", {}),
-                    })
-
-                transformed_results.append({
-                    "name": stock_result.get("name", ""),
-                    "symbol": stock_result.get("symbol", ""),
-                    "steps": transformed_steps,
-                })
+                )
 
             return {
                 "status": result.get("status", "completed"),
