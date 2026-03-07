@@ -8,9 +8,10 @@ This module defines the core types used by the step orchestrator pattern:
 - StepOutcome: Dataclass representing the result of a step execution
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.services.brokers.kis.client import KISClient
@@ -91,11 +92,16 @@ class TradingContext:
         if not self.avg_price:
             self.avg_price = float(self.stock.get("pchs_avg_pric", 0) or 0)
         if not self.current_price:
-            # Try last_price for overseas stocks
-            self.current_price = float(self.stock.get("last_price", 0) or 0)
+            overseas_price = (
+                self.stock.get("now_pric2")
+                or self.stock.get("ovrs_now_pric1")
+                or self.stock.get("last_price")
+                or 0
+            )
+            self.current_price = float(overseas_price or 0)
 
         # Exchange code for overseas stocks
-        self.exchange_code = self.stock.get("ovrs_excg_cd", "")
+        self.exchange_code = str(self.stock.get("ovrs_excg_cd", "")).strip().upper()
 
 
 @dataclass

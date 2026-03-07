@@ -1,6 +1,5 @@
 """Unit tests for KIS trading orchestrator and market strategies."""
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,7 +18,6 @@ from app.jobs.kis_trading_types import (
     StepResult,
     TradingContext,
 )
-
 
 # ==================== Helper Functions ====================
 
@@ -75,12 +73,42 @@ def create_mock_step(
     step.name = name
     step.failure_policy = failure_policy
     step.should_skip = MagicMock(return_value=should_skip)
-    step.execute = AsyncMock(return_value=outcome or StepOutcome(
-        result=StepResult.SUCCESS,
-        message="Success",
-    ))
+    step.execute = AsyncMock(
+        return_value=outcome
+        or StepOutcome(
+            result=StepResult.SUCCESS,
+            message="Success",
+        )
+    )
     step._log_skip = MagicMock()
     return step
+
+
+def test_trading_context_parses_overseas_now_pric2_and_exchange_code():
+    stock = {
+        "ovrs_pdno": "AAPL",
+        "ovrs_item_name": "Apple Inc",
+        "ovrs_cblc_qty": "10",
+        "ord_psbl_qty": "8",
+        "pchs_avg_pric": "150.25",
+        "now_pric2": "175.50",
+        "ovrs_excg_cd": " nasd ",
+        "_is_manual": True,
+    }
+
+    context = TradingContext(
+        stock=stock,
+        open_orders=[],
+        kis=MagicMock(),
+        strategy=MagicMock(),
+    )
+
+    assert context.symbol == "AAPL"
+    assert context.name == "Apple Inc"
+    assert context.current_price == 175.50
+    assert context.exchange_code == "NASD"
+    assert context.quantity == 8
+    assert context.is_manual is True
 
 
 # ==================== _extract_overseas_order_id Tests ====================
@@ -301,9 +329,7 @@ class TestDomesticStrategy:
         strategy = DomesticStrategy()
         mock_kis = MagicMock()
         mock_kis.inquire_korea_orders = AsyncMock(
-            return_value=[
-                {"pdno": "005935", "sll_buy_dvsn_cd": "02", "odno": "123"}
-            ]
+            return_value=[{"pdno": "005935", "sll_buy_dvsn_cd": "02", "odno": "123"}]
         )
 
         orders = await strategy.fetch_open_orders(mock_kis)
@@ -317,7 +343,7 @@ class TestDomesticStrategy:
 
         with patch("app.analysis.service_analyzers.KISAnalyzer") as mock_analyzer_cls:
             mock_analyzer_cls.return_value = MagicMock()
-            analyzer = strategy.get_analyzer()
+            strategy.get_analyzer()
             mock_analyzer_cls.assert_called_once()
 
     @pytest.mark.asyncio
@@ -325,13 +351,9 @@ class TestDomesticStrategy:
         """fetch_current_price_for_manual should return price from API."""
         strategy = DomesticStrategy()
         mock_kis = MagicMock()
-        mock_kis.fetch_fundamental_info = AsyncMock(
-            return_value={"현재가": 76000}
-        )
+        mock_kis.fetch_fundamental_info = AsyncMock(return_value={"현재가": 76000})
 
-        price = await strategy.fetch_current_price_for_manual(
-            mock_kis, "005935", 75000
-        )
+        price = await strategy.fetch_current_price_for_manual(mock_kis, "005935", 75000)
 
         assert price == 76000
 
@@ -340,13 +362,9 @@ class TestDomesticStrategy:
         """fetch_current_price_for_manual should return default on error."""
         strategy = DomesticStrategy()
         mock_kis = MagicMock()
-        mock_kis.fetch_fundamental_info = AsyncMock(
-            side_effect=Exception("API 오류")
-        )
+        mock_kis.fetch_fundamental_info = AsyncMock(side_effect=Exception("API 오류"))
 
-        price = await strategy.fetch_current_price_for_manual(
-            mock_kis, "005935", 75000
-        )
+        price = await strategy.fetch_current_price_for_manual(mock_kis, "005935", 75000)
 
         assert price == 75000
 
@@ -439,7 +457,7 @@ class TestOverseasStrategy:
             ]
         )
 
-        orders = await strategy.fetch_open_orders(mock_kis)
+        await strategy.fetch_open_orders(mock_kis)
 
         # Should be called 3 times (NASD, NYSE, AMEX)
         assert mock_kis.inquire_overseas_orders.call_count == 3
@@ -501,7 +519,7 @@ class TestOverseasStrategy:
 
         with patch("app.analysis.service_analyzers.YahooAnalyzer") as mock_analyzer_cls:
             mock_analyzer_cls.return_value = MagicMock()
-            analyzer = strategy.get_analyzer()
+            strategy.get_analyzer()
             mock_analyzer_cls.assert_called_once()
 
     @pytest.mark.asyncio
@@ -537,12 +555,11 @@ class TestOverseasStrategy:
 
         # Mock DataFrame response
         import pandas as pd
+
         mock_df = pd.DataFrame({"close": [150.0]})
         mock_kis.inquire_overseas_price = AsyncMock(return_value=mock_df)
 
-        price = await strategy.fetch_current_price_for_manual(
-            mock_kis, "AAPL", 100.0
-        )
+        price = await strategy.fetch_current_price_for_manual(mock_kis, "AAPL", 100.0)
 
         assert price == 150.0
 
@@ -553,12 +570,11 @@ class TestOverseasStrategy:
         mock_kis = MagicMock()
 
         import pandas as pd
+
         mock_df = pd.DataFrame()  # Empty DataFrame
         mock_kis.inquire_overseas_price = AsyncMock(return_value=mock_df)
 
-        price = await strategy.fetch_current_price_for_manual(
-            mock_kis, "AAPL", 100.0
-        )
+        price = await strategy.fetch_current_price_for_manual(mock_kis, "AAPL", 100.0)
 
         assert price == 100.0
 
@@ -567,13 +583,9 @@ class TestOverseasStrategy:
         """fetch_current_price_for_manual should return default on error."""
         strategy = OverseasStrategy()
         mock_kis = MagicMock()
-        mock_kis.inquire_overseas_price = AsyncMock(
-            side_effect=Exception("API 오류")
-        )
+        mock_kis.inquire_overseas_price = AsyncMock(side_effect=Exception("API 오류"))
 
-        price = await strategy.fetch_current_price_for_manual(
-            mock_kis, "AAPL", 100.0
-        )
+        price = await strategy.fetch_current_price_for_manual(mock_kis, "AAPL", 100.0)
 
         assert price == 100.0
 
@@ -656,6 +668,105 @@ class TestTradingOrchestrator:
         assert len(result["results"]) == 1
         assert result["results"][0]["symbol"] == "005935"
         assert result["results"][0]["name"] == "삼성전자우"
+
+    @pytest.mark.asyncio
+    async def test_run_hydrates_manual_price_and_exchange_before_steps(self):
+        mock_strategy = MagicMock(spec=MarketStrategy)
+        mock_strategy.market_name = "해외주식"
+        mock_strategy.fetch_holdings = AsyncMock(
+            return_value=[
+                {
+                    "ovrs_pdno": "CONY",
+                    "ovrs_item_name": "CONY",
+                    "ovrs_cblc_qty": "20",
+                    "ord_psbl_qty": "20",
+                    "pchs_avg_pric": "17.18",
+                    "now_pric2": "0",
+                    "_is_manual": True,
+                }
+            ]
+        )
+        mock_strategy.fetch_open_orders = AsyncMock(return_value=[])
+        mock_strategy.resolve_exchange_code = AsyncMock(return_value="NASD")
+        mock_strategy.fetch_current_price_for_manual = AsyncMock(return_value=18.5)
+
+        observed_context: dict[str, Any] = {}
+
+        async def execute(context: TradingContext) -> StepOutcome:
+            observed_context["exchange_code"] = context.exchange_code
+            observed_context["current_price"] = context.current_price
+            return StepOutcome(result=StepResult.SUCCESS, message="ok")
+
+        step = MagicMock()
+        step.name = "observe"
+        step.failure_policy = FailurePolicy.CONTINUE
+        step.should_skip = MagicMock(return_value=False)
+        step.execute = AsyncMock(side_effect=execute)
+        step._log_skip = MagicMock()
+
+        orchestrator = TradingOrchestrator(strategy=mock_strategy, steps=[step])
+
+        await orchestrator.run(MagicMock())
+
+        assert observed_context["exchange_code"] == "NASD"
+        assert observed_context["current_price"] == 18.5
+        mock_strategy.resolve_exchange_code.assert_awaited_once_with(
+            "CONY",
+            mock_strategy.fetch_holdings.return_value[0],
+        )
+        mock_strategy.fetch_current_price_for_manual.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_run_flattens_legacy_result_keys_from_outcome_data(self):
+        mock_strategy = MagicMock(spec=MarketStrategy)
+        mock_strategy.market_name = "국내주식"
+        mock_strategy.fetch_holdings = AsyncMock(
+            return_value=[
+                {
+                    "pdno": "005935",
+                    "prdt_name": "삼성전자우",
+                    "hldg_qty": "5",
+                    "ord_psbl_qty": "5",
+                    "pchs_avg_pric": "73800",
+                    "prpr": "75850",
+                }
+            ]
+        )
+        mock_strategy.fetch_open_orders = AsyncMock(return_value=[])
+
+        step = create_mock_step(
+            name="sell",
+            outcome=StepOutcome(
+                result=StepResult.SUCCESS,
+                message="매도 주문 1건 성공",
+                data={
+                    "orders_placed": 1,
+                    "prices": [80000],
+                    "quantities": [5],
+                    "total_amount": 400000.0,
+                    "total_volume": 5,
+                    "expected_amount": 400000.0,
+                    "cancelled": 1,
+                    "failed": 0,
+                    "total": 1,
+                },
+            ),
+        )
+
+        orchestrator = TradingOrchestrator(strategy=mock_strategy, steps=[step])
+
+        result = await orchestrator.run(MagicMock())
+        step_result = result["results"][0]["steps"][0]["result"]
+
+        assert step_result["orders_placed"] == 1
+        assert step_result["prices"] == [80000]
+        assert step_result["quantities"] == [5]
+        assert step_result["total_amount"] == 400000.0
+        assert step_result["total_volume"] == 5
+        assert step_result["expected_amount"] == 400000.0
+        assert step_result["cancelled"] == 1
+        assert step_result["failed"] == 0
+        assert step_result["total"] == 1
 
     @pytest.mark.asyncio
     async def test_run_processes_multiple_stocks(self):

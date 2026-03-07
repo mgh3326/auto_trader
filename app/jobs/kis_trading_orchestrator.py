@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any
 
 from app.jobs.kis_trading_types import (
     FailurePolicy,
-    StepOutcome,
     StepResult,
     TradingContext,
 )
@@ -388,9 +387,7 @@ class OverseasStrategy(MarketStrategy):
         for holding in manual_holdings:
             ticker = holding.ticker
             # Skip if already in KIS holdings (normalize symbol for comparison)
-            if any(
-                to_db_symbol(s.get("ovrs_pdno", "")) == ticker for s in my_stocks
-            ):
+            if any(to_db_symbol(s.get("ovrs_pdno", "")) == ticker for s in my_stocks):
                 continue
 
             # Convert to KIS format
@@ -631,14 +628,34 @@ class TradingOrchestrator:
                 strategy=self.strategy,
             )
 
+            if hasattr(self.strategy, "resolve_exchange_code"):
+                context.exchange_code = await self.strategy.resolve_exchange_code(
+                    context.symbol,
+                    stock,
+                )
+
+            fetch_manual_price = getattr(
+                self.strategy,
+                "fetch_current_price_for_manual",
+                None,
+            )
+            if context.is_manual and callable(fetch_manual_price):
+                context.current_price = await fetch_manual_price(
+                    kis,
+                    context.symbol,
+                    context.current_price,
+                )
+
             # Execute steps for this stock
             stock_steps, should_stop_all = await self._run_stock_automation(context)
 
-            results.append({
-                "symbol": context.symbol,
-                "name": context.name,
-                "steps": stock_steps,
-            })
+            results.append(
+                {
+                    "symbol": context.symbol,
+                    "name": context.name,
+                    "steps": stock_steps,
+                }
+            )
 
             # Check for STOP_ALL
             if should_stop_all:
@@ -701,13 +718,15 @@ class TradingOrchestrator:
             if step.should_skip(context):
                 skip_reason = "Skip condition met"
                 step._log_skip(context, skip_reason)
-                stock_steps.append({
-                    "step": step.name,
-                    "result": {
-                        "skipped": True,
-                        "reason": skip_reason,
-                    },
-                })
+                stock_steps.append(
+                    {
+                        "step": step.name,
+                        "result": {
+                            "skipped": True,
+                            "reason": skip_reason,
+                        },
+                    }
+                )
                 continue
 
             # Execute step
@@ -723,16 +742,18 @@ class TradingOrchestrator:
                 }
                 # Include data fields at top level for backward compatibility
                 if outcome.data:
-                    for key in ["orders_placed", "prices", "quantities", "total_amount"]:
-                        if key in outcome.data:
-                            step_result[key] = outcome.data[key]
+                    for key, value in outcome.data.items():
+                        if key not in {"success", "skipped", "message", "error"}:
+                            step_result[key] = value
                 # Include error key for failures to maintain backward compatibility
                 if outcome.result == StepResult.FAILURE:
                     step_result["error"] = outcome.message
-                stock_steps.append({
-                    "step": step.name,
-                    "result": step_result,
-                })
+                stock_steps.append(
+                    {
+                        "step": step.name,
+                        "result": step_result,
+                    }
+                )
 
                 # Handle failure policy
                 if outcome.result == StepResult.FAILURE:
@@ -768,13 +789,15 @@ class TradingOrchestrator:
                     e,
                     exc_info=e,
                 )
-                stock_steps.append({
-                    "step": step.name,
-                    "result": {
-                        "success": False,
-                        "error": str(e),
-                    },
-                })
+                stock_steps.append(
+                    {
+                        "step": step.name,
+                        "result": {
+                            "success": False,
+                            "error": str(e),
+                        },
+                    }
+                )
 
                 # Treat unexpected errors according to step's failure policy
                 if step.failure_policy == FailurePolicy.STOP_STOCK:
