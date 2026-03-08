@@ -49,6 +49,14 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `modify_order(order_id, symbol, new_price=None, new_quantity=None)`
 - `cancel_order(order_id)`
 - `manage_watch_alerts(action, market=None, symbol=None, metric=None, operator=None, threshold=None)`
+- `get_asset_profile(symbol=None, market_type=None, profile=None, tier=None, include_rules=False)`
+- `set_asset_profile(symbol, market_type=None, tier=None, profile=None, sector=None, tags=None, max_position_pct=None, buy_allowed=None, sell_mode=None, note=None, reason=None, updated_by="mcp")`
+- `get_tier_rule_params(instrument_type=None, tier=None, profile=None, param_type=None)`
+- `set_tier_rule_params(instrument_type, tier, profile, param_type, params, reason=None, updated_by="mcp")`
+- `get_market_filters(instrument_type=None, filter_name=None, enabled=None)`
+- `set_market_filter(instrument_type, filter_name, params, enabled=True, reason=None, updated_by="mcp")`
+- `delete_asset_profile(symbol, market_type=None, reason=None, updated_by="mcp")`
+- `prepare_trade_draft(instrument_type=None, action_type="all", dry_run=True)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
 
@@ -148,6 +156,128 @@ Error examples:
 {
   "success": false,
   "error": "Unknown action: foo"
+}
+```
+
+### Trade profile tools
+
+Shared market alias rules:
+- `instrument_type` / `market_type` accept `crypto`, `equity_kr`, `equity_us` plus aliases `kr`, `us`, `crypto`
+- Responses normalize to canonical values: `crypto`, `equity_kr`, `equity_us`
+
+CRUD response contract:
+- Success: `{ "success": true, "action": "created|updated|deleted", "data": ... }`
+- Read helpers: `{ "success": true, "data": [...], "count": N }`
+
+#### `get_tier_rule_params`
+
+Parameters:
+- `instrument_type`: optional market filter
+- `tier`: optional tier filter (`1-4`)
+- `profile`: optional profile filter (`aggressive`, `balanced`, `conservative`, `exit`, `hold_only`)
+- `param_type`: optional rule filter (`buy`, `sell`, `stop`, `rebalance`, `common`)
+
+#### `set_tier_rule_params`
+
+Behavior:
+- Upserts `(user_id, instrument_type, tier, profile, param_type)`
+- Create starts `version=1`; update increments `version += 1`
+- Audit log uses `change_type="tier_rule_param"` and target `tier_rule:{instrument}:{tier}:{profile}:{param_type}`
+- For `param_type="buy"`, successful saves with non-empty params but zero active signal predicates still persist and return optional top-level `warning="no active signal predicates"`
+
+#### `get_market_filters`
+
+Parameters:
+- `instrument_type`: optional market filter
+- `filter_name`: optional exact filter name
+- `enabled`: optional boolean filter
+
+#### `set_market_filter`
+
+Behavior:
+- Upserts `(user_id, instrument_type, filter_name)`
+- Supports `enabled` toggle and `params` replacement in one call
+- Audit log uses `change_type="market_filter"` and target `filter:{instrument}:{filter_name}`
+
+#### `delete_asset_profile`
+
+Behavior:
+- Reuses the same market inference rules as `set_asset_profile`
+- Deletes only the uniquely resolved row
+- Returns `action="deleted"`
+- Audit log stores the full `old_value` snapshot and `new_value={"deleted": true}`
+
+#### `prepare_trade_draft`
+
+Parameters:
+- `instrument_type`: optional market scope; omitted returns all supported markets. Accepts `kr`, `us`, `crypto`, `equity_kr`, and `equity_us`. Invalid values return `{ "success": false, "error": ... }`.
+- `action_type`: `all`, `buy`, or `sell`. Invalid values return `{ "success": false, "error": ... }`.
+- `dry_run`: echoed in the response payload
+
+Behavior:
+- Deterministic rule-only draft generation; no LLM scoring or ranking
+- Buy candidates come from the liquid top-30 universe per market
+- Cash pools are market-specific: Upbit KRW for `crypto`, KIS domestic KRW for `equity_kr`, KIS overseas USD for `equity_us`
+- Filter evaluation order is fixed: `kill_switch -> regime_ema200 -> fear_greed -> funding_rate -> symbol rule`
+- `kill_switch` only halts a market when crypto BTC `change_rate <= -btc_drop_24h_pct`; missing BTC metric adds a warning and ignores the filter
+- `regime_ema200` evaluates per symbol using `price_above_ema200`; dict params such as `{ "above": true, "below": false }` are supported, scalar fallback remains for backward compatibility, and `params.budget_factor` reduces buy sizing only when price is below EMA200
+- `fear_greed` blocks new buys when the current index is at or above `extreme_greed`; unavailable data adds a warning and the filter is ignored
+- `funding_rate` blocks crypto buys when `current_funding_rate_pct >= hot_threshold`; unavailable batch data adds a warning and the filter is ignored
+- Buy-allowed profiles require non-empty `buy` params; missing or empty `buy` params move the symbol to `skipped`
+- Supported buy entry-predicate keys are `rsi14_max`, `stoch_rsi_k_max`, `adx_max`, `macd_cross_required`, and `obv_rising_required`
+- Supported buy sizing-only keys are `position_size_pct`, `dca_stages`, and `ema200_budget_factor`
+- Non-empty `buy` params with zero active predicates move the symbol to `skipped` with `reason="no active buy predicates"`
+- Active buy predicates that evaluate false move the symbol to `skipped` with `reason="buy conditions not met"`
+- Buy sizing order is: available cash after reserve/max_positions -> `position_size_pct` -> market `regime_ema200.budget_factor` -> buy-rule `ema200_budget_factor`
+- `regime_ema200.budget_factor` composes sequentially with buy-rule `ema200_budget_factor`; missing `price_above_ema200` data required for either regime gating or regime sizing moves the symbol to `skipped`
+- Supported sell-rule keys from stored JSON are `take_profit_full_rsi`, `take_profit_partial_rsi`, and fallback `rsi14_min`
+- Unknown `filter_name` values are ignored and appended to `warnings`
+- Missing indicator data required by a configured buy/sell rule moves the symbol to `skipped` with a concrete reason
+- `profile="exit"` bypasses rule checks and produces a full-position sell draft
+- `sell_mode="none"` suppresses sell drafts entirely
+- `sell_mode="rebalance_only"` without `rebalance` params moves the symbol to `skipped`
+- Equity partial sells are normalized to executable whole shares with `floor(quantity * 0.5)`; results below `1` share move the symbol to `skipped`, while crypto partial sells keep fractional quantities
+- `stop` params are returned as downstream risk metadata only in v1
+- Buy drafts are sorted by RSI ascending; sell drafts by RSI descending
+- `dca_stage` is set only for new entries as `"1/N"`; existing holdings omit it
+- Buy drafts are never emitted with `triggers=[]`
+
+Buy draft item fields:
+- `symbol`, `instrument_type`, `profile`, `tier`, `triggers`, `suggested_amount`, `price_type`, `rsi`
+- Compatibility alias: `amount == suggested_amount`
+- Optional: `dca_stage`
+
+Sell draft item fields:
+- `symbol`, `instrument_type`, `profile`, `tier`, `triggers`, `suggested_qty`, `price_type`, `rsi`
+- Compatibility alias: `quantity == suggested_qty`
+- Equity partial sell `suggested_qty` values are whole-share executable quantities; crypto partial sells may remain fractional
+- Optional: `risk_metadata`
+
+Response shape:
+```json
+{
+  "success": true,
+  "action_type": "all",
+  "dry_run": true,
+  "markets": [
+    {
+      "instrument_type": "crypto",
+      "filters_applied": ["kill_switch", "fear_greed"],
+      "kill_switch": false,
+      "buy_drafts": [],
+      "sell_drafts": [],
+      "skipped": [],
+      "warnings": []
+    }
+  ]
+}
+```
+
+Error response shape:
+```json
+{
+  "success": false,
+  "error": "instrument_type must be one of: kr, us, crypto (got 'bond')"
 }
 ```
 
