@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pandas as pd
 import pytest
-from unittest.mock import AsyncMock
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import analysis_screen_core
