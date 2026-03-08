@@ -337,7 +337,9 @@ def pytest_configure(config):
     )
     config.addinivalue_line("markers", "integration: marks tests as integration tests")
     config.addinivalue_line("markers", "unit: marks tests as unit tests")
-    config.addinivalue_line("markers", "live: marks tests as live API tests (require --run-live to execute)")
+    config.addinivalue_line(
+        "markers", "live: marks tests as live API tests (require --run-live to execute)"
+    )
 
 
 def pytest_addoption(parser):
@@ -352,7 +354,7 @@ def pytest_addoption(parser):
 
 def pytest_collection_modifyitems(config, items):
     """Skip live tests unless --run-live is explicitly passed.
-    
+
     This keeps collection-oriented acceptance checks meaningful:
     - `pytest --collect-only -m "not live"` shows what fast gate will run
     - `pytest --collect-only -m "live" --run-live` shows live test set
