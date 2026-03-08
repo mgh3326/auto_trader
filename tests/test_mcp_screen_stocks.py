@@ -237,7 +237,7 @@ class TestScreenStocksKRRegression:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
 
@@ -663,7 +663,7 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
 
@@ -749,7 +749,7 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
 
@@ -818,11 +818,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr",
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
             fail_legacy_kr,
         )
 
@@ -880,11 +880,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_us",
+            "app.mcp_server.tooling.analysis_screen_core._screen_us",
             fail_legacy_us,
         )
 
@@ -943,11 +943,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr",
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
             fail_legacy_kr,
         )
 
@@ -1007,11 +1007,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_us",
+            "app.mcp_server.tooling.analysis_screen_core._screen_us",
             fail_legacy_us,
         )
 
@@ -1081,11 +1081,11 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_us",
+            "app.mcp_server.tooling.analysis_screen_core._screen_us",
             mock_screen_us,
         )
 
@@ -1134,7 +1134,7 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
 
@@ -1169,7 +1169,7 @@ class TestScreenStocksTvScreenerContract:
 
         monkeypatch.setattr(yf, "screen", mock_yfinance_screen)
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
             fail_if_called,
         )
 
@@ -1217,11 +1217,11 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
             fail_if_called,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr",
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
             mock_screen_kr,
         )
 
@@ -3329,7 +3329,7 @@ class TestScreenStocksPhase2Spec:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
 
@@ -3424,7 +3424,7 @@ class TestScreenStocksPhase2Spec:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_tool_handlers._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
 
