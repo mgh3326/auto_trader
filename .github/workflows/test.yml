@@ -193,3 +193,25 @@ jobs:
         path: |
           bandit-report.json
           safety-report.json
+
+  notify:
+    if: failure()
+    needs: [lint, test, security]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord failure notification
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -s -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"❌ Test CI 실패\",
+                \"description\": \"**Branch:** \`${{ github.ref_name }}\`\n**Commit:** \`${GITHUB_SHA::7}\`\n**Author:** ${{ github.actor }}\n**Trigger:** ${{ github.event_name }}\",
+                \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+                \"color\": 16711680,
+                \"footer\": {\"text\": \"${{ github.repository }}\"},
+                \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+              }]
+            }" \
+            "$DISCORD_WEBHOOK"
