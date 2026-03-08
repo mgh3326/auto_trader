@@ -12,7 +12,9 @@ Stage 1 Refactoring (2026-03):
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.symbol import to_db_symbol
 from app.services.brokers.kis.client import KISClient
@@ -28,6 +30,46 @@ KIS_MIN_BALANCE = 100000  # 최소 예수금
 
 # 메시지 상수
 MSG_NO_SETTINGS = "종목 설정 없음 - 매수 건너뜀"
+
+
+def _coerce_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_positive_int(value: object, *, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _open_async_session() -> AsyncSession:
+    from app.core.db import AsyncSessionLocal
+
+    session = cast(object, AsyncSessionLocal())
+    return cast(AsyncSession, session)
+
+
+def _present_prices(*values: object) -> list[float]:
+    prices: list[float] = []
+    for value in values:
+        coerced = _coerce_optional_float(value)
+        if coerced is not None:
+            prices.append(coerced)
+    return prices
 
 
 # =============================================================================
@@ -56,13 +98,12 @@ async def _process_kis_domestic_buy_orders_impl(
     kis_client: KISClient, symbol: str, current_price: float, avg_buy_price: float
 ) -> OrderStepResult:
     """국내 매수 주문 실제 구현. 예외를 호출부로 전파."""
-    from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
     from app.services.symbol_trade_settings_service import (
         SymbolTradeSettingsService,
     )
 
-    async with AsyncSessionLocal() as db:
+    async with _open_async_session() as db:
         service = StockAnalysisService(db)
         analysis = await service.get_latest_analysis_by_symbol(symbol)
 
@@ -87,44 +128,47 @@ async def _process_kis_domestic_buy_orders_impl(
             return OrderStepResult(success=False, message=MSG_NO_SETTINGS)
 
         buy_price_levels = settings.buy_price_levels
+        appropriate_buy_min = _coerce_optional_float(
+            getattr(analysis, "appropriate_buy_min", None)
+        )
+        appropriate_buy_max = _coerce_optional_float(
+            getattr(analysis, "appropriate_buy_max", None)
+        )
+        buy_hope_min = _coerce_optional_float(getattr(analysis, "buy_hope_min", None))
+        buy_hope_max = _coerce_optional_float(getattr(analysis, "buy_hope_max", None))
 
         # 3. 가격 정보 확인 (스마트 선택 로직)
         if buy_price_levels == 1:
-            appropriate_max = analysis.appropriate_buy_max
             use_lower_price = (
-                appropriate_max is not None
+                appropriate_buy_max is not None
                 and avg_buy_price > 0
-                and appropriate_max < avg_buy_price
+                and appropriate_buy_max < avg_buy_price
             )
 
             if use_lower_price:
-                if analysis.appropriate_buy_min is not None:
-                    buy_prices = [("appropriate_buy_min", analysis.appropriate_buy_min)]
-                elif analysis.buy_hope_min is not None:
-                    buy_prices = [("buy_hope_min", analysis.buy_hope_min)]
+                if appropriate_buy_min is not None:
+                    buy_prices = [("appropriate_buy_min", appropriate_buy_min)]
+                elif buy_hope_min is not None:
+                    buy_prices = [("buy_hope_min", buy_hope_min)]
                 else:
                     buy_prices = []
             else:
-                if analysis.appropriate_buy_max is not None:
-                    buy_prices = [("appropriate_buy_max", analysis.appropriate_buy_max)]
-                elif analysis.appropriate_buy_min is not None:
-                    buy_prices = [("appropriate_buy_min", analysis.appropriate_buy_min)]
+                if appropriate_buy_max is not None:
+                    buy_prices = [("appropriate_buy_max", appropriate_buy_max)]
+                elif appropriate_buy_min is not None:
+                    buy_prices = [("appropriate_buy_min", appropriate_buy_min)]
                 else:
                     buy_prices = []
         else:
-            all_buy_prices = []
-            if analysis.appropriate_buy_min is not None:
-                all_buy_prices.append(
-                    ("appropriate_buy_min", analysis.appropriate_buy_min)
-                )
-            if analysis.appropriate_buy_max is not None:
-                all_buy_prices.append(
-                    ("appropriate_buy_max", analysis.appropriate_buy_max)
-                )
-            if analysis.buy_hope_min is not None:
-                all_buy_prices.append(("buy_hope_min", analysis.buy_hope_min))
-            if analysis.buy_hope_max is not None:
-                all_buy_prices.append(("buy_hope_max", analysis.buy_hope_max))
+            all_buy_prices: list[tuple[str, float]] = []
+            if appropriate_buy_min is not None:
+                all_buy_prices.append(("appropriate_buy_min", appropriate_buy_min))
+            if appropriate_buy_max is not None:
+                all_buy_prices.append(("appropriate_buy_max", appropriate_buy_max))
+            if buy_hope_min is not None:
+                all_buy_prices.append(("buy_hope_min", buy_hope_min))
+            if buy_hope_max is not None:
+                all_buy_prices.append(("buy_hope_max", buy_hope_max))
             buy_prices = all_buy_prices[:buy_price_levels]
 
         if not buy_prices:
@@ -148,7 +192,7 @@ async def _process_kis_domestic_buy_orders_impl(
             )
 
         # 5. 수량 확인
-        quantity = int(settings.buy_quantity_per_order)
+        quantity = _coerce_positive_int(settings.buy_quantity_per_order)
         if quantity < 1:
             return OrderStepResult(
                 success=False,
@@ -218,11 +262,10 @@ async def _process_kis_overseas_buy_orders_impl(
     exchange_code: str = "NASD",
 ) -> OrderStepResult:
     """해외 매수 주문 실제 구현. 예외를 호출부로 전파."""
-    from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
     from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
 
-    async with AsyncSessionLocal() as db:
+    async with _open_async_session() as db:
         service = StockAnalysisService(db)
         analysis = await service.get_latest_analysis_by_symbol(symbol)
 
@@ -245,40 +288,44 @@ async def _process_kis_overseas_buy_orders_impl(
 
         buy_price_levels = settings.buy_price_levels
         actual_exchange_code = settings.exchange_code or exchange_code
+        appropriate_buy_min = _coerce_optional_float(
+            getattr(analysis, "appropriate_buy_min", None)
+        )
+        appropriate_buy_max = _coerce_optional_float(
+            getattr(analysis, "appropriate_buy_max", None)
+        )
+        buy_hope_min = _coerce_optional_float(getattr(analysis, "buy_hope_min", None))
+        buy_hope_max = _coerce_optional_float(getattr(analysis, "buy_hope_max", None))
 
         # 가격 정보 확인 (스마트 선택 로직)
         if buy_price_levels == 1:
-            appropriate_max = analysis.appropriate_buy_max
             use_lower_price = (
-                appropriate_max is not None
+                appropriate_buy_max is not None
                 and avg_buy_price > 0
-                and appropriate_max < avg_buy_price
+                and appropriate_buy_max < avg_buy_price
             )
 
             if use_lower_price:
-                if analysis.appropriate_buy_min is not None:
-                    buy_prices = [analysis.appropriate_buy_min]
-                elif analysis.buy_hope_min is not None:
-                    buy_prices = [analysis.buy_hope_min]
+                if appropriate_buy_min is not None:
+                    buy_prices = [appropriate_buy_min]
+                elif buy_hope_min is not None:
+                    buy_prices = [buy_hope_min]
                 else:
                     buy_prices = []
             else:
-                if analysis.appropriate_buy_max is not None:
-                    buy_prices = [analysis.appropriate_buy_max]
-                elif analysis.appropriate_buy_min is not None:
-                    buy_prices = [analysis.appropriate_buy_min]
+                if appropriate_buy_max is not None:
+                    buy_prices = [appropriate_buy_max]
+                elif appropriate_buy_min is not None:
+                    buy_prices = [appropriate_buy_min]
                 else:
                     buy_prices = []
         else:
-            all_buy_prices = []
-            if analysis.appropriate_buy_min:
-                all_buy_prices.append(analysis.appropriate_buy_min)
-            if analysis.appropriate_buy_max:
-                all_buy_prices.append(analysis.appropriate_buy_max)
-            if analysis.buy_hope_min:
-                all_buy_prices.append(analysis.buy_hope_min)
-            if analysis.buy_hope_max:
-                all_buy_prices.append(analysis.buy_hope_max)
+            all_buy_prices = _present_prices(
+                appropriate_buy_min,
+                appropriate_buy_max,
+                buy_hope_min,
+                buy_hope_max,
+            )
             buy_prices = all_buy_prices[:buy_price_levels]
 
         if not buy_prices:
@@ -298,7 +345,7 @@ async def _process_kis_overseas_buy_orders_impl(
                 message=f"조건에 맞는 매수 가격 없음 ({buy_price_levels}개 가격대 중 유효 없음)",
             )
 
-        quantity = int(settings.buy_quantity_per_order)
+        quantity = _coerce_positive_int(settings.buy_quantity_per_order)
         if quantity < 1:
             return OrderStepResult(
                 success=False,
@@ -370,25 +417,21 @@ async def _process_kis_domestic_sell_orders_impl(
     balance_qty: int,
 ) -> OrderStepResult:
     """국내 매도 주문 실제 구현. 예외를 호출부로 전파."""
-    from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
 
-    async with AsyncSessionLocal() as db:
+    async with _open_async_session() as db:
         service = StockAnalysisService(db)
         analysis = await service.get_latest_analysis_by_symbol(symbol)
 
         if not analysis:
             return OrderStepResult(success=False, message="분석 결과 없음")
 
-        sell_prices = []
-        if analysis.appropriate_sell_min:
-            sell_prices.append(analysis.appropriate_sell_min)
-        if analysis.appropriate_sell_max:
-            sell_prices.append(analysis.appropriate_sell_max)
-        if analysis.sell_target_min:
-            sell_prices.append(analysis.sell_target_min)
-        if analysis.sell_target_max:
-            sell_prices.append(analysis.sell_target_max)
+        sell_prices = _present_prices(
+            getattr(analysis, "appropriate_sell_min", None),
+            getattr(analysis, "appropriate_sell_max", None),
+            getattr(analysis, "sell_target_min", None),
+            getattr(analysis, "sell_target_max", None),
+        )
 
         if not sell_prices:
             return OrderStepResult(
@@ -525,11 +568,10 @@ async def _process_kis_overseas_sell_orders_impl(
     exchange_code: str = "NASD",
 ) -> OrderStepResult:
     """해외 매도 주문 실제 구현. 예외를 호출부로 전파."""
-    from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
     from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
 
-    async with AsyncSessionLocal() as db:
+    async with _open_async_session() as db:
         service = StockAnalysisService(db)
         analysis = await service.get_latest_analysis_by_symbol(symbol)
 
@@ -556,12 +598,8 @@ async def _process_kis_overseas_sell_orders_impl(
             None,
         )
         if target_stock:
-            actual_qty = int(
-                float(
-                    target_stock.get(
-                        "ord_psbl_qty", target_stock.get("ovrs_cblc_qty", 0)
-                    )
-                )
+            actual_qty = _coerce_positive_int(
+                target_stock.get("ord_psbl_qty", target_stock.get("ovrs_cblc_qty", 0))
             )
             if actual_qty < balance_qty:
                 logger.info(
@@ -575,15 +613,12 @@ async def _process_kis_overseas_sell_orders_impl(
                 message="주문가능수량 없음",
             )
 
-        sell_prices = []
-        if analysis.appropriate_sell_min:
-            sell_prices.append(analysis.appropriate_sell_min)
-        if analysis.appropriate_sell_max:
-            sell_prices.append(analysis.appropriate_sell_max)
-        if analysis.sell_target_min:
-            sell_prices.append(analysis.sell_target_min)
-        if analysis.sell_target_max:
-            sell_prices.append(analysis.sell_target_max)
+        sell_prices = _present_prices(
+            getattr(analysis, "appropriate_sell_min", None),
+            getattr(analysis, "appropriate_sell_max", None),
+            getattr(analysis, "sell_target_min", None),
+            getattr(analysis, "sell_target_max", None),
+        )
 
         if not sell_prices:
             return OrderStepResult(
