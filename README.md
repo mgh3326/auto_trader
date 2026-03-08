@@ -203,83 +203,19 @@ uv sync --all-groups
 
 ### 테스트 실행
 
-### 테스트 실행
+- Fast gate (`live` 제외): `make test` 또는 `uv run pytest tests/ -v -m "not live"`
+- 단위 테스트만: `make test-unit` 또는 `uv run pytest tests/ -v -m "not integration and not live"`
+- 통합 테스트만 (`live` 제외): `make test-integration` 또는 `uv run pytest tests/ -v -m "integration and not live"`
+- Live API 테스트: `make test-live` 또는 `uv run pytest tests/ -v -m "integration and live" --run-live --no-cov`
+- 커버리지 리포트: `make test-cov` 또는 `uv run pytest tests/ -v -m "not live" --cov=app --cov-report=html --cov-report=term-missing`
 
-모든 테스트 실행 (live 테스트 제외):
-```bash
-make test
-# 또는
-uv run pytest tests/ -v -m "not live"
-```
-
-단위 테스트만 실행:
-```bash
-make test-unit
-# 또는
-uv run pytest tests/ -v -m "not integration and not live"
-```
-
-통합 테스트만 실행 (live 테스트 제외):
-```bash
-make test-integration
-# 또는
-uv run pytest tests/ -v -m "integration and not live"
-```
-
-live API 테스트 실행 (외부 네트워크 필요):
-```bash
-make test-live
-# 또는
-uv run pytest tests/ -v -m "integration and live" --run-live
-```
-
-커버리지 리포트와 함께 테스트 실행:
-```bash
-make test-cov
-# 또는
-uv run pytest tests/ -v -m "not live" --cov=app --cov-report=html
-```
-
-### 테스트 마커
-
-- `@pytest.mark.unit`: 단위 테스트
-- `@pytest.mark.integration`: 통합 테스트 (DB, Redis, 남부 API 사용)
-- `@pytest.mark.live`: 외부 API 호출 테스트 (`--run-live` 필요)
-- `@pytest.mark.slow`: 느린 테스트 (선택적 실행)
-
-**참고:** `live` 테스트는 `integration`의 strict subset입니다. live 테스트는
-`--run-live` 옵션 없이는 skip되며, CI fast gate에서는 실행되지 않습니다.
-```bash
-make test
-# 또는
-uv run pytest tests/ -v
-```
-
-단위 테스트만 실행:
-```bash
-make test-unit
-# 또는
-uv run pytest tests/ -v -m "not integration"
-```
-
-통합 테스트만 실행:
-```bash
-make test-integration
-# 또는
-uv run pytest tests/ -v -m "integration"
-```
-
-커버리지 리포트와 함께 테스트 실행:
-```bash
-make test-cov
-# 또는
-uv run pytest tests/ -v --cov=app --cov-report=html
-```
+`live` 테스트는 `integration`의 strict subset입니다. 기본 fast gate는 항상 `-m "not live"`를 사용하고, `@pytest.mark.live` 테스트는 `--run-live`를 명시적으로 전달해야 실행됩니다.
 
 ### 테스트 마커
 
 - `@pytest.mark.unit`: 단위 테스트
 - `@pytest.mark.integration`: 통합 테스트
+- `@pytest.mark.live`: 외부 API 호출 테스트 (`integration`의 strict subset, `--run-live` 필요)
 - `@pytest.mark.slow`: 느린 테스트 (선택적 실행)
 
 ### 코드 품질
@@ -307,7 +243,8 @@ make security
 make help          # 사용 가능한 명령어 목록
 make install       # 프로덕션 의존성 설치
 make install-dev   # 개발 의존성 설치
-make test          # 모든 테스트 실행
+make test          # live 제외 fast gate 테스트 실행
+make test-live     # live 통합 테스트 실행 (--run-live)
 make test-cov      # 커버리지와 함께 테스트 실행
 make lint          # 코드 품질 검사
 make format        # 코드 포맷팅
