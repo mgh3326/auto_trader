@@ -274,6 +274,17 @@ class TestPerApiRateLimiters:
 class TestKisServiceRateLimitWiring:
     """Static guardrails for KIS rate-limit wrapper coverage."""
 
-    def test_kis_uses_async_client_only_in_token_and_wrapper(self):
-        content = Path("app/services/brokers/kis/client.py").read_text(encoding="utf-8")
-        assert content.count("async with httpx.AsyncClient") == 2
+    def test_kis_transport_lives_in_base_client_wrapper(self):
+        client_content = Path("app/services/brokers/kis/client.py").read_text(
+            encoding="utf-8"
+        )
+        base_content = Path("app/services/brokers/kis/base.py").read_text(
+            encoding="utf-8"
+        )
+
+        assert "class KISClient(BaseKISClient)" in client_content
+        assert "async with httpx.AsyncClient" not in client_content
+        assert "def _build_http_client" in base_content
+        assert "return httpx.AsyncClient(timeout=timeout)" in base_content
+        assert "async def _ensure_client" in base_content
+        assert "async def _request_with_rate_limit" in base_content
