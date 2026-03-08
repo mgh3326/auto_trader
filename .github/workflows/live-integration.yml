@@ -1,0 +1,56 @@
+name: Live Integration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  live-tests:
+    name: Live API Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@v3
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group test
+
+    - name: Preflight check - tvscreener import
+      run: uv run python -c "import tvscreener; print('tvscreener imported successfully')"
+
+    - name: Preflight check - live tests collection
+      run: |
+        LIVE_COUNT=$(uv run pytest tests/ --collect-only -q --no-cov -m "integration and live" --run-live 2>/dev/null | grep -c "::test_" || echo "0")
+        echo "Collected $LIVE_COUNT live tests"
+        if [ "$LIVE_COUNT" -eq 0 ]; then
+          echo "ERROR: No live tests collected. Check marker configuration."
+          exit 1
+        fi
+
+    - name: Run live API tests
+      run: |
+        uv run pytest tests/ -v -m "integration and live" --run-live --no-cov \
+          -ra --durations=25 --durations-min=1.0 \
+          -o faulthandler_timeout=120
+      env:
+        # Use minimal environment for live tests (no DB/Redis needed)
+        DATABASE_URL: ""
+        REDIS_URL: ""

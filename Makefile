@@ -10,24 +10,26 @@ install: ## Install production dependencies
 install-dev: ## Install development dependencies
 	uv sync --all-groups
 
-test: ## Run all tests
-	uv run pytest tests/ -v
+test: ## Run all tests (excludes live)
+	uv run pytest tests/ -v -m "not live"
 
-test-unit: ## Run unit tests only
-	uv run pytest tests/ -v -m "not integration"
+test-unit: ## Run unit tests only (excludes integration and live)
+	uv run pytest tests/ -v -m "not integration and not live"
 
-test-integration: ## Run integration tests only
-	uv run pytest tests/ -v -m "integration"
+test-integration: ## Run integration tests only (excludes live)
+	uv run pytest tests/ -v -m "integration and not live"
 
-test-cov: ## Run tests with coverage report
-	uv run pytest tests/ -v --cov=app --cov-report=html --cov-report=term-missing
+test-cov: ## Run tests with coverage report (excludes live)
+	uv run pytest tests/ -v -m "not live" --cov=app --cov-report=html --cov-report=term-missing
 
-test-fast: ## Run tests without coverage (faster)
-	uv run pytest tests/ -v --no-cov
+test-fast: ## Run tests without coverage (faster, excludes live)
+	uv run pytest tests/ -v -m "not live" --no-cov
 
-test-watch: ## Run tests in watch mode
-	uv run pytest tests/ -v -f
+test-watch: ## Run tests in watch mode (excludes live)
+	uv run pytest tests/ -v -m "not live" -f
 
+test-live: ## Run live API tests only (requires external network)
+	uv run pytest tests/ -v -m "integration and live" --run-live --no-cov
 lint: ## Run linting checks (Ruff + ty)
 	uv run ruff check app/ tests/
 	uv run ruff format --check app/ tests/
