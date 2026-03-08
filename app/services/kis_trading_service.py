@@ -1,9 +1,25 @@
+"""KIS Trading Service - Order execution with analysis.
+
+This module provides functions to process buy/sell orders for domestic
+and overseas stocks based on analysis results.
+
+Stage 1 Refactoring (2026-03):
+- Added exception handling to all process_* functions
+- Internal logic moved to _impl functions
+- Errors are absorbed and returned as structured payloads
+- Public contracts (return type dict[str, Any]) unchanged
+"""
+
 import asyncio
 import logging
 from typing import Any
 
 from app.core.symbol import to_db_symbol
 from app.services.brokers.kis.client import KISClient
+from app.services.kis_trading_contracts import (
+    OrderStepResult,
+    _map_exception_to_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +30,32 @@ KIS_MIN_BALANCE = 100000  # 최소 예수금
 MSG_NO_SETTINGS = "종목 설정 없음 - 매수 건너뜀"
 
 
+# =============================================================================
+# DOMESTIC BUY
+# =============================================================================
+
+
 async def process_kis_domestic_buy_orders_with_analysis(
     kis_client: KISClient, symbol: str, current_price: float, avg_buy_price: float
 ) -> dict[str, Any]:
-    """분석 결과를 기반으로 KIS 국내 주식 매수 주문 처리"""
+    """분석 결과를 기반으로 KIS 국내 주식 매수 주문 처리.
+
+    Stage 1: 예외를 내부에서 흡수하여 structured error payload 반환.
+    """
+    try:
+        result = await _process_kis_domestic_buy_orders_impl(
+            kis_client, symbol, current_price, avg_buy_price
+        )
+        return result.to_payload()
+    except Exception as exc:
+        logger.exception(f"[{symbol}] Domestic buy order failed: {exc}")
+        return _map_exception_to_result(exc, f"domestic buy for {symbol}").to_payload()
+
+
+async def _process_kis_domestic_buy_orders_impl(
+    kis_client: KISClient, symbol: str, current_price: float, avg_buy_price: float
+) -> OrderStepResult:
+    """국내 매수 주문 실제 구현. 예외를 호출부로 전파."""
     from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
     from app.services.symbol_trade_settings_service import (
@@ -28,35 +66,30 @@ async def process_kis_domestic_buy_orders_with_analysis(
         service = StockAnalysisService(db)
         analysis = await service.get_latest_analysis_by_symbol(symbol)
 
-        # 1. 기본 조건: 현재가가 평균 매수가보다 1% 낮아야 함 (평단가가 0이면 신규 진입으로 간주하여 통과)
+        # 1. 기본 조건: 현재가가 평균 매수가보다 1% 낮아야 함
         if avg_buy_price > 0:
             target_price = avg_buy_price * 0.99
             if current_price >= target_price:
-                return {
-                    "success": False,
-                    "message": f"1% 매수 조건 미충족: 현재가 {current_price} >= 목표가 {target_price}",
-                    "orders_placed": 0,
-                }
+                return OrderStepResult(
+                    success=False,
+                    message=f"1% 매수 조건 미충족: 현재가 {current_price} >= 목표가 {target_price}",
+                )
 
         # 2. 분석 결과 확인
         if not analysis:
-            return {"success": False, "message": "분석 결과 없음", "orders_placed": 0}
+            return OrderStepResult(success=False, message="분석 결과 없음")
 
         # 2.5 종목 설정 확인 및 buy_price_levels 가져오기
         settings_service = SymbolTradeSettingsService(db)
         settings = await settings_service.get_by_symbol(symbol)
         if not settings or not settings.is_active:
             logger.info(f"[{symbol}] {MSG_NO_SETTINGS}")
-            return {"success": False, "message": MSG_NO_SETTINGS, "orders_placed": 0}
+            return OrderStepResult(success=False, message=MSG_NO_SETTINGS)
 
-        buy_price_levels = settings.buy_price_levels  # 1~4 (주문할 가격대 수)
+        buy_price_levels = settings.buy_price_levels
 
-        # 3. 가격 정보 확인
-        # buy_price_levels=1일 때 스마트 선택:
-        # - 적정매수 max가 평균매수가보다 낮으면 → 적정매수 min 또는 희망매수 min 사용 (더 낮은 가격 선호)
-        # - 그렇지 않으면 → 적정매수 max 사용 (신규 진입 또는 적정 가격이 아직 높은 경우)
+        # 3. 가격 정보 확인 (스마트 선택 로직)
         if buy_price_levels == 1:
-            # 스마트 단일 가격 선택
             appropriate_max = analysis.appropriate_buy_max
             use_lower_price = (
                 appropriate_max is not None
@@ -65,7 +98,6 @@ async def process_kis_domestic_buy_orders_with_analysis(
             )
 
             if use_lower_price:
-                # 적정매수 max가 평균매수가보다 낮음 → 더 낮은 가격(min 또는 hope_min) 선택
                 if analysis.appropriate_buy_min is not None:
                     buy_prices = [("appropriate_buy_min", analysis.appropriate_buy_min)]
                 elif analysis.buy_hope_min is not None:
@@ -73,7 +105,6 @@ async def process_kis_domestic_buy_orders_with_analysis(
                 else:
                     buy_prices = []
             else:
-                # 신규 진입이거나 적정매수 max >= 평균매수가 → max 사용
                 if analysis.appropriate_buy_max is not None:
                     buy_prices = [("appropriate_buy_max", analysis.appropriate_buy_max)]
                 elif analysis.appropriate_buy_min is not None:
@@ -81,7 +112,6 @@ async def process_kis_domestic_buy_orders_with_analysis(
                 else:
                     buy_prices = []
         else:
-            # 기존 로직: 낮은 가격 순서로 나열
             all_buy_prices = []
             if analysis.appropriate_buy_min is not None:
                 all_buy_prices.append(
@@ -95,40 +125,35 @@ async def process_kis_domestic_buy_orders_with_analysis(
                 all_buy_prices.append(("buy_hope_min", analysis.buy_hope_min))
             if analysis.buy_hope_max is not None:
                 all_buy_prices.append(("buy_hope_max", analysis.buy_hope_max))
-
             buy_prices = all_buy_prices[:buy_price_levels]
 
         if not buy_prices:
-            return {
-                "success": False,
-                "message": "분석 결과에 매수 가격 정보 없음",
-                "orders_placed": 0,
-            }
+            return OrderStepResult(
+                success=False,
+                message="분석 결과에 매수 가격 정보 없음",
+            )
 
         # 4. 조건에 맞는 가격 필터링
-        # 평균 매수가의 99%보다 낮고(평단가 있을시), 현재가보다 낮은 가격
         threshold_price = avg_buy_price * 0.99 if avg_buy_price > 0 else float("inf")
-
-        valid_prices = []
-        for name, price in buy_prices:
-            if price < threshold_price and price < current_price:
-                valid_prices.append((name, price))
+        valid_prices = [
+            (name, price)
+            for name, price in buy_prices
+            if price < threshold_price and price < current_price
+        ]
 
         if not valid_prices:
-            return {
-                "success": False,
-                "message": f"조건에 맞는 매수 가격 없음 ({buy_price_levels}개 가격대 중 유효 없음)",
-                "orders_placed": 0,
-            }
+            return OrderStepResult(
+                success=False,
+                message=f"조건에 맞는 매수 가격 없음 ({buy_price_levels}개 가격대 중 유효 없음)",
+            )
 
         # 5. 수량 확인
         quantity = int(settings.buy_quantity_per_order)
         if quantity < 1:
-            return {
-                "success": False,
-                "message": "설정된 수량이 1 미만",
-                "orders_placed": 0,
-            }
+            return OrderStepResult(
+                success=False,
+                message="설정된 수량이 1 미만",
+            )
 
         # 6. 주문 실행
         success_count = 0
@@ -149,14 +174,19 @@ async def process_kis_domestic_buy_orders_with_analysis(
 
             await asyncio.sleep(0.2)
 
-        return {
-            "success": success_count > 0,
-            "message": f"{success_count}개 주문 성공 (설정: {buy_price_levels}개 가격대)",
-            "orders_placed": success_count,
-            "prices": ordered_prices,
-            "quantities": ordered_quantities,
-            "total_amount": total_amount,
-        }
+        return OrderStepResult(
+            success=success_count > 0,
+            message=f"{success_count}개 주문 성공 (설정: {buy_price_levels}개 가격대)",
+            orders_placed=success_count,
+            prices=ordered_prices,
+            quantities=ordered_quantities,
+            total_amount=total_amount,
+        )
+
+
+# =============================================================================
+# OVERSEAS BUY
+# =============================================================================
 
 
 async def process_kis_overseas_buy_orders_with_analysis(
@@ -166,7 +196,28 @@ async def process_kis_overseas_buy_orders_with_analysis(
     avg_buy_price: float,
     exchange_code: str = "NASD",
 ) -> dict[str, Any]:
-    """분석 결과를 기반으로 KIS 해외 주식 매수 주문 처리"""
+    """분석 결과를 기반으로 KIS 해외 주식 매수 주문 처리.
+
+    Stage 1: 예외를 내부에서 흡수하여 structured error payload 반환.
+    """
+    try:
+        result = await _process_kis_overseas_buy_orders_impl(
+            kis_client, symbol, current_price, avg_buy_price, exchange_code
+        )
+        return result.to_payload()
+    except Exception as exc:
+        logger.exception(f"[{symbol}] Overseas buy order failed: {exc}")
+        return _map_exception_to_result(exc, f"overseas buy for {symbol}").to_payload()
+
+
+async def _process_kis_overseas_buy_orders_impl(
+    kis_client: KISClient,
+    symbol: str,
+    current_price: float,
+    avg_buy_price: float,
+    exchange_code: str = "NASD",
+) -> OrderStepResult:
+    """해외 매수 주문 실제 구현. 예외를 호출부로 전파."""
     from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
     from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
@@ -178,32 +229,25 @@ async def process_kis_overseas_buy_orders_with_analysis(
         if avg_buy_price > 0:
             target_price = avg_buy_price * 0.99
             if current_price >= target_price:
-                return {
-                    "success": False,
-                    "message": "1% 매수 조건 미충족",
-                    "orders_placed": 0,
-                }
+                return OrderStepResult(
+                    success=False,
+                    message="1% 매수 조건 미충족",
+                )
 
         if not analysis:
-            return {"success": False, "message": "분석 결과 없음", "orders_placed": 0}
+            return OrderStepResult(success=False, message="분석 결과 없음")
 
-        # 종목 설정 확인 및 buy_price_levels 가져오기
         settings_service = SymbolTradeSettingsService(db)
         settings = await settings_service.get_by_symbol(symbol)
         if not settings or not settings.is_active:
             logger.info(f"[{symbol}] {MSG_NO_SETTINGS}")
-            return {"success": False, "message": MSG_NO_SETTINGS, "orders_placed": 0}
+            return OrderStepResult(success=False, message=MSG_NO_SETTINGS)
 
-        buy_price_levels = settings.buy_price_levels  # 1~4 (주문할 가격대 수)
-        # settings에 exchange_code가 설정되어 있으면 그것을 사용
+        buy_price_levels = settings.buy_price_levels
         actual_exchange_code = settings.exchange_code or exchange_code
 
-        # 가격 정보 확인
-        # buy_price_levels=1일 때 스마트 선택:
-        # - 적정매수 max가 평균매수가보다 낮으면 → 적정매수 min 또는 희망매수 min 사용 (더 낮은 가격 선호)
-        # - 그렇지 않으면 → 적정매수 max 사용 (신규 진입 또는 적정 가격이 아직 높은 경우)
+        # 가격 정보 확인 (스마트 선택 로직)
         if buy_price_levels == 1:
-            # 스마트 단일 가격 선택
             appropriate_max = analysis.appropriate_buy_max
             use_lower_price = (
                 appropriate_max is not None
@@ -212,7 +256,6 @@ async def process_kis_overseas_buy_orders_with_analysis(
             )
 
             if use_lower_price:
-                # 적정매수 max가 평균매수가보다 낮음 → 더 낮은 가격(min 또는 hope_min) 선택
                 if analysis.appropriate_buy_min is not None:
                     buy_prices = [analysis.appropriate_buy_min]
                 elif analysis.buy_hope_min is not None:
@@ -220,7 +263,6 @@ async def process_kis_overseas_buy_orders_with_analysis(
                 else:
                     buy_prices = []
             else:
-                # 신규 진입이거나 적정매수 max >= 평균매수가 → max 사용
                 if analysis.appropriate_buy_max is not None:
                     buy_prices = [analysis.appropriate_buy_max]
                 elif analysis.appropriate_buy_min is not None:
@@ -228,7 +270,6 @@ async def process_kis_overseas_buy_orders_with_analysis(
                 else:
                     buy_prices = []
         else:
-            # 기존 로직: 낮은 가격 순서로 나열
             all_buy_prices = []
             if analysis.appropriate_buy_min:
                 all_buy_prices.append(analysis.appropriate_buy_min)
@@ -238,15 +279,13 @@ async def process_kis_overseas_buy_orders_with_analysis(
                 all_buy_prices.append(analysis.buy_hope_min)
             if analysis.buy_hope_max:
                 all_buy_prices.append(analysis.buy_hope_max)
-
             buy_prices = all_buy_prices[:buy_price_levels]
 
         if not buy_prices:
-            return {
-                "success": False,
-                "message": "분석 결과에 매수 가격 정보 없음",
-                "orders_placed": 0,
-            }
+            return OrderStepResult(
+                success=False,
+                message="분석 결과에 매수 가격 정보 없음",
+            )
 
         threshold_price = avg_buy_price * 0.99 if avg_buy_price > 0 else float("inf")
         valid_prices = [
@@ -254,20 +293,17 @@ async def process_kis_overseas_buy_orders_with_analysis(
         ]
 
         if not valid_prices:
-            return {
-                "success": False,
-                "message": f"조건에 맞는 매수 가격 없음 ({buy_price_levels}개 가격대 중 유효 없음)",
-                "orders_placed": 0,
-            }
+            return OrderStepResult(
+                success=False,
+                message=f"조건에 맞는 매수 가격 없음 ({buy_price_levels}개 가격대 중 유효 없음)",
+            )
 
-        # 수량 확인
         quantity = int(settings.buy_quantity_per_order)
         if quantity < 1:
-            return {
-                "success": False,
-                "message": "설정된 수량이 1 미만",
-                "orders_placed": 0,
-            }
+            return OrderStepResult(
+                success=False,
+                message="설정된 수량이 1 미만",
+            )
 
         success_count = 0
         ordered_prices: list[float] = []
@@ -290,14 +326,19 @@ async def process_kis_overseas_buy_orders_with_analysis(
 
             await asyncio.sleep(0.2)
 
-        return {
-            "success": success_count > 0,
-            "message": f"{success_count}개 주문 성공 (설정: {buy_price_levels}개 가격대)",
-            "orders_placed": success_count,
-            "prices": ordered_prices,
-            "quantities": ordered_quantities,
-            "total_amount": total_amount,
-        }
+        return OrderStepResult(
+            success=success_count > 0,
+            message=f"{success_count}개 주문 성공 (설정: {buy_price_levels}개 가격대)",
+            orders_placed=success_count,
+            prices=ordered_prices,
+            quantities=ordered_quantities,
+            total_amount=total_amount,
+        )
+
+
+# =============================================================================
+# DOMESTIC SELL
+# =============================================================================
 
 
 async def process_kis_domestic_sell_orders_with_analysis(
@@ -307,7 +348,28 @@ async def process_kis_domestic_sell_orders_with_analysis(
     avg_buy_price: float,
     balance_qty: int,
 ) -> dict[str, Any]:
-    """분석 결과를 기반으로 KIS 국내 주식 매도 주문 처리"""
+    """분석 결과를 기반으로 KIS 국내 주식 매도 주문 처리.
+
+    Stage 1: 예외를 내부에서 흡수하여 structured error payload 반환.
+    """
+    try:
+        result = await _process_kis_domestic_sell_orders_impl(
+            kis_client, symbol, current_price, avg_buy_price, balance_qty
+        )
+        return result.to_payload()
+    except Exception as exc:
+        logger.exception(f"[{symbol}] Domestic sell order failed: {exc}")
+        return _map_exception_to_result(exc, f"domestic sell for {symbol}").to_payload()
+
+
+async def _process_kis_domestic_sell_orders_impl(
+    kis_client: KISClient,
+    symbol: str,
+    current_price: float,
+    avg_buy_price: float,
+    balance_qty: int,
+) -> OrderStepResult:
+    """국내 매도 주문 실제 구현. 예외를 호출부로 전파."""
     from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
 
@@ -316,7 +378,7 @@ async def process_kis_domestic_sell_orders_with_analysis(
         analysis = await service.get_latest_analysis_by_symbol(symbol)
 
         if not analysis:
-            return {"success": False, "message": "분석 결과 없음", "orders_placed": 0}
+            return OrderStepResult(success=False, message="분석 결과 없음")
 
         sell_prices = []
         if analysis.appropriate_sell_min:
@@ -329,11 +391,10 @@ async def process_kis_domestic_sell_orders_with_analysis(
             sell_prices.append(analysis.sell_target_max)
 
         if not sell_prices:
-            return {
-                "success": False,
-                "message": "매도 가격 정보 없음",
-                "orders_placed": 0,
-            }
+            return OrderStepResult(
+                success=False,
+                message="매도 가격 정보 없음",
+            )
 
         min_sell_price = avg_buy_price * 1.01
         valid_prices = [
@@ -350,23 +411,22 @@ async def process_kis_domestic_sell_orders_with_analysis(
                     price=int(current_price),
                 )
                 if res and res.get("odno"):
-                    return {
-                        "success": True,
-                        "message": "목표가 도달로 전량 매도",
-                        "orders_placed": 1,
-                        "prices": [current_price],
-                        "quantities": [balance_qty],
-                        "total_volume": balance_qty,
-                        "expected_amount": current_price * balance_qty,
-                    }
+                    return OrderStepResult(
+                        success=True,
+                        message="목표가 도달로 전량 매도",
+                        orders_placed=1,
+                        prices=[current_price],
+                        quantities=[balance_qty],
+                        total_volume=balance_qty,
+                        expected_amount=current_price * balance_qty,
+                    )
                 else:
-                    return {
-                        "success": False,
-                        "message": "매도 주문 실패",
-                        "orders_placed": 0,
-                    }
+                    return OrderStepResult(
+                        success=False,
+                        message="매도 주문 실패",
+                    )
 
-            return {"success": False, "message": "매도 조건 미충족", "orders_placed": 0}
+            return OrderStepResult(success=False, message="매도 조건 미충족")
 
         split_count = len(valid_prices)
         qty_per_order = balance_qty // split_count
@@ -380,16 +440,16 @@ async def process_kis_domestic_sell_orders_with_analysis(
                 price=int(target_price),
             )
             if res and res.get("odno"):
-                return {
-                    "success": True,
-                    "message": "전량 매도 주문 (분할 불가)",
-                    "orders_placed": 1,
-                    "prices": [target_price],
-                    "quantities": [balance_qty],
-                    "total_volume": balance_qty,
-                    "expected_amount": target_price * balance_qty,
-                }
-            return {"success": False, "message": "매도 주문 실패", "orders_placed": 0}
+                return OrderStepResult(
+                    success=True,
+                    message="전량 매도 주문 (분할 불가)",
+                    orders_placed=1,
+                    prices=[target_price],
+                    quantities=[balance_qty],
+                    total_volume=balance_qty,
+                    expected_amount=target_price * balance_qty,
+                )
+            return OrderStepResult(success=False, message="매도 주문 실패")
 
         success_count = 0
         remaining_qty = balance_qty
@@ -418,15 +478,20 @@ async def process_kis_domestic_sell_orders_with_analysis(
 
             await asyncio.sleep(0.2)
 
-        return {
-            "success": success_count > 0,
-            "message": f"{success_count}건 분할 매도 주문 완료",
-            "orders_placed": success_count,
-            "prices": ordered_prices,
-            "quantities": ordered_quantities,
-            "total_volume": total_volume,
-            "expected_amount": expected_amount,
-        }
+        return OrderStepResult(
+            success=success_count > 0,
+            message=f"{success_count}건 분할 매도 주문 완료",
+            orders_placed=success_count,
+            prices=ordered_prices,
+            quantities=ordered_quantities,
+            total_volume=total_volume,
+            expected_amount=expected_amount,
+        )
+
+
+# =============================================================================
+# OVERSEAS SELL
+# =============================================================================
 
 
 async def process_kis_overseas_sell_orders_with_analysis(
@@ -437,7 +502,29 @@ async def process_kis_overseas_sell_orders_with_analysis(
     balance_qty: int,
     exchange_code: str = "NASD",
 ) -> dict[str, Any]:
-    """분석 결과를 기반으로 KIS 해외 주식 매도 주문 처리"""
+    """분석 결과를 기반으로 KIS 해외 주식 매도 주문 처리.
+
+    Stage 1: 예외를 내부에서 흡수하여 structured error payload 반환.
+    """
+    try:
+        result = await _process_kis_overseas_sell_orders_impl(
+            kis_client, symbol, current_price, avg_buy_price, balance_qty, exchange_code
+        )
+        return result.to_payload()
+    except Exception as exc:
+        logger.exception(f"[{symbol}] Overseas sell order failed: {exc}")
+        return _map_exception_to_result(exc, f"overseas sell for {symbol}").to_payload()
+
+
+async def _process_kis_overseas_sell_orders_impl(
+    kis_client: KISClient,
+    symbol: str,
+    current_price: float,
+    avg_buy_price: float,
+    balance_qty: int,
+    exchange_code: str = "NASD",
+) -> OrderStepResult:
+    """해외 매도 주문 실제 구현. 예외를 호출부로 전파."""
     from app.core.db import AsyncSessionLocal
     from app.services.stock_info_service import StockAnalysisService
     from app.services.symbol_trade_settings_service import SymbolTradeSettingsService
@@ -447,9 +534,8 @@ async def process_kis_overseas_sell_orders_with_analysis(
         analysis = await service.get_latest_analysis_by_symbol(symbol)
 
         if not analysis:
-            return {"success": False, "message": "분석 결과 없음", "orders_placed": 0}
+            return OrderStepResult(success=False, message="분석 결과 없음")
 
-        # settings에 exchange_code가 설정되어 있으면 그것을 사용
         settings_service = SymbolTradeSettingsService(db)
         settings = await settings_service.get_by_symbol(symbol)
         actual_exchange_code = (
@@ -458,9 +544,8 @@ async def process_kis_overseas_sell_orders_with_analysis(
             else exchange_code
         )
 
-        # KIS 계좌의 실제 주문가능수량 조회 (토스 등 수동 잔고 제외)
+        # KIS 계좌의 실제 주문가능수량 조회
         my_stocks = await kis_client.fetch_my_overseas_stocks()
-        # 심볼 형식 정규화하여 비교
         normalized_symbol = to_db_symbol(symbol)
         target_stock = next(
             (
@@ -471,7 +556,6 @@ async def process_kis_overseas_sell_orders_with_analysis(
             None,
         )
         if target_stock:
-            # ord_psbl_qty가 있으면 사용, 없으면 ovrs_cblc_qty 사용
             actual_qty = int(
                 float(
                     target_stock.get(
@@ -486,11 +570,10 @@ async def process_kis_overseas_sell_orders_with_analysis(
                 balance_qty = actual_qty
 
         if balance_qty <= 0:
-            return {
-                "success": False,
-                "message": "주문가능수량 없음",
-                "orders_placed": 0,
-            }
+            return OrderStepResult(
+                success=False,
+                message="주문가능수량 없음",
+            )
 
         sell_prices = []
         if analysis.appropriate_sell_min:
@@ -503,11 +586,10 @@ async def process_kis_overseas_sell_orders_with_analysis(
             sell_prices.append(analysis.sell_target_max)
 
         if not sell_prices:
-            return {
-                "success": False,
-                "message": "매도 가격 정보 없음",
-                "orders_placed": 0,
-            }
+            return OrderStepResult(
+                success=False,
+                message="매도 가격 정보 없음",
+            )
 
         min_sell_price = avg_buy_price * 1.01
         valid_prices = [
@@ -525,22 +607,21 @@ async def process_kis_overseas_sell_orders_with_analysis(
                     price=current_price,
                 )
                 if res and res.get("odno"):
-                    return {
-                        "success": True,
-                        "message": "목표가 도달로 전량 매도",
-                        "orders_placed": 1,
-                        "prices": [current_price],
-                        "quantities": [balance_qty],
-                        "total_volume": balance_qty,
-                        "expected_amount": current_price * balance_qty,
-                    }
+                    return OrderStepResult(
+                        success=True,
+                        message="목표가 도달로 전량 매도",
+                        orders_placed=1,
+                        prices=[current_price],
+                        quantities=[balance_qty],
+                        total_volume=balance_qty,
+                        expected_amount=current_price * balance_qty,
+                    )
                 else:
-                    return {
-                        "success": False,
-                        "message": "매도 주문 실패",
-                        "orders_placed": 0,
-                    }
-            return {"success": False, "message": "매도 조건 미충족", "orders_placed": 0}
+                    return OrderStepResult(
+                        success=False,
+                        message="매도 주문 실패",
+                    )
+            return OrderStepResult(success=False, message="매도 조건 미충족")
 
         split_count = len(valid_prices)
         qty_per_order = balance_qty // split_count
@@ -555,16 +636,16 @@ async def process_kis_overseas_sell_orders_with_analysis(
                 price=target_price,
             )
             if res and res.get("odno"):
-                return {
-                    "success": True,
-                    "message": "전량 매도 주문",
-                    "orders_placed": 1,
-                    "prices": [target_price],
-                    "quantities": [balance_qty],
-                    "total_volume": balance_qty,
-                    "expected_amount": target_price * balance_qty,
-                }
-            return {"success": False, "message": "매도 주문 실패", "orders_placed": 0}
+                return OrderStepResult(
+                    success=True,
+                    message="전량 매도 주문",
+                    orders_placed=1,
+                    prices=[target_price],
+                    quantities=[balance_qty],
+                    total_volume=balance_qty,
+                    expected_amount=target_price * balance_qty,
+                )
+            return OrderStepResult(success=False, message="매도 주문 실패")
 
         success_count = 0
         remaining_qty = balance_qty
@@ -597,12 +678,12 @@ async def process_kis_overseas_sell_orders_with_analysis(
 
             await asyncio.sleep(0.2)
 
-        return {
-            "success": success_count > 0,
-            "message": f"{success_count}건 분할 매도 주문 완료",
-            "orders_placed": success_count,
-            "prices": ordered_prices,
-            "quantities": ordered_quantities,
-            "total_volume": total_volume,
-            "expected_amount": expected_amount,
-        }
+        return OrderStepResult(
+            success=success_count > 0,
+            message=f"{success_count}건 분할 매도 주문 완료",
+            orders_placed=success_count,
+            prices=ordered_prices,
+            quantities=ordered_quantities,
+            total_volume=total_volume,
+            expected_amount=expected_amount,
+        )
