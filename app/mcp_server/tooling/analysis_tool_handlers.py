@@ -51,18 +51,17 @@ except ImportError:
     list_filings = None
 
 try:
+    from data.disclosures.dart_corp_index import NAME_TO_CORP as _name_to_corp
     from data.disclosures.dart_corp_index import (
-        NAME_TO_CORP as _NAME_TO_CORP,
+        prime_index as _prime_index_impl,
     )
-    from data.disclosures.dart_corp_index import (
-        prime_index as _prime_index,
-    )
-
-    name_to_corp_map = _NAME_TO_CORP
-    prime_index = _prime_index
 except ImportError:
-    name_to_corp_map = {}
-    prime_index = None
+    _name_to_corp = {}
+    _prime_index_impl = None
+
+NAME_TO_CORP: dict[str, Any] = _name_to_corp
+name_to_corp_map = NAME_TO_CORP
+prime_index = _prime_index_impl
 
 
 async def get_stock_name_by_code(code: str) -> str | None:
@@ -229,7 +228,7 @@ async def get_disclosures_impl(
             )
             pass
 
-    if not name_to_corp_map:
+    if not NAME_TO_CORP:
         if prime_index is None:
             return {
                 "success": False,

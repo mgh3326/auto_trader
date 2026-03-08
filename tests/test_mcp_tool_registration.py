@@ -41,3 +41,15 @@ async def test_recommend_stocks_registration() -> None:
     """Test recommend_stocks tool is registered."""
     tools = build_tools()
     assert "recommend_stocks" in tools
+
+
+@pytest.mark.asyncio
+async def test_trade_profile_issue_224_tools_registered() -> None:
+    tools = build_tools()
+
+    assert "get_tier_rule_params" in tools
+    assert "set_tier_rule_params" in tools
+    assert "get_market_filters" in tools
+    assert "set_market_filter" in tools
+    assert "delete_asset_profile" in tools
+    assert "prepare_trade_draft" in tools
