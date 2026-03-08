@@ -49,11 +49,6 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.13"]
-    needs: lint
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.13"]
 
     services:
       postgres:
@@ -109,8 +104,6 @@ jobs:
     - name: Run tests
       run: |
         uv run pytest tests/ -v -m "not live" -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=30
-      run: |
-        uv run pytest tests/ -v --cov=app --cov-report=xml --cov-report=html
 
     - name: TaskIQ worker smoke test
       run: |
@@ -160,9 +153,6 @@ jobs:
         token: ${{ secrets.CODECOV_TOKEN }}
         files: coverage.xml
         disable_search: true
-      uses: codecov/codecov-action@v5
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
 
 
   security:
