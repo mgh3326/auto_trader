@@ -470,6 +470,7 @@ async def test_screen_kr_falls_back_to_name_when_description_missing(
 
 class TestStockScreeningIntegration:
     @pytest.mark.integration
+    @pytest.mark.live
     @pytest.mark.asyncio
     async def test_kr_screening_real_api(self) -> None:
         pytest.importorskip("tvscreener")
@@ -486,6 +487,7 @@ class TestStockScreeningIntegration:
             assert first["name"]
 
     @pytest.mark.integration
+    @pytest.mark.live
     @pytest.mark.asyncio
     async def test_us_screening_real_api(self) -> None:
         pytest.importorskip("tvscreener")

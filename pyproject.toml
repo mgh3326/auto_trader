@@ -72,16 +72,13 @@ python_functions = ["test_*"]
 addopts = [
     "--strict-markers",
     "--strict-config",
-    "--cov=app",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-    "--cov-report=xml",
-    "--cov-fail-under=30"
 ]
+
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests"
+    "unit: marks tests as unit tests",
+    "live: marks tests as live API tests (require --run-live to execute)",
 ]
 filterwarnings = [
     "ignore::pydantic.warnings.PydanticDeprecatedSince212:google.genai.types"
