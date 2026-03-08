@@ -10,7 +10,7 @@ import asyncio
 import inspect
 import logging
 import random
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -75,6 +75,12 @@ class BaseKISClient:
     methods for API calls.
     """
 
+    _shared_http_client: ClassVar[httpx.AsyncClient | None] = None
+    _shared_http_client_owner: ClassVar[object | None] = None
+    _shared_http_client_entered: ClassVar[bool] = False
+    _shared_client_lock: ClassVar[asyncio.Lock | None] = None
+    _shared_http_client_builder_token: ClassVar[tuple[int, int] | None] = None
+
     def __init__(self) -> None:
         """Initialize base client with headers and token manager."""
         self._hdr_base = {
@@ -85,10 +91,40 @@ class BaseKISClient:
         }
         self._token_manager = redis_token_manager
         self._unmapped_rate_limit_keys_logged: set[str] = set()
-        self._http_client: httpx.AsyncClient | None = None
-        self._http_client_owner: object | None = None
-        self._http_client_entered = False
-        self._client_lock = asyncio.Lock()
+        if type(self)._shared_client_lock is None:
+            type(self)._shared_client_lock = asyncio.Lock()
+
+    @property
+    def _http_client(self) -> httpx.AsyncClient | None:
+        return type(self)._shared_http_client
+
+    @_http_client.setter
+    def _http_client(self, client: httpx.AsyncClient | None) -> None:
+        type(self)._shared_http_client = client
+
+    @property
+    def _http_client_owner(self) -> object | None:
+        return type(self)._shared_http_client_owner
+
+    @_http_client_owner.setter
+    def _http_client_owner(self, owner: object | None) -> None:
+        type(self)._shared_http_client_owner = owner
+
+    @property
+    def _http_client_entered(self) -> bool:
+        return type(self)._shared_http_client_entered
+
+    @_http_client_entered.setter
+    def _http_client_entered(self, entered: bool) -> None:
+        type(self)._shared_http_client_entered = entered
+
+    @property
+    def _client_lock(self) -> asyncio.Lock:
+        lock = type(self)._shared_client_lock
+        if lock is None:
+            lock = asyncio.Lock()
+            type(self)._shared_client_lock = lock
+        return lock
 
     @property
     def _settings(self):
@@ -101,9 +137,15 @@ class BaseKISClient:
     def _build_http_client(self, timeout: float) -> object:
         return httpx.AsyncClient(timeout=timeout)
 
+    def _current_http_client_builder_token(self) -> tuple[int, int]:
+        return (id(type(self)._build_http_client), id(httpx.AsyncClient))
+
     async def _open_http_client(self, timeout: float) -> httpx.AsyncClient:
         client_owner = self._build_http_client(timeout)
         self._http_client_owner = client_owner
+        type(
+            self
+        )._shared_http_client_builder_token = self._current_http_client_builder_token()
 
         owner = cast(Any, client_owner)
         if callable(getattr(owner, "__aenter__", None)):
@@ -121,26 +163,13 @@ class BaseKISClient:
         self._http_client_entered = False
         return client
 
-    async def _ensure_client(self, timeout: float | None = None) -> httpx.AsyncClient:
-        """Get or create the persistent HTTP client (lazy initialization)."""
-        if self._http_client is None:
-            async with self._client_lock:
-                if self._http_client is None:
-                    await self._open_http_client(timeout or 10.0)
-        assert self._http_client is not None
-        return self._http_client
-
-    async def close(self) -> None:
-        """Close the HTTP client and release resources."""
-        async with self._client_lock:
-            client = self._http_client
-            client_owner = self._http_client_owner
-            client_entered = self._http_client_entered
-
-            self._http_client = None
-            self._http_client_owner = None
-            self._http_client_entered = False
-
+    async def _close_client_resources(
+        self,
+        *,
+        client: httpx.AsyncClient | None,
+        client_owner: object | None,
+        client_entered: bool,
+    ) -> None:
         if client_owner is not None and client_entered:
             aexit = getattr(client_owner, "__aexit__", None)
             if callable(aexit):
@@ -157,6 +186,60 @@ class BaseKISClient:
                 if inspect.isawaitable(result):
                     await result
             logging.debug("KIS HTTP client closed")
+
+    async def _ensure_client(self, timeout: float | None = None) -> httpx.AsyncClient:
+        """Get or create the persistent HTTP client (lazy initialization)."""
+        current_builder_token = self._current_http_client_builder_token()
+        client_to_close: httpx.AsyncClient | None = None
+        owner_to_close: object | None = None
+        entered_to_close = False
+
+        async with self._client_lock:
+            if (
+                self._http_client is not None
+                and type(self)._shared_http_client_builder_token is not None
+                and type(self)._shared_http_client_builder_token
+                != current_builder_token
+            ):
+                client_to_close = self._http_client
+                owner_to_close = self._http_client_owner
+                entered_to_close = self._http_client_entered
+                self._http_client = None
+                self._http_client_owner = None
+                self._http_client_entered = False
+                type(self)._shared_http_client_builder_token = None
+
+        if client_to_close is not None or owner_to_close is not None:
+            await self._close_client_resources(
+                client=client_to_close,
+                client_owner=owner_to_close,
+                client_entered=entered_to_close,
+            )
+
+        if self._http_client is None:
+            async with self._client_lock:
+                if self._http_client is None:
+                    _ = await self._open_http_client(timeout or 10.0)
+        assert self._http_client is not None
+        return self._http_client
+
+    async def close(self) -> None:
+        """Close the HTTP client and release resources."""
+        async with self._client_lock:
+            client = self._http_client
+            client_owner = self._http_client_owner
+            client_entered = self._http_client_entered
+
+            self._http_client = None
+            self._http_client_owner = None
+            self._http_client_entered = False
+            type(self)._shared_http_client_builder_token = None
+
+        await self._close_client_resources(
+            client=client,
+            client_owner=client_owner,
+            client_entered=client_entered,
+        )
 
     async def _fetch_token(self) -> tuple[str, int]:
         """Fetch new OAuth2 token from KIS API.

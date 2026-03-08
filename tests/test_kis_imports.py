@@ -190,3 +190,36 @@ class TestKISClientLifecycle:
 
         # Second close should not raise
         await client.close()
+
+    @pytest.mark.asyncio
+    async def test_instances_share_underlying_http_client(self):
+        from app.services.brokers.kis.client import KISClient
+
+        class DummyOwner:
+            def __init__(self):
+                self.client = AsyncMock()
+
+            async def __aenter__(self):
+                return self.client
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return None
+
+        owner = DummyOwner()
+
+        with patch.object(
+            KISClient,
+            "_build_http_client",
+            return_value=owner,
+        ) as mock_build:
+            client_one = KISClient()
+            client_two = KISClient()
+
+            try:
+                http_client_one = await client_one._ensure_client()
+                http_client_two = await client_two._ensure_client()
+
+                assert http_client_one is http_client_two
+                mock_build.assert_called_once()
+            finally:
+                await client_one.close()
