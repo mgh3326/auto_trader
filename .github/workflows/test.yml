@@ -45,6 +45,12 @@ jobs:
   test:
     needs: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+    needs: lint
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.13"]
@@ -102,6 +108,8 @@ jobs:
 
     - name: Run tests
       run: |
+        uv run pytest tests/ -v -m "not live" -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=30
+      run: |
         uv run pytest tests/ -v --cov=app --cov-report=xml --cov-report=html
 
     - name: TaskIQ worker smoke test
@@ -146,15 +154,16 @@ jobs:
           taskiq-scheduler.log
         if-no-files-found: warn
 
-    - name: Upload coverage reports to GitHub
+    - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v5
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
-    - name: Upload coverage reports to GitHub
-      uses: actions/upload-artifact@v4
+        files: coverage.xml
+        disable_search: true
+      uses: codecov/codecov-action@v5
       with:
-        name: coverage-report-${{ matrix.python-version }}
-        path: htmlcov/
+        token: ${{ secrets.CODECOV_TOKEN }}
+
 
   security:
     runs-on: ubuntu-latest

@@ -512,6 +512,7 @@ async def test_enrich_crypto_indicators_manual_fallback_uses_upbit_keys(
 
 class TestCryptoScreeningIntegration:
     @pytest.mark.integration
+    @pytest.mark.live
     @pytest.mark.asyncio
     async def test_enrich_real_symbols(self) -> None:
         pytest.importorskip("tvscreener")

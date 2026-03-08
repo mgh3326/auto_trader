@@ -16,6 +16,13 @@
 
 ## CONVENTIONS
 - Canonical pytest config lives in `pyproject.toml` (`[tool.pytest.ini_options]`).
+- Enforced settings include strict markers/config. Coverage is explicit-only via `make test-cov` or CI.
+- Registered markers are `slow`, `integration`, `unit`, and `live`; use only registered markers.
+- `live` marks tests that make external API calls and require `--run-live` to execute.
+- `live` is always a strict subset of `integration`.
+- Naming follows `test_*.py` or `*_test.py`, test functions `test_*`, classes `Test*`.
+- Default command set comes from `Makefile` (`make test`, `make test-unit`, `make test-integration`, `make test-live`, `make test-cov`).
+- Canonical pytest config lives in `pyproject.toml` (`[tool.pytest.ini_options]`).
 - Enforced settings include strict markers/config and `--cov-fail-under=50`.
 - Registered markers are `slow`, `integration`, and `unit`; use only registered markers.
 - Naming follows `test_*.py` or `*_test.py`, test functions `test_*`, classes `Test*`.
