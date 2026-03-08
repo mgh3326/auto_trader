@@ -12,12 +12,26 @@ Features:
 from __future__ import annotations
 
 import logging
+from typing import TypedDict
 
 import httpx
 
 from app.core.timezone import format_datetime
 
 logger = logging.getLogger(__name__)
+
+
+class DiscordField(TypedDict):
+    name: str
+    value: str
+    inline: bool
+
+
+class DiscordEmbed(TypedDict):
+    title: str
+    description: str
+    color: int
+    fields: list[DiscordField]
 
 
 class TradeNotifier:
@@ -153,35 +167,18 @@ class TradeNotifier:
         prices: list[float],
         volumes: list[float],
         market_type: str = "암호화폐",
-    ) -> dict:
-        """
-        Format buy order notification as Discord embed.
-
-        Args:
-            symbol: Trading symbol (e.g., "BTC", "005930")
-            korean_name: Korean name of asset
-            order_count: Number of orders placed
-            total_amount: Total amount in KRW
-            prices: List of order prices
-            volumes: List of order volumes
-            market_type: Type of market (암호화폐, 국내주식, 해외주식)
-
-        Returns:
-            Discord embed dict
-        """
+    ) -> DiscordEmbed:
         timestamp = format_datetime()
 
-        # Build fields list
-        fields = [
+        fields: list[DiscordField] = [
             {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
             {"name": "시장", "value": market_type, "inline": True},
             {"name": "주문 수", "value": f"{order_count}건", "inline": True},
             {"name": "총 금액", "value": f"{total_amount:,.0f}원", "inline": False},
         ]
 
-        # Add order details if available
         if prices and volumes and len(prices) == len(volumes):
-            order_details = []
+            order_details: list[str] = []
             for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
                 order_details.append(f"{i}. {price:,.2f}원 × {volume:.8g}")
             fields.append(
@@ -192,7 +189,7 @@ class TradeNotifier:
                 }
             )
         elif prices:
-            price_list = []
+            price_list: list[str] = []
             for i, price in enumerate(prices, 1):
                 price_list.append(f"{i}. {price:,.2f}원")
             fields.append(
@@ -206,7 +203,7 @@ class TradeNotifier:
         return {
             "title": "💰 매수 주문 접수",
             "description": f"🕒 {timestamp}",
-            "color": 0x00FF00,  # Green for buy
+            "color": 0x00FF00,
             "fields": fields,
         }
 
@@ -220,27 +217,10 @@ class TradeNotifier:
         volumes: list[float],
         expected_amount: float,
         market_type: str = "암호화폐",
-    ) -> dict:
-        """
-        Format sell order notification as Discord embed.
-
-        Args:
-            symbol: Trading symbol
-            korean_name: Korean name of asset
-            order_count: Number of orders placed
-            total_volume: Total volume being sold
-            prices: List of order prices
-            volumes: List of order volumes
-            expected_amount: Expected total amount in KRW
-            market_type: Type of market
-
-        Returns:
-            Discord embed dict
-        """
+    ) -> DiscordEmbed:
         timestamp = format_datetime()
 
-        # Build fields list
-        fields = [
+        fields: list[DiscordField] = [
             {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
             {"name": "시장", "value": market_type, "inline": True},
             {"name": "주문 수", "value": f"{order_count}건", "inline": True},
@@ -252,9 +232,8 @@ class TradeNotifier:
             },
         ]
 
-        # Add order details if available
         if prices and volumes and len(prices) == len(volumes):
-            order_details = []
+            order_details: list[str] = []
             for i, (price, volume) in enumerate(zip(prices, volumes, strict=True), 1):
                 order_details.append(f"{i}. {price:,.2f}원 × {volume:.8g}")
             fields.append(
@@ -265,7 +244,7 @@ class TradeNotifier:
                 }
             )
         elif prices:
-            price_list = []
+            price_list: list[str] = []
             for i, price in enumerate(prices, 1):
                 price_list.append(f"{i}. {price:,.2f}원")
             fields.append(
@@ -279,7 +258,7 @@ class TradeNotifier:
         return {
             "title": "💸 매도 주문 접수",
             "description": f"🕒 {timestamp}",
-            "color": 0xFF0000,  # Red for sell
+            "color": 0xFF0000,
             "fields": fields,
         }
 
@@ -290,24 +269,10 @@ class TradeNotifier:
         cancel_count: int,
         order_type: str = "전체",
         market_type: str = "암호화폐",
-    ) -> dict:
-        """
-        Format order cancellation notification as Discord embed.
-
-        Args:
-            symbol: Trading symbol
-            korean_name: Korean name of asset
-            cancel_count: Number of orders cancelled
-            order_type: Type of orders cancelled (매수, 매도, 전체)
-            market_type: Type of market
-
-        Returns:
-            Discord embed dict
-        """
+    ) -> DiscordEmbed:
         timestamp = format_datetime()
 
-        # Build fields list
-        fields = [
+        fields: list[DiscordField] = [
             {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
             {"name": "시장", "value": market_type, "inline": True},
             {"name": "취소 유형", "value": order_type, "inline": True},
@@ -317,7 +282,7 @@ class TradeNotifier:
         return {
             "title": "🚫 주문 취소",
             "description": f"🕒 {timestamp}",
-            "color": 0xFFFF00,  # Yellow for cancel
+            "color": 0xFFFF00,
             "fields": fields,
         }
 
@@ -329,43 +294,25 @@ class TradeNotifier:
         confidence: float,
         reasons: list[str],
         market_type: str = "암호화폐",
-    ) -> dict:
-        """
-        Format AI analysis notification as Discord embed.
-
-        Args:
-            symbol: Trading symbol
-            korean_name: Korean name of asset
-            decision: AI decision (buy, hold, sell)
-            confidence: Confidence score (0-100)
-            reasons: List of decision reasons
-            market_type: Type of market
-
-        Returns:
-            Discord embed dict
-        """
+    ) -> DiscordEmbed:
         timestamp = format_datetime()
 
-        # Decision emoji mapping
         decision_emoji = {"buy": "🟢", "hold": "🟡", "sell": "🔴"}
         decision_text = {"buy": "매수", "hold": "보유", "sell": "매도"}
 
         emoji = decision_emoji.get(decision.lower(), "⚪")
         decision_kr = decision_text.get(decision.lower(), decision)
 
-        # Build fields list
-        fields = [
+        fields: list[DiscordField] = [
             {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
             {"name": "시장", "value": market_type, "inline": True},
             {"name": "판단", "value": f"{emoji} {decision_kr}", "inline": True},
             {"name": "신뢰도", "value": f"{confidence:.1f}%", "inline": False},
         ]
 
-        # Add reasons if available
         if reasons:
             reason_text = "\n".join(
-                f"{i}. {reason}"
-                for i, reason in enumerate(reasons[:3], 1)  # Max 3 reasons
+                f"{i}. {reason}" for i, reason in enumerate(reasons[:3], 1)
             )
             fields.append(
                 {
@@ -378,7 +325,7 @@ class TradeNotifier:
         return {
             "title": "📊 AI 분석 완료",
             "description": f"🕒 {timestamp}",
-            "color": 0x0000FF,  # Blue for analysis
+            "color": 0x0000FF,
             "fields": fields,
         }
 
@@ -390,25 +337,10 @@ class TradeNotifier:
         sold: int,
         errors: int,
         duration_seconds: float,
-    ) -> dict:
-        """
-        Format automation execution summary as Discord embed.
-
-        Args:
-            total_coins: Total number of coins processed
-            analyzed: Number of coins analyzed
-            bought: Number of buy orders placed
-            sold: Number of sell orders placed
-            errors: Number of errors occurred
-            duration_seconds: Total execution time
-
-        Returns:
-            Discord embed dict
-        """
+    ) -> DiscordEmbed:
         timestamp = format_datetime()
 
-        # Build fields list
-        fields = [
+        fields: list[DiscordField] = [
             {"name": "처리 종목", "value": f"{total_coins}개", "inline": True},
             {"name": "분석 완료", "value": f"{analyzed}개", "inline": True},
             {"name": "매수 주문", "value": f"{bought}건", "inline": True},
@@ -416,7 +348,6 @@ class TradeNotifier:
             {"name": "실행 시간", "value": f"{duration_seconds:.1f}초", "inline": True},
         ]
 
-        # Add error count if any errors occurred
         if errors > 0:
             fields.append(
                 {
@@ -429,7 +360,7 @@ class TradeNotifier:
         return {
             "title": "🤖 자동 거래 실행 완료",
             "description": f"🕒 {timestamp}",
-            "color": 0x00FFFF,  # Cyan for automation
+            "color": 0x00FFFF,
             "fields": fields,
         }
 
@@ -505,7 +436,7 @@ class TradeNotifier:
                         "disable_web_page_preview": True,
                     },
                 )
-                response.raise_for_status()
+                _ = response.raise_for_status()
                 success_count += 1
 
             except Exception as e:
@@ -538,7 +469,7 @@ class TradeNotifier:
                     json={"content": message},
                     headers={"Content-Type": "application/json"},
                 )
-                response.raise_for_status()
+                _ = response.raise_for_status()
                 success_count += 1
 
             except Exception as e:
@@ -549,7 +480,7 @@ class TradeNotifier:
             return True
         return False
 
-    async def _send_to_discord_embed(self, embed: dict) -> bool:
+    async def _send_to_discord_embed(self, embed: DiscordEmbed) -> bool:
         """
         Send Discord embed to all configured Discord webhooks.
 
@@ -571,7 +502,7 @@ class TradeNotifier:
                     json={"embeds": [embed]},
                     headers={"Content-Type": "application/json"},
                 )
-                response.raise_for_status()
+                _ = response.raise_for_status()
                 success_count += 1
 
             except Exception as e:
@@ -583,7 +514,7 @@ class TradeNotifier:
         return False
 
     async def _send_to_discord_embed_single(
-        self, embed: dict, webhook_url: str
+        self, embed: DiscordEmbed, webhook_url: str
     ) -> bool:
         """
         Send Discord embed to a specific webhook URL.
@@ -608,7 +539,7 @@ class TradeNotifier:
                 json={"embeds": [embed]},
                 headers={"Content-Type": "application/json"},
             )
-            response.raise_for_status()
+            _ = response.raise_for_status()
             logger.info("Embed sent to Discord webhook")
             return True
 
@@ -642,7 +573,7 @@ class TradeNotifier:
                 json={"content": content},
                 headers={"Content-Type": "application/json"},
             )
-            response.raise_for_status()
+            _ = response.raise_for_status()
             logger.info("Content sent to Discord webhook")
             return True
 
@@ -1177,23 +1108,10 @@ class TradeNotifier:
         korean_name: str,
         reason: str,
         market_type: str = "암호화폐",
-    ) -> dict:
-        """
-        Format trade failure notification as Discord embed.
-
-        Args:
-            symbol: Trading symbol
-            korean_name: Korean name of asset
-            reason: Failure reason
-            market_type: Type of market
-
-        Returns:
-            Discord embed dict
-        """
+    ) -> DiscordEmbed:
         timestamp = format_datetime()
 
-        # Build fields list
-        fields = [
+        fields: list[DiscordField] = [
             {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
             {"name": "시장", "value": market_type, "inline": True},
             {"name": "사유", "value": reason, "inline": False},
@@ -1202,7 +1120,7 @@ class TradeNotifier:
         return {
             "title": "⚠️ 거래 실패",
             "description": f"🕒 {timestamp}",
-            "color": 0xFF6600,  # Orange for failure
+            "color": 0xFF6600,
             "fields": fields,
         }
 
@@ -1272,34 +1190,14 @@ class TradeNotifier:
         recommended_quantity: int,
         currency: str = "원",
         market_type: str = "국내주식",
-    ) -> dict:
-        """
-        Format Toss manual buy recommendation notification as Discord embed.
-
-        Args:
-            symbol: Trading symbol
-            korean_name: Korean name of asset
-            current_price: Current market price
-            toss_quantity: Quantity held in Toss
-            toss_avg_price: Average price in Toss
-            kis_quantity: Quantity held in KIS (optional)
-            kis_avg_price: Average price in KIS (optional)
-            recommended_price: AI recommended buy price
-            recommended_quantity: AI recommended buy quantity
-            currency: Currency symbol (원, $)
-            market_type: Type of market
-
-        Returns:
-            Discord embed dict
-        """
+    ) -> DiscordEmbed:
         timestamp = format_datetime()
         is_usd = currency == "$"
 
-        def price_fmt(p: float) -> str:
-            return f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
+        def price_fmt(price: float) -> str:
+            return f"${price:,.2f}" if is_usd else f"{price:,.0f}{currency}"
 
-        # Build fields list
-        fields = [
+        fields: list[DiscordField] = [
             {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
             {"name": "시장", "value": market_type, "inline": True},
             {"name": "현재가", "value": price_fmt(current_price), "inline": False},
@@ -1310,7 +1208,6 @@ class TradeNotifier:
             },
         ]
 
-        # Add KIS holdings if available
         if kis_quantity and kis_quantity > 0 and kis_avg_price:
             fields.append(
                 {
@@ -1320,7 +1217,6 @@ class TradeNotifier:
                 }
             )
 
-        # Add recommendation
         fields.extend(
             [
                 {
@@ -1339,7 +1235,7 @@ class TradeNotifier:
         return {
             "title": "📈 [토스 수동매수]",
             "description": f"🕒 {timestamp}",
-            "color": 0x00FF00,  # Green for buy
+            "color": 0x00FF00,
             "fields": fields,
         }
 
@@ -1358,38 +1254,16 @@ class TradeNotifier:
         profit_percent: float,
         currency: str = "원",
         market_type: str = "국내주식",
-    ) -> dict:
-        """
-        Format Toss manual sell recommendation notification as Discord embed.
-
-        Args:
-            symbol: Trading symbol
-            korean_name: Korean name of asset
-            current_price: Current market price
-            toss_quantity: Quantity held in Toss
-            toss_avg_price: Average price in Toss
-            kis_quantity: Quantity held in KIS (optional)
-            kis_avg_price: Average price in KIS (optional)
-            recommended_price: AI recommended sell price
-            recommended_quantity: AI recommended sell quantity
-            expected_profit: Expected profit amount
-            profit_percent: Expected profit percentage
-            currency: Currency symbol (원, $)
-            market_type: Type of market
-
-        Returns:
-            Discord embed dict
-        """
+    ) -> DiscordEmbed:
         timestamp = format_datetime()
         is_usd = currency == "$"
 
-        def price_fmt(p: float) -> str:
-            return f"${p:,.2f}" if is_usd else f"{p:,.0f}{currency}"
+        def price_fmt(price: float) -> str:
+            return f"${price:,.2f}" if is_usd else f"{price:,.0f}{currency}"
 
         profit_sign = "+" if profit_percent >= 0 else ""
 
-        # Build fields list
-        fields = [
+        fields: list[DiscordField] = [
             {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
             {"name": "시장", "value": market_type, "inline": True},
             {"name": "현재가", "value": price_fmt(current_price), "inline": False},
@@ -1400,7 +1274,6 @@ class TradeNotifier:
             },
         ]
 
-        # Add KIS holdings if available
         if kis_quantity and kis_quantity > 0 and kis_avg_price:
             fields.append(
                 {
@@ -1410,7 +1283,6 @@ class TradeNotifier:
                 }
             )
 
-        # Add recommendation with profit
         fields.extend(
             [
                 {
@@ -1434,7 +1306,7 @@ class TradeNotifier:
         return {
             "title": "📉 [토스 수동매도]",
             "description": f"🕒 {timestamp}",
-            "color": 0xFF0000,  # Red for sell
+            "color": 0xFF0000,
             "fields": fields,
         }
 
@@ -1484,6 +1356,8 @@ class TradeNotifier:
                 market_type=market_type,
             )
             webhook_url = self._get_webhook_for_market_type(market_type)
+            if not webhook_url:
+                return False
             return await self._send_to_discord_embed_single(embed, webhook_url)
         except Exception as e:
             logger.error(f"Failed to send Toss buy recommendation: {e}")
@@ -1539,6 +1413,8 @@ class TradeNotifier:
                 market_type=market_type,
             )
             webhook_url = self._get_webhook_for_market_type(market_type)
+            if not webhook_url:
+                return False
             return await self._send_to_discord_embed_single(embed, webhook_url)
         except Exception as e:
             logger.error(f"Failed to send Toss sell recommendation: {e}")
@@ -1564,10 +1440,12 @@ class TradeNotifier:
         sell_target_max: float | None = None,
         currency: str = "원",
         market_type: str = "국내주식",
-    ) -> dict:
+    ) -> str:
         """
-        Format Toss price recommendation notification with AI analysis as Discord embed.
+        Format Toss price recommendation notification with AI analysis as HTML for Telegram.
         """
+        import html
+
         timestamp = format_datetime()
         is_usd = currency == "$"
 
@@ -1586,12 +1464,114 @@ class TradeNotifier:
         emoji = decision_emoji.get(decision.lower(), "⚪")
         decision_kr = decision_text.get(decision.lower(), decision)
 
-        # Color based on decision
+        # Escape HTML special characters in text values
+        safe_name = html.escape(korean_name)
+        safe_symbol = html.escape(symbol)
+
+        # Build HTML message
+        lines = [
+            "📊 <b>[토스] AI 분석</b>",
+            f"🕒 {timestamp}",
+            "",
+            f"<b>종목:</b> {safe_name} ({safe_symbol})",
+            f"<b>시장:</b> {market_type}",
+            f"<b>현재가:</b> {price_fmt(current_price)}",
+            f"<b>보유:</b> {toss_quantity}주 (평단가 {price_fmt(toss_avg_price)}, {profit_sign}{profit_percent:.1f}%)",
+            f"<b>AI 판단:</b> {emoji} {decision_kr} (신뢰도 {confidence:.0f}%)",
+        ]
+
+        # 근거 추가
+        if reasons:
+            lines.append("")
+            lines.append("<b>근거:</b>")
+            for i, reason in enumerate(reasons[:3], 1):
+                safe_reason = html.escape(reason)
+                lines.append(f"{i}. {safe_reason}")
+
+        # 가격 제안 추가
+        price_suggestions: list[str] = []
+
+        if appropriate_buy_min or appropriate_buy_max:
+            buy_range: list[str] = []
+            if appropriate_buy_min:
+                buy_range.append(price_fmt(appropriate_buy_min))
+            if appropriate_buy_max:
+                buy_range.append(price_fmt(appropriate_buy_max))
+            price_suggestions.append(f"적정 매수: {' ~ '.join(buy_range)}")
+
+        if appropriate_sell_min or appropriate_sell_max:
+            sell_range: list[str] = []
+            if appropriate_sell_min:
+                sell_range.append(price_fmt(appropriate_sell_min))
+            if appropriate_sell_max:
+                sell_range.append(price_fmt(appropriate_sell_max))
+            price_suggestions.append(f"적정 매도: {' ~ '.join(sell_range)}")
+
+        if buy_hope_min or buy_hope_max:
+            hope_range: list[str] = []
+            if buy_hope_min:
+                hope_range.append(price_fmt(buy_hope_min))
+            if buy_hope_max:
+                hope_range.append(price_fmt(buy_hope_max))
+            price_suggestions.append(f"매수 희망: {' ~ '.join(hope_range)}")
+
+        if sell_target_min or sell_target_max:
+            target_range: list[str] = []
+            if sell_target_min:
+                target_range.append(price_fmt(sell_target_min))
+            if sell_target_max:
+                target_range.append(price_fmt(sell_target_max))
+            price_suggestions.append(f"매도 목표: {' ~ '.join(target_range)}")
+
+        if price_suggestions:
+            lines.append("")
+            lines.append("<b>가격 제안:</b>")
+            for suggestion in price_suggestions:
+                lines.append(html.escape(suggestion))
+
+        return "\n".join(lines)
+
+    def _format_toss_price_recommendation_discord_embed(
+        self,
+        symbol: str,
+        korean_name: str,
+        current_price: float,
+        toss_quantity: int,
+        toss_avg_price: float,
+        decision: str,
+        confidence: float,
+        reasons: list[str],
+        appropriate_buy_min: float | None,
+        appropriate_buy_max: float | None,
+        appropriate_sell_min: float | None,
+        appropriate_sell_max: float | None,
+        buy_hope_min: float | None = None,
+        buy_hope_max: float | None = None,
+        sell_target_min: float | None = None,
+        sell_target_max: float | None = None,
+        currency: str = "원",
+        market_type: str = "국내주식",
+    ) -> DiscordEmbed:
+        timestamp = format_datetime()
+        is_usd = currency == "$"
+
+        def price_fmt(price: float) -> str:
+            return f"${price:,.2f}" if is_usd else f"{price:,.0f}{currency}"
+
+        profit_percent = (
+            ((current_price / toss_avg_price) - 1) * 100 if toss_avg_price > 0 else 0
+        )
+        profit_sign = "+" if profit_percent >= 0 else ""
+
+        decision_emoji = {"buy": "🟢", "hold": "🟡", "sell": "🔴"}
+        decision_text = {"buy": "매수", "hold": "보유", "sell": "매도"}
+        emoji = decision_emoji.get(decision.lower(), "⚪")
+        decision_kr = decision_text.get(decision.lower(), decision)
+
         decision_color = {"buy": 0x00FF00, "hold": 0xFFFF00, "sell": 0xFF0000}
         color = decision_color.get(decision.lower(), 0x0000FF)
 
-        # Build fields list
-        fields = [
+        fields: list[DiscordField] = [
             {"name": "종목", "value": f"{korean_name} ({symbol})", "inline": True},
             {"name": "시장", "value": market_type, "inline": True},
             {"name": "현재가", "value": price_fmt(current_price), "inline": True},
@@ -1607,49 +1587,37 @@ class TradeNotifier:
             },
         ]
 
-        # 근거 추가
         if reasons:
             reason_text = "\n".join(
                 f"{i}. {reason[:80]}..." if len(reason) > 80 else f"{i}. {reason}"
                 for i, reason in enumerate(reasons[:3], 1)
             )
-            fields.append(
-                {
-                    "name": "근거",
-                    "value": reason_text,
-                    "inline": False,
-                }
-            )
+            fields.append({"name": "근거", "value": reason_text, "inline": False})
 
-        # 가격 제안 추가
-        price_suggestions = []
-
+        price_suggestions: list[str] = []
         if appropriate_buy_min or appropriate_buy_max:
-            buy_range = []
+            buy_range: list[str] = []
             if appropriate_buy_min:
                 buy_range.append(price_fmt(appropriate_buy_min))
             if appropriate_buy_max:
                 buy_range.append(price_fmt(appropriate_buy_max))
             price_suggestions.append(f"적정 매수: {' ~ '.join(buy_range)}")
-
         if appropriate_sell_min or appropriate_sell_max:
-            sell_range = []
+            sell_range: list[str] = []
             if appropriate_sell_min:
                 sell_range.append(price_fmt(appropriate_sell_min))
             if appropriate_sell_max:
                 sell_range.append(price_fmt(appropriate_sell_max))
             price_suggestions.append(f"적정 매도: {' ~ '.join(sell_range)}")
-
         if buy_hope_min or buy_hope_max:
-            hope_range = []
+            hope_range: list[str] = []
             if buy_hope_min:
                 hope_range.append(price_fmt(buy_hope_min))
             if buy_hope_max:
                 hope_range.append(price_fmt(buy_hope_max))
             price_suggestions.append(f"매수 희망: {' ~ '.join(hope_range)}")
-
         if sell_target_min or sell_target_max:
-            target_range = []
+            target_range: list[str] = []
             if sell_target_min:
                 target_range.append(price_fmt(sell_target_min))
             if sell_target_max:
@@ -1707,7 +1675,7 @@ class TradeNotifier:
             return False
 
         try:
-            embed = self._format_toss_price_recommendation_html(
+            embed = self._format_toss_price_recommendation_discord_embed(
                 symbol=symbol,
                 korean_name=korean_name,
                 current_price=current_price,
@@ -1728,6 +1696,8 @@ class TradeNotifier:
                 market_type=market_type,
             )
             webhook_url = self._get_webhook_for_market_type(market_type)
+            if not webhook_url:
+                return False
             return await self._send_to_discord_embed_single(embed, webhook_url)
         except Exception as e:
             logger.error(f"Failed to send Toss price recommendation: {e}")
@@ -1795,10 +1765,11 @@ class TradeNotifier:
             # Use first available Discord webhook for testing
             for webhook_url in discord_webhooks:
                 if webhook_url:
-                    test_embed = {
+                    test_embed: DiscordEmbed = {
                         "title": "✅ 거래 알림 테스트",
                         "description": f"연결 성공: {format_datetime()}\n거래 알림 시스템이 정상 작동 중입니다.",
                         "color": 0x00FF00,  # Green for success
+                        "fields": [],
                     }
                     return await self._send_to_discord_embed_single(
                         test_embed, webhook_url

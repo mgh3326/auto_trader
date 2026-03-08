@@ -173,7 +173,7 @@ class TestKISService:
     """Test KIS service functionality."""
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_kis_client_initialization(self, mock_client_class):
         """Test KIS client initialization."""
         # Mock client
@@ -189,7 +189,7 @@ class TestKISService:
         assert hasattr(client, "_hdr_base")
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_kis_volume_rank(self, mock_client_class):
         """Test KIS volume rank functionality."""
         # Mock client
@@ -212,7 +212,8 @@ class TestKISService:
         # Mock client의 get 메서드 설정
         mock_client.get.return_value = mock_response
 
-        # Mock client class가 context manager로 동작하도록 설정
+        # Mock client class for both direct calls and context manager
+        mock_client_class.return_value = mock_client
         mock_client_class.return_value.__aenter__.return_value = mock_client
         mock_client_class.return_value.__aexit__.return_value = None
 
@@ -229,7 +230,7 @@ class TestKISService:
             assert len(result) > 0
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_fetch_my_stocks_inqr_dvsn_domestic(self, mock_client_class):
         """Verify INQR_DVSN is set to '00' for domestic stock queries."""
         # Setup mock client and response
@@ -282,7 +283,7 @@ class TestKISService:
             assert headers["tr_id"] == "TTTC8434R"
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_inquire_domestic_cash_balance_success(
         self, mock_client_class, monkeypatch
     ):
@@ -325,7 +326,7 @@ class TestKISService:
         assert headers["tr_id"] == "TTTC8434R"
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_inquire_domestic_cash_balance_fallback_ord_psbl_cash(
         self, mock_client_class, monkeypatch
     ):
@@ -361,7 +362,7 @@ class TestKISService:
         assert result["stck_cash_ord_psbl_amt"] == 950000.0
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_inquire_domestic_cash_balance_api_error_raises(
         self, mock_client_class, monkeypatch
     ):
@@ -391,7 +392,7 @@ class TestKISService:
                 await client.inquire_domestic_cash_balance(is_mock=False)
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_inquire_overseas_margin_parses_extended_orderable_fields(
         self, mock_client_class, monkeypatch
     ):
@@ -439,7 +440,7 @@ class TestKISService:
         assert result[0]["itgr_ord_psbl_amt"] == 5824.27
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_inquire_overseas_margin_safe_float_handles_blank_values(
         self, mock_client_class, monkeypatch
     ):
@@ -761,7 +762,7 @@ class TestKISIntegratedMarginParams:
     """Test KIS 통합증거금 요청 파라미터 검증 (OPSQ2001 방지)."""
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_params_includes_cma_field(
         self, mock_settings, mock_client_class
@@ -812,7 +813,7 @@ class TestKISIntegratedMarginParams:
         assert INTEGRATED_MARGIN_URL in call_args.args[0]
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_opsq2001_retry_with_y(
         self, mock_settings, mock_client_class
@@ -867,7 +868,7 @@ class TestKISIntegratedMarginParams:
         assert result["stck_itgr_cash100_ord_psbl_amt"] == 800000.0
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_missing_domestic_fields_defaults_zero(
         self, mock_settings, mock_client_class
@@ -928,7 +929,7 @@ class TestKISFailureLogging:
     """Test KIS API 실패 로깅 검증."""
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_domestic_cash_balance_logs_failure_details(
         self, mock_settings, mock_client_class, caplog
@@ -974,7 +975,7 @@ class TestKISFailureLogging:
         assert "ACNT_PRDT_CD" in error_log
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_logs_failure_details(
         self, mock_settings, mock_client_class, caplog
@@ -1025,7 +1026,7 @@ class TestKISFailureLogging:
         assert "OTHER_ERROR" in error_log
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_msg1_none_no_typeerror(
         self, mock_settings, mock_client_class
@@ -1059,7 +1060,7 @@ class TestKISFailureLogging:
         assert "OPSQ2001" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_opsq2001_cma_warning_logged(
         self, mock_settings, mock_client_class, caplog
@@ -1108,7 +1109,7 @@ class TestKISFailureLogging:
         assert result["dnca_tot_amt"] == 500000.0
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_order_korea_stock_logs_failure_details(
         self, mock_settings, mock_client_class, caplog
@@ -1171,7 +1172,7 @@ class TestKISFailureLogging:
             ("sell", True, "VTTC0011U"),
         ],
     )
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_order_korea_stock_uses_new_tr_and_sor(
         self,
@@ -1229,7 +1230,7 @@ class TestKISFailureLogging:
             (True, "VTTC0013U"),
         ],
     )
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_cancel_korea_order_uses_new_tr_sor_and_explicit_orgno(
         self,
@@ -1290,7 +1291,7 @@ class TestKISFailureLogging:
             (True, "VTTC0013U"),
         ],
     )
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_modify_korea_order_uses_new_tr_sor_and_resolved_orgno(
         self,
@@ -1351,7 +1352,7 @@ class TestKISFailureLogging:
         assert body["RVSE_CNCL_DVSN_CD"] == "01"
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_cancel_korea_order_raises_when_orgno_resolution_fails(
         self,
@@ -1399,7 +1400,7 @@ class TestKISFailureLogging:
 
 class TestKISOverseasDailyPrice:
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_overseas_daily_price_parses_output2(
         self, mock_settings, mock_client_class
@@ -1459,7 +1460,7 @@ class TestKISOverseasDailyPrice:
         assert params["SYMB"] == "AAPL"
 
     @pytest.mark.asyncio
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_overseas_daily_price_retries_on_expired_token(
         self, mock_settings, mock_client_class
@@ -1690,7 +1691,7 @@ class TestKISRequestWithRateLimit:
         ],
     )
     @patch("app.services.brokers.kis.client.get_limiter")
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_request_with_rate_limit_passes_timeout_keyword(
         self,
         mock_client_class,
@@ -1744,7 +1745,7 @@ class TestKISRequestWithRateLimit:
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.kis.client.get_limiter")
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_request_with_rate_limit_returns_json_body_on_http_500(
         self,
         mock_client_class,
@@ -1785,7 +1786,7 @@ class TestKISRequestWithRateLimit:
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.kis.client.get_limiter")
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     async def test_request_with_rate_limit_raises_http_error_on_http_500_non_json(
         self,
         mock_client_class,

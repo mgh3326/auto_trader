@@ -236,6 +236,15 @@ async def cleanup_monitoring() -> None:
     except Exception as e:
         logger.error(f"Error during KRX session cleanup: {e}", exc_info=True)
 
+    # Close KIS HTTP client
+    try:
+        from app.services.brokers.kis.client import kis
+
+        await kis.close()
+        logger.info("KIS client cleanup complete")
+    except Exception as e:
+        logger.error(f"Error during KIS client cleanup: {e}", exc_info=True)
+
 
 # Create app instance
 api = create_app()

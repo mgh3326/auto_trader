@@ -2,6 +2,7 @@
 
 # Base URL
 BASE_URL = "https://openapi.koreainvestment.com:9443"
+BASE = BASE_URL  # Alias for backward compatibility
 
 # ============================================================================
 # DOMESTIC STOCK CONSTANTS
@@ -24,6 +25,28 @@ DOMESTIC_MINUTE_CHART_URL = (
 )
 DOMESTIC_MINUTE_CHART_TR = "FHKST03010200"  # 분봉 조회 TR ID
 
+# Domestic Stock - Orderbook
+DOMESTIC_ORDERBOOK_URL = (
+    "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+)
+DOMESTIC_ORDERBOOK_TR = "FHKST01010200"  # 주식현재가호가상체결
+
+# Domestic Stock - Time Daily Chart (same-day minute candles)
+DOMESTIC_TIME_DAILY_CHART_URL = (
+    "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
+)
+DOMESTIC_TIME_DAILY_CHART_TR = "FHKST03010230"  # 당일분봉 조회 TR ID
+
+# Domestic Stock - Ranking APIs
+MARKET_CAP_RANK_URL = "/uapi/domestic-stock/v1/ranking/market-cap"
+MARKET_CAP_RANK_TR = "FHPST01740000"
+
+FLUCTUATION_RANK_URL = "/uapi/domestic-stock/v1/ranking/fluctuation"
+FLUCTUATION_RANK_TR = "FHPST01700000"
+
+FOREIGN_BUYING_RANK_URL = "/uapi/domestic-stock/v1/quotations/foreign-institution-total"
+FOREIGN_BUYING_RANK_TR = "FHPTJ04400000"
+
 # Domestic Stock - Balance & Orders
 DOMESTIC_BALANCE_URL = "/uapi/domestic-stock/v1/trading/inquire-balance"
 DOMESTIC_BALANCE_TR = "TTTC8434R"  # 실전투자 주식잔고조회
@@ -43,6 +66,11 @@ DOMESTIC_ORDER_INQUIRY_TR = (
 DOMESTIC_ORDER_CANCEL_URL = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 DOMESTIC_ORDER_CANCEL_TR = "TTTC0013U"  # 실전투자 국내주식 정정취소주문
 DOMESTIC_ORDER_CANCEL_TR_MOCK = "VTTC0013U"  # 모의투자 국내주식 정정취소주문
+
+# Domestic Stock - Daily Order (execution history)
+DOMESTIC_DAILY_ORDER_URL = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+DOMESTIC_DAILY_ORDER_TR = "TTTC8001R"  # 실전투자 국내주식 체결조회
+DOMESTIC_DAILY_ORDER_TR_MOCK = "VTTC8001R"  # 모의투자 국내주식 체결조회
 
 # ============================================================================
 # OVERSEAS STOCK CONSTANTS
@@ -90,6 +118,11 @@ OVERSEAS_ORDER_INQUIRY_TR = "TTTS3018R"  # 해외주식 미체결내역 조회
 OVERSEAS_ORDER_CANCEL_URL = "/uapi/overseas-stock/v1/trading/order-rvsecncl"
 OVERSEAS_ORDER_CANCEL_TR = "TTTT1004U"  # 실전투자 해외주식 정정취소주문
 OVERSEAS_ORDER_CANCEL_TR_MOCK = "VTTT1004U"  # 모의투자 해외주식 정정취소주문
+
+# Overseas Stock - Daily Order (execution history)
+OVERSEAS_DAILY_ORDER_URL = "/uapi/overseas-stock/v1/trading/inquire-ccnl"
+OVERSEAS_DAILY_ORDER_TR = "TTTS3035R"  # 실전투자 해외주식 체결조회
+OVERSEAS_DAILY_ORDER_TR_MOCK = "VTTS3035R"  # 모의투자 해외주식 체결조회
 
 # ============================================================================
 # MARGIN & INTEGRATED MARGIN
@@ -201,6 +234,24 @@ PRICE_ADJUSTED = "0"  # 수정주가
 PRICE_ORIGINAL = "1"  # 원본주가
 
 # ============================================================================
+# DATA FRAME COLUMNS
+# ============================================================================
+
+# Columns for daily chart DataFrame
+DAY_FRAME_COLUMNS = ["date", "open", "high", "low", "close", "volume", "value"]
+
+# Required fields for daily itemchartprice validation
+DAILY_ITEMCHARTPRICE_REQUIRED_FIELDS = {
+    "stck_bsop_date",
+    "stck_oprc",
+    "stck_hgpr",
+    "stck_lwpr",
+    "stck_clpr",
+    "acml_vol",
+    "acml_tr_pbmn",
+}
+
+# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
@@ -228,6 +279,9 @@ def get_mock_tr_id(tr_id: str, is_mock: bool) -> str:
         Appropriate TR ID for the mode
     """
     # Mock TR IDs follow pattern: T -> V for most cases
+    if is_mock and tr_id.startswith("TTT"):
+        return tr_id.replace("TTT", "VTT", 1)
+    return tr_id
     if is_mock and tr_id.startswith("TTT"):
         return tr_id.replace("TTT", "VTT", 1)
     if is_mock and tr_id.startswith("TTT"):

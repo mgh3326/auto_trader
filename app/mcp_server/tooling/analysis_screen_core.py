@@ -54,6 +54,85 @@ MARKET_PANIC = -0.10
 CRYPTO_TOP_BY_VOLUME = 100
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 
+# TvScreener supported sort fields for stock screening
+# TvScreener supported sort fields for stock screening
+_TVSCREENER_STOCK_SORTS = {"volume", "change_rate", "market_cap", "dividend_yield"}
+
+# ---------------------------------------------------------------------------
+# Timeout Policy Configuration
+# ---------------------------------------------------------------------------
+
+# Default timeout values (in seconds) for different pipeline stages
+DEFAULT_TIMEOUTS = {
+    "tvscreener": 30.0,
+    "rsi_enrichment": 30.0,
+    "crypto_enrichment": 30.0,
+    "http_client": 10.0,
+    "candidate_collection": 60.0,
+}
+
+
+class TimeoutBehavior:
+    """Timeout handling behavior enum."""
+
+    RAISE = "raise"  # Propagate the timeout exception
+    RETURN_PARTIAL = "return_partial"  # Return partial results with diagnostics
+    FALLBACK = "fallback"  # Trigger fallback logic
+
+
+async def _with_timeout(
+    coro,
+    timeout_seconds: float,
+    *,
+    behavior: str = TimeoutBehavior.RAISE,
+    fallback_value: Any = None,
+    error_context: dict[str, Any] | None = None,
+) -> Any:
+    """Execute a coroutine with a timeout and configurable behavior.
+
+    Args:
+        coro: The coroutine to execute
+        timeout_seconds: Timeout in seconds
+        behavior: How to handle timeout (RAISE, RETURN_PARTIAL, FALLBACK)
+        fallback_value: Value to return on timeout if behavior is FALLBACK
+        error_context: Additional context for error logging
+
+    Returns:
+        The coroutine result, or fallback_value on timeout depending on behavior
+
+    Raises:
+        asyncio.TimeoutError: If behavior is RAISE and timeout occurs
+    """
+    import asyncio
+
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout_seconds)
+    except TimeoutError:
+        context_msg = ""
+        if error_context:
+            context_msg = f" | context: {error_context}"
+        logger.warning(
+            "Operation timed out after %.1fs (behavior=%s)%s",
+            timeout_seconds,
+            behavior,
+            context_msg,
+        )
+
+        if behavior == TimeoutBehavior.RAISE:
+            raise
+        elif behavior == TimeoutBehavior.FALLBACK:
+            return fallback_value
+        elif behavior == TimeoutBehavior.RETURN_PARTIAL:
+            # Return a dict with partial results indicator
+            return {
+                "_timeout_occurred": True,
+                "_timeout_seconds": timeout_seconds,
+                "result": fallback_value,
+            }
+        else:
+            # Unknown behavior, default to raising
+            raise
+
 
 def _to_optional_float(value: Any) -> float | None:
     if value is None:
@@ -345,6 +424,87 @@ def _normalize_dividend_yield_threshold(
         return None, None
     normalized_value = value / 100 if value >= 1 else value
     return value, normalized_value
+
+
+def _can_use_tvscreener_stock_path(
+    *,
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    sort_by: str,
+    max_rsi: float | None,
+) -> bool:
+    """Determine if tvscreener path can be used for the given parameters.
+
+    TvScreener supports specific sort fields and simple stock queries only.
+    ETF, category filters, and unsupported sorts require legacy path.
+    """
+    _ = max_rsi  # Reserved for future compatibility
+    if sort_by not in _TVSCREENER_STOCK_SORTS:
+        return False
+
+    if market in {"kr", "kospi", "kosdaq"}:
+        return asset_type in {None, "stock"} and category is None
+
+    if market == "us":
+        return asset_type in {None, "stock"} and category is None
+
+    return False
+
+
+def _map_tvscreener_stock_row(
+    row: dict[str, Any],
+    *,
+    market: str,
+) -> dict[str, Any]:
+    """Map a tvscreener result row to standardized candidate format."""
+    mapped: dict[str, Any] = {
+        "code": row.get("symbol") or "",
+        "name": row.get("name") or "",
+        "close": row.get("price"),
+        "change_rate": row.get("change_percent"),
+        "volume": row.get("volume"),
+        "market_cap": row.get("market_cap"),
+        "per": row.get("per"),
+        "dividend_yield": row.get("dividend_yield"),
+        "rsi": row.get("rsi"),
+        "adx": row.get("adx"),
+        "market": row.get("market") or market,
+    }
+    if row.get("pbr") is not None or market in {"kr", "kospi", "kosdaq"}:
+        mapped["pbr"] = row.get("pbr")
+    return mapped
+
+
+def _adapt_tvscreener_stock_response(
+    tvscreener_result: dict[str, Any],
+    *,
+    market: str,
+) -> dict[str, Any]:
+    """Adapt tvscreener response to standard screen response format."""
+    raw_rows = tvscreener_result.get("stocks", [])
+    rows = [
+        _map_tvscreener_stock_row(row, market=market)
+        for row in raw_rows
+        if isinstance(row, dict)
+    ]
+    filters_applied = tvscreener_result.get("filters_applied")
+    normalized_filters = (
+        dict(filters_applied) if isinstance(filters_applied, dict) else {}
+    )
+    normalized_filters.setdefault("market", market)
+    normalized_filters.setdefault("asset_type", "stock")
+    normalized_filters.setdefault("category", None)
+    normalized_filters.setdefault("sort_by", None)
+    normalized_filters.setdefault("sort_order", "desc")
+    total_count = int(tvscreener_result.get("count", len(rows)) or 0)
+    return _build_screen_response(
+        rows,
+        total_count,
+        normalized_filters,
+        market,
+        meta_fields={"source": "tvscreener"},
+    )
 
 
 def _validate_screen_filters(
@@ -2472,8 +2632,309 @@ async def _screen_crypto_via_tvscreener(
     )
 
 
+async def screen_stocks_unified(
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    min_market_cap: float | None,
+    max_per: float | None,
+    max_pbr: float | None,
+    min_dividend_yield: float | None,
+    max_rsi: float | None,
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+    enrich_rsi: bool = True,
+) -> dict[str, Any]:
+    """Unified stock screening entry point with automatic data source selection.
+
+    This function encapsulates the selector logic to choose between tvscreener
+    and legacy implementations based on query parameters. It provides a single
+    entry point for all screening operations while maintaining backward
+    compatibility with existing response contracts.
+
+    Args:
+        market: Target market ("kr", "kospi", "kosdaq", "us", "crypto")
+        asset_type: Asset type filter ("stock", "etf", "etn") or None
+        category: Category/sector filter or None
+        min_market_cap: Minimum market cap filter
+        max_per: Maximum P/E ratio filter
+        max_pbr: Maximum P/B ratio filter
+        min_dividend_yield: Minimum dividend yield filter (decimal or percent)
+        max_rsi: Maximum RSI filter (0-100)
+        sort_by: Sort field ("volume", "trade_amount", "market_cap", etc.)
+        sort_order: Sort order ("asc" or "desc")
+        limit: Maximum results to return
+        enrich_rsi: Whether to enrich with RSI data
+
+    Returns:
+        Standardized screening response dict with results, filters_applied,
+        meta (including source), and timestamp.
+    """
+    normalized_market = _normalize_screen_market(market)
+    normalized_asset_type = _normalize_asset_type(asset_type)
+    normalized_sort_by = _normalize_sort_by(sort_by)
+    normalized_sort_order = _normalize_sort_order(sort_order)
+
+    # Validate filters before processing
+    _validate_screen_filters(
+        market=normalized_market,
+        asset_type=normalized_asset_type,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        min_dividend_yield=min_dividend_yield,
+        max_rsi=max_rsi,
+        sort_by=normalized_sort_by,
+    )
+
+    # Route to appropriate implementation based on market and capabilities
+    if normalized_market in ("kr", "kospi", "kosdaq"):
+        return await _screen_kr_with_fallback(
+            market=normalized_market,
+            asset_type=normalized_asset_type,
+            category=category,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=max_pbr,
+            min_dividend_yield=min_dividend_yield,
+            max_rsi=max_rsi,
+            sort_by=normalized_sort_by,
+            sort_order=normalized_sort_order,
+            limit=limit,
+            enrich_rsi=enrich_rsi,
+        )
+
+    if normalized_market == "us":
+        return await _screen_us_with_fallback(
+            market=normalized_market,
+            asset_type=normalized_asset_type,
+            category=category,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            min_dividend_yield=min_dividend_yield,
+            max_rsi=max_rsi,
+            sort_by=normalized_sort_by,
+            sort_order=normalized_sort_order,
+            limit=limit,
+            enrich_rsi=enrich_rsi,
+        )
+
+    if normalized_market == "crypto":
+        return await _screen_crypto_with_fallback(
+            market=normalized_market,
+            asset_type=normalized_asset_type,
+            category=category,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            min_dividend_yield=min_dividend_yield,
+            max_rsi=max_rsi,
+            sort_by=normalized_sort_by,
+            sort_order=normalized_sort_order,
+            limit=limit,
+        )
+
+    # Fallback for unknown markets
+    return _build_screen_response(
+        results=[],
+        total_count=0,
+        filters_applied={
+            "market": normalized_market,
+            "asset_type": normalized_asset_type,
+            "category": category,
+        },
+        market=normalized_market,
+        warnings=[f"Unsupported market: {normalized_market}"],
+    )
+
+
+async def _screen_kr_with_fallback(
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    min_market_cap: float | None,
+    max_per: float | None,
+    max_pbr: float | None,
+    min_dividend_yield: float | None,
+    max_rsi: float | None,
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+    enrich_rsi: bool,
+) -> dict[str, Any]:
+    """Screen Korean market with tvscreener fallback to legacy."""
+    if _can_use_tvscreener_stock_path(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sort_by=sort_by,
+        max_rsi=max_rsi,
+    ):
+        try:
+            tvscreener_result = await _screen_kr_via_tvscreener(
+                market=market,
+                asset_type=asset_type or "stock",
+                category=category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                max_pbr=max_pbr,
+                min_dividend_yield=min_dividend_yield,
+                min_rsi=None,
+                max_rsi=max_rsi,
+                min_adx=None,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=limit,
+            )
+            if tvscreener_result and not tvscreener_result.get("error"):
+                logger.info(
+                    "Korean stock screening via tvscreener succeeded: %d stocks",
+                    tvscreener_result.get("count", 0),
+                )
+                return _adapt_tvscreener_stock_response(
+                    tvscreener_result,
+                    market=market,
+                )
+        except Exception as exc:
+            logger.debug(
+                "tvscreener Korean screening failed, falling back to legacy: %s",
+                exc,
+            )
+
+    # Fallback to legacy implementation
+    return await _screen_kr(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        max_pbr=max_pbr,
+        min_dividend_yield=min_dividend_yield,
+        max_rsi=max_rsi,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        enrich_rsi=enrich_rsi,
+    )
+
+
+async def _screen_us_with_fallback(
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    min_market_cap: float | None,
+    max_per: float | None,
+    min_dividend_yield: float | None,
+    max_rsi: float | None,
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+    enrich_rsi: bool,
+) -> dict[str, Any]:
+    """Screen US market with tvscreener fallback to legacy."""
+    if _can_use_tvscreener_stock_path(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sort_by=sort_by,
+        max_rsi=max_rsi,
+    ):
+        try:
+            tvscreener_result = await _screen_us_via_tvscreener(
+                market=market,
+                asset_type=asset_type,
+                category=category,
+                min_market_cap=min_market_cap,
+                max_per=max_per,
+                min_dividend_yield=min_dividend_yield,
+                min_rsi=None,
+                max_rsi=max_rsi,
+                min_adx=None,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=limit,
+            )
+            if tvscreener_result and not tvscreener_result.get("error"):
+                logger.info(
+                    "US stock screening via tvscreener succeeded: %d stocks",
+                    tvscreener_result.get("count", 0),
+                )
+                return _adapt_tvscreener_stock_response(
+                    tvscreener_result,
+                    market=market,
+                )
+        except Exception as exc:
+            logger.debug(
+                "tvscreener US screening failed, falling back to legacy: %s",
+                exc,
+            )
+
+    # Fallback to legacy implementation
+    return await _screen_us(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        min_dividend_yield=min_dividend_yield,
+        max_rsi=max_rsi,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        enrich_rsi=enrich_rsi,
+    )
+
+
+async def _screen_crypto_with_fallback(
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    min_market_cap: float | None,
+    max_per: float | None,
+    min_dividend_yield: float | None,
+    max_rsi: float | None,
+    sort_by: str,
+    sort_order: str,
+    limit: int,
+) -> dict[str, Any]:
+    """Screen crypto market with tvscreener fallback to legacy."""
+    try:
+        return await _screen_crypto_via_tvscreener(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            min_dividend_yield=min_dividend_yield,
+            max_rsi=max_rsi,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+        )
+    except Exception as exc:
+        logger.debug(
+            "tvscreener crypto screening failed, falling back to legacy: %s",
+            exc,
+        )
+        # Fallback to legacy implementation
+        return await _screen_crypto(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            min_dividend_yield=min_dividend_yield,
+            max_rsi=max_rsi,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+        )
+
+
 __all__ = [
     "is_safe_drop",
+    "DEFAULT_TIMEOUTS",
+    "TimeoutBehavior",
+    "_with_timeout",
     "_normalize_screen_market",
     "_normalize_asset_type",
     "_normalize_sort_by",
@@ -2483,6 +2944,10 @@ __all__ = [
     "_apply_basic_filters",
     "_sort_and_limit",
     "_build_screen_response",
+    "_can_use_tvscreener_stock_path",
+    "_map_tvscreener_stock_row",
+    "_adapt_tvscreener_stock_response",
+    "screen_stocks_unified",
     "_screen_kr",
     "_screen_us",
     "_screen_crypto",

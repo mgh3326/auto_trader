@@ -534,20 +534,20 @@ async def test_process_kis_domestic_sell_orders_quantity_exceeds_orderable(
 
         # balance_qty=4일 때 qty_per_order=1이 되어 3주 성공 후 마지막 1주 시도
         # 하지만 실제로 주문 가능한 수량이 3주만 있다면 에러 발생
-        try:
-            result = await process_kis_domestic_sell_orders_with_analysis(
-                kis_client=mock_kis_client,
-                symbol="005935",
-                current_price=77500,
-                avg_buy_price=76300,  # min_sell = 77063
-                balance_qty=4,  # 4주 보유로 설정 (qty_per_order = 1)
-            )
-            # 에러가 발생하지 않으면 3개 주문이 성공해야 함
-            assert result["success"] is True
-            assert result["orders_placed"] == 3
-        except RuntimeError:
-            # RuntimeError가 전파되면 에러 처리가 필요함을 의미
-            pass
+        # With exception handling (Stage 1), RuntimeError from 4th order is caught
+        # and returns error payload instead of propagating or partial success
+        result = await process_kis_domestic_sell_orders_with_analysis(
+            kis_client=mock_kis_client,
+            symbol="005935",
+            current_price=77500,
+            avg_buy_price=76300,  # min_sell = 77063
+            balance_qty=4,  # 4주 보유로 설정 (qty_per_order = 1)
+        )
+        # Exception is now absorbed - returns error payload
+        assert result["success"] is False
+        assert result["error_type"] == "api"
+        assert "APBK0400" in result["error"]
+        assert "주문 가능한 수량을 초과" in result["error"]
 
         # 4번의 주문 시도가 있어야 함 (3 성공 + 1 실패)
         assert mock_kis_client.order_korea_stock.call_count == 4

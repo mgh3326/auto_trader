@@ -1290,3 +1290,108 @@ async def test_send_to_discord_content_single_failure(trade_notifier):
 
         assert result is False
         mock_post.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_toss_buy_recommendation_requires_market_webhook(trade_notifier):
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts="https://discord.com/api/webhooks/alerts",
+    )
+
+    with patch.object(
+        trade_notifier,
+        "_send_to_discord_embed_single",
+        new_callable=AsyncMock,
+    ) as mock_send:
+        result = await trade_notifier.notify_toss_buy_recommendation(
+            symbol="005930",
+            korean_name="삼성전자",
+            current_price=70000,
+            toss_quantity=10,
+            toss_avg_price=65000,
+            kis_quantity=3,
+            kis_avg_price=64000,
+            recommended_price=68000,
+            recommended_quantity=2,
+            market_type="국내주식",
+        )
+
+    assert result is False
+    mock_send.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_toss_sell_recommendation_requires_market_webhook(trade_notifier):
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts="https://discord.com/api/webhooks/alerts",
+    )
+
+    with patch.object(
+        trade_notifier,
+        "_send_to_discord_embed_single",
+        new_callable=AsyncMock,
+    ) as mock_send:
+        result = await trade_notifier.notify_toss_sell_recommendation(
+            symbol="005930",
+            korean_name="삼성전자",
+            current_price=70000,
+            toss_quantity=10,
+            toss_avg_price=65000,
+            kis_quantity=3,
+            kis_avg_price=64000,
+            recommended_price=72000,
+            recommended_quantity=2,
+            expected_profit=14000,
+            profit_percent=2.0,
+            market_type="국내주식",
+        )
+
+    assert result is False
+    mock_send.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_toss_price_recommendation_requires_market_webhook(trade_notifier):
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts="https://discord.com/api/webhooks/alerts",
+    )
+
+    with patch.object(
+        trade_notifier,
+        "_send_to_discord_embed_single",
+        new_callable=AsyncMock,
+    ) as mock_send:
+        result = await trade_notifier.notify_toss_price_recommendation(
+            symbol="005930",
+            korean_name="삼성전자",
+            current_price=70000,
+            toss_quantity=10,
+            toss_avg_price=65000,
+            decision="buy",
+            confidence=72.0,
+            reasons=["가격 매력도", "분할 매수 구간"],
+            appropriate_buy_min=66000,
+            appropriate_buy_max=68000,
+            appropriate_sell_min=None,
+            appropriate_sell_max=None,
+            buy_hope_min=65000,
+            buy_hope_max=65500,
+            sell_target_min=None,
+            sell_target_max=None,
+            market_type="국내주식",
+        )
+
+    assert result is False
+    mock_send.assert_not_called()
