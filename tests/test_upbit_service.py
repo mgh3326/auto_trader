@@ -39,6 +39,24 @@ def test_get_upbit_rate_limit_candles_wildcard_is_fixed():
     assert period == 1.0
 
 
+@pytest.mark.parametrize(
+    ("api_key", "expected_rate", "expected_period"),
+    [
+        ("GET /v1/accounts", 30, 1.0),
+        ("GET /v1/ticker", 10, 1.0),
+    ],
+)
+def test_get_upbit_rate_limit_for_seeded_keys(
+    api_key: str,
+    expected_rate: int,
+    expected_period: float,
+):
+    rate, period = upbit._get_upbit_rate_limit(api_key)
+
+    assert rate == expected_rate
+    assert period == expected_period
+
+
 @pytest.mark.asyncio
 async def test_request_json_uses_candles_wildcard_limiter_key(monkeypatch):
     captured: dict[str, object] = {}
@@ -103,7 +121,9 @@ async def test_request_json_uses_candles_wildcard_limiter_key(monkeypatch):
 async def test_fetch_multiple_current_prices_cache_hit_within_ttl(monkeypatch):
     raw_call_count = 0
 
-    async def fake_fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
+    async def fake_fetch_multiple_tickers(
+        market_codes: list[str],
+    ) -> list[dict[str, object]]:
         nonlocal raw_call_count
         raw_call_count += 1
         return [
@@ -124,7 +144,9 @@ async def test_fetch_multiple_current_prices_cache_hit_within_ttl(monkeypatch):
 async def test_fetch_multiple_current_prices_partial_cache_hit(monkeypatch):
     requested_batches: list[list[str]] = []
 
-    async def fake_fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
+    async def fake_fetch_multiple_tickers(
+        market_codes: list[str],
+    ) -> list[dict[str, object]]:
         requested_batches.append(list(market_codes))
         return [
             {"market": market_code, "trade_price": float(len(requested_batches))}
@@ -144,7 +166,9 @@ async def test_fetch_multiple_current_prices_partial_cache_hit(monkeypatch):
 async def test_fetch_multiple_current_prices_inflight_dedupe(monkeypatch):
     raw_call_count = 0
 
-    async def fake_fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
+    async def fake_fetch_multiple_tickers(
+        market_codes: list[str],
+    ) -> list[dict[str, object]]:
         nonlocal raw_call_count
         raw_call_count += 1
         await asyncio.sleep(0.05)
@@ -171,7 +195,9 @@ async def test_fetch_multiple_current_prices_inflight_dedupe_for_overlapping_bat
 ):
     requested_batches: list[list[str]] = []
 
-    async def fake_fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
+    async def fake_fetch_multiple_tickers(
+        market_codes: list[str],
+    ) -> list[dict[str, object]]:
         requested_batches.append(list(market_codes))
         await asyncio.sleep(0.05)
         return [
@@ -196,7 +222,9 @@ async def test_fetch_multiple_current_prices_inflight_dedupe_for_overlapping_bat
 async def test_fetch_multiple_current_prices_bypass_cache(monkeypatch):
     raw_call_count = 0
 
-    async def fake_fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
+    async def fake_fetch_multiple_tickers(
+        market_codes: list[str],
+    ) -> list[dict[str, object]]:
         nonlocal raw_call_count
         raw_call_count += 1
         return [
