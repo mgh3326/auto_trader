@@ -1,7 +1,7 @@
 # pyright: reportAttributeAccessIssue=false, reportImplicitOverride=false, reportPrivateUsage=false
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 from pandas import DataFrame
@@ -16,8 +16,13 @@ from .constants import DOMESTIC_BALANCE_URL as BALANCE_URL
 from .constants import DOMESTIC_ORDER_URL as KOREA_ORDER_URL
 from .constants import INTEGRATED_MARGIN_TR, INTEGRATED_MARGIN_URL
 from .domestic_orders import DomesticOrderClient
-from .market_data import MarketDataClient, _aggregate_minute_candles_frame
+from .market_data import (
+    MarketDataClient,
+    OverseasMinuteChartPage,
+    _aggregate_minute_candles_frame,
+)
 from .overseas_orders import OverseasOrderClient
+from .protocols import KISClientProtocol
 
 __all__ = [
     "BALANCE_TR",
@@ -49,10 +54,11 @@ class KISClient(BaseKISClient):
 
     def __init__(self) -> None:
         super().__init__()
-        self._market_data = MarketDataClient(self)
-        self._account = AccountClient(self)
-        self._domestic_orders = DomesticOrderClient(self)
-        self._overseas_orders = OverseasOrderClient(self)
+        parent: KISClientProtocol = cast(KISClientProtocol, cast(object, self))
+        self._market_data: MarketDataClient = MarketDataClient(parent)
+        self._account: AccountClient = AccountClient(parent)
+        self._domestic_orders: DomesticOrderClient = DomesticOrderClient(parent)
+        self._overseas_orders: OverseasOrderClient = OverseasOrderClient(parent)
 
     @property
     def _settings(self) -> Any:
@@ -151,6 +157,17 @@ class KISClient(BaseKISClient):
     ) -> pd.DataFrame:
         return await self._market_data.inquire_overseas_daily_price(
             symbol, exchange_code, n, period
+        )
+
+    async def inquire_overseas_minute_chart(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD",
+        n: int = 120,
+        keyb: str = "",
+    ) -> OverseasMinuteChartPage:
+        return await self._market_data.inquire_overseas_minute_chart(
+            symbol, exchange_code, n, keyb
         )
 
     async def fetch_my_stocks(

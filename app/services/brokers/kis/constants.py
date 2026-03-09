@@ -88,7 +88,7 @@ OVERSEAS_PERIOD_CHART_TR = "FHKST03030100"
 OVERSEAS_MINUTE_CHART_URL = (
     "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice"
 )
-OVERSEAS_MINUTE_CHART_TR = "FHKST03010200"
+OVERSEAS_MINUTE_CHART_TR = "HHDFS76950200"
 
 OVERSEAS_PRICE_URL = "/uapi/overseas-price/v1/quotations/price"
 OVERSEAS_PRICE_TR = "HHDFS00000300"  # 해외주식 현재가 조회
