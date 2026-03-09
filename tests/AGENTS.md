@@ -8,7 +8,7 @@
 |------|----------|-------|
 | Global fixtures, marker registration, and live gating | `tests/conftest.py` | Shared fixtures, env setup, `--run-live`, and live skip wiring |
 | API/router tests | `tests/test_routers.py`, `tests/test_main_sentry.py`, `tests/test_openclaw_callback*.py` | HTTP layer and app lifecycle assertions |
-| Service-layer tests | `tests/test_services.py`, `tests/test_*_service*.py` | Business logic and integration boundaries |
+| Service-layer tests | `tests/test_services_*.py`, `tests/test_*_service*.py` | Business logic and integration boundaries; use `make test-services-split` when you need the former monolith-only scope |
 | Task and scheduler tests | `tests/test_tasks.py`, `tests/test_daily_scan.py`, `tests/test_kis_tasks.py` | TaskIQ-facing logic checks |
 | MCP tool tests | `tests/test_mcp_*.py`, `tests/test_upbit_order_tools.py` | Tool contract and market-behavior coverage |
 | Websocket monitor tests | `tests/test_websocket_monitor.py`, `tests/test_*websocket*.py` | Stream/runtime monitor behavior |
@@ -20,7 +20,7 @@
 - `live` marks tests that make external API calls, is always a strict subset of `integration`, and requires `--run-live` to execute.
 - Fast-gate selectors use `-m "not live"`; live execution is opt-in only.
 - Naming follows `test_*.py` or `*_test.py`, test functions `test_*`, classes `Test*`.
-- Default command set comes from `Makefile` (`make test`, `make test-unit`, `make test-integration`, `make test-live`, `make test-cov`, `make test-fast`, `make test-watch`).
+- Default command set comes from `Makefile` (`make test`, `make test-unit`, `make test-integration`, `make test-services-split`, `make test-live`, `make test-cov`, `make test-fast`, `make test-watch`).
 
 ## ANTI-PATTERNS
 - Do not introduce unregistered markers when strict markers are enabled.
@@ -32,3 +32,4 @@
 - Root-level one-off websocket test scripts were removed; `blog/test_*.py` remains supplemental and is not part of canonical `tests/` discovery.
 - CI runs lint before tests and uses PostgreSQL/Redis services for integration-sensitive coverage.
 - When adding new MCP behavior, update both positive and unsupported-market/error-path tests.
+- `tests/test_services_*.py` is a family pattern, not an alias for the removed `tests/test_services.py`; it also matches `tests/test_services_krx.py`. Use `make test-services-split` for the exact former monolith scope.
