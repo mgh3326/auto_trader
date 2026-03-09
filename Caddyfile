@@ -63,6 +63,10 @@
 			# Headers for proper subpath handling
 			header_up Host {host}
 			header_up X-Real-IP {remote_host}
+
+			# Retry on deploy (backend restart tolerance)
+			lb_try_duration 10s
+			lb_try_interval 500ms
 		}
 	}
 
@@ -80,6 +84,15 @@
 			# Headers
 			header_up Host {host}
 			header_up X-Real-IP {remote_host}
+
+			# Retry on deploy (backend restart tolerance)
+			lb_try_duration 10s
+			lb_try_interval 500ms
+
+			# Active health check
+			health_uri /healthz
+			health_interval 5s
+			health_timeout 3s
 		}
 	}
 
