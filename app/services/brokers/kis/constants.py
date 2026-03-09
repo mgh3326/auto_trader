@@ -88,7 +88,7 @@ OVERSEAS_PERIOD_CHART_TR = "FHKST03030100"
 OVERSEAS_MINUTE_CHART_URL = (
     "/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice"
 )
-OVERSEAS_MINUTE_CHART_TR = "FHKST03010200"
+OVERSEAS_MINUTE_CHART_TR = "HHDFS76950200"
 
 OVERSEAS_PRICE_URL = "/uapi/overseas-price/v1/quotations/price"
 OVERSEAS_PRICE_TR = "HHDFS00000300"  # 해외주식 현재가 조회
@@ -279,13 +279,6 @@ def get_mock_tr_id(tr_id: str, is_mock: bool) -> str:
         Appropriate TR ID for the mode
     """
     # Mock TR IDs follow pattern: T -> V for most cases
-    if is_mock and tr_id.startswith("TTT"):
-        return tr_id.replace("TTT", "VTT", 1)
-    return tr_id
-    if is_mock and tr_id.startswith("TTT"):
-        return tr_id.replace("TTT", "VTT", 1)
-    if is_mock and tr_id.startswith("TTT"):
-        return tr_id.replace("TTT", "VTT", 1)
     if is_mock and tr_id.startswith("TTT"):
         return tr_id.replace("TTT", "VTT", 1)
     return tr_id

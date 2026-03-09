@@ -1543,6 +1543,342 @@ class TestKISOverseasDailyPrice:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exchange_code", "expected_excd"),
+    [("NASD", "NAS"), ("NYSE", "NYS"), ("AMEX", "AMS")],
+)
+async def test_kis_inquire_overseas_minute_chart_maps_exchange_codes_and_returns_empty_page(
+    monkeypatch,
+    exchange_code,
+    expected_excd,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={"rt_cd": "0", "output1": {"next": "", "more": "N"}, "output2": []}
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    page = await client.inquire_overseas_minute_chart(
+        "BRK.B", exchange_code=exchange_code
+    )
+
+    assert page.frame.empty
+    assert list(page.frame.columns) == [
+        "datetime",
+        "date",
+        "time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "value",
+    ]
+    assert page.has_more is False
+    assert page.next_keyb is None
+
+    request_mock.assert_awaited_once()
+    await_args = request_mock.await_args
+    assert await_args is not None
+    assert await_args.args[0] == "GET"
+    assert await_args.args[1].endswith("/inquire-time-itemchartprice")
+    assert await_args.kwargs["tr_id"] == "HHDFS76950200"
+    assert await_args.kwargs["api_name"] == "inquire_overseas_minute_chart"
+
+    params = await_args.kwargs["params"]
+    assert params["AUTH"] == ""
+    assert params["EXCD"] == expected_excd
+    assert params["SYMB"] == "BRK/B"
+    assert params["NMIN"] == "1"
+    assert params["PINC"] == "1"
+    assert params["NEXT"] == ""
+    assert params["NREC"] == "120"
+    assert params["FILL"] == ""
+    assert params["KEYB"] == ""
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_overseas_minute_chart_marks_continuation_when_keyb_given(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={"rt_cd": "0", "output1": {"next": "", "more": "N"}, "output2": []}
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    await client.inquire_overseas_minute_chart(
+        "AAPL", exchange_code="NASD", keyb="20260219100000"
+    )
+
+    await_args = request_mock.await_args
+    assert await_args is not None
+    params = await_args.kwargs["params"]
+    assert params["NEXT"] == "1"
+    assert params["KEYB"] == "20260219100000"
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_overseas_minute_chart_parses_rows(monkeypatch):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output1": {"next": "", "more": "N"},
+            "output2": [
+                {
+                    "xymd": "20260219",
+                    "xhms": "093000",
+                    "open": "180.1",
+                    "high": "181.0",
+                    "low": "179.8",
+                    "last": "180.5",
+                    "evol": "100",
+                    "eamt": "18050",
+                },
+                {
+                    "xymd": "20260219",
+                    "xhms": "093100",
+                    "open": "180.5",
+                    "high": "180.7",
+                    "low": "180.2",
+                    "clos": "180.4",
+                    "evol": "80",
+                    "eamt": "14432",
+                },
+            ],
+        }
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    page = await client.inquire_overseas_minute_chart("AAPL")
+
+    assert list(page.frame.columns) == [
+        "datetime",
+        "date",
+        "time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "value",
+    ]
+    assert len(page.frame) == 2
+    assert list(page.frame["close"]) == [180.5, 180.4]
+    assert list(page.frame["volume"]) == [100, 80]
+    assert list(page.frame["value"]) == [18050, 14432]
+    assert page.frame.iloc[0]["datetime"] == pd.Timestamp("2026-02-19 09:30:00")
+    assert page.frame.iloc[0]["date"] == date(2026, 2, 19)
+    assert page.frame.iloc[0]["time"].isoformat() == "09:30:00"
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_overseas_minute_chart_falls_back_to_tvol_and_tamt(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output1": {"next": "", "more": "N"},
+            "output2": [
+                {
+                    "xymd": "20260219",
+                    "xhms": "093000",
+                    "open": "180.1",
+                    "high": "181.0",
+                    "low": "179.8",
+                    "last": "180.5",
+                    "tvol": "101",
+                    "tamt": "18230",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    page = await client.inquire_overseas_minute_chart("AAPL")
+
+    assert list(page.frame["volume"]) == [101]
+    assert list(page.frame["value"]) == [18230]
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_overseas_minute_chart_raises_controlled_error_on_falsy_string_payload(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output1": {"next": "", "more": "N"},
+            "output2": "",
+        }
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    with pytest.raises(RuntimeError, match="expected list"):
+        await client.inquire_overseas_minute_chart("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_overseas_minute_chart_raises_controlled_error_on_invalid_numeric_value(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output1": {"next": "", "more": "N"},
+            "output2": [
+                {
+                    "xymd": "20260219",
+                    "xhms": "093000",
+                    "open": "bad-open",
+                    "high": "181.0",
+                    "low": "179.8",
+                    "last": "180.5",
+                    "evol": "100",
+                    "eamt": "18050",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    with pytest.raises(RuntimeError, match="invalid numeric field open"):
+        await client.inquire_overseas_minute_chart("AAPL")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_code", ["EGW00123", "EGW00121"])
+async def test_kis_inquire_overseas_minute_chart_retries_on_expired_token(
+    monkeypatch,
+    error_code,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    ensure_token = AsyncMock()
+    monkeypatch.setattr(client, "_ensure_token", ensure_token)
+    request_mock = AsyncMock(
+        side_effect=[
+            {"rt_cd": "1", "msg_cd": error_code, "msg1": "token expired"},
+            {
+                "rt_cd": "0",
+                "output1": {"next": "", "more": "N"},
+                "output2": [
+                    {
+                        "xymd": "20260219",
+                        "xhms": "093000",
+                        "open": "180.1",
+                        "high": "181.0",
+                        "low": "179.8",
+                        "last": "180.5",
+                        "evol": "100",
+                        "eamt": "18050",
+                    }
+                ],
+            },
+        ]
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+    client._token_manager = AsyncMock()
+    client._token_manager.clear_token = AsyncMock(return_value=None)
+
+    page = await client.inquire_overseas_minute_chart("AAPL")
+
+    assert len(page.frame) == 1
+    assert request_mock.await_count == 2
+    assert ensure_token.await_count == 2
+    client._token_manager.clear_token.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_overseas_minute_chart_raises_controlled_error_on_non_list_payload(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output1": {"next": "", "more": "N"},
+            "output2": {"foo": "bar"},
+        }
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    with pytest.raises(RuntimeError, match="expected list"):
+        await client.inquire_overseas_minute_chart("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_overseas_minute_chart_computes_next_keyb_from_oldest_row(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output1": {"next": "Y", "more": "Y"},
+            "output2": [
+                {
+                    "xymd": "20260219",
+                    "xhms": "100200",
+                    "open": "180.6",
+                    "high": "180.8",
+                    "low": "180.4",
+                    "last": "180.7",
+                    "evol": "110",
+                    "eamt": "19877",
+                },
+                {
+                    "xymd": "20260219",
+                    "xhms": "100100",
+                    "open": "180.5",
+                    "high": "180.6",
+                    "low": "180.3",
+                    "last": "180.4",
+                    "evol": "90",
+                    "eamt": "16236",
+                },
+            ],
+        }
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    page = await client.inquire_overseas_minute_chart("AAPL")
+
+    assert page.has_more is True
+    assert page.next_keyb == "20260219100000"
+
+
+@pytest.mark.asyncio
 async def test_kis_inquire_time_dailychartprice_parses_rows(monkeypatch):
     from app.services.brokers.kis.client import KISClient
 
@@ -1609,7 +1945,7 @@ async def test_kis_inquire_time_dailychartprice_uses_end_time_when_provided(
         "005930",
         market="J",
         n=1,
-        end_date=pd.Timestamp(date(2026, 2, 19)),
+        end_date=pd.Timestamp("2026-02-19"),
         end_time="153000",
     )
 
