@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, time, timedelta
 from typing import Any, Literal, cast
@@ -72,6 +73,13 @@ class _VenueConfig:
     session_end: time
 
 
+@dataclass(frozen=True, slots=True)
+class _IntradayPeriodConfig:
+    period: str
+    bucket_minutes: int
+    history_table: str
+
+
 _VENUE_CONFIGS: dict[VenueType, _VenueConfig] = {
     "KRX": _VenueConfig(
         venue="KRX",
@@ -86,6 +94,48 @@ _VENUE_CONFIGS: dict[VenueType, _VenueConfig] = {
         session_end=time(20, 0, 0),
     ),
 }
+
+_INTRADAY_PERIOD_CONFIGS: dict[str, _IntradayPeriodConfig] = {
+    "1m": _IntradayPeriodConfig(
+        period="1m",
+        bucket_minutes=1,
+        history_table="public.kr_candles_1m",
+    ),
+    "5m": _IntradayPeriodConfig(
+        period="5m",
+        bucket_minutes=5,
+        history_table="public.kr_candles_5m",
+    ),
+    "15m": _IntradayPeriodConfig(
+        period="15m",
+        bucket_minutes=15,
+        history_table="public.kr_candles_15m",
+    ),
+    "30m": _IntradayPeriodConfig(
+        period="30m",
+        bucket_minutes=30,
+        history_table="public.kr_candles_30m",
+    ),
+    "1h": _IntradayPeriodConfig(
+        period="1h",
+        bucket_minutes=60,
+        history_table="public.kr_candles_1h",
+    ),
+}
+
+_INTRADAY_FRAME_COLUMNS = [
+    "datetime",
+    "date",
+    "time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "value",
+    "session",
+    "venues",
+]
 
 
 _KR_UNIVERSE_HAS_ANY_ROWS_SQL = text(
@@ -122,6 +172,17 @@ _KR_MINUTE_SQL = text(
     WHERE symbol = :symbol
       AND time >= :start_time
       AND time < :end_time
+    """
+)
+
+_KR_MINUTE_HISTORY_SQL = text(
+    """
+    SELECT time, venue, open, high, low, close, volume, value
+    FROM public.kr_candles_1m
+    WHERE symbol = :symbol
+      AND time <= :end_time
+    ORDER BY time DESC
+    LIMIT :limit
     """
 )
 
@@ -220,33 +281,25 @@ def _session_for_bucket_start(
 
 
 def _aggregate_minutes_to_hourly(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aggregate minute candles to hourly candles using OHLCV math.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Minute candles with columns: datetime, open, high, low, close, volume
-
-    Returns
-    -------
-    pd.DataFrame
-        Hourly candles with columns: datetime, open, high, low, close, volume
-        Empty DataFrame if input is empty or invalid
-
-    Notes
-    -----
-    - datetime is floored to hour (e.g., 2024-01-01 09:00:00)
-    - open: first value in the hour
-    - high: maximum value in the hour
-    - low: minimum value in the hour
-    - close: last value in the hour
-    - volume: sum of volumes in the hour
-    """
-    if df.empty:
+    aggregated = _aggregate_minutes_to_buckets(df, bucket_minutes=60)
+    if aggregated.empty:
         return pd.DataFrame(
             columns=["datetime", "open", "high", "low", "close", "volume"]
         )
+    return aggregated[["datetime", "open", "high", "low", "close", "volume"]]
+
+
+def _empty_intraday_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=_INTRADAY_FRAME_COLUMNS)
+
+
+def _aggregate_minutes_to_buckets(
+    df: pd.DataFrame,
+    *,
+    bucket_minutes: int,
+) -> pd.DataFrame:
+    if df.empty:
+        return _empty_intraday_frame()
 
     required_cols = {"datetime", "open", "high", "low", "close", "volume"}
     missing_cols = required_cols - set(df.columns)
@@ -255,47 +308,101 @@ def _aggregate_minutes_to_hourly(df: pd.DataFrame) -> pd.DataFrame:
             "Missing required columns for aggregation: %s",
             sorted(missing_cols),
         )
-        return pd.DataFrame(
-            columns=["datetime", "open", "high", "low", "close", "volume"]
-        )
+        return _empty_intraday_frame()
 
     out = df.copy()
     out["datetime"] = pd.to_datetime(out["datetime"], errors="coerce")
     out = out.dropna(subset=["datetime"])
 
     if out.empty:
-        return pd.DataFrame(
-            columns=["datetime", "open", "high", "low", "close", "volume"]
+        return _empty_intraday_frame()
+
+    if "value" not in out.columns:
+        out["value"] = 0.0
+    if "venues" not in out.columns:
+        if "venue" in out.columns:
+            out["venues"] = out["venue"].apply(_normalize_venues)
+        else:
+            out["venues"] = [[] for _ in range(len(out))]
+
+    bucket_label = f"{bucket_minutes}min"
+    out["bucket"] = out["datetime"].dt.floor(bucket_label)
+
+    rows: list[dict[str, object]] = []
+    for bucket_value, group in out.groupby("bucket", sort=True):
+        try:
+            bucket_dt = pd.Timestamp(cast(Any, bucket_value)).to_pydatetime()
+        except Exception:
+            continue
+        session = _session_for_bucket_start(bucket_dt)
+        if session is None:
+            continue
+
+        venues: list[str] = []
+        for value in group["venues"].tolist():
+            venues.extend(_normalize_venues(value))
+        normalized_venues = list(dict.fromkeys(_normalize_venues(venues)))
+
+        rows.append(
+            {
+                "datetime": bucket_dt,
+                "date": bucket_dt.date(),
+                "time": bucket_dt.time(),
+                "open": float(group["open"].iloc[0]),
+                "high": float(group["high"].max()),
+                "low": float(group["low"].min()),
+                "close": float(group["close"].iloc[-1]),
+                "volume": float(group["volume"].sum()),
+                "value": float(group["value"].sum()),
+                "session": session,
+                "venues": normalized_venues,
+            }
         )
 
-    out["hour_bucket"] = out["datetime"].dt.floor("60min")
+    if not rows:
+        return _empty_intraday_frame()
 
-    try:
-        aggregated = (
-            out.groupby("hour_bucket", as_index=False)
-            .agg(
-                {
-                    "open": "first",
-                    "high": "max",
-                    "low": "min",
-                    "close": "last",
-                    "volume": "sum",
-                }
-            )
-            .sort_values("hour_bucket")
-            .reset_index(drop=True)
+    return pd.DataFrame(rows, columns=_INTRADAY_FRAME_COLUMNS)
+
+
+def _merge_minute_rows(rows: list[_MinuteRow]) -> pd.DataFrame:
+    if not rows:
+        return _empty_intraday_frame()
+
+    minutes_by_time: dict[datetime.datetime, dict[VenueType, _MinuteRow]] = {}
+    for row in rows:
+        minutes_by_time.setdefault(row.minute_time, {})[row.venue] = row
+
+    merged_rows: list[dict[str, object]] = []
+    for minute_time in sorted(minutes_by_time):
+        venue_rows = minutes_by_time[minute_time]
+        source = venue_rows.get("KRX") or venue_rows.get("NTX")
+        if source is None:
+            continue
+        session = _session_for_bucket_start(minute_time)
+        if session is None:
+            continue
+
+        merged_rows.append(
+            {
+                "datetime": minute_time,
+                "date": minute_time.date(),
+                "time": minute_time.time(),
+                "open": float(source.open),
+                "high": float(source.high),
+                "low": float(source.low),
+                "close": float(source.close),
+                "volume": float(sum(item.volume for item in venue_rows.values())),
+                "value": float(sum(item.value for item in venue_rows.values())),
+                "session": session,
+                "venues": _normalize_venues(list(venue_rows.keys())),
+            }
         )
-    except Exception as e:
-        logger.error("Error during aggregation: %s", e)
-        return pd.DataFrame(
-            columns=["datetime", "open", "high", "low", "close", "volume"]
-        )
 
-    result = aggregated.rename(columns={"hour_bucket": "datetime"})
-    result = result[["datetime", "open", "high", "low", "close", "volume"]]
-    result = result.reset_index(drop=True)
+    if not merged_rows:
+        return _empty_intraday_frame()
 
-    return result
+    return pd.DataFrame(merged_rows, columns=_INTRADAY_FRAME_COLUMNS)
 
 
 def _should_call_api(
@@ -539,10 +646,11 @@ async def _build_current_hour_row(
         venue_raw = row.get("venue")
         if not isinstance(time_raw, datetime.datetime):
             continue
-        venue = _to_venue(venue_raw)
+        venue_opt = _to_venue(venue_raw)
         # Skip rows with invalid venue (graceful degradation)
-        if venue is None:
+        if venue_opt is None:
             continue
+        venue = cast(VenueType, venue_opt)
         minute_time = _to_kst_naive(time_raw).replace(second=0, microsecond=0)
         if not (
             current_bucket_naive
@@ -571,13 +679,17 @@ async def _build_current_hour_row(
 
     if markets:
         kis = KISClient()
-        api_date = now_kst.date()
+        api_date = pd.Timestamp(now_kst.date())
         legacy_end_time = now_kst.strftime("%H%M%S")
 
-        async def _fetch_one(market: str) -> pd.DataFrame:
-            minute_chart = getattr(kis, "inquire_minute_chart", None)
+        async def _fetch_one(market: str) -> object:
+            minute_chart = cast(Any, getattr(kis, "inquire_minute_chart", None))
             if callable(minute_chart):
-                return await minute_chart(
+                minute_chart_async = cast(
+                    Callable[..., Awaitable[pd.DataFrame]],
+                    minute_chart,
+                )
+                return await minute_chart_async(
                     code=symbol,
                     market=market,
                     time_unit=1,
@@ -605,7 +717,7 @@ async def _build_current_hour_row(
                     frame,
                 )
                 continue
-            if frame is None or frame.empty:
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
                 continue
             venue: VenueType = "KRX" if market == "J" else "NTX"
             if "datetime" not in frame.columns:
@@ -860,7 +972,7 @@ async def _fetch_historical_minutes_via_kis(
                     code=symbol,
                     market=venue_config.market_code,
                     n=200,
-                    end_date=target_day,
+                    end_date=pd.Timestamp(target_day),
                     end_time=end_time,
                 )
 
@@ -1014,7 +1126,7 @@ async def _fetch_historical_minutes_via_kis(
     return hour_rows, minute_rows_list
 
 
-def _log_task_exception(task: asyncio.Task) -> None:
+def _log_task_exception(task: asyncio.Task[None]) -> None:
     """Callback to log exceptions from background storage tasks."""
     try:
         task.result()
@@ -1092,6 +1204,339 @@ async def _store_minute_candles_background(
             e,
             exc_info=True,
         )
+
+
+async def _fetch_minute_history_rows(
+    *,
+    symbol: str,
+    end_time_kst: datetime.datetime,
+    limit: int,
+) -> list[dict[str, object]]:
+    async with _async_session() as session:
+        result = await session.execute(
+            _KR_MINUTE_HISTORY_SQL,
+            {
+                "symbol": symbol,
+                "end_time": end_time_kst,
+                "limit": int(limit),
+            },
+        )
+        return [{str(k): v for k, v in row.items()} for row in result.mappings().all()]
+
+
+async def _fetch_intraday_history_rows(
+    *,
+    config: _IntradayPeriodConfig,
+    symbol: str,
+    end_time_kst: datetime.datetime,
+    limit: int,
+) -> list[dict[str, object]]:
+    if config.period == "1m":
+        return await _fetch_minute_history_rows(
+            symbol=symbol,
+            end_time_kst=end_time_kst,
+            limit=max(limit * 4, limit),
+        )
+
+    query = text(
+        f"""
+        SELECT bucket, open, high, low, close, volume, value, venues
+        FROM {config.history_table}
+        WHERE symbol = :symbol
+          AND bucket <= :end_time
+        ORDER BY bucket DESC
+        LIMIT :limit
+        """
+    )
+    async with _async_session() as session:
+        result = await session.execute(
+            query,
+            {
+                "symbol": symbol,
+                "end_time": end_time_kst,
+                "limit": int(limit),
+            },
+        )
+        return [{str(k): v for k, v in row.items()} for row in result.mappings().all()]
+
+
+def _history_rows_to_frame(
+    *,
+    config: _IntradayPeriodConfig,
+    rows: list[dict[str, object]],
+) -> pd.DataFrame:
+    if not rows:
+        return _empty_intraday_frame()
+
+    if config.period == "1m":
+        minute_rows: list[_MinuteRow] = []
+        for row in rows:
+            time_raw = row.get("time")
+            venue = _to_venue(row.get("venue"))
+            if not isinstance(time_raw, datetime.datetime) or venue is None:
+                continue
+            assert venue is not None
+            minute_rows.append(
+                _MinuteRow(
+                    minute_time=_to_kst_naive(time_raw).replace(
+                        second=0, microsecond=0
+                    ),
+                    venue=venue,
+                    open=_to_float(row.get("open")),
+                    high=_to_float(row.get("high")),
+                    low=_to_float(row.get("low")),
+                    close=_to_float(row.get("close")),
+                    volume=_to_float(row.get("volume")),
+                    value=_to_float(row.get("value")),
+                )
+            )
+        return _merge_minute_rows(minute_rows)
+
+    frame_rows: list[dict[str, object]] = []
+    for row in rows:
+        bucket_raw = row.get("bucket")
+        if not isinstance(bucket_raw, datetime.datetime):
+            continue
+        bucket_naive = _to_kst_naive(bucket_raw)
+        session = _session_for_bucket_start(bucket_naive)
+        if session is None:
+            continue
+        frame_rows.append(
+            {
+                "datetime": bucket_naive,
+                "date": bucket_naive.date(),
+                "time": bucket_naive.time(),
+                "open": _to_float(row.get("open")),
+                "high": _to_float(row.get("high")),
+                "low": _to_float(row.get("low")),
+                "close": _to_float(row.get("close")),
+                "volume": _to_float(row.get("volume")),
+                "value": _to_float(row.get("value")),
+                "session": session,
+                "venues": _normalize_venues(row.get("venues")),
+            }
+        )
+
+    if not frame_rows:
+        return _empty_intraday_frame()
+
+    return (
+        pd.DataFrame(frame_rows, columns=_INTRADAY_FRAME_COLUMNS)
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+
+
+async def _load_recent_overlay_frame(
+    *,
+    symbol: str,
+    start_time_kst: datetime.datetime,
+    end_time_kst: datetime.datetime,
+    now_kst: datetime.datetime,
+    nxt_eligible: bool,
+    end_date: datetime.datetime | None,
+) -> pd.DataFrame:
+    start_naive = start_time_kst.replace(tzinfo=None)
+    end_naive = end_time_kst.replace(tzinfo=None)
+
+    minute_by_key: dict[tuple[datetime.datetime, VenueType], _MinuteRow] = {}
+    db_rows = await _fetch_minute_rows(
+        symbol=symbol,
+        start_time_kst=start_time_kst,
+        end_time_kst=end_time_kst,
+    )
+    for row in db_rows:
+        time_raw = row.get("time")
+        venue_opt = _to_venue(row.get("venue"))
+        if not isinstance(time_raw, datetime.datetime) or venue_opt is None:
+            continue
+        venue = cast(VenueType, venue_opt)
+        minute_time = _to_kst_naive(time_raw).replace(second=0, microsecond=0)
+        if not (start_naive <= minute_time < end_naive):
+            continue
+        minute_by_key[(minute_time, venue)] = _MinuteRow(
+            minute_time=minute_time,
+            venue=venue,
+            open=_to_float(row.get("open")),
+            high=_to_float(row.get("high")),
+            low=_to_float(row.get("low")),
+            close=_to_float(row.get("close")),
+            volume=_to_float(row.get("volume")),
+            value=_to_float(row.get("value")),
+        )
+
+    markets = _api_markets_for_now(
+        now_kst=now_kst,
+        nxt_eligible=nxt_eligible,
+        end_date=end_date,
+    )
+    if markets:
+        kis = KISClient()
+        api_end_date = pd.Timestamp(end_time_kst.date())
+        legacy_end_time = end_time_kst.strftime("%H%M%S")
+
+        async def _fetch_one(market: str) -> object:
+            minute_chart = cast(Any, getattr(kis, "inquire_minute_chart", None))
+            if callable(minute_chart):
+                minute_chart_async = cast(
+                    Callable[..., Awaitable[pd.DataFrame]],
+                    minute_chart,
+                )
+                return await minute_chart_async(
+                    code=symbol,
+                    market=market,
+                    time_unit=1,
+                    n=30,
+                    end_date=api_end_date,
+                )
+            return await kis.inquire_time_dailychartprice(
+                code=symbol,
+                market=market,
+                n=30,
+                end_date=api_end_date,
+                end_time=legacy_end_time,
+            )
+
+        frames = await asyncio.gather(
+            *[_fetch_one(market) for market in markets],
+            return_exceptions=True,
+        )
+        for market, frame in zip(markets, frames, strict=False):
+            if isinstance(frame, Exception):
+                logger.warning(
+                    "Recent overlay KIS API call failed for %s %s: %s",
+                    symbol,
+                    market,
+                    frame,
+                )
+                continue
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
+                continue
+            if "datetime" not in frame.columns:
+                continue
+
+            venue: VenueType = "KRX" if market == "J" else "NTX"
+            dt_series = pd.to_datetime(frame["datetime"], errors="coerce")
+            for index, dt_value in enumerate(dt_series.tolist()):
+                if pd.isna(dt_value):
+                    continue
+                minute_time = (
+                    pd.Timestamp(dt_value)
+                    .to_pydatetime()
+                    .replace(second=0, microsecond=0)
+                )
+                if not (start_naive <= minute_time < end_naive):
+                    continue
+                src = frame.iloc[index]
+                minute_by_key[(minute_time, venue)] = _MinuteRow(
+                    minute_time=minute_time,
+                    venue=venue,
+                    open=_to_float(src.get("open")),
+                    high=_to_float(src.get("high")),
+                    low=_to_float(src.get("low")),
+                    close=_to_float(src.get("close")),
+                    volume=_to_float(src.get("volume")),
+                    value=_to_float(src.get("value")),
+                )
+
+    return _merge_minute_rows(list(minute_by_key.values()))
+
+
+async def read_kr_intraday_candles(
+    *,
+    symbol: str,
+    period: str,
+    count: int,
+    end_date: datetime.datetime | None,
+    now_kst: datetime.datetime | None = None,
+) -> pd.DataFrame:
+    normalized_period = str(period or "1h").strip().lower()
+    if normalized_period == "1h":
+        return await read_kr_hourly_candles_1h(
+            symbol=symbol,
+            count=count,
+            end_date=end_date,
+            now_kst=now_kst,
+        )
+
+    config = _INTRADAY_PERIOD_CONFIGS.get(normalized_period)
+    if config is None:
+        raise ValueError(f"Unsupported KR intraday period: {period}")
+
+    capped_count = max(int(count), 1)
+    resolved_now = _ensure_kst_aware(now_kst or datetime.datetime.now(_KST))
+    universe = await _resolve_universe_row(symbol)
+    if isinstance(universe, _UniverseError):
+        return _empty_intraday_frame()
+
+    if end_date is None:
+        end_day = resolved_now.date()
+        end_time_kst = resolved_now
+    else:
+        end_day = (
+            _ensure_kst_aware(end_date).date() if end_date.tzinfo else end_date.date()
+        )
+        end_time_kst = datetime.datetime.combine(
+            end_day,
+            datetime.time(20, 0, 0),
+            tzinfo=_KST,
+        )
+
+    history_rows = await _fetch_intraday_history_rows(
+        config=config,
+        symbol=universe.symbol,
+        end_time_kst=end_time_kst,
+        limit=min(max(capped_count * 3, capped_count + 12), 1000),
+    )
+    out = _history_rows_to_frame(config=config, rows=history_rows)
+
+    if end_day == resolved_now.date():
+        overlay_start = max(
+            datetime.datetime.combine(end_day, datetime.time(8, 0, 0), tzinfo=_KST),
+            resolved_now - datetime.timedelta(minutes=30),
+        )
+        overlay_frame = await _load_recent_overlay_frame(
+            symbol=universe.symbol,
+            start_time_kst=overlay_start,
+            end_time_kst=resolved_now + datetime.timedelta(minutes=1),
+            now_kst=resolved_now,
+            nxt_eligible=universe.nxt_eligible,
+            end_date=end_date,
+        )
+        if not overlay_frame.empty:
+            if config.bucket_minutes > 1:
+                overlay_frame = _aggregate_minutes_to_buckets(
+                    overlay_frame,
+                    bucket_minutes=config.bucket_minutes,
+                )
+            touched = set(pd.to_datetime(overlay_frame["datetime"]).tolist())
+            if not out.empty:
+                out = out[~pd.to_datetime(out["datetime"]).isin(touched)]
+            out = pd.concat([out, overlay_frame], ignore_index=True)
+
+    if end_day == resolved_now.date() and len(out) < capped_count:
+        _, api_minute_rows = await _fetch_historical_minutes_via_kis(
+            symbol=universe.symbol,
+            end_date=pd.Timestamp(end_day).date(),
+            limit=capped_count,
+        )
+        if api_minute_rows:
+            api_frame = _merge_minute_rows(api_minute_rows)
+            if config.bucket_minutes > 1:
+                api_frame = _aggregate_minutes_to_buckets(
+                    api_frame,
+                    bucket_minutes=config.bucket_minutes,
+                )
+            touched = set(pd.to_datetime(api_frame["datetime"]).tolist())
+            if not out.empty:
+                out = out[~pd.to_datetime(out["datetime"]).isin(touched)]
+            out = pd.concat([out, api_frame], ignore_index=True)
+
+    if out.empty:
+        return _empty_intraday_frame()
+
+    out = out.sort_values("datetime").reset_index(drop=True)
+    return out.tail(capped_count).reset_index(drop=True)
 
 
 async def read_kr_hourly_candles_1h(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -1562,7 +1562,9 @@ async def test_venue_separation_preserved(monkeypatch):
     )
 
     # Verify venue separation in background storage
-    stored_rows = background_storage_calls[0]["minute_rows"]
+    stored_rows = cast(
+        list[dict[str, object]], background_storage_calls[0]["minute_rows"]
+    )
     venues_stored = {row.get("venue") for row in stored_rows if row.get("venue")}
 
     # At least KRX should be present (NTX depends on time window)
@@ -1765,3 +1767,183 @@ async def test_partial_db_data_filled_by_api(monkeypatch):
     assert row_11["close"] == 116.4, (
         f"API data for 11:00 close should be 116.4, got {row_11['close']}"
     )
+
+
+@pytest.mark.asyncio
+async def test_read_kr_intraday_candles_1m_merges_same_minute_venues(monkeypatch):
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    minute_rows = [
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 2, 23, 9, 0, 0),
+            venue="KRX",
+            open=100.0,
+            high=110.0,
+            low=90.0,
+            close=105.0,
+            volume=10.0,
+            value=1000.0,
+        ),
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 2, 23, 9, 0, 0),
+            venue="NTX",
+            open=200.0,
+            high=210.0,
+            low=190.0,
+            close=205.0,
+            volume=5.0,
+            value=500.0,
+        ),
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 2, 23, 9, 1, 0),
+            venue="KRX",
+            open=106.0,
+            high=111.0,
+            low=101.0,
+            close=107.0,
+            volume=7.0,
+            value=700.0,
+        ),
+    ]
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [{"symbol": symbol, "nxt_eligible": True, "is_active": True}]
+                )
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult(minute_rows)
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+
+    out = await svc.read_kr_intraday_candles(
+        symbol=symbol,
+        period="1m",
+        count=2,
+        end_date=_dt_kst(2026, 2, 23, 0, 0, 0),
+        now_kst=_dt_kst(2026, 2, 24, 10, 0, 0),
+    )
+
+    assert len(out) == 2
+    first = out.iloc[0]
+    second = out.iloc[1]
+    assert first["datetime"] == datetime.datetime(2026, 2, 23, 9, 0, 0)
+    assert first["open"] == 100.0
+    assert first["close"] == 105.0
+    assert first["volume"] == 15.0
+    assert first["value"] == 1500.0
+    assert first["venues"] == ["KRX", "NTX"]
+    assert second["datetime"] == datetime.datetime(2026, 2, 23, 9, 1, 0)
+    assert second["venues"] == ["KRX"]
+
+
+@pytest.mark.asyncio
+async def test_read_kr_intraday_candles_5m_includes_current_partial_bucket(monkeypatch):
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    minute_rows = [
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 2, 23, 9, 0, 0),
+            venue="KRX",
+            open=100.0,
+            high=101.0,
+            low=99.0,
+            close=100.5,
+            volume=10.0,
+            value=1000.0,
+        ),
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 2, 23, 9, 1, 0),
+            venue="KRX",
+            open=100.5,
+            high=102.0,
+            low=100.0,
+            close=101.0,
+            volume=20.0,
+            value=2000.0,
+        ),
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 2, 23, 9, 2, 0),
+            venue="KRX",
+            open=101.0,
+            high=103.0,
+            low=100.5,
+            close=102.5,
+            volume=30.0,
+            value=3000.0,
+        ),
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 2, 23, 9, 5, 0),
+            venue="KRX",
+            open=103.0,
+            high=104.0,
+            low=102.0,
+            close=103.5,
+            volume=40.0,
+            value=4000.0,
+        ),
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 2, 23, 9, 6, 0),
+            venue="KRX",
+            open=103.5,
+            high=105.0,
+            low=103.0,
+            close=104.0,
+            volume=50.0,
+            value=5000.0,
+        ),
+    ]
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [{"symbol": symbol, "nxt_eligible": False, "is_active": True}]
+                )
+            if "FROM public.kr_candles_5m" in sql:
+                return _MappingsResult([])
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult(minute_rows)
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
+    )
+    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+
+    out = await svc.read_kr_intraday_candles(
+        symbol=symbol,
+        period="5m",
+        count=2,
+        end_date=None,
+        now_kst=_dt_kst(2026, 2, 23, 9, 7, 0),
+    )
+
+    assert len(out) == 2
+    first = out.iloc[0]
+    second = out.iloc[1]
+    assert first["datetime"] == datetime.datetime(2026, 2, 23, 9, 0, 0)
+    assert first["open"] == 100.0
+    assert first["close"] == 102.5
+    assert first["volume"] == 60.0
+    assert second["datetime"] == datetime.datetime(2026, 2, 23, 9, 5, 0)
+    assert second["open"] == 103.0
+    assert second["close"] == 104.0
+    assert second["volume"] == 90.0
+    assert second["session"] == "REGULAR"
+    assert second["venues"] == ["KRX"]
