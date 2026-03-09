@@ -20,8 +20,15 @@ class TestUpbitService:
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.upbit.client._request_json")
-    async def test_fetch_ohlcv(self, mock_request):
+    async def test_fetch_ohlcv(self, mock_request, monkeypatch):
         """Test fetching OHLCV data."""
+        monkeypatch.setattr(
+            upbit_service_module.settings,
+            "upbit_ohlcv_cache_enabled",
+            False,
+            raising=False,
+        )
+
         # Mock response
         mock_data = [
             {
@@ -58,6 +65,29 @@ class TestUpbitService:
         called_url = mock_request.await_args.args[0]
         called_params = mock_request.await_args.args[1]
         assert called_url.endswith("/candles/minutes/240")
+        assert called_params["count"] == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("period", "expected_endpoint"),
+        [
+            ("1m", "/candles/minutes/1"),
+            ("5m", "/candles/minutes/5"),
+            ("15m", "/candles/minutes/15"),
+            ("30m", "/candles/minutes/30"),
+        ],
+    )
+    @patch("app.services.brokers.upbit.client._request_json")
+    async def test_fetch_ohlcv_minute_periods_use_expected_endpoints(
+        self, mock_request, period, expected_endpoint
+    ):
+        mock_request.return_value = []
+
+        await upbit_service_module.fetch_ohlcv("KRW-BTC", days=300, period=period)
+
+        called_url = mock_request.await_args.args[0]
+        called_params = mock_request.await_args.args[1]
+        assert called_url.endswith(expected_endpoint)
         assert called_params["count"] == 200
 
     @pytest.mark.asyncio

@@ -25,9 +25,11 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
 - `get_position(symbol, market=None)`
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None)`
-  - period: `day`, `week`, `month`, `4h`, `1h`
-  - `4h`: crypto only
+  - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
+  - `1m` / `5m` / `15m` / `30m` / `4h`: crypto only
   - `1h`: KR/US equity + crypto
+  - Crypto `1m` / `5m` / `15m` / `30m` rows expose `date`, `time`, `open`, `high`, `low`, `close`, `volume`, `value`
+  - Crypto `1h` / `4h` keep the existing normalized response row shape
 - US OHLCV remains Yahoo-based (`app.services.brokers.yahoo.client.fetch_ohlcv`)
   - KR `1h` history is DB-first from Timescale continuous aggregate `public.kr_candles_1h`
   - KR `1h` includes the in-progress (partial) hourly candle by rebuilding the current hour in-memory from:

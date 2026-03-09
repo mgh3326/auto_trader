@@ -191,6 +191,43 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+_OHLCV_ALLOWED_PERIODS = (
+    "day",
+    "week",
+    "month",
+    "1m",
+    "5m",
+    "15m",
+    "30m",
+    "4h",
+    "1h",
+)
+_CRYPTO_ONLY_OHLCV_PERIODS = frozenset({"1m", "5m", "15m", "30m", "4h"})
+_CRYPTO_MINUTE_OHLCV_PERIODS = frozenset({"1m", "5m", "15m", "30m"})
+_CRYPTO_MINUTE_PUBLIC_ROW_KEYS = (
+    "date",
+    "time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "value",
+)
+_OHLCV_PERIOD_ERROR = (
+    "period must be 'day', 'week', 'month', '1m', '5m', '15m', '30m', '4h', or '1h'"
+)
+
+
+def _validate_crypto_only_ohlcv_period(period: str, market_type: str) -> None:
+    if period in _CRYPTO_ONLY_OHLCV_PERIODS and market_type != "crypto":
+        raise ValueError(f"period '{period}' is supported only for crypto")
+
+
+def _normalize_crypto_minute_ohlcv_rows(df: Any) -> list[dict[str, Any]]:
+    return _normalize_rows(df.loc[:, list(_CRYPTO_MINUTE_PUBLIC_ROW_KEYS)])
+
+
 async def _fetch_ohlcv_crypto(
     symbol: str, count: int, period: str, end_date: datetime.datetime | None
 ) -> dict[str, Any]:
@@ -217,7 +254,12 @@ async def _fetch_ohlcv_crypto(
         "source": "upbit",
         "period": period,
         "count": capped_count,
-        "rows": _normalize_rows(df),
+        "rows": (
+            _normalize_crypto_minute_ohlcv_rows(df)
+            if period in _CRYPTO_MINUTE_OHLCV_PERIODS
+            and set(_CRYPTO_MINUTE_PUBLIC_ROW_KEYS).issubset(df.columns)
+            else _normalize_rows(df)
+        ),
     }
 
 
@@ -367,7 +409,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         name="get_ohlcv",
         description=(
             "Get OHLCV candles for a symbol. Supports daily/weekly/monthly periods "
-            "plus 4h for crypto, 1h for KR/US equity/crypto, and date-based pagination."
+            "plus 1m/5m/15m/30m/4h for crypto, 1h for KR/US equity/crypto, and date-based pagination."
         ),
     )
     async def get_ohlcv(
@@ -385,8 +427,8 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             raise ValueError("count must be > 0")
 
         period = (period or "day").strip().lower()
-        if period not in ("day", "week", "month", "4h", "1h"):
-            raise ValueError("period must be 'day', 'week', 'month', '4h', or '1h'")
+        if period not in _OHLCV_ALLOWED_PERIODS:
+            raise ValueError(_OHLCV_PERIOD_ERROR)
 
         parsed_end_date: datetime.datetime | None = None
         if end_date:
@@ -398,9 +440,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                 ) from exc
 
         market_type, symbol = _resolve_market_type(symbol, market)
-
-        if period == "4h" and market_type != "crypto":
-            raise ValueError("period '4h' is supported only for crypto")
+        _validate_crypto_only_ohlcv_period(period, market_type)
 
         source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
         source = source_map[market_type]
