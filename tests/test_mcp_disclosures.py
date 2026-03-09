@@ -36,7 +36,7 @@ class TestGetDisclosuresImplCodeConversion:
             handlers, "get_stock_name_by_code", mock_get_stock_name_by_code
         )
         monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
-        monkeypatch.setattr(handlers, "NAME_TO_CORP", {"삼성전자": "00126380"})
+        monkeypatch.setattr(handlers, "name_to_corp_map", {"삼성전자": "00126380"})
         monkeypatch.setattr(handlers, "prime_index", mock_prime_index)
 
         result = await handlers.get_disclosures_impl(symbol="005930", days=30, limit=3)
@@ -70,7 +70,7 @@ class TestGetDisclosuresImplCodeConversion:
             handlers, "get_stock_name_by_code", mock_get_stock_name_by_code
         )
         monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
-        monkeypatch.setattr(handlers, "NAME_TO_CORP", {"삼성전자": "00126380"})
+        monkeypatch.setattr(handlers, "name_to_corp_map", {"삼성전자": "00126380"})
         monkeypatch.setattr(handlers, "prime_index", mock_prime_index)
 
         result = await handlers.get_disclosures_impl(symbol="삼성전자", days=30)
@@ -98,7 +98,7 @@ class TestGetDisclosuresImplCodeConversion:
             handlers, "get_stock_name_by_code", mock_get_stock_name_by_code
         )
         monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
-        monkeypatch.setattr(handlers, "NAME_TO_CORP", {})
+        monkeypatch.setattr(handlers, "name_to_corp_map", {})
         monkeypatch.setattr(handlers, "prime_index", mock_prime_index)
 
         result = await handlers.get_disclosures_impl(symbol="999999", days=30)
@@ -125,7 +125,7 @@ class TestGetDisclosuresImplCodeConversion:
             handlers, "get_stock_name_by_code", mock_get_stock_name_by_code
         )
         monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
-        monkeypatch.setattr(handlers, "NAME_TO_CORP", {})
+        monkeypatch.setattr(handlers, "name_to_corp_map", {})
         monkeypatch.setattr(handlers, "prime_index", mock_prime_index)
 
         result = await handlers.get_disclosures_impl(symbol="005930", days=30)
@@ -144,7 +144,7 @@ class TestGetDisclosuresImplCodeConversion:
             return []
 
         monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
-        monkeypatch.setattr(handlers, "NAME_TO_CORP", {})
+        monkeypatch.setattr(handlers, "name_to_corp_map", {})
         monkeypatch.setattr(handlers, "prime_index", mock_prime_index)
 
         result = await handlers.get_disclosures_impl(symbol="삼성전자", days=30)

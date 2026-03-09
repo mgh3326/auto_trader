@@ -50,7 +50,7 @@ class TestApplicationIntegration:
 
     @patch("app.services.brokers.upbit.client.httpx.AsyncClient")
     @patch("app.services.brokers.yahoo.client.yf.Ticker")
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("httpx.AsyncClient")
     @patch("app.analysis.analyzer.genai.Client")
     def test_external_services_integration(
         self,
@@ -108,8 +108,13 @@ class TestExternalServiceMocking:
 
     @pytest.mark.asyncio
     @patch("app.services.brokers.yahoo.client.yf.download")
-    async def test_yahoo_service_mocking(self, mock_yahoo_download):
+    async def test_yahoo_service_mocking(self, mock_yahoo_download, monkeypatch):
         """Test Yahoo Finance service mocking."""
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.settings.yahoo_ohlcv_cache_enabled",
+            False,
+            raising=False,
+        )
         mock_df = pd.DataFrame(
             {
                 "Open": [100],
@@ -132,7 +137,7 @@ class TestExternalServiceMocking:
         "app.services.brokers.kis.client.KISClient._ensure_token",
         new_callable=AsyncMock,
     )
-    @patch("app.services.brokers.kis.client.httpx.AsyncClient")
+    @patch("httpx.AsyncClient")
     async def test_kis_service_mocking(self, mock_kis_client, mock_ensure_token):
         """Test KIS service mocking."""
         mock_instance = mock_kis_client.return_value.__aenter__.return_value
