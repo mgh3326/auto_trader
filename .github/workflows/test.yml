@@ -154,7 +154,6 @@ jobs:
         files: coverage.xml
         disable_search: true
 
-
   security:
     runs-on: ubuntu-latest
     env:
