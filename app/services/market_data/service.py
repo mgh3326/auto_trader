@@ -17,20 +17,12 @@ from app.services.domain_errors import (
     UpstreamUnavailableError,
     ValidationError,
 )
+from app.services.market_data.constants import (
+    CRYPTO_ONLY_OHLCV_PERIODS,
+    OHLCV_ALLOWED_PERIODS,
+    OHLCV_PERIOD_ERROR,
+)
 from app.services.market_data.contracts import Candle, Quote
-
-_OHLCV_ALLOWED_PERIODS = {
-    "day",
-    "week",
-    "month",
-    "1m",
-    "5m",
-    "15m",
-    "30m",
-    "1h",
-    "4h",
-}
-_CRYPTO_ONLY_OHLCV_PERIODS = frozenset({"1m", "5m", "15m", "30m", "4h"})
 
 
 def _normalize_market(market: str) -> str:
@@ -65,11 +57,9 @@ def _normalize_symbol(symbol: str, market: str) -> str:
 
 def _normalize_period(period: str, market: str) -> str:
     normalized = str(period or "day").strip().lower()
-    if normalized not in _OHLCV_ALLOWED_PERIODS:
-        raise ValidationError(
-            "period must be one of day/week/month/1m/5m/15m/30m/1h/4h"
-        )
-    if normalized in _CRYPTO_ONLY_OHLCV_PERIODS and market != "crypto":
+    if normalized not in OHLCV_ALLOWED_PERIODS:
+        raise ValidationError(OHLCV_PERIOD_ERROR)
+    if normalized in CRYPTO_ONLY_OHLCV_PERIODS and market != "crypto":
         raise ValidationError(f"period '{normalized}' is supported only for crypto")
     return normalized
 
