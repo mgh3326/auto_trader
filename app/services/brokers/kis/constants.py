@@ -282,10 +282,3 @@ def get_mock_tr_id(tr_id: str, is_mock: bool) -> str:
     if is_mock and tr_id.startswith("TTT"):
         return tr_id.replace("TTT", "VTT", 1)
     return tr_id
-    if is_mock and tr_id.startswith("TTT"):
-        return tr_id.replace("TTT", "VTT", 1)
-    if is_mock and tr_id.startswith("TTT"):
-        return tr_id.replace("TTT", "VTT", 1)
-    if is_mock and tr_id.startswith("TTT"):
-        return tr_id.replace("TTT", "VTT", 1)
-    return tr_id
