@@ -112,7 +112,13 @@ def test_us_candles_migration_chain_continues_existing_candle_branch() -> None:
 
 
 def test_revision_graph_has_single_final_head_after_us_candle_revisions() -> None:
-    assert _collect_revision_heads() == {"a9d6e4c2b1f0"}
+    _, merge_content = _read_migration("*_merge_kr_intraday_and_us_candle_heads.py")
+
+    assert _collect_revision_heads() == {_extract_revision(merge_content)}
+    assert (
+        'down_revision: str | Sequence[str] | None = ("5c6d7e8f9012", "a9d6e4c2b1f0")'
+        in merge_content
+    )
 
 
 def test_us_candles_timescale_migration_defines_required_base_table_contract() -> None:
@@ -280,7 +286,7 @@ class _RecordingSession:
         self.upsert_rowcount = upsert_rowcount
 
     async def execute(self, statement: object, params: object = None):
-        from app.services import us_candles_sync_service as svc
+        import app.services.us_candles_sync_service as svc
 
         self.executed.append((statement, params))
         if statement is svc._CURSOR_SQL:
@@ -412,7 +418,7 @@ class _KISStub:
 
 
 def test_build_symbol_union_combines_kis_and_manual_us_symbols() -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     kis_holdings = [
         {"ovrs_pdno": "aapl"},
@@ -437,7 +443,7 @@ def test_build_symbol_union_combines_kis_and_manual_us_symbols() -> None:
 async def test_sync_us_candles_no_target_symbols_returns_kr_style_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     fake_session = _RecordingSession()
     fetch_my_us_stocks = AsyncMock(return_value=[])
@@ -476,7 +482,7 @@ async def test_sync_us_candles_no_target_symbols_returns_kr_style_summary(
 async def test_sync_us_candles_propagates_us_symbol_universe_sync_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     fake_session = _RecordingSession()
     kis_client = SimpleNamespace(
@@ -510,7 +516,7 @@ async def test_sync_us_candles_propagates_us_symbol_universe_sync_hint(
 async def test_sync_us_candles_incremental_skips_when_current_minute_is_not_trading(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     fake_session = _RecordingSession()
     fetch_my_us_stocks = AsyncMock(return_value=[{"ovrs_pdno": "AAPL"}])
@@ -553,7 +559,7 @@ async def test_sync_us_candles_incremental_skips_when_current_minute_is_not_trad
 async def test_sync_us_candles_backfill_returns_kr_style_final_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     fake_session = _RecordingSession()
     fetch_my_us_stocks = AsyncMock(return_value=[{"ovrs_pdno": "AAPL"}])
@@ -608,7 +614,7 @@ async def test_sync_us_candles_backfill_returns_kr_style_final_summary(
 def test_select_closed_sessions_uses_calendar_window_for_dst_aware_backfill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     calendar = _FakeCalendar(
         last_closed="2026-11-30",
@@ -642,7 +648,7 @@ def test_select_closed_sessions_uses_calendar_window_for_dst_aware_backfill(
 
 
 def test_compute_incremental_lower_bound_uses_five_minute_overlap() -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     lower_bound = svc._compute_incremental_lower_bound(
         datetime(2026, 3, 9, 15, 0, tzinfo=UTC),
@@ -653,7 +659,7 @@ def test_compute_incremental_lower_bound_uses_five_minute_overlap() -> None:
 
 
 def test_compute_incremental_lower_bound_clamps_to_current_session_open() -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     lower_bound = svc._compute_incremental_lower_bound(
         datetime(2026, 3, 9, 13, 32, tzinfo=UTC),
@@ -665,7 +671,7 @@ def test_compute_incremental_lower_bound_clamps_to_current_session_open() -> Non
 
 @pytest.mark.asyncio
 async def test_collect_window_rows_stops_when_lower_bound_is_reached() -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     inquire = AsyncMock(
         side_effect=[
@@ -738,7 +744,7 @@ async def test_collect_window_rows_stops_when_lower_bound_is_reached() -> None:
 
 @pytest.mark.asyncio
 async def test_collect_window_rows_stops_when_kis_has_no_more_history() -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     inquire = AsyncMock(
         side_effect=[
@@ -772,7 +778,7 @@ async def test_collect_window_rows_stops_when_kis_has_no_more_history() -> None:
 
 @pytest.mark.asyncio
 async def test_collect_window_rows_stops_before_next_keyb_crosses_lower_bound() -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     inquire = AsyncMock(
         return_value=_make_page(
@@ -819,7 +825,7 @@ async def test_collect_window_rows_stops_before_next_keyb_crosses_lower_bound() 
 
 @pytest.mark.asyncio
 async def test_normalize_minute_page_and_upsert_payload_are_utc() -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     frame = pd.DataFrame(
         [
@@ -867,7 +873,7 @@ async def test_normalize_minute_page_and_upsert_payload_are_utc() -> None:
 
 @pytest.mark.asyncio
 async def test_upsert_rows_returns_actual_affected_rowcount() -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     frame = pd.DataFrame(
         [
@@ -900,7 +906,7 @@ async def test_upsert_rows_returns_actual_affected_rowcount() -> None:
 
 @pytest.mark.asyncio
 async def test_upsert_rows_skips_matching_existing_row_without_upsert() -> None:
-    from app.services import us_candles_sync_service as svc
+    import app.services.us_candles_sync_service as svc
 
     frame = pd.DataFrame(
         [
