@@ -1962,8 +1962,7 @@ async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     now_kst = _dt_kst(2026, 2, 23, 9, 7, 0)
     background_started = False
     background_completed = False
-    background_symbol: str | None = None
-    background_rows: list[dict[str, object]] = []
+    background_calls: list[tuple[str, list[dict[str, object]]]] = []
 
     class DummyDB:
         async def execute(self, query, params=None):
@@ -1986,14 +1985,9 @@ async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     )
 
     async def mock_store_background(*, symbol, minute_rows):
-        nonlocal \
-            background_started, \
-            background_completed, \
-            background_symbol, \
-            background_rows
+        nonlocal background_started, background_completed
         background_started = True
-        background_symbol = symbol
-        background_rows = list(minute_rows)
+        background_calls.append((symbol, list(minute_rows)))
         await asyncio.sleep(0.2)
         background_completed = True
 
@@ -2048,8 +2042,10 @@ async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     await asyncio.sleep(0)
     assert background_started, "Overlay API rows should start background storage"
     assert background_completed is False
-    assert background_symbol == symbol
-    assert len(background_rows) == 2
+    assert len(background_calls) == 1
+    stored_symbol, stored_rows = background_calls[0]
+    assert stored_symbol == symbol
+    assert len(stored_rows) == 2
 
     await asyncio.sleep(0.25)
     assert background_completed, "Background storage should complete after response"
@@ -2089,6 +2085,7 @@ async def test_read_kr_intraday_candles_5m_fallback_schedules_background_storage
         background_storage_calls.append(
             {"symbol": symbol, "minute_rows": list(minute_rows)}
         )
+        await asyncio.sleep(0)
 
     monkeypatch.setattr(svc, "_store_minute_candles_background", mock_store_background)
     kis = SimpleNamespace(

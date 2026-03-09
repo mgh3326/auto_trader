@@ -56,17 +56,41 @@ CREATE INDEX ix_kr_candles_1m_symbol_time_desc
 
 DO $$
 DECLARE
-    v_view_name TEXT;
+    v_cagg_relation_names CONSTANT TEXT[] := ARRAY[
+        'public.kr_candles_1h',
+        'public.kr_candles_5m',
+        'public.kr_candles_15m',
+        'public.kr_candles_30m'
+    ];
+    v_cagg_interval_sqls CONSTANT TEXT[] := ARRAY[
+        'INTERVAL ''1 hour''',
+        'INTERVAL ''5 minutes''',
+        'INTERVAL ''15 minutes''',
+        'INTERVAL ''30 minutes'''
+    ];
+    v_retention_relation_names CONSTANT TEXT[] := ARRAY[
+        'public.kr_candles_1m',
+        'public.kr_candles_5m',
+        'public.kr_candles_15m',
+        'public.kr_candles_30m',
+        'public.kr_candles_1h'
+    ];
+    v_start_offset_sql CONSTANT TEXT := 'INTERVAL ''2 days''';
+    v_schedule_interval_sql CONSTANT TEXT := 'INTERVAL ''5 minutes''';
+    v_retention_interval_sql CONSTANT TEXT := 'INTERVAL ''90 days''';
     v_relation_name TEXT;
     v_bucket_interval_sql TEXT;
+    v_view_name TEXT;
+    v_refresh_end TIMESTAMPTZ;
+    v_start TIMESTAMPTZ;
+    v_end TIMESTAMPTZ;
+    v_index INTEGER;
 BEGIN
-    FOR v_view_name, v_relation_name, v_bucket_interval_sql IN
-        VALUES
-            ('kr_candles_1h', 'public.kr_candles_1h', 'INTERVAL ''1 hour'''),
-            ('kr_candles_5m', 'public.kr_candles_5m', 'INTERVAL ''5 minutes'''),
-            ('kr_candles_15m', 'public.kr_candles_15m', 'INTERVAL ''15 minutes'''),
-            ('kr_candles_30m', 'public.kr_candles_30m', 'INTERVAL ''30 minutes''')
-    LOOP
+    FOR v_index IN 1..array_length(v_cagg_relation_names, 1) LOOP
+        v_relation_name := v_cagg_relation_names[v_index];
+        v_bucket_interval_sql := v_cagg_interval_sqls[v_index];
+        v_view_name := split_part(v_relation_name, '.', 2);
+
         EXECUTE format(
             $sql$
             CREATE MATERIALIZED VIEW public.%I
@@ -100,24 +124,7 @@ BEGIN
             v_view_name,
             v_bucket_interval_sql
         );
-    END LOOP;
-END
-$$;
 
-DO $$
-DECLARE
-    v_relation_name TEXT;
-    v_end_offset_sql TEXT;
-    v_start_offset_sql CONSTANT TEXT := 'INTERVAL ''2 days''';
-    v_schedule_interval_sql CONSTANT TEXT := 'INTERVAL ''5 minutes''';
-BEGIN
-    FOR v_relation_name, v_end_offset_sql IN
-        VALUES
-            ('public.kr_candles_5m', 'INTERVAL ''5 minutes'''),
-            ('public.kr_candles_15m', 'INTERVAL ''15 minutes'''),
-            ('public.kr_candles_30m', 'INTERVAL ''30 minutes'''),
-            ('public.kr_candles_1h', 'INTERVAL ''1 hour''')
-    LOOP
         IF to_regclass(v_relation_name) IS NOT NULL THEN
             EXECUTE format(
                 $sql$
@@ -140,27 +147,13 @@ BEGIN
                 $sql$,
                 v_relation_name,
                 v_start_offset_sql,
-                v_end_offset_sql,
+                v_bucket_interval_sql,
                 v_schedule_interval_sql
             );
         END IF;
     END LOOP;
-END
-$$;
 
-DO $$
-DECLARE
-    v_relation_name TEXT;
-    v_retention_interval_sql CONSTANT TEXT := 'INTERVAL ''90 days''';
-BEGIN
-    FOREACH v_relation_name IN ARRAY ARRAY[
-        'public.kr_candles_1m',
-        'public.kr_candles_5m',
-        'public.kr_candles_15m',
-        'public.kr_candles_30m',
-        'public.kr_candles_1h'
-    ]
-    LOOP
+    FOREACH v_relation_name IN ARRAY v_retention_relation_names LOOP
         IF to_regclass(v_relation_name) IS NOT NULL THEN
             EXECUTE format(
                 $sql$
@@ -184,17 +177,7 @@ BEGIN
             );
         END IF;
     END LOOP;
-END
-$$;
 
-DO $$
-DECLARE
-    v_start TIMESTAMPTZ;
-    v_end TIMESTAMPTZ;
-    v_refresh_end TIMESTAMPTZ;
-    v_relation_name TEXT;
-    v_end_offset_sql TEXT;
-BEGIN
     IF to_regclass('public.kr_candles_1h') IS NULL THEN
         RETURN;
     END IF;
@@ -207,13 +190,10 @@ BEGIN
         RETURN;
     END IF;
 
-    FOR v_relation_name, v_end_offset_sql IN
-        VALUES
-            ('public.kr_candles_1h', 'INTERVAL ''1 hour'''),
-            ('public.kr_candles_5m', 'INTERVAL ''5 minutes'''),
-            ('public.kr_candles_15m', 'INTERVAL ''15 minutes'''),
-            ('public.kr_candles_30m', 'INTERVAL ''30 minutes''')
-    LOOP
+    FOR v_index IN 1..array_length(v_cagg_relation_names, 1) LOOP
+        v_relation_name := v_cagg_relation_names[v_index];
+        v_bucket_interval_sql := v_cagg_interval_sqls[v_index];
+
         IF v_relation_name = 'public.kr_candles_1h' THEN
             v_refresh_end := LEAST(
                 v_end + INTERVAL '1 hour',
@@ -222,8 +202,8 @@ BEGIN
         ELSE
             EXECUTE format(
                 'SELECT LEAST($1 + %s, now() - %s)',
-                v_end_offset_sql,
-                v_end_offset_sql
+                v_bucket_interval_sql,
+                v_bucket_interval_sql
             )
             INTO v_refresh_end
             USING v_end;
