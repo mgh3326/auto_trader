@@ -24,12 +24,15 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - US equity Yahoo lookup failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
 - `get_position(symbol, market=None)`
-- `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None)`
+- `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None, include_indicators=False)`
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
   - `1m` / `5m` / `15m` / `30m` / `4h`: crypto only
   - `1h`: KR/US equity + crypto
-  - Crypto `1m` / `5m` / `15m` / `30m` rows expose `date`, `time`, `open`, `high`, `low`, `close`, `volume`, `value`
+  - Crypto `1m` / `5m` / `15m` / `30m` rows expose `timestamp`, `date`, `time`, `open`, `high`, `low`, `close`, `volume`, `value`, `trade_amount`
   - Crypto `1h` / `4h` keep the existing normalized response row shape
+  - `include_indicators=True` adds `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, and `vwap` to each row
+  - `vwap` is populated only for intraday periods (`1m`, `5m`, `15m`, `30m`, `1h`, `4h`); day/week/month rows return `vwap: null`
+  - Successful and empty-result payloads include `indicators_included`
 - US OHLCV remains Yahoo-based (`app.services.brokers.yahoo.client.fetch_ohlcv`)
   - KR `1h` history is DB-first from Timescale continuous aggregate `public.kr_candles_1h`
   - KR `1h` includes the in-progress (partial) hourly candle by rebuilding the current hour in-memory from:
