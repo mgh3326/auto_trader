@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-unit test-integration test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test sync-kr-symbol-universe sync-upbit-symbol-universe sync-us-symbol-universe sync-kr-candles-backfill sync-kr-candles-incremental
+.PHONY: help install install-dev test test-unit test-integration test-services-split test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test sync-kr-symbol-universe sync-upbit-symbol-universe sync-us-symbol-universe sync-kr-candles-backfill sync-kr-candles-incremental
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -18,6 +18,17 @@ test-unit: ## Run unit tests only (excludes integration and live)
 
 test-integration: ## Run integration tests only (excludes live)
 	uv run pytest tests/ -v -m "integration and not live"
+
+test-services-split: ## Run split service tests for former test_services.py scope
+	uv run pytest --no-cov -q \
+		tests/test_services_upbit.py \
+		tests/test_services_kis_client.py \
+		tests/test_services_kis_market_data.py \
+		tests/test_services_kis_logging.py \
+		tests/test_services_stock_info.py \
+		tests/test_services_gemini.py \
+		tests/test_services_dart.py \
+		tests/test_services_yahoo.py
 
 test-cov: ## Run tests with coverage report (excludes live)
 	uv run pytest tests/ -v -m "not live" --cov=app --cov-report=html --cov-report=term-missing

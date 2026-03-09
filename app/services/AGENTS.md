@@ -31,5 +31,5 @@
 
 ## NOTES
 - `app/services/kis.py` is intentionally large; use targeted reads and narrow edits.
-- Service changes often require test updates in `tests/test_services*.py` and domain-specific test files.
+- Service changes often require test updates in `tests/test_services_*.py` and domain-specific test files; use `make test-services-split` when you need the exact former `tests/test_services.py` scope.
 - Some services have dedicated submodules (`app/services/disclosures/`, `app/services/kis/`) for narrower responsibilities.

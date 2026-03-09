@@ -206,6 +206,7 @@ uv sync --all-groups
 - Fast gate (`live` 제외): `make test` 또는 `uv run pytest tests/ -v -m "not live"`
 - 단위 테스트만: `make test-unit` 또는 `uv run pytest tests/ -v -m "not integration and not live"`
 - 통합 테스트만 (`live` 제외): `make test-integration` 또는 `uv run pytest tests/ -v -m "integration and not live"`
+- 옛 `tests/test_services.py` 범위 검증: `make test-services-split`
 - Live API 테스트: `make test-live` 또는 `uv run pytest tests/ -v -m "integration and live" --run-live --no-cov`
 - 커버리지 리포트: `make test-cov` 또는 `uv run pytest tests/ -v -m "not live" --cov=app --cov-report=html --cov-report=term-missing`
 
@@ -244,6 +245,7 @@ make help          # 사용 가능한 명령어 목록
 make install       # 프로덕션 의존성 설치
 make install-dev   # 개발 의존성 설치
 make test          # live 제외 fast gate 테스트 실행
+make test-services-split # 옛 test_services.py 범위 검증
 make test-live     # live 통합 테스트 실행 (--run-live)
 make test-cov      # 커버리지와 함께 테스트 실행
 make lint          # 코드 품질 검사
@@ -262,9 +264,11 @@ tests/
 ├── test_config.py        # 설정 모듈 테스트
 ├── test_routers.py       # API 라우터 테스트
 ├── test_analysis.py      # 분석 모듈 테스트
-├── test_services.py      # 서비스 모듈 테스트
+├── test_services_*.py    # 서비스 모듈 테스트 (도메인별 분리)
 └── test_integration.py   # 통합 테스트
 ```
+
+`tests/test_services_*.py`는 삭제된 `tests/test_services.py`의 정확한 별칭이 아닙니다. 이 패턴은 `tests/test_services_krx.py`도 포함하므로, 예전 단일 파일 범위와 동일한 검증이 필요하면 `make test-services-split`를 사용하세요.
 
 ## CI/CD
 
