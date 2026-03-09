@@ -274,11 +274,12 @@ def test_sql_script_contains_90_day_retention_policy_for_both_tables() -> None:
 
     assert "add_retention_policy" in content
     assert "remove_retention_policy" in content
-    assert "public.kr_candles_1m" in content
-    assert "public.kr_candles_5m" in content
-    assert "public.kr_candles_15m" in content
-    assert "public.kr_candles_30m" in content
-    assert "public.kr_candles_1h" in content
+    assert "v_relation_prefix CONSTANT TEXT := 'public.kr_candles_'" in content
+    assert "'1m'" in content
+    assert "'5m'" in content
+    assert "'15m'" in content
+    assert "'30m'" in content
+    assert "'1h'" in content
     assert "timescaledb.materialized_only = false" in content
     assert "INTERVAL '5 minutes'" in content or "INTERVAL ''5 minutes''" in content
     assert "90 days" in content
