@@ -34,6 +34,39 @@ def upgrade() -> None:
                     INTERVAL '90 days'
                 );
             END IF;
+
+            IF to_regclass('public.kr_candles_5m') IS NOT NULL THEN
+                PERFORM remove_retention_policy(
+                    'public.kr_candles_5m',
+                    if_exists => TRUE
+                );
+                PERFORM add_retention_policy(
+                    'public.kr_candles_5m',
+                    INTERVAL '90 days'
+                );
+            END IF;
+
+            IF to_regclass('public.kr_candles_15m') IS NOT NULL THEN
+                PERFORM remove_retention_policy(
+                    'public.kr_candles_15m',
+                    if_exists => TRUE
+                );
+                PERFORM add_retention_policy(
+                    'public.kr_candles_15m',
+                    INTERVAL '90 days'
+                );
+            END IF;
+
+            IF to_regclass('public.kr_candles_30m') IS NOT NULL THEN
+                PERFORM remove_retention_policy(
+                    'public.kr_candles_30m',
+                    if_exists => TRUE
+                );
+                PERFORM add_retention_policy(
+                    'public.kr_candles_30m',
+                    INTERVAL '90 days'
+                );
+            END IF;
         END
         $$
         """
@@ -55,6 +88,27 @@ def downgrade() -> None:
             IF to_regclass('public.kr_candles_1h') IS NOT NULL THEN
                 PERFORM remove_retention_policy(
                     'public.kr_candles_1h',
+                    if_exists => TRUE
+                );
+            END IF;
+
+            IF to_regclass('public.kr_candles_5m') IS NOT NULL THEN
+                PERFORM remove_retention_policy(
+                    'public.kr_candles_5m',
+                    if_exists => TRUE
+                );
+            END IF;
+
+            IF to_regclass('public.kr_candles_15m') IS NOT NULL THEN
+                PERFORM remove_retention_policy(
+                    'public.kr_candles_15m',
+                    if_exists => TRUE
+                );
+            END IF;
+
+            IF to_regclass('public.kr_candles_30m') IS NOT NULL THEN
+                PERFORM remove_retention_policy(
+                    'public.kr_candles_30m',
                     if_exists => TRUE
                 );
             END IF;
