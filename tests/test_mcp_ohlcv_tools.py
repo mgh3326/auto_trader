@@ -47,6 +47,79 @@ def _single_crypto_intraday_df() -> pd.DataFrame:
     )
 
 
+_CRYPTO_MINUTE_PUBLIC_KEYS = {
+    "timestamp",
+    "date",
+    "time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "value",
+    "trade_amount",
+}
+
+_OHLCV_INDICATOR_KEYS = {
+    "rsi_14",
+    "ema_20",
+    "bb_upper",
+    "bb_mid",
+    "bb_lower",
+    "vwap",
+}
+
+
+def _multi_row_crypto_intraday_df(rows: int = 25) -> pd.DataFrame:
+    base_timestamp = pd.Timestamp("2024-01-01 09:00:00")
+    records: list[dict[str, object]] = []
+    for idx in range(rows):
+        timestamp = base_timestamp + pd.Timedelta(minutes=idx)
+        close = 100.0 + (idx * 0.4) + (1.5 if idx % 2 == 0 else -1.0)
+        open_price = close - 0.7 if idx % 2 == 0 else close + 0.5
+        high = max(open_price, close) + 1.0
+        low = min(open_price, close) - 1.0
+        volume = 1000.0 + (idx * 25.0)
+        records.append(
+            {
+                "datetime": timestamp,
+                "date": timestamp.date(),
+                "time": timestamp.time(),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+                "value": close * volume,
+            }
+        )
+    return pd.DataFrame(records)
+
+
+def _multi_row_daily_df(rows: int = 25) -> pd.DataFrame:
+    base_date = pd.Timestamp("2024-01-01")
+    records: list[dict[str, object]] = []
+    for idx in range(rows):
+        candle_date = base_date + pd.Timedelta(days=idx)
+        close = 200.0 + (idx * 0.6) + (2.0 if idx % 2 == 0 else -1.5)
+        open_price = close - 0.8 if idx % 3 else close + 0.4
+        high = max(open_price, close) + 1.5
+        low = min(open_price, close) - 1.5
+        volume = 5000.0 + (idx * 50.0)
+        records.append(
+            {
+                "date": candle_date.date(),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+                "value": close * volume,
+            }
+        )
+    return pd.DataFrame(records)
+
+
 # ============================================================================
 # Crypto OHLCV Tests
 # ============================================================================
@@ -134,16 +207,9 @@ async def test_get_ohlcv_crypto_minute_periods(monkeypatch, period):
     assert result["period"] == period
     assert result["count"] == 200
     assert result["instrument_type"] == "crypto"
-    assert set(result["rows"][0]) == {
-        "date",
-        "time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "value",
-    }
+    assert result["indicators_included"] is False
+    assert set(result["rows"][0]) == _CRYPTO_MINUTE_PUBLIC_KEYS
+    assert _OHLCV_INDICATOR_KEYS.isdisjoint(result["rows"][0])
 
 
 @pytest.mark.asyncio
@@ -157,16 +223,9 @@ async def test_get_ohlcv_crypto_minute_rows_do_not_expose_datetime(monkeypatch):
 
     row = result["rows"][0]
     assert "datetime" not in row
-    assert set(row) == {
-        "date",
-        "time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "value",
-    }
+    assert row["timestamp"] == "2024-01-01T09:30:00"
+    assert row["trade_amount"] == row["value"]
+    assert set(row) == _CRYPTO_MINUTE_PUBLIC_KEYS
 
 
 @pytest.mark.asyncio
@@ -183,16 +242,93 @@ async def test_get_ohlcv_crypto_minute_periods_preserve_minute_public_row_shape(
 
     row = result["rows"][0]
     assert "datetime" not in row
-    assert set(row) == {
-        "date",
-        "time",
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-        "value",
+    assert row["timestamp"] == "2024-01-01T09:30:00"
+    assert row["trade_amount"] == row["value"]
+    assert set(row) == _CRYPTO_MINUTE_PUBLIC_KEYS
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_include_indicators_enriches_crypto_minute_rows(monkeypatch):
+    tools = build_tools()
+    df = _multi_row_crypto_intraday_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"](
+        "KRW-BTC", count=25, period="1m", include_indicators=True
+    )
+
+    assert result["indicators_included"] is True
+    first_row = result["rows"][0]
+    last_row = result["rows"][-1]
+    assert _OHLCV_INDICATOR_KEYS.issubset(first_row)
+    assert _OHLCV_INDICATOR_KEYS.issubset(last_row)
+    assert first_row["rsi_14"] is None
+    assert first_row["ema_20"] is None
+    assert first_row["bb_upper"] is None
+    assert first_row["bb_mid"] is None
+    assert first_row["bb_lower"] is None
+    assert first_row["vwap"] is not None
+    assert last_row["rsi_14"] is not None
+    assert last_row["ema_20"] is not None
+    assert last_row["bb_upper"] is not None
+    assert last_row["bb_mid"] is not None
+    assert last_row["bb_lower"] is not None
+    assert last_row["vwap"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_include_indicators_daily_sets_vwap_to_none(monkeypatch):
+    tools = build_tools()
+    df = _multi_row_daily_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", count=25, include_indicators=True)
+
+    assert result["indicators_included"] is True
+    row = result["rows"][-1]
+    assert _OHLCV_INDICATOR_KEYS.issubset(row)
+    assert row["vwap"] is None
+    assert row["ema_20"] is not None
+    assert row["bb_upper"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_empty_crypto_result_preserves_indicators_flag(monkeypatch):
+    tools = build_tools()
+    mock_fetch = AsyncMock(return_value=pd.DataFrame())
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"](
+        "KRW-BTC", count=5, period="1m", include_indicators=True
+    )
+
+    assert result == {
+        "symbol": "KRW-BTC",
+        "instrument_type": "crypto",
+        "source": "upbit",
+        "period": "1m",
+        "count": 0,
+        "rows": [],
+        "indicators_included": True,
+        "message": "No candle data available for KRW-BTC",
     }
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_crypto_minute_missing_raw_column_raises_value_error(
+    monkeypatch,
+):
+    tools = build_tools()
+    df = _single_crypto_intraday_df().drop(columns=["time"])
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    with pytest.raises(
+        ValueError, match="Crypto minute OHLCV response missing columns: time"
+    ):
+        await tools["get_ohlcv"]("KRW-BTC", count=1, period="1m")
 
 
 @pytest.mark.asyncio

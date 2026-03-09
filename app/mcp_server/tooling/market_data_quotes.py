@@ -11,6 +11,8 @@ import datetime
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 from app.core.config import settings
@@ -42,6 +44,14 @@ from app.services import kis_ohlcv_cache
 from app.services.brokers.kis.client import KISClient
 from app.services.kr_hourly_candles_read_service import read_kr_hourly_candles_1h
 from app.services.kr_symbol_universe_service import search_kr_symbols
+from app.services.market_data.constants import (
+    CRYPTO_MINUTE_OHLCV_PERIODS,
+    CRYPTO_MINUTE_PUBLIC_ROW_KEYS,
+    CRYPTO_MINUTE_REQUIRED_SOURCE_COLUMNS,
+    CRYPTO_ONLY_OHLCV_PERIODS,
+    OHLCV_ALLOWED_PERIODS,
+    OHLCV_PERIOD_ERROR,
+)
 from app.services.upbit_symbol_universe_service import search_upbit_symbols
 from app.services.us_symbol_universe_service import search_us_symbols
 
@@ -191,45 +201,122 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-_OHLCV_ALLOWED_PERIODS = (
-    "day",
-    "week",
-    "month",
-    "1m",
-    "5m",
-    "15m",
-    "30m",
-    "4h",
-    "1h",
-)
-_CRYPTO_ONLY_OHLCV_PERIODS = frozenset({"1m", "5m", "15m", "30m", "4h"})
-_CRYPTO_MINUTE_OHLCV_PERIODS = frozenset({"1m", "5m", "15m", "30m"})
-_CRYPTO_MINUTE_PUBLIC_ROW_KEYS = (
-    "date",
-    "time",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "value",
-)
-_OHLCV_PERIOD_ERROR = (
-    "period must be 'day', 'week', 'month', '1m', '5m', '15m', '30m', '4h', or '1h'"
+_INTRADAY_OHLCV_PERIODS = frozenset({"1m", "5m", "15m", "30m", "1h", "4h"})
+_OHLCV_INDICATOR_ROW_KEYS = (
+    "rsi_14",
+    "ema_20",
+    "bb_upper",
+    "bb_mid",
+    "bb_lower",
+    "vwap",
 )
 
 
 def _validate_crypto_only_ohlcv_period(period: str, market_type: str) -> None:
-    if period in _CRYPTO_ONLY_OHLCV_PERIODS and market_type != "crypto":
+    if period in CRYPTO_ONLY_OHLCV_PERIODS and market_type != "crypto":
         raise ValueError(f"period '{period}' is supported only for crypto")
 
 
-def _normalize_crypto_minute_ohlcv_rows(df: Any) -> list[dict[str, Any]]:
-    return _normalize_rows(df.loc[:, list(_CRYPTO_MINUTE_PUBLIC_ROW_KEYS)])
+def _format_crypto_minute_timestamp(date_value: Any, time_value: Any) -> str | None:
+    if pd.isna(date_value) or pd.isna(time_value):
+        return None
+    return f"{date_value}T{time_value}"
+
+
+def _validate_crypto_minute_source_columns(df: pd.DataFrame) -> None:
+    missing = [
+        column
+        for column in CRYPTO_MINUTE_REQUIRED_SOURCE_COLUMNS
+        if column not in df.columns
+    ]
+    if missing:
+        missing_text = ", ".join(missing)
+        raise ValueError(
+            f"Crypto minute OHLCV response missing columns: {missing_text}"
+        )
+
+
+def _calculate_rsi_14(close: pd.Series) -> pd.Series:
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=14, min_periods=14).mean()
+    avg_loss = loss.rolling(window=14, min_periods=14).mean()
+    rs = avg_gain / avg_loss.replace(0, pd.NA)
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.mask(avg_loss == 0, 100.0)
+    rsi = rsi.mask((avg_gain == 0) & (avg_loss == 0), 50.0)
+    return rsi.round(2)
+
+
+def _calculate_ema_20(close: pd.Series) -> pd.Series:
+    ema = close.ewm(span=20, adjust=False).mean()
+    return ema.where(close.expanding().count() >= 20)
+
+
+def _calculate_bollinger_bands(
+    close: pd.Series,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    middle = close.rolling(window=20, min_periods=20).mean()
+    std = close.rolling(window=20, min_periods=20).std()
+    upper = middle + (std * 2)
+    lower = middle - (std * 2)
+    return upper, middle, lower
+
+
+def _calculate_vwap(df: pd.DataFrame, period: str) -> pd.Series:
+    if period not in _INTRADAY_OHLCV_PERIODS:
+        return pd.Series([None] * len(df), index=df.index, dtype=object)
+
+    typical_price = (df["high"] + df["low"] + df["close"]) / 3
+    cumulative_volume = df["volume"].cumsum()
+    vwap = (typical_price * df["volume"]).cumsum() / cumulative_volume.replace(0, pd.NA)
+    return vwap
+
+
+def _enrich_ohlcv_with_indicators(df: pd.DataFrame, period: str) -> pd.DataFrame:
+    frame = df.copy()
+    close = frame["close"].astype(float)
+    frame["rsi_14"] = _calculate_rsi_14(close)
+    frame["ema_20"] = _calculate_ema_20(close)
+    bb_upper, bb_mid, bb_lower = _calculate_bollinger_bands(close)
+    frame["bb_upper"] = bb_upper
+    frame["bb_mid"] = bb_mid
+    frame["bb_lower"] = bb_lower
+
+    if period in _INTRADAY_OHLCV_PERIODS:
+        frame["high"] = frame["high"].astype(float)
+        frame["low"] = frame["low"].astype(float)
+        frame["volume"] = frame["volume"].astype(float)
+        frame["vwap"] = _calculate_vwap(frame, period)
+    else:
+        frame["vwap"] = None
+
+    return frame
+
+
+def _normalize_crypto_minute_ohlcv_rows(
+    df: pd.DataFrame, *, include_indicators: bool
+) -> list[dict[str, Any]]:
+    frame = df.copy()
+    frame["timestamp"] = [
+        _format_crypto_minute_timestamp(date_value, time_value)
+        for date_value, time_value in zip(frame["date"], frame["time"], strict=False)
+    ]
+    frame["trade_amount"] = frame["value"]
+    row_keys: list[str] = list(CRYPTO_MINUTE_PUBLIC_ROW_KEYS)
+    if include_indicators:
+        row_keys.extend(_OHLCV_INDICATOR_ROW_KEYS)
+    return _normalize_rows(frame.loc[:, row_keys])
 
 
 async def _fetch_ohlcv_crypto(
-    symbol: str, count: int, period: str, end_date: datetime.datetime | None
+    symbol: str,
+    count: int,
+    period: str,
+    end_date: datetime.datetime | None,
+    *,
+    include_indicators: bool,
 ) -> dict[str, Any]:
     """Fetch crypto OHLCV from Upbit."""
     capped_count = min(count, 200)
@@ -245,8 +332,15 @@ async def _fetch_ohlcv_crypto(
             "period": period,
             "count": 0,
             "rows": [],
+            "indicators_included": include_indicators,
             "message": f"No candle data available for {symbol}",
         }
+
+    if period in CRYPTO_MINUTE_OHLCV_PERIODS:
+        _validate_crypto_minute_source_columns(df)
+
+    if include_indicators:
+        df = _enrich_ohlcv_with_indicators(df, period)
 
     return {
         "symbol": symbol,
@@ -254,10 +348,12 @@ async def _fetch_ohlcv_crypto(
         "source": "upbit",
         "period": period,
         "count": capped_count,
+        "indicators_included": include_indicators,
         "rows": (
-            _normalize_crypto_minute_ohlcv_rows(df)
-            if period in _CRYPTO_MINUTE_OHLCV_PERIODS
-            and set(_CRYPTO_MINUTE_PUBLIC_ROW_KEYS).issubset(df.columns)
+            _normalize_crypto_minute_ohlcv_rows(
+                df, include_indicators=include_indicators
+            )
+            if period in CRYPTO_MINUTE_OHLCV_PERIODS
             else _normalize_rows(df)
         ),
     }
@@ -271,6 +367,8 @@ async def _fetch_ohlcv_equity_kr(
     count: int,
     period: str,
     end_date: datetime.datetime | None,
+    *,
+    include_indicators: bool,
 ) -> dict[str, Any]:
     """Fetch Korean equity OHLCV from KIS."""
     capped_count = min(count, 200)
@@ -313,30 +411,42 @@ async def _fetch_ohlcv_equity_kr(
             end_date=end_date.date() if end_date else None,
         )
 
+    if include_indicators and not df.empty:
+        df = _enrich_ohlcv_with_indicators(df, period)
+
     return {
         "symbol": symbol,
         "instrument_type": "equity_kr",
         "source": "kis",
         "period": period,
         "count": capped_count,
+        "indicators_included": include_indicators,
         "rows": _normalize_rows(df),
     }
 
 
 async def _fetch_ohlcv_equity_us(
-    symbol: str, count: int, period: str, end_date: datetime.datetime | None
+    symbol: str,
+    count: int,
+    period: str,
+    end_date: datetime.datetime | None,
+    *,
+    include_indicators: bool,
 ) -> dict[str, Any]:
     """Fetch US equity OHLCV from Yahoo Finance."""
     capped_count = min(count, 100)
     df = await yahoo_service.fetch_ohlcv(
         ticker=symbol, days=capped_count, period=period, end_date=end_date
     )
+    if include_indicators and not df.empty:
+        df = _enrich_ohlcv_with_indicators(df, period)
     return {
         "symbol": symbol,
         "instrument_type": "equity_us",
         "source": "yahoo",
         "period": period,
         "count": capped_count,
+        "indicators_included": include_indicators,
         "rows": _normalize_rows(df),
     }
 
@@ -418,6 +528,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         period: str = "day",
         end_date: str | None = None,
         market: str | None = None,
+        include_indicators: bool = False,
     ) -> dict[str, Any]:
         symbol = (symbol or "").strip()
         if not symbol:
@@ -427,8 +538,8 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             raise ValueError("count must be > 0")
 
         period = (period or "day").strip().lower()
-        if period not in _OHLCV_ALLOWED_PERIODS:
-            raise ValueError(_OHLCV_PERIOD_ERROR)
+        if period not in OHLCV_ALLOWED_PERIODS:
+            raise ValueError(OHLCV_PERIOD_ERROR)
 
         parsed_end_date: datetime.datetime | None = None
         if end_date:
@@ -447,13 +558,31 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
 
         try:
             if market_type == "crypto":
-                return await _fetch_ohlcv_crypto(symbol, count, period, parsed_end_date)
+                return await _fetch_ohlcv_crypto(
+                    symbol,
+                    count,
+                    period,
+                    parsed_end_date,
+                    include_indicators=include_indicators,
+                )
             if market_type == "equity_kr":
                 return await _fetch_ohlcv_equity_kr(
-                    symbol, count, period, parsed_end_date
+                    symbol,
+                    count,
+                    period,
+                    parsed_end_date,
+                    include_indicators=include_indicators,
                 )
-            return await _fetch_ohlcv_equity_us(symbol, count, period, parsed_end_date)
+            return await _fetch_ohlcv_equity_us(
+                symbol,
+                count,
+                period,
+                parsed_end_date,
+                include_indicators=include_indicators,
+            )
         except Exception as exc:
+            if str(exc).startswith("Crypto minute OHLCV response missing columns:"):
+                raise
             return _error_payload_from_exception(
                 source=source,
                 exc=exc,
