@@ -26,27 +26,29 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_position(symbol, market=None)`
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None, include_indicators=False)`
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
-  - `1m` / `5m` / `15m` / `30m` / `4h`: crypto only
+  - `include_indicators=True` adds `indicators_included` at the payload top level and appends `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, `vwap` to each row
+  - `vwap` is populated for intraday periods and `null` for `day/week/month`
+  - `1m` / `5m` / `15m` / `30m`: KR equity + crypto
+  - `4h`: crypto only
   - `1h`: KR/US equity + crypto
-  - Crypto `1m` / `5m` / `15m` / `30m` rows expose `timestamp`, `date`, `time`, `open`, `high`, `low`, `close`, `volume`, `value`, `trade_amount`
-  - Crypto `1h` / `4h` keep the existing normalized response row shape
-  - `include_indicators=True` adds `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, and `vwap` to each row
-  - `vwap` is populated only for intraday periods (`1m`, `5m`, `15m`, `30m`, `1h`, `4h`); day/week/month rows return `vwap: null`
-  - Successful and empty-result payloads include `indicators_included`
+  - Crypto `1m` / `5m` / `15m` / `30m` rows expose `timestamp`, `date`, `time`, `open`, `high`, `low`, `close`, `volume`, `value`, `trade_amount` and do not expose raw `datetime`
+- KR OHLCV behavior:
 - US OHLCV remains Yahoo-based (`app.services.brokers.yahoo.client.fetch_ohlcv`)
-  - KR `1h` history is DB-first from Timescale continuous aggregate `public.kr_candles_1h`
-  - KR `1h` includes the in-progress (partial) hourly candle by rebuilding the current hour in-memory from:
-    - `public.kr_candles_1m` (minute DB) + KIS minute API (up to 30 rows)
-    - KIS minute venues are merged with strict dedup to prevent double-counting (API overwrites DB per minute+venue)
+  - KR `day` keeps the existing Redis-backed `kis_ohlcv_cache` path when `end_date` is omitted
+  - KR `1m` reads DB-first from raw `public.kr_candles_1m` with venue merge (`KRX` price priority, `volume/value` sum)
+  - KR `5m/15m/30m/1h` read DB-first from Timescale continuous aggregates (`public.kr_candles_5m`, `public.kr_candles_15m`, `public.kr_candles_30m`, `public.kr_candles_1h`)
+  - KR intraday (`1m/5m/15m/30m/1h`) overlays the most recent 30 minutes from `public.kr_candles_1m` + KIS minute API to cover the unchanged 10-minute sync cadence
+  - KR intraday includes the current partial bucket when minute data is available
+  - KIS minute venues are merged with strict dedup to prevent double-counting (API overwrites DB per minute+venue)
   - KIS minute API call plan (KST):
     - `09:00 <= now < 15:35`: call KRX (`J`) + NTX (`NX`) in parallel when `nxt_eligible=true` (15:35 delay defense)
     - `08:00 <= now < 09:00`: call NTX (`NX`) only when `nxt_eligible=true`
     - `15:35 <= now < 20:00`: call NTX (`NX`) only when `nxt_eligible=true`
     - When `end_date` is in the past: DB-only (0 API calls)
-  - KR `1h` returns an explicit error when symbol is missing/inactive in `kr_symbol_universe` (used for `nxt_eligible`)
-  - KR `1h` does not use Redis OHLCV cache (`kis_ohlcv_cache`)
-  - KR `1h` treats partial API failure (KRX/NTX) as a tool-level error (exception)
-  - KR `1h` response rows add `session` and `venues` fields (KR `1h` only; other market/period schemas unchanged)
+  - KR intraday degrades to an empty result when symbol is missing/inactive in `kr_symbol_universe` (used for `nxt_eligible`)
+  - KR intraday does not use Redis OHLCV cache (`kis_ohlcv_cache`)
+  - KR intraday degrades to DB-backed partial data when recent KIS minute overlay calls fail
+  - KR intraday response rows add `session` and `venues` fields
 - `get_indicators(symbol, indicators, market=None)`
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50)`
