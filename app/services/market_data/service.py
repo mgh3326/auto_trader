@@ -17,6 +17,11 @@ from app.services.domain_errors import (
     UpstreamUnavailableError,
     ValidationError,
 )
+from app.services.market_data.constants import (
+    CRYPTO_ONLY_OHLCV_PERIODS,
+    OHLCV_ALLOWED_PERIODS,
+    OHLCV_PERIOD_ERROR,
+)
 from app.services.market_data.contracts import Candle, Quote
 
 
@@ -52,11 +57,10 @@ def _normalize_symbol(symbol: str, market: str) -> str:
 
 def _normalize_period(period: str, market: str) -> str:
     normalized = str(period or "day").strip().lower()
-    allowed = {"day", "week", "month", "1h", "4h"}
-    if normalized not in allowed:
-        raise ValidationError("period must be one of day/week/month/1h/4h")
-    if normalized == "4h" and market != "crypto":
-        raise ValidationError("4h period is supported only for crypto")
+    if normalized not in OHLCV_ALLOWED_PERIODS:
+        raise ValidationError(OHLCV_PERIOD_ERROR)
+    if normalized in CRYPTO_ONLY_OHLCV_PERIODS and market != "crypto":
+        raise ValidationError(f"period '{normalized}' is supported only for crypto")
     return normalized
 
 
@@ -76,8 +80,11 @@ def _to_candle_rows(
         timestamp_raw = row.get("datetime")
         if timestamp_raw is None:
             date_raw = row.get("date")
-            timestamp_raw = pd.to_datetime(date_raw)
+            if date_raw is None:
+                raise ValidationError("candle row must include datetime or date")
+            timestamp_raw = pd.Timestamp(date_raw)
         timestamp = pd.Timestamp(timestamp_raw).to_pydatetime()
+        value_raw = row.get("value")
         rows.append(
             Candle(
                 symbol=symbol,
@@ -90,9 +97,7 @@ def _to_candle_rows(
                 low=float(row.get("low") or 0.0),
                 close=float(row.get("close") or 0.0),
                 volume=float(row.get("volume") or 0.0),
-                value=(
-                    float(row.get("value")) if row.get("value") is not None else None
-                ),
+                value=(float(value_raw) if value_raw is not None else None),
             )
         )
     return rows

@@ -28,6 +28,98 @@ from tests._mcp_tooling_support import (
     build_tools,
 )
 
+
+def _single_crypto_intraday_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2024-01-01 09:30:00"),
+                "date": date(2024, 1, 1),
+                "time": datetime.time(9, 30, 0),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+            }
+        ]
+    )
+
+
+_CRYPTO_MINUTE_PUBLIC_KEYS = {
+    "timestamp",
+    "date",
+    "time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "value",
+    "trade_amount",
+}
+
+_OHLCV_INDICATOR_KEYS = {
+    "rsi_14",
+    "ema_20",
+    "bb_upper",
+    "bb_mid",
+    "bb_lower",
+    "vwap",
+}
+
+
+def _multi_row_crypto_intraday_df(rows: int = 25) -> pd.DataFrame:
+    base_timestamp = pd.Timestamp("2024-01-01 09:00:00")
+    records: list[dict[str, object]] = []
+    for idx in range(rows):
+        timestamp = base_timestamp + pd.Timedelta(minutes=idx)
+        close = 100.0 + (idx * 0.4) + (1.5 if idx % 2 == 0 else -1.0)
+        open_price = close - 0.7 if idx % 2 == 0 else close + 0.5
+        high = max(open_price, close) + 1.0
+        low = min(open_price, close) - 1.0
+        volume = 1000.0 + (idx * 25.0)
+        records.append(
+            {
+                "datetime": timestamp,
+                "date": timestamp.date(),
+                "time": timestamp.time(),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+                "value": close * volume,
+            }
+        )
+    return pd.DataFrame(records)
+
+
+def _multi_row_daily_df(rows: int = 25) -> pd.DataFrame:
+    base_date = pd.Timestamp("2024-01-01")
+    records: list[dict[str, object]] = []
+    for idx in range(rows):
+        candle_date = base_date + pd.Timedelta(days=idx)
+        close = 200.0 + (idx * 0.6) + (2.0 if idx % 2 == 0 else -1.5)
+        open_price = close - 0.8 if idx % 3 else close + 0.4
+        high = max(open_price, close) + 1.5
+        low = min(open_price, close) - 1.5
+        volume = 5000.0 + (idx * 50.0)
+        records.append(
+            {
+                "date": candle_date.date(),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+                "value": close * volume,
+            }
+        )
+    return pd.DataFrame(records)
+
+
 # ============================================================================
 # Crypto OHLCV Tests
 # ============================================================================
@@ -97,6 +189,198 @@ async def test_get_ohlcv_crypto_period_1h(monkeypatch):
     )
     assert result["period"] == "1h"
     assert result["instrument_type"] == "crypto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("period", ["1m", "5m", "15m", "30m"])
+async def test_get_ohlcv_crypto_minute_periods(monkeypatch, period):
+    tools = build_tools()
+    df = _single_row_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", count=250, period=period)
+
+    mock_fetch.assert_awaited_once_with(
+        market="KRW-BTC", days=200, period=period, end_date=None
+    )
+    assert result["period"] == period
+    assert result["count"] == 200
+    assert result["instrument_type"] == "crypto"
+    assert result["indicators_included"] is False
+    assert set(result["rows"][0]) == _CRYPTO_MINUTE_PUBLIC_KEYS
+    assert _OHLCV_INDICATOR_KEYS.isdisjoint(result["rows"][0])
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_crypto_minute_rows_do_not_expose_datetime(monkeypatch):
+    tools = build_tools()
+    df = _single_crypto_intraday_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", count=1, period="1m")
+
+    row = result["rows"][0]
+    assert "datetime" not in row
+    assert row["timestamp"] == "2024-01-01T09:30:00"
+    assert row["trade_amount"] == row["value"]
+    assert set(row) == _CRYPTO_MINUTE_PUBLIC_KEYS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("period", ["5m", "15m", "30m"])
+async def test_get_ohlcv_crypto_minute_periods_preserve_minute_public_row_shape(
+    monkeypatch, period
+):
+    tools = build_tools()
+    df = _single_crypto_intraday_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", count=1, period=period)
+
+    row = result["rows"][0]
+    assert "datetime" not in row
+    assert row["timestamp"] == "2024-01-01T09:30:00"
+    assert row["trade_amount"] == row["value"]
+    assert set(row) == _CRYPTO_MINUTE_PUBLIC_KEYS
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_include_indicators_enriches_crypto_minute_rows(monkeypatch):
+    tools = build_tools()
+    df = _multi_row_crypto_intraday_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"](
+        "KRW-BTC", count=25, period="1m", include_indicators=True
+    )
+
+    assert result["indicators_included"] is True
+    first_row = result["rows"][0]
+    last_row = result["rows"][-1]
+    assert _OHLCV_INDICATOR_KEYS.issubset(first_row)
+    assert _OHLCV_INDICATOR_KEYS.issubset(last_row)
+    assert first_row["rsi_14"] is None
+    assert first_row["ema_20"] is None
+    assert first_row["bb_upper"] is None
+    assert first_row["bb_mid"] is None
+    assert first_row["bb_lower"] is None
+    assert first_row["vwap"] is not None
+    assert last_row["rsi_14"] is not None
+    assert last_row["ema_20"] is not None
+    assert last_row["bb_upper"] is not None
+    assert last_row["bb_mid"] is not None
+    assert last_row["bb_lower"] is not None
+    assert last_row["vwap"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_include_indicators_daily_sets_vwap_to_none(monkeypatch):
+    tools = build_tools()
+    df = _multi_row_daily_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", count=25, include_indicators=True)
+
+    assert result["indicators_included"] is True
+    row = result["rows"][-1]
+    assert _OHLCV_INDICATOR_KEYS.issubset(row)
+    assert row["vwap"] is None
+    assert row["ema_20"] is not None
+    assert row["bb_upper"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_empty_crypto_result_preserves_indicators_flag(monkeypatch):
+    tools = build_tools()
+    mock_fetch = AsyncMock(return_value=pd.DataFrame())
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"](
+        "KRW-BTC", count=5, period="1m", include_indicators=True
+    )
+
+    assert result == {
+        "symbol": "KRW-BTC",
+        "instrument_type": "crypto",
+        "source": "upbit",
+        "period": "1m",
+        "count": 0,
+        "rows": [],
+        "indicators_included": True,
+        "message": "No candle data available for KRW-BTC",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_crypto_minute_missing_raw_column_raises_value_error(
+    monkeypatch,
+):
+    tools = build_tools()
+    df = _single_crypto_intraday_df().drop(columns=["time"])
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    with pytest.raises(
+        ValueError, match="Crypto minute OHLCV response missing columns: time"
+    ):
+        await tools["get_ohlcv"]("KRW-BTC", count=1, period="1m")
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_crypto_period_1h_preserves_datetime(monkeypatch):
+    tools = build_tools()
+    df = _single_crypto_intraday_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", count=1, period="1h")
+
+    row = result["rows"][0]
+    assert row["datetime"] == "2024-01-01T09:30:00"
+    assert row["date"] == "2024-01-01"
+    assert row["time"] == "09:30:00"
+    assert set(row) == {
+        "datetime",
+        "date",
+        "time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "value",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_crypto_period_4h_preserves_datetime(monkeypatch):
+    tools = build_tools()
+    df = _single_crypto_intraday_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"]("KRW-BTC", count=1, period="4h")
+
+    row = result["rows"][0]
+    assert row["datetime"] == "2024-01-01T09:30:00"
+    assert row["date"] == "2024-01-01"
+    assert row["time"] == "09:30:00"
+    assert set(row) == {
+        "datetime",
+        "date",
+        "time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "value",
+    }
 
 
 # ============================================================================
@@ -522,7 +806,7 @@ async def test_get_ohlcv_raises_on_invalid_period():
 
     with pytest.raises(
         ValueError,
-        match="period must be 'day', 'week', 'month', '4h', or '1h'",
+        match="period must be 'day', 'week', 'month', '1m', '5m', '15m', '30m', '4h', or '1h'",
     ):
         await tools["get_ohlcv"]("AAPL", period="hour")
 
@@ -541,6 +825,24 @@ async def test_get_ohlcv_period_4h_market_us_rejected():
 
     with pytest.raises(ValueError, match="period '4h' is supported only for crypto"):
         await tools["get_ohlcv"]("AAPL", period="4h", market="us")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("period", ["1m", "5m", "15m", "30m"])
+@pytest.mark.parametrize(
+    ("symbol", "market"),
+    [("005930", "kr"), ("AAPL", "us")],
+)
+async def test_get_ohlcv_crypto_minute_periods_non_crypto_rejected(
+    symbol, market, period
+):
+    tools = build_tools()
+
+    with pytest.raises(
+        ValueError,
+        match=rf"period '{period}' is supported only for crypto",
+    ):
+        await tools["get_ohlcv"](symbol, period=period, market=market)
 
 
 @pytest.mark.asyncio
