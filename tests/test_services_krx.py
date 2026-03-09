@@ -608,6 +608,7 @@ class TestKRXFallbackLogic:
     @pytest.mark.asyncio
     async def test_redis_get_exception_falls_back_to_memory_cache(self, monkeypatch):
         """Test Redis get exception triggers memory cache fallback."""
+        trading_date = "20260309"
 
         # Mock Redis client to raise exception
         class MockRedisClient:
@@ -642,13 +643,16 @@ class TestKRXFallbackLogic:
 
         monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data)
 
-        # First call: Redis fails, fetch from API, save to memory cache
-        result1 = await krx.fetch_stock_all(market="STK")
+        # First call: Redis fails, fetch from API, save to memory cache.
+        # Use a fixed trading date so this fallback test does not depend on
+        # KRX max-working-date resolution around midnight.
+        result1 = await krx.fetch_stock_all(market="STK", trd_date=trading_date)
         assert len(result1) == 1
         assert result1[0]["code"] == "005930"
 
         # Verify data was saved to memory cache
-        cache_keys = [k for k in krx._MEMORY_CACHE.keys() if "krx:stock:all:STK" in k]
+        cache_key = f"krx:stock:all:STK:{trading_date}"
+        cache_keys = [k for k in krx._MEMORY_CACHE.keys() if k == cache_key]
         assert len(cache_keys) > 0, "Memory cache should have data"
 
         # Second call: Redis fails again, but should use memory cache
@@ -661,7 +665,7 @@ class TestKRXFallbackLogic:
 
         monkeypatch.setattr(krx, "_fetch_krx_data", mock_fetch_krx_data_count)
 
-        result2 = await krx.fetch_stock_all(market="STK")
+        result2 = await krx.fetch_stock_all(market="STK", trd_date=trading_date)
         assert len(result2) == 1
         assert result2[0]["code"] == "005930"
         assert fetch_called_count == 0, "Should use memory cache, not fetch API again"
