@@ -1,13 +1,165 @@
 import json
 import os
 import random
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic.fields import FieldInfo
+from pydantic_settings import (
+    BaseSettings,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+ApiRateLimitEntry = dict[str, int | float]
+ApiRateLimitMap = dict[str, ApiRateLimitEntry]
+
+
+DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
+    "FHKST03010100|/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice": {
+        "rate": 20,
+        "period": 1.0,
+    },
+    "FHKST03010230|/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice": {
+        "rate": 20,
+        "period": 1.0,
+    },
+    "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
+        "rate": 10,
+        "period": 1.0,
+    },
+    "TTTC8001R|/uapi/domestic-stock/v1/trading/inquire-daily-ccld": {
+        "rate": 10,
+        "period": 1.0,
+    },
+    "TTTC8036R|/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl": {
+        "rate": 10,
+        "period": 1.0,
+    },
+}
+
+DEFAULT_UPBIT_API_RATE_LIMITS: ApiRateLimitMap = {
+    "GET /v1/accounts": {"rate": 30, "period": 1.0},
+    "GET /v1/ticker": {"rate": 10, "period": 1.0},
+}
+
+_DEFAULT_API_RATE_LIMITS_BY_FIELD: dict[str, ApiRateLimitMap] = {
+    "kis_api_rate_limits": DEFAULT_KIS_API_RATE_LIMITS,
+    "upbit_api_rate_limits": DEFAULT_UPBIT_API_RATE_LIMITS,
+}
+
+
+def _copy_api_rate_limit_map(api_rate_limits: ApiRateLimitMap) -> ApiRateLimitMap:
+    return {
+        endpoint_key: dict(limit_config)
+        for endpoint_key, limit_config in api_rate_limits.items()
+    }
+
+
+def _default_kis_api_rate_limits() -> ApiRateLimitMap:
+    return _copy_api_rate_limit_map(DEFAULT_KIS_API_RATE_LIMITS)
+
+
+def _default_upbit_api_rate_limits() -> ApiRateLimitMap:
+    return _copy_api_rate_limit_map(DEFAULT_UPBIT_API_RATE_LIMITS)
+
+
+def _parse_api_rate_limit_overrides(value: Any) -> ApiRateLimitMap:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        raw_value = value.strip()
+        if not raw_value:
+            return {}
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON for API rate limits: {exc}") from exc
+        value = parsed
+    if not isinstance(value, dict):
+        raise ValueError("API rate limits must be a JSON object")
+    if not value:
+        return {}
+
+    overrides: ApiRateLimitMap = {}
+    for endpoint_key, limit_config in value.items():
+        if not isinstance(limit_config, dict):
+            raise ValueError(
+                f"API rate limit override for '{endpoint_key}' must be a JSON object"
+            )
+        overrides[str(endpoint_key)] = dict(limit_config)
+    return overrides
+
+
+def _merge_api_rate_limits(
+    defaults: ApiRateLimitMap, overrides: Any
+) -> ApiRateLimitMap:
+    merged = _copy_api_rate_limit_map(defaults)
+    parsed_overrides = _parse_api_rate_limit_overrides(overrides)
+    for endpoint_key, limit_config in parsed_overrides.items():
+        merged_entry = dict(merged.get(endpoint_key, {}))
+        merged_entry.update(limit_config)
+        merged[endpoint_key] = merged_entry
+    return merged
+
+
+def _merge_api_rate_limits_for_source(defaults: ApiRateLimitMap, value: Any) -> Any:
+    try:
+        return _merge_api_rate_limits(defaults, value)
+    except ValueError:
+        return value
+
+
+class _MergedApiRateLimitSource(PydanticBaseSettingsSource):
+    def __init__(self, wrapped_source: PydanticBaseSettingsSource) -> None:
+        super().__init__(wrapped_source.settings_cls)
+        self._wrapped_source = wrapped_source
+
+    def get_field_value(
+        self, field: FieldInfo, field_name: str
+    ) -> tuple[Any, str, bool]:
+        return self._wrapped_source.get_field_value(field, field_name)
+
+    def __call__(self) -> dict[str, Any]:
+        source_data = dict(self._wrapped_source())
+        for field_name, defaults in _DEFAULT_API_RATE_LIMITS_BY_FIELD.items():
+            if field_name in self.current_state:
+                source_data.pop(field_name, None)
+                continue
+            if field_name in source_data:
+                source_data[field_name] = _merge_api_rate_limits_for_source(
+                    defaults, source_data[field_name]
+                )
+        return source_data
+
+
+def _load_settings() -> "Settings":
+    settings_class = globals()["Settings"]
+    loaded_settings = settings_class()
+    if not isinstance(loaded_settings, Settings):
+        raise TypeError("Settings bootstrap returned an unexpected object")
+    return loaded_settings
 
 
 class Settings(BaseSettings):
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        _ = settings_cls
+        return (
+            init_settings,
+            _MergedApiRateLimitSource(env_settings),
+            _MergedApiRateLimitSource(dotenv_settings),
+            file_secret_settings,
+        )
+
     # KIS
     kis_app_key: str
     kis_app_secret: str
@@ -27,14 +179,18 @@ class Settings(BaseSettings):
     kis_rate_limit_period: float = 1.0  # 윈도우 기간 (초)
 
     # KIS Per-API Rate Limits (JSON map: "TR_ID|/path" -> {"rate": int, "period": float})
-    kis_api_rate_limits: dict[str, dict[str, int | float]] = {}
+    kis_api_rate_limits: Annotated[ApiRateLimitMap, NoDecode] = Field(
+        default_factory=_default_kis_api_rate_limits
+    )
 
     # Upbit Rate Limiting (HTTP API)
     upbit_rate_limit_rate: int = 10  # 초당 최대 요청 수
     upbit_rate_limit_period: float = 1.0  # 윈도우 기간 (초)
 
     # Upbit Per-API Rate Limits (JSON map: "METHOD /path" -> {"rate": int, "period": float})
-    upbit_api_rate_limits: dict[str, dict[str, int | float]] = {}
+    upbit_api_rate_limits: Annotated[ApiRateLimitMap, NoDecode] = Field(
+        default_factory=_default_upbit_api_rate_limits
+    )
 
     upbit_ohlcv_cache_enabled: bool = True
     upbit_ohlcv_cache_max_days: int = 400
@@ -77,21 +233,8 @@ class Settings(BaseSettings):
 
     @field_validator("kis_api_rate_limits", "upbit_api_rate_limits", mode="before")
     @classmethod
-    def parse_api_rate_limits(cls, v: Any) -> dict[str, dict[str, int | float]]:
-        """Parse JSON string or dict for API rate limits."""
-        if isinstance(v, str):
-            if not v:
-                return {}
-            try:
-                parsed = json.loads(v)
-                if not isinstance(parsed, dict):
-                    raise ValueError("API rate limits must be a JSON object")
-                return parsed
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid JSON for API rate limits: {e}") from e
-        if isinstance(v, dict):
-            return v
-        return {}
+    def parse_api_rate_limits(cls, v: Any) -> ApiRateLimitMap:
+        return _parse_api_rate_limit_overrides(v)
 
     @field_validator("google_api_keys", mode="before")
     @classmethod
@@ -294,4 +437,4 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()  # import 하면 전역 singleton
+settings = _load_settings()  # import 하면 전역 singleton

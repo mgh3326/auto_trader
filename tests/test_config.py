@@ -5,7 +5,62 @@ Tests for configuration module.
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+from pydantic import ValidationError
+
 from app.core.config import Settings, settings
+
+EXPECTED_KIS_API_RATE_LIMITS = {
+    "FHKST03010100|/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice": {
+        "rate": 20,
+        "period": 1.0,
+    },
+    "FHKST03010230|/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice": {
+        "rate": 20,
+        "period": 1.0,
+    },
+    "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
+        "rate": 10,
+        "period": 1.0,
+    },
+    "TTTC8001R|/uapi/domestic-stock/v1/trading/inquire-daily-ccld": {
+        "rate": 10,
+        "period": 1.0,
+    },
+    "TTTC8036R|/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl": {
+        "rate": 10,
+        "period": 1.0,
+    },
+}
+
+EXPECTED_UPBIT_API_RATE_LIMITS = {
+    "GET /v1/accounts": {"rate": 30, "period": 1.0},
+    "GET /v1/ticker": {"rate": 10, "period": 1.0},
+}
+
+
+def _required_settings_kwargs() -> dict[str, str]:
+    return {
+        "kis_app_key": settings.kis_app_key,
+        "kis_app_secret": settings.kis_app_secret,
+        "google_api_key": settings.google_api_key,
+        "opendart_api_key": settings.opendart_api_key,
+        "DATABASE_URL": settings.DATABASE_URL,
+        "upbit_access_key": settings.upbit_access_key,
+        "upbit_secret_key": settings.upbit_secret_key,
+        "SECRET_KEY": settings.SECRET_KEY,
+    }
+
+
+def _build_settings(**kwargs: object) -> Settings:
+    settings_class = globals()["Settings"]
+    cfg = settings_class(**kwargs)
+    assert isinstance(cfg, Settings)
+    return cfg
+
+
+def _new_settings() -> Settings:
+    return _build_settings(**_required_settings_kwargs())
 
 
 class TestSettings:
@@ -82,6 +137,78 @@ class TestConfigLoading:
         # Test get_next_key method
         next_key = settings.get_next_key()
         assert isinstance(next_key, str)
+
+    def test_api_rate_limit_defaults_include_builtins(self):
+        cfg = _new_settings()
+
+        assert cfg.kis_api_rate_limits == EXPECTED_KIS_API_RATE_LIMITS
+        assert cfg.upbit_api_rate_limits == EXPECTED_UPBIT_API_RATE_LIMITS
+
+    def test_empty_object_env_override_does_not_erase_builtins(self, monkeypatch):
+        monkeypatch.setenv("KIS_API_RATE_LIMITS", "{}")
+        monkeypatch.setenv("UPBIT_API_RATE_LIMITS", "{}")
+
+        cfg = _new_settings()
+
+        assert cfg.kis_api_rate_limits == EXPECTED_KIS_API_RATE_LIMITS
+        assert cfg.upbit_api_rate_limits == EXPECTED_UPBIT_API_RATE_LIMITS
+
+    def test_empty_string_env_override_does_not_erase_builtins(self, monkeypatch):
+        monkeypatch.setenv("KIS_API_RATE_LIMITS", "")
+        monkeypatch.setenv("UPBIT_API_RATE_LIMITS", "")
+
+        cfg = _new_settings()
+
+        assert cfg.kis_api_rate_limits == EXPECTED_KIS_API_RATE_LIMITS
+        assert cfg.upbit_api_rate_limits == EXPECTED_UPBIT_API_RATE_LIMITS
+
+    def test_partial_api_rate_limit_override_merges_endpoint_subdict(self, monkeypatch):
+        monkeypatch.setenv(
+            "KIS_API_RATE_LIMITS",
+            '{"TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {"rate": 25}}',
+        )
+
+        cfg = _new_settings()
+
+        assert cfg.kis_api_rate_limits[
+            "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance"
+        ] == {"rate": 25, "period": 1.0}
+        assert cfg.kis_api_rate_limits[
+            "TTTC8001R|/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+        ] == {"rate": 10, "period": 1.0}
+
+    def test_invalid_api_rate_limit_json_raises_validation_error(self, monkeypatch):
+        monkeypatch.setenv("KIS_API_RATE_LIMITS", "{not-json}")
+
+        with pytest.raises(ValidationError, match="Invalid JSON for API rate limits"):
+            _new_settings()
+
+    def test_non_object_api_rate_limit_json_raises_validation_error(self, monkeypatch):
+        monkeypatch.setenv("KIS_API_RATE_LIMITS", "[]")
+
+        with pytest.raises(
+            ValidationError, match="API rate limits must be a JSON object"
+        ):
+            _new_settings()
+
+    def test_constructor_empty_kis_api_rate_limits_replaces_builtins(self):
+        cfg = _build_settings(**_required_settings_kwargs(), kis_api_rate_limits={})
+
+        assert cfg.kis_api_rate_limits == {}
+
+    def test_constructor_empty_upbit_api_rate_limits_replaces_builtins(self):
+        cfg = _build_settings(**_required_settings_kwargs(), upbit_api_rate_limits={})
+
+        assert cfg.upbit_api_rate_limits == {}
+
+    def test_constructor_custom_kis_api_rate_limits_do_not_auto_seed_builtins(self):
+        custom_limits = {"custom": {"rate": 1}}
+
+        cfg = _build_settings(
+            **_required_settings_kwargs(), kis_api_rate_limits=custom_limits
+        )
+
+        assert cfg.kis_api_rate_limits == custom_limits
 
 
 def test_runbook_exists() -> None:
