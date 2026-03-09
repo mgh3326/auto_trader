@@ -1206,6 +1206,40 @@ async def _store_minute_candles_background(
         )
 
 
+def _schedule_background_minute_storage(
+    *,
+    symbol: str,
+    minute_rows: list[_MinuteRow],
+) -> None:
+    if not minute_rows:
+        return
+
+    task = asyncio.create_task(
+        _store_minute_candles_background(
+            symbol=symbol,
+            minute_rows=[
+                {
+                    "time": _convert_kis_datetime_to_utc(row.minute_time),
+                    "venue": row.venue,
+                    "open": row.open,
+                    "high": row.high,
+                    "low": row.low,
+                    "close": row.close,
+                    "volume": row.volume,
+                    "value": row.value,
+                }
+                for row in minute_rows
+            ],
+        )
+    )
+    task.add_done_callback(_log_task_exception)
+    logger.info(
+        "Background task created to store %d minute candles for symbol '%s'",
+        len(minute_rows),
+        symbol,
+    )
+
+
 async def _fetch_minute_history_rows(
     *,
     symbol: str,
@@ -1335,11 +1369,12 @@ async def _load_recent_overlay_frame(
     now_kst: datetime.datetime,
     nxt_eligible: bool,
     end_date: datetime.datetime | None,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, list[_MinuteRow]]:
     start_naive = start_time_kst.replace(tzinfo=None)
     end_naive = end_time_kst.replace(tzinfo=None)
 
     minute_by_key: dict[tuple[datetime.datetime, VenueType], _MinuteRow] = {}
+    api_minute_rows: list[_MinuteRow] = []
     db_rows = await _fetch_minute_rows(
         symbol=symbol,
         start_time_kst=start_time_kst,
@@ -1438,8 +1473,20 @@ async def _load_recent_overlay_frame(
                     volume=_to_float(src.get("volume")),
                     value=_to_float(src.get("value")),
                 )
+                api_minute_rows.append(
+                    _MinuteRow(
+                        minute_time=minute_time,
+                        venue=venue,
+                        open=_to_float(src.get("open")),
+                        high=_to_float(src.get("high")),
+                        low=_to_float(src.get("low")),
+                        close=_to_float(src.get("close")),
+                        volume=_to_float(src.get("volume")),
+                        value=_to_float(src.get("value")),
+                    )
+                )
 
-    return _merge_minute_rows(list(minute_by_key.values()))
+    return _merge_minute_rows(list(minute_by_key.values())), api_minute_rows
 
 
 async def read_kr_intraday_candles(
@@ -1495,7 +1542,7 @@ async def read_kr_intraday_candles(
             datetime.datetime.combine(end_day, datetime.time(8, 0, 0), tzinfo=_KST),
             resolved_now - datetime.timedelta(minutes=30),
         )
-        overlay_frame = await _load_recent_overlay_frame(
+        overlay_frame, overlay_api_minute_rows = await _load_recent_overlay_frame(
             symbol=universe.symbol,
             start_time_kst=overlay_start,
             end_time_kst=resolved_now + datetime.timedelta(minutes=1),
@@ -1513,15 +1560,18 @@ async def read_kr_intraday_candles(
             if not out.empty:
                 out = out[~pd.to_datetime(out["datetime"]).isin(touched)]
             out = pd.concat([out, overlay_frame], ignore_index=True)
+    else:
+        overlay_api_minute_rows = []
 
+    fallback_api_minute_rows: list[_MinuteRow] = []
     if end_day == resolved_now.date() and len(out) < capped_count:
-        _, api_minute_rows = await _fetch_historical_minutes_via_kis(
+        _, fallback_api_minute_rows = await _fetch_historical_minutes_via_kis(
             symbol=universe.symbol,
             end_date=pd.Timestamp(end_day).date(),
             limit=capped_count,
         )
-        if api_minute_rows:
-            api_frame = _merge_minute_rows(api_minute_rows)
+        if fallback_api_minute_rows:
+            api_frame = _merge_minute_rows(fallback_api_minute_rows)
             if config.bucket_minutes > 1:
                 api_frame = _aggregate_minutes_to_buckets(
                     api_frame,
@@ -1531,6 +1581,14 @@ async def read_kr_intraday_candles(
             if not out.empty:
                 out = out[~pd.to_datetime(out["datetime"]).isin(touched)]
             out = pd.concat([out, api_frame], ignore_index=True)
+
+    all_api_minute_rows = list(overlay_api_minute_rows)
+    if fallback_api_minute_rows:
+        all_api_minute_rows.extend(fallback_api_minute_rows)
+    _schedule_background_minute_storage(
+        symbol=universe.symbol,
+        minute_rows=all_api_minute_rows,
+    )
 
     if out.empty:
         return _empty_intraday_frame()
@@ -1692,31 +1750,10 @@ async def read_kr_hourly_candles_1h(
         all_api_minute_candles.extend(current_minute_candles)
 
     # Schedule background storage of API-fetched minute candles (fire-and-forget)
-    if all_api_minute_candles:
-        task = asyncio.create_task(
-            _store_minute_candles_background(
-                symbol=universe.symbol,
-                minute_rows=[
-                    {
-                        "time": _convert_kis_datetime_to_utc(r.minute_time),
-                        "venue": r.venue,
-                        "open": r.open,
-                        "high": r.high,
-                        "low": r.low,
-                        "close": r.close,
-                        "volume": r.volume,
-                        "value": r.value,
-                    }
-                    for r in all_api_minute_candles
-                ],
-            )
-        )
-        task.add_done_callback(_log_task_exception)
-        logger.info(
-            "Background task created to store %d minute candles for symbol '%s'",
-            len(all_api_minute_candles),
-            universe.symbol,
-        )
+    _schedule_background_minute_storage(
+        symbol=universe.symbol,
+        minute_rows=all_api_minute_candles,
+    )
 
     out = _build_hour_frame(
         hour_rows=hour_rows,
