@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1947,3 +1948,243 @@ async def test_read_kr_intraday_candles_5m_includes_current_partial_bucket(monke
     assert second["volume"] == 90.0
     assert second["session"] == "REGULAR"
     assert second["venues"] == ["KRX"]
+
+
+@pytest.mark.asyncio
+async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
+    monkeypatch,
+):
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    now_kst = _dt_kst(2026, 2, 23, 9, 7, 0)
+    background_started = False
+    background_completed = False
+    background_args: tuple[str, list[dict[str, object]]] | None = None
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [{"symbol": symbol, "nxt_eligible": False, "is_active": True}]
+                )
+            if "FROM public.kr_candles_5m" in sql:
+                return _MappingsResult([])
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult([])
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+
+    async def mock_store_background(*, symbol, minute_rows):
+        nonlocal background_started, background_completed, background_args
+        background_started = True
+        background_args = (symbol, list(minute_rows))
+        await asyncio.sleep(0.2)
+        background_completed = True
+
+    monkeypatch.setattr(svc, "_store_minute_candles_background", mock_store_background)
+
+    overlay_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-02-23 09:05:00"),
+                "date": datetime.date(2026, 2, 23),
+                "time": datetime.time(9, 5, 0),
+                "open": 103.0,
+                "high": 104.0,
+                "low": 102.0,
+                "close": 103.5,
+                "volume": 40.0,
+                "value": 4000.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-02-23 09:06:00"),
+                "date": datetime.date(2026, 2, 23),
+                "time": datetime.time(9, 6, 0),
+                "open": 103.5,
+                "high": 105.0,
+                "low": 103.0,
+                "close": 104.0,
+                "volume": 50.0,
+                "value": 5000.0,
+            },
+        ]
+    )
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(return_value=overlay_df)
+    )
+    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+
+    start_time = datetime.datetime.now()
+    out = await svc.read_kr_intraday_candles(
+        symbol=symbol,
+        period="5m",
+        count=1,
+        end_date=None,
+        now_kst=now_kst,
+    )
+    elapsed_ms = (datetime.datetime.now() - start_time).total_seconds() * 1000
+
+    assert len(out) == 1
+    assert elapsed_ms < 100, (
+        f"Function took {elapsed_ms}ms, should return immediately (< 100ms)"
+    )
+
+    await asyncio.sleep(0)
+    assert background_started, "Overlay API rows should start background storage"
+    assert background_completed is False
+    assert background_args is not None
+    assert background_args[0] == symbol
+    assert len(background_args[1]) == 2
+
+    await asyncio.sleep(0.25)
+    assert background_completed, "Background storage should complete after response"
+
+
+@pytest.mark.asyncio
+async def test_read_kr_intraday_candles_5m_fallback_schedules_background_storage(
+    monkeypatch,
+):
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    now_kst = _dt_kst(2026, 2, 23, 9, 7, 0)
+    background_storage_calls: list[dict[str, object]] = []
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [{"symbol": symbol, "nxt_eligible": False, "is_active": True}]
+                )
+            if "FROM public.kr_candles_5m" in sql:
+                return _MappingsResult([])
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult([])
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+
+    async def mock_store_background(*, symbol, minute_rows):
+        background_storage_calls.append(
+            {"symbol": symbol, "minute_rows": list(minute_rows)}
+        )
+
+    monkeypatch.setattr(svc, "_store_minute_candles_background", mock_store_background)
+    kis = SimpleNamespace(
+        inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
+    )
+    monkeypatch.setattr(svc, "KISClient", lambda: kis)
+
+    fallback_minute_rows = [
+        svc._MinuteRow(
+            minute_time=datetime.datetime(2026, 2, 23, 9, 5, 0),
+            venue="KRX",
+            open=103.0,
+            high=104.0,
+            low=102.0,
+            close=103.5,
+            volume=40.0,
+            value=4000.0,
+        ),
+        svc._MinuteRow(
+            minute_time=datetime.datetime(2026, 2, 23, 9, 6, 0),
+            venue="KRX",
+            open=103.5,
+            high=105.0,
+            low=103.0,
+            close=104.0,
+            volume=50.0,
+            value=5000.0,
+        ),
+    ]
+    monkeypatch.setattr(
+        svc,
+        "_fetch_historical_minutes_via_kis",
+        AsyncMock(return_value=([], fallback_minute_rows)),
+    )
+
+    out = await svc.read_kr_intraday_candles(
+        symbol=symbol,
+        period="5m",
+        count=1,
+        end_date=None,
+        now_kst=now_kst,
+    )
+
+    assert len(out) == 1
+    await asyncio.sleep(0)
+    assert len(background_storage_calls) == 1, (
+        "Fallback API minute rows should be stored in the background"
+    )
+    stored_rows = cast(
+        list[dict[str, object]], background_storage_calls[0]["minute_rows"]
+    )
+    assert background_storage_calls[0]["symbol"] == symbol
+    assert len(stored_rows) == 2
+    assert {row.get("venue") for row in stored_rows} == {"KRX"}
+
+
+@pytest.mark.asyncio
+async def test_read_kr_intraday_candles_db_only_does_not_schedule_background_storage(
+    monkeypatch,
+):
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [{"symbol": symbol, "nxt_eligible": False, "is_active": True}]
+                )
+            if "FROM public.kr_candles_5m" in sql:
+                return _MappingsResult(
+                    [
+                        _make_hour_row(
+                            bucket_kst_naive=datetime.datetime(2026, 2, 21, 9, 0, 0),
+                            open=100.0,
+                            high=101.0,
+                            low=99.0,
+                            close=100.5,
+                            volume=1200.0,
+                            value=120000.0,
+                            venues=["KRX"],
+                        )
+                    ]
+                )
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult([])
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+    store_mock = AsyncMock()
+    monkeypatch.setattr(svc, "_store_minute_candles_background", store_mock)
+
+    out = await svc.read_kr_intraday_candles(
+        symbol=symbol,
+        period="5m",
+        count=1,
+        end_date=_dt_kst(2026, 2, 21, 0, 0, 0),
+        now_kst=_dt_kst(2026, 2, 23, 9, 7, 0),
+    )
+
+    assert len(out) == 1
+    store_mock.assert_not_awaited()
