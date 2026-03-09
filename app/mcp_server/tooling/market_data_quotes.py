@@ -11,6 +11,8 @@ import datetime
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 from app.core.config import settings
@@ -40,13 +42,136 @@ from app.mcp_server.tooling.shared import (
 )
 from app.services import kis_ohlcv_cache
 from app.services.brokers.kis.client import KISClient
-from app.services.kr_hourly_candles_read_service import read_kr_hourly_candles_1h
+from app.services.kr_hourly_candles_read_service import (
+    read_kr_hourly_candles_1h,
+    read_kr_intraday_candles,
+)
 from app.services.kr_symbol_universe_service import search_kr_symbols
+from app.services.market_data.constants import (
+    KR_INTRADAY_OHLCV_PERIODS,
+    validate_ohlcv_period,
+)
 from app.services.upbit_symbol_universe_service import search_upbit_symbols
 from app.services.us_symbol_universe_service import search_us_symbols
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+
+_OHLCV_INDICATOR_ROW_KEYS = (
+    "rsi_14",
+    "ema_20",
+    "bb_upper",
+    "bb_mid",
+    "bb_lower",
+    "vwap",
+)
+
+_NON_INTRADAY_PERIODS = {"day", "week", "month"}
+
+
+def _numeric_series(df: pd.DataFrame, column: str) -> pd.Series:
+    if column not in df.columns:
+        return pd.Series(index=df.index, dtype="float64")
+    return pd.to_numeric(df[column], errors="coerce")
+
+
+def _kis_end_date(end_date: datetime.datetime | None) -> pd.Timestamp | None:
+    if end_date is None:
+        return None
+    return pd.Timestamp(end_date.date())
+
+
+def _build_rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, float("nan"))
+    return 100 - (100 / (1 + rs))
+
+
+def _build_indicator_rows(df: pd.DataFrame, period: str) -> list[dict[str, Any]]:
+    close = _numeric_series(df, "close")
+    high = _numeric_series(df, "high")
+    low = _numeric_series(df, "low")
+    volume = _numeric_series(df, "volume")
+
+    ema_20 = close.ewm(span=20, adjust=False).mean()
+    rsi_14 = _build_rsi_series(close).round(2)
+    bb_mid = close.rolling(window=20).mean()
+    bb_std = close.rolling(window=20).std()
+    bb_upper = bb_mid + (bb_std * 2.0)
+    bb_lower = bb_mid - (bb_std * 2.0)
+
+    indicator_frame = pd.DataFrame(
+        {
+            "rsi_14": rsi_14,
+            "ema_20": ema_20,
+            "bb_upper": bb_upper,
+            "bb_mid": bb_mid,
+            "bb_lower": bb_lower,
+        },
+        index=df.index,
+    )
+
+    if period in _NON_INTRADAY_PERIODS:
+        indicator_frame["vwap"] = None
+    else:
+        typical_price = (high + low + close) / 3.0
+        cumulative_volume = volume.cumsum()
+        weighted_total = (typical_price * volume).cumsum()
+        indicator_frame["vwap"] = weighted_total / cumulative_volume.where(
+            cumulative_volume != 0
+        )
+
+    return _normalize_rows(indicator_frame.loc[:, list(_OHLCV_INDICATOR_ROW_KEYS)])
+
+
+def _normalize_ohlcv_rows(
+    df: pd.DataFrame,
+    *,
+    period: str,
+    include_indicators: bool,
+) -> list[dict[str, Any]]:
+    rows = _normalize_rows(df)
+    if not include_indicators or not rows:
+        return rows
+
+    indicator_rows = _build_indicator_rows(df, period)
+    return [{**row, **indicator_rows[index]} for index, row in enumerate(rows)]
+
+
+def _build_ohlcv_payload(
+    *,
+    symbol: str,
+    instrument_type: str,
+    source: str,
+    period: str,
+    count: int,
+    df: pd.DataFrame,
+    include_indicators: bool,
+    message: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "symbol": symbol,
+        "instrument_type": instrument_type,
+        "source": source,
+        "period": period,
+        "count": count,
+        "rows": _normalize_ohlcv_rows(
+            df,
+            period=period,
+            include_indicators=include_indicators,
+        ),
+    }
+    if include_indicators:
+        payload["indicators_included"] = True
+    if message is not None:
+        payload["message"] = message
+    return payload
+
 
 # ---------------------------------------------------------------------------
 # Symbol Search
@@ -192,7 +317,12 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
 
 
 async def _fetch_ohlcv_crypto(
-    symbol: str, count: int, period: str, end_date: datetime.datetime | None
+    symbol: str,
+    count: int,
+    period: str,
+    end_date: datetime.datetime | None,
+    *,
+    include_indicators: bool = False,
 ) -> dict[str, Any]:
     """Fetch crypto OHLCV from Upbit."""
     capped_count = min(count, 200)
@@ -201,24 +331,26 @@ async def _fetch_ohlcv_crypto(
     )
 
     if df.empty:
-        return {
-            "symbol": symbol,
-            "instrument_type": "crypto",
-            "source": "upbit",
-            "period": period,
-            "count": 0,
-            "rows": [],
-            "message": f"No candle data available for {symbol}",
-        }
+        return _build_ohlcv_payload(
+            symbol=symbol,
+            instrument_type="crypto",
+            source="upbit",
+            period=period,
+            count=0,
+            df=df,
+            include_indicators=include_indicators,
+            message=f"No candle data available for {symbol}",
+        )
 
-    return {
-        "symbol": symbol,
-        "instrument_type": "crypto",
-        "source": "upbit",
-        "period": period,
-        "count": capped_count,
-        "rows": _normalize_rows(df),
-    }
+    return _build_ohlcv_payload(
+        symbol=symbol,
+        instrument_type="crypto",
+        source="upbit",
+        period=period,
+        count=capped_count,
+        df=df,
+        include_indicators=include_indicators,
+    )
 
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -229,6 +361,8 @@ async def _fetch_ohlcv_equity_kr(
     count: int,
     period: str,
     end_date: datetime.datetime | None,
+    *,
+    include_indicators: bool = False,
 ) -> dict[str, Any]:
     """Fetch Korean equity OHLCV from KIS."""
     capped_count = min(count, 200)
@@ -242,7 +376,7 @@ async def _fetch_ohlcv_equity_kr(
                 market="UN",
                 n=requested_count,
                 period="D",
-                end_date=end_date.date() if end_date else None,
+                end_date=_kis_end_date(end_date),
             )
 
         use_cache = end_date is None and settings.kis_ohlcv_cache_enabled
@@ -261,6 +395,13 @@ async def _fetch_ohlcv_equity_kr(
             count=capped_count,
             end_date=end_date,
         )
+    elif period in KR_INTRADAY_OHLCV_PERIODS:
+        df = await read_kr_intraday_candles(
+            symbol=symbol,
+            period=period,
+            count=capped_count,
+            end_date=end_date,
+        )
     else:
         kis_period_map = {"week": "W", "month": "M"}
         df = await kis.inquire_daily_itemchartprice(
@@ -268,35 +409,42 @@ async def _fetch_ohlcv_equity_kr(
             market="UN",
             n=capped_count,
             period=kis_period_map.get(period, "D"),
-            end_date=end_date.date() if end_date else None,
+            end_date=_kis_end_date(end_date),
         )
 
-    return {
-        "symbol": symbol,
-        "instrument_type": "equity_kr",
-        "source": "kis",
-        "period": period,
-        "count": capped_count,
-        "rows": _normalize_rows(df),
-    }
+    return _build_ohlcv_payload(
+        symbol=symbol,
+        instrument_type="equity_kr",
+        source="kis",
+        period=period,
+        count=capped_count,
+        df=df,
+        include_indicators=include_indicators,
+    )
 
 
 async def _fetch_ohlcv_equity_us(
-    symbol: str, count: int, period: str, end_date: datetime.datetime | None
+    symbol: str,
+    count: int,
+    period: str,
+    end_date: datetime.datetime | None,
+    *,
+    include_indicators: bool = False,
 ) -> dict[str, Any]:
     """Fetch US equity OHLCV from Yahoo Finance."""
     capped_count = min(count, 100)
     df = await yahoo_service.fetch_ohlcv(
         ticker=symbol, days=capped_count, period=period, end_date=end_date
     )
-    return {
-        "symbol": symbol,
-        "instrument_type": "equity_us",
-        "source": "yahoo",
-        "period": period,
-        "count": capped_count,
-        "rows": _normalize_rows(df),
-    }
+    return _build_ohlcv_payload(
+        symbol=symbol,
+        instrument_type="equity_us",
+        source="yahoo",
+        period=period,
+        count=capped_count,
+        df=df,
+        include_indicators=include_indicators,
+    )
 
 
 # Tool Registration
@@ -376,6 +524,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         period: str = "day",
         end_date: str | None = None,
         market: str | None = None,
+        include_indicators: bool = False,
     ) -> dict[str, Any]:
         symbol = (symbol or "").strip()
         if not symbol:
@@ -385,8 +534,6 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
             raise ValueError("count must be > 0")
 
         period = (period or "day").strip().lower()
-        if period not in ("day", "week", "month", "4h", "1h"):
-            raise ValueError("period must be 'day', 'week', 'month', '4h', or '1h'")
 
         parsed_end_date: datetime.datetime | None = None
         if end_date:
@@ -398,21 +545,35 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                 ) from exc
 
         market_type, symbol = _resolve_market_type(symbol, market)
-
-        if period == "4h" and market_type != "crypto":
-            raise ValueError("period '4h' is supported only for crypto")
+        period = validate_ohlcv_period(period, market_type)
 
         source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
         source = source_map[market_type]
 
         try:
             if market_type == "crypto":
-                return await _fetch_ohlcv_crypto(symbol, count, period, parsed_end_date)
+                return await _fetch_ohlcv_crypto(
+                    symbol,
+                    count,
+                    period,
+                    parsed_end_date,
+                    include_indicators=include_indicators,
+                )
             if market_type == "equity_kr":
                 return await _fetch_ohlcv_equity_kr(
-                    symbol, count, period, parsed_end_date
+                    symbol,
+                    count,
+                    period,
+                    parsed_end_date,
+                    include_indicators=include_indicators,
                 )
-            return await _fetch_ohlcv_equity_us(symbol, count, period, parsed_end_date)
+            return await _fetch_ohlcv_equity_us(
+                symbol,
+                count,
+                period,
+                parsed_end_date,
+                include_indicators=include_indicators,
+            )
         except Exception as exc:
             return _error_payload_from_exception(
                 source=source,

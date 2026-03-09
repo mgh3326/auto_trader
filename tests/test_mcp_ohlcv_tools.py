@@ -28,6 +28,29 @@ from tests._mcp_tooling_support import (
     build_tools,
 )
 
+
+def _multi_row_intraday_df(row_count: int = 30) -> pd.DataFrame:
+    base = pd.Timestamp("2026-02-23 09:00:00")
+    rows: list[dict[str, object]] = []
+    for index in range(row_count):
+        current = base + pd.Timedelta(minutes=index)
+        close = 100.0 + ((index % 4) * 1.5) + (index * 0.1)
+        rows.append(
+            {
+                "date": current,
+                "open": close - 0.5,
+                "high": close + 1.0,
+                "low": close - 1.0,
+                "close": close,
+                "volume": 1000 + (index * 10),
+                "value": (1000 + (index * 10)) * close,
+                "timestamp": int(current.timestamp() * 1000),
+                "trade_amount": (1000 + (index * 10)) * close,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 # ============================================================================
 # Crypto OHLCV Tests
 # ============================================================================
@@ -99,6 +122,34 @@ async def test_get_ohlcv_crypto_period_1h(monkeypatch):
     assert result["instrument_type"] == "crypto"
 
 
+@pytest.mark.asyncio
+async def test_get_ohlcv_crypto_include_indicators_preserves_minute_row_shape(
+    monkeypatch,
+):
+    tools = build_tools()
+    df = _multi_row_intraday_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"](
+        "KRW-BTC",
+        count=25,
+        period="1m",
+        include_indicators=True,
+    )
+
+    assert result["indicators_included"] is True
+    row = result["rows"][-1]
+    assert row["timestamp"] is not None
+    assert row["trade_amount"] is not None
+    assert row["rsi_14"] is not None
+    assert row["ema_20"] is not None
+    assert row["bb_upper"] is not None
+    assert row["bb_mid"] is not None
+    assert row["bb_lower"] is not None
+    assert row["vwap"] is not None
+
+
 # ============================================================================
 # US Equity OHLCV Tests
 # ============================================================================
@@ -136,6 +187,24 @@ async def test_get_ohlcv_us_equity(monkeypatch):
     assert result["source"] == "yahoo"
     assert result["count"] == 5
     assert len(result["rows"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_day_include_indicators_sets_vwap_none(monkeypatch):
+    tools = build_tools()
+    df = _multi_row_intraday_df()
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(yahoo_service, "fetch_ohlcv", mock_fetch)
+
+    result = await tools["get_ohlcv"](
+        "AAPL",
+        count=25,
+        period="day",
+        include_indicators=True,
+    )
+
+    assert result["indicators_included"] is True
+    assert result["rows"][-1]["vwap"] is None
 
 
 @pytest.mark.asyncio
@@ -287,6 +356,46 @@ async def test_get_ohlcv_kr_equity_period_1h_includes_session_and_venues(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("period", ["1m", "5m", "15m", "30m"])
+async def test_get_ohlcv_kr_intraday_periods_use_shared_reader(monkeypatch, period):
+    tools = build_tools()
+    df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-02-23 09:00:00"),
+                "date": date(2026, 2, 23),
+                "time": datetime.time(9, 0, 0),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+                "session": "REGULAR",
+                "venues": ["KRX", "NTX"],
+            }
+        ]
+    )
+    read_mock = AsyncMock(return_value=df)
+    monkeypatch.setattr(market_data_quotes, "read_kr_intraday_candles", read_mock)
+
+    result = await tools["get_ohlcv"]("005930", market="kr", count=50, period=period)
+
+    read_mock.assert_awaited_once_with(
+        symbol="005930",
+        period=period,
+        count=50,
+        end_date=None,
+    )
+    assert result["instrument_type"] == "equity_kr"
+    assert result["period"] == period
+    assert result["source"] == "kis"
+    row = result["rows"][0]
+    assert row["session"] == "REGULAR"
+    assert row["venues"] == ["KRX", "NTX"]
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_kr_1h_does_not_use_kis_ohlcv_cache(monkeypatch):
     tools = build_tools()
     df = pd.DataFrame(
@@ -320,6 +429,45 @@ async def test_get_ohlcv_kr_1h_does_not_use_kis_ohlcv_cache(monkeypatch):
     result = await tools["get_ohlcv"]("005930", market="kr", count=1, period="1h")
 
     assert result["period"] == "1h"
+    assert result["instrument_type"] == "equity_kr"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_kr_5m_does_not_use_kis_ohlcv_cache(monkeypatch):
+    tools = build_tools()
+    df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-02-23 09:00:00"),
+                "date": date(2026, 2, 23),
+                "time": datetime.time(9, 0, 0),
+                "open": 100.0,
+                "high": 110.0,
+                "low": 90.0,
+                "close": 105.0,
+                "volume": 1000.0,
+                "value": 105000.0,
+                "session": "REGULAR",
+                "venues": ["KRX"],
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        market_data_quotes.kis_ohlcv_cache,
+        "get_candles",
+        AsyncMock(
+            side_effect=AssertionError("KR intraday must not use kis_ohlcv_cache")
+        ),
+    )
+    monkeypatch.setattr(
+        market_data_quotes,
+        "read_kr_intraday_candles",
+        AsyncMock(return_value=df),
+    )
+
+    result = await tools["get_ohlcv"]("005930", market="kr", count=1, period="5m")
+
+    assert result["period"] == "5m"
     assert result["instrument_type"] == "equity_kr"
 
 
@@ -420,7 +568,7 @@ async def test_get_ohlcv_kr_day_bypasses_cache_when_end_date_provided(monkeypatc
             del code, market, n
             called["raw"] += 1
             assert period == "D"
-            assert end_date == date(2024, 6, 30)
+            assert pd.Timestamp(end_date).date() == date(2024, 6, 30)
             return df
 
     cache_mock = AsyncMock(return_value=df)
@@ -522,7 +670,7 @@ async def test_get_ohlcv_raises_on_invalid_period():
 
     with pytest.raises(
         ValueError,
-        match="period must be 'day', 'week', 'month', '4h', or '1h'",
+        match="period must be 'day', 'week', 'month', '1m', '5m', '15m', '30m', '4h', or '1h'",
     ):
         await tools["get_ohlcv"]("AAPL", period="hour")
 
@@ -541,6 +689,14 @@ async def test_get_ohlcv_period_4h_market_us_rejected():
 
     with pytest.raises(ValueError, match="period '4h' is supported only for crypto"):
         await tools["get_ohlcv"]("AAPL", period="4h", market="us")
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_period_5m_market_us_rejected():
+    tools = build_tools()
+
+    with pytest.raises(ValueError, match="period '5m' is not supported for us equity"):
+        await tools["get_ohlcv"]("AAPL", period="5m", market="us")
 
 
 @pytest.mark.asyncio
