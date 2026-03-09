@@ -206,7 +206,7 @@ jobs:
             -d "{
               \"embeds\": [{
                 \"title\": \"❌ Test CI 실패\",
-                \"description\": \"**Branch:** \`${{ github.ref_name }}\`\n**Commit:** \`${GITHUB_SHA::7}\`\n**Author:** ${{ github.actor }}\n**Trigger:** ${{ github.event_name }}\",
+                \"description\": \"**Branch:** \`${{ github.ref_name }}\`\n**Commit:** \`${GITHUB_SHA::7}\`\n**Author:** ${{ github.actor }}\n**Trigger:** ${{ github.event_name }}\n\n🔗 [GitHub Actions에서 보기](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\",
                 \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
                 \"color\": 16711680,
                 \"footer\": {\"text\": \"${{ github.repository }}\"},
