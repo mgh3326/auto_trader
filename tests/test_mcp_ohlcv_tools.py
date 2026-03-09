@@ -629,6 +629,61 @@ async def test_get_ohlcv_kr_intraday_periods_use_shared_reader(monkeypatch, peri
 
 
 @pytest.mark.asyncio
+async def test_get_ohlcv_kr_intraday_include_indicators_preserves_fields(monkeypatch):
+    tools = build_tools()
+    base = pd.Timestamp("2026-02-23 09:00:00")
+    df = pd.DataFrame(
+        [
+            {
+                "datetime": current,
+                "date": current.date(),
+                "time": current.time(),
+                "open": close - 0.5,
+                "high": close + 1.0,
+                "low": close - 1.0,
+                "close": close,
+                "volume": 1000.0 + (index * 10.0),
+                "value": (1000.0 + (index * 10.0)) * close,
+                "session": "REGULAR",
+                "venues": ["KRX", "NTX"],
+            }
+            for index in range(25)
+            for current, close in [
+                (base + pd.Timedelta(minutes=index), 100.0 + (index * 0.4))
+            ]
+        ]
+    )
+    read_mock = AsyncMock(return_value=df)
+    monkeypatch.setattr(market_data_quotes, "read_kr_intraday_candles", read_mock)
+
+    result = await tools["get_ohlcv"](
+        "005930",
+        market="kr",
+        count=25,
+        period="5m",
+        include_indicators=True,
+    )
+
+    assert result["indicators_included"] is True
+    first_row = result["rows"][0]
+    last_row = result["rows"][-1]
+    assert first_row["session"] == "REGULAR"
+    assert first_row["venues"] == ["KRX", "NTX"]
+    assert first_row["rsi_14"] is None
+    assert first_row["ema_20"] is None
+    assert first_row["bb_upper"] is None
+    assert first_row["bb_mid"] is None
+    assert first_row["bb_lower"] is None
+    assert first_row["vwap"] is not None
+    assert last_row["rsi_14"] is not None
+    assert last_row["ema_20"] is not None
+    assert last_row["bb_upper"] is not None
+    assert last_row["bb_mid"] is not None
+    assert last_row["bb_lower"] is not None
+    assert last_row["vwap"] is not None
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_kr_1h_does_not_use_kis_ohlcv_cache(monkeypatch):
     tools = build_tools()
     df = pd.DataFrame(

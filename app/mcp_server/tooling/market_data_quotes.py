@@ -138,12 +138,10 @@ def _normalize_ohlcv_rows(
     period: str,
     include_indicators: bool,
 ) -> list[dict[str, Any]]:
-    rows = _normalize_rows(df)
-    if not include_indicators or not rows:
-        return rows
-
-    indicator_rows = _build_indicator_rows(df, period)
-    return [{**row, **indicator_rows[index]} for index, row in enumerate(rows)]
+    frame = df
+    if include_indicators and not df.empty:
+        frame = _enrich_ohlcv_with_indicators(df, period)
+    return _normalize_rows(frame)
 
 
 def _build_ohlcv_payload(
