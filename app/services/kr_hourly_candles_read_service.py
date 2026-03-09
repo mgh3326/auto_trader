@@ -1011,7 +1011,7 @@ def _normalize_intraday_rows(
 
         rows.append(
             _MinuteRow(
-                minute_time=local_dt,
+                minute_time=_to_kst_naive(local_dt),
                 venue=venue_config.venue,
                 open=float(open_value),
                 high=float(high_value),
