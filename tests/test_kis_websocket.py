@@ -142,6 +142,11 @@ class TestKISWebSocketClient:
         assert client.max_reconnect_attempts == 10
         assert client.ping_interval == 30
         assert client.ping_timeout == 10
+        assert client.messages_received == 0
+        assert client.execution_events_received == 0
+        assert client.last_message_at is None
+        assert client.last_execution_at is None
+        assert client.last_pingpong_at is None
 
     @pytest.mark.asyncio
     async def test_build_websocket_url_real_and_mock(self, execution_callback):
@@ -271,10 +276,12 @@ class TestKISWebSocketClient:
         client.reconnect_delay = 0
         client.max_reconnect_attempts = 3
         client.approval_key = "cached-key"
+        called = False
 
         async def connect_fail_then_success() -> None:
-            if not hasattr(connect_fail_then_success, "called"):
-                connect_fail_then_success.called = True
+            nonlocal called
+            if not called:
+                called = True
                 raise KISSubscriptionAckError(
                     tr_id=DOMESTIC_EXECUTION_TR_REAL,
                     rt_cd="1",
@@ -326,10 +333,12 @@ class TestKISWebSocketClient:
         client.reconnect_delay = 0
         client.max_reconnect_attempts = 3
         client.approval_key = "cached-key"
+        called = False
 
         async def connect_fail_then_success() -> None:
-            if not hasattr(connect_fail_then_success, "called"):
-                connect_fail_then_success.called = True
+            nonlocal called
+            if not called:
+                called = True
                 raise KISSubscriptionAckError(
                     tr_id=DOMESTIC_EXECUTION_TR_REAL,
                     rt_cd="9",
@@ -426,7 +435,7 @@ class TestKISWebSocketClient:
         client._encryption_keys_by_tr[DOMESTIC_EXECUTION_TR_REAL] = (key, iv)
 
         plain_payload = "005930^02^A123456789^70000^10^093001"
-        padder = padding.PKCS7(algorithms.AES.block_size).padder()
+        padder = padding.PKCS7(128).padder()
         padded_payload = (
             padder.update(plain_payload.encode("utf-8")) + padder.finalize()
         )
@@ -1032,6 +1041,73 @@ class TestKISWebSocketClient:
             await client.listen()
 
     @pytest.mark.asyncio
+    async def test_listen_logs_domestic_execution_summary_with_correlation_metadata(
+        self, execution_callback, caplog
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        client.websocket = AsyncMock()
+        client.websocket.__aiter__.return_value = [
+            (
+                "0|H0STCNI0|1|"
+                "mgh3326^6762259301^0030145286^0000000000^02^0^00^00^012450^2^1135000^093001^N^2^Y^0000^2^홍길동^0^KRX^N^^00^00000000^한화에어로^1135000"
+            )
+        ]
+
+        with caplog.at_level("INFO"):
+            await client.listen()
+
+        execution_callback.assert_awaited_once()
+        event = execution_callback.await_args.args[0]
+        assert event["symbol"] == "012450"
+        assert event["correlation_id"]
+        assert event["received_at"]
+        assert client.messages_received == 1
+        assert client.execution_events_received == 1
+        assert client.last_message_at == event["received_at"]
+        assert client.last_execution_at == event["received_at"]
+        assert "KIS execution received" in caplog.text
+        assert f"correlation_id={event['correlation_id']}" in caplog.text
+        assert "symbol=012450" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_listen_updates_pingpong_state_without_info_log(
+        self, execution_callback, caplog
+    ):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        client.websocket = AsyncMock()
+        client.websocket.send = AsyncMock()
+        client.websocket.__aiter__.return_value = ["0|pingpong"]
+
+        with caplog.at_level("INFO"):
+            await client.listen()
+
+        assert client.messages_received == 1
+        assert client.execution_events_received == 0
+        assert client.last_message_at is not None
+        assert client.last_pingpong_at is not None
+        execution_callback.assert_not_awaited()
+        client.websocket.send.assert_awaited_once_with("0|pingpong")
+        assert "KIS pingpong received" not in caplog.text
+
+    def test_get_runtime_snapshot_returns_current_state(self, execution_callback):
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        client.messages_received = 3
+        client.execution_events_received = 2
+        client.last_message_at = "2026-03-09T14:05:00+00:00"
+        client.last_execution_at = "2026-03-09T14:05:05+00:00"
+        client.last_pingpong_at = "2026-03-09T14:05:06+00:00"
+
+        snapshot = client.get_runtime_snapshot()
+
+        assert snapshot == {
+            "messages_received": 3,
+            "execution_events_received": 2,
+            "last_message_at": "2026-03-09T14:05:00+00:00",
+            "last_execution_at": "2026-03-09T14:05:05+00:00",
+            "last_pingpong_at": "2026-03-09T14:05:06+00:00",
+        }
+
+    @pytest.mark.asyncio
     async def test_stop_still_closes_redis_when_websocket_close_fails(
         self, execution_callback
     ):
@@ -1114,6 +1190,7 @@ class TestKISWebSocketClient:
             "filled_qty": 10,
             "filled_price": 201.5,
             "symbol": "AMZN",
+            "correlation_id": "corr-reject-1",
         }
 
         with caplog.at_level("ERROR"):
@@ -1121,6 +1198,28 @@ class TestKISWebSocketClient:
 
         assert result is False
         assert "overseas execution event rejected" in caplog.text.lower()
+        assert "correlation_id=corr-reject-1" in caplog.text
+        assert "filled_qty=10" in caplog.text
+
+    def test_is_execution_event_logs_drop_reason_for_domestic_missing_fill_yn(
+        self, execution_callback, caplog
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        data = {
+            "tr_code": DOMESTIC_EXECUTION_TR_REAL,
+            "execution_type": 1,
+            "symbol": "035420",
+            "correlation_id": "corr-drop-1",
+        }
+
+        with caplog.at_level("INFO"):
+            result = client._is_execution_event(data)
+
+        assert result is False
+        assert "drop domestic execution event without fill_yn" in caplog.text.lower()
+        assert "correlation_id=corr-drop-1" in caplog.text
+        assert "symbol=035420" in caplog.text
 
 
 @pytest.mark.unit

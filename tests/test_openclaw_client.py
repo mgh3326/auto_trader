@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 
 from app.core.config import settings
+from app.monitoring.trade_notifier import TradeNotifier, get_trade_notifier
 from app.services.openclaw_client import OpenClawClient, _build_openclaw_message
 
 
@@ -202,6 +203,7 @@ async def test_send_fill_notification_returns_none_when_disabled(
 async def test_send_fill_notification_success(
     mock_httpx_client_cls: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
     monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
@@ -237,7 +239,10 @@ async def test_send_fill_notification_success(
         lambda: mock_notifier,
     )
 
-    result = await OpenClawClient().send_fill_notification(order)
+    with caplog.at_level("INFO"):
+        result = await OpenClawClient().send_fill_notification(
+            order, correlation_id="corr-fill-success"
+        )
 
     assert result is not None
     mock_cli.post.assert_awaited_once()
@@ -246,8 +251,10 @@ async def test_send_fill_notification_success(
     assert called_json["wakeMode"] == "now"
     assert "🟢 체결 알림" in called_json["message"]
     mock_notifier.notify_openclaw_message.assert_awaited_once_with(
-        called_json["message"]
+        called_json["message"], correlation_id="corr-fill-success"
     )
+    assert "correlation_id=corr-fill-success" in caplog.text
+    assert f"request_id={result}" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -297,6 +304,7 @@ async def test_send_fill_notification_partial_event_uses_partial_message_and_ord
 async def test_send_fill_notification_retries_on_failure_then_succeeds(
     mock_httpx_client_cls: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
     monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
@@ -332,10 +340,16 @@ async def test_send_fill_notification_retries_on_failure_then_succeeds(
     mock_client_instance.__aexit__.return_value = None
     mock_httpx_client_cls.return_value = mock_client_instance
 
-    result = await OpenClawClient().send_fill_notification(order)
+    with caplog.at_level("INFO"):
+        result = await OpenClawClient().send_fill_notification(
+            order, correlation_id="corr-fill-retry"
+        )
 
     assert result is not None
     assert mock_cli.post.call_count == 4
+    assert "correlation_id=corr-fill-retry" in caplog.text
+    assert "attempt=1" in caplog.text
+    assert "attempt=4" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -343,6 +357,7 @@ async def test_send_fill_notification_retries_on_failure_then_succeeds(
 async def test_send_fill_notification_returns_none_after_all_retries_fail(
     mock_httpx_client_cls: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
     monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
@@ -370,10 +385,15 @@ async def test_send_fill_notification_returns_none_after_all_retries_fail(
     mock_client_instance.__aexit__.return_value = None
     mock_httpx_client_cls.return_value = mock_client_instance
 
-    result = await OpenClawClient().send_fill_notification(order)
+    with caplog.at_level("INFO"):
+        result = await OpenClawClient().send_fill_notification(
+            order, correlation_id="corr-fill-failed"
+        )
 
     assert result is None
     assert mock_cli.post.call_count == 4
+    assert "correlation_id=corr-fill-failed" in caplog.text
+    assert "failed after retries" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -381,6 +401,7 @@ async def test_send_fill_notification_returns_none_after_all_retries_fail(
 async def test_send_fill_notification_forwards_telegram_when_openclaw_fails(
     mock_httpx_client_cls: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
     monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
@@ -415,13 +436,129 @@ async def test_send_fill_notification_forwards_telegram_when_openclaw_fails(
         lambda: mock_notifier,
     )
 
-    result = await OpenClawClient().send_fill_notification(order)
+    with caplog.at_level("INFO"):
+        result = await OpenClawClient().send_fill_notification(
+            order, correlation_id="corr-openclaw-fail-mirror-success"
+        )
 
     assert result is None
     assert mock_cli.post.call_count == 4
     mock_notifier.notify_openclaw_message.assert_awaited_once()
     forwarded_message = mock_notifier.notify_openclaw_message.await_args.args[0]
     assert "체결 알림" in forwarded_message
+    assert "corr-openclaw-fail-mirror-success" in caplog.text
+
+
+@pytest.mark.asyncio
+@patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_fill_notification_logs_mirror_failure_when_openclaw_succeeds(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
+    monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
+    monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "test-token")
+
+    from app.services.fill_notification import FillOrder
+
+    order = FillOrder(
+        symbol="KRW-BTC",
+        side="bid",
+        filled_price=50000000,
+        filled_qty=0.1,
+        filled_amount=5000000,
+        filled_at="2024-01-01T00:00:00Z",
+        account="upbit",
+    )
+
+    mock_cli = AsyncMock()
+    mock_res = MagicMock(status_code=200)
+    mock_res.raise_for_status.return_value = None
+    mock_cli.post.return_value = mock_res
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    mock_notifier = MagicMock()
+    mock_notifier.notify_openclaw_message = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        "app.services.openclaw_client.get_trade_notifier",
+        lambda: mock_notifier,
+    )
+
+    with caplog.at_level("INFO"):
+        result = await OpenClawClient().send_fill_notification(
+            order, correlation_id="corr-openclaw-success-mirror-fail"
+        )
+
+    assert result is not None
+    mock_notifier.notify_openclaw_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_fill_notification_disabled_notifier_emits_single_summary_log(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
+    monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
+    monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "test-token")
+
+    from app.services.fill_notification import FillOrder
+
+    order = FillOrder(
+        symbol="KRW-BTC",
+        side="bid",
+        filled_price=50000000,
+        filled_qty=0.1,
+        filled_amount=5000000,
+        filled_at="2024-01-01T00:00:00Z",
+        account="upbit",
+    )
+
+    mock_cli = AsyncMock()
+    mock_res = MagicMock(status_code=200)
+    mock_res.raise_for_status.return_value = None
+    mock_cli.post.return_value = mock_res
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    TradeNotifier._instance = None
+    TradeNotifier._initialized = False
+    notifier = get_trade_notifier()
+    notifier.configure(bot_token="test-token", chat_ids=["123456"], enabled=False)
+    monkeypatch.setattr(
+        "app.services.openclaw_client.get_trade_notifier",
+        lambda: notifier,
+    )
+
+    try:
+        with caplog.at_level("INFO"):
+            result = await OpenClawClient().send_fill_notification(
+                order, correlation_id="corr-real-disabled"
+            )
+    finally:
+        TradeNotifier._instance = None
+        TradeNotifier._initialized = False
+
+    assert result is not None
+    summary_lines = [
+        record.getMessage()
+        for record in caplog.records
+        if "OpenClaw mirror result:" in record.getMessage()
+    ]
+    assert len(summary_lines) == 1
+    assert "correlation_id=corr-real-disabled" in summary_lines[0]
+    assert "discord=skipped(notifier_disabled)" in summary_lines[0]
+    assert "telegram=skipped(notifier_disabled)" in summary_lines[0]
 
 
 @pytest.mark.asyncio
