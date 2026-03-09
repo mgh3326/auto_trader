@@ -83,6 +83,7 @@ class TestUnifiedWebSocketMonitor:
                 "filled_price": 70_000,
                 "filled_qty": 10,
                 "market": "kr",
+                "correlation_id": "corr-kis-1",
             }
         )
 
@@ -91,6 +92,8 @@ class TestUnifiedWebSocketMonitor:
         assert isinstance(fill_order, FillOrder)
         assert fill_order.symbol == "005930"
         assert fill_order.side == "ask"
+        assert send_mock.await_args is not None
+        assert send_mock.await_args.kwargs["correlation_id"] == "corr-kis-1"
 
     @pytest.mark.asyncio
     async def test_on_kis_execution_skips_domestic_without_fill_yn(
@@ -327,6 +330,189 @@ class TestUnifiedWebSocketMonitor:
         send_mock.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_send_fill_notification_logs_openclaw_result_states(
+        self, mock_settings: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="kis")
+        order = FillOrder(
+            symbol="005930",
+            side="ask",
+            filled_price=70_000,
+            filled_qty=10,
+            filled_amount=700_000,
+            filled_at="2024-01-01T00:00:00Z",
+            account="kis",
+        )
+
+        caplog.set_level("INFO")
+
+        monitor.openclaw_client.send_fill_notification = AsyncMock(
+            return_value="req-123"
+        )
+        await monitor._send_fill_notification(order, correlation_id="corr-success")
+        assert monitor.fills_forwarded == 1
+        assert monitor.last_openclaw_success_at is not None
+        assert "correlation_id=corr-success" in caplog.text
+        assert "OpenClaw send start" in caplog.text
+        assert "OpenClaw send result" in caplog.text
+        assert "result=success" in caplog.text
+        assert "Notification pipeline result" not in caplog.text
+
+        caplog.clear()
+        monitor.openclaw_client.send_fill_notification = AsyncMock(return_value=None)
+        await monitor._send_fill_notification(order, correlation_id="corr-failed")
+        assert "correlation_id=corr-failed" in caplog.text
+        assert "OpenClaw send result" in caplog.text
+        assert "result=failed" in caplog.text
+
+        caplog.clear()
+        monitor.openclaw_client.send_fill_notification = AsyncMock(
+            return_value="req-skip"
+        )
+        monitor.mode = "upbit"
+        await monitor._send_fill_notification(
+            FillOrder(
+                symbol="KRW-BTC",
+                side="bid",
+                filled_price=10_000,
+                filled_qty=1,
+                filled_amount=10_000,
+                filled_at="2024-01-01T00:00:00Z",
+                account="upbit",
+            ),
+            correlation_id="corr-skipped",
+        )
+        assert "correlation_id=corr-skipped" in caplog.text
+        assert "OpenClaw send result" in caplog.text
+        assert "result=skipped" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_log_health_status_uses_kis_state_fields(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monkeypatch.setenv("WS_MONITOR_HEALTH_LOG_INTERVAL_SECONDS", "123")
+        monitor = UnifiedWebSocketMonitor(mode="kis")
+        monitor.is_running = True
+        monitor._started_at_monotonic = asyncio.get_running_loop().time() - 42
+        monitor.fills_forwarded = 3
+        monitor.last_openclaw_success_at = "2026-03-09T14:00:00+00:00"
+        monitor.kis_ws = MagicMock(
+            is_connected=True,
+            messages_received=11,
+            execution_events_received=4,
+            last_message_at="2026-03-09T14:01:00+00:00",
+            last_execution_at="2026-03-09T14:01:05+00:00",
+            last_pingpong_at="2026-03-09T14:01:10+00:00",
+        )
+
+        assert monitor._health_log_interval_seconds == 123.0
+
+        caplog.set_level("INFO")
+        monitor._log_health_status(force=True)
+
+        assert "Unified WebSocket health" in caplog.text
+        assert "connected=True" in caplog.text
+        assert "messages_received=11" in caplog.text
+        assert "execution_events_received=4" in caplog.text
+        assert "fills_forwarded=3" in caplog.text
+        assert "last_pingpong_at=2026-03-09T14:01:10+00:00" in caplog.text
+        assert "last_openclaw_success_at=2026-03-09T14:00:00+00:00" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_log_health_status_reports_mixed_backend_states_in_both_mode(
+        self, mock_settings: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="both")
+        monitor.is_running = True
+        monitor._started_at_monotonic = asyncio.get_running_loop().time() - 10
+        monitor.upbit_ws = MagicMock(is_connected=True)
+        monitor.kis_ws = MagicMock(
+            is_connected=False,
+            messages_received=5,
+            execution_events_received=2,
+            last_message_at="2026-03-09T14:02:00+00:00",
+            last_execution_at="2026-03-09T14:02:05+00:00",
+            last_pingpong_at="2026-03-09T14:02:06+00:00",
+        )
+
+        caplog.set_level("INFO")
+        monitor._log_health_status(force=True)
+
+        assert "mode=both" in caplog.text
+        assert "connected=False" in caplog.text
+        assert "upbit_connected=True" in caplog.text
+        assert "kis_connected=False" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_log_health_status_accumulates_closed_kis_sessions(
+        self, mock_settings: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="kis")
+        monitor.is_running = True
+        monitor._started_at_monotonic = asyncio.get_running_loop().time() - 20
+
+        closed_socket = MagicMock(
+            is_connected=False,
+            get_runtime_snapshot=MagicMock(
+                return_value={
+                    "messages_received": 7,
+                    "execution_events_received": 3,
+                    "last_message_at": "2026-03-09T14:03:00+00:00",
+                    "last_execution_at": "2026-03-09T14:03:05+00:00",
+                    "last_pingpong_at": "2026-03-09T14:03:06+00:00",
+                }
+            ),
+        )
+        monitor._fold_kis_socket_stats(closed_socket)
+
+        monitor.kis_ws = MagicMock(
+            is_connected=True,
+            get_runtime_snapshot=MagicMock(
+                return_value={
+                    "messages_received": 5,
+                    "execution_events_received": 2,
+                    "last_message_at": "2026-03-09T14:04:00+00:00",
+                    "last_execution_at": "2026-03-09T14:04:05+00:00",
+                    "last_pingpong_at": "2026-03-09T14:04:06+00:00",
+                }
+            ),
+        )
+
+        caplog.set_level("INFO")
+        monitor._log_health_status(force=True)
+
+        assert "messages_received=12" in caplog.text
+        assert "execution_events_received=5" in caplog.text
+        assert "last_message_at=2026-03-09T14:04:00+00:00" in caplog.text
+        assert "last_execution_at=2026-03-09T14:04:05+00:00" in caplog.text
+        assert "last_pingpong_at=2026-03-09T14:04:06+00:00" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_log_health_status_throttles_when_not_forced(
+        self, mock_settings: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="kis")
+        monitor._next_health_log_at = asyncio.get_running_loop().time() + 60
+
+        caplog.set_level("INFO")
+        monitor._log_health_status(force=False)
+
+        assert "Unified WebSocket health" not in caplog.text
+
+    @pytest.mark.asyncio
     async def test_main_configures_and_shuts_down_trade_notifier(
         self, mock_settings: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -497,6 +683,15 @@ class TestAutoReconnect:
         monkeypatch.setenv("WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS", "30")
         monitor = UnifiedWebSocketMonitor()
         assert monitor._heartbeat_interval_seconds == 30.0
+
+    def test_health_log_interval_defaults_to_five_minutes(
+        self, mock_settings: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monkeypatch.delenv("WS_MONITOR_HEALTH_LOG_INTERVAL_SECONDS", raising=False)
+        monitor = UnifiedWebSocketMonitor()
+        assert monitor._health_log_interval_seconds == 300.0
 
     @pytest.mark.asyncio
     async def test_supervisor_exits_on_stop_before_start(

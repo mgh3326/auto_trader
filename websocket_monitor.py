@@ -13,6 +13,7 @@ import os
 import signal
 import sys
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -35,6 +36,7 @@ MIN_FILL_NOTIFY_AMOUNT = 50_000
 # Default heartbeat configuration
 DEFAULT_HEARTBEAT_PATH = "/tmp/websocket_monitor_heartbeat.json"
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 5.0
+DEFAULT_HEALTH_LOG_INTERVAL_SECONDS = 300.0
 DEFAULT_RECONNECT_DELAY_SECONDS = 5.0
 
 
@@ -56,8 +58,21 @@ class UnifiedWebSocketMonitor:
         self.openclaw_client = OpenClawClient()
         self.upbit_ws: UpbitMyOrderWebSocket | None = None
         self.kis_ws: KISExecutionWebSocket | None = None
-        self._health_log_interval_seconds = 30.0
+        self._health_log_interval_seconds = float(
+            os.environ.get(
+                "WS_MONITOR_HEALTH_LOG_INTERVAL_SECONDS",
+                str(DEFAULT_HEALTH_LOG_INTERVAL_SECONDS),
+            )
+        )
         self._next_health_log_at = 0.0
+        self._started_at_monotonic: float | None = None
+        self.fills_forwarded = 0
+        self.last_openclaw_success_at: str | None = None
+        self._kis_messages_received_closed = 0
+        self._kis_execution_events_received_closed = 0
+        self._kis_last_message_at_closed: str | None = None
+        self._kis_last_execution_at_closed: str | None = None
+        self._kis_last_pingpong_at_closed: str | None = None
         self._setup_signal_handlers()
 
         # Heartbeat configuration from environment
@@ -165,7 +180,18 @@ class UnifiedWebSocketMonitor:
             if not self._is_valid_kis_fill_event(event):
                 return
             fill_order = normalize_kis_fill(event)
-            await self._send_fill_notification(fill_order)
+            correlation_id = str(event.get("correlation_id") or "n/a")
+            logger.info(
+                "KIS fill detected: correlation_id=%s symbol=%s side=%s filled_qty=%s filled_price=%s",
+                correlation_id,
+                fill_order.symbol,
+                fill_order.side,
+                fill_order.filled_qty,
+                fill_order.filled_price,
+            )
+            await self._send_fill_notification(
+                fill_order, correlation_id=correlation_id
+            )
             logger.info(
                 f"KIS fill processed: {fill_order.symbol} {fill_order.side} "
                 f"{fill_order.filled_qty}@{fill_order.filled_price}"
@@ -208,27 +234,78 @@ class UnifiedWebSocketMonitor:
         except (TypeError, ValueError):
             return 0.0
 
-    async def _send_fill_notification(self, order: FillOrder) -> None:
+    async def _send_fill_notification(
+        self, order: FillOrder, *, correlation_id: str | None = None
+    ) -> None:
         """OpenClaw로 체결 알림 전송 (fire-and-forget)"""
         if not settings.OPENCLAW_ENABLED:
-            logger.debug("OpenClaw disabled, skipping fill notification")
+            logger.info(
+                "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
+                "result=skipped reason=openclaw_disabled",
+                correlation_id,
+                order.symbol,
+                order.account,
+            )
             return
 
         if order.account == "upbit" and order.filled_amount < MIN_FILL_NOTIFY_AMOUNT:
             logger.debug(
-                f"Fill below minimum notify amount ({order.filled_amount:,.0f} < "
-                f"{MIN_FILL_NOTIFY_AMOUNT:,.0f}), skipping: {order.symbol}"
+                "Fill below minimum notify amount (%s < %s), skipping: %s",
+                f"{order.filled_amount:,.0f}",
+                f"{MIN_FILL_NOTIFY_AMOUNT:,.0f}",
+                order.symbol,
+            )
+            logger.info(
+                "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
+                "result=skipped reason=below_minimum_notify_amount filled_amount=%s minimum_amount=%s",
+                correlation_id,
+                order.symbol,
+                order.account,
+                f"{order.filled_amount:,.0f}",
+                f"{MIN_FILL_NOTIFY_AMOUNT:,.0f}",
             )
             return
 
+        logger.info(
+            "OpenClaw send start: correlation_id=%s symbol=%s account=%s filled_amount=%s",
+            correlation_id,
+            order.symbol,
+            order.account,
+            order.filled_amount,
+        )
         try:
-            request_id = await self.openclaw_client.send_fill_notification(order)
+            request_id = await self.openclaw_client.send_fill_notification(
+                order, correlation_id=correlation_id
+            )
             if request_id:
-                logger.debug(f"Fill notification sent: request_id={request_id}")
+                self.fills_forwarded += 1
+                self.last_openclaw_success_at = datetime.now(UTC).isoformat()
+                logger.info(
+                    "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
+                    "result=success request_id=%s",
+                    correlation_id,
+                    order.symbol,
+                    order.account,
+                    request_id,
+                )
             else:
-                logger.warning("Fill notification failed after retries, continuing...")
+                logger.warning(
+                    "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
+                    "result=failed request_id=<none>",
+                    correlation_id,
+                    order.symbol,
+                    order.account,
+                )
         except Exception as e:
-            logger.error(f"Fill notification error: {e}", exc_info=True)
+            logger.error(
+                "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
+                "result=failed error=%s",
+                correlation_id,
+                order.symbol,
+                order.account,
+                e,
+                exc_info=True,
+            )
 
     async def _start_upbit_supervisor(self) -> None:
         """
@@ -292,6 +369,8 @@ class UnifiedWebSocketMonitor:
 
                 # listen() returned - connection closed
                 if self.is_running:
+                    self._fold_kis_socket_stats(self.kis_ws)
+                    self.kis_ws = None
                     logger.warning(
                         "KIS WebSocket connection closed, reconnecting in %.1fs...",
                         self._reconnect_delay_seconds,
@@ -303,6 +382,8 @@ class UnifiedWebSocketMonitor:
             except Exception as e:
                 logger.error("KIS WebSocket error: %s", e, exc_info=True)
                 if self.is_running:
+                    self._fold_kis_socket_stats(self.kis_ws)
+                    self.kis_ws = None
                     logger.info(
                         "Reconnecting KIS in %.1fs...", self._reconnect_delay_seconds
                     )
@@ -335,17 +416,41 @@ class UnifiedWebSocketMonitor:
         kis_connected: bool | str = (
             bool(self.kis_ws and self.kis_ws.is_connected) if kis_enabled else "n/a"
         )
-        logger.debug(
-            "Unified WebSocket health: upbit_connected=%s kis_connected=%s openclaw_enabled=%s",
+        enabled_states: list[bool] = []
+        if upbit_enabled:
+            enabled_states.append(bool(upbit_connected))
+        if kis_enabled:
+            enabled_states.append(bool(kis_connected))
+        connected = all(enabled_states) if enabled_states else False
+        uptime = 0.0
+        if self._started_at_monotonic is not None:
+            uptime = round(now - self._started_at_monotonic, 1)
+        kis_snapshot = self._current_kis_stats_snapshot()
+        logger.info(
+            "Unified WebSocket health: mode=%s connected=%s uptime=%s "
+            "upbit_connected=%s kis_connected=%s "
+            "messages_received=%s execution_events_received=%s fills_forwarded=%s "
+            "last_message_at=%s last_execution_at=%s last_pingpong_at=%s "
+            "last_openclaw_success_at=%s",
+            self.mode,
+            connected,
+            uptime,
             upbit_connected,
             kis_connected,
-            settings.OPENCLAW_ENABLED,
+            kis_snapshot["messages_received"],
+            kis_snapshot["execution_events_received"],
+            self.fills_forwarded,
+            kis_snapshot["last_message_at"],
+            kis_snapshot["last_execution_at"],
+            kis_snapshot["last_pingpong_at"],
+            self.last_openclaw_success_at,
         )
 
     async def start(self) -> None:
         """통합 모니터링 시작"""
         logger.info("Starting Unified WebSocket Monitor (mode=%s)...", self.mode)
         self.is_running = True
+        self._started_at_monotonic = asyncio.get_running_loop().time()
 
         # Write initial heartbeat
         self._write_heartbeat()
@@ -441,11 +546,98 @@ class UnifiedWebSocketMonitor:
 
         if self.kis_ws:
             try:
+                self._fold_kis_socket_stats(self.kis_ws)
                 await self.kis_ws.stop()
             except Exception as e:
                 logger.warning(f"Failed to stop KIS WebSocket cleanly: {e}")
 
         logger.info("Unified WebSocket Monitor stopped")
+
+    @staticmethod
+    def _latest_timestamp(*timestamps: str | None) -> str | None:
+        values = [timestamp for timestamp in timestamps if timestamp]
+        return max(values) if values else None
+
+    @staticmethod
+    def _read_kis_socket_stats(
+        websocket: KISExecutionWebSocket | Any | None,
+    ) -> dict[str, int | str | None]:
+        if websocket is None:
+            return {
+                "messages_received": 0,
+                "execution_events_received": 0,
+                "last_message_at": None,
+                "last_execution_at": None,
+                "last_pingpong_at": None,
+            }
+        snapshot_reader = getattr(websocket, "get_runtime_snapshot", None)
+        if callable(snapshot_reader):
+            snapshot = snapshot_reader()
+            if isinstance(snapshot, dict):
+                return snapshot
+        return {
+            "messages_received": int(getattr(websocket, "messages_received", 0) or 0),
+            "execution_events_received": int(
+                getattr(websocket, "execution_events_received", 0) or 0
+            ),
+            "last_message_at": getattr(websocket, "last_message_at", None),
+            "last_execution_at": getattr(websocket, "last_execution_at", None),
+            "last_pingpong_at": getattr(websocket, "last_pingpong_at", None),
+        }
+
+    def _fold_kis_socket_stats(
+        self, websocket: KISExecutionWebSocket | Any | None
+    ) -> None:
+        snapshot = self._read_kis_socket_stats(websocket)
+        self._kis_messages_received_closed += int(snapshot["messages_received"] or 0)
+        self._kis_execution_events_received_closed += int(
+            snapshot["execution_events_received"] or 0
+        )
+        self._kis_last_message_at_closed = self._latest_timestamp(
+            self._kis_last_message_at_closed,
+            snapshot["last_message_at"]
+            if isinstance(snapshot["last_message_at"], str)
+            else None,
+        )
+        self._kis_last_execution_at_closed = self._latest_timestamp(
+            self._kis_last_execution_at_closed,
+            snapshot["last_execution_at"]
+            if isinstance(snapshot["last_execution_at"], str)
+            else None,
+        )
+        self._kis_last_pingpong_at_closed = self._latest_timestamp(
+            self._kis_last_pingpong_at_closed,
+            snapshot["last_pingpong_at"]
+            if isinstance(snapshot["last_pingpong_at"], str)
+            else None,
+        )
+
+    def _current_kis_stats_snapshot(self) -> dict[str, int | str | None]:
+        current_snapshot = self._read_kis_socket_stats(self.kis_ws)
+        return {
+            "messages_received": self._kis_messages_received_closed
+            + int(current_snapshot["messages_received"] or 0),
+            "execution_events_received": self._kis_execution_events_received_closed
+            + int(current_snapshot["execution_events_received"] or 0),
+            "last_message_at": self._latest_timestamp(
+                self._kis_last_message_at_closed,
+                current_snapshot["last_message_at"]
+                if isinstance(current_snapshot["last_message_at"], str)
+                else None,
+            ),
+            "last_execution_at": self._latest_timestamp(
+                self._kis_last_execution_at_closed,
+                current_snapshot["last_execution_at"]
+                if isinstance(current_snapshot["last_execution_at"], str)
+                else None,
+            ),
+            "last_pingpong_at": self._latest_timestamp(
+                self._kis_last_pingpong_at_closed,
+                current_snapshot["last_pingpong_at"]
+                if isinstance(current_snapshot["last_pingpong_at"], str)
+                else None,
+            ),
+        }
 
 
 async def main(mode: str = "both") -> None:
