@@ -125,6 +125,42 @@ def _make_minute_row(
     }
 
 
+def _make_intraday_db_manager(
+    *,
+    symbol: str,
+    nxt_eligible: bool,
+    history_table: str | None = None,
+    history_rows: list[dict[str, object]] | None = None,
+    minute_rows: list[dict[str, object]] | None = None,
+) -> DummySessionManager:
+    history_rows_list: list[dict[str, object]] = list(history_rows or [])
+    minute_rows_list: list[dict[str, object]] = list(minute_rows or [])
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            await asyncio.sleep(0)
+            sql = str(getattr(query, "text", query))
+            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
+                return _ScalarResult(symbol)
+            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
+                return _MappingsResult(
+                    [
+                        {
+                            "symbol": symbol,
+                            "nxt_eligible": nxt_eligible,
+                            "is_active": True,
+                        }
+                    ]
+                )
+            if history_table is not None and f"FROM {history_table}" in sql:
+                return _MappingsResult(history_rows_list)
+            if "FROM public.kr_candles_1m" in sql:
+                return _MappingsResult(minute_rows_list)
+            raise AssertionError(f"unexpected sql: {sql}")
+
+    return DummySessionManager(DummyDB())
+
+
 @pytest.mark.asyncio
 async def test_api_prefetch_plan_time_boundaries_for_nxt_eligible(monkeypatch):
     from app.services import kr_hourly_candles_read_service as svc
@@ -1809,21 +1845,14 @@ async def test_read_kr_intraday_candles_1m_merges_same_minute_venues(monkeypatch
         ),
     ]
 
-    class DummyDB:
-        async def execute(self, query, params=None):
-            sql = str(getattr(query, "text", query))
-            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
-                return _ScalarResult(symbol)
-            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
-                return _MappingsResult(
-                    [{"symbol": symbol, "nxt_eligible": True, "is_active": True}]
-                )
-            if "FROM public.kr_candles_1m" in sql:
-                return _MappingsResult(minute_rows)
-            raise AssertionError(f"unexpected sql: {sql}")
-
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        svc,
+        "AsyncSessionLocal",
+        lambda: _make_intraday_db_manager(
+            symbol=symbol,
+            nxt_eligible=True,
+            minute_rows=minute_rows,
+        ),
     )
 
     out = await svc.read_kr_intraday_candles(
@@ -1905,24 +1934,16 @@ async def test_read_kr_intraday_candles_5m_includes_current_partial_bucket(monke
         ),
     ]
 
-    class DummyDB:
-        async def execute(self, query, params=None):
-            await asyncio.sleep(0)
-            sql = str(getattr(query, "text", query))
-            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
-                return _ScalarResult(symbol)
-            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
-                return _MappingsResult(
-                    [{"symbol": symbol, "nxt_eligible": False, "is_active": True}]
-                )
-            if "FROM public.kr_candles_5m" in sql:
-                return _MappingsResult([])
-            if "FROM public.kr_candles_1m" in sql:
-                return _MappingsResult(minute_rows)
-            raise AssertionError(f"unexpected sql: {sql}")
-
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        svc,
+        "AsyncSessionLocal",
+        lambda: _make_intraday_db_manager(
+            symbol=symbol,
+            nxt_eligible=False,
+            history_table="public.kr_candles_5m",
+            history_rows=[],
+            minute_rows=minute_rows,
+        ),
     )
     kis = SimpleNamespace(
         inquire_time_dailychartprice=AsyncMock(return_value=pd.DataFrame())
@@ -1964,24 +1985,16 @@ async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     background_completed = False
     background_calls: list[tuple[str, list[dict[str, object]]]] = []
 
-    class DummyDB:
-        async def execute(self, query, params=None):
-            await asyncio.sleep(0)
-            sql = str(getattr(query, "text", query))
-            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
-                return _ScalarResult(symbol)
-            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
-                return _MappingsResult(
-                    [{"symbol": symbol, "nxt_eligible": False, "is_active": True}]
-                )
-            if "FROM public.kr_candles_5m" in sql:
-                return _MappingsResult([])
-            if "FROM public.kr_candles_1m" in sql:
-                return _MappingsResult([])
-            raise AssertionError(f"unexpected sql: {sql}")
-
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        svc,
+        "AsyncSessionLocal",
+        lambda: _make_intraday_db_manager(
+            symbol=symbol,
+            nxt_eligible=False,
+            history_table="public.kr_candles_5m",
+            history_rows=[],
+            minute_rows=[],
+        ),
     )
 
     async def mock_store_background(*, symbol, minute_rows):
@@ -2061,24 +2074,16 @@ async def test_read_kr_intraday_candles_5m_fallback_schedules_background_storage
     now_kst = _dt_kst(2026, 2, 23, 9, 7, 0)
     background_storage_calls: list[dict[str, object]] = []
 
-    class DummyDB:
-        async def execute(self, query, params=None):
-            await asyncio.sleep(0)
-            sql = str(getattr(query, "text", query))
-            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
-                return _ScalarResult(symbol)
-            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
-                return _MappingsResult(
-                    [{"symbol": symbol, "nxt_eligible": False, "is_active": True}]
-                )
-            if "FROM public.kr_candles_5m" in sql:
-                return _MappingsResult([])
-            if "FROM public.kr_candles_1m" in sql:
-                return _MappingsResult([])
-            raise AssertionError(f"unexpected sql: {sql}")
-
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        svc,
+        "AsyncSessionLocal",
+        lambda: _make_intraday_db_manager(
+            symbol=symbol,
+            nxt_eligible=False,
+            history_table="public.kr_candles_5m",
+            history_rows=[],
+            minute_rows=[],
+        ),
     )
 
     async def mock_store_background(*, symbol, minute_rows):
@@ -2150,37 +2155,27 @@ async def test_read_kr_intraday_candles_db_only_does_not_schedule_background_sto
 
     symbol = "005930"
 
-    class DummyDB:
-        async def execute(self, query, params=None):
-            await asyncio.sleep(0)
-            sql = str(getattr(query, "text", query))
-            if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
-                return _ScalarResult(symbol)
-            if "FROM public.kr_symbol_universe" in sql and "WHERE symbol" in sql:
-                return _MappingsResult(
-                    [{"symbol": symbol, "nxt_eligible": False, "is_active": True}]
-                )
-            if "FROM public.kr_candles_5m" in sql:
-                return _MappingsResult(
-                    [
-                        _make_hour_row(
-                            bucket_kst_naive=datetime.datetime(2026, 2, 21, 9, 0, 0),
-                            open=100.0,
-                            high=101.0,
-                            low=99.0,
-                            close=100.5,
-                            volume=1200.0,
-                            value=120000.0,
-                            venues=["KRX"],
-                        )
-                    ]
-                )
-            if "FROM public.kr_candles_1m" in sql:
-                return _MappingsResult([])
-            raise AssertionError(f"unexpected sql: {sql}")
-
     monkeypatch.setattr(
-        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+        svc,
+        "AsyncSessionLocal",
+        lambda: _make_intraday_db_manager(
+            symbol=symbol,
+            nxt_eligible=False,
+            history_table="public.kr_candles_5m",
+            history_rows=[
+                _make_hour_row(
+                    bucket_kst_naive=datetime.datetime(2026, 2, 21, 9, 0, 0),
+                    open=100.0,
+                    high=101.0,
+                    low=99.0,
+                    close=100.5,
+                    volume=1200.0,
+                    value=120000.0,
+                    venues=["KRX"],
+                )
+            ],
+            minute_rows=[],
+        ),
     )
     store_mock = AsyncMock()
     monkeypatch.setattr(svc, "_store_minute_candles_background", store_mock)
