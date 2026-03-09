@@ -280,7 +280,7 @@ def test_sql_script_contains_90_day_retention_policy_for_both_tables() -> None:
     assert "public.kr_candles_30m" in content
     assert "public.kr_candles_1h" in content
     assert "timescaledb.materialized_only = false" in content
-    assert "INTERVAL '5 minutes'" in content
+    assert "INTERVAL '5 minutes'" in content or "INTERVAL ''5 minutes''" in content
     assert "90 days" in content
 
 

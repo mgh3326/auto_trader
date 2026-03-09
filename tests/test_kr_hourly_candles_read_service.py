@@ -321,6 +321,7 @@ async def test_api_prefetch_plan_respects_nxt_ineligible(monkeypatch):
 
     class DummyDB:
         async def execute(self, query, params=None):
+            await asyncio.sleep(0)
             sql = str(getattr(query, "text", query))
             if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
                 return _ScalarResult(symbol)
@@ -1837,10 +1838,10 @@ async def test_read_kr_intraday_candles_1m_merges_same_minute_venues(monkeypatch
     first = out.iloc[0]
     second = out.iloc[1]
     assert first["datetime"] == datetime.datetime(2026, 2, 23, 9, 0, 0)
-    assert first["open"] == 100.0
-    assert first["close"] == 105.0
-    assert first["volume"] == 15.0
-    assert first["value"] == 1500.0
+    assert first["open"] == pytest.approx(100.0)
+    assert first["close"] == pytest.approx(105.0)
+    assert first["volume"] == pytest.approx(15.0)
+    assert first["value"] == pytest.approx(1500.0)
     assert first["venues"] == ["KRX", "NTX"]
     assert second["datetime"] == datetime.datetime(2026, 2, 23, 9, 1, 0)
     assert second["venues"] == ["KRX"]
@@ -1906,6 +1907,7 @@ async def test_read_kr_intraday_candles_5m_includes_current_partial_bucket(monke
 
     class DummyDB:
         async def execute(self, query, params=None):
+            await asyncio.sleep(0)
             sql = str(getattr(query, "text", query))
             if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
                 return _ScalarResult(symbol)
@@ -1939,13 +1941,13 @@ async def test_read_kr_intraday_candles_5m_includes_current_partial_bucket(monke
     first = out.iloc[0]
     second = out.iloc[1]
     assert first["datetime"] == datetime.datetime(2026, 2, 23, 9, 0, 0)
-    assert first["open"] == 100.0
-    assert first["close"] == 102.5
-    assert first["volume"] == 60.0
+    assert first["open"] == pytest.approx(100.0)
+    assert first["close"] == pytest.approx(102.5)
+    assert first["volume"] == pytest.approx(60.0)
     assert second["datetime"] == datetime.datetime(2026, 2, 23, 9, 5, 0)
-    assert second["open"] == 103.0
-    assert second["close"] == 104.0
-    assert second["volume"] == 90.0
+    assert second["open"] == pytest.approx(103.0)
+    assert second["close"] == pytest.approx(104.0)
+    assert second["volume"] == pytest.approx(90.0)
     assert second["session"] == "REGULAR"
     assert second["venues"] == ["KRX"]
 
@@ -1960,10 +1962,12 @@ async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     now_kst = _dt_kst(2026, 2, 23, 9, 7, 0)
     background_started = False
     background_completed = False
-    background_args: tuple[str, list[dict[str, object]]] | None = None
+    background_symbol: str | None = None
+    background_rows: list[dict[str, object]] = []
 
     class DummyDB:
         async def execute(self, query, params=None):
+            await asyncio.sleep(0)
             sql = str(getattr(query, "text", query))
             if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
                 return _ScalarResult(symbol)
@@ -1982,9 +1986,14 @@ async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     )
 
     async def mock_store_background(*, symbol, minute_rows):
-        nonlocal background_started, background_completed, background_args
+        nonlocal \
+            background_started, \
+            background_completed, \
+            background_symbol, \
+            background_rows
         background_started = True
-        background_args = (symbol, list(minute_rows))
+        background_symbol = symbol
+        background_rows = list(minute_rows)
         await asyncio.sleep(0.2)
         background_completed = True
 
@@ -2039,9 +2048,8 @@ async def test_read_kr_intraday_candles_5m_overlay_starts_background_storage(
     await asyncio.sleep(0)
     assert background_started, "Overlay API rows should start background storage"
     assert background_completed is False
-    assert background_args is not None
-    assert background_args[0] == symbol
-    assert len(background_args[1]) == 2
+    assert background_symbol == symbol
+    assert len(background_rows) == 2
 
     await asyncio.sleep(0.25)
     assert background_completed, "Background storage should complete after response"
@@ -2059,6 +2067,7 @@ async def test_read_kr_intraday_candles_5m_fallback_schedules_background_storage
 
     class DummyDB:
         async def execute(self, query, params=None):
+            await asyncio.sleep(0)
             sql = str(getattr(query, "text", query))
             if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
                 return _ScalarResult(symbol)
@@ -2146,6 +2155,7 @@ async def test_read_kr_intraday_candles_db_only_does_not_schedule_background_sto
 
     class DummyDB:
         async def execute(self, query, params=None):
+            await asyncio.sleep(0)
             sql = str(getattr(query, "text", query))
             if "FROM public.kr_symbol_universe" in sql and "LIMIT 1" in sql:
                 return _ScalarResult(symbol)
