@@ -11,8 +11,10 @@ import logging
 import ssl
 from collections.abc import Callable
 from datetime import UTC, datetime
+from inspect import isawaitable
 from typing import Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
 import redis.asyncio as redis
@@ -281,7 +283,7 @@ class KISExecutionWebSocket:
 
     def __init__(
         self,
-        on_execution: Callable[[dict], None],
+        on_execution: Callable[[dict[str, Any]], Any],
         mock_mode: bool = False,
     ):
         """
@@ -292,7 +294,8 @@ class KISExecutionWebSocket:
         self.on_execution = on_execution
         self.mock_mode = mock_mode
 
-        self.websocket = None
+        self.websocket: Any | None = None
+        self.websocket_url = ""
         self.is_running = False
         self.is_connected = False
 
@@ -302,6 +305,11 @@ class KISExecutionWebSocket:
 
         self.ping_interval = settings.kis_ws_ping_interval
         self.ping_timeout = settings.kis_ws_ping_timeout
+        self.messages_received = 0
+        self.execution_events_received = 0
+        self.last_message_at: str | None = None
+        self.last_execution_at: str | None = None
+        self.last_pingpong_at: str | None = None
 
         self.approval_key: str | None = None
         self._encryption_keys_by_tr: dict[str, tuple[str, str]] = {}
@@ -335,53 +343,83 @@ class KISExecutionWebSocket:
 
             except Exception as e:
                 self.current_attempt += 1
+                ack_error = e if isinstance(e, KISSubscriptionAckError) else None
                 recoverable_ack_failure = (
-                    isinstance(e, KISSubscriptionAckError)
-                    and e.msg_cd in RECOVERABLE_APPROVAL_MSG_CODES
+                    ack_error is not None
+                    and ack_error.msg_cd in RECOVERABLE_APPROVAL_MSG_CODES
                     and self.is_running
                 )
                 if recoverable_ack_failure:
                     logger.warning(
-                        "KIS WebSocket recoverable ACK failure "
-                        "(attempt %s/%s): tr_id=%s msg_cd=%s msg1=%s",
+                        "KIS WebSocket recoverable ACK failure: "
+                        "attempt=%s/%s tr_id=%s msg_cd=%s msg1=%s last_message_at=%s "
+                        "last_execution_at=%s last_pingpong_at=%s",
                         self.current_attempt,
                         self.max_reconnect_attempts,
-                        e.tr_id,
-                        e.msg_cd,
-                        e.msg1,
+                        ack_error.tr_id if ack_error is not None else None,
+                        ack_error.msg_cd if ack_error is not None else None,
+                        ack_error.msg1 if ack_error is not None else None,
+                        self.last_message_at,
+                        self.last_execution_at,
+                        self.last_pingpong_at,
                     )
                 else:
                     logger.error(
-                        "KIS WebSocket connection failed (attempt %s/%s): %s",
+                        "KIS WebSocket connection failed: attempt=%s/%s error=%s "
+                        "last_message_at=%s last_execution_at=%s last_pingpong_at=%s",
                         self.current_attempt,
                         self.max_reconnect_attempts,
                         e,
+                        self.last_message_at,
+                        self.last_execution_at,
+                        self.last_pingpong_at,
                     )
                 await self._close_websocket_best_effort()
 
                 if recoverable_ack_failure:
-                    if self._last_reissue_msg_code == e.msg_cd:
+                    if (
+                        ack_error is not None
+                        and self._last_reissue_msg_code == ack_error.msg_cd
+                    ):
                         # 동일한 ACK 오류가 연속으로 반복되면 최소 1초 대기 후 재발급합니다.
                         await asyncio.sleep(1)
                     self.approval_key = await _issue_approval_key()
                     await _cache_approval_key(self.approval_key)
-                    self._last_reissue_msg_code = e.msg_cd
+                    self._last_reissue_msg_code = (
+                        ack_error.msg_cd if ack_error else None
+                    )
                     logger.info(
                         "Approval key reissued after recoverable ACK failure: "
-                        "msg_cd=%s attempt=%s",
-                        e.msg_cd,
+                        "msg_cd=%s attempt=%s messages_received=%s execution_events_received=%s",
+                        ack_error.msg_cd if ack_error else None,
                         self.current_attempt,
+                        self.messages_received,
+                        self.execution_events_received,
                     )
                 else:
                     self._last_reissue_msg_code = None
 
                 if self.current_attempt >= self.max_reconnect_attempts:
-                    logger.error("Max reconnection attempts reached. Stopping.")
+                    logger.error(
+                        "Max reconnection attempts reached: messages_received=%s "
+                        "execution_events_received=%s last_message_at=%s last_execution_at=%s "
+                        "last_pingpong_at=%s",
+                        self.messages_received,
+                        self.execution_events_received,
+                        self.last_message_at,
+                        self.last_execution_at,
+                        self.last_pingpong_at,
+                    )
                     self.is_connected = False
                     break
 
                 if self.is_running:
-                    logger.info(f"Retrying in {self.reconnect_delay} seconds...")
+                    logger.info(
+                        "Retrying KIS WebSocket connection in %s seconds: attempt=%s/%s",
+                        self.reconnect_delay,
+                        self.current_attempt,
+                        self.max_reconnect_attempts,
+                    )
                     await asyncio.sleep(self.reconnect_delay)
 
         if not self.is_connected:
@@ -543,6 +581,9 @@ class KISExecutionWebSocket:
 
         try:
             async for message in websocket:
+                received_at = self._now_iso()
+                self.messages_received += 1
+                self.last_message_at = received_at
                 try:
                     data = self._parse_message(message)
 
@@ -550,22 +591,68 @@ class KISExecutionWebSocket:
                         continue
 
                     if data.get("system") == "pingpong":
+                        self.last_pingpong_at = received_at
+                        logger.debug(
+                            "KIS pingpong received: received_at=%s messages_received=%s",
+                            received_at,
+                            self.messages_received,
+                        )
                         await self._handle_pingpong()
                         continue
 
+                    data["received_at"] = received_at
+                    data.setdefault("correlation_id", self._new_correlation_id())
+
                     if self._is_execution_event(data):
-                        logger.debug(f"Execution received: {data}")
+                        self.execution_events_received += 1
+                        self.last_execution_at = received_at
+                        logger.info(
+                            "KIS execution received: correlation_id=%s received_at=%s "
+                            "tr_code=%s market=%s symbol=%s side=%s filled_qty=%s "
+                            "filled_price=%s fill_yn=%s execution_status=%s",
+                            data.get("correlation_id"),
+                            received_at,
+                            data.get("tr_code"),
+                            data.get("market"),
+                            data.get("symbol"),
+                            data.get("side"),
+                            data.get("filled_qty"),
+                            data.get("filled_price"),
+                            data.get("fill_yn"),
+                            data.get("execution_status"),
+                        )
                         if self.on_execution:
-                            await self.on_execution(data)
+                            callback_result = self.on_execution(data)
+                            if isawaitable(callback_result):
+                                await callback_result
 
                 except Exception as e:
                     logger.error(f"Message processing error: {e}", exc_info=True)
 
         except ConnectionClosed:
-            logger.warning("KIS WebSocket connection closed")
+            logger.warning(
+                "KIS WebSocket connection closed: messages_received=%s "
+                "execution_events_received=%s last_message_at=%s last_execution_at=%s "
+                "last_pingpong_at=%s",
+                self.messages_received,
+                self.execution_events_received,
+                self.last_message_at,
+                self.last_execution_at,
+                self.last_pingpong_at,
+            )
             self.is_connected = False
         except WebSocketException as e:
-            logger.error(f"KIS WebSocket error: {e}", exc_info=True)
+            logger.error(
+                "KIS WebSocket error: error=%s messages_received=%s execution_events_received=%s "
+                "last_message_at=%s last_execution_at=%s last_pingpong_at=%s",
+                e,
+                self.messages_received,
+                self.execution_events_received,
+                self.last_message_at,
+                self.last_execution_at,
+                self.last_pingpong_at,
+                exc_info=True,
+            )
             self.is_connected = False
 
     def _is_execution_event(self, data: dict[str, Any]) -> bool:
@@ -581,7 +668,9 @@ class KISExecutionWebSocket:
             has_price = self._to_float(data.get("filled_price")) > 0
             if not (is_filled and has_qty and has_price):
                 logger.error(
-                    "Overseas execution event rejected: tr_code=%s symbol=%s fill_yn=%s filled_qty=%s filled_price=%s execution_status=%s",
+                    "Overseas execution event rejected: correlation_id=%s tr_code=%s symbol=%s "
+                    "fill_yn=%s filled_qty=%s filled_price=%s execution_status=%s",
+                    data.get("correlation_id"),
                     tr_code,
                     data.get("symbol"),
                     data.get("fill_yn"),
@@ -597,8 +686,10 @@ class KISExecutionWebSocket:
             status = str(data.get("execution_status", "")).strip().lower()
             if status:
                 return status in {"filled", "partial"}
-            logger.debug(
-                "Drop domestic execution event without fill_yn: tr_code=%s symbol=%s execution_type=%s",
+            logger.info(
+                "Drop domestic execution event without fill_yn: correlation_id=%s "
+                "tr_code=%s symbol=%s execution_type=%s",
+                data.get("correlation_id"),
                 tr_code,
                 data.get("symbol"),
                 data.get("execution_type"),
@@ -636,7 +727,7 @@ class KISExecutionWebSocket:
             return "filled"
         return "invalid_fill"
 
-    def _parse_message(self, message: str | bytes) -> dict | None:
+    def _parse_message(self, message: str | bytes) -> dict[str, Any] | None:
         """
         KIS WebSocket 메시지 파싱
 
@@ -795,7 +886,7 @@ class KISExecutionWebSocket:
             ).decryptor()
             padded_plain = decryptor.update(cipher_bytes) + decryptor.finalize()
 
-            unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+            unpadder = padding.PKCS7(128).unpadder()
             plain = unpadder.update(padded_plain) + unpadder.finalize()
             return plain.decode("utf-8").strip()
         except Exception as e:
@@ -1206,7 +1297,7 @@ class KISExecutionWebSocket:
         except (TypeError, ValueError):
             return 0.0
 
-    def _parse_response(self, message: str | bytes) -> dict:
+    def _parse_response(self, message: str | bytes) -> dict[str, Any]:
         """
         구독 응답 메시지 파싱
 
@@ -1235,6 +1326,23 @@ class KISExecutionWebSocket:
         if self.websocket:
             await self.websocket.send("0|pingpong")
             logger.debug("Pingpong message echoed")
+
+    def get_runtime_snapshot(self) -> dict[str, int | str | None]:
+        return {
+            "messages_received": self.messages_received,
+            "execution_events_received": self.execution_events_received,
+            "last_message_at": self.last_message_at,
+            "last_execution_at": self.last_execution_at,
+            "last_pingpong_at": self.last_pingpong_at,
+        }
+
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now(UTC).isoformat()
+
+    @staticmethod
+    def _new_correlation_id() -> str:
+        return uuid4().hex
 
     async def _close_websocket_best_effort(self) -> None:
         websocket = self.websocket
