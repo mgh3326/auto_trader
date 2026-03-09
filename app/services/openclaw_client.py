@@ -33,19 +33,38 @@ class OpenClawClient:
         self._token = token if token is not None else settings.OPENCLAW_TOKEN
         self._callback_url = settings.OPENCLAW_CALLBACK_URL
 
-    async def _forward_to_telegram(self, message: str, alert_type: str) -> None:
+    async def _forward_to_telegram(
+        self,
+        message: str,
+        alert_type: str,
+        *,
+        correlation_id: str | None = None,
+    ) -> None:
         try:
             notifier = get_trade_notifier()
-            sent = await notifier.notify_openclaw_message(message)
+            if correlation_id is None:
+                sent = await notifier.notify_openclaw_message(message)
+            else:
+                sent = await notifier.notify_openclaw_message(
+                    message, correlation_id=correlation_id
+                )
             if sent:
                 logger.debug(
-                    "OpenClaw %s alert mirrored to Telegram",
+                    "OpenClaw %s alert mirror invoked: correlation_id=%s result=success",
                     alert_type,
+                    correlation_id,
+                )
+            else:
+                logger.debug(
+                    "OpenClaw %s alert mirror invoked: correlation_id=%s result=failed",
+                    alert_type,
+                    correlation_id,
                 )
         except Exception as exc:
             logger.warning(
-                "Failed to mirror OpenClaw %s alert to Telegram: %s",
+                "Failed to invoke OpenClaw %s alert mirror: correlation_id=%s error=%s",
                 alert_type,
+                correlation_id,
                 exc,
             )
 
@@ -108,7 +127,9 @@ class OpenClawClient:
         )
         return request_id
 
-    async def send_fill_notification(self, order: FillOrderLike) -> str | None:
+    async def send_fill_notification(
+        self, order: FillOrderLike, *, correlation_id: str | None = None
+    ) -> str | None:
         """
         체결 알림을 OpenClaw Gateway로 전송
 
@@ -151,35 +172,74 @@ class OpenClawClient:
                 wait=wait_exponential(multiplier=1, min=1, max=4),
                 reraise=False,
             ):
+                attempt_number = attempt.retry_state.attempt_number
                 with attempt:
-                    async with httpx.AsyncClient(timeout=10) as cli:
-                        res = await cli.post(
-                            self._webhook_url, json=payload, headers=headers
-                        )
-                        res.raise_for_status()
                     logger.info(
-                        "OpenClaw fill notification sent: request_id=%s symbol=%s account=%s",
+                        "OpenClaw fill notification send start: correlation_id=%s "
+                        "request_id=%s symbol=%s account=%s attempt=%s",
+                        correlation_id,
                         request_id,
                         normalized_order.symbol,
                         normalized_order.account,
+                        attempt_number,
+                    )
+                    try:
+                        async with httpx.AsyncClient(timeout=10) as cli:
+                            res = await cli.post(
+                                self._webhook_url, json=payload, headers=headers
+                            )
+                            res.raise_for_status()
+                    except Exception as exc:
+                        logger.warning(
+                            "OpenClaw fill notification attempt failed: correlation_id=%s "
+                            "request_id=%s symbol=%s account=%s attempt=%s error=%s",
+                            correlation_id,
+                            request_id,
+                            normalized_order.symbol,
+                            normalized_order.account,
+                            attempt_number,
+                            exc,
+                        )
+                        raise
+                    logger.info(
+                        "OpenClaw fill notification sent: correlation_id=%s request_id=%s "
+                        "symbol=%s account=%s attempt=%s status=%s",
+                        correlation_id,
+                        request_id,
+                        normalized_order.symbol,
+                        normalized_order.account,
+                        attempt_number,
+                        res.status_code,
                     )
                     delivered_to_openclaw = True
                     break
 
         except RetryError as e:
             logger.error(
-                "OpenClaw fill notification failed after retries: request_id=%s error=%s",
+                "OpenClaw fill notification failed after retries: correlation_id=%s "
+                "request_id=%s symbol=%s account=%s error=%s",
+                correlation_id,
                 request_id,
+                normalized_order.symbol,
+                normalized_order.account,
                 e,
             )
         except Exception as e:
             logger.error(
-                "OpenClaw fill notification error: request_id=%s error=%s",
+                "OpenClaw fill notification error: correlation_id=%s request_id=%s "
+                "symbol=%s account=%s error=%s",
+                correlation_id,
                 request_id,
+                normalized_order.symbol,
+                normalized_order.account,
                 e,
             )
         finally:
-            await self._forward_to_telegram(message, alert_type="fill")
+            await self._forward_to_telegram(
+                message,
+                alert_type="fill",
+                correlation_id=correlation_id,
+            )
 
         if delivered_to_openclaw:
             return request_id

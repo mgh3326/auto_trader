@@ -1707,6 +1707,8 @@ class TradeNotifier:
         self,
         message: str,
         parse_mode: str = "Markdown",
+        *,
+        correlation_id: str | None = None,
     ) -> bool:
         """
         Forward an OpenClaw outbound message to Discord or Telegram.
@@ -1721,24 +1723,72 @@ class TradeNotifier:
         Returns:
             True if notification sent successfully
         """
-        if not self._enabled:
-            return False
+        discord_result = "skipped(no_discord_webhook)"
+        telegram_result = "skipped(not_attempted)"
 
         try:
+            if not self._enabled:
+                discord_result = "skipped(notifier_disabled)"
+                telegram_result = "skipped(notifier_disabled)"
+                logger.info(
+                    "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                    correlation_id,
+                    discord_result,
+                    telegram_result,
+                )
+                return False
+
             # Try Discord first
             if self._discord_webhook_alerts:
                 discord_success = await self._send_to_discord_content_single(
                     message, self._discord_webhook_alerts
                 )
                 if discord_success:
+                    discord_result = "success"
+                    telegram_result = "skipped(fallback_not_needed)"
+                    logger.info(
+                        "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                        correlation_id,
+                        discord_result,
+                        telegram_result,
+                    )
                     return True
-                logger.info("Discord send failed, falling back to Telegram")
+                discord_result = "failed"
 
             # Fall back to Telegram
-            return await self._send_to_telegram(message, parse_mode=parse_mode)
+            if not self._has_telegram_delivery_config():
+                telegram_result = "skipped(no_telegram_config)"
+                logger.info(
+                    "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                    correlation_id,
+                    discord_result,
+                    telegram_result,
+                )
+                return False
+
+            telegram_success = await self._send_to_telegram(
+                message, parse_mode=parse_mode
+            )
+            telegram_result = "success" if telegram_success else "failed"
+            logger.info(
+                "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                correlation_id,
+                discord_result,
+                telegram_result,
+            )
+            return telegram_success
         except Exception as e:
             logger.error(f"Failed to forward OpenClaw message: {e}")
+            logger.info(
+                "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                correlation_id,
+                discord_result,
+                telegram_result,
+            )
             return False
+
+    def _has_telegram_delivery_config(self) -> bool:
+        return bool(self._http_client and self._bot_token and self._chat_ids)
 
     async def test_connection(self) -> bool:
         """
