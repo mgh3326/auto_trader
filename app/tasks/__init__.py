@@ -3,6 +3,7 @@ from app.tasks import (
     kr_candles_tasks,
     kr_symbol_universe_tasks,
     upbit_symbol_universe_tasks,
+    us_candles_tasks,
     us_symbol_universe_tasks,
     watch_scan_tasks,
 )
@@ -13,5 +14,6 @@ TASKIQ_TASK_MODULES = (
     kr_candles_tasks,
     kr_symbol_universe_tasks,
     upbit_symbol_universe_tasks,
+    us_candles_tasks,
     us_symbol_universe_tasks,
 )
