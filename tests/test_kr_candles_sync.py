@@ -262,6 +262,9 @@ def test_new_retention_migration_contains_upgrade_and_downgrade_policy_sql() -> 
     assert "add_retention_policy" in content
     assert "remove_retention_policy" in content
     assert "kr_candles_1m" in content
+    assert "kr_candles_5m" in content
+    assert "kr_candles_15m" in content
+    assert "kr_candles_30m" in content
     assert "kr_candles_1h" in content
     assert "90 days" in content
 
@@ -271,6 +274,19 @@ def test_sql_script_contains_90_day_retention_policy_for_both_tables() -> None:
 
     assert "add_retention_policy" in content
     assert "remove_retention_policy" in content
-    assert "public.kr_candles_1m" in content
-    assert "public.kr_candles_1h" in content
+    assert "v_relation_prefix CONSTANT TEXT := 'public.kr_candles_'" in content
+    assert "'1m'" in content
+    assert "'5m'" in content
+    assert "'15m'" in content
+    assert "'30m'" in content
+    assert "'1h'" in content
+    assert "timescaledb.materialized_only = false" in content
+    assert "INTERVAL '5 minutes'" in content or "INTERVAL ''5 minutes''" in content
     assert "90 days" in content
+
+
+def test_kr_candles_task_cron_remains_ten_minutes() -> None:
+    content = Path("app/tasks/kr_candles_tasks.py").read_text(encoding="utf-8")
+
+    assert 'task_name="candles.kr.sync"' in content
+    assert '"cron": "*/10 * * * 1-5"' in content

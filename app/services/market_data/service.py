@@ -17,10 +17,10 @@ from app.services.domain_errors import (
     UpstreamUnavailableError,
     ValidationError,
 )
+from app.services.kr_hourly_candles_read_service import read_kr_intraday_candles
 from app.services.market_data.constants import (
-    CRYPTO_ONLY_OHLCV_PERIODS,
-    OHLCV_ALLOWED_PERIODS,
-    OHLCV_PERIOD_ERROR,
+    KR_INTRADAY_OHLCV_PERIODS,
+    validate_ohlcv_period,
 )
 from app.services.market_data.contracts import Candle, Quote
 
@@ -56,12 +56,7 @@ def _normalize_symbol(symbol: str, market: str) -> str:
 
 
 def _normalize_period(period: str, market: str) -> str:
-    normalized = str(period or "day").strip().lower()
-    if normalized not in OHLCV_ALLOWED_PERIODS:
-        raise ValidationError(OHLCV_PERIOD_ERROR)
-    if normalized in CRYPTO_ONLY_OHLCV_PERIODS and market != "crypto":
-        raise ValidationError(f"period '{normalized}' is supported only for crypto")
-    return normalized
+    return validate_ohlcv_period(period, market, error_type=ValidationError)
 
 
 def _to_candle_rows(
@@ -265,7 +260,7 @@ async def get_ohlcv(
                 market="UN",
                 n=min(count, 200),
                 period=period_map[resolved_period],
-                end_date=(end.date() if end is not None else None),
+                end_date=(pd.Timestamp(end.date()) if end is not None else None),
             )
             return _to_candle_rows(
                 frame,
@@ -275,13 +270,21 @@ async def get_ohlcv(
                 period=resolved_period,
             )
 
-        frame = await kis.inquire_minute_chart(
-            code=resolved_symbol,
-            market="UN",
-            time_unit=60,
-            n=min(count, 200),
-            end_date=(end.date() if end is not None else None),
-        )
+        if resolved_period in KR_INTRADAY_OHLCV_PERIODS:
+            frame = await read_kr_intraday_candles(
+                symbol=resolved_symbol,
+                period=resolved_period,
+                count=min(count, 200),
+                end_date=end,
+            )
+        else:
+            frame = await kis.inquire_minute_chart(
+                code=resolved_symbol,
+                market="UN",
+                time_unit=60,
+                n=min(count, 200),
+                end_date=(pd.Timestamp(end.date()) if end is not None else None),
+            )
         return _to_candle_rows(
             frame,
             symbol=resolved_symbol,
