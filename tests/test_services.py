@@ -2,6 +2,7 @@
 Tests for service modules.
 """
 
+import logging
 from datetime import date
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1608,7 +1609,7 @@ async def test_kis_inquire_time_dailychartprice_uses_end_time_when_provided(
         "005930",
         market="J",
         n=1,
-        end_date=date(2026, 2, 19),
+        end_date=pd.Timestamp(date(2026, 2, 19)),
         end_time="153000",
     )
 
@@ -1903,3 +1904,66 @@ class TestKISInquireOrderbook:
 
         with pytest.raises(RuntimeError, match="output1"):
             await client.inquire_orderbook("005930")
+
+
+class TestKISRateLimitLookup:
+    @pytest.mark.parametrize(
+        ("api_key", "expected_rate", "expected_period"),
+        [
+            (
+                "FHKST03010100|/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                20,
+                1.0,
+            ),
+            (
+                "FHKST03010230|/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice",
+                20,
+                1.0,
+            ),
+            (
+                "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance",
+                10,
+                1.0,
+            ),
+            (
+                "TTTC8001R|/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+                10,
+                1.0,
+            ),
+            (
+                "TTTC8036R|/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl",
+                10,
+                1.0,
+            ),
+        ],
+    )
+    def test_get_rate_limit_for_seeded_api_keys(
+        self, api_key: str, expected_rate: int, expected_period: float
+    ):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+
+        assert client._get_rate_limit_for_api(api_key) == (
+            expected_rate,
+            expected_period,
+        )
+
+    def test_get_rate_limit_for_unknown_api_key_warns_once_and_falls_back(self, caplog):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        api_key = "UNKNOWN|/uapi/test"
+
+        with caplog.at_level(logging.WARNING):
+            first = client._get_rate_limit_for_api(api_key)
+            second = client._get_rate_limit_for_api(api_key)
+
+        assert first == (19, 1.0)
+        assert second == (19, 1.0)
+        warnings = [
+            record
+            for record in caplog.records
+            if record.levelno == logging.WARNING and api_key in record.message
+        ]
+        assert len(warnings) == 1
