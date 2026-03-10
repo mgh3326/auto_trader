@@ -194,7 +194,7 @@ def _parse_cached_row(
     parsed_dt = _coerce_datetime(raw_dt)
     if parsed_dt is None:
         return None
-    row = {
+    row: dict[str, object] = {
         "datetime": parsed_dt,
         "date": parsed_dt.date(),
         "time": parsed_dt.time(),
