@@ -202,6 +202,28 @@ class TestUnifiedWebSocketMonitor:
 
         never_called_upbit.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_start_reraises_cancelled_error_after_cleanup(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        started = asyncio.Event()
+
+        async def wait_forever() -> None:
+            started.set()
+            await asyncio.Future()
+
+        monitor._start_upbit = wait_forever  # type: ignore[method-assign]
+
+        task = asyncio.create_task(monitor.start())
+        await started.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
     def test_invalid_mode_raises_value_error(self, mock_settings: None) -> None:
         from websocket_monitor import UnifiedWebSocketMonitor
 
