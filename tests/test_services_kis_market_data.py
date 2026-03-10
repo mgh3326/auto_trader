@@ -818,6 +818,61 @@ class TestKISInquireOrderbook:
         with pytest.raises(RuntimeError, match="output1"):
             await client.inquire_orderbook("005930")
 
+    @pytest.mark.asyncio
+    async def test_inquire_orderbook_snapshot_returns_output1_and_output2_dict(self):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        client._request_with_rate_limit = AsyncMock(
+            return_value={
+                "rt_cd": "0",
+                "output1": {"askp1": "70100", "askp_rsqn1": "111"},
+                "output2": {"antc_cnpr": "70200", "antc_cnqn": "1200"},
+            }
+        )
+
+        output1, output2 = await client.inquire_orderbook_snapshot("005930")
+
+        assert output1 == {"askp1": "70100", "askp_rsqn1": "111"}
+        assert output2 == {"antc_cnpr": "70200", "antc_cnqn": "1200"}
+
+    @pytest.mark.asyncio
+    async def test_inquire_orderbook_snapshot_normalizes_single_item_output2_list(self):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        client._request_with_rate_limit = AsyncMock(
+            return_value={
+                "rt_cd": "0",
+                "output1": {"askp1": "70100", "askp_rsqn1": "111"},
+                "output2": [{"antc_cnpr": "70200", "antc_cnqn": "1200"}],
+            }
+        )
+
+        _, output2 = await client.inquire_orderbook_snapshot("005930")
+
+        assert output2 == {"antc_cnpr": "70200", "antc_cnqn": "1200"}
+
+    @pytest.mark.asyncio
+    async def test_inquire_orderbook_snapshot_returns_none_when_output2_missing(self):
+        from app.services.brokers.kis.client import KISClient
+
+        client = KISClient()
+        client._ensure_token = AsyncMock(return_value=None)
+        client._request_with_rate_limit = AsyncMock(
+            return_value={
+                "rt_cd": "0",
+                "output1": {"askp1": "70100", "askp_rsqn1": "111"},
+            }
+        )
+
+        output1, output2 = await client.inquire_orderbook_snapshot("005930")
+
+        assert output1 == {"askp1": "70100", "askp_rsqn1": "111"}
+        assert output2 is None
+
 
 class TestKISRateLimitLookup:
     @pytest.mark.parametrize(
