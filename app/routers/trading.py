@@ -262,6 +262,14 @@ def _normalize_ohlcv_days(days: int) -> int:
     return min(days, DEFAULT_CANDLES)
 
 
+def _build_partial_sell_warning(
+    requested_quantity: int, kis_quantity: int
+) -> str | None:
+    if requested_quantity >= kis_quantity:
+        return None
+    return f"KIS 보유 수량({kis_quantity}주) 중 {requested_quantity}주만 매도합니다"
+
+
 @router.post("/api/buy", response_model=OrderSimulationResponse)
 async def buy_order(
     data: BuyOrderRequest,
@@ -447,11 +455,7 @@ async def sell_order(
     }
 
     # 7. 경고 메시지
-    warning_msg = None
-    if data.quantity < kis_quantity:
-        warning_msg = (
-            f"KIS 보유 수량({kis_quantity}주) 중 {data.quantity}주만 매도합니다"
-        )
+    warning_msg = _build_partial_sell_warning(data.quantity, kis_quantity)
 
     # 8. 시뮬레이션 또는 실제 주문
     if data.dry_run:
@@ -517,7 +521,11 @@ async def sell_order(
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.get("/api/v1/trading/ohlcv", response_model=OHLCVResponse)
+@router.get(
+    "/api/v1/trading/ohlcv",
+    response_model=OHLCVResponse,
+    responses={400: {"description": "Invalid market type or days"}},
+)
 async def get_ohlcv(
     ticker: str,
     days: int = 200,
