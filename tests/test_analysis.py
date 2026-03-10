@@ -3,6 +3,7 @@ Tests for analysis module.
 """
 
 import pandas as pd
+import pytest
 
 from app.analysis.indicators import add_indicators
 from app.analysis.prompt import format_decimal, format_quantity
@@ -101,6 +102,7 @@ class TestAnalysisWorkflow:
         pass
 
 
+@pytest.mark.unit
 class TestPromptFormatting:
     def test_format_decimal_preserves_existing_krw_precision_bands(self):
         assert format_decimal(1_500_000, "₩") == "1,500,000"

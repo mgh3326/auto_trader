@@ -202,6 +202,7 @@ class TestUnifiedWebSocketMonitor:
 
         never_called_upbit.assert_not_awaited()
 
+    @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_start_reraises_cancelled_error_after_cleanup(
         self, mock_settings: None

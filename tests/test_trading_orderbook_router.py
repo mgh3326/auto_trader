@@ -9,6 +9,8 @@ from fastapi.routing import APIRoute
 from app.models.manual_holdings import MarketType
 from app.routers import trading
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.mark.asyncio
 async def test_get_orderbook_uses_new_quantity_keys_first(monkeypatch):
