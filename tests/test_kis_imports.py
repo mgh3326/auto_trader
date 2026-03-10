@@ -4,6 +4,7 @@ This module verifies that all KIS components can be imported correctly
 and that the facade pattern is properly wired.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -223,3 +224,45 @@ class TestKISClientLifecycle:
                 mock_build.assert_called_once()
             finally:
                 await client_one.close()
+
+    def test_stale_shared_client_from_closed_loop_does_not_break_reopen(self):
+        from app.services.brokers.kis.client import KISClient
+
+        class LoopBoundOwner:
+            def __init__(self) -> None:
+                self.client = AsyncMock()
+                self.loop: asyncio.AbstractEventLoop | None = None
+
+            async def __aenter__(self):
+                self.loop = asyncio.get_running_loop()
+                return self.client
+
+            async def __aexit__(self, exc_type, exc, tb):
+                if self.loop is not None and self.loop.is_closed():
+                    raise RuntimeError("Event loop is closed")
+                return None
+
+        async def open_shared_client(owner: LoopBoundOwner) -> None:
+            with patch.object(KISClient, "_build_http_client", return_value=owner):
+                client = KISClient()
+                await client._ensure_client()
+
+        first_owner = LoopBoundOwner()
+        first_loop = asyncio.new_event_loop()
+        try:
+            first_loop.run_until_complete(open_shared_client(first_owner))
+        finally:
+            first_loop.close()
+
+        second_owner = LoopBoundOwner()
+        second_loop = asyncio.new_event_loop()
+        try:
+            with patch.object(
+                KISClient, "_build_http_client", return_value=second_owner
+            ):
+                client = KISClient()
+                http_client = second_loop.run_until_complete(client._ensure_client())
+                assert http_client is second_owner.client
+                second_loop.run_until_complete(client.close())
+        finally:
+            second_loop.close()
