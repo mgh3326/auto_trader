@@ -24,9 +24,6 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     is_korean_equity_code as _is_korean_equity_code,
 )
-from app.mcp_server.tooling.shared import (
-    is_us_equity_symbol as _is_us_equity_symbol,
-)
 from app.monitoring import build_yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
 
@@ -46,9 +43,12 @@ def _looks_like_correlation_company_name(symbol: str) -> bool:
         return False
     if _is_korean_equity_code(normalized_symbol):
         return False
-    if _is_us_equity_symbol(normalized_symbol):
-        return False
-    return any(ch.isalpha() for ch in normalized_symbol)
+
+    stripped_symbol = normalized_symbol.strip()
+    if any(ch.isspace() for ch in stripped_symbol):
+        return True
+
+    return any(ord(ch) > 127 and ch.isalpha() for ch in stripped_symbol)
 
 
 def _resolve_correlation_symbol_input(symbol: str | int) -> tuple[str, str]:
