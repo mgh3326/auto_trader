@@ -10,7 +10,7 @@
 
 ---
 
-### Task 1: Make Upbit websocket TLS verification secure-by-default
+## Task 1: Make Upbit websocket TLS verification secure-by-default
 
 **Files:**
 - Modify: `app/services/upbit_websocket.py`
@@ -80,7 +80,7 @@ git commit -m "fix: secure websocket TLS defaults"
 
 ---
 
-### Task 2: Bound KIS daily-candle lookbacks before they hit the paging loop
+## Task 2: Bound KIS daily-candle lookbacks before they hit the paging loop
 
 **Files:**
 - Modify: `app/services/brokers/kis/constants.py`
@@ -189,7 +189,7 @@ git commit -m "fix: bound KIS daily candle lookbacks"
 
 ---
 
-### Task 3: Triage and fix only the verified runtime bug candidates
+## Task 3: Triage and fix only the verified runtime bug candidates
 
 **Files:**
 - Modify: `websocket_monitor.py`
@@ -265,7 +265,7 @@ Only stage the optional admin/MCP/prompt files that actually changed after a fai
 
 ---
 
-### Task 4: Verify the full pass 1 slice and capture reviewed dispositions
+## Task 4: Verify the full pass 1 slice and capture reviewed dispositions
 
 **Files:**
 - Modify: `docs/plans/2026-03-10-sonar-pass1-security-correctness-implementation-plan.md`
