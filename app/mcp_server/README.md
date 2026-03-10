@@ -100,9 +100,9 @@ Response format:
 Derived fields:
 - `pressure` is derived from `bid_ask_ratio` using fixed inclusive boundaries:
   - `ratio > 2.0` -> `strong_buy`
-  - `1.3 < ratio <= 2.0` -> `buy`
-  - `0.7 <= ratio <= 1.3` -> `neutral`
-  - `0.5 <= ratio < 0.7` -> `sell`
+  - `ratio > 1.3` (i.e. 1.3 excluded) -> `buy`
+  - `ratio >= 0.7` (i.e. 0.7 included, up to 1.3 inclusive) -> `neutral`
+  - `ratio >= 0.5` (i.e. 0.5 included, below 0.7) -> `sell`
   - `ratio < 0.5` -> `strong_sell`
 - `pressure_desc` is a Korean interpretation string. `strong_buy`/`buy` use `total_bid_qty / total_ask_qty`, `strong_sell`/`sell` use `total_ask_qty / total_bid_qty`, and `neutral` is always `"매수/매도 잔량이 균형권 - 중립"`
 - If `bid_ask_ratio` is `null`, both `pressure` and `pressure_desc` are `null`
