@@ -6,8 +6,10 @@ Trading Router
 
 import logging
 from datetime import datetime
+from typing import Protocol
 
 from fastapi import APIRouter, Depends, HTTPException
+from pandas import DataFrame
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -28,6 +30,7 @@ from app.schemas.trading import (
     OrderbookResponse,
 )
 from app.services.brokers.kis.client import KISClient
+from app.services.brokers.kis.constants import DEFAULT_CANDLES
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
 from app.services.merged_portfolio_service import MergedPortfolioService
 from app.services.trading_price_service import TradingPriceService
@@ -208,19 +211,41 @@ EXCHANGE_MAP: dict[str, str] = {
 }
 
 
+class _PriceLookupClient(Protocol):
+    async def inquire_price(self, code: str, market: str = "UN") -> DataFrame: ...
+
+    async def inquire_overseas_daily_price(
+        self,
+        symbol: str,
+        exchange_code: str = "NASD",
+        n: int = 200,
+        period: str = "D",
+    ) -> DataFrame: ...
+
+
 async def _get_current_price(
-    kis_client: KISClient,
+    kis_client: _PriceLookupClient,
     ticker: str,
     market_type: MarketType,
+    db: AsyncSession,
 ) -> float:
     """현재가 조회"""
     try:
         if market_type == MarketType.KR:
-            price_info = await kis_client.get_price(ticker)
-            return float(price_info.get("stck_prpr", 0))
-        else:
-            price_info = await kis_client.get_overseas_price(ticker)
-            return float(price_info.get("last", 0))
+            price_frame = await kis_client.inquire_price(ticker)
+            if price_frame.empty:
+                return 0
+            return float(price_frame.iloc[-1].get("close", 0) or 0)
+
+        exchange_code = await _resolve_exchange_code(ticker, db)
+        price_frame = await kis_client.inquire_overseas_daily_price(
+            symbol=ticker,
+            exchange_code=exchange_code,
+            n=1,
+        )
+        if price_frame.empty:
+            return 0
+        return float(price_frame.iloc[-1].get("close", 0) or 0)
     except Exception as e:
         logger.warning(f"Failed to fetch current price: {e}")
         return 0
@@ -232,9 +257,17 @@ async def _resolve_exchange_code(ticker: str, db: AsyncSession) -> str:
 
     stock_service = StockInfoService(db)
     stock_info = await stock_service.get_stock_info_by_symbol(ticker)
-    if stock_info and stock_info.exchange:
+    if stock_info is not None and stock_info.exchange is not None:
         return str(stock_info.exchange)
     return EXCHANGE_MAP.get(ticker, "NASD")
+
+
+def _normalize_ohlcv_days(days: int) -> int:
+    if days < 1:
+        raise HTTPException(
+            status_code=400, detail="days must be greater than or equal to 1"
+        )
+    return min(days, DEFAULT_CANDLES)
 
 
 @router.post("/api/buy", response_model=OrderSimulationResponse)
@@ -263,7 +296,9 @@ async def buy_order(
     # 2. 현재가 조회
     current_price = kis_info.get("current_price", 0)
     if current_price <= 0:
-        current_price = await _get_current_price(kis_client, ticker, data.market_type)
+        current_price = await _get_current_price(
+            kis_client, ticker, data.market_type, db
+        )
     if current_price <= 0:
         raise HTTPException(status_code=400, detail=PRICE_FETCH_ERROR)
 
@@ -371,7 +406,7 @@ async def sell_order(
 
     # 1. KIS 보유 정보 조회
     kis_info = await get_kis_holding_for_ticker(kis_client, ticker, data.market_type)
-    kis_quantity = kis_info.get("quantity", 0)
+    kis_quantity = int(kis_info.get("quantity", 0) or 0)
 
     # 2. 매도 수량 검증
     is_valid, warning = price_service.validate_sell_quantity(
@@ -383,7 +418,9 @@ async def sell_order(
     # 3. 현재가 조회
     current_price = kis_info.get("current_price", 0)
     if current_price <= 0:
-        current_price = await _get_current_price(kis_client, ticker, data.market_type)
+        current_price = await _get_current_price(
+            kis_client, ticker, data.market_type, db
+        )
     if current_price <= 0:
         raise HTTPException(status_code=400, detail=PRICE_FETCH_ERROR)
 
@@ -510,9 +547,10 @@ async def get_ohlcv(
                 detail="현재 국내 주식(KR)만 지원합니다",
             )
 
+        normalized_days = _normalize_ohlcv_days(days)
         kis_client = KISClient()
         df = await kis_client.inquire_daily_itemchartprice(
-            code=ticker, market="UN", n=days, period="D"
+            code=ticker, market="UN", n=normalized_days, period="D"
         )
 
         ohlcv_data = [
