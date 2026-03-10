@@ -29,6 +29,7 @@ from app.schemas.trading import (
 )
 from app.services.brokers.kis.client import KISClient
 from app.services.kis_holdings_service import get_kis_holding_for_ticker
+from app.services.market_data import service as market_data_service
 from app.services.merged_portfolio_service import MergedPortfolioService
 from app.services.trading_price_service import TradingPriceService
 
@@ -556,30 +557,16 @@ async def get_orderbook(
                 detail="현재 국내 주식(KR)만 지원합니다",
             )
 
-        kis_client = KISClient()
-        orderbook_data = await kis_client.inquire_orderbook(code=ticker, market="UN")
+        snapshot = await market_data_service.get_orderbook(ticker, "kr")
 
-        ask_levels = []
-        bid_levels = []
-
-        for i in range(1, 11):
-            ask_price = orderbook_data.get(f"askp{i}")
-            ask_qty = orderbook_data.get(f"askp_rsqn{i}")
-            if ask_qty is None:
-                ask_qty = orderbook_data.get(f"askp{i}_rsqn")
-            if ask_price:
-                ask_levels.append(
-                    OrderbookLevel(price=float(ask_price), quantity=int(ask_qty or 0))
-                )
-
-            bid_price = orderbook_data.get(f"bidp{i}")
-            bid_qty = orderbook_data.get(f"bidp_rsqn{i}")
-            if bid_qty is None:
-                bid_qty = orderbook_data.get(f"bidp{i}_rsqn")
-            if bid_price:
-                bid_levels.append(
-                    OrderbookLevel(price=float(bid_price), quantity=int(bid_qty or 0))
-                )
+        ask_levels = [
+            OrderbookLevel(price=float(level.price), quantity=level.quantity)
+            for level in snapshot.asks
+        ]
+        bid_levels = [
+            OrderbookLevel(price=float(level.price), quantity=level.quantity)
+            for level in snapshot.bids
+        ]
 
         return OrderbookResponse(
             ticker=ticker.upper(),
