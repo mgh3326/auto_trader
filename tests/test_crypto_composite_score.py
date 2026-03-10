@@ -910,7 +910,7 @@ class TestCryptoEnrichmentGracefulDegradation:
             raise ImportError("force manual RSI fallback")
 
         async def mock_fetch_ohlcv_slow(symbol, market_type, count):
-            await asyncio.sleep(60)
+            await asyncio.sleep(0.05)
             return pd.DataFrame()
 
         async def mock_collect_portfolio_positions(*args, **kwargs):
@@ -936,6 +936,11 @@ class TestCryptoEnrichmentGracefulDegradation:
             analysis_screen_core,
             "_import_tvscreener",
             mock_import_tvscreener,
+        )
+        monkeypatch.setitem(
+            analysis_screen_core.DEFAULT_TIMEOUTS,
+            "crypto_enrichment",
+            0.01,
         )
 
         tools = build_tools()

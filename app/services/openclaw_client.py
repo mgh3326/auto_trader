@@ -20,6 +20,17 @@ from app.services.fill_notification import (
 
 logger = logging.getLogger(__name__)
 
+OPENCLAW_RETRY_STOP = stop_after_attempt(4)
+OPENCLAW_RETRY_WAIT = wait_exponential(multiplier=1, min=1, max=4)
+
+
+def _build_openclaw_retrying() -> AsyncRetrying:
+    return AsyncRetrying(
+        stop=OPENCLAW_RETRY_STOP,
+        wait=OPENCLAW_RETRY_WAIT,
+        reraise=False,
+    )
+
 
 class OpenClawClient:
     """Client for OpenClaw Gateway webhook (POST /hooks/agent)."""
@@ -167,11 +178,7 @@ class OpenClawClient:
 
         delivered_to_openclaw = False
         try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(4),
-                wait=wait_exponential(multiplier=1, min=1, max=4),
-                reraise=False,
-            ):
+            async for attempt in _build_openclaw_retrying():
                 attempt_number = attempt.retry_state.attempt_number
                 with attempt:
                     logger.info(
@@ -270,11 +277,7 @@ class OpenClawClient:
 
         delivered_to_openclaw = False
         try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(4),
-                wait=wait_exponential(multiplier=1, min=1, max=4),
-                reraise=False,
-            ):
+            async for attempt in _build_openclaw_retrying():
                 with attempt:
                     async with httpx.AsyncClient(timeout=10) as cli:
                         res = await cli.post(

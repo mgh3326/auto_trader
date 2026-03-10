@@ -72,6 +72,10 @@ DEFAULT_TIMEOUTS = {
 }
 
 
+def _timeout_seconds(name: str) -> float:
+    return float(DEFAULT_TIMEOUTS[name])
+
+
 class TimeoutBehavior:
     """Timeout handling behavior enum."""
 
@@ -932,7 +936,7 @@ async def _screen_kr(
                     ],
                     return_exceptions=True,
                 ),
-                timeout=30.0,
+                timeout=_timeout_seconds("rsi_enrichment"),
             )
             for i, result in enumerate(subset_results):
                 if isinstance(result, Exception):
@@ -962,11 +966,16 @@ async def _screen_kr(
                     statuses[i] = "error"
                     errors[i] = "RSI calculation returned None"
         except TimeoutError:
-            logger.warning("[RSI-KR] RSI enrichment timed out after 30 seconds")
+            logger.warning(
+                "[RSI-KR] RSI enrichment timed out after %.2f seconds",
+                _timeout_seconds("rsi_enrichment"),
+            )
             for i, status in enumerate(statuses):
                 if status == "pending":
                     statuses[i] = "timeout"
-                    errors[i] = "Timed out after 30 seconds"
+                    errors[i] = (
+                        f"Timed out after {_timeout_seconds('rsi_enrichment'):.2f} seconds"
+                    )
         except Exception as exc:
             logger.error(
                 "[RSI-KR] RSI enrichment batch failed: %s: %s",
@@ -1202,7 +1211,7 @@ async def _screen_us(
                         *[calculate_rsi_for_stock(item) for item in subset],
                         return_exceptions=True,
                     ),
-                    timeout=30.0,
+                    timeout=_timeout_seconds("rsi_enrichment"),
                 )
                 for i, enriched in enumerate(subset_with_rsi):
                     if isinstance(enriched, Exception):
@@ -1328,7 +1337,7 @@ async def _enrich_crypto_indicators(
             len(unique_tv_symbols),
         )
 
-        tvscreener_service = TvScreenerService(timeout=30.0)
+        tvscreener_service = TvScreenerService(timeout=_timeout_seconds("tvscreener"))
 
         try:
             tvscreener = _import_tvscreener()
@@ -1437,7 +1446,7 @@ async def _enrich_crypto_indicators(
             ]
             rsi_map_manual = await asyncio.wait_for(
                 compute_crypto_realtime_rsi_map(batch_symbols),
-                timeout=30.0,
+                timeout=_timeout_seconds("crypto_enrichment"),
             )
             # Convert manual RSI map (Upbit symbols) to match our data structure
             rsi_map = {}
@@ -1506,12 +1515,15 @@ async def _enrich_crypto_indicators(
                 errors[index] = f"CryptoScreener error: {exc}"
     except TimeoutError:
         logger.warning(
-            "[Indicators-Crypto] Indicator enrichment timed out after 30 seconds"
+            "[Indicators-Crypto] Indicator enrichment timed out after %.2f seconds",
+            _timeout_seconds("crypto_enrichment"),
         )
         for index, status in enumerate(statuses):
             if status == "pending":
                 statuses[index] = "timeout"
-                errors[index] = "Timed out after 30 seconds"
+                errors[index] = (
+                    f"Timed out after {_timeout_seconds('crypto_enrichment'):.2f} seconds"
+                )
     except Exception as exc:
         logger.error(
             "[Indicators-Crypto] Indicator enrichment batch failed: %s: %s",
@@ -1655,7 +1667,7 @@ async def _screen_kr_via_tvscreener(
             limit,
         )
 
-        tvscreener_service = TvScreenerService(timeout=30.0)
+        tvscreener_service = TvScreenerService(timeout=_timeout_seconds("tvscreener"))
         df = await tvscreener_service.query_stock_screener(
             columns=columns,
             where_clause=where_conditions,
@@ -1926,7 +1938,7 @@ async def _screen_us_via_tvscreener(
             limit,
         )
 
-        tvscreener_service = TvScreenerService(timeout=30.0)
+        tvscreener_service = TvScreenerService(timeout=_timeout_seconds("tvscreener"))
         df = await tvscreener_service.query_stock_screener(
             columns=columns,
             where_clause=where_conditions,
@@ -2365,7 +2377,7 @@ async def _screen_crypto_via_tvscreener(
     sort_field = sort_field_map.get(sort_by, value_traded_field)
     query_limit = max(limit * 5, 50)
 
-    tvscreener_service = TvScreenerService(timeout=30.0)
+    tvscreener_service = TvScreenerService(timeout=_timeout_seconds("tvscreener"))
     df = await tvscreener_service.query_crypto_screener(
         columns=columns,
         where_clause=where_conditions,
@@ -2561,7 +2573,7 @@ async def _screen_crypto_via_tvscreener(
         try:
             df = await asyncio.wait_for(
                 _fetch_ohlcv_for_indicators(symbol, "crypto", count=50),
-                timeout=30.0,
+                timeout=_timeout_seconds("crypto_enrichment"),
             )
             metrics = calculate_crypto_metrics_from_ohlcv(df)
         except TimeoutError:
