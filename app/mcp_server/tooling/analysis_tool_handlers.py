@@ -43,12 +43,12 @@ def _looks_like_correlation_company_name(symbol: str) -> bool:
         return False
     if _is_korean_equity_code(normalized_symbol):
         return False
-
     stripped_symbol = normalized_symbol.strip()
     if any(ch.isspace() for ch in stripped_symbol):
         return True
-
-    return any(ord(ch) > 127 and ch.isalpha() for ch in stripped_symbol)
+    if not stripped_symbol.isascii():
+        return True
+    return False
 
 
 def _resolve_correlation_symbol_input(symbol: str | int) -> tuple[str, str]:
