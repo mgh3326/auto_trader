@@ -15,6 +15,7 @@ import pandas as pd
 
 import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
+import app.services.market_data as market_data_service
 from app.core.config import settings
 from app.mcp_server.tooling.market_data_indicators import (
     IndicatorType,
@@ -172,6 +173,29 @@ def _build_ohlcv_payload(
     if message is not None:
         payload["message"] = message
     return payload
+
+
+def _build_orderbook_payload(
+    snapshot: market_data_service.OrderbookSnapshot,
+) -> dict[str, Any]:
+    return {
+        "symbol": snapshot.symbol,
+        "instrument_type": snapshot.instrument_type,
+        "source": snapshot.source,
+        "asks": [
+            {"price": level.price, "quantity": level.quantity}
+            for level in snapshot.asks
+        ],
+        "bids": [
+            {"price": level.price, "quantity": level.quantity}
+            for level in snapshot.bids
+        ],
+        "total_ask_qty": snapshot.total_ask_qty,
+        "total_bid_qty": snapshot.total_bid_qty,
+        "bid_ask_ratio": snapshot.bid_ask_ratio,
+        "expected_price": snapshot.expected_price,
+        "expected_qty": snapshot.expected_qty,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +586,7 @@ async def _fetch_ohlcv_equity_us(
 MARKET_DATA_TOOL_NAMES: set[str] = {
     "search_symbol",
     "get_quote",
+    "get_orderbook",
     "get_ohlcv",
     "get_indicators",
 }
@@ -618,6 +643,38 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                 exc=exc,
                 symbol=symbol,
                 instrument_type=market_type,
+            )
+
+    @mcp.tool(
+        name="get_orderbook",
+        description=(
+            "Get 10-level KR equity orderbook with total residual quantities and expected match metadata. "
+            "Only KR market is supported."
+        ),
+    )
+    async def get_orderbook(symbol: str | int, market: str = "kr") -> dict[str, Any]:
+        symbol = _normalize_symbol_input(symbol, "kr")
+        if not symbol:
+            raise ValueError("symbol is required")
+
+        requested_market = str(market or "kr").strip() or "kr"
+        market_type = _normalize_market(requested_market)
+        if market_type is None:
+            raise ValueError(f"Unsupported market: {market}")
+        if market_type != "equity_kr":
+            raise ValueError("get_orderbook only supports KR market")
+
+        _, symbol = _resolve_market_type(symbol, "kr")
+
+        try:
+            snapshot = await market_data_service.get_orderbook(symbol, "kr")
+            return _build_orderbook_payload(snapshot)
+        except Exception as exc:
+            return _error_payload_from_exception(
+                source="kis",
+                exc=exc,
+                symbol=symbol,
+                instrument_type="equity_kr",
             )
 
     @mcp.tool(
@@ -817,6 +874,7 @@ __all__ = [
     "_fetch_ohlcv_crypto",
     "_fetch_ohlcv_equity_kr",
     "_fetch_ohlcv_equity_us",
+    "_build_orderbook_payload",
     "MARKET_DATA_TOOL_NAMES",
     "_register_market_data_tools_impl",
 ]
