@@ -20,6 +20,7 @@ from app.services.domain_errors import (
 from app.services.kr_hourly_candles_read_service import read_kr_intraday_candles
 from app.services.market_data.constants import (
     KR_INTRADAY_OHLCV_PERIODS,
+    US_INTRADAY_OHLCV_PERIODS,
     validate_ohlcv_period,
 )
 from app.services.market_data.contracts import (
@@ -28,6 +29,8 @@ from app.services.market_data.contracts import (
     OrderbookSnapshot,
     Quote,
 )
+from app.services.us_intraday_candles_read_service import read_us_intraday_candles
+from app.services.us_symbol_universe_service import USSymbolUniverseLookupError
 
 
 def _normalize_market(market: str) -> str:
@@ -113,6 +116,7 @@ def _map_error(exc: Exception) -> Exception:
             SymbolNotFoundError,
             RateLimitError,
             UpstreamUnavailableError,
+            USSymbolUniverseLookupError,
         ),
     ):
         return exc
@@ -320,6 +324,21 @@ async def get_ohlcv(
             )
 
         if resolved_market == "equity_us":
+            if resolved_period in US_INTRADAY_OHLCV_PERIODS:
+                frame = await read_us_intraday_candles(
+                    symbol=resolved_symbol,
+                    period=resolved_period,
+                    count=min(count, 200),
+                    end_date=end,
+                )
+                return _to_candle_rows(
+                    frame,
+                    symbol=resolved_symbol,
+                    market=resolved_market,
+                    source="kis",
+                    period=resolved_period,
+                )
+            # day/week/month use Yahoo Finance
             frame = await fetch_yahoo_ohlcv(
                 ticker=resolved_symbol,
                 days=min(count, 200),

@@ -9,6 +9,11 @@ import pytest
 from app.services.domain_errors import UpstreamUnavailableError, ValidationError
 from app.services.market_data import service as market_data_service
 from app.services.market_data.contracts import Candle, OrderbookLevel, OrderbookSnapshot
+from app.services.us_symbol_universe_service import (
+    USSymbolInactiveError,
+    USSymbolNotRegisteredError,
+    USSymbolUniverseEmptyError,
+)
 
 
 @pytest.mark.asyncio
@@ -91,17 +96,122 @@ async def test_get_ohlcv_rejects_invalid_period_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_ohlcv_non_kr_minute_period_rejected_for_us() -> None:
-    with pytest.raises(
-        ValidationError,
-        match="period '5m' is not supported for us equity",
-    ):
+@pytest.mark.parametrize("period", ["1m", "5m", "15m", "30m", "1h"])
+async def test_get_ohlcv_us_intraday_uses_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    period: str,
+) -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-02-23 10:30:00"),
+                "date": dt.date(2026, 2, 23),
+                "time": dt.time(10, 30, 0),
+                "open": 150.0,
+                "high": 151.0,
+                "low": 149.5,
+                "close": 150.5,
+                "volume": 5000.0,
+                "value": 752500.0,
+                "session": "REGULAR",
+            }
+        ]
+    )
+    read_mock = AsyncMock(return_value=frame)
+    monkeypatch.setattr(market_data_service, "read_us_intraday_candles", read_mock)
+
+    candles = await market_data_service.get_ohlcv(
+        symbol="AAPL",
+        market="us",
+        period=period,
+        count=3,
+    )
+
+    read_mock.assert_awaited_once_with(
+        symbol="AAPL",
+        period=period,
+        count=3,
+        end_date=None,
+    )
+    assert len(candles) == 1
+    assert candles[0].symbol == "AAPL"
+    assert candles[0].source == "kis"
+    assert candles[0].period == period
+    assert isinstance(candles[0], Candle)
+    assert candles[0].timestamp == dt.datetime(2026, 2, 23, 10, 30, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc_type", "message"),
+    [
+        (
+            USSymbolUniverseEmptyError,
+            "us_symbol_universe is empty. Sync required: uv run python scripts/sync_us_symbol_universe.py",
+        ),
+        (
+            USSymbolNotRegisteredError,
+            "US symbol 'AAPL' is not registered in us_symbol_universe. Sync required: uv run python scripts/sync_us_symbol_universe.py",
+        ),
+        (
+            USSymbolInactiveError,
+            "US symbol 'AAPL' is inactive in us_symbol_universe. Sync required: uv run python scripts/sync_us_symbol_universe.py",
+        ),
+    ],
+)
+async def test_get_ohlcv_us_intraday_propagates_universe_lookup_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    exc_type: type[Exception],
+    message: str,
+) -> None:
+    read_mock = AsyncMock(side_effect=exc_type(message))
+    monkeypatch.setattr(market_data_service, "read_us_intraday_candles", read_mock)
+
+    with pytest.raises(exc_type, match=message):
         await market_data_service.get_ohlcv(
             symbol="AAPL",
             market="us",
             period="5m",
-            count=10,
+            count=3,
         )
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_day_uses_yahoo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "date": dt.date(2026, 2, 23),
+                "open": 150.0,
+                "high": 151.0,
+                "low": 149.5,
+                "close": 150.5,
+                "volume": 5000.0,
+                "value": 752500.0,
+            }
+        ]
+    )
+    fetch_mock = AsyncMock(return_value=frame)
+    monkeypatch.setattr(market_data_service, "fetch_yahoo_ohlcv", fetch_mock)
+
+    candles = await market_data_service.get_ohlcv(
+        symbol="AAPL",
+        market="us",
+        period="day",
+        count=3,
+    )
+
+    fetch_mock.assert_awaited_once_with(
+        ticker="AAPL",
+        days=3,
+        period="day",
+        end_date=None,
+    )
+    assert len(candles) == 1
+    assert candles[0].source == "yahoo"
+    assert candles[0].period == "day"
 
 
 @pytest.mark.asyncio

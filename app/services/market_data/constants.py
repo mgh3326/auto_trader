@@ -40,7 +40,8 @@ CRYPTO_MINUTE_REQUIRED_SOURCE_COLUMNS = (
 ALL_OHLCV_MARKETS = frozenset({"equity_kr", "equity_us", "crypto"})
 KR_OHLCV_PERIODS = frozenset({"day", "week", "month", "1m", "5m", "15m", "30m", "1h"})
 KR_INTRADAY_OHLCV_PERIODS = frozenset({"1m", "5m", "15m", "30m", "1h"})
-US_OHLCV_PERIODS = frozenset({"day", "week", "month", "1h"})
+US_INTRADAY_OHLCV_PERIODS = frozenset({"1m", "5m", "15m", "30m", "1h"})
+US_OHLCV_PERIODS = frozenset({"day", "week", "month", "1m", "5m", "15m", "30m", "1h"})
 CRYPTO_OHLCV_PERIODS = frozenset(
     {"day", "week", "month", "1m", "5m", "15m", "30m", "1h", "4h"}
 )
@@ -49,10 +50,10 @@ OHLCV_PERIOD_MARKETS = {
     "day": ALL_OHLCV_MARKETS,
     "week": ALL_OHLCV_MARKETS,
     "month": ALL_OHLCV_MARKETS,
-    "1m": frozenset({"equity_kr", "crypto"}),
-    "5m": frozenset({"equity_kr", "crypto"}),
-    "15m": frozenset({"equity_kr", "crypto"}),
-    "30m": frozenset({"equity_kr", "crypto"}),
+    "1m": frozenset({"equity_kr", "equity_us", "crypto"}),
+    "5m": frozenset({"equity_kr", "equity_us", "crypto"}),
+    "15m": frozenset({"equity_kr", "equity_us", "crypto"}),
+    "30m": frozenset({"equity_kr", "equity_us", "crypto"}),
     "4h": frozenset({"crypto"}),
     "1h": ALL_OHLCV_MARKETS,
 }
@@ -96,6 +97,7 @@ __all__ = [
     "CRYPTO_ONLY_OHLCV_PERIODS",
     "KR_OHLCV_PERIODS",
     "KR_INTRADAY_OHLCV_PERIODS",
+    "US_INTRADAY_OHLCV_PERIODS",
     "OHLCV_ALLOWED_PERIODS",
     "OHLCV_PERIOD_ERROR",
     "OHLCV_PERIOD_MARKETS",

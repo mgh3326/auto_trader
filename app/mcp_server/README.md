@@ -29,12 +29,16 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
   - `include_indicators=True` adds `indicators_included` at the payload top level and appends `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, `vwap` to each row
   - `vwap` is populated for intraday periods and `null` for `day/week/month`
-  - `1m` / `5m` / `15m` / `30m`: KR equity + crypto
+  - `1m` / `5m` / `15m` / `30m`: KR/US equity + crypto
   - `4h`: crypto only
   - `1h`: KR/US equity + crypto
   - Crypto `1m` / `5m` / `15m` / `30m` rows expose `timestamp`, `date`, `time`, `open`, `high`, `low`, `close`, `volume`, `value`, `trade_amount` and do not expose raw `datetime`
+- US OHLCV behavior:
+  - US `day`/`week`/`month` uses Yahoo Finance (`app.services.brokers.yahoo.client.fetch_ohlcv`)
+  - US intraday (`1m`/`5m`/`15m`/`30m`/`1h`) uses KIS via DB-first reader (`read_us_intraday_candles`) with ET-naive timestamps
+  - US intraday rows include `session` field (`PRE_MARKET`, `REGULAR`, `POST_MARKET`)
+  - US intraday `end_date="YYYY-MM-DD"` is interpreted as ET `20:00:00` for that market date; timestamp inputs use the exact provided instant
 - KR OHLCV behavior:
-- US OHLCV remains Yahoo-based (`app.services.brokers.yahoo.client.fetch_ohlcv`)
   - KR `day` keeps the existing Redis-backed `kis_ohlcv_cache` path when `end_date` is omitted
   - KR `1m` reads DB-first from raw `public.kr_candles_1m` with venue merge (`KRX` price priority, `volume/value` sum)
   - KR `5m/15m/30m/1h` read DB-first from Timescale continuous aggregates (`public.kr_candles_5m`, `public.kr_candles_15m`, `public.kr_candles_30m`, `public.kr_candles_1h`)

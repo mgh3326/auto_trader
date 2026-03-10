@@ -53,9 +53,11 @@ from app.services.market_data.constants import (
     CRYPTO_MINUTE_PUBLIC_ROW_KEYS,
     CRYPTO_MINUTE_REQUIRED_SOURCE_COLUMNS,
     KR_INTRADAY_OHLCV_PERIODS,
+    US_INTRADAY_OHLCV_PERIODS,
     validate_ohlcv_period,
 )
 from app.services.upbit_symbol_universe_service import search_upbit_symbols
+from app.services.us_intraday_candles_read_service import read_us_intraday_candles
 from app.services.us_symbol_universe_service import search_us_symbols
 
 if TYPE_CHECKING:
@@ -563,8 +565,30 @@ async def _fetch_ohlcv_equity_us(
     end_date: datetime.datetime | None,
     *,
     include_indicators: bool = False,
+    end_date_is_date_only: bool = False,
 ) -> dict[str, Any]:
-    """Fetch US equity OHLCV from Yahoo Finance."""
+    """Fetch US equity OHLCV - intraday from KIS, daily from Yahoo Finance."""
+    # Intraday periods use KIS via DB-first reader
+    if period in US_INTRADAY_OHLCV_PERIODS:
+        capped_count = min(count, 100)
+        df = await read_us_intraday_candles(
+            symbol=symbol,
+            period=period,
+            count=capped_count,
+            end_date=end_date,
+            end_date_is_date_only=end_date_is_date_only,
+        )
+        return _build_ohlcv_payload(
+            symbol=symbol,
+            instrument_type="equity_us",
+            source="kis",
+            period=period,
+            count=capped_count,
+            df=df,
+            include_indicators=include_indicators,
+        )
+
+    # day/week/month use Yahoo Finance
     capped_count = min(count, 100)
     df = await yahoo_service.fetch_ohlcv(
         ticker=symbol, days=capped_count, period=period, end_date=end_date
@@ -681,7 +705,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         name="get_ohlcv",
         description=(
             "Get OHLCV candles for a symbol. Supports daily/weekly/monthly periods "
-            "plus 1m/5m/15m/30m for KR equity and crypto, 4h for crypto, 1h for KR/US equity/crypto, and date-based pagination."
+            "plus 1m/5m/15m/30m for KR/US equity and crypto, 4h for crypto, 1h for KR/US equity/crypto, and date-based pagination."
         ),
     )
     async def get_ohlcv(
@@ -701,21 +725,37 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
 
         period = (period or "day").strip().lower()
 
+        market_type, symbol = _resolve_market_type(symbol, market)
+        period = validate_ohlcv_period(period, market_type)
+
         parsed_end_date: datetime.datetime | None = None
+        end_date_is_date_only = False
         if end_date:
             try:
-                parsed_end_date = datetime.datetime.fromisoformat(end_date)
+                is_date_only = len(end_date) == 10  # "YYYY-MM-DD"
+                if (
+                    market_type == "equity_us"
+                    and period in US_INTRADAY_OHLCV_PERIODS
+                    and is_date_only
+                ):
+                    end_date_is_date_only = True
+                    parsed_end_date = datetime.datetime.combine(
+                        datetime.date.fromisoformat(end_date),
+                        datetime.time(20, 0),  # 20:00 ET = post-market close
+                    )
+                else:
+                    parsed_end_date = datetime.datetime.fromisoformat(end_date)
             except ValueError as exc:
                 raise ValueError(
                     "end_date must be ISO format (e.g., '2024-01-15')"
                 ) from exc
 
-        market_type, symbol = _resolve_market_type(symbol, market)
-        period = validate_ohlcv_period(period, market_type)
-
-        source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
-        source = source_map[market_type]
-
+        # Period-aware source mapping
+        if market_type == "equity_us" and period in US_INTRADAY_OHLCV_PERIODS:
+            source = "kis"
+        else:
+            source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
+            source = source_map[market_type]
         try:
             if market_type == "crypto":
                 return await _fetch_ohlcv_crypto(
@@ -739,6 +779,7 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
                 period,
                 parsed_end_date,
                 include_indicators=include_indicators,
+                end_date_is_date_only=end_date_is_date_only,
             )
         except Exception as exc:
             if str(exc).startswith("Crypto minute OHLCV response missing columns:"):
