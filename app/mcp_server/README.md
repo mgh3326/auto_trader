@@ -137,6 +137,18 @@ Examples:
 - Allowed: `symbol="KRW-ETC"` (market omitted)
 - Rejected: `symbol="ETC"` (market omitted)
 
+### `get_correlation` spec
+Parameters:
+- `symbols`: List of asset ticker/code inputs (required, 2-10 entries)
+- `period`: Lookback window in days (default: 60, minimum effective value: 30, maximum: 365)
+
+Symbol contract:
+- `get_correlation` has no `market` parameter and therefore accepts ticker/code inputs only.
+- Mixed-market ticker/code inputs continue to work, including KR codes such as `005930`, US tickers such as `AAPL`, and crypto symbols such as `KRW-BTC`.
+- Company-name inputs such as `삼성전자` or `Apple Inc.` are rejected with:
+  - `"get_correlation does not support company-name inputs because it has no market parameter. Use ticker/code inputs directly."`
+- When at least 2 ticker/code inputs resolve and fetch successfully, the tool still returns a correlation matrix and includes failed symbols in `errors`.
+
 ### `manage_watch_alerts` spec
 Parameters:
 - `action`: Required action - `"add"`, `"remove"`, `"list"`
