@@ -1202,7 +1202,6 @@ async def test_place_order_kr_limit_applies_tick_adjustment_and_metadata(
 
 @pytest.mark.asyncio
 async def test_place_order_kr_equity_calls_integrated_margin(monkeypatch):
-    """국내주식 주문은 통합증거금(inquire_integrated_margin)을 사용해 주문가능 현금을 조회한다."""
     tools = build_tools()
 
     integrated_margin_called = False
@@ -1215,7 +1214,14 @@ async def test_place_order_kr_equity_calls_integrated_margin(monkeypatch):
             return {
                 "dnca_tot_amt": "50000000.0",
                 "stck_cash_objt_amt": "50000000.0",
-                "stck_itgr_cash100_ord_psbl_amt": "50000000.0",
+                "stck_itgr_cash100_ord_psbl_amt": "0.0",
+                "stck_cash100_max_ord_psbl_amt": "50000000.0",
+                "raw": {
+                    "dnca_tot_amt": "50000000.0",
+                    "stck_cash_objt_amt": "50000000.0",
+                    "stck_itgr_cash100_ord_psbl_amt": "0.0",
+                    "stck_cash100_max_ord_psbl_amt": "50000000.0",
+                },
             }
 
         async def inquire_domestic_cash_balance(self):
@@ -1244,6 +1250,51 @@ async def test_place_order_kr_equity_calls_integrated_margin(monkeypatch):
     assert result["dry_run"] is True
     assert integrated_margin_called is True
     assert domestic_called is False
+    assert "warning" not in result
+
+
+@pytest.mark.asyncio
+async def test_place_order_kr_equity_balance_precheck_skips_zero_priority_orderables(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "5000000.0",
+                "stck_cash_objt_amt": "5000000.0",
+                "stck_cash100_max_ord_psbl_amt": "0",
+                "stck_itgr_cash100_ord_psbl_amt": "0",
+                "stck_cash_ord_psbl_amt": "2100000.25",
+                "raw": {
+                    "dnca_tot_amt": "5000000.0",
+                    "stck_cash_objt_amt": "5000000.0",
+                    "stck_cash100_max_ord_psbl_amt": "0",
+                    "stck_itgr_cash100_ord_psbl_amt": "0",
+                    "stck_cash_ord_psbl_amt": "2100000.25",
+                },
+            }
+
+    async def fetch_quote(symbol):
+        return {"price": 70000.0}
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", fetch_quote)
+
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=10,
+        price=70000.0,
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["estimated_value"] == 700000.0
+    assert "warning" not in result
 
 
 @pytest.mark.asyncio

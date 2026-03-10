@@ -228,6 +228,99 @@ async def test_get_cash_balance_kis_fail_close_when_domestic_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_cash_balance_kis_domestic_prefers_stck_cash100_max_orderable(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "5000000.0",
+                "stck_cash_objt_amt": "5000000.0",
+                "stck_itgr_cash100_ord_psbl_amt": "0",
+                "stck_cash100_max_ord_psbl_amt": "3534890.5473",
+                "raw": {
+                    "dnca_tot_amt": "5000000.0",
+                    "stck_cash_objt_amt": "5000000.0",
+                    "stck_itgr_cash100_ord_psbl_amt": "0",
+                    "stck_cash100_max_ord_psbl_amt": "3534890.5473",
+                },
+            }
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "500.0",
+                    "frcr_gnrl_ord_psbl_amt": "450.0",
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    kis_only = await tools["get_cash_balance"](account="kis")
+    kis_domestic_only = await tools["get_cash_balance"](account="kis_domestic")
+
+    kis_domestic_account = next(
+        acc for acc in kis_only["accounts"] if acc["account"] == "kis_domestic"
+    )
+
+    assert kis_domestic_account["orderable"] == 3534890.5473
+    assert kis_domestic_only["accounts"][0]["orderable"] == 3534890.5473
+    assert "stck_cash100_max_ord_psbl_amt" not in kis_domestic_account
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_domestic_skips_zero_priority_orderables(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "5000000.0",
+                "stck_cash_objt_amt": "5000000.0",
+                "stck_cash100_max_ord_psbl_amt": "0",
+                "stck_itgr_cash100_ord_psbl_amt": "0",
+                "stck_cash_ord_psbl_amt": "2100000.25",
+                "raw": {
+                    "dnca_tot_amt": "5000000.0",
+                    "stck_cash_objt_amt": "5000000.0",
+                    "stck_cash100_max_ord_psbl_amt": "0",
+                    "stck_itgr_cash100_ord_psbl_amt": "0",
+                    "stck_cash_ord_psbl_amt": "2100000.25",
+                },
+            }
+
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt_2": "500.0",
+                    "frcr_gnrl_ord_psbl_amt": "450.0",
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    kis_only = await tools["get_cash_balance"](account="kis")
+    kis_domestic_only = await tools["get_cash_balance"](account="kis_domestic")
+
+    kis_domestic_account = next(
+        acc for acc in kis_only["accounts"] if acc["account"] == "kis_domestic"
+    )
+
+    assert kis_domestic_account["balance"] == 5000000.0
+    assert kis_domestic_account["orderable"] == 2100000.25
+    assert kis_domestic_only["accounts"][0]["balance"] == 5000000.0
+    assert kis_domestic_only["accounts"][0]["orderable"] == 2100000.25
+
+
+@pytest.mark.asyncio
 async def test_get_cash_balance_non_strict_skips_domestic_on_integrated_margin_error(
     monkeypatch,
 ):

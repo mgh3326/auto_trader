@@ -345,6 +345,43 @@ class TestKISIntegratedMarginParams:
     @pytest.mark.asyncio
     @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
+    async def test_inquire_integrated_margin_parses_stck_cash100_max_ord_psbl_amt(
+        self, mock_settings, mock_client_class
+    ):
+        from app.services.brokers.kis.client import KISClient
+
+        mock_settings.kis_account_no = "1234567890"
+        mock_settings.kis_app_key = "test_key"
+        mock_settings.kis_app_secret = "test_secret"
+        mock_settings.kis_access_token = "test_token"
+
+        mock_client = AsyncMock()
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "rt_cd": "0",
+            "output1": {
+                "dnca_tot_amt": "5000000",
+                "stck_cash_objt_amt": "5000000",
+                "stck_itgr_cash100_ord_psbl_amt": "0",
+                "stck_cash100_max_ord_psbl_amt": "3534890.5473",
+            },
+        }
+        mock_client.get.return_value = mock_response
+
+        client = KISClient()
+        client._token_manager = AsyncMock()
+        client._token_manager.get_token = AsyncMock(return_value="test_token")
+
+        result = await client.inquire_integrated_margin()
+
+        assert result["stck_cash100_max_ord_psbl_amt"] == 3534890.5473
+
+    @pytest.mark.asyncio
+    @patch("app.services.brokers.kis.base.httpx.AsyncClient")
+    @patch("app.services.brokers.kis.client.settings")
     async def test_inquire_integrated_margin_opsq2001_retry_with_y(
         self, mock_settings, mock_client_class
     ):
@@ -453,3 +490,106 @@ class TestKISIntegratedMarginParams:
         assert summary["balance"] == 777000.0
         assert summary["orderable"] == 555000.0
         assert summary["raw"]["stck_cash_objt_amt"] == "777000"
+
+    def test_extract_domestic_cash_summary_prefers_stck_cash100_max_orderable(self):
+        from app.services.brokers.kis.client import (
+            extract_domestic_cash_summary_from_integrated_margin,
+        )
+
+        summary = extract_domestic_cash_summary_from_integrated_margin(
+            {
+                "stck_cash_objt_amt": "5000000",
+                "stck_itgr_cash100_ord_psbl_amt": "0",
+                "stck_cash100_max_ord_psbl_amt": "3534890.5473",
+                "raw": {
+                    "stck_cash_objt_amt": "5000000",
+                    "stck_itgr_cash100_ord_psbl_amt": "0",
+                    "stck_cash100_max_ord_psbl_amt": "3534890.5473",
+                },
+            }
+        )
+
+        assert summary["balance"] == 5000000.0
+        assert summary["orderable"] == 3534890.5473
+
+    def test_extract_domestic_cash_summary_falls_back_to_stck_cash_ord_psbl_amt(self):
+        from app.services.brokers.kis.client import (
+            extract_domestic_cash_summary_from_integrated_margin,
+        )
+
+        summary = extract_domestic_cash_summary_from_integrated_margin(
+            {
+                "stck_cash_objt_amt": "5000000",
+                "stck_cash_ord_psbl_amt": "2100000.25",
+                "raw": {
+                    "stck_cash_objt_amt": "5000000",
+                    "stck_cash_ord_psbl_amt": "2100000.25",
+                },
+            }
+        )
+
+        assert summary["orderable"] == 2100000.25
+
+    def test_extract_domestic_cash_summary_skips_zero_priority_orderables_for_lower_positive(
+        self,
+    ):
+        from app.services.brokers.kis.client import (
+            extract_domestic_cash_summary_from_integrated_margin,
+        )
+
+        summary = extract_domestic_cash_summary_from_integrated_margin(
+            {
+                "stck_cash_objt_amt": "5000000",
+                "stck_cash100_max_ord_psbl_amt": "0",
+                "stck_itgr_cash100_ord_psbl_amt": "0",
+                "stck_cash_ord_psbl_amt": "2100000.25",
+                "raw": {
+                    "stck_cash_objt_amt": "5000000",
+                    "stck_cash100_max_ord_psbl_amt": "0",
+                    "stck_itgr_cash100_ord_psbl_amt": "0",
+                    "stck_cash_ord_psbl_amt": "2100000.25",
+                },
+            }
+        )
+
+        assert summary["balance"] == 5000000.0
+        assert summary["orderable"] == 2100000.25
+
+    def test_extract_domestic_cash_summary_returns_zero_when_all_orderables_zero(self):
+        from app.services.brokers.kis.client import (
+            extract_domestic_cash_summary_from_integrated_margin,
+        )
+
+        summary = extract_domestic_cash_summary_from_integrated_margin(
+            {
+                "stck_cash_objt_amt": "0",
+                "stck_cash100_max_ord_psbl_amt": "0",
+                "stck_itgr_cash100_ord_psbl_amt": "0",
+                "stck_cash_ord_psbl_amt": "0",
+                "raw": {
+                    "stck_cash_objt_amt": "0",
+                    "stck_cash100_max_ord_psbl_amt": "0",
+                    "stck_itgr_cash100_ord_psbl_amt": "0",
+                    "stck_cash_ord_psbl_amt": "0",
+                },
+            }
+        )
+
+        assert summary["balance"] == 0.0
+        assert summary["orderable"] == 0.0
+
+    def test_extract_domestic_cash_summary_falls_back_to_stck_cash_objt_amt(self):
+        from app.services.brokers.kis.client import (
+            extract_domestic_cash_summary_from_integrated_margin,
+        )
+
+        summary = extract_domestic_cash_summary_from_integrated_margin(
+            {
+                "stck_cash_objt_amt": "5000000",
+                "raw": {
+                    "stck_cash_objt_amt": "5000000",
+                },
+            }
+        )
+
+        assert summary["orderable"] == 5000000.0
