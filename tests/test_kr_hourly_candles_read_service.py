@@ -1229,6 +1229,35 @@ async def test_hour_aggregation_from_minutes():
     assert row["datetime"] == pd.Timestamp("2026-02-23 09:00:00")
 
 
+def test_normalize_intraday_rows_returns_naive_kst_minute_times():
+    from app.services import kr_hourly_candles_read_service as svc
+
+    frame = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:05:00+09:00"),
+                "open": 101.0,
+                "high": 102.0,
+                "low": 100.5,
+                "close": 101.5,
+                "volume": 10.0,
+                "value": 1000.0,
+            }
+        ]
+    )
+
+    rows = svc._normalize_intraday_rows(
+        frame=frame,
+        symbol="005930",
+        venue_config=svc._VENUE_CONFIGS["NTX"],
+        target_day=datetime.date(2026, 3, 10),
+    )
+
+    assert len(rows) == 1
+    assert rows[0].minute_time == datetime.datetime(2026, 3, 10, 8, 5, 0)
+    assert rows[0].minute_time.tzinfo is None
+
+
 @pytest.mark.asyncio
 async def test_background_task_non_blocking(monkeypatch):
     """Test that background storage task is non-blocking.
@@ -2145,6 +2174,453 @@ async def test_read_kr_intraday_candles_5m_fallback_schedules_background_storage
     assert background_storage_calls[0]["symbol"] == symbol
     assert len(stored_rows) == 2
     assert {row.get("venue") for row in stored_rows} == {"KRX"}
+
+
+@pytest.mark.asyncio
+async def test_read_kr_intraday_candles_1m_mixed_history_and_aware_fallback_keeps_naive_kst(
+    monkeypatch,
+):
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    now_kst = _dt_kst(2026, 3, 10, 8, 18, 0)
+    db_minute_rows = [
+        _make_minute_row(
+            time_kst=_dt_kst(2026, 3, 9, 15, 59, 0),
+            venue="KRX",
+            open=100.0,
+            high=101.0,
+            low=99.0,
+            close=100.5,
+            volume=10.0,
+            value=1000.0,
+        )
+    ]
+
+    monkeypatch.setattr(
+        svc,
+        "AsyncSessionLocal",
+        lambda: _make_intraday_db_manager(
+            symbol=symbol,
+            nxt_eligible=True,
+            minute_rows=db_minute_rows,
+        ),
+    )
+    fallback_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:00:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, 0, 0),
+                "open": 101.0,
+                "high": 102.0,
+                "low": 100.5,
+                "close": 101.5,
+                "volume": 20.0,
+                "value": 2000.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:01:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, 1, 0),
+                "open": 101.5,
+                "high": 103.0,
+                "low": 101.0,
+                "close": 102.5,
+                "volume": 30.0,
+                "value": 3000.0,
+            },
+        ]
+    )
+
+    async def mock_inquire(*, market, end_time, **_):
+        if market == "NX" and end_time == "200000":
+            return fallback_df
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        svc,
+        "KISClient",
+        lambda: SimpleNamespace(
+            inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire)
+        ),
+    )
+    monkeypatch.setattr(svc, "_store_minute_candles_background", AsyncMock())
+
+    out = await svc.read_kr_intraday_candles(
+        symbol=symbol,
+        period="1m",
+        count=20,
+        end_date=None,
+        now_kst=now_kst,
+    )
+
+    assert list(out["datetime"]) == [
+        datetime.datetime(2026, 3, 9, 15, 59, 0),
+        datetime.datetime(2026, 3, 10, 8, 0, 0),
+        datetime.datetime(2026, 3, 10, 8, 1, 0),
+    ]
+    assert all(value.tzinfo is None for value in out["datetime"])
+    assert out.iloc[0]["venues"] == ["KRX"]
+    assert out.iloc[1]["venues"] == ["NTX"]
+    assert out.iloc[2]["venues"] == ["NTX"]
+
+
+@pytest.mark.asyncio
+async def test_read_kr_intraday_candles_5m_mixed_history_and_aware_fallback_keeps_naive_kst(
+    monkeypatch,
+):
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    now_kst = _dt_kst(2026, 3, 10, 8, 19, 0)
+    history_rows = [
+        _make_hour_row(
+            bucket_kst_naive=datetime.datetime(2026, 3, 9, 15, 55, 0),
+            open=99.0,
+            high=100.0,
+            low=98.5,
+            close=99.5,
+            volume=120.0,
+            value=12000.0,
+            venues=["KRX"],
+        )
+    ]
+
+    monkeypatch.setattr(
+        svc,
+        "AsyncSessionLocal",
+        lambda: _make_intraday_db_manager(
+            symbol=symbol,
+            nxt_eligible=True,
+            history_table="public.kr_candles_5m",
+            history_rows=history_rows,
+            minute_rows=[],
+        ),
+    )
+    fallback_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:15:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, 15, 0),
+                "open": 100.0,
+                "high": 100.5,
+                "low": 99.5,
+                "close": 100.0,
+                "volume": 10.0,
+                "value": 1000.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:16:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, 16, 0),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.8,
+                "close": 100.8,
+                "volume": 20.0,
+                "value": 2000.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:17:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, 17, 0),
+                "open": 100.8,
+                "high": 101.2,
+                "low": 100.5,
+                "close": 101.0,
+                "volume": 30.0,
+                "value": 3000.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:18:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, 18, 0),
+                "open": 101.0,
+                "high": 101.8,
+                "low": 100.9,
+                "close": 101.5,
+                "volume": 40.0,
+                "value": 4000.0,
+            },
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:19:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, 19, 0),
+                "open": 101.5,
+                "high": 102.0,
+                "low": 101.3,
+                "close": 101.9,
+                "volume": 50.0,
+                "value": 5000.0,
+            },
+        ]
+    )
+
+    async def mock_inquire(*, market, end_time, **_):
+        if market == "NX" and end_time == "200000":
+            return fallback_df
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        svc,
+        "KISClient",
+        lambda: SimpleNamespace(
+            inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire)
+        ),
+    )
+    monkeypatch.setattr(svc, "_store_minute_candles_background", AsyncMock())
+
+    out = await svc.read_kr_intraday_candles(
+        symbol=symbol,
+        period="5m",
+        count=5,
+        end_date=None,
+        now_kst=now_kst,
+    )
+
+    assert list(out["datetime"]) == [
+        datetime.datetime(2026, 3, 9, 15, 55, 0),
+        datetime.datetime(2026, 3, 10, 8, 15, 0),
+    ]
+    assert all(value.tzinfo is None for value in out["datetime"])
+    fallback_bucket = out.iloc[1]
+    assert fallback_bucket["open"] == pytest.approx(100.0)
+    assert fallback_bucket["close"] == pytest.approx(101.9)
+    assert fallback_bucket["volume"] == pytest.approx(150.0)
+    assert fallback_bucket["session"] == "PRE_MARKET"
+    assert fallback_bucket["venues"] == ["NTX"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_background_minute_storage_writes_utc_naive_time(monkeypatch):
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    executed_params: list[dict[str, object]] = []
+    commit_called = False
+
+    class DummyDB:
+        async def execute(self, query, params=None):
+            sql = str(getattr(query, "text", query))
+            if "INSERT INTO public.kr_candles_1m" not in sql:
+                raise AssertionError(f"unexpected sql: {sql}")
+            assert isinstance(params, dict)
+            executed_params.append(dict(params))
+            return None
+
+        async def commit(self):
+            nonlocal commit_called
+            commit_called = True
+
+    monkeypatch.setattr(
+        svc, "AsyncSessionLocal", lambda: DummySessionManager(DummyDB())
+    )
+
+    svc._schedule_background_minute_storage(
+        symbol=symbol,
+        minute_rows=[
+            svc._MinuteRow(
+                minute_time=datetime.datetime(2026, 3, 10, 8, 5, 0),
+                venue="KRX",
+                open=101.0,
+                high=102.0,
+                low=100.0,
+                close=101.5,
+                volume=10.0,
+                value=1000.0,
+            )
+        ],
+    )
+
+    for _ in range(10):
+        if executed_params:
+            break
+        await asyncio.sleep(0)
+
+    assert commit_called is True
+    assert len(executed_params) == 1
+    assert executed_params[0]["symbol"] == symbol
+    stored_time = cast(datetime.datetime, executed_params[0]["time"])
+    assert stored_time == datetime.datetime(2026, 3, 9, 23, 5, 0)
+    assert stored_time.tzinfo is None
+
+
+@pytest.mark.asyncio
+async def test_read_kr_intraday_candles_1m_pure_kis_overlay_and_fallback_keep_naive_kst(
+    monkeypatch,
+):
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    now_kst = _dt_kst(2026, 3, 10, 8, 18, 0)
+
+    monkeypatch.setattr(
+        svc,
+        "AsyncSessionLocal",
+        lambda: _make_intraday_db_manager(
+            symbol=symbol,
+            nxt_eligible=True,
+            minute_rows=[],
+        ),
+    )
+
+    overlay_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp(f"2026-03-10 08:{minute:02d}:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, minute, 0),
+                "open": 100.0 + minute * 0.1,
+                "high": 100.5 + minute * 0.1,
+                "low": 99.5 + minute * 0.1,
+                "close": 100.2 + minute * 0.1,
+                "volume": 10.0 + minute,
+                "value": 1000.0 + minute * 100.0,
+            }
+            for minute in range(19)
+        ]
+    )
+    fallback_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp(f"2026-03-10 08:{minute:02d}:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, minute, 0),
+                "open": 101.0 + minute * 0.1,
+                "high": 101.5 + minute * 0.1,
+                "low": 100.5 + minute * 0.1,
+                "close": 101.2 + minute * 0.1,
+                "volume": 20.0 + minute,
+                "value": 2000.0 + minute * 100.0,
+            }
+            for minute in range(20)
+        ]
+    )
+
+    async def mock_inquire(*, market, end_time, **_):
+        if market != "NX":
+            return pd.DataFrame()
+        if end_time == "081900":
+            return overlay_df
+        if end_time == "200000":
+            return fallback_df
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        svc,
+        "KISClient",
+        lambda: SimpleNamespace(
+            inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire)
+        ),
+    )
+    monkeypatch.setattr(svc, "_store_minute_candles_background", AsyncMock())
+
+    out = await svc.read_kr_intraday_candles(
+        symbol=symbol,
+        period="1m",
+        count=20,
+        end_date=None,
+        now_kst=now_kst,
+    )
+
+    assert len(out) == 20
+    assert out.iloc[0]["datetime"] == datetime.datetime(2026, 3, 10, 8, 0, 0)
+    assert out.iloc[-1]["datetime"] == datetime.datetime(2026, 3, 10, 8, 19, 0)
+    assert all(value.tzinfo is None for value in out["datetime"])
+    assert all(venues == ["NTX"] for venues in out["venues"])
+
+
+@pytest.mark.asyncio
+async def test_read_kr_intraday_candles_5m_pure_kis_overlay_and_fallback_keep_naive_kst(
+    monkeypatch,
+):
+    from app.services import kr_hourly_candles_read_service as svc
+
+    symbol = "005930"
+    now_kst = _dt_kst(2026, 3, 10, 8, 19, 0)
+
+    monkeypatch.setattr(
+        svc,
+        "AsyncSessionLocal",
+        lambda: _make_intraday_db_manager(
+            symbol=symbol,
+            nxt_eligible=True,
+            history_table="public.kr_candles_5m",
+            history_rows=[],
+            minute_rows=[],
+        ),
+    )
+
+    overlay_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp(f"2026-03-10 08:{minute:02d}:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, minute, 0),
+                "open": 100.0 + minute * 0.1,
+                "high": 100.5 + minute * 0.1,
+                "low": 99.5 + minute * 0.1,
+                "close": 100.2 + minute * 0.1,
+                "volume": 10.0 + minute,
+                "value": 1000.0 + minute * 100.0,
+            }
+            for minute in range(19)
+        ]
+    )
+    fallback_df = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp(f"2026-03-10 08:{minute:02d}:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, minute, 0),
+                "open": 101.0 + minute * 0.1,
+                "high": 101.5 + minute * 0.1,
+                "low": 100.5 + minute * 0.1,
+                "close": 101.2 + minute * 0.1,
+                "volume": 20.0 + minute,
+                "value": 2000.0 + minute * 100.0,
+            }
+            for minute in range(20)
+        ]
+    )
+
+    async def mock_inquire(*, market, end_time, **_):
+        if market != "NX":
+            return pd.DataFrame()
+        if end_time == "082000":
+            return overlay_df
+        if end_time == "200000":
+            return fallback_df
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        svc,
+        "KISClient",
+        lambda: SimpleNamespace(
+            inquire_time_dailychartprice=AsyncMock(side_effect=mock_inquire)
+        ),
+    )
+    monkeypatch.setattr(svc, "_store_minute_candles_background", AsyncMock())
+
+    out = await svc.read_kr_intraday_candles(
+        symbol=symbol,
+        period="5m",
+        count=5,
+        end_date=None,
+        now_kst=now_kst,
+    )
+
+    assert list(out["datetime"]) == [
+        datetime.datetime(2026, 3, 10, 8, 0, 0),
+        datetime.datetime(2026, 3, 10, 8, 5, 0),
+        datetime.datetime(2026, 3, 10, 8, 10, 0),
+        datetime.datetime(2026, 3, 10, 8, 15, 0),
+    ]
+    assert all(value.tzinfo is None for value in out["datetime"])
+    assert out.iloc[-1]["close"] == pytest.approx(103.1)
+    assert out.iloc[-1]["venues"] == ["NTX"]
 
 
 @pytest.mark.asyncio
