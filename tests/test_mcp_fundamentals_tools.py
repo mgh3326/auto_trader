@@ -25,6 +25,9 @@ import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import (
+    analysis_analyze,
+    analysis_screening,
+    analysis_tool_handlers,
     fundamentals_sources_coingecko,
     fundamentals_sources_indices,
     fundamentals_sources_naver,
@@ -47,6 +50,83 @@ from tests._mcp_tooling_support import (
 @pytest.mark.asyncio
 class TestAnalyzeStock:
     """Test analyze_stock tool."""
+
+    async def test_analysis_screening_analyze_alias_delegates_to_analysis_analyze(
+        self, monkeypatch
+    ):
+        called: dict[str, object] = {}
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            called["symbol"] = symbol
+            called["market"] = market
+            called["include_peers"] = include_peers
+            return {"symbol": symbol, "source": "analysis-analyze"}
+
+        monkeypatch.setattr(analysis_analyze, "analyze_stock_impl", fake_impl)
+
+        result = await analysis_screening._analyze_stock_impl("005930", "kr", False)
+
+        assert result["source"] == "analysis-analyze"
+        assert called == {
+            "symbol": "005930",
+            "market": "kr",
+            "include_peers": False,
+        }
+
+    async def test_analyze_stock_tool_uses_analysis_screening_alias(self, monkeypatch):
+        tools = build_tools()
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return {
+                "symbol": symbol,
+                "market_type": "equity_kr",
+                "source": "shim-test",
+                "include_peers": include_peers,
+            }
+
+        monkeypatch.setattr(analysis_screening, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock"]("005930", market="kr")
+
+        assert result["source"] == "shim-test"
+
+    async def test_analyze_stock_tool_uses_analysis_screening_symbol_normalizer(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return {
+                "symbol": symbol,
+                "market_type": "equity_kr",
+                "source": "normalized-shim",
+                "include_peers": include_peers,
+            }
+
+        monkeypatch.setattr(
+            analysis_screening,
+            "_normalize_symbol_input",
+            lambda symbol, market: "000123",
+        )
+        monkeypatch.setattr(analysis_screening, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock"]("123", market="kr")
+
+        assert result["symbol"] == "000123"
+        assert result["source"] == "normalized-shim"
+
+    async def test_patch_runtime_attr_updates_analysis_analyze_dependencies(
+        self, monkeypatch
+    ):
+        async def fake_fetch(symbol, market_type, count):
+            _ = symbol, market_type, count
+            return pd.DataFrame()
+
+        original = analysis_analyze._fetch_ohlcv_for_indicators
+        _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", fake_fetch)
+
+        assert analysis_analyze._fetch_ohlcv_for_indicators is fake_fetch
+        assert analysis_analyze._fetch_ohlcv_for_indicators is not original
 
     async def test_recommendation_generation_kr(self, monkeypatch):
         mock_analysis = {
@@ -207,6 +287,37 @@ class TestAnalyzeStock:
         # Both symbols should be normalized to 6-digit strings
         assert "012450" in result["results"]
         assert "005930" in result["results"]
+
+
+@pytest.mark.asyncio
+async def test_get_correlation_tool_uses_analysis_screening_correlation_alias(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    async def fake_fetch(symbol, market_type, count):
+        _ = symbol, market_type, count
+        return pd.DataFrame({"close": [100.0, 101.0, 102.0, 103.0]})
+
+    monkeypatch.setattr(
+        analysis_screening,
+        "_resolve_market_type",
+        lambda symbol, market: ("equity_us", str(symbol).upper()),
+    )
+    monkeypatch.setattr(
+        analysis_tool_handlers, "_fetch_ohlcv_for_indicators", fake_fetch
+    )
+    monkeypatch.setattr(
+        analysis_screening,
+        "_calculate_pearson_correlation",
+        lambda left, right: 0.42,
+    )
+
+    result = await tools["get_correlation"](["aapl", "msft"], period=60)
+
+    assert result["success"] is True
+    assert result["symbols"] == ["AAPL", "MSFT"]
+    assert result["correlation_matrix"][0][1] == 0.42
 
 
 # ---------------------------------------------------------------------------

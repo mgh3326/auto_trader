@@ -1,33 +1,58 @@
+from collections.abc import Callable
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
-from app.mcp_server.tooling import analysis_tool_handlers
+from app.mcp_server.tooling import analysis_screening, analysis_tool_handlers
 from app.mcp_server.tooling.registry import register_all_tools
 
 
 class DummyMCP:
     def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
+        self.tools: dict[str, Callable[..., Any]] = {}
 
     def tool(self, name: str, description: str):
-        def decorator(func):
+        _ = description
+
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             self.tools[name] = func
             return func
 
         return decorator
 
 
-def build_tools() -> dict[str, object]:
+def build_tools() -> dict[str, Callable[..., Any]]:
     mcp = DummyMCP()
-    register_all_tools(mcp)
+    register_all_tools(cast(Any, mcp))
     return mcp.tools
 
 
 @pytest.mark.asyncio
 class TestMCPTopStocks:
+    async def test_get_top_stocks_us_uses_analysis_screening_rankings_alias(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+
+        async def fake_get_us_rankings(ranking_type: str, limit: int):
+            assert ranking_type == "volume"
+            assert limit == 3
+            return ([{"rank": 1, "symbol": "AAPL", "name": "Apple"}], "shim-us")
+
+        monkeypatch.setattr(
+            analysis_screening, "_get_us_rankings", fake_get_us_rankings
+        )
+
+        result = await tools["get_top_stocks"](
+            market="us", ranking_type="volume", limit=3
+        )
+
+        assert result["source"] == "shim-us"
+        assert result["rankings"][0]["symbol"] == "AAPL"
+
     async def test_kr_volume_rank(self, monkeypatch):
         tools = build_tools()
 
