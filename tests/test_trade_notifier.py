@@ -715,6 +715,127 @@ async def test_notify_sell_order_disabled(trade_notifier):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market_type", "expected_webhook"),
+    [
+        ("kr", "https://discord.com/api/webhooks/kr"),
+        ("us", "https://discord.com/api/webhooks/us"),
+        ("crypto", "https://discord.com/api/webhooks/crypto"),
+    ],
+)
+async def test_notify_openclaw_message_fill_uses_market_specific_webhook(
+    trade_notifier,
+    market_type: str,
+    expected_webhook: str,
+):
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_us="https://discord.com/api/webhooks/us",
+        discord_webhook_kr="https://discord.com/api/webhooks/kr",
+        discord_webhook_crypto="https://discord.com/api/webhooks/crypto",
+        discord_webhook_alerts="https://discord.com/api/webhooks/alerts",
+    )
+
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_content_single",
+            new=AsyncMock(return_value=True),
+        ) as mock_discord,
+        patch.object(
+            trade_notifier,
+            "_send_to_telegram",
+            new=AsyncMock(return_value=True),
+        ) as mock_telegram,
+    ):
+        result = await trade_notifier.notify_openclaw_message(
+            "fill message",
+            correlation_id=f"corr-fill-{market_type}",
+            market_type=market_type,
+        )
+
+    assert result is True
+    mock_discord.assert_awaited_once_with("fill message", expected_webhook)
+    mock_telegram.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_openclaw_message_fill_skips_alerts_when_market_webhook_missing(
+    trade_notifier,
+):
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_alerts="https://discord.com/api/webhooks/alerts",
+    )
+
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_content_single",
+            new=AsyncMock(return_value=True),
+        ) as mock_discord,
+        patch.object(
+            trade_notifier,
+            "_send_to_telegram",
+            new=AsyncMock(return_value=True),
+        ) as mock_telegram,
+    ):
+        result = await trade_notifier.notify_openclaw_message(
+            "fill message",
+            correlation_id="corr-fill-no-market-webhook",
+            market_type="kr",
+        )
+
+    assert result is True
+    mock_discord.assert_not_awaited()
+    mock_telegram.assert_awaited_once_with("fill message", parse_mode="Markdown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_openclaw_message_fill_discord_failure_falls_back_to_telegram(
+    trade_notifier,
+):
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_kr="https://discord.com/api/webhooks/kr",
+        discord_webhook_alerts="https://discord.com/api/webhooks/alerts",
+    )
+
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_content_single",
+            new=AsyncMock(return_value=False),
+        ) as mock_discord,
+        patch.object(
+            trade_notifier,
+            "_send_to_telegram",
+            new=AsyncMock(return_value=True),
+        ) as mock_telegram,
+    ):
+        result = await trade_notifier.notify_openclaw_message(
+            "fill message",
+            correlation_id="corr-fill-discord-failed",
+            market_type="kr",
+        )
+
+    assert result is True
+    mock_discord.assert_awaited_once_with(
+        "fill message", "https://discord.com/api/webhooks/kr"
+    )
+    mock_telegram.assert_awaited_once_with("fill message", parse_mode="Markdown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_notify_openclaw_message_success(trade_notifier):
     """Test successful OpenClaw message forwarding."""
     trade_notifier.configure(
@@ -738,6 +859,40 @@ async def test_notify_openclaw_message_success(trade_notifier):
         mock_post.assert_called_once()
         call_args = mock_post.call_args
         assert call_args.kwargs["json"]["text"] == "scan message"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_openclaw_message_generic_scan_uses_alerts_webhook(trade_notifier):
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_us="https://discord.com/api/webhooks/us",
+        discord_webhook_kr="https://discord.com/api/webhooks/kr",
+        discord_webhook_crypto="https://discord.com/api/webhooks/crypto",
+        discord_webhook_alerts="https://discord.com/api/webhooks/alerts",
+    )
+
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_content_single",
+            new=AsyncMock(return_value=True),
+        ) as mock_discord,
+        patch.object(
+            trade_notifier,
+            "_send_to_telegram",
+            new=AsyncMock(return_value=True),
+        ) as mock_telegram,
+    ):
+        result = await trade_notifier.notify_openclaw_message("scan message")
+
+    assert result is True
+    mock_discord.assert_awaited_once_with(
+        "scan message", "https://discord.com/api/webhooks/alerts"
+    )
+    mock_telegram.assert_not_awaited()
 
 
 @pytest.mark.unit

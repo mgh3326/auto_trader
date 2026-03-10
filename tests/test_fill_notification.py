@@ -1,5 +1,7 @@
 """Tests for fill notification normalization and formatting."""
 
+import pytest
+
 from app.services.fill_notification import (
     FillOrder,
     coerce_fill_order,
@@ -28,6 +30,7 @@ class TestNormalizeUpbitFill:
         assert order.filled_qty == 0.1
         assert order.filled_amount == 5_000_000
         assert order.account == "upbit"
+        assert order.market_type == "crypto"
 
     def test_normalize_with_order_metadata(self) -> None:
         raw = {
@@ -71,6 +74,7 @@ class TestNormalizeKisFill:
         assert order.filled_amount == 700_000
         assert order.order_id == "A123456789"
         assert order.account == "kis"
+        assert order.market_type == "kr"
 
     def test_normalize_overseas_fields(self) -> None:
         raw = {
@@ -91,6 +95,22 @@ class TestNormalizeKisFill:
         assert order.filled_amount == 391.0
         assert order.order_id == "US-ORDER-1234"
         assert order.account == "kis"
+        assert order.market_type == "us"
+
+    def test_normalize_kis_fill_prefers_explicit_market_field_over_symbol_inference(
+        self,
+    ) -> None:
+        raw = {
+            "pdno": "005930",
+            "market": "NASDAQ",
+            "sll_buy_dvsn_cd": "02",
+            "ccld_unpr": "70000",
+            "ccld_qty": "1",
+        }
+
+        order = normalize_kis_fill(raw)
+
+        assert order.market_type == "us"
 
     def test_normalize_kis_fill_propagates_execution_status_to_fill_status(
         self,
@@ -124,6 +144,113 @@ class TestNormalizeKisFill:
 
         assert order.fill_status == "partial"
 
+    def test_coerce_fill_order_prefers_market_type_over_market_alias(self) -> None:
+        order = coerce_fill_order(
+            {
+                "symbol": "005930",
+                "side": "02",
+                "filled_price": 100,
+                "filled_qty": 1,
+                "filled_amount": 100,
+                "filled_at": "2026-02-14T09:30:00",
+                "account": "kis",
+                "market_type": "kr",
+                "market": "NASDAQ",
+            }
+        )
+
+        assert order.market_type == "kr"
+
+    @pytest.mark.parametrize(
+        ("market", "expected_market_type"),
+        [("kr", "kr"), ("us", "us"), ("NASDAQ", "us")],
+    )
+    def test_coerce_fill_order_normalizes_raw_market_aliases(
+        self, market: str, expected_market_type: str
+    ) -> None:
+        order = coerce_fill_order(
+            {
+                "symbol": "005930" if expected_market_type == "kr" else "AAPL",
+                "side": "02",
+                "filled_price": 100,
+                "filled_qty": 1,
+                "filled_amount": 100,
+                "filled_at": "2026-02-14T09:30:00",
+                "account": "kis",
+                "market": market,
+            }
+        )
+
+        assert order.market_type == expected_market_type
+
+    def test_coerce_fill_order_uses_upbit_account_market_fallback(self) -> None:
+        order = coerce_fill_order(
+            {
+                "symbol": "KRW-BTC",
+                "side": "BID",
+                "filled_price": 100,
+                "filled_qty": 1,
+                "filled_amount": 100,
+                "filled_at": "2026-02-14T09:30:00",
+                "account": "upbit",
+            }
+        )
+
+        assert order.market_type == "crypto"
+
+    @pytest.mark.parametrize(
+        ("symbol", "expected_market_type"),
+        [("005930", "kr"), ("AAPL", "us")],
+    )
+    def test_coerce_fill_order_infers_safe_kis_market_from_symbol_shape(
+        self, symbol: str, expected_market_type: str
+    ) -> None:
+        order = coerce_fill_order(
+            {
+                "symbol": symbol,
+                "side": "02",
+                "filled_price": 100,
+                "filled_qty": 1,
+                "filled_amount": 100,
+                "filled_at": "2026-02-14T09:30:00",
+                "account": "kis",
+            }
+        )
+
+        assert order.market_type == expected_market_type
+
+    def test_coerce_fill_order_keeps_unknown_market_for_crypto_like_symbol_without_hint(
+        self,
+    ) -> None:
+        order = coerce_fill_order(
+            {
+                "symbol": "KRW-BTC",
+                "side": "BID",
+                "filled_price": 100,
+                "filled_qty": 1,
+                "filled_amount": 100,
+                "filled_at": "2026-02-14T09:30:00",
+                "account": "unknown",
+            }
+        )
+
+        assert order.market_type is None
+
+    def test_coerce_fill_order_missing_symbol_does_not_infer_us_market(self) -> None:
+        order = coerce_fill_order(
+            {
+                "side": "02",
+                "filled_price": 100,
+                "filled_qty": 1,
+                "filled_amount": 100,
+                "filled_at": "2026-02-14T09:30:00",
+                "account": "kis",
+            }
+        )
+
+        assert order.symbol == "UNKNOWN"
+        assert order.market_type is None
+
     def test_normalize_missing_fields_best_effort(self) -> None:
         order = normalize_kis_fill({})
 
@@ -133,6 +260,7 @@ class TestNormalizeKisFill:
         assert order.filled_qty == 0
         assert order.filled_amount == 0
         assert order.account == "kis"
+        assert order.market_type is None
         assert order.filled_at
 
 

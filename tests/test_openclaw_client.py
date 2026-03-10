@@ -205,6 +205,7 @@ async def test_send_fill_notification_returns_none_when_disabled(
         filled_amount=5000000,
         filled_at="2024-01-01T00:00:00Z",
         account="upbit",
+        market_type="crypto",
     )
 
     result = await OpenClawClient().send_fill_notification(order)
@@ -233,6 +234,7 @@ async def test_send_fill_notification_success(
         filled_at="2024-01-01T00:00:00Z",
         account="upbit",
         order_id="order-123",
+        market_type="crypto",
     )
 
     mock_cli = AsyncMock()
@@ -264,10 +266,62 @@ async def test_send_fill_notification_success(
     assert called_json["wakeMode"] == "now"
     assert "🟢 체결 알림" in called_json["message"]
     mock_notifier.notify_openclaw_message.assert_awaited_once_with(
-        called_json["message"], correlation_id="corr-fill-success"
+        called_json["message"],
+        correlation_id="corr-fill-success",
+        market_type="crypto",
     )
     assert "correlation_id=corr-fill-success" in caplog.text
     assert f"request_id={result}" in caplog.text
+
+
+@pytest.mark.asyncio
+@patch("app.services.openclaw_client.httpx.AsyncClient")
+async def test_send_fill_notification_raw_mapping_forwards_canonical_market_type(
+    mock_httpx_client_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
+    monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
+    monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "test-token")
+
+    order = {
+        "symbol": "AAPL",
+        "side": "02",
+        "filled_price": 195.5,
+        "filled_qty": 2,
+        "filled_amount": 391,
+        "filled_at": "2026-02-14T09:30:00-05:00",
+        "account": "kis",
+        "market": "NASDAQ",
+    }
+
+    mock_cli = AsyncMock()
+    mock_res = MagicMock(status_code=200)
+    mock_res.raise_for_status.return_value = None
+    mock_cli.post.return_value = mock_res
+
+    mock_client_instance = AsyncMock()
+    mock_client_instance.__aenter__.return_value = mock_cli
+    mock_client_instance.__aexit__.return_value = None
+    mock_httpx_client_cls.return_value = mock_client_instance
+
+    mock_notifier = MagicMock()
+    mock_notifier.notify_openclaw_message = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "app.services.openclaw_client.get_trade_notifier",
+        lambda: mock_notifier,
+    )
+
+    result = await OpenClawClient().send_fill_notification(
+        order, correlation_id="corr-fill-raw-market"
+    )
+
+    assert result is not None
+    mock_notifier.notify_openclaw_message.assert_awaited_once_with(
+        mock_notifier.notify_openclaw_message.await_args.args[0],
+        correlation_id="corr-fill-raw-market",
+        market_type="us",
+    )
 
 
 @pytest.mark.asyncio
@@ -391,6 +445,7 @@ async def test_send_fill_notification_returns_none_after_all_retries_fail(
         filled_amount=5000000,
         filled_at="2024-01-01T00:00:00Z",
         account="upbit",
+        market_type="crypto",
     )
 
     mock_cli = AsyncMock()
@@ -439,6 +494,7 @@ async def test_send_fill_notification_forwards_telegram_when_openclaw_fails(
         filled_amount=5000000,
         filled_at="2024-01-01T00:00:00Z",
         account="upbit",
+        market_type="crypto",
     )
 
     mock_cli = AsyncMock()
@@ -468,8 +524,11 @@ async def test_send_fill_notification_forwards_telegram_when_openclaw_fails(
     assert result is None
     assert mock_cli.post.call_count == 4
     assert elapsed < 2.0
-    mock_notifier.notify_openclaw_message.assert_awaited_once()
-    forwarded_message = mock_notifier.notify_openclaw_message.await_args.args[0]
+    mock_notifier.notify_openclaw_message.assert_awaited_once_with(
+        forwarded_message := mock_notifier.notify_openclaw_message.await_args.args[0],
+        correlation_id="corr-openclaw-fail-mirror-success",
+        market_type="crypto",
+    )
     assert "체결 알림" in forwarded_message
     assert "corr-openclaw-fail-mirror-success" in caplog.text
 
