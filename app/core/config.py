@@ -21,6 +21,10 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 20,
         "period": 1.0,
     },
+    "FHPST04830000|/uapi/domestic-stock/v1/quotations/daily-short-sale": {
+        "rate": 20,
+        "period": 1.0,
+    },
     "FHKST03010230|/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice": {
         "rate": 20,
         "period": 1.0,

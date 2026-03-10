@@ -177,9 +177,67 @@ def _build_ohlcv_payload(
     return payload
 
 
+def _classify_orderbook_pressure(ratio: float | None) -> str | None:
+    if ratio is None:
+        return None
+    if ratio > 2.0:
+        return "strong_buy"
+    if ratio > 1.3:
+        return "buy"
+    if ratio >= 0.7:
+        return "neutral"
+    if ratio >= 0.5:
+        return "sell"
+    return "strong_sell"
+
+
+def _build_orderbook_pressure_desc(
+    *,
+    pressure: str | None,
+    total_ask_qty: int,
+    total_bid_qty: int,
+) -> str | None:
+    if pressure is None:
+        return None
+    if pressure == "neutral":
+        return "매수/매도 잔량이 균형권 - 중립"
+
+    if pressure in {"strong_buy", "buy"}:
+        if total_ask_qty <= 0:
+            return None
+        multiplier = total_bid_qty / total_ask_qty
+        suffix = "강한 매수 압력" if pressure == "strong_buy" else "매수 압력"
+        return f"매수잔량이 매도잔량의 {multiplier:.1f}배 - {suffix}"
+
+    if total_bid_qty <= 0:
+        return None
+    multiplier = total_ask_qty / total_bid_qty
+    suffix = "강한 매도 압력" if pressure == "strong_sell" else "매도 압력"
+    return f"매도잔량이 매수잔량의 {multiplier:.1f}배 - {suffix}"
+
+
+def _calculate_orderbook_spread(
+    snapshot: market_data_service.OrderbookSnapshot,
+) -> tuple[int | None, float | None]:
+    if not snapshot.asks or not snapshot.bids:
+        return None, None
+
+    best_ask = snapshot.asks[0].price
+    best_bid = snapshot.bids[0].price
+    if best_bid <= 0:
+        return None, None
+
+    spread = best_ask - best_bid
+
+    spread_pct = round((spread / best_bid) * 100, 3)
+    return spread, spread_pct
+
+
 def _build_orderbook_payload(
     snapshot: market_data_service.OrderbookSnapshot,
 ) -> dict[str, Any]:
+    pressure = _classify_orderbook_pressure(snapshot.bid_ask_ratio)
+    spread, spread_pct = _calculate_orderbook_spread(snapshot)
     return {
         "symbol": snapshot.symbol,
         "instrument_type": snapshot.instrument_type,
@@ -195,6 +253,14 @@ def _build_orderbook_payload(
         "total_ask_qty": snapshot.total_ask_qty,
         "total_bid_qty": snapshot.total_bid_qty,
         "bid_ask_ratio": snapshot.bid_ask_ratio,
+        "pressure": pressure,
+        "pressure_desc": _build_orderbook_pressure_desc(
+            pressure=pressure,
+            total_ask_qty=snapshot.total_ask_qty,
+            total_bid_qty=snapshot.total_bid_qty,
+        ),
+        "spread": spread,
+        "spread_pct": spread_pct,
         "expected_price": snapshot.expected_price,
         "expected_qty": snapshot.expected_qty,
     }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import override
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -40,7 +41,7 @@ async def test_get_kr_volume_rank_maps_errors(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(market_data_service, "KISClient", lambda: FailingKIS())
 
     with pytest.raises(UpstreamUnavailableError, match="upstream failed"):
-        await market_data_service.get_kr_volume_rank()
+        _ = await market_data_service.get_kr_volume_rank()
 
 
 @pytest.mark.asyncio
@@ -87,7 +88,7 @@ async def test_get_ohlcv_rejects_invalid_period_message() -> None:
         ValidationError,
         match="period must be 'day', 'week', 'month', '1m', '5m', '15m', '30m', '4h', or '1h'",
     ):
-        await market_data_service.get_ohlcv(
+        _ = await market_data_service.get_ohlcv(
             symbol="AAPL",
             market="us",
             period="hour",
@@ -168,7 +169,7 @@ async def test_get_ohlcv_us_intraday_propagates_universe_lookup_errors(
     monkeypatch.setattr(market_data_service, "read_us_intraday_candles", read_mock)
 
     with pytest.raises(exc_type, match=message):
-        await market_data_service.get_ohlcv(
+        _ = await market_data_service.get_ohlcv(
             symbol="AAPL",
             market="us",
             period="5m",
@@ -306,6 +307,8 @@ async def test_get_orderbook_falls_back_to_legacy_quantity_keys(
 ) -> None:
     class DummyKIS:
         async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            assert code == "005930"
+            assert market == "UN"
             return (
                 {
                     "askp1": "70200",
@@ -362,6 +365,8 @@ async def test_get_orderbook_returns_none_ratio_when_total_ask_is_zero(
 ) -> None:
     class DummyKIS:
         async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            assert code == "005930"
+            assert market == "UN"
             return (
                 {
                     "askp1": "70100",
@@ -385,4 +390,288 @@ async def test_get_orderbook_returns_none_ratio_when_total_ask_is_zero(
 @pytest.mark.parametrize("market", ["us", "crypto"])
 async def test_get_orderbook_rejects_non_kr_markets(market: str) -> None:
     with pytest.raises(ValueError, match="KR orderbook only supports KR market"):
-        await market_data_service.get_orderbook("005930", market)
+        _ = await market_data_service.get_orderbook("005930", market)
+
+
+@pytest.mark.asyncio
+async def test_get_short_interest_maps_rows_and_uses_naver_name_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FixedDate(dt.date):
+        @override
+        @classmethod
+        def today(cls) -> FixedDate:
+            return cls(2026, 2, 20)
+
+    class DummyKIS:
+        async def inquire_short_selling(
+            self,
+            code: str,
+            start_date: dt.date,
+            end_date: dt.date,
+            market: str = "J",
+        ) -> tuple[dict[str, str], list[dict[str, str]]]:
+            assert code == "005930"
+            assert start_date == dt.date(2026, 2, 16)
+            assert end_date == dt.date(2026, 2, 20)
+            assert market == "J"
+            return (
+                {},
+                [
+                    {
+                        "stck_bsop_date": "20260219",
+                        "ssts_cntg_qty": "100",
+                        "ssts_tr_pbmn": "1000",
+                        "ssts_vol_rlim": "5.5",
+                        "acml_vol": "2000",
+                        "acml_tr_pbmn": "25000",
+                    },
+                    {
+                        "stck_bsop_date": "20260220",
+                        "ssts_cntg_qty": "80",
+                        "ssts_tr_pbmn": "900",
+                        "ssts_vol_rlim": "",
+                        "acml_vol": "1500",
+                        "acml_tr_pbmn": "20000",
+                    },
+                    {
+                        "stck_bsop_date": "20260218",
+                        "ssts_cntg_qty": "60",
+                        "ssts_tr_pbmn": "700",
+                        "ssts_vol_rlim": "3.0",
+                        "acml_vol": "1000",
+                        "acml_tr_pbmn": "15000",
+                    },
+                ],
+            )
+
+        async def fetch_fundamental_info(
+            self, _code: str, _market: str = "UN"
+        ) -> dict[str, str]:
+            raise AssertionError("KIS fundamental fallback should not be used")
+
+    async def fake_fetch_company_profile(code: str) -> dict[str, str | None]:
+        assert code == "005930"
+        return {"name": "삼성전자"}
+
+    monkeypatch.setattr("app.services.market_data.service.dt.date", FixedDate)
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+    monkeypatch.setattr(
+        "app.services.market_data.service.naver_finance.fetch_company_profile",
+        fake_fetch_company_profile,
+    )
+
+    assert hasattr(market_data_service, "get_short_interest")
+
+    result = await market_data_service.get_short_interest("5930", days=2)
+
+    assert result == {
+        "symbol": "005930",
+        "name": "삼성전자",
+        "short_data": [
+            {
+                "date": "2026-02-20",
+                "short_volume": 80,
+                "short_amount": 900,
+                "short_ratio": None,
+                "total_volume": 1500,
+                "total_amount": 20000,
+            },
+            {
+                "date": "2026-02-19",
+                "short_volume": 100,
+                "short_amount": 1000,
+                "short_ratio": 5.5,
+                "total_volume": 2000,
+                "total_amount": 25000,
+            },
+        ],
+        "avg_short_ratio": 5.5,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_short_interest_returns_clean_no_data_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FixedDate(dt.date):
+        @override
+        @classmethod
+        def today(cls) -> FixedDate:
+            return cls(2026, 2, 20)
+
+    class DummyKIS:
+        async def inquire_short_selling(
+            self,
+            code: str,
+            start_date: dt.date,
+            end_date: dt.date,
+            market: str = "J",
+        ) -> tuple[dict[str, str], list[dict[str, str]]]:
+            assert code == "005930"
+            assert start_date == dt.date(2026, 2, 18)
+            assert end_date == dt.date(2026, 2, 20)
+            assert market == "J"
+            return ({}, [])
+
+        async def fetch_fundamental_info(
+            self, _code: str, _market: str = "UN"
+        ) -> dict[str, str]:
+            raise AssertionError("KIS fundamental fallback should not be used")
+
+    async def fake_fetch_company_profile(_code: str) -> dict[str, str | None]:
+        raise RuntimeError("lookup failed")
+
+    monkeypatch.setattr("app.services.market_data.service.dt.date", FixedDate)
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+    monkeypatch.setattr(
+        "app.services.market_data.service.naver_finance.fetch_company_profile",
+        fake_fetch_company_profile,
+    )
+
+    assert hasattr(market_data_service, "get_short_interest")
+
+    result = await market_data_service.get_short_interest("005930", days=0)
+
+    assert result == {
+        "symbol": "005930",
+        "name": None,
+        "short_data": [],
+        "avg_short_ratio": None,
+    }
+    assert "short_balance" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_short_interest_caps_days_above_60(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FixedDate(dt.date):
+        @override
+        @classmethod
+        def today(cls) -> FixedDate:
+            return cls(2026, 2, 20)
+
+    class DummyKIS:
+        async def inquire_short_selling(
+            self,
+            code: str,
+            start_date: dt.date,
+            end_date: dt.date,
+            market: str = "J",
+        ) -> tuple[dict[str, str], list[dict[str, str]]]:
+            assert code == "005930"
+            assert start_date == dt.date(2025, 10, 23)
+            assert end_date == dt.date(2026, 2, 20)
+            assert market == "J"
+            return ({"hts_kor_isnm": "삼성전자"}, [])
+
+    monkeypatch.setattr("app.services.market_data.service.dt.date", FixedDate)
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    result = await market_data_service.get_short_interest("005930", days=100)
+
+    assert result["symbol"] == "005930"
+    assert result["name"] == "삼성전자"
+    assert result["short_data"] == []
+    assert result["avg_short_ratio"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_short_interest_drops_rows_with_malformed_dates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_short_selling(
+            self,
+            code: str,
+            start_date: dt.date,
+            end_date: dt.date,
+            market: str = "J",
+        ) -> tuple[dict[str, str], list[dict[str, str]]]:
+            assert code == "005930"
+            assert start_date <= end_date
+            assert market == "J"
+            return (
+                {"hts_kor_isnm": "삼성전자"},
+                [
+                    {
+                        "stck_bsop_date": "bad-date",
+                        "ssts_cntg_qty": "10",
+                        "ssts_tr_pbmn": "100",
+                        "ssts_vol_rlim": "1.5",
+                        "acml_vol": "500",
+                        "acml_tr_pbmn": "1000",
+                    },
+                    {
+                        "stck_bsop_date": "20260219",
+                        "ssts_cntg_qty": "20",
+                        "ssts_tr_pbmn": "200",
+                        "ssts_vol_rlim": "2.5",
+                        "acml_vol": "600",
+                        "acml_tr_pbmn": "1200",
+                    },
+                ],
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    result = await market_data_service.get_short_interest("005930", days=20)
+
+    assert result["short_data"] == [
+        {
+            "date": "2026-02-19",
+            "short_volume": 20,
+            "short_amount": 200,
+            "short_ratio": 2.5,
+            "total_volume": 600,
+            "total_amount": 1200,
+        }
+    ]
+    assert result["avg_short_ratio"] == 2.5
+
+
+@pytest.mark.asyncio
+async def test_get_short_interest_maps_upstream_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_short_selling(
+            self,
+            code: str,
+            start_date: dt.date,
+            end_date: dt.date,
+            market: str = "J",
+        ) -> tuple[dict[str, str], list[dict[str, str]]]:
+            assert code == "005930"
+            assert start_date <= end_date
+            assert market == "J"
+            raise RuntimeError("short data unavailable")
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    assert hasattr(market_data_service, "get_short_interest")
+
+    with pytest.raises(UpstreamUnavailableError, match="short data unavailable"):
+        _ = await market_data_service.get_short_interest("005930")
+
+
+@pytest.mark.asyncio
+async def test_get_short_interest_maps_kis_construction_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failing_client() -> object:
+        raise RuntimeError("kis init failed")
+
+    monkeypatch.setattr(market_data_service, "KISClient", failing_client)
+
+    with pytest.raises(UpstreamUnavailableError, match="kis init failed"):
+        _ = await market_data_service.get_short_interest("005930")
+
+
+def test_market_data_exports_get_short_interest() -> None:
+    from app.services import market_data
+
+    assert getattr(market_data, "get_short_interest", None) is getattr(
+        market_data_service, "get_short_interest", None
+    )
