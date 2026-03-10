@@ -97,6 +97,13 @@ class KISClient(BaseKISClient):
     async def inquire_orderbook(self, code: str, market: str = "UN") -> dict[str, Any]:
         return await self._market_data.inquire_orderbook(code, market)
 
+    async def inquire_orderbook_snapshot(
+        self,
+        code: str,
+        market: str = "UN",
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        return await self._market_data.inquire_orderbook_snapshot(code, market)
+
     async def fetch_fundamental_info(
         self, code: str, market: str = "UN"
     ) -> dict[str, Any]:

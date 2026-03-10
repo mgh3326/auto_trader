@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -226,6 +227,41 @@ SAMPLE_INVESTMENT_OPINIONS_HTML = """
 </html>
 """
 
+SAMPLE_INVESTMENT_OPINIONS_DUPLICATE_HTML = """
+<html>
+<body>
+<table class="type_1">
+    <tbody>
+        <tr>
+            <td><a href="/item/main.naver?code=005930">삼성전자</a></td>
+            <td><a href="company_read.naver?nid=12345&page=1">반도체 업황 개선 전망</a></td>
+            <td>삼성증권</td>
+            <td><a href="https://example.com/report1.pdf"></a></td>
+            <td class="date">26.01.15</td>
+            <td>1234</td>
+        </tr>
+        <tr>
+            <td><a href="/item/main.naver?code=005930">삼성전자</a></td>
+            <td><a href="company_read.naver?nid=12345&page=9">반도체 업황 개선 전망</a></td>
+            <td>삼성증권</td>
+            <td><a href="https://example.com/report1.pdf"></a></td>
+            <td class="date">26.01.15</td>
+            <td>9999</td>
+        </tr>
+        <tr>
+            <td><a href="/item/main.naver?code=005930">삼성전자</a></td>
+            <td><a href="company_read.naver?nid=12346&page=1">실적 호조 지속</a></td>
+            <td>미래에셋</td>
+            <td><a href="https://example.com/report2.pdf"></a></td>
+            <td class="date">26.01.14</td>
+            <td>5678</td>
+        </tr>
+    </tbody>
+</table>
+</body>
+</html>
+"""
+
 SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1 = """
 <html>
 <body>
@@ -371,7 +407,7 @@ class TestFetchNews:
 
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_NEWS_HTML, "lxml")
 
@@ -387,7 +423,7 @@ class TestFetchNews:
 
     async def test_limit_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_NEWS_HTML, "lxml")
 
@@ -399,7 +435,7 @@ class TestFetchNews:
 
     async def test_empty_table(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup("<html></html>", "lxml")
 
@@ -416,7 +452,7 @@ class TestFetchCompanyProfile:
 
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_PROFILE_HTML, "lxml")
 
@@ -436,7 +472,7 @@ class TestFetchCompanyProfile:
 
     async def test_filters_none_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             # Minimal HTML with only name
             return BeautifulSoup(
@@ -461,7 +497,7 @@ class TestFetchInvestorTrends:
 
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_INVESTOR_TRENDS_HTML, "lxml")
 
@@ -487,7 +523,7 @@ class TestFetchInvestorTrends:
 
     async def test_days_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_INVESTOR_TRENDS_HTML, "lxml")
 
@@ -505,7 +541,7 @@ class TestFetchInvestmentOpinions:
 
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             # Return different HTML based on URL
             if "company_list.naver" in url:
@@ -563,7 +599,7 @@ class TestFetchInvestmentOpinions:
 
     async def test_limit_applied(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             if "company_list.naver" in url:
                 return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
@@ -583,7 +619,7 @@ class TestFetchInvestmentOpinions:
         """Test with no opinions found."""
 
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup("<html><table class='type_1'></table></html>", "lxml")
 
@@ -609,7 +645,7 @@ class TestFetchInvestmentOpinions:
         """
 
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             if "company_list.naver" in url:
                 return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
@@ -636,6 +672,172 @@ class TestFetchInvestmentOpinions:
         assert consensus["avg_target_price"] == 90000
         assert consensus["max_target_price"] == 90000
         assert consensus["min_target_price"] == 90000
+
+    async def test_deduplicates_duplicate_nids_before_detail_fetch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        detail_calls: list[str] = []
+
+        async def mock_fetch_html(
+            url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            if "company_list.naver" in url:
+                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_DUPLICATE_HTML, "lxml")
+            if "company_read.naver" in url:
+                nid = str((params or {}).get("nid", ""))
+                detail_calls.append(nid)
+                if nid == "12345":
+                    return BeautifulSoup(
+                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml"
+                    )
+                if nid == "12346":
+                    return BeautifulSoup(
+                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml"
+                    )
+            if "main.naver" in url:
+                return BeautifulSoup(SAMPLE_CURRENT_PRICE_HTML, "lxml")
+            return BeautifulSoup("<html></html>", "lxml")
+
+        monkeypatch.setattr(naver_finance, "_fetch_html", mock_fetch_html)
+
+        result = await naver_finance.fetch_investment_opinions("005930", limit=10)
+
+        assert detail_calls == ["12345", "12346"]
+        assert result["count"] == 2
+        assert [opinion["target_price"] for opinion in result["opinions"]] == [
+            85000,
+            90000,
+        ]
+        assert result["consensus"]["avg_target_price"] == 87500
+        assert result["consensus"]["current_price"] == 75000
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestFetchKrSnapshot:
+    async def test_snapshot_reuses_single_main_page_for_consensus(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        request_counts = {
+            "main": 0,
+            "sise": 0,
+            "news": 0,
+            "company_list": 0,
+            "detail": 0,
+        }
+
+        async def mock_fetch_html_with_client(
+            client, url: str, params: dict[str, Any] | None = None
+        ) -> BeautifulSoup:
+            _ = client
+            if "main.naver" in url:
+                request_counts["main"] += 1
+                return BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+            if "sise.naver" in url:
+                request_counts["sise"] += 1
+                return BeautifulSoup(SAMPLE_VALUATION_SISE_HTML, "lxml")
+            if "news_news.naver" in url:
+                request_counts["news"] += 1
+                return BeautifulSoup(SAMPLE_NEWS_HTML, "lxml")
+            if "company_list.naver" in url:
+                request_counts["company_list"] += 1
+                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
+            if "company_read.naver" in url:
+                request_counts["detail"] += 1
+                nid = str((params or {}).get("nid", ""))
+                if nid == "12345":
+                    return BeautifulSoup(
+                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml"
+                    )
+                if nid == "12346":
+                    return BeautifulSoup(
+                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml"
+                    )
+            return BeautifulSoup("<html></html>", "lxml")
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: mock_client)
+        monkeypatch.setattr(
+            naver_finance,
+            "_fetch_html_with_client",
+            mock_fetch_html_with_client,
+            raising=False,
+        )
+
+        snapshot = await naver_finance._fetch_kr_snapshot(
+            "005930", news_limit=5, opinion_limit=10
+        )
+
+        assert request_counts == {
+            "main": 1,
+            "sise": 1,
+            "news": 1,
+            "company_list": 1,
+            "detail": 2,
+        }
+        assert snapshot["valuation"]["current_price"] == 75000
+        assert snapshot["news"][0]["title"] == "삼성전자, 신제품 발표"
+        assert snapshot["opinions"]["count"] == 2
+        assert snapshot["opinions"]["consensus"]["avg_target_price"] == 87500
+        assert snapshot["opinions"]["consensus"]["current_price"] == 75000
+        assert abs(snapshot["opinions"]["consensus"]["upside_pct"] - 16.67) < 0.01
+
+    async def test_snapshot_keeps_other_sections_when_one_page_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def mock_fetch_html_with_client(
+            client: Any,
+            url: str,
+            params: dict[str, Any] | None = None,
+        ) -> BeautifulSoup:
+            _ = client, params
+            if "main.naver" in url:
+                return BeautifulSoup(SAMPLE_VALUATION_MAIN_HTML, "lxml")
+            if "sise.naver" in url:
+                raise RuntimeError("sise unavailable")
+            if "news_news.naver" in url:
+                return BeautifulSoup(SAMPLE_NEWS_HTML, "lxml")
+            if "company_list.naver" in url:
+                return BeautifulSoup(SAMPLE_INVESTMENT_OPINIONS_HTML, "lxml")
+            if "company_read.naver" in url:
+                nid = str((params or {}).get("nid", ""))
+                if nid == "12345":
+                    return BeautifulSoup(
+                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_1, "lxml"
+                    )
+                if nid == "12346":
+                    return BeautifulSoup(
+                        SAMPLE_INVESTMENT_OPINIONS_DETAIL_HTML_2, "lxml"
+                    )
+            return BeautifulSoup("<html></html>", "lxml")
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: mock_client)
+        monkeypatch.setattr(
+            naver_finance,
+            "_fetch_html_with_client",
+            mock_fetch_html_with_client,
+            raising=False,
+        )
+
+        snapshot = await naver_finance._fetch_kr_snapshot(
+            "005930", news_limit=5, opinion_limit=10
+        )
+
+        assert snapshot["valuation"] is None
+        assert snapshot["news"][0]["title"] == "삼성전자, 신제품 발표"
+        assert snapshot["opinions"]["count"] == 2
+        assert snapshot["opinions"]["consensus"]["current_price"] == 75000
 
 
 @pytest.mark.asyncio
@@ -704,7 +906,7 @@ class TestFetchShortInterest:
 
         # Mock the company name fetch
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_SHORT_INTEREST_HTML, "lxml")
 
@@ -733,7 +935,7 @@ class TestFetchShortInterest:
         class MockResponse:
             status_code = 200
 
-            def json(self) -> dict:
+            def json(self) -> dict[str, Any]:
                 return krx_response
 
         async def mock_post(self, url: str, **kwargs) -> MockResponse:
@@ -785,7 +987,7 @@ class TestFetchShortInterest:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_SHORT_INTEREST_HTML, "lxml")
 
@@ -813,7 +1015,7 @@ class TestFetchShortInterest:
         class MockResponse:
             status_code = 200
 
-            def json(self) -> dict:
+            def json(self) -> dict[str, Any]:
                 return krx_response
 
         async def mock_post(self, url: str, **kwargs) -> MockResponse:
@@ -846,7 +1048,7 @@ class TestFetchShortInterest:
         """Test with empty short selling data from KRX."""
 
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_SHORT_INTEREST_HTML, "lxml")
 
@@ -861,7 +1063,7 @@ class TestFetchShortInterest:
         class MockResponse:
             status_code = 200
 
-            def json(self) -> dict:
+            def json(self) -> dict[str, Any]:
                 return {"OutBlock_1": []}
 
         async def mock_post(self, url: str, **kwargs) -> MockResponse:
@@ -872,7 +1074,9 @@ class TestFetchShortInterest:
         monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
 
         # Also mock pykrx fallback to return empty
-        async def mock_pykrx_fetch(code: str, days: int) -> tuple[list, dict | None]:
+        async def mock_pykrx_fetch(
+            code: str, days: int
+        ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
             return [], None
 
         monkeypatch.setattr(
@@ -892,7 +1096,7 @@ class TestFetchShortInterest:
         """Test handling of KRX API exceptions."""
 
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup(SAMPLE_SHORT_INTEREST_HTML, "lxml")
 
@@ -912,7 +1116,9 @@ class TestFetchShortInterest:
         monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
 
         # Also mock pykrx fallback to return empty
-        async def mock_pykrx_fetch(code: str, days: int) -> tuple[list, dict | None]:
+        async def mock_pykrx_fetch(
+            code: str, days: int
+        ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
             return [], None
 
         monkeypatch.setattr(
@@ -933,7 +1139,7 @@ class TestFetchValuation:
 
     async def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             # Return different HTML based on URL
             if "main.naver" in url:
@@ -962,7 +1168,7 @@ class TestFetchValuation:
         """Test with minimal HTML data (some values missing)."""
 
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             if "main.naver" in url:
                 return BeautifulSoup(SAMPLE_VALUATION_MINIMAL_MAIN_HTML, "lxml")
@@ -1005,7 +1211,7 @@ class TestFetchValuation:
         """
 
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             if "main.naver" in url:
                 return BeautifulSoup(main_html, "lxml")
@@ -1036,7 +1242,7 @@ class TestFetchValuation:
         """
 
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             if "main.naver" in url:
                 return BeautifulSoup(main_html, "lxml")
@@ -1052,7 +1258,7 @@ class TestFetchValuation:
         """Test with empty HTML."""
 
         async def mock_fetch_html(
-            url: str, params: dict | None = None
+            url: str, params: dict[str, Any] | None = None
         ) -> BeautifulSoup:
             return BeautifulSoup("<html></html>", "lxml")
 

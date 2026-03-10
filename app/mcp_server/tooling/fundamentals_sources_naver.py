@@ -401,6 +401,46 @@ async def _fetch_news_naver(symbol: str, limit: int) -> dict[str, Any]:
     }
 
 
+async def _fetch_analysis_snapshot_naver(
+    symbol: str,
+    news_limit: int,
+    opinions_limit: int,
+) -> dict[str, Any]:
+    snapshot = await naver_finance._fetch_kr_snapshot(
+        symbol,
+        news_limit=news_limit,
+        opinion_limit=opinions_limit,
+    )
+    result: dict[str, Any] = {}
+    valuation = snapshot.get("valuation")
+    if isinstance(valuation, dict):
+        result["valuation"] = {
+            "instrument_type": "equity_kr",
+            "source": "naver",
+            **valuation,
+        }
+
+    news_items = snapshot.get("news")
+    if isinstance(news_items, list):
+        result["news"] = {
+            "symbol": symbol,
+            "market": "kr",
+            "source": "naver",
+            "count": len(news_items),
+            "news": news_items,
+        }
+
+    opinions = snapshot.get("opinions")
+    if isinstance(opinions, dict):
+        result["opinions"] = {
+            "instrument_type": "equity_kr",
+            "source": "naver",
+            **opinions,
+        }
+
+    return result
+
+
 async def _fetch_company_profile_naver(symbol: str) -> dict[str, Any]:
     profile = await naver_finance.fetch_company_profile(symbol)
     return {
@@ -450,7 +490,7 @@ async def _fetch_investment_opinions_yfinance(
         session = build_yfinance_tracing_session()
     ticker = yf.Ticker(symbol, session=session)
 
-    def _collect() -> tuple[dict | None, Any, dict | None]:
+    def _collect() -> tuple[dict[str, Any] | None, Any, dict[str, Any] | None]:
         targets = None
         try:
             targets = ticker.analyst_price_targets
@@ -720,11 +760,6 @@ async def _fetch_sector_peers_us(
     target_per = target_info.get("trailingPE")
     target_pbr = target_info.get("priceToBook")
     target_mcap = target_info.get("marketCap")
-
-    def get_base_ticker(ticker: str) -> str:
-        if "." in ticker:
-            return ticker.split(".")[0]
-        return ticker
 
     target_base = get_base_ticker(upper_symbol)
     # Dedupe already applied before network call, use peer_tickers directly

@@ -467,13 +467,7 @@ class MarketDataClient:
         }
         return pd.DataFrame([row]).set_index("code")  # index = 종목코드
 
-    async def inquire_orderbook(self, code: str, market: str = "UN") -> dict:
-        """
-        주식 호가(orderbook) 조회 - 10단계 매수/매도 호가
-        :param code: 6자리 종목코드(005930)
-        :param market: K(코스피)/Q(코스닥)/UN(통합)
-        :return: API output 딕셔너리
-        """
+    async def _request_orderbook_snapshot(self, code: str, market: str = "UN") -> dict:
         await self._parent._ensure_token()
 
         hdr = self._parent._hdr_base | {
@@ -502,14 +496,51 @@ class MarketDataClient:
             ]:
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
-                return await self.inquire_orderbook(code, market)
+                return await self._request_orderbook_snapshot(code, market)
             raise RuntimeError(f"{js['msg_cd']} {js['msg1']}")
+        return js
+
+    async def inquire_orderbook(self, code: str, market: str = "UN") -> dict:
+        """
+        주식 호가(orderbook) 조회 - 10단계 매수/매도 호가
+        :param code: 6자리 종목코드(005930)
+        :param market: K(코스피)/Q(코스닥)/UN(통합)
+        :return: API output 딕셔너리
+        """
+        js = await self._request_orderbook_snapshot(code, market)
         output = js.get("output1")
         if output is None:
             output = js.get("output")
         if not isinstance(output, dict):
             raise RuntimeError("inquire_orderbook: missing valid output1/output dict")
         return output
+
+    async def inquire_orderbook_snapshot(
+        self,
+        code: str,
+        market: str = "UN",
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        js = await self._request_orderbook_snapshot(code, market)
+        output1 = js.get("output1")
+        if output1 is None:
+            output1 = js.get("output")
+        if not isinstance(output1, dict):
+            raise RuntimeError("inquire_orderbook: missing valid output1/output dict")
+
+        output2_raw = js.get("output2")
+        output2: dict[str, Any] | None
+        if isinstance(output2_raw, dict):
+            output2 = output2_raw
+        elif (
+            isinstance(output2_raw, list)
+            and len(output2_raw) == 1
+            and isinstance(output2_raw[0], dict)
+        ):
+            output2 = output2_raw[0]
+        else:
+            output2 = None
+
+        return output1, output2
 
     async def fetch_fundamental_info(self, code: str, market: str = "UN") -> dict:
         """

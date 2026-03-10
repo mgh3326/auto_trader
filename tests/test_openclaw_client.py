@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
+from tenacity import wait_fixed
 
+import app.services.openclaw_client as openclaw_client
 from app.core.config import settings
 from app.monitoring.trade_notifier import TradeNotifier, get_trade_notifier
 from app.services.openclaw_client import OpenClawClient, _build_openclaw_message
@@ -52,6 +55,16 @@ def test_build_openclaw_message_can_omit_model_name() -> None:
     schema_json = message.split("RESPONSE_JSON_SCHEMA (example):\n", 1)[1].strip()
     schema = json.loads(schema_json)
     assert "model_name" not in schema
+
+
+@pytest.fixture
+def zero_delay_openclaw_retry_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        openclaw_client,
+        "OPENCLAW_RETRY_WAIT",
+        wait_fixed(0),
+        raising=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -300,6 +313,7 @@ async def test_send_fill_notification_partial_event_uses_partial_message_and_ord
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("zero_delay_openclaw_retry_wait")
 @patch("app.services.openclaw_client.httpx.AsyncClient")
 async def test_send_fill_notification_retries_on_failure_then_succeeds(
     mock_httpx_client_cls: MagicMock,
@@ -340,19 +354,23 @@ async def test_send_fill_notification_retries_on_failure_then_succeeds(
     mock_client_instance.__aexit__.return_value = None
     mock_httpx_client_cls.return_value = mock_client_instance
 
+    start = time.monotonic()
     with caplog.at_level("INFO"):
         result = await OpenClawClient().send_fill_notification(
             order, correlation_id="corr-fill-retry"
         )
+    elapsed = time.monotonic() - start
 
     assert result is not None
     assert mock_cli.post.call_count == 4
+    assert elapsed < 2.0
     assert "correlation_id=corr-fill-retry" in caplog.text
     assert "attempt=1" in caplog.text
     assert "attempt=4" in caplog.text
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("zero_delay_openclaw_retry_wait")
 @patch("app.services.openclaw_client.httpx.AsyncClient")
 async def test_send_fill_notification_returns_none_after_all_retries_fail(
     mock_httpx_client_cls: MagicMock,
@@ -385,18 +403,22 @@ async def test_send_fill_notification_returns_none_after_all_retries_fail(
     mock_client_instance.__aexit__.return_value = None
     mock_httpx_client_cls.return_value = mock_client_instance
 
+    start = time.monotonic()
     with caplog.at_level("INFO"):
         result = await OpenClawClient().send_fill_notification(
             order, correlation_id="corr-fill-failed"
         )
+    elapsed = time.monotonic() - start
 
     assert result is None
     assert mock_cli.post.call_count == 4
+    assert elapsed < 2.0
     assert "correlation_id=corr-fill-failed" in caplog.text
     assert "failed after retries" in caplog.text
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("zero_delay_openclaw_retry_wait")
 @patch("app.services.openclaw_client.httpx.AsyncClient")
 async def test_send_fill_notification_forwards_telegram_when_openclaw_fails(
     mock_httpx_client_cls: MagicMock,
@@ -436,13 +458,16 @@ async def test_send_fill_notification_forwards_telegram_when_openclaw_fails(
         lambda: mock_notifier,
     )
 
+    start = time.monotonic()
     with caplog.at_level("INFO"):
         result = await OpenClawClient().send_fill_notification(
             order, correlation_id="corr-openclaw-fail-mirror-success"
         )
+    elapsed = time.monotonic() - start
 
     assert result is None
     assert mock_cli.post.call_count == 4
+    assert elapsed < 2.0
     mock_notifier.notify_openclaw_message.assert_awaited_once()
     forwarded_message = mock_notifier.notify_openclaw_message.await_args.args[0]
     assert "체결 알림" in forwarded_message
@@ -687,6 +712,7 @@ async def test_send_scan_alert_skips_telegram_when_mirror_disabled(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("zero_delay_openclaw_retry_wait")
 @patch("app.services.openclaw_client.httpx.AsyncClient")
 async def test_send_scan_alert_returns_none_after_all_retries_fail(
     mock_httpx_client_cls: MagicMock,
@@ -706,13 +732,17 @@ async def test_send_scan_alert_returns_none_after_all_retries_fail(
     mock_client_instance.__aexit__.return_value = None
     mock_httpx_client_cls.return_value = mock_client_instance
 
+    start = time.monotonic()
     result = await OpenClawClient().send_scan_alert("scan message")
+    elapsed = time.monotonic() - start
 
     assert result is None
     assert mock_cli.post.call_count == 4
+    assert elapsed < 2.0
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("zero_delay_openclaw_retry_wait")
 @patch("app.services.openclaw_client.httpx.AsyncClient")
 async def test_send_scan_alert_forwards_telegram_when_openclaw_fails(
     mock_httpx_client_cls: MagicMock,
@@ -739,14 +769,18 @@ async def test_send_scan_alert_forwards_telegram_when_openclaw_fails(
         lambda: mock_notifier,
     )
 
+    start = time.monotonic()
     result = await OpenClawClient().send_scan_alert("scan message")
+    elapsed = time.monotonic() - start
 
     assert result is None
     assert mock_cli.post.call_count == 4
+    assert elapsed < 2.0
     mock_notifier.notify_openclaw_message.assert_awaited_once_with("scan message")
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("zero_delay_openclaw_retry_wait")
 @patch("app.services.openclaw_client.httpx.AsyncClient")
 async def test_send_watch_alert_forwards_telegram_when_openclaw_fails(
     mock_httpx_client_cls: MagicMock,
@@ -773,8 +807,11 @@ async def test_send_watch_alert_forwards_telegram_when_openclaw_fails(
         lambda: mock_notifier,
     )
 
+    start = time.monotonic()
     result = await OpenClawClient().send_watch_alert("watch message")
+    elapsed = time.monotonic() - start
 
     assert result is None
     assert mock_cli.post.call_count == 4
+    assert elapsed < 2.0
     mock_notifier.notify_openclaw_message.assert_awaited_once_with("watch message")

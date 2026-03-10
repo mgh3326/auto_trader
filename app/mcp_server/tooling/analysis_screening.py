@@ -202,6 +202,25 @@ async def _get_quote_impl(symbol: str, market_type: str) -> dict[str, Any] | Non
     return None
 
 
+def _build_kr_quote_from_ohlcv(
+    symbol: str, ohlcv_df: pd.DataFrame
+) -> dict[str, Any] | None:
+    if ohlcv_df.empty:
+        return None
+    last = ohlcv_df.iloc[-1].to_dict()
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_kr",
+        "price": last.get("close"),
+        "open": last.get("open"),
+        "high": last.get("high"),
+        "low": last.get("low"),
+        "volume": last.get("volume"),
+        "value": last.get("value"),
+        "source": "kis",
+    }
+
+
 async def _get_indicators_impl(
     symbol: str,
     indicators: list[str],

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Awaitable, Callable
 from datetime import date, timedelta
 from typing import Any
 
@@ -217,17 +218,286 @@ async def _fetch_html(url: str, params: dict[str, Any] | None = None) -> Beautif
         BeautifulSoup object of the parsed HTML
     """
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-        response = await client.get(url, params=params, headers=DEFAULT_HEADERS)
-        response.raise_for_status()
+        return await _fetch_html_with_client(client, url, params=params)
 
-        # Naver Finance uses EUC-KR encoding for some pages
-        content = response.content
+
+def _decode_html_content(content: bytes) -> str:
+    try:
+        return content.decode("euc-kr")
+    except UnicodeDecodeError:
+        return content.decode("utf-8", errors="replace")
+
+
+async def _fetch_html_with_client(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict[str, Any] | None = None,
+) -> BeautifulSoup:
+    response = await client.get(url, params=params, headers=DEFAULT_HEADERS)
+    response.raise_for_status()
+    return BeautifulSoup(_decode_html_content(response.content), "lxml")
+
+
+def _extract_current_price_from_main_soup(main_soup: BeautifulSoup) -> int | None:
+    price_elem = main_soup.select_one("p.no_today em span.blind")
+    if price_elem:
+        price = _parse_korean_number(price_elem.get_text(strip=True))
+        if price:
+            return int(price)
+
+    no_today = main_soup.select_one("p.no_today")
+    if no_today:
+        price = _parse_korean_number(no_today.get_text(strip=True))
+        if price:
+            return int(price)
+
+    return None
+
+
+def _parse_news_soup(soup: BeautifulSoup, limit: int) -> list[dict[str, Any]]:
+    news_items: list[dict[str, Any]] = []
+    table = soup.select_one("table.type5")
+    if not table:
+        return news_items
+
+    for row in table.select("tr"):
+        title_elem = row.select_one("td.title a")
+        if not title_elem:
+            continue
+
+        source_elem = row.select_one("td.info")
+        date_elem = row.select_one("td.date")
+        href = title_elem.get("href") or ""
+        href_str = href if isinstance(href, str) else ""
+        full_url = (
+            href_str if href_str.startswith("http") else NAVER_FINANCE_BASE + href_str
+        )
+        news_items.append(
+            {
+                "title": title_elem.get_text(strip=True),
+                "url": full_url,
+                "source": source_elem.get_text(strip=True) if source_elem else "",
+                "datetime": (
+                    _parse_naver_date(date_elem.get_text(strip=True))
+                    if date_elem
+                    else None
+                ),
+            }
+        )
+        if len(news_items) >= limit:
+            break
+
+    return news_items
+
+
+def _parse_report_detail_soup(soup: BeautifulSoup) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "target_price": None,
+        "rating": None,
+    }
+
+    info_div = soup.select_one("div.view_info_1")
+    if not info_div:
+        return result
+
+    target_elem = info_div.select_one("em.money strong")
+    if target_elem:
+        result["target_price"] = _parse_korean_number(target_elem.get_text(strip=True))
+
+    rating_elem = info_div.select_one("em.coment")
+    if rating_elem:
+        result["rating"] = rating_elem.get_text(strip=True)
+
+    return result
+
+
+def _collect_opinion_report_infos(
+    company_list_soup: BeautifulSoup,
+    limit: int,
+) -> list[dict[str, Any]]:
+    table = company_list_soup.select_one("table.type_1")
+    if not table:
+        return []
+
+    report_infos: list[dict[str, Any]] = []
+    seen_nids: set[str] = set()
+    rows = table.select("tbody tr, tr")
+    for row in rows:
+        cells = row.select("td")
+        if len(cells) < 5:
+            continue
+
         try:
-            html = content.decode("euc-kr")
-        except UnicodeDecodeError:
-            html = content.decode("utf-8", errors="replace")
+            title_elem = cells[1].select_one("a")
+            if not title_elem:
+                continue
 
-        return BeautifulSoup(html, "lxml")
+            href = title_elem.get("href") or ""
+            href_str = href if isinstance(href, str) else ""
+            nid_match = re.search(r"nid=(\d+)", href_str)
+            if not nid_match:
+                continue
+
+            nid = nid_match.group(1)
+            if nid in seen_nids:
+                continue
+            seen_nids.add(nid)
+
+            report_infos.append(
+                {
+                    "nid": nid,
+                    "stock_name": cells[0].get_text(strip=True),
+                    "title": title_elem.get_text(strip=True),
+                    "firm": cells[2].get_text(strip=True),
+                    "date": _parse_naver_date(cells[4].get_text(strip=True)),
+                    "url": (
+                        href_str
+                        if href_str.startswith("http")
+                        else NAVER_FINANCE_BASE + "/research/" + href_str
+                    ),
+                }
+            )
+            if len(report_infos) >= limit:
+                break
+        except (IndexError, ValueError):
+            continue
+
+    return report_infos
+
+
+async def _build_investment_opinions_from_company_list_soup(
+    code: str,
+    company_list_soup: BeautifulSoup,
+    limit: int,
+    *,
+    current_price: int | None,
+    detail_fetcher: Callable[[str], Awaitable[dict[str, Any] | None]],
+) -> dict[str, Any]:
+    opinions: dict[str, Any] = {
+        "symbol": code,
+        "count": 0,
+        "opinions": [],
+        "consensus": None,
+    }
+    report_infos = _collect_opinion_report_infos(company_list_soup, limit)
+    if report_infos:
+        detail_tasks = [detail_fetcher(info["nid"]) for info in report_infos]
+        details = await asyncio.gather(*detail_tasks, return_exceptions=True)
+
+        for info, detail in zip(report_infos, details, strict=True):
+            raw_rating = None
+            if isinstance(detail, dict):
+                raw_rating = detail.get("rating")
+
+            rating_label = normalize_rating_label(raw_rating)
+            opinions["opinions"].append(
+                {
+                    "stock_name": info["stock_name"],
+                    "title": info["title"],
+                    "firm": info["firm"],
+                    "date": info["date"],
+                    "url": info["url"],
+                    "target_price": detail.get("target_price")
+                    if isinstance(detail, dict)
+                    else None,
+                    "rating": rating_label,
+                    "rating_bucket": rating_to_bucket(rating_label),
+                }
+            )
+
+    opinions["count"] = len(opinions["opinions"])
+    opinions["consensus"] = build_consensus(opinions["opinions"], current_price)
+    return opinions
+
+
+def _parse_valuation_from_soups(
+    code: str,
+    main_soup: BeautifulSoup,
+    sise_soup: BeautifulSoup,
+) -> dict[str, Any]:
+    valuation: dict[str, Any] = {
+        "symbol": code,
+        "name": None,
+        "current_price": None,
+        "per": None,
+        "pbr": None,
+        "roe": None,
+        "roe_controlling": None,
+        "dividend_yield": None,
+        "high_52w": None,
+        "low_52w": None,
+        "current_position_52w": None,
+    }
+
+    name_elem = main_soup.select_one("div.wrap_company h2 a")
+    if name_elem:
+        valuation["name"] = name_elem.get_text(strip=True)
+
+    valuation["current_price"] = _extract_current_price_from_main_soup(main_soup)
+
+    per_elem = main_soup.select_one("em#_per")
+    if per_elem:
+        per_val = _parse_korean_number(per_elem.get_text(strip=True))
+        if per_val is not None and per_val != 0:
+            valuation["per"] = per_val
+
+    pbr_elem = main_soup.select_one("em#_pbr")
+    if pbr_elem:
+        pbr_val = _parse_korean_number(pbr_elem.get_text(strip=True))
+        if pbr_val is not None and pbr_val != 0:
+            valuation["pbr"] = pbr_val
+
+    dvr_elem = main_soup.select_one("em#_dvr")
+    if dvr_elem:
+        dvr_val = _parse_korean_number(dvr_elem.get_text(strip=True))
+        if dvr_val is not None:
+            valuation["dividend_yield"] = dvr_val / 100
+
+    for row in main_soup.select("tr"):
+        th = row.select_one("th")
+        if not th:
+            continue
+        th_text = th.get_text(strip=True)
+        if not th_text.startswith("ROE"):
+            continue
+        tds = row.select("td")
+        if not tds:
+            continue
+        roe_val = _parse_korean_number(tds[0].get_text(strip=True))
+        if roe_val is None:
+            continue
+        if "ROE(%)" in th_text:
+            valuation["roe"] = roe_val
+        elif "지배" in th_text:
+            valuation["roe_controlling"] = roe_val
+
+    for row in sise_soup.select("tr"):
+        cells = row.select("th, td")
+        for i, cell in enumerate(cells):
+            label = cell.get_text(strip=True)
+            if "52주 최고" in label or "52주최고" in label:
+                if i + 1 < len(cells):
+                    high_val = _parse_korean_number(cells[i + 1].get_text(strip=True))
+                    if high_val:
+                        valuation["high_52w"] = int(high_val)
+            elif "52주 최저" in label or "52주최저" in label:
+                if i + 1 < len(cells):
+                    low_val = _parse_korean_number(cells[i + 1].get_text(strip=True))
+                    if low_val:
+                        valuation["low_52w"] = int(low_val)
+
+    if (
+        valuation["current_price"] is not None
+        and valuation["high_52w"] is not None
+        and valuation["low_52w"] is not None
+    ):
+        high = valuation["high_52w"]
+        low = valuation["low_52w"]
+        current = valuation["current_price"]
+        if high > low:
+            valuation["current_position_52w"] = round((current - low) / (high - low), 2)
+
+    return valuation
 
 
 # ---------------------------------------------------------------------------
@@ -248,55 +518,9 @@ async def fetch_news(code: str, limit: int = 20) -> list[dict[str, Any]]:
     Returns:
         List of news items with title, source, datetime, url
     """
-    # The main news.naver page loads news via iframe
-    # We directly fetch the iframe content: news_news.naver
     url = f"{NAVER_FINANCE_ITEM}/news_news.naver"
     soup = await _fetch_html(url, params={"code": code, "page": "", "clusterId": ""})
-
-    news_items: list[dict[str, Any]] = []
-
-    # Parse news table - structure: <table class="type5">
-    # The news table contains both company news and disclosure news
-    table = soup.select_one("table.type5")
-    if not table:
-        return []
-
-    rows = table.select("tr")
-    for row in rows:
-        # Skip header rows and empty rows
-        title_elem = row.select_one("td.title a")
-        if not title_elem:
-            continue
-
-        # Extract source (media name)
-        source_elem = row.select_one("td.info")
-
-        # Extract date
-        date_elem = row.select_one("td.date")
-
-        href = title_elem.get("href") or ""
-        href_str = href if isinstance(href, str) else ""
-        full_url = (
-            href_str if href_str.startswith("http") else NAVER_FINANCE_BASE + href_str
-        )
-
-        news_items.append(
-            {
-                "title": title_elem.get_text(strip=True),
-                "url": full_url,
-                "source": source_elem.get_text(strip=True) if source_elem else "",
-                "datetime": (
-                    _parse_naver_date(date_elem.get_text(strip=True))
-                    if date_elem
-                    else None
-                ),
-            }
-        )
-
-        if len(news_items) >= limit:
-            break
-
-    return news_items
+    return _parse_news_soup(soup, limit)
 
 
 # ---------------------------------------------------------------------------
@@ -575,45 +799,21 @@ async def fetch_investor_trends(code: str, days: int = 20) -> dict[str, Any]:
 
 
 async def _fetch_report_detail(nid: str) -> dict[str, Any] | None:
-    """Fetch individual report page to get target price and rating.
-
-    Args:
-        nid: Report ID from Naver Finance
-
-    Returns:
-        Dictionary with target_price and rating, or None if not found
-    """
-    url = f"{NAVER_FINANCE_BASE}/research/company_read.naver"
-
     try:
+        url = f"{NAVER_FINANCE_BASE}/research/company_read.naver"
         soup = await _fetch_html(url, params={"nid": nid})
+        return _parse_report_detail_soup(soup)
+    except Exception:
+        return None
 
-        result: dict[str, Any] = {
-            "target_price": None,
-            "rating": None,
-        }
 
-        # Find view_info_1 div which contains target price and rating
-        # Structure: <div class="view_info_1">
-        #     목표가 <em class="money"><strong>183,000</strong></em>
-        #     투자의견 <em class="coment">매수</em>
-        # </div>
-        info_div = soup.select_one("div.view_info_1")
-        if info_div:
-            # Target price from em.money > strong
-            target_elem = info_div.select_one("em.money strong")
-            if target_elem:
-                result["target_price"] = _parse_korean_number(
-                    target_elem.get_text(strip=True)
-                )
-
-            # Rating from em.coment
-            rating_elem = info_div.select_one("em.coment")
-            if rating_elem:
-                result["rating"] = rating_elem.get_text(strip=True)
-
-        return result
-
+async def _fetch_report_detail_with_client(
+    client: httpx.AsyncClient, nid: str
+) -> dict[str, Any] | None:
+    try:
+        url = f"{NAVER_FINANCE_BASE}/research/company_read.naver"
+        soup = await _fetch_html_with_client(client, url, params={"nid": nid})
+        return _parse_report_detail_soup(soup)
     except Exception:
         return None
 
@@ -630,22 +830,7 @@ async def _fetch_current_price(code: str) -> int | None:
     try:
         url = f"{NAVER_FINANCE_ITEM}/main.naver"
         soup = await _fetch_html(url, params={"code": code})
-
-        # Try span.blind inside p.no_today
-        price_elem = soup.select_one("p.no_today em span.blind")
-        if price_elem:
-            price = _parse_korean_number(price_elem.get_text(strip=True))
-            if price:
-                return int(price)
-
-        # Fallback: try p.no_today directly
-        no_today = soup.select_one("p.no_today")
-        if no_today:
-            price = _parse_korean_number(no_today.get_text(strip=True))
-            if price:
-                return int(price)
-
-        return None
+        return _extract_current_price_from_main_soup(soup)
     except Exception:
         return None
 
@@ -668,105 +853,91 @@ async def fetch_investment_opinions(code: str, limit: int = 10) -> dict[str, Any
         - consensus: Aggregated statistics (buy/hold/sell counts, target prices, upside_pct)
     """
     url = f"{NAVER_FINANCE_BASE}/research/company_list.naver"
-    soup = await _fetch_html(url, params={"searchType": "itemCode", "itemCode": code})
-
-    opinions: dict[str, Any] = {
-        "symbol": code,
-        "count": 0,
-        "opinions": [],
-        "consensus": None,
-    }
-
-    # Parse research report table - <table class="type_1">
-    # Current structure (as of 2025):
-    # Cell 0: 종목명 (link)
-    # Cell 1: 리포트 제목 (link with nid)
-    # Cell 2: 증권사
-    # Cell 3: PDF 링크 (empty text)
-    # Cell 4: 날짜
-    # Cell 5: 조회수
-    table = soup.select_one("table.type_1")
-    if not table:
-        return opinions
-
-    # Collect report info first
-    report_infos: list[dict[str, Any]] = []
-
-    rows = table.select("tbody tr, tr")
-    for row in rows:
-        cells = row.select("td")
-        # Need at least 5 cells (종목명, 제목, 증권사, PDF, 날짜)
-        if len(cells) < 5:
-            continue
-
-        try:
-            # Skip if this is a header row or ad row
-            title_elem = cells[1].select_one("a")
-            if not title_elem:
-                continue
-
-            # Extract report ID from href
-            href = title_elem.get("href") or ""
-            href_str = href if isinstance(href, str) else ""
-            nid_match = re.search(r"nid=(\d+)", href_str)
-            if not nid_match:
-                continue
-
-            nid = nid_match.group(1)
-
-            report_info = {
-                "nid": nid,
-                "stock_name": cells[0].get_text(strip=True),
-                "title": title_elem.get_text(strip=True),
-                "firm": cells[2].get_text(strip=True),
-                "date": _parse_naver_date(cells[4].get_text(strip=True)),
-                "url": (
-                    href_str
-                    if href_str.startswith("http")
-                    else NAVER_FINANCE_BASE + "/research/" + href_str
-                ),
-            }
-
-            report_infos.append(report_info)
-
-            if len(report_infos) >= limit:
-                break
-        except (IndexError, ValueError):
-            continue
-
-    # Fetch details for each report (target_price and rating)
-    # Use asyncio.gather for concurrent fetching
-    if report_infos:
-        detail_tasks = [_fetch_report_detail(info["nid"]) for info in report_infos]
-        details = await asyncio.gather(*detail_tasks, return_exceptions=True)
-
-        for info, detail in zip(report_infos, details, strict=True):
-            raw_rating = None
-            if isinstance(detail, dict):
-                raw_rating = detail.get("rating")
-
-            rating_label = normalize_rating_label(raw_rating)
-            opinion = {
-                "stock_name": info["stock_name"],
-                "title": info["title"],
-                "firm": info["firm"],
-                "date": info["date"],
-                "url": info["url"],
-                "target_price": detail.get("target_price")
-                if isinstance(detail, dict)
-                else None,
-                "rating": rating_label,
-                "rating_bucket": rating_to_bucket(rating_label),
-            }
-
-            opinions["opinions"].append(opinion)
-
-    opinions["count"] = len(opinions["opinions"])
-
+    company_list_soup = await _fetch_html(
+        url, params={"searchType": "itemCode", "itemCode": code}
+    )
     current_price = await _fetch_current_price(code)
-    opinions["consensus"] = build_consensus(opinions["opinions"], current_price)
+    return await _build_investment_opinions_from_company_list_soup(
+        code,
+        company_list_soup,
+        limit,
+        current_price=current_price,
+        detail_fetcher=_fetch_report_detail,
+    )
 
-    return opinions
+
+async def _fetch_kr_snapshot(
+    code: str,
+    *,
+    news_limit: int = 5,
+    opinion_limit: int = 10,
+) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        main_url = f"{NAVER_FINANCE_ITEM}/main.naver"
+        sise_url = f"{NAVER_FINANCE_ITEM}/sise.naver"
+        news_url = f"{NAVER_FINANCE_ITEM}/news_news.naver"
+        company_list_url = f"{NAVER_FINANCE_BASE}/research/company_list.naver"
+        page_results = await asyncio.gather(
+            _fetch_html_with_client(client, main_url, params={"code": code}),
+            _fetch_html_with_client(client, sise_url, params={"code": code}),
+            _fetch_html_with_client(
+                client,
+                news_url,
+                params={"code": code, "page": "", "clusterId": ""},
+            ),
+            _fetch_html_with_client(
+                client,
+                company_list_url,
+                params={"searchType": "itemCode", "itemCode": code},
+            ),
+            return_exceptions=True,
+        )
+        main_soup = (
+            page_results[0] if isinstance(page_results[0], BeautifulSoup) else None
+        )
+        sise_soup = (
+            page_results[1] if isinstance(page_results[1], BeautifulSoup) else None
+        )
+        news_soup = (
+            page_results[2] if isinstance(page_results[2], BeautifulSoup) else None
+        )
+        company_list_soup = (
+            page_results[3] if isinstance(page_results[3], BeautifulSoup) else None
+        )
+
+        snapshot: dict[str, Any] = {
+            "valuation": None,
+            "news": None,
+            "opinions": None,
+        }
+
+        if main_soup is not None and sise_soup is not None:
+            snapshot["valuation"] = _parse_valuation_from_soups(
+                code, main_soup, sise_soup
+            )
+
+        if news_soup is not None:
+            snapshot["news"] = _parse_news_soup(news_soup, news_limit)
+
+        if company_list_soup is not None:
+            current_price = (
+                _extract_current_price_from_main_soup(main_soup)
+                if main_soup is not None
+                else None
+            )
+            snapshot[
+                "opinions"
+            ] = await _build_investment_opinions_from_company_list_soup(
+                code,
+                company_list_soup,
+                opinion_limit,
+                current_price=current_price,
+                detail_fetcher=lambda nid: _fetch_report_detail_with_client(
+                    client, nid
+                ),
+            )
+
+        return snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -788,129 +959,13 @@ async def fetch_valuation(code: str) -> dict[str, Any]:
         Valuation metrics including PER, PBR, ROE, dividend_yield,
         52-week high/low, current price, and current_position_52w
     """
-    import asyncio
-
-    valuation: dict[str, Any] = {
-        "symbol": code,
-        "name": None,
-        "current_price": None,
-        "per": None,
-        "pbr": None,
-        "roe": None,
-        "roe_controlling": None,
-        "dividend_yield": None,
-        "high_52w": None,
-        "low_52w": None,
-        "current_position_52w": None,
-    }
-
-    # Fetch both pages concurrently
     main_url = f"{NAVER_FINANCE_ITEM}/main.naver"
     sise_url = f"{NAVER_FINANCE_ITEM}/sise.naver"
-
     main_soup, sise_soup = await asyncio.gather(
         _fetch_html(main_url, params={"code": code}),
         _fetch_html(sise_url, params={"code": code}),
     )
-
-    # === Parse main.naver page ===
-
-    # Company name from <div class="wrap_company">
-    name_elem = main_soup.select_one("div.wrap_company h2 a")
-    if name_elem:
-        valuation["name"] = name_elem.get_text(strip=True)
-
-    # Current price from <p class="no_today">
-    # The actual value is in span.blind inside em
-    price_elem = main_soup.select_one("p.no_today em span.blind")
-    if price_elem:
-        valuation["current_price"] = _parse_korean_number(
-            price_elem.get_text(strip=True)
-        )
-
-    # Fallback: try getting from no_today directly
-    if valuation["current_price"] is None:
-        no_today = main_soup.select_one("p.no_today")
-        if no_today:
-            # Get text and parse
-            price_text = no_today.get_text(strip=True)
-            valuation["current_price"] = _parse_korean_number(price_text)
-
-    # PER, PBR, dividend yield from ID-based elements (most reliable)
-    per_elem = main_soup.select_one("em#_per")
-    if per_elem:
-        per_val = _parse_korean_number(per_elem.get_text(strip=True))
-        if per_val is not None and per_val != 0:
-            valuation["per"] = per_val
-
-    pbr_elem = main_soup.select_one("em#_pbr")
-    if pbr_elem:
-        pbr_val = _parse_korean_number(pbr_elem.get_text(strip=True))
-        if pbr_val is not None and pbr_val != 0:
-            valuation["pbr"] = pbr_val
-
-    # Dividend yield (배당수익률) - em#_dvr
-    dvr_elem = main_soup.select_one("em#_dvr")
-    if dvr_elem:
-        dvr_text = dvr_elem.get_text(strip=True)
-        # dvr is already a percentage value like "1.05"
-        dvr_val = _parse_korean_number(dvr_text)
-        if dvr_val is not None:
-            # Convert to decimal (1.05% -> 0.0105)
-            valuation["dividend_yield"] = dvr_val / 100
-
-    # ROE from table (look for ROE label in th elements)
-    # ROE(%) -> roe, ROE(지배주주) -> roe_controlling
-    for row in main_soup.select("tr"):
-        th = row.select_one("th")
-        if th:
-            th_text = th.get_text(strip=True)
-            if th_text.startswith("ROE"):
-                tds = row.select("td")
-                if tds:
-                    # First td is the most recent value
-                    roe_val = _parse_korean_number(tds[0].get_text(strip=True))
-                    if roe_val is not None:
-                        if "ROE(%)" in th_text:
-                            valuation["roe"] = roe_val
-                        elif "지배" in th_text:  # ROE(지배주주)
-                            valuation["roe_controlling"] = roe_val
-
-    # === Parse sise.naver page for 52-week high/low ===
-
-    # Find rows with "52주 최고" and "52주 최저" labels
-    for row in sise_soup.select("tr"):
-        cells = row.select("th, td")
-        for i, cell in enumerate(cells):
-            label = cell.get_text(strip=True)
-
-            if "52주 최고" in label or "52주최고" in label:
-                # Value is in next cell
-                if i + 1 < len(cells):
-                    high_val = _parse_korean_number(cells[i + 1].get_text(strip=True))
-                    if high_val:
-                        valuation["high_52w"] = int(high_val)
-            elif "52주 최저" in label or "52주최저" in label:
-                if i + 1 < len(cells):
-                    low_val = _parse_korean_number(cells[i + 1].get_text(strip=True))
-                    if low_val:
-                        valuation["low_52w"] = int(low_val)
-
-    # Calculate current_position_52w if we have all required values
-    if (
-        valuation["current_price"] is not None
-        and valuation["high_52w"] is not None
-        and valuation["low_52w"] is not None
-    ):
-        high = valuation["high_52w"]
-        low = valuation["low_52w"]
-        current = valuation["current_price"]
-
-        if high > low:
-            position = (current - low) / (high - low)
-            valuation["current_position_52w"] = round(position, 2)
-
-    return valuation
+    return _parse_valuation_from_soups(code, main_soup, sise_soup)
 
 
 # ---------------------------------------------------------------------------
@@ -1066,7 +1121,7 @@ async def _fetch_short_data_from_pykrx(
                 for idx, row in df_short.iterrows():
                     date_str = (
                         idx.strftime("%Y-%m-%d")
-                        if hasattr(idx, "strftime")
+                        if isinstance(idx, pd.Timestamp)
                         else str(idx)
                     )
 
@@ -1449,7 +1504,9 @@ async def _fetch_sector_stock_codes(
 
         codes: list[str] = []
         for a in table.select("a[href*='code=']"):
-            m = re.search(r"code=(\w{6})", a.get("href", ""))
+            href = a.get("href")
+            href_str = href if isinstance(href, str) else ""
+            m = re.search(r"code=(\w{6})", href_str)
             if m:
                 codes.append(m.group(1))
         return codes

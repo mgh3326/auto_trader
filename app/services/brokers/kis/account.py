@@ -23,12 +23,53 @@ def extract_domestic_cash_summary_from_integrated_margin(
         except (ValueError, TypeError):
             return default
 
+    def optional_float(val: Any) -> float | None:
+        if val in ("", None):
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+
+    def first_available_float(*candidates: Any, default: float = 0.0) -> float:
+        for candidate in candidates:
+            parsed = optional_float(candidate)
+            if parsed is not None:
+                return parsed
+        return default
+
+    def first_usable_positive_float(*candidates: Any, default: float = 0.0) -> float:
+        first_numeric: float | None = None
+        for candidate in candidates:
+            parsed = optional_float(candidate)
+            if parsed is None:
+                continue
+            if first_numeric is None:
+                first_numeric = parsed
+            if parsed > 0:
+                return parsed
+        if first_numeric is not None:
+            return first_numeric
+        return default
+
     raw = margin_data.get("raw")
     raw_payload = raw if isinstance(raw, dict) else margin_data
 
     return {
-        "balance": safe_float(margin_data.get("stck_cash_objt_amt")),
-        "orderable": safe_float(margin_data.get("stck_itgr_cash100_ord_psbl_amt")),
+        "balance": first_available_float(
+            margin_data.get("stck_cash_objt_amt"),
+            raw_payload.get("stck_cash_objt_amt"),
+        ),
+        "orderable": first_usable_positive_float(
+            margin_data.get("stck_cash100_max_ord_psbl_amt"),
+            raw_payload.get("stck_cash100_max_ord_psbl_amt"),
+            margin_data.get("stck_itgr_cash100_ord_psbl_amt"),
+            raw_payload.get("stck_itgr_cash100_ord_psbl_amt"),
+            margin_data.get("stck_cash_ord_psbl_amt"),
+            raw_payload.get("stck_cash_ord_psbl_amt"),
+            margin_data.get("stck_cash_objt_amt"),
+            raw_payload.get("stck_cash_objt_amt"),
+        ),
         "raw": raw_payload,
     }
 
@@ -361,7 +402,7 @@ class AccountClient:
             except (ValueError, TypeError):
                 return default
 
-        def optional_float(val: object) -> float | None:
+        def optional_float(val: Any) -> float | None:
             if val in ("", None):
                 return None
             try:
@@ -528,6 +569,7 @@ class AccountClient:
             통합 증거금 정보
             - dnca_tot_amt: 원화 예수금
             - stck_cash_objt_amt: 국내 주식 현금 대상 금액
+            - stck_cash100_max_ord_psbl_amt: 국내 주식 현금 100% 최대 주문가능금액
             - stck_itgr_cash100_ord_psbl_amt: 국내 주식 100% 통합 현금 주문가능금액
             - stck_cash_ord_psbl_amt: 원화 주문가능금액
             - usd_ord_psbl_amt: 달러 주문가능금액
@@ -629,6 +671,9 @@ class AccountClient:
             output.get("dnca_tot_amt") or output.get("stck_cash_objt_amt")
         )
         stck_cash_objt_amt = safe_float(output.get("stck_cash_objt_amt"))
+        stck_cash100_max_ord_psbl_amt = safe_float(
+            output.get("stck_cash100_max_ord_psbl_amt")
+        )
         stck_itgr_cash100_ord_psbl_amt = safe_float(
             output.get("stck_itgr_cash100_ord_psbl_amt")
         )
@@ -653,6 +698,7 @@ class AccountClient:
         return {
             "dnca_tot_amt": dnca_tot_amt,
             "stck_cash_objt_amt": stck_cash_objt_amt,
+            "stck_cash100_max_ord_psbl_amt": stck_cash100_max_ord_psbl_amt,
             "stck_itgr_cash100_ord_psbl_amt": stck_itgr_cash100_ord_psbl_amt,
             "stck_cash_ord_psbl_amt": stck_cash_ord_psbl_amt,
             "usd_ord_psbl_amt": usd_ord_psbl_amt,

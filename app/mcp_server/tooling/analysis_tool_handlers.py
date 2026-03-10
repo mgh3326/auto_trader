@@ -18,10 +18,47 @@ from app.mcp_server.tooling import analysis_screening
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
+from app.mcp_server.tooling.shared import (
+    is_crypto_market as _is_crypto_market,
+)
+from app.mcp_server.tooling.shared import (
+    is_korean_equity_code as _is_korean_equity_code,
+)
+from app.mcp_server.tooling.shared import (
+    is_us_equity_symbol as _is_us_equity_symbol,
+)
 from app.monitoring import build_yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
 
 logger = logging.getLogger(__name__)
+
+_CORRELATION_COMPANY_NAME_ERROR = (
+    "get_correlation does not support company-name inputs because it has no "
+    "market parameter. Use ticker/code inputs directly."
+)
+
+
+def _looks_like_correlation_company_name(symbol: str) -> bool:
+    normalized_symbol = analysis_screening._normalize_symbol_input(symbol, None)
+    if not normalized_symbol:
+        return False
+    if _is_crypto_market(normalized_symbol):
+        return False
+    if _is_korean_equity_code(normalized_symbol):
+        return False
+    if _is_us_equity_symbol(normalized_symbol):
+        return False
+    return any(ch.isalpha() for ch in normalized_symbol)
+
+
+def _resolve_correlation_symbol_input(symbol: str | int) -> tuple[str, str]:
+    normalized_symbol = analysis_screening._normalize_symbol_input(symbol, None)
+    if not normalized_symbol:
+        raise ValueError("symbol is required")
+    if _looks_like_correlation_company_name(normalized_symbol):
+        raise ValueError(_CORRELATION_COMPANY_NAME_ERROR)
+    return analysis_screening._resolve_market_type(normalized_symbol, None)
+
 
 name_to_corp_map: dict[str, Any]
 prime_index: Any | None
@@ -259,16 +296,25 @@ async def get_correlation_impl(
 
     source_map = {"crypto": "upbit", "equity_kr": "kis", "equity_us": "yahoo"}
     errors: list[str] = []
+    company_name_validation_errors: list[str] = []
     price_data: dict[str, list[float]] = {}
     market_types: dict[str, str] = {}
 
-    async def fetch_prices(symbol: str) -> None:
+    async def fetch_prices(
+        symbol: str,
+    ) -> tuple[str | None, str | None, list[float] | None, str | None, bool]:
         try:
-            market_type, normalized_symbol = analysis_screening._resolve_market_type(
-                symbol, None
+            market_type, normalized_symbol = _resolve_correlation_symbol_input(symbol)
+        except Exception as exc:
+            return (
+                None,
+                None,
+                None,
+                f"{symbol}: {str(exc)}",
+                str(exc) == _CORRELATION_COMPANY_NAME_ERROR,
             )
-            market_types[normalized_symbol] = market_type
 
+        try:
             df = await _fetch_ohlcv_for_indicators(
                 normalized_symbol,
                 market_type,
@@ -280,13 +326,30 @@ async def get_correlation_impl(
                 raise ValueError(f"Missing close price data for symbol '{symbol}'")
 
             prices = df["close"].tolist()
-            price_data[normalized_symbol] = prices
+            return normalized_symbol, market_type, prices, None, False
         except Exception as exc:
-            errors.append(f"{symbol}: {str(exc)}")
+            return None, None, None, f"{symbol}: {str(exc)}", False
 
-    await asyncio.gather(*[fetch_prices(sym) for sym in symbols])
+    results = await asyncio.gather(*[fetch_prices(sym) for sym in symbols])
+
+    for normalized_symbol, market_type, prices, error, is_validation_error in results:
+        if error is not None:
+            errors.append(error)
+            if is_validation_error:
+                company_name_validation_errors.append(error)
+            continue
+        if normalized_symbol is None or market_type is None or prices is None:
+            continue
+        market_types[normalized_symbol] = market_type
+        price_data[normalized_symbol] = prices
 
     if len(price_data) < 2:
+        if company_name_validation_errors:
+            return {
+                "success": False,
+                "error": _CORRELATION_COMPANY_NAME_ERROR,
+                "errors": errors,
+            }
         return {
             "success": False,
             "error": (

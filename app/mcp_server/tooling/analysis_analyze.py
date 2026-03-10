@@ -11,6 +11,7 @@ from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_news_finnhub,
 )
 from app.mcp_server.tooling.fundamentals_sources_naver import (
+    _fetch_analysis_snapshot_naver,
     _fetch_investment_opinions_naver,
     _fetch_investment_opinions_yfinance,
     _fetch_news_naver,
@@ -35,6 +36,13 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
 from app.monitoring import build_yfinance_tracing_session
 
+# Keep direct KR helper bindings available for test monkeypatch compatibility.
+_KR_ANALYZE_PATCH_SURFACES = (
+    _fetch_investment_opinions_naver,
+    _fetch_news_naver,
+    _fetch_valuation_naver,
+)
+
 
 async def _get_quote_impl(symbol: str, market_type: str) -> dict[str, Any] | None:
     if market_type == "crypto":
@@ -44,6 +52,26 @@ async def _get_quote_impl(symbol: str, market_type: str) -> dict[str, Any] | Non
     if market_type == "equity_us":
         return await _fetch_quote_equity_us(symbol)
     return None
+
+
+def _build_kr_quote_from_ohlcv(
+    symbol: str, ohlcv_df: pd.DataFrame
+) -> dict[str, Any] | None:
+    if ohlcv_df.empty:
+        return None
+
+    last = ohlcv_df.iloc[-1].to_dict()
+    return {
+        "symbol": symbol,
+        "instrument_type": "equity_kr",
+        "price": last.get("close"),
+        "open": last.get("open"),
+        "high": last.get("high"),
+        "low": last.get("low"),
+        "volume": last.get("volume"),
+        "value": last.get("value"),
+        "source": "kis",
+    }
 
 
 async def _get_indicators_impl(
@@ -89,44 +117,67 @@ async def analyze_stock_impl(
         "source": source,
     }
 
-    tasks: list[asyncio.Task[Any]] = []
-
+    named_tasks: list[tuple[str, asyncio.Task[Any]]] = []
+    loop = asyncio.get_running_loop()
     ohlcv_df = await _fetch_ohlcv_for_indicators(
         normalized_symbol, market_type, count=250
     )
     ohlcv_60d = ohlcv_df.tail(60) if len(ohlcv_df) >= 60 else ohlcv_df
 
-    loop = asyncio.get_running_loop()
+    preloaded_quote = None
+    if market_type == "equity_kr":
+        preloaded_quote = _build_kr_quote_from_ohlcv(normalized_symbol, ohlcv_df)
+        if preloaded_quote is None:
+            named_tasks.append(
+                (
+                    "quote",
+                    asyncio.create_task(
+                        _get_quote_impl(normalized_symbol, market_type)
+                    ),
+                )
+            )
+    else:
+        named_tasks.append(
+            (
+                "quote",
+                asyncio.create_task(_get_quote_impl(normalized_symbol, market_type)),
+            )
+        )
 
-    quote_task = asyncio.create_task(_get_quote_impl(normalized_symbol, market_type))
-    tasks.append(quote_task)
-
-    indicators_task = asyncio.create_task(
-        _get_indicators_impl(
-            normalized_symbol,
-            ["rsi", "macd", "bollinger", "sma"],
-            None,
-            preloaded_df=ohlcv_df,
+    named_tasks.append(
+        (
+            "indicators",
+            asyncio.create_task(
+                _get_indicators_impl(
+                    normalized_symbol,
+                    ["rsi", "macd", "bollinger", "sma"],
+                    None,
+                    preloaded_df=ohlcv_df,
+                )
+            ),
         ),
     )
-    tasks.append(indicators_task)
 
-    sr_task = asyncio.create_task(
-        _get_support_resistance_impl(normalized_symbol, None, preloaded_df=ohlcv_60d),
+    named_tasks.append(
+        (
+            "support_resistance",
+            asyncio.create_task(
+                _get_support_resistance_impl(
+                    normalized_symbol, None, preloaded_df=ohlcv_60d
+                )
+            ),
+        )
     )
-    tasks.append(sr_task)
 
     if market_type == "equity_kr":
-        valuation_task = asyncio.create_task(_fetch_valuation_naver(normalized_symbol))
-        tasks.append(valuation_task)
-
-        news_task = asyncio.create_task(_fetch_news_naver(normalized_symbol, 5))
-        tasks.append(news_task)
-
-        opinions_task = asyncio.create_task(
-            _fetch_investment_opinions_naver(normalized_symbol, 10),
+        named_tasks.append(
+            (
+                "kr_snapshot",
+                asyncio.create_task(
+                    _fetch_analysis_snapshot_naver(normalized_symbol, 5, 10)
+                ),
+            )
         )
-        tasks.append(opinions_task)
 
     elif market_type == "equity_us":
         yf_session = build_yfinance_tracing_session()
@@ -156,33 +207,48 @@ async def analyze_stock_impl(
 
         yf_snapshot = await loop.run_in_executor(None, _collect_yf_snapshot)
 
-        valuation_task = asyncio.create_task(
-            _fetch_valuation_yfinance(
-                normalized_symbol, snapshot=yf_snapshot, session=yf_session
-            ),
+        named_tasks.append(
+            (
+                "valuation",
+                asyncio.create_task(
+                    _fetch_valuation_yfinance(
+                        normalized_symbol, snapshot=yf_snapshot, session=yf_session
+                    )
+                ),
+            )
         )
-        tasks.append(valuation_task)
-
-        profile_task = asyncio.create_task(
-            _fetch_company_profile_finnhub(normalized_symbol),
+        named_tasks.append(
+            (
+                "profile",
+                asyncio.create_task(_fetch_company_profile_finnhub(normalized_symbol)),
+            )
         )
-        tasks.append(profile_task)
-
-        news_task = asyncio.create_task(_fetch_news_finnhub(normalized_symbol, "us", 5))
-        tasks.append(news_task)
-
-        opinions_task = asyncio.create_task(
-            _fetch_investment_opinions_yfinance(
-                normalized_symbol, 10, snapshot=yf_snapshot, session=yf_session
-            ),
+        named_tasks.append(
+            (
+                "news",
+                asyncio.create_task(_fetch_news_finnhub(normalized_symbol, "us", 5)),
+            )
         )
-        tasks.append(opinions_task)
+        named_tasks.append(
+            (
+                "opinions",
+                asyncio.create_task(
+                    _fetch_investment_opinions_yfinance(
+                        normalized_symbol, 10, snapshot=yf_snapshot, session=yf_session
+                    )
+                ),
+            )
+        )
 
     elif market_type == "crypto":
-        news_task = asyncio.create_task(
-            _fetch_news_finnhub(normalized_symbol, "crypto", 5),
+        named_tasks.append(
+            (
+                "news",
+                asyncio.create_task(
+                    _fetch_news_finnhub(normalized_symbol, "crypto", 5)
+                ),
+            )
         )
-        tasks.append(news_task)
 
     if include_peers and market_type != "crypto":
         if market_type == "equity_kr":
@@ -193,21 +259,20 @@ async def analyze_stock_impl(
             peers_task = asyncio.create_task(
                 _fetch_sector_peers_us(normalized_symbol, 10),
             )
-        tasks.append(peers_task)
+        named_tasks.append(("sector_peers", peers_task))
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    results = await asyncio.gather(
+        *(task for _, task in named_tasks), return_exceptions=True
+    )
+    task_results = {
+        name: result
+        for (name, _), result in zip(named_tasks, results, strict=True)
+        if not isinstance(result, Exception)
+    }
 
-    quote = None
-    if not isinstance(results[0], Exception):
-        quote = results[0]
-
-    indicators = None
-    if not isinstance(results[1], Exception) and len(results) > 1:
-        indicators = results[1]
-
-    support_resistance = None
-    if not isinstance(results[2], Exception) and len(results) > 2:
-        support_resistance = results[2]
+    quote = preloaded_quote or task_results.get("quote")
+    indicators = task_results.get("indicators")
+    support_resistance = task_results.get("support_resistance")
 
     if quote:
         analysis["quote"] = quote
@@ -218,44 +283,33 @@ async def analyze_stock_impl(
     if support_resistance:
         analysis["support_resistance"] = support_resistance
 
-    task_idx = 3
     if market_type == "equity_kr":
-        if not isinstance(results[task_idx], Exception):
-            analysis["valuation"] = results[task_idx]
-        task_idx += 1
-
-        if not isinstance(results[task_idx], Exception):
-            analysis["news"] = results[task_idx]
-        task_idx += 1
-
-        if not isinstance(results[task_idx], Exception):
-            analysis["opinions"] = results[task_idx]
-        task_idx += 1
+        kr_snapshot = task_results.get("kr_snapshot")
+        if isinstance(kr_snapshot, dict):
+            if "valuation" in kr_snapshot:
+                analysis["valuation"] = kr_snapshot["valuation"]
+            if "news" in kr_snapshot:
+                analysis["news"] = kr_snapshot["news"]
+            if "opinions" in kr_snapshot:
+                analysis["opinions"] = kr_snapshot["opinions"]
 
     elif market_type == "equity_us":
-        if not isinstance(results[task_idx], Exception):
-            analysis["valuation"] = results[task_idx]
-        task_idx += 1
-
-        if not isinstance(results[task_idx], Exception):
-            analysis["profile"] = results[task_idx]
-        task_idx += 1
-
-        if not isinstance(results[task_idx], Exception):
-            analysis["news"] = results[task_idx]
-        task_idx += 1
-
-        if not isinstance(results[task_idx], Exception):
-            analysis["opinions"] = results[task_idx]
-        task_idx += 1
+        if "valuation" in task_results:
+            analysis["valuation"] = task_results["valuation"]
+        if "profile" in task_results:
+            analysis["profile"] = task_results["profile"]
+        if "news" in task_results:
+            analysis["news"] = task_results["news"]
+        if "opinions" in task_results:
+            analysis["opinions"] = task_results["opinions"]
 
     elif market_type == "crypto":
-        if not isinstance(results[task_idx], Exception):
-            analysis["news"] = results[task_idx]
+        if "news" in task_results:
+            analysis["news"] = task_results["news"]
 
     if include_peers and market_type != "crypto":
-        if not isinstance(results[task_idx], Exception):
-            analysis["sector_peers"] = results[task_idx]
+        if "sector_peers" in task_results:
+            analysis["sector_peers"] = task_results["sector_peers"]
 
     if errors:
         analysis["errors"] = errors
