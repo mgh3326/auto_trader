@@ -114,6 +114,20 @@ Response format:
 - Upbit prerequisite: run `make sync-upbit-symbol-universe` (or `uv run python scripts/sync_upbit_symbol_universe.py`) right after migrations.
 - Scheduled sync task `symbols.upbit.universe.sync` runs daily at `06:15` KST (`cron: 15 6 * * *`, `cron_offset: Asia/Seoul`).
 
+### Company-name inputs
+- Read-only symbol tools support company-name inputs only when `market` is supplied explicitly.
+- `get_correlation` is the current exception: it has no `market` parameter, so it accepts ticker/code inputs only and rejects company-name inputs under the current API.
+- Supported explicit-market name resolution uses DB-backed universes only:
+  - `market="kr"` -> `kr_symbol_universe`
+  - `market="us"` -> `us_symbol_universe`
+- When a company name is missing, inactive, or ambiguous in the relevant universe, the tool returns the underlying lookup error with the existing sync hint.
+- When `market` is omitted for a company-name input (for example `삼성전자` or `Apple Inc.`), tools fail fast with:
+  - `"market is required for company-name inputs. Provide market='kr' or market='us', or use a ticker/code directly."`
+- For `get_correlation`, company-name inputs fail with:
+  - `"get_correlation does not support company-name inputs because it has no market parameter. Use ticker/code inputs directly."`
+- Runtime never infers `equity_us` from non-ASCII letters alone.
+- Order-entry tools do not use this company-name resolution path; they still require explicit tradable ticker/code inputs.
+
 ### `get_indicators` spec
 Parameters:
 - `symbol`: Asset symbol/ticker
@@ -132,6 +146,18 @@ Examples:
 - Allowed: `symbol="KRW-ETC", market="crypto"`
 - Allowed: `symbol="KRW-ETC"` (market omitted)
 - Rejected: `symbol="ETC"` (market omitted)
+
+### `get_correlation` spec
+Parameters:
+- `symbols`: List of asset ticker/code inputs (required, 2-10 entries)
+- `period`: Lookback window in days (default: 60, minimum effective value: 30, maximum: 365)
+
+Symbol contract:
+- `get_correlation` has no `market` parameter and therefore accepts ticker/code inputs only.
+- Mixed-market ticker/code inputs continue to work, including KR codes such as `005930`, US tickers such as `AAPL`, and crypto symbols such as `KRW-BTC`.
+- Company-name inputs such as `삼성전자` or `Apple Inc.` are rejected with:
+  - `"get_correlation does not support company-name inputs because it has no market parameter. Use ticker/code inputs directly."`
+- When at least 2 ticker/code inputs resolve and fetch successfully, the tool still returns a correlation matrix and includes failed symbols in `errors`.
 
 ### `manage_watch_alerts` spec
 Parameters:
