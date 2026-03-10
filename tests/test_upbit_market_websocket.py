@@ -1,6 +1,10 @@
 import ssl
 
+import pytest
+
 from app.services.upbit_market_websocket import UpbitPublicWebSocketClient
+
+pytestmark = pytest.mark.unit
 
 
 def test_public_websocket_ssl_context_verifies_by_default() -> None:

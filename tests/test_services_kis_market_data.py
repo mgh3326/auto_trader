@@ -561,6 +561,7 @@ async def test_kis_inquire_daily_itemchartprice_returns_empty_dataframe_on_empty
     request_mock.assert_awaited_once()
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_kis_inquire_daily_itemchartprice_rejects_non_positive_n(monkeypatch):
     from app.services.brokers.kis.client import KISClient
@@ -572,6 +573,7 @@ async def test_kis_inquire_daily_itemchartprice_rejects_non_positive_n(monkeypat
         await client.inquire_daily_itemchartprice("005930", market="UN", n=0)
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_kis_inquire_daily_itemchartprice_clamps_oversized_n_to_200(monkeypatch):
     from app.services.brokers.kis.client import KISClient
