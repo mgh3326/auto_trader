@@ -5,6 +5,7 @@ __all__ = ["register_all_tools"]
 AVAILABLE_TOOL_NAMES = [
     "search_symbol",
     "get_quote",
+    "get_orderbook",
     "get_holdings",
     "get_position",
     "place_order",

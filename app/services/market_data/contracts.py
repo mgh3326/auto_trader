@@ -33,4 +33,24 @@ class Candle:
     value: float | None = None
 
 
-__all__ = ["Quote", "Candle"]
+@dataclass(slots=True)
+class OrderbookLevel:
+    price: int
+    quantity: int
+
+
+@dataclass(slots=True)
+class OrderbookSnapshot:
+    symbol: str
+    instrument_type: str
+    source: str
+    asks: list[OrderbookLevel]
+    bids: list[OrderbookLevel]
+    total_ask_qty: int
+    total_bid_qty: int
+    bid_ask_ratio: float | None
+    expected_price: int | None = None
+    expected_qty: int | None = None
+
+
+__all__ = ["Quote", "Candle", "OrderbookLevel", "OrderbookSnapshot"]

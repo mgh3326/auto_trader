@@ -19,6 +19,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 ## Tools
 - `search_symbol(query, limit=20)`
 - `get_quote(symbol, market=None)`
+- `get_orderbook(symbol, market="kr")`
 - US equity quote price resolution uses Yahoo directly via `app.services.brokers.yahoo.client`
   - US quote response keeps `source: "yahoo"` and includes `previous_close/open/high/low/volume` from Yahoo `fast_info`
   - US equity Yahoo lookup failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
@@ -28,12 +29,16 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
   - `include_indicators=True` adds `indicators_included` at the payload top level and appends `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, `vwap` to each row
   - `vwap` is populated for intraday periods and `null` for `day/week/month`
-  - `1m` / `5m` / `15m` / `30m`: KR equity + crypto
+  - `1m` / `5m` / `15m` / `30m`: KR/US equity + crypto
   - `4h`: crypto only
   - `1h`: KR/US equity + crypto
   - Crypto `1m` / `5m` / `15m` / `30m` rows expose `timestamp`, `date`, `time`, `open`, `high`, `low`, `close`, `volume`, `value`, `trade_amount` and do not expose raw `datetime`
+- US OHLCV behavior:
+  - US `day`/`week`/`month` uses Yahoo Finance (`app.services.brokers.yahoo.client.fetch_ohlcv`)
+  - US intraday (`1m`/`5m`/`15m`/`30m`/`1h`) uses KIS via DB-first reader (`read_us_intraday_candles`) with ET-naive timestamps
+  - US intraday rows include `session` field (`PRE_MARKET`, `REGULAR`, `POST_MARKET`)
+  - US intraday `end_date="YYYY-MM-DD"` is interpreted as ET `20:00:00` for that market date; timestamp inputs use the exact provided instant
 - KR OHLCV behavior:
-- US OHLCV remains Yahoo-based (`app.services.brokers.yahoo.client.fetch_ohlcv`)
   - KR `day` keeps the existing Redis-backed `kis_ohlcv_cache` path when `end_date` is omitted
   - KR `1m` reads DB-first from raw `public.kr_candles_1m` with venue merge (`KRX` price priority, `volume/value` sum)
   - KR `5m/15m/30m/1h` read DB-first from Timescale continuous aggregates (`public.kr_candles_5m`, `public.kr_candles_15m`, `public.kr_candles_30m`, `public.kr_candles_1h`)
@@ -58,6 +63,34 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `manage_watch_alerts(action, market=None, symbol=None, metric=None, operator=None, threshold=None)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
+
+### `get_orderbook` spec
+Parameters:
+- `symbol`: KR equity symbol/code (required)
+- `market`: KR market alias only (`"kr"`, `"kospi"`, `"kosdaq"`, `"korea"`, `"kis"`, `"equity_kr"`); default `"kr"`
+
+Behavior:
+- Only KR equity orderbook is supported in v1; `market="us"` or `market="crypto"` raises an argument error
+- Symbol normalization follows the KR quote path, including zero-padding numeric codes such as `5930 -> 005930`
+- Valid KR requests use KIS `inquire-asking-price-exp-ccn` and return 10-level asks/bids, total residual quantities, and expected match metadata
+- Successful responses include `source: "kis"` and `instrument_type: "equity_kr"`
+- Invalid input raises; upstream KIS failures for otherwise valid KR requests return in-band error payloads via the shared MCP error contract
+
+Response format:
+```json
+{
+  "symbol": "005930",
+  "instrument_type": "equity_kr",
+  "source": "kis",
+  "asks": [{"price": 70100, "quantity": 123}],
+  "bids": [{"price": 70000, "quantity": 321}],
+  "total_ask_qty": 1000,
+  "total_bid_qty": 1500,
+  "bid_ask_ratio": 1.5,
+  "expected_price": 70050,
+  "expected_qty": 42
+}
+```
 
 ### KR order routing
 - Domestic order tools (`place_order`, `modify_order`, `cancel_order` with `market="kr"`) use the new KIS TR IDs (`TTTC0012U/TTTC0011U/TTTC0013U`, mock: `VTTC0012U/VTTC0011U/VTTC0013U`).
@@ -103,6 +136,18 @@ Examples:
 - Allowed: `symbol="KRW-ETC", market="crypto"`
 - Allowed: `symbol="KRW-ETC"` (market omitted)
 - Rejected: `symbol="ETC"` (market omitted)
+
+### `get_correlation` spec
+Parameters:
+- `symbols`: List of asset ticker/code inputs (required, 2-10 entries)
+- `period`: Lookback window in days (default: 60, minimum effective value: 30, maximum: 365)
+
+Symbol contract:
+- `get_correlation` has no `market` parameter and therefore accepts ticker/code inputs only.
+- Mixed-market ticker/code inputs continue to work, including KR codes such as `005930`, US tickers such as `AAPL`, and crypto symbols such as `KRW-BTC`.
+- Company-name inputs such as `삼성전자` or `Apple Inc.` are rejected with:
+  - `"get_correlation does not support company-name inputs because it has no market parameter. Use ticker/code inputs directly."`
+- When at least 2 ticker/code inputs resolve and fetch successfully, the tool still returns a correlation matrix and includes failed symbols in `errors`.
 
 ### `manage_watch_alerts` spec
 Parameters:
@@ -460,7 +505,7 @@ Broker-specific contract:
   - `formatted`: formatted total KRW string (e.g. `"700,000 KRW"`)
 - **KIS domestic (`account="kis_domestic"`)**
   - `balance`: `stck_cash_objt_amt` (`intgr-margin`)
-  - `orderable`: `stck_itgr_cash100_ord_psbl_amt` (`intgr-margin`)
+  - `orderable`: first usable positive domestic integrated-margin orderable in this priority: `stck_cash100_max_ord_psbl_amt` -> `stck_itgr_cash100_ord_psbl_amt` -> `stck_cash_ord_psbl_amt` -> `stck_cash_objt_amt`; if all candidates are zero/missing, `0.0` is returned
 - **KIS overseas (`account="kis_overseas"`)**
   - `balance`: USD cash balance (`frcr_dncl_amt1` fallback `frcr_dncl_amt_2`)
   - `orderable`: USD orderable cash (`frcr_gnrl_ord_psbl_amt`)

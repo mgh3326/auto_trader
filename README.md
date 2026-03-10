@@ -209,8 +209,9 @@ uv sync --all-groups
 - 옛 `tests/test_services.py` 범위 검증: `make test-services-split`
 - Live API 테스트: `make test-live` 또는 `uv run pytest tests/ -v -m "integration and live" --run-live --no-cov`
 - 커버리지 리포트: `make test-cov` 또는 `uv run pytest tests/ -v -m "not live" --cov=app --cov-report=html --cov-report=term-missing`
+- CI fast gate 재현: `CI=true uv run pytest tests/ -m "not live" -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-fail-under=30`
 
-`live` 테스트는 `integration`의 strict subset입니다. 기본 fast gate는 항상 `-m "not live"`를 사용하고, `@pytest.mark.live` 테스트는 `--run-live`를 명시적으로 전달해야 실행됩니다.
+`live` 테스트는 `integration`의 strict subset입니다. 기본 로컬 fast gate는 항상 직렬 `-m "not live"`를 사용하고, GitHub Actions fast gate만 `-n auto --dist=loadfile`로 병렬 실행합니다. `@pytest.mark.live` 테스트는 `--run-live`를 명시적으로 전달해야 실행됩니다.
 
 ### 테스트 마커
 
@@ -275,7 +276,7 @@ tests/
 GitHub Actions를 통해 자동으로 다음을 실행합니다:
 
 - **린팅**: Ruff 린터 + 포맷터, ty 타입 체커
-- **테스트**: Python 3.13에서 테스트 실행 (lint 통과 후)
+- **테스트**: Python 3.13에서 fast gate를 병렬 실행하고 후속 TaskIQ smoke tests를 수행 (lint 통과 후)
 - **보안**: bandit, safety 검사
 - **커버리지**: 테스트 커버리지 리포트 생성
 

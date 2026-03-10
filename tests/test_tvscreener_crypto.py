@@ -109,6 +109,50 @@ def normalized_crypto_df() -> pd.DataFrame:
 
 
 @pytest.mark.asyncio
+async def test_finalize_crypto_screen_forces_rsi_sort_to_asc() -> None:
+    from app.mcp_server.tooling.analysis_screen_crypto import finalize_crypto_screen
+
+    result = await finalize_crypto_screen(
+        candidates=[{"symbol": "KRW-BTC", "rsi": 45.0, "rsi_bucket": 45}],
+        filters_applied={
+            "market": "crypto",
+            "sort_by": "rsi",
+            "sort_order": "desc",
+        },
+        market="crypto",
+        limit=20,
+        max_rsi=None,
+        warnings=[],
+        rsi_enrichment={
+            "attempted": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "timeout": 0,
+            "rate_limited": 0,
+            "error_samples": [],
+        },
+        coingecko_payload={
+            "data": {},
+            "cached": True,
+            "age_seconds": 0.0,
+            "stale": False,
+            "error": None,
+        },
+        total_markets=1,
+        top_by_volume=1,
+        filtered_by_warning=0,
+        filtered_by_crash=0,
+    )
+
+    assert result["filters_applied"]["sort_order"] == "asc"
+    assert result["warnings"] == [
+        "crypto sort_by='rsi' always uses ascending order; requested desc was ignored."
+    ]
+    assert result["meta"]["filtered_by_warning"] == 0
+    assert result["meta"]["filtered_by_crash"] == 0
+
+
+@pytest.mark.asyncio
 async def test_enrich_crypto_indicators_uses_upbit_bulk_query(
     crypto_candidates: list[dict[str, object]],
     normalized_crypto_df: pd.DataFrame,
@@ -300,6 +344,14 @@ async def test_screen_crypto_via_tvscreener_uses_upbit_value_traded_contract(
             "app.mcp_server.tooling.analysis_screen_core.upbit_service.fetch_multiple_tickers",
             new=fetch_multiple_tickers,
         ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.get_upbit_market_display_names",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.get_upbit_warning_markets",
+            new=AsyncMock(return_value=set()),
+        ),
         patch.object(
             __import__(
                 "app.mcp_server.tooling.analysis_screen_core",
@@ -391,6 +443,14 @@ async def test_screen_crypto_via_tvscreener_prefers_value_traded_over_usd_volume
             "app.mcp_server.tooling.analysis_screen_core.upbit_service.fetch_multiple_tickers",
             new=fetch_multiple_tickers,
         ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.get_upbit_market_display_names",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.get_upbit_warning_markets",
+            new=AsyncMock(return_value=set()),
+        ),
         patch.object(
             __import__(
                 "app.mcp_server.tooling.analysis_screen_core",
@@ -456,6 +516,14 @@ async def test_screen_crypto_via_tvscreener_sorts_by_market_cap_field(
             "app.mcp_server.tooling.analysis_screen_core.upbit_service.fetch_multiple_tickers",
             new=fetch_multiple_tickers,
         ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.get_upbit_market_display_names",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.get_upbit_warning_markets",
+            new=AsyncMock(return_value=set()),
+        ),
         patch.object(
             __import__(
                 "app.mcp_server.tooling.analysis_screen_core",
@@ -486,6 +554,140 @@ async def test_screen_crypto_via_tvscreener_sorts_by_market_cap_field(
         "KRW-ETH",
         "KRW-XRP",
     ]
+
+
+@pytest.mark.asyncio
+async def test_screen_crypto_via_tvscreener_coerces_rsi_desc_before_query(
+    fake_tvscreener_module: SimpleNamespace,
+) -> None:
+    service = AsyncMock()
+    service.query_crypto_screener.return_value = pd.DataFrame(
+        {
+            "symbol": ["UPBIT:BTCKRW"],
+            "name": ["BTCKRW"],
+            "description": ["Bitcoin"],
+            "price": [150_000_000.0],
+            "change_percent": [1.5],
+            "relative_strength_index_14": [45.5],
+            "average_directional_index_14": [25.3],
+            "value_traded": [900_000_000_000.0],
+            "market_cap": [2_500_000_000_000_000.0],
+            "volume_24h_in_usd": [1.0],
+            "exchange": ["UPBIT"],
+        }
+    )
+    fetch_multiple_tickers = AsyncMock(
+        return_value=[{"market": "KRW-BTC", "acc_trade_volume_24h": 777.0}]
+    )
+    get_market_caps = AsyncMock(
+        return_value={
+            "data": {},
+            "cached": True,
+            "age_seconds": 0.0,
+            "stale": False,
+            "error": None,
+        }
+    )
+
+    with (
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            return_value=service,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.upbit_service.fetch_multiple_tickers",
+            new=fetch_multiple_tickers,
+        ),
+        patch.object(
+            __import__(
+                "app.mcp_server.tooling.analysis_screen_core",
+                fromlist=["_CRYPTO_MARKET_CAP_CACHE"],
+            )._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            new=get_market_caps,
+        ),
+    ):
+        result = await _screen_crypto_via_tvscreener(
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="rsi",
+            sort_order="desc",
+            limit=1,
+        )
+
+    kwargs = service.query_crypto_screener.await_args.kwargs
+    assert (
+        kwargs["sort_by"]
+        == fake_tvscreener_module.CryptoField.RELATIVE_STRENGTH_INDEX_14
+    )
+    assert kwargs["ascending"] is True
+    assert result["filters_applied"]["sort_order"] == "asc"
+    assert (
+        "crypto sort_by='rsi' always uses ascending order; requested desc was ignored."
+        in result["warnings"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_finalize_crypto_screen_preserves_existing_market_cap_when_coingecko_is_null() -> (
+    None
+):
+    from app.mcp_server.tooling.analysis_screen_crypto import finalize_crypto_screen
+
+    result = await finalize_crypto_screen(
+        candidates=[
+            {
+                "symbol": "KRW-BTC",
+                "original_market": "KRW-BTC",
+                "market_cap": 2_500_000_000_000_000.0,
+                "market_cap_rank": None,
+                "rsi": 45.0,
+                "rsi_bucket": 45,
+                "trade_amount_24h": 900_000_000_000.0,
+            }
+        ],
+        filters_applied={
+            "market": "crypto",
+            "sort_by": "trade_amount",
+            "sort_order": "desc",
+        },
+        market="crypto",
+        limit=20,
+        max_rsi=None,
+        warnings=[],
+        rsi_enrichment={
+            "attempted": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "timeout": 0,
+            "rate_limited": 0,
+            "error_samples": [],
+        },
+        coingecko_payload={
+            "data": {"BTC": {"market_cap": None, "market_cap_rank": 1}},
+            "cached": True,
+            "age_seconds": 0.0,
+            "stale": False,
+            "error": None,
+        },
+        total_markets=1,
+        top_by_volume=1,
+        filtered_by_warning=0,
+        filtered_by_crash=0,
+    )
+
+    first = result["results"][0]
+    assert first["market_cap"] == 2_500_000_000_000_000.0
+    assert first["market_cap_rank"] == 1
 
 
 @pytest.mark.asyncio

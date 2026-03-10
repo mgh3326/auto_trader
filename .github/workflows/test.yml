@@ -43,37 +43,11 @@ jobs:
       run: uv run ty check app/ --error-on-warning
 
   test:
-    needs: lint
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       matrix:
         python-version: ["3.13"]
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-          POSTGRES_DB: test_db
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-      
-      redis:
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
 
     steps:
     - uses: actions/checkout@v4
@@ -103,13 +77,63 @@ jobs:
 
     - name: Run tests
       run: |
-        uv run pytest tests/ -v -m "not live" -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=30
+        uv run pytest tests/ -m "not live" -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-fail-under=30
+
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: coverage.xml
+        disable_search: true
+
+  taskiq-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHON_VERSION: "3.13"
+
+    services:
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@v3
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group test
+
+    - name: Set environment variables from env.example
+      run: |
+        chmod +x scripts/setup-test-env.sh
+        bash scripts/setup-test-env.sh
 
     - name: TaskIQ worker smoke test
       run: |
         set -euo pipefail
         status=0
-        timeout --signal=TERM --kill-after=5s 25s uv run taskiq worker app.core.taskiq_broker:broker app.tasks > taskiq-worker.log 2>&1 || status=$?
+        timeout --signal=TERM --kill-after=5s 15s uv run taskiq worker app.core.taskiq_broker:broker app.tasks > taskiq-worker.log 2>&1 || status=$?
         if [[ "$status" -ne 124 && "$status" -ne 137 ]]; then
           echo "TaskIQ worker smoke test failed: unexpected exit code $status."
           tail -n 200 taskiq-worker.log || true
@@ -125,7 +149,7 @@ jobs:
       run: |
         set -euo pipefail
         status=0
-        timeout --signal=TERM --kill-after=5s 25s uv run taskiq scheduler app.core.scheduler:sched app.tasks --skip-first-run > taskiq-scheduler.log 2>&1 || status=$?
+        timeout --signal=TERM --kill-after=5s 15s uv run taskiq scheduler app.core.scheduler:sched app.tasks --skip-first-run > taskiq-scheduler.log 2>&1 || status=$?
         if [[ "$status" -ne 124 && "$status" -ne 137 ]]; then
           echo "TaskIQ scheduler smoke test failed: unexpected exit code $status."
           tail -n 200 taskiq-scheduler.log || true
@@ -141,18 +165,11 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: taskiq-smoke-logs-${{ matrix.python-version }}
+        name: taskiq-smoke-logs-${{ env.PYTHON_VERSION }}
         path: |
           taskiq-worker.log
           taskiq-scheduler.log
         if-no-files-found: warn
-
-    - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@v5
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-        files: coverage.xml
-        disable_search: true
 
   security:
     runs-on: ubuntu-latest
@@ -195,7 +212,7 @@ jobs:
 
   notify:
     if: failure()
-    needs: [lint, test, security]
+    needs: [lint, test, taskiq-smoke, security]
     runs-on: ubuntu-latest
     steps:
       - name: Discord failure notification

@@ -21,6 +21,7 @@ import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
 from app.core.config import settings
 from app.mcp_server.tooling import market_data_quotes
+from app.services.us_symbol_universe_service import USSymbolNotRegisteredError
 from tests._mcp_tooling_support import (
     _KR_SYNC_HINT,
     _patch_runtime_attr,
@@ -389,19 +390,127 @@ async def test_get_ohlcv_crypto_period_4h_preserves_datetime(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_ohlcv_us_equity_period_1h(monkeypatch):
+@pytest.mark.parametrize("period", ["1m", "5m", "15m", "30m", "1h"])
+async def test_get_ohlcv_us_intraday_periods_use_kis_reader(monkeypatch, period):
+    from app.mcp_server.tooling import market_data_quotes as mdq
+
+    tools = build_tools()
+    df = _single_row_df()
+    df["session"] = "REGULAR"
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(mdq, "read_us_intraday_candles", mock_fetch)
+
+    result = await tools["get_ohlcv"]("AAPL", count=150, period=period)
+
+    mock_fetch.assert_awaited_once()
+    call_kwargs = mock_fetch.call_args.kwargs
+    assert call_kwargs["symbol"] == "AAPL"
+    assert call_kwargs["period"] == period
+    assert call_kwargs["count"] == 100  # capped at 100 for MCP
+    assert call_kwargs["end_date"] is None
+    assert call_kwargs["end_date_is_date_only"] is False
+    assert result["period"] == period
+    assert result["instrument_type"] == "equity_us"
+    assert result["source"] == "kis"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_intraday_date_only_end_date_uses_post_market_cursor(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import market_data_quotes as mdq
+
+    tools = build_tools()
+    df = _single_row_df()
+    df["session"] = "REGULAR"
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(mdq, "read_us_intraday_candles", mock_fetch)
+
+    result = await tools["get_ohlcv"](
+        "AAPL",
+        market="us",
+        count=5,
+        period="5m",
+        end_date="2024-06-30",
+    )
+
+    mock_fetch.assert_awaited_once()
+    call_kwargs = mock_fetch.call_args.kwargs
+    assert call_kwargs["end_date"] == datetime.datetime(2024, 6, 30, 20, 0, 0)
+    assert call_kwargs["end_date_is_date_only"] is True
+    assert result["source"] == "kis"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_intraday_timestamp_end_date_preserves_exact_instant(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import market_data_quotes as mdq
+
+    tools = build_tools()
+    df = _single_row_df()
+    df["session"] = "REGULAR"
+    mock_fetch = AsyncMock(return_value=df)
+    monkeypatch.setattr(mdq, "read_us_intraday_candles", mock_fetch)
+
+    result = await tools["get_ohlcv"](
+        "AAPL",
+        market="us",
+        count=5,
+        period="5m",
+        end_date="2024-06-30T14:30:00",
+    )
+
+    mock_fetch.assert_awaited_once()
+    call_kwargs = mock_fetch.call_args.kwargs
+    assert call_kwargs["end_date"] == datetime.datetime(2024, 6, 30, 14, 30, 0)
+    assert call_kwargs["end_date_is_date_only"] is False
+    assert result["source"] == "kis"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_day_date_only_end_date_does_not_use_intraday_cursor(
+    monkeypatch,
+):
     tools = build_tools()
     df = _single_row_df()
     mock_fetch = AsyncMock(return_value=df)
     monkeypatch.setattr(yahoo_service, "fetch_ohlcv", mock_fetch)
 
-    result = await tools["get_ohlcv"]("AAPL", count=150, period="1h")
-
-    mock_fetch.assert_awaited_once_with(
-        ticker="AAPL", days=100, period="1h", end_date=None
+    result = await tools["get_ohlcv"](
+        "AAPL",
+        market="us",
+        count=5,
+        period="day",
+        end_date="2024-06-30",
     )
-    assert result["period"] == "1h"
-    assert result["instrument_type"] == "equity_us"
+
+    mock_fetch.assert_awaited_once()
+    call_kwargs = mock_fetch.call_args.kwargs
+    assert call_kwargs["end_date"] == datetime.datetime(2024, 6, 30, 0, 0, 0)
+    assert result["source"] == "yahoo"
+
+
+@pytest.mark.asyncio
+async def test_get_ohlcv_us_intraday_lookup_failure_returns_kis_error_payload(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import market_data_quotes as mdq
+
+    tools = build_tools()
+    read_mock = AsyncMock(
+        side_effect=USSymbolNotRegisteredError("US symbol 'AAPL' is not registered")
+    )
+    monkeypatch.setattr(mdq, "read_us_intraday_candles", read_mock)
+
+    result = await tools["get_ohlcv"]("AAPL", market="us", count=5, period="5m")
+
+    assert result == {
+        "error": "US symbol 'AAPL' is not registered",
+        "source": "kis",
+        "symbol": "AAPL",
+        "instrument_type": "equity_us",
+    }
 
 
 @pytest.mark.asyncio
@@ -977,14 +1086,6 @@ async def test_get_ohlcv_period_4h_market_us_rejected():
 
     with pytest.raises(ValueError, match="period '4h' is supported only for crypto"):
         await tools["get_ohlcv"]("AAPL", period="4h", market="us")
-
-
-@pytest.mark.asyncio
-async def test_get_ohlcv_period_5m_market_us_rejected():
-    tools = build_tools()
-
-    with pytest.raises(ValueError, match="period '5m' is not supported for us equity"):
-        await tools["get_ohlcv"]("AAPL", period="5m", market="us")
 
 
 @pytest.mark.asyncio

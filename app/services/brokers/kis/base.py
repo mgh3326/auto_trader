@@ -20,6 +20,10 @@ from app.core.config import settings
 from app.services.redis_token_manager import redis_token_manager
 
 
+def _is_closed_loop_runtime_error(exc: RuntimeError) -> bool:
+    return str(exc) == "Event loop is closed"
+
+
 def _safe_parse_retry_after(value: str | None) -> float:
     """Safely parse Retry-After header, returning 0 on failure."""
     if not value:
@@ -170,22 +174,29 @@ class BaseKISClient:
         client_owner: object | None,
         client_entered: bool,
     ) -> None:
-        if client_owner is not None and client_entered:
-            aexit = getattr(client_owner, "__aexit__", None)
-            if callable(aexit):
-                result = aexit(None, None, None)
-                if inspect.isawaitable(result):
-                    await result
-                logging.debug("KIS HTTP client closed")
-                return
+        try:
+            if client_owner is not None and client_entered:
+                aexit = getattr(client_owner, "__aexit__", None)
+                if callable(aexit):
+                    result = aexit(None, None, None)
+                    if inspect.isawaitable(result):
+                        await result
+                    logging.debug("KIS HTTP client closed")
+                    return
 
-        if client is not None:
-            aclose = getattr(client, "aclose", None)
-            if callable(aclose):
-                result = aclose()
-                if inspect.isawaitable(result):
-                    await result
-            logging.debug("KIS HTTP client closed")
+            if client is not None:
+                aclose = getattr(client, "aclose", None)
+                if callable(aclose):
+                    result = aclose()
+                    if inspect.isawaitable(result):
+                        await result
+                logging.debug("KIS HTTP client closed")
+        except RuntimeError as exc:
+            if not _is_closed_loop_runtime_error(exc):
+                raise
+            logging.debug(
+                "Skipping KIS HTTP client close because its event loop is already closed"
+            )
 
     async def _ensure_client(self, timeout: float | None = None) -> httpx.AsyncClient:
         """Get or create the persistent HTTP client (lazy initialization)."""

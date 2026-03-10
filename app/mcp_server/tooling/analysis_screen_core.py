@@ -16,6 +16,7 @@ from app.core.async_rate_limiter import RateLimitExceededError
 from app.mcp_server.tooling.analysis_crypto_score import (
     calculate_crypto_metrics_from_ohlcv,
 )
+from app.mcp_server.tooling.analysis_screen_crypto import finalize_crypto_screen
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_rsi,
     _fetch_ohlcv_for_indicators,
@@ -70,6 +71,10 @@ DEFAULT_TIMEOUTS = {
     "http_client": 10.0,
     "candidate_collection": 60.0,
 }
+
+
+def _timeout_seconds(name: str) -> float:
+    return float(DEFAULT_TIMEOUTS[name])
 
 
 class TimeoutBehavior:
@@ -932,7 +937,7 @@ async def _screen_kr(
                     ],
                     return_exceptions=True,
                 ),
-                timeout=30.0,
+                timeout=_timeout_seconds("rsi_enrichment"),
             )
             for i, result in enumerate(subset_results):
                 if isinstance(result, Exception):
@@ -962,11 +967,16 @@ async def _screen_kr(
                     statuses[i] = "error"
                     errors[i] = "RSI calculation returned None"
         except TimeoutError:
-            logger.warning("[RSI-KR] RSI enrichment timed out after 30 seconds")
+            logger.warning(
+                "[RSI-KR] RSI enrichment timed out after %.2f seconds",
+                _timeout_seconds("rsi_enrichment"),
+            )
             for i, status in enumerate(statuses):
                 if status == "pending":
                     statuses[i] = "timeout"
-                    errors[i] = "Timed out after 30 seconds"
+                    errors[i] = (
+                        f"Timed out after {_timeout_seconds('rsi_enrichment'):.2f} seconds"
+                    )
         except Exception as exc:
             logger.error(
                 "[RSI-KR] RSI enrichment batch failed: %s: %s",
@@ -1202,7 +1212,7 @@ async def _screen_us(
                         *[calculate_rsi_for_stock(item) for item in subset],
                         return_exceptions=True,
                     ),
-                    timeout=30.0,
+                    timeout=_timeout_seconds("rsi_enrichment"),
                 )
                 for i, enriched in enumerate(subset_with_rsi):
                     if isinstance(enriched, Exception):
@@ -1328,7 +1338,7 @@ async def _enrich_crypto_indicators(
             len(unique_tv_symbols),
         )
 
-        tvscreener_service = TvScreenerService(timeout=30.0)
+        tvscreener_service = TvScreenerService(timeout=_timeout_seconds("tvscreener"))
 
         try:
             tvscreener = _import_tvscreener()
@@ -1437,7 +1447,7 @@ async def _enrich_crypto_indicators(
             ]
             rsi_map_manual = await asyncio.wait_for(
                 compute_crypto_realtime_rsi_map(batch_symbols),
-                timeout=30.0,
+                timeout=_timeout_seconds("crypto_enrichment"),
             )
             # Convert manual RSI map (Upbit symbols) to match our data structure
             rsi_map = {}
@@ -1506,12 +1516,15 @@ async def _enrich_crypto_indicators(
                 errors[index] = f"CryptoScreener error: {exc}"
     except TimeoutError:
         logger.warning(
-            "[Indicators-Crypto] Indicator enrichment timed out after 30 seconds"
+            "[Indicators-Crypto] Indicator enrichment timed out after %.2f seconds",
+            _timeout_seconds("crypto_enrichment"),
         )
         for index, status in enumerate(statuses):
             if status == "pending":
                 statuses[index] = "timeout"
-                errors[index] = "Timed out after 30 seconds"
+                errors[index] = (
+                    f"Timed out after {_timeout_seconds('crypto_enrichment'):.2f} seconds"
+                )
     except Exception as exc:
         logger.error(
             "[Indicators-Crypto] Indicator enrichment batch failed: %s: %s",
@@ -1655,7 +1668,7 @@ async def _screen_kr_via_tvscreener(
             limit,
         )
 
-        tvscreener_service = TvScreenerService(timeout=30.0)
+        tvscreener_service = TvScreenerService(timeout=_timeout_seconds("tvscreener"))
         df = await tvscreener_service.query_stock_screener(
             columns=columns,
             where_clause=where_conditions,
@@ -1926,7 +1939,7 @@ async def _screen_us_via_tvscreener(
             limit,
         )
 
-        tvscreener_service = TvScreenerService(timeout=30.0)
+        tvscreener_service = TvScreenerService(timeout=_timeout_seconds("tvscreener"))
         df = await tvscreener_service.query_stock_screener(
             columns=columns,
             where_clause=where_conditions,
@@ -2192,73 +2205,6 @@ async def _screen_crypto(
             "error": f"{type(exc).__name__}: {exc}",
         }
 
-    timeout_count = int(rsi_enrichment.get("timeout", 0) or 0)
-    if timeout_count > 0:
-        warnings.append(
-            f"Crypto RSI enrichment timed out for {timeout_count} symbols; partial results returned"
-        )
-
-    rate_limited_count = int(rsi_enrichment.get("rate_limited", 0) or 0)
-    if rate_limited_count > 0:
-        warnings.append(
-            "Crypto RSI enrichment hit rate limits for "
-            f"{rate_limited_count} symbols; partial results returned"
-        )
-
-    coingecko_data = cast(
-        dict[str, dict[str, Any]],
-        coingecko_payload.get("data") or {},
-    )
-    for item in candidates:
-        symbol = _extract_market_symbol(
-            item.get("symbol") or item.get("original_market")
-        )
-        cap_data = coingecko_data.get(symbol or "") if symbol else None
-        if cap_data:
-            item["market_cap"] = cap_data.get("market_cap")
-            item["market_cap_rank"] = cap_data.get("market_cap_rank")
-        else:
-            item["market_cap"] = None
-            item["market_cap_rank"] = None
-        item["market_warning"] = None
-        item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
-        item.pop("score", None)
-
-    coingecko_error = coingecko_payload.get("error")
-    if coingecko_error:
-        if coingecko_payload.get("stale"):
-            warnings.append(
-                "CoinGecko market-cap refresh failed; stale cache was used."
-            )
-        else:
-            warnings.append(
-                "CoinGecko market-cap data unavailable; market_cap fields remain null."
-            )
-
-    if max_rsi is not None:
-        filtered = [
-            item
-            for item in candidates
-            if item.get("rsi") is not None and float(item["rsi"]) <= max_rsi
-        ]
-    else:
-        filtered = candidates
-
-    applied_sort_order = sort_order
-    if sort_by == "rsi":
-        if sort_order == "desc":
-            warnings.append(
-                "crypto sort_by='rsi' always uses ascending order; requested desc was ignored."
-            )
-        applied_sort_order = "asc"
-        ordered = _sort_crypto_by_rsi_bucket(filtered)
-    else:
-        ordered = _sort_and_limit(filtered, sort_by, sort_order, len(filtered))
-
-    results = ordered[:limit]
-    for item in results:
-        item.pop("score", None)
-
     filters_applied.update(
         {
             "min_market_cap": min_market_cap,
@@ -2266,7 +2212,7 @@ async def _screen_crypto(
             "min_dividend_yield": min_dividend_yield_normalized,
             "max_rsi": max_rsi,
             "sort_by": sort_by,
-            "sort_order": applied_sort_order,
+            "sort_order": sort_order,
         }
     )
     if min_dividend_yield_input is not None:
@@ -2274,25 +2220,19 @@ async def _screen_crypto(
     if min_dividend_yield_normalized is not None:
         filters_applied["min_dividend_yield_normalized"] = min_dividend_yield_normalized
 
-    meta_fields = {
-        "total_markets": total_markets,
-        "top_by_volume": top_by_volume,
-        "filtered_by_warning": filtered_by_warning,
-        "filtered_by_crash": filtered_by_crash,
-        "rsi_enriched": int(rsi_enrichment.get("succeeded", 0) or 0),
-        "final_count": len(results),
-        "coingecko_cached": bool(coingecko_payload.get("cached")),
-        "coingecko_age_seconds": coingecko_payload.get("age_seconds"),
-    }
-
-    return _build_screen_response(
-        results,
-        len(filtered),
-        filters_applied,
-        market,
+    return await finalize_crypto_screen(
+        candidates=candidates,
+        filters_applied=filters_applied,
+        market=market,
+        limit=limit,
+        max_rsi=max_rsi,
         rsi_enrichment=rsi_enrichment,
-        warnings=warnings if warnings else None,
-        meta_fields=meta_fields,
+        warnings=warnings,
+        coingecko_payload=coingecko_payload,
+        total_markets=total_markets,
+        top_by_volume=top_by_volume,
+        filtered_by_warning=filtered_by_warning,
+        filtered_by_crash=filtered_by_crash,
     )
 
 
@@ -2363,14 +2303,15 @@ async def _screen_crypto_via_tvscreener(
         "change_rate": CryptoField.CHANGE_PERCENT,
     }
     sort_field = sort_field_map.get(sort_by, value_traded_field)
+    dispatch_sort_order = "asc" if sort_by == "rsi" else sort_order
     query_limit = max(limit * 5, 50)
 
-    tvscreener_service = TvScreenerService(timeout=30.0)
+    tvscreener_service = TvScreenerService(timeout=_timeout_seconds("tvscreener"))
     df = await tvscreener_service.query_crypto_screener(
         columns=columns,
         where_clause=where_conditions,
         sort_by=sort_field,
-        ascending=(sort_order == "asc"),
+        ascending=(dispatch_sort_order == "asc"),
         limit=query_limit,
     )
 
@@ -2516,32 +2457,6 @@ async def _screen_crypto_via_tvscreener(
         item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
         candidates.append(item)
 
-    coingecko_payload = await _CRYPTO_MARKET_CAP_CACHE.get()
-    coingecko_data = cast(
-        dict[str, dict[str, Any]],
-        coingecko_payload.get("data") or {},
-    )
-    for item in candidates:
-        symbol = _extract_market_symbol(
-            item.get("symbol") or item.get("original_market")
-        )
-        cap_data = coingecko_data.get(symbol or "") if symbol else None
-        if cap_data:
-            item["market_cap"] = cap_data.get("market_cap") or item.get("market_cap")
-            item["market_cap_rank"] = cap_data.get("market_cap_rank")
-        item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
-
-    coingecko_error = coingecko_payload.get("error")
-    if coingecko_error:
-        if coingecko_payload.get("stale"):
-            warnings.append(
-                "CoinGecko market-cap refresh failed; stale cache was used."
-            )
-        else:
-            warnings.append(
-                "CoinGecko market-cap data unavailable; market_cap fields remain null."
-            )
-
     if max_rsi is not None:
         filtered = [
             item
@@ -2561,7 +2476,7 @@ async def _screen_crypto_via_tvscreener(
         try:
             df = await asyncio.wait_for(
                 _fetch_ohlcv_for_indicators(symbol, "crypto", count=50),
-                timeout=30.0,
+                timeout=_timeout_seconds("crypto_enrichment"),
             )
             metrics = calculate_crypto_metrics_from_ohlcv(df)
         except TimeoutError:
@@ -2589,46 +2504,21 @@ async def _screen_crypto_via_tvscreener(
 
     if timeout_count > 0:
         metric_diagnostics["timeout"] = timeout_count
-        warnings.append(
-            f"Crypto RSI enrichment timed out for {timeout_count} symbols; partial results returned"
-        )
-
-    applied_sort_order = sort_order
-    if sort_by == "rsi":
-        if sort_order == "desc":
-            warnings.append(
-                "crypto sort_by='rsi' always uses ascending order; requested desc was ignored."
-            )
-        applied_sort_order = "asc"
-        ordered = _sort_crypto_by_rsi_bucket(filtered)
-    elif sort_by == "market_cap":
-        ordered = sorted(
-            filtered,
-            key=lambda item: float(item.get("market_cap") or 0.0),
-            reverse=(sort_order == "desc"),
-        )
-    else:
-        ordered = _sort_and_limit(filtered, sort_by, sort_order, len(filtered))
-
-    results = ordered[:limit]
-    filters_applied["sort_order"] = applied_sort_order
-    return _build_screen_response(
-        results,
-        len(filtered),
-        filters_applied,
-        market,
+    coingecko_payload = await _CRYPTO_MARKET_CAP_CACHE.get()
+    return await finalize_crypto_screen(
+        candidates=candidates,
+        filters_applied=filters_applied,
+        market=market,
+        limit=limit,
+        max_rsi=max_rsi,
         rsi_enrichment=metric_diagnostics,
-        warnings=warnings if warnings else None,
-        meta_fields={
-            "source": "tvscreener",
-            "total_markets": len(raw_results),
-            "top_by_volume": len(raw_results),
-            "filtered_by_warning": filtered_by_warning,
-            "filtered_by_crash": filtered_by_crash,
-            "final_count": len(results),
-            "coingecko_cached": bool(coingecko_payload.get("cached")),
-            "coingecko_age_seconds": coingecko_payload.get("age_seconds"),
-        },
+        warnings=warnings,
+        coingecko_payload=coingecko_payload,
+        total_markets=len(raw_results),
+        top_by_volume=len(raw_results),
+        filtered_by_warning=filtered_by_warning,
+        filtered_by_crash=filtered_by_crash,
+        source="tvscreener",
     )
 
 

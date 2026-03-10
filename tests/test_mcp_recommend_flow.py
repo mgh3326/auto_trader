@@ -1,5 +1,3 @@
-"""Tests for recommend_stocks MCP tool and related helpers."""
-
 from __future__ import annotations
 
 from typing import Any
@@ -7,323 +5,49 @@ from typing import Any
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
-from app.mcp_server.scoring import (
-    calc_composite_score,
-    calc_dividend_score,
-    calc_momentum_score,
-    calc_rsi_score,
-    calc_valuation_score,
-    generate_reason,
-)
-from app.mcp_server.strategies import (
-    VALID_STRATEGIES,
-    get_strategy_config,
-    validate_strategy,
-)
 from app.mcp_server.tooling import (
     analysis_recommend,
     analysis_screen_core,
+    analysis_screening,
     analysis_tool_handlers,
     portfolio_holdings,
 )
-from app.mcp_server.tooling.registry import register_all_tools
+from tests._mcp_recommend_support import _mock_empty_holdings, _mock_kr_sources
+from tests._mcp_tooling_support import build_tools
+
+pytest_plugins = ("tests._mcp_tooling_support",)
 
 
-class DummyMCP:
-    def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
-
-    def tool(self, name: str, description: str):
-        def decorator(func):
-            self.tools[name] = func
-            return func
-
-        return decorator
-
-
-def build_tools() -> dict[str, object]:
-    mcp = DummyMCP()
-    register_all_tools(mcp)
-    return mcp.tools
-
-
-def _mock_kr_sources(
+@pytest.mark.asyncio
+async def test_recommend_stocks_tool_uses_analysis_screening_alias(
     monkeypatch: pytest.MonkeyPatch,
-    *,
-    stk: list[dict[str, Any]],
-    ksq: list[dict[str, Any]] | None = None,
-    etfs: list[dict[str, Any]] | None = None,
-    valuations: dict[str, dict[str, Any]] | None = None,
 ) -> None:
-    async def mock_fetch_stock_all_cached(market: str) -> list[dict[str, Any]]:
-        if market == "STK":
-            return [dict(item) for item in stk]
-        if market == "KSQ":
-            return [dict(item) for item in (ksq or [])]
-        return []
+    tools = build_tools()
+    called: dict[str, Any] = {}
 
-    async def mock_fetch_etf_all_cached() -> list[dict[str, Any]]:
-        return [dict(item) for item in (etfs or [])]
-
-    async def mock_fetch_valuation_all_cached(
-        market: str,
-    ) -> dict[str, dict[str, Any]]:
-        return valuations or {}
-
-    monkeypatch.setattr(
-        analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
-    )
-    monkeypatch.setattr(
-        analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
-    )
-    monkeypatch.setattr(
-        analysis_screen_core,
-        "fetch_valuation_all_cached",
-        mock_fetch_valuation_all_cached,
-    )
-
-
-def _mock_empty_holdings(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def mock_collect_portfolio_positions(
-        *,
-        account: str | None,
-        market: str | None,
-        include_current_price: bool,
-        user_id: int,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
-        return [], [], market, account
-
-    monkeypatch.setattr(
-        portfolio_holdings,
-        "_collect_portfolio_positions",
-        mock_collect_portfolio_positions,
-    )
-
-
-@pytest.fixture(autouse=True)
-def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
-    async def mock_get_upbit_warning_markets(
-        db=None,
-        quote_currency: str | None = None,
-        fiat: str | None = None,
-    ):
-        _ = (quote_currency, fiat, db)
-        return set()
-
-    async def mock_market_cap_cache_get():
+    async def fake_recommend(**kwargs: Any) -> dict[str, Any]:
+        called.update(kwargs)
+        budget = float(kwargs["budget"])
+        strategy = str(kwargs["strategy"])
         return {
-            "data": {},
-            "cached": True,
-            "age_seconds": 0.0,
-            "stale": False,
-            "error": None,
+            "recommendations": [],
+            "total_amount": 0.0,
+            "remaining_budget": budget,
+            "strategy": strategy,
+            "strategy_description": "shim-test",
+            "candidates_screened": 0,
+            "diagnostics": {},
+            "fallback_applied": False,
+            "warnings": ["shim-test"],
+            "timestamp": "2026-03-10T00:00:00Z",
         }
 
-    async def mock_fetch_ohlcv_for_indicators(
-        symbol: str, market_type: str, count: int
-    ):
-        import pandas as pd
+    monkeypatch.setattr(analysis_screening, "_recommend_stocks_impl", fake_recommend)
 
-        return pd.DataFrame()
+    result = await tools["recommend_stocks"](budget=1_000_000, market="kr")
 
-    monkeypatch.setattr(
-        analysis_screen_core,
-        "get_upbit_warning_markets",
-        mock_get_upbit_warning_markets,
-    )
-    monkeypatch.setattr(
-        analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
-        "get",
-        mock_market_cap_cache_get,
-    )
-    monkeypatch.setattr(
-        analysis_screen_core,
-        "_fetch_ohlcv_for_indicators",
-        mock_fetch_ohlcv_for_indicators,
-    )
-
-
-class TestScoringFunctions:
-    def test_calc_rsi_score_handles_none(self):
-        assert calc_rsi_score(None) == 50.0
-
-    def test_calc_valuation_score_handles_none(self):
-        assert calc_valuation_score(None, None) == 50.0
-
-    def test_calc_momentum_score_handles_none(self):
-        assert calc_momentum_score(None) == 50.0
-
-    def test_calc_dividend_score_accepts_percent_input(self):
-        score_decimal = calc_dividend_score(0.05)
-        score_percent = calc_dividend_score(5.0)
-        assert score_decimal == score_percent
-
-    def test_calc_composite_score_range(self):
-        score = calc_composite_score(
-            {
-                "rsi": 42,
-                "per": 12,
-                "pbr": 1.2,
-                "change_rate": 2.1,
-                "volume": 10_000_000,
-                "dividend_yield": 0.03,
-            }
-        )
-        assert 0 <= score <= 100
-
-    def test_calc_composite_score_crypto_liquidity_weighting(self):
-        high_liquidity = calc_composite_score(
-            {
-                "market": "crypto",
-                "rsi": 50,
-                "change_rate": 1.0,
-                "volume": 1_000_000,
-                "trade_amount_24h": 150_000_000_000,
-            }
-        )
-        low_liquidity = calc_composite_score(
-            {
-                "market": "crypto",
-                "rsi": 50,
-                "change_rate": 1.0,
-                "volume": 1_000_000,
-                "trade_amount_24h": 500_000_000,
-            }
-        )
-        assert high_liquidity > low_liquidity
-
-    def test_calc_composite_score_uses_rsi_field_only(self):
-        score_with_legacy_only = calc_composite_score({"rsi_14": 10})
-        score_without_rsi = calc_composite_score({})
-        assert score_with_legacy_only == score_without_rsi
-
-    def test_generate_reason_ignores_legacy_rsi_14_field(self):
-        reason = generate_reason({"rsi_14": 22.0}, strategy="balanced")
-        assert "RSI" not in reason
-
-
-class TestCryptoReasonBuilder:
-    def test_build_crypto_rsi_reason_rsi_only(self):
-        reason = analysis_recommend._build_crypto_rsi_reason(
-            {
-                "rsi": 33.2,
-                "rsi_bucket": 30,
-                "candle_type": "bullish",
-                "volume_ratio": 1.4,
-            }
-        )
-
-        assert "RSI 33.2" in reason
-        assert "캔들 bullish" in reason
-        assert "거래량 1.4배" in reason
-
-
-class TestStrategyValidation:
-    def test_validate_strategy_values(self):
-        for strategy in VALID_STRATEGIES:
-            assert validate_strategy(strategy) == strategy
-
-    def test_validate_strategy_invalid(self):
-        with pytest.raises(ValueError, match="Invalid strategy"):
-            validate_strategy("invalid")
-
-    def test_strategy_config_schema(self):
-        config = get_strategy_config("balanced")
-        assert set(config.keys()) == {"description", "screen_params", "scoring_weights"}
-        assert "sort_by" in config["screen_params"]
-        assert "rsi_weight" in config["scoring_weights"]
-
-
-class TestBudgetAllocation:
-    @pytest.fixture
-    def allocate_budget(self):
-        build_tools()
-        return analysis_recommend._allocate_budget
-
-    def test_score_proportional_allocation(self, allocate_budget):
-        candidates = [
-            {"symbol": "A", "price": 100, "score": 90},
-            {"symbol": "B", "price": 100, "score": 10},
-        ]
-        allocated, remaining = allocate_budget(candidates, 1000, 2)
-        assert len(allocated) == 2
-        quantities = {item["symbol"]: item["quantity"] for item in allocated}
-        assert quantities["A"] > quantities["B"]
-        assert remaining == 0
-
-    def test_allocation_dedupes_symbols(self, allocate_budget):
-        candidates = [
-            {"symbol": "AAA", "price": 1000, "score": 80},
-            {"symbol": "AAA", "price": 1000, "score": 70},
-            {"symbol": "BBB", "price": 1000, "score": 60},
-        ]
-        allocated, _ = allocate_budget(candidates, 10_000, 5)
-        symbols = [item["symbol"] for item in allocated]
-        assert symbols.count("AAA") == 1
-
-    def test_allocation_insufficient_budget(self, allocate_budget):
-        candidates = [{"symbol": "A", "price": 200_000, "score": 80}]
-        allocated, remaining = allocate_budget(candidates, 50_000, 1)
-        assert allocated == []
-        assert remaining == 50_000
-
-
-class TestCandidateNormalization:
-    @pytest.fixture
-    def normalize_candidate(self):
-        build_tools()
-        return analysis_recommend._normalize_candidate
-
-    def test_symbol_priority_symbol_first(self, normalize_candidate):
-        item = {
-            "symbol": "KRW-BTC",
-            "code": "005930",
-            "original_market": "KRW-ETH",
-            "market": "crypto",
-            "trade_price": 1000,
-        }
-        normalized = normalize_candidate(item, "crypto")
-        assert normalized["symbol"] == "KRW-BTC"
-
-    def test_symbol_priority_fallback_original_market(self, normalize_candidate):
-        item = {"original_market": "KRW-XRP", "market": "crypto", "trade_price": 900}
-        normalized = normalize_candidate(item, "crypto")
-        assert normalized["symbol"] == "KRW-XRP"
-
-    def test_rsi_bucket_zero_is_preserved_for_crypto(self, normalize_candidate):
-        item = {
-            "symbol": "KRW-BTC",
-            "trade_price": 1000,
-            "rsi_bucket": 0,
-        }
-        normalized = normalize_candidate(item, "crypto")
-        assert normalized["rsi_bucket"] == 0
-
-    def test_crypto_market_cap_none_remains_none(self, normalize_candidate):
-        item = {
-            "symbol": "KRW-BTC",
-            "trade_price": 1000,
-            "market_cap": None,
-        }
-        normalized = normalize_candidate(item, "crypto")
-        assert normalized["market_cap"] is None
-
-    def test_volume_24h_fallback_order(self, normalize_candidate):
-        item_with_acc_trade_volume = {
-            "symbol": "KRW-BTC",
-            "trade_price": 1000,
-            "acc_trade_volume_24h": 12345,
-        }
-        normalized_from_acc = normalize_candidate(item_with_acc_trade_volume, "crypto")
-        assert normalized_from_acc["volume_24h"] == 12345.0
-
-        item_with_volume_only = {
-            "symbol": "KRW-ETH",
-            "trade_price": 1000,
-            "volume": 6789,
-        }
-        normalized_from_volume = normalize_candidate(item_with_volume_only, "crypto")
-        assert normalized_from_volume["volume_24h"] == 6789.0
+    assert result["warnings"] == ["shim-test"]
+    assert called["market"] == "kr"
 
 
 class TestRecommendStocksIntegration:
@@ -360,6 +84,86 @@ class TestRecommendStocksIntegration:
                 strategy="balanced",
                 account="kis",  # type: ignore[call-arg]
             )
+
+    @pytest.mark.asyncio
+    async def test_recommend_stocks_impl_uses_score_and_allocate_phase(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _mock_empty_holdings(monkeypatch)
+        called: dict[str, Any] = {}
+
+        async def mock_get_top_stocks(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {
+                "rankings": [
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple",
+                        "price": 200.0,
+                        "change_rate": 1.1,
+                        "volume": 10_000_000,
+                        "market_cap": 3_000_000_000_000,
+                    }
+                ]
+            }
+
+        async def unused_screen(**kwargs: Any) -> dict[str, Any]:
+            raise AssertionError(f"unexpected screen call: {kwargs}")
+
+        def fake_score_and_allocate(
+            *,
+            candidates: list[dict[str, Any]],
+            budget: float,
+            max_positions: int,
+            strategy: str,
+        ) -> tuple[list[dict[str, Any]], float]:
+            called["symbols"] = [item["symbol"] for item in candidates]
+            called["budget"] = budget
+            called["max_positions"] = max_positions
+            called["strategy"] = strategy
+            return (
+                [
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple",
+                        "price": 200.0,
+                        "quantity": 3,
+                        "amount": 600.0,
+                        "score": 88.5,
+                        "reason": "phase seam",
+                        "rsi": 42.0,
+                        "per": 20.0,
+                        "change_rate": 1.1,
+                    }
+                ],
+                400.0,
+            )
+
+        monkeypatch.setattr(
+            analysis_recommend, "_score_and_allocate", fake_score_and_allocate
+        )
+
+        result = await analysis_recommend.recommend_stocks_impl(
+            budget=1_000.0,
+            market="us",
+            strategy="growth",
+            exclude_symbols=None,
+            sectors=None,
+            max_positions=2,
+            top_stocks_fallback=mock_get_top_stocks,
+            screen_kr_fn=unused_screen,
+            screen_crypto_fn=unused_screen,
+            top_stocks_override=mock_get_top_stocks,
+        )
+
+        assert called == {
+            "symbols": ["AAPL"],
+            "budget": 1_000.0,
+            "max_positions": 2,
+            "strategy": "growth",
+        }
+        assert result["recommendations"][0]["reason"] == "phase seam"
+        assert result["remaining_budget"] == 400.0
+        assert result["strategy"] == "growth"
 
     @pytest.mark.asyncio
     async def test_kr_success_path_and_warnings_is_list(
@@ -642,9 +446,7 @@ class TestRecommendStocksIntegration:
             ], "yfinance"
 
         monkeypatch.setattr(
-            analysis_tool_handlers,
-            "_get_us_rankings",
-            mock_get_us_rankings,
+            analysis_screening, "_get_us_rankings", mock_get_us_rankings
         )
 
         result = await recommend_stocks(
