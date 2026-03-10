@@ -78,7 +78,7 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_optional_float as _to_optional_float,
 )
-from app.services import naver_finance
+from app.services import market_data as market_data_service
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -142,10 +142,6 @@ async def _get_support_resistance_impl(
         volume_result["period_days"] = 60
 
         indicator_result = _compute_indicators(df, ["bollinger"])
-        indicator_result["symbol"] = normalized_symbol
-        indicator_result["price"] = current_price
-        indicator_result["instrument_type"] = market_type
-        indicator_result["source"] = source
 
         if not fib_result.get("levels"):
             raise ValueError("Failed to calculate Fibonacci levels")
@@ -176,11 +172,18 @@ async def _get_support_resistance_impl(
         if value_area_low is not None and value_area_low > 0:
             price_levels.append((value_area_low, "volume_value_area_low"))
 
-        bollinger = indicator_result.get("bollinger")
-        if not isinstance(bollinger, dict):
-            bollinger = (indicator_result.get("indicators") or {}).get(
-                "bollinger"
-            ) or {}
+        bollinger_raw = indicator_result.get("bollinger")
+        if isinstance(bollinger_raw, dict):
+            bollinger = bollinger_raw
+        else:
+            indicators_raw = indicator_result.get("indicators")
+            if isinstance(indicators_raw, dict):
+                nested_bollinger = indicators_raw.get("bollinger")
+                bollinger = (
+                    nested_bollinger if isinstance(nested_bollinger, dict) else {}
+                )
+            else:
+                bollinger = {}
         bb_upper = _to_optional_float(bollinger.get("upper"))
         bb_middle = _to_optional_float(bollinger.get("middle"))
         bb_lower = _to_optional_float(bollinger.get("lower"))
@@ -667,7 +670,7 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         name="get_short_interest",
         description=(
             "Get short selling data for a Korean stock. Returns daily short selling "
-            "volume, amount, ratio, and balance. Korean stocks only."
+            "volume, amount, and ratio. Korean stocks only."
         ),
     )
     async def get_short_interest(
@@ -687,10 +690,10 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
         capped_days = min(max(days, 1), 60)
 
         try:
-            return await naver_finance.fetch_short_interest(symbol, capped_days)
+            return await market_data_service.get_short_interest(symbol, capped_days)
         except Exception as exc:
             return _error_payload(
-                source="krx",
+                source="kis",
                 message=str(exc),
                 symbol=symbol,
                 instrument_type="equity_kr",
@@ -831,10 +834,12 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
 
         indices: list[dict[str, Any]] = []
         for i, r in enumerate(results):
-            if isinstance(r, Exception):
+            if isinstance(r, BaseException):
                 indices.append({"symbol": _DEFAULT_INDICES[i], "error": str(r)})
-            else:
+            elif isinstance(r, dict):
                 indices.append(r)
+            else:
+                indices.append({"symbol": _DEFAULT_INDICES[i], "error": str(r)})
 
         return {"indices": indices}
 

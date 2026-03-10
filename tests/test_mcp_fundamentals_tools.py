@@ -34,6 +34,7 @@ from app.mcp_server.tooling import (
     market_data_indicators,
     shared,
 )
+from app.services import market_data as market_data_service
 from app.services import naver_finance
 from tests._mcp_tooling_support import (
     _patch_httpx_async_client,
@@ -554,18 +555,13 @@ class TestGetShortInterest:
                 },
             ],
             "avg_short_ratio": 5.17,
-            "short_balance": {
-                "balance_shares": 1_234_567,
-                "balance_amount": 98_765_432_100,
-                "balance_ratio": 0.5,
-            },
         }
 
         async def mock_fetch_short_interest(code, days):
             return mock_short_interest
 
         monkeypatch.setattr(
-            naver_finance, "fetch_short_interest", mock_fetch_short_interest
+            market_data_service, "get_short_interest", mock_fetch_short_interest
         )
 
         result = await tools["get_short_interest"]("005930", days=20)
@@ -577,7 +573,7 @@ class TestGetShortInterest:
         assert result["short_data"][0]["short_amount"] == 1_000_000_000
         assert result["short_data"][0]["short_ratio"] == 5.0
         assert result["avg_short_ratio"] == 5.17
-        assert result["short_balance"]["balance_shares"] == 1_234_567
+        assert "short_balance" not in result
 
     async def test_rejects_us_equity(self):
         """Test that US equity symbol raises ValueError."""
@@ -600,6 +596,12 @@ class TestGetShortInterest:
         with pytest.raises(ValueError, match="symbol is required"):
             await tools["get_short_interest"]("")
 
+    async def test_rejects_unpadded_kr_code(self):
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Korean stocks"):
+            await tools["get_short_interest"]("5930")
+
     async def test_days_limit_capped(self, monkeypatch):
         """Test that days parameter is capped at 60."""
         tools = build_tools()
@@ -617,7 +619,7 @@ class TestGetShortInterest:
             }
 
         monkeypatch.setattr(
-            naver_finance, "fetch_short_interest", mock_fetch_short_interest
+            market_data_service, "get_short_interest", mock_fetch_short_interest
         )
 
         await tools["get_short_interest"]("005930", days=100)
@@ -629,16 +631,16 @@ class TestGetShortInterest:
         tools = build_tools()
 
         async def mock_fetch_short_interest(code, days):
-            raise Exception("KRX API error")
+            raise Exception("KIS API error")
 
         monkeypatch.setattr(
-            naver_finance, "fetch_short_interest", mock_fetch_short_interest
+            market_data_service, "get_short_interest", mock_fetch_short_interest
         )
 
         result = await tools["get_short_interest"]("005930")
 
         assert "error" in result
-        assert result["source"] == "krx"
+        assert result["source"] == "kis"
         assert result["symbol"] == "005930"
         assert result["instrument_type"] == "equity_kr"
 
@@ -657,7 +659,7 @@ class TestGetShortInterest:
             return mock_short_interest
 
         monkeypatch.setattr(
-            naver_finance, "fetch_short_interest", mock_fetch_short_interest
+            market_data_service, "get_short_interest", mock_fetch_short_interest
         )
 
         result = await tools["get_short_interest"]("000000")
