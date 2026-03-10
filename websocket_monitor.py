@@ -318,7 +318,7 @@ class UnifiedWebSocketMonitor:
             try:
                 self.upbit_ws = UpbitMyOrderWebSocket(
                     on_order_callback=self._on_upbit_order,
-                    verify_ssl=False,
+                    verify_ssl=True,
                 )
                 logger.info("Connecting to Upbit WebSocket...")
                 await self.upbit_ws.connect_and_subscribe()

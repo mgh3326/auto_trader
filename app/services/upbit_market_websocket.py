@@ -9,7 +9,8 @@ import json
 import logging
 import ssl
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
@@ -31,8 +32,8 @@ class UpbitPublicWebSocketClient:
         self,
         subscription_type: str = "ticker",
         codes: list[str] | None = None,
-        verify_ssl: bool = False,
-        on_message: Callable | None = None,
+        verify_ssl: bool = True,
+        on_message: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ):
         """
         Initialize Upbit public WebSocket client.
@@ -41,7 +42,7 @@ class UpbitPublicWebSocketClient:
             subscription_type: Type of subscription ("ticker", "orderbook", "trade")
             codes: List of market codes to subscribe (e.g., ["KRW-BTC", "KRW-ETH"])
                    None means subscribe to all markets
-            verify_ssl: SSL certificate verification (default: False on macOS)
+            verify_ssl: SSL certificate verification (default: True)
             on_message: Optional callback for received messages
         """
         self.websocket_url = UPBIT_PUBLIC_WS_URL
@@ -58,19 +59,18 @@ class UpbitPublicWebSocketClient:
 
     def _create_ssl_context(self):
         """Create SSL context for WebSocket connection."""
+        ssl_context = ssl.create_default_context()
         if self.verify_ssl:
-            ssl_context = ssl.create_default_context()
             logger.info("SSL certificate verification enabled")
         else:
-            ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-            logger.info("SSL certificate verification disabled (macOS default)")
+            logger.warning("SSL certificate verification explicitly disabled")
         return ssl_context
 
-    def _create_subscribe_message(self) -> list:
+    def _create_subscribe_message(self) -> list[dict[str, Any]]:
         """Create subscription message for Upbit WebSocket."""
-        message = [
+        message: list[dict[str, Any]] = [
             {"ticket": str(uuid.uuid4())},
             {
                 "type": self.subscription_type,
@@ -162,7 +162,7 @@ class UpbitPublicWebSocketClient:
             logger.error(f"Unexpected error: {e}")
             self.is_connected = False
 
-    async def _handle_message(self, data: dict):
+    async def _handle_message(self, data: dict[str, Any]) -> None:
         """Handle received market data message."""
         if self.on_message:
             await self.on_message(data)

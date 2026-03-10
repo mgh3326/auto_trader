@@ -27,13 +27,13 @@ class UpbitMyOrderWebSocket:
     def __init__(
         self,
         on_order_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-        verify_ssl: bool = False,
+        verify_ssl: bool = True,
     ):
         """
         Args:
             on_order_callback: 주문/체결 데이터 수신 시 호출될 콜백 함수
                               함수 시그니처: async def callback(order_data: dict) -> None
-            verify_ssl: SSL 인증서 검증 여부 (기본값: False - macOS 호환성)
+            verify_ssl: SSL 인증서 검증 여부 (기본값: True)
         """
         self.websocket_url = "wss://api.upbit.com/websocket/v1/private"
         self.on_order_callback = on_order_callback
@@ -47,16 +47,13 @@ class UpbitMyOrderWebSocket:
 
     def _create_ssl_context(self):
         """SSL 컨텍스트 생성"""
+        ssl_context = ssl.create_default_context()
         if self.verify_ssl:
-            # 정상적인 SSL 검증 사용
-            ssl_context = ssl.create_default_context()
             logger.info("SSL 인증서 검증을 사용합니다.")
         else:
-            # SSL 검증 비활성화 (macOS 호환성)
-            ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-            logger.info("SSL 인증서 검증을 비활성화했습니다. (macOS 호환성)")
+            logger.warning("SSL 인증서 검증을 명시적으로 비활성화했습니다.")
 
         return ssl_context
 
@@ -256,13 +253,13 @@ class UpbitOrderAnalysisService:
     def __init__(
         self,
         analyzer_callback: Callable[[str], Awaitable[None]] | None = None,
-        verify_ssl: bool = False,
+        verify_ssl: bool = True,
     ):
         """
         Args:
             analyzer_callback: 분석 수행 콜백 함수
                               함수 시그니처: async def callback(coin_name: str) -> None
-            verify_ssl: SSL 인증서 검증 여부 (기본값: False - macOS 호환성)
+            verify_ssl: SSL 인증서 검증 여부 (기본값: True)
         """
         self.analyzer_callback = analyzer_callback
         self.verify_ssl = verify_ssl

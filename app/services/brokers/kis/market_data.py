@@ -117,6 +117,12 @@ def _validate_daily_itemchartprice_chunk(chunk: list[dict[str, Any]]) -> None:
             )
 
 
+def normalize_daily_chart_lookback(n: int) -> int:
+    if n < 1:
+        raise ValueError("n must be greater than or equal to 1")
+    return min(n, constants.DEFAULT_CANDLES)
+
+
 def _validate_overseas_minute_chart_chunk(chunk: Any) -> list[dict[str, Any]]:
     if not isinstance(chunk, list):
         raise RuntimeError(
@@ -618,6 +624,7 @@ class MarketDataClient:
            (이평 같은 지표 계산은 외부에서!)
         컬럼: date • open • high • low • close • volume • value
         """
+        n = normalize_daily_chart_lookback(n)
         await self._parent._ensure_token()
         hdr = self._parent._hdr_base | {
             "authorization": f"Bearer {self._settings.kis_access_token}",
