@@ -22,7 +22,12 @@ from app.services.market_data.constants import (
     KR_INTRADAY_OHLCV_PERIODS,
     validate_ohlcv_period,
 )
-from app.services.market_data.contracts import Candle, Quote
+from app.services.market_data.contracts import (
+    Candle,
+    OrderbookLevel,
+    OrderbookSnapshot,
+    Quote,
+)
 
 
 def _normalize_market(market: str) -> str:
@@ -52,6 +57,8 @@ def _normalize_symbol(symbol: str, market: str) -> str:
         if upper.startswith(("KRW-", "USDT-")):
             return upper
         return f"KRW-{upper}"
+    if market == "equity_kr" and value.isdigit() and len(value) <= 6:
+        return value.zfill(6)
     return value.upper()
 
 
@@ -115,6 +122,39 @@ def _map_error(exc: Exception) -> Exception:
     if "not found" in text.lower() or "no data" in text.lower():
         return SymbolNotFoundError(text)
     return UpstreamUnavailableError(text)
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        if value in (None, ""):
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_optional_int(value: Any) -> int | None:
+    try:
+        if value in (None, ""):
+            return None
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_orderbook_levels(
+    output: dict[str, Any], prefix: str
+) -> list[OrderbookLevel]:
+    levels: list[OrderbookLevel] = []
+    for idx in range(1, 11):
+        price = _to_int(output.get(f"{prefix}p{idx}"))
+        if price <= 0:
+            continue
+        quantity = output.get(f"{prefix}p_rsqn{idx}")
+        if quantity is None:
+            quantity = output.get(f"{prefix}p{idx}_rsqn")
+        levels.append(OrderbookLevel(price=price, quantity=_to_int(quantity)))
+    return levels
 
 
 async def get_kr_volume_rank() -> list[dict[str, Any]]:
@@ -203,6 +243,48 @@ async def get_quote(symbol: str, market: str) -> Quote:
             ),
             value=(float(last["value"]) if last.get("value") is not None else None),
         )
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+
+async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
+    resolved_market = _normalize_market(market)
+    if resolved_market != "equity_kr":
+        raise ValueError("KR orderbook only supports KR market")
+    resolved_symbol = _normalize_symbol(symbol, resolved_market)
+
+    try:
+        kis = KISClient()
+        output1, output2 = await kis.inquire_orderbook_snapshot(
+            code=resolved_symbol,
+            market="UN",
+        )
+        total_ask_qty = _to_int(output1.get("total_askp_rsqn"))
+        total_bid_qty = _to_int(output1.get("total_bidp_rsqn"))
+        return OrderbookSnapshot(
+            symbol=resolved_symbol,
+            instrument_type="equity_kr",
+            source="kis",
+            asks=_parse_orderbook_levels(output1, "ask"),
+            bids=_parse_orderbook_levels(output1, "bid"),
+            total_ask_qty=total_ask_qty,
+            total_bid_qty=total_bid_qty,
+            bid_ask_ratio=(
+                round(total_bid_qty / total_ask_qty, 2) if total_ask_qty > 0 else None
+            ),
+            expected_price=(
+                _to_optional_int(output2.get("antc_cnpr"))
+                if output2 is not None
+                else None
+            ),
+            expected_qty=(
+                _to_optional_int(output2.get("antc_cnqn"))
+                if output2 is not None
+                else None
+            ),
+        )
+    except ValueError:
+        raise
     except Exception as exc:
         raise _map_error(exc) from exc
 
@@ -296,4 +378,13 @@ async def get_ohlcv(
         raise _map_error(exc) from exc
 
 
-__all__ = ["get_quote", "get_ohlcv", "get_kr_volume_rank", "Quote", "Candle"]
+__all__ = [
+    "get_quote",
+    "get_orderbook",
+    "get_ohlcv",
+    "get_kr_volume_rank",
+    "Quote",
+    "Candle",
+    "OrderbookLevel",
+    "OrderbookSnapshot",
+]
