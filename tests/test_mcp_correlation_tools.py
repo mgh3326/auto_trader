@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import pandas as pd
 import pytest
 
-from app.mcp_server.tooling.shared import COMPANY_NAME_MARKET_REQUIRED_MESSAGE
 from tests._mcp_tooling_support import _patch_runtime_attr, build_tools
 
 _CORRELATION_COMPANY_NAME_ERROR = (
@@ -80,7 +79,7 @@ async def test_get_correlation_rejects_korean_company_name_with_validation_error
         "success": False,
         "error": _CORRELATION_COMPANY_NAME_ERROR,
         "errors": [
-            f"삼성전자: {COMPANY_NAME_MARKET_REQUIRED_MESSAGE}",
+            f"삼성전자: {_CORRELATION_COMPANY_NAME_ERROR}",
         ],
     }
     fetch_mock.assert_awaited_once()
@@ -102,7 +101,7 @@ async def test_get_correlation_rejects_us_company_name_with_validation_error(
         "success": False,
         "error": _CORRELATION_COMPANY_NAME_ERROR,
         "errors": [
-            f"Apple Inc.: {COMPANY_NAME_MARKET_REQUIRED_MESSAGE}",
+            f"Apple Inc.: {_CORRELATION_COMPANY_NAME_ERROR}",
         ],
     }
     fetch_mock.assert_awaited_once()
@@ -126,7 +125,7 @@ async def test_get_correlation_keeps_partial_success_with_invalid_company_name(
     assert result["success"] is True
     assert result["symbols"] == ["005930", "AAPL"]
     assert result["errors"] == [
-        f"삼성전자: {COMPANY_NAME_MARKET_REQUIRED_MESSAGE}",
+        f"삼성전자: {_CORRELATION_COMPANY_NAME_ERROR}",
     ]
     assert result["correlation_matrix"] == [[1.0, 1.0], [1.0, 1.0]]
 
