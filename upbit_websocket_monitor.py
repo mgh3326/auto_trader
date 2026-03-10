@@ -34,10 +34,9 @@ async def main():
         except Exception as e:
             logger.error(f"코인 분석 오류 ({coin_name}): {e}")
 
-    # WebSocket 모니터링 서비스 초기화 (SSL 검증 비활성화 - macOS 호환성)
     service = UpbitOrderAnalysisService(
         analyzer_callback=analyze_coin_callback,
-        verify_ssl=False,  # macOS에서 SSL 인증서 문제 해결
+        verify_ssl=True,
     )
 
     try:

@@ -1,5 +1,6 @@
 """Unit tests for Upbit MyOrder websocket service."""
 
+import ssl
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -79,3 +80,19 @@ class TestUpbitMyOrderWebSocket:
         assert client.current_attempt == client.max_reconnect_attempts
         assert client.is_connected is False
         assert "3/3" in str(exc_info.value)
+
+    def test_create_ssl_context_verifies_by_default(self):
+        client = UpbitMyOrderWebSocket()
+
+        ssl_context = client._create_ssl_context()
+
+        assert ssl_context.verify_mode == ssl.CERT_REQUIRED
+        assert ssl_context.check_hostname is True
+
+    def test_create_ssl_context_supports_explicit_insecure_mode(self):
+        client = UpbitMyOrderWebSocket(verify_ssl=False)
+
+        ssl_context = client._create_ssl_context()
+
+        assert ssl_context.verify_mode == ssl.CERT_NONE
+        assert ssl_context.check_hostname is False
