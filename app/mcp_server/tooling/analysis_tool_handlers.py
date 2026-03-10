@@ -14,33 +14,18 @@ from typing import Any, Literal
 import httpx
 import yfinance as yf
 
-from app.mcp_server.tooling.analysis_screen_core import (
-    _normalize_asset_type,
-    _normalize_screen_market,
-    _normalize_sort_by,
-    _normalize_sort_order,
-    _validate_screen_filters,
-    screen_stocks_unified,
-)
-from app.mcp_server.tooling.analysis_screening import (
-    _analyze_stock_impl,
-    _calculate_pearson_correlation,
-    _error_payload,
-    _get_crypto_rankings,
-    _get_us_rankings,
-    _map_kr_row,
-    _normalize_symbol_input,
-    _recommend_stocks_impl,
-    _to_float,
-)
+from app.mcp_server.tooling import analysis_screening
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
 from app.mcp_server.tooling.shared import (
     is_crypto_market as _is_crypto_market,
+)
+from app.mcp_server.tooling.shared import (
     is_korean_equity_code as _is_korean_equity_code,
+)
+from app.mcp_server.tooling.shared import (
     is_us_equity_symbol as _is_us_equity_symbol,
-    resolve_market_type as _resolve_market_type,
 )
 from app.monitoring import build_yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
@@ -54,7 +39,7 @@ _CORRELATION_COMPANY_NAME_ERROR = (
 
 
 def _looks_like_correlation_company_name(symbol: str) -> bool:
-    normalized_symbol = _normalize_symbol_input(symbol, None)
+    normalized_symbol = analysis_screening._normalize_symbol_input(symbol, None)
     if not normalized_symbol:
         return False
     if _is_crypto_market(normalized_symbol):
@@ -67,12 +52,13 @@ def _looks_like_correlation_company_name(symbol: str) -> bool:
 
 
 def _resolve_correlation_symbol_input(symbol: str | int) -> tuple[str, str]:
-    normalized_symbol = _normalize_symbol_input(symbol, None)
+    normalized_symbol = analysis_screening._normalize_symbol_input(symbol, None)
     if not normalized_symbol:
         raise ValueError("symbol is required")
     if _looks_like_correlation_company_name(normalized_symbol):
         raise ValueError(_CORRELATION_COMPANY_NAME_ERROR)
-    return _resolve_market_type(normalized_symbol, None)
+    return analysis_screening._resolve_market_type(normalized_symbol, None)
+
 
 name_to_corp_map: dict[str, Any]
 prime_index: Any | None
@@ -142,7 +128,7 @@ async def get_top_stocks_impl(
 
     key = (market, ranking_type)
     if key not in supported_combinations:
-        return _error_payload(
+        return analysis_screening._error_payload(
             source="validation",
             message=f"Unsupported combination: market={market}, ranking_type={ranking_type}",
             query=f"market={market}, ranking_type={ranking_type}",
@@ -180,37 +166,41 @@ async def get_top_stocks_impl(
             filtered_rank = 1
             for row in data[:fetch_limit]:
                 if ranking_type == "losers":
-                    change_rate = _to_float(row.get("prdy_ctrt"))
+                    change_rate = analysis_screening._to_float(row.get("prdy_ctrt"))
                     if change_rate is None or change_rate >= 0:
                         continue
 
-                mapped = _map_kr_row(row, filtered_rank)
+                mapped = analysis_screening._map_kr_row(row, filtered_rank)
                 rankings.append(mapped)
                 filtered_rank += 1
                 if len(rankings) >= limit_clamped:
                     break
 
         elif market == "us":
-            rankings, source = await _get_us_rankings(ranking_type, limit_clamped)
+            rankings, source = await analysis_screening._get_us_rankings(
+                ranking_type, limit_clamped
+            )
 
         elif market == "crypto":
-            rankings, source = await _get_crypto_rankings(ranking_type, limit_clamped)
+            rankings, source = await analysis_screening._get_crypto_rankings(
+                ranking_type, limit_clamped
+            )
 
         else:
-            return _error_payload(
+            return analysis_screening._error_payload(
                 source="validation",
                 message=f"Unsupported market: {market}",
                 query=f"market={market}",
             )
 
     except Exception as exc:
-        return _error_payload(
+        return analysis_screening._error_payload(
             source=source,
             message=str(exc),
         )
 
     if len(rankings) == 0 and market == "kr" and ranking_type == "losers":
-        return _error_payload(
+        return analysis_screening._error_payload(
             source="kis",
             message=(
                 "No losing stocks found. "
@@ -384,7 +374,9 @@ async def get_correlation_impl(
                 truncated_a = prices_a[-actual_len:]
                 truncated_b = prices_b[-actual_len:]
                 corr = (
-                    _calculate_pearson_correlation(truncated_a, truncated_b)
+                    analysis_screening._calculate_pearson_correlation(
+                        truncated_a, truncated_b
+                    )
                     if len(truncated_a) >= 2
                     else 0.0
                 )
@@ -428,8 +420,10 @@ async def analyze_stock_impl(
     market: str | None = None,
     include_peers: bool = False,
 ) -> dict[str, Any]:
-    normalized_symbol = _normalize_symbol_input(symbol, market)
-    result = _analyze_stock_impl(normalized_symbol, market, include_peers)
+    normalized_symbol = analysis_screening._normalize_symbol_input(symbol, market)
+    result = analysis_screening._analyze_stock_impl(
+        normalized_symbol, market, include_peers
+    )
     if asyncio.iscoroutine(result):
         return await result
     return result
@@ -446,7 +440,9 @@ async def analyze_portfolio_impl(
     if len(symbols) > 10:
         raise ValueError("symbols must contain at most 10 entries")
 
-    normalized_symbols = [_normalize_symbol_input(s, market) for s in symbols]
+    normalized_symbols = [
+        analysis_screening._normalize_symbol_input(s, market) for s in symbols
+    ]
     results: dict[str, Any] = {}
     errors: list[str] = []
     sem = asyncio.Semaphore(5)
@@ -454,7 +450,9 @@ async def analyze_portfolio_impl(
     async def _analyze_one(sym: str) -> dict[str, Any]:
         async with sem:
             try:
-                result = _analyze_stock_impl(sym, market, include_peers)
+                result = analysis_screening._analyze_stock_impl(
+                    sym, market, include_peers
+                )
                 if asyncio.iscoroutine(result):
                     return await result
                 return result
@@ -528,10 +526,10 @@ async def screen_stocks_impl(
         if max_rsi is None and "max_rsi" in preset:
             max_rsi = preset["max_rsi"]
 
-    normalized_market = _normalize_screen_market(market)
-    normalized_asset_type = _normalize_asset_type(asset_type)
-    normalized_sort_by = _normalize_sort_by(sort_by)
-    normalized_sort_order = _normalize_sort_order(sort_order)
+    normalized_market = analysis_screening._normalize_screen_market(market)
+    normalized_asset_type = analysis_screening._normalize_asset_type(asset_type)
+    normalized_sort_by = analysis_screening._normalize_sort_by(sort_by)
+    normalized_sort_order = analysis_screening._normalize_sort_order(sort_order)
 
     if normalized_market == "crypto" and not sort_by_specified:
         if strategy_applied:
@@ -546,7 +544,7 @@ async def screen_stocks_impl(
     if limit > 100:
         limit = 100
 
-    _validate_screen_filters(
+    analysis_screening._validate_screen_filters(
         market=normalized_market,
         asset_type=normalized_asset_type,
         min_market_cap=min_market_cap,
@@ -556,7 +554,7 @@ async def screen_stocks_impl(
         sort_by=normalized_sort_by,
     )
     # Use unified screening with automatic data source selection
-    return await screen_stocks_unified(
+    return await analysis_screening.screen_stocks_unified(
         market=normalized_market,
         asset_type=normalized_asset_type,
         category=category,
@@ -581,7 +579,7 @@ async def recommend_stocks_impl(
     max_positions: int = 5,
     exclude_held: bool = True,
 ) -> dict[str, Any]:
-    return await _recommend_stocks_impl(
+    return await analysis_screening._recommend_stocks_impl(
         budget=budget,
         market=market,
         strategy=strategy,
@@ -652,14 +650,14 @@ async def get_fear_greed_index_impl(days: int = 7) -> dict[str, Any]:
             data = response.json()
 
         if not data or "data" not in data:
-            return _error_payload(
+            return analysis_screening._error_payload(
                 source="alternative.me",
                 message="No data received from Fear & Greed API",
             )
 
         history_data = data["data"]
         if not history_data:
-            return _error_payload(
+            return analysis_screening._error_payload(
                 source="alternative.me",
                 message="Empty data array received from Fear & Greed API",
             )
@@ -702,12 +700,12 @@ async def get_fear_greed_index_impl(days: int = 7) -> dict[str, Any]:
         }
 
     except httpx.HTTPStatusError as exc:
-        return _error_payload(
+        return analysis_screening._error_payload(
             source="alternative.me",
             message=f"HTTP error: {exc}",
         )
     except Exception as exc:
-        return _error_payload(
+        return analysis_screening._error_payload(
             source="alternative.me",
             message=str(exc),
         )
