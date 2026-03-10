@@ -5,6 +5,7 @@ Tests for analysis module.
 import pandas as pd
 
 from app.analysis.indicators import add_indicators
+from app.analysis.prompt import format_decimal, format_quantity
 
 
 class TestTechnicalIndicators:
@@ -98,3 +99,17 @@ class TestAnalysisWorkflow:
         # This test should verify the structure of analysis results
         # Add implementation based on your actual result format
         pass
+
+
+class TestPromptFormatting:
+    def test_format_decimal_preserves_existing_krw_precision_bands(self):
+        assert format_decimal(1_500_000, "₩") == "1,500,000"
+        assert format_decimal(15_000, "₩") == "15,000.0"
+        assert format_decimal(1_500, "₩") == "1,500.00"
+        assert format_decimal(150, "₩") == "150.00"
+        assert format_decimal(15, "₩") == "15.00"
+
+    def test_format_quantity_formats_stock_units_as_whole_numbers(self):
+        assert format_quantity(1_500, "주") == "1,500"
+        assert format_quantity(150, "주") == "150"
+        assert format_quantity(15, "주") == "15"

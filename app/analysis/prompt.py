@@ -1,7 +1,8 @@
 from collections.abc import Iterable
+from typing import Any
 
 import pandas as pd
-import ta
+from ta.momentum import RSIIndicator
 
 from .indicators import add_indicators
 
@@ -26,25 +27,15 @@ def format_decimal(value: float, currency: str = "₩") -> str:
     if currency == "₩":
         if abs_value >= 1000000:  # 100만원 이상
             return f"{value:,.0f}"
-        elif abs_value >= 10000:  # 1만원 이상
+        if abs_value >= 10000:  # 1만원 이상
             return f"{value:,.1f}"
-        elif abs_value >= 1000:  # 1천원 이상
-            return f"{value:,.2f}"
-        elif abs_value >= 100:  # 100원 이상
-            return f"{value:,.2f}"
-        else:  # 100원 미만
-            return f"{value:,.2f}"
+        return f"{value:,.2f}"
 
     # 미국 달러 ($) 기준
     elif currency == "$":
-        if abs_value >= 1000:  # $1,000 이상
+        if abs_value >= 10:  # $10 이상
             return f"{value:,.2f}"
-        elif abs_value >= 100:  # $100 이상
-            return f"{value:,.2f}"
-        elif abs_value >= 10:  # $10 이상
-            return f"{value:,.2f}"
-        else:  # $10 미만
-            return f"{value:,.3f}"
+        return f"{value:,.3f}"
 
     # 암호화폐 등 기타 통화 (기본값)
     else:
@@ -82,12 +73,7 @@ def format_quantity(quantity: float, unit_shares: str = "개") -> str:
 
     # 주식의 경우 (보통 정수 단위)
     if unit_shares == "주":
-        if abs_quantity >= 1000:  # 1000주 이상
-            return f"{quantity:,.0f}"
-        elif abs_quantity >= 100:  # 100주 이상
-            return f"{quantity:,.0f}"
-        else:  # 100주 미만
-            return f"{quantity:,.0f}"
+        return f"{quantity:,.0f}"
 
     # 암호화폐의 경우 (소수점 포함)
     elif unit_shares == "개":
@@ -126,9 +112,9 @@ def build_prompt(
     stock_name: str,
     currency: str = "₩",
     unit_shares: str = "주",
-    fundamental_info: dict | None = None,
-    position_info: dict | None = None,
-    minute_candles: dict | None = None,
+    fundamental_info: dict[str, Any] | None = None,
+    position_info: dict[str, Any] | None = None,
+    minute_candles: dict[str, pd.DataFrame] | None = None,
 ) -> str:
     df = add_indicators(df).sort_values("date").reset_index(drop=True)
     """
@@ -169,7 +155,7 @@ def build_prompt(
     )  # 개수/주수 등 단위
 
     df = add_ma(df, windows=(5, 20, 60, 120, 200))
-    rsi14 = ta.momentum.RSIIndicator(df.close).rsi().iloc[-1]
+    rsi14 = RSIIndicator(df.close).rsi().iloc[-1]
 
     # 전일 대비·등락률·거래량 증감
     df["diff"] = df.close.diff()
@@ -393,9 +379,9 @@ def build_json_prompt(
     stock_name: str,
     currency: str = "₩",
     unit_shares: str = "주",
-    fundamental_info: dict | None = None,
-    position_info: dict | None = None,
-    minute_candles: dict | None = None,
+    fundamental_info: dict[str, Any] | None = None,
+    position_info: dict[str, Any] | None = None,
+    minute_candles: dict[str, pd.DataFrame] | None = None,
 ) -> str:
     """
     JSON 형식의 응답을 받기 위한 프롬프트를 생성합니다.
