@@ -51,6 +51,48 @@ async def test_get_orderbook_returns_kr_payload(
 
 
 @pytest.mark.asyncio
+async def test_get_orderbook_preserves_null_expected_qty_without_extra_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(
+            return_value=OrderbookSnapshot(
+                symbol="005930",
+                instrument_type="equity_kr",
+                source="kis",
+                asks=[OrderbookLevel(price=70100, quantity=123)],
+                bids=[OrderbookLevel(price=70000, quantity=321)],
+                total_ask_qty=1000,
+                total_bid_qty=1500,
+                bid_ask_ratio=1.5,
+                expected_price=70050,
+                expected_qty=None,
+            )
+        ),
+    )
+    tools = build_tools()
+
+    result = await tools["get_orderbook"]("5930")
+
+    assert result == {
+        "symbol": "005930",
+        "instrument_type": "equity_kr",
+        "source": "kis",
+        "asks": [{"price": 70100, "quantity": 123}],
+        "bids": [{"price": 70000, "quantity": 321}],
+        "total_ask_qty": 1000,
+        "total_bid_qty": 1500,
+        "bid_ask_ratio": 1.5,
+        "expected_price": 70050,
+        "expected_qty": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_get_orderbook_returns_error_payload_on_kis_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

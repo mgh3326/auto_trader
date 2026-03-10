@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -297,6 +298,175 @@ async def test_get_orderbook_parses_kr_snapshot(
         bid_ask_ratio=1.5,
         expected_price=70050,
         expected_qty=42,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_normalizes_blank_expected_qty_and_logs_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                },
+                {"antc_cnpr": "70050", "antc_cnqn": ""},
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    with caplog.at_level(logging.INFO):
+        snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.expected_price == 70050
+    assert snapshot.expected_qty is None
+
+    messages = [
+        record.message
+        for record in caplog.records
+        if "expected_qty unavailable" in record.message
+    ]
+    assert len(messages) == 1
+    message = messages[0]
+    assert "symbol=005930" in message
+    assert "session_hint=" in message
+    assert "antc_cnpr='70050'" in message
+    assert "antc_cnqn=''" in message
+    assert "output2_keys=['antc_cnpr', 'antc_cnqn']" in message
+    assert "askp1" not in message
+    assert "total_askp_rsqn" not in message
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_normalizes_missing_expected_qty_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                },
+                {"antc_cnpr": "70050"},
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.expected_price == 70050
+    assert snapshot.expected_qty is None
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_normalizes_none_expected_qty_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                },
+                {"antc_cnpr": "70050", "antc_cnqn": None},
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.expected_price == 70050
+    assert snapshot.expected_qty is None
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_logs_diagnostics_when_output2_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    with caplog.at_level(logging.INFO):
+        snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.expected_price is None
+    assert snapshot.expected_qty is None
+
+    messages = [
+        record.message
+        for record in caplog.records
+        if "expected_qty unavailable" in record.message
+    ]
+    assert len(messages) == 1
+    message = messages[0]
+    assert "symbol=005930" in message
+    assert "session_hint=" in message
+    assert "antc_cnpr=None" in message
+    assert "antc_cnqn=None" in message
+    assert "output2_keys=[]" in message
+    assert "askp1" not in message
+    assert "total_askp_rsqn" not in message
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_keeps_zero_expected_qty_without_diagnostic_log(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                },
+                {"antc_cnpr": "70050", "antc_cnqn": "0"},
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    with caplog.at_level(logging.INFO):
+        snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.expected_price == 70050
+    assert snapshot.expected_qty == 0
+    assert all(
+        "expected_qty unavailable" not in record.message for record in caplog.records
     )
 
 
