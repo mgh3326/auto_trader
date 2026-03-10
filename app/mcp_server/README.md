@@ -73,6 +73,7 @@ Behavior:
 - Only KR equity orderbook is supported in v1; `market="us"` or `market="crypto"` raises an argument error
 - Symbol normalization follows the KR quote path, including zero-padding numeric codes such as `5930 -> 005930`
 - Valid KR requests use KIS `inquire-asking-price-exp-ccn` and return 10-level asks/bids, total residual quantities, and expected match metadata
+- Successful responses also include MCP-only derived fields: `pressure`, `pressure_desc`, `spread`, and `spread_pct`
 - Successful responses include `source: "kis"` and `instrument_type: "equity_kr"`
 - Invalid input raises; upstream KIS failures for otherwise valid KR requests return in-band error payloads via the shared MCP error contract
 
@@ -87,10 +88,26 @@ Response format:
   "total_ask_qty": 1000,
   "total_bid_qty": 1500,
   "bid_ask_ratio": 1.5,
+  "pressure": "buy",
+  "pressure_desc": "매수잔량이 매도잔량의 1.5배 - 매수 압력",
+  "spread": 100,
+  "spread_pct": 0.143,
   "expected_price": 70050,
   "expected_qty": 42
 }
 ```
+
+Derived fields:
+- `pressure` is derived from `bid_ask_ratio` using fixed inclusive boundaries:
+  - `ratio > 2.0` -> `strong_buy`
+  - `1.3 < ratio <= 2.0` -> `buy`
+  - `0.7 <= ratio <= 1.3` -> `neutral`
+  - `0.5 <= ratio < 0.7` -> `sell`
+  - `ratio < 0.5` -> `strong_sell`
+- `pressure_desc` is a Korean interpretation string. `strong_buy`/`buy` use `total_bid_qty / total_ask_qty`, `strong_sell`/`sell` use `total_ask_qty / total_bid_qty`, and `neutral` is always `"매수/매도 잔량이 균형권 - 중립"`
+- If `bid_ask_ratio` is `null`, both `pressure` and `pressure_desc` are `null`
+- `spread` is `asks[0].price - bids[0].price` when both best levels exist; otherwise it is `null`
+- `spread_pct` is `(spread / bids[0].price) * 100`, rounded to 3 decimal places, and becomes `null` when the best bid is missing or `<= 0`
 
 ### KR order routing
 - Domestic order tools (`place_order`, `modify_order`, `cancel_order` with `market="kr"`) use the new KIS TR IDs (`TTTC0012U/TTTC0011U/TTTC0013U`, mock: `VTTC0012U/VTTC0011U/VTTC0013U`).
