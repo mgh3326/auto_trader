@@ -25,6 +25,7 @@ import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import (
+    analysis_screening,
     fundamentals_sources_coingecko,
     fundamentals_sources_indices,
     fundamentals_sources_naver,
@@ -2448,6 +2449,256 @@ async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
     assert result["symbol"] == "AAPL"
     assert "valuation" in result
     assert "opinions" in result
+
+
+@pytest.mark.asyncio
+async def test_analyze_stock_kr_reuses_preloaded_ohlcv_and_bundled_naver(monkeypatch):
+    tools = build_tools()
+
+    ohlcv_fetches: list[tuple[str, str, int]] = []
+
+    async def mock_fetch_ohlcv(symbol, market_type, count):
+        ohlcv_fetches.append((symbol, market_type, count))
+        return pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2024-01-01"]),
+                "open": [74000.0],
+                "high": [76000.0],
+                "low": [73000.0],
+                "close": [75000.0],
+                "volume": [1000000],
+                "value": [75000000000.0],
+            }
+        )
+
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
+
+    quote_mock = AsyncMock(side_effect=AssertionError("unexpected KR quote fetch"))
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", quote_mock)
+
+    standalone_valuation_mock = AsyncMock(
+        side_effect=AssertionError("unexpected standalone KR valuation fetch")
+    )
+    _patch_runtime_attr(
+        monkeypatch, "_fetch_valuation_naver", standalone_valuation_mock
+    )
+
+    standalone_news_mock = AsyncMock(
+        side_effect=AssertionError("unexpected standalone KR news fetch")
+    )
+    _patch_runtime_attr(monkeypatch, "_fetch_news_naver", standalone_news_mock)
+
+    standalone_opinions_mock = AsyncMock(
+        side_effect=AssertionError("unexpected standalone KR opinions fetch")
+    )
+    _patch_runtime_attr(
+        monkeypatch, "_fetch_investment_opinions_naver", standalone_opinions_mock
+    )
+
+    bundle_mock = AsyncMock(
+        return_value={
+            "valuation": {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                "symbol": "005930",
+                "current_price": 75000,
+                "per": 12.5,
+            },
+            "news": {
+                "symbol": "005930",
+                "market": "kr",
+                "source": "naver",
+                "count": 1,
+                "news": [{"title": "headline", "url": "https://example.com/news"}],
+            },
+            "opinions": {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                "symbol": "005930",
+                "count": 2,
+                "opinions": [
+                    {"firm": "Firm A", "rating": "Buy", "target_price": 85000},
+                    {"firm": "Firm B", "rating": "Strong Buy", "target_price": 90000},
+                ],
+                "consensus": {
+                    "buy_count": 2,
+                    "hold_count": 0,
+                    "sell_count": 0,
+                    "total_count": 2,
+                    "avg_target_price": 87500,
+                    "current_price": 75000,
+                },
+            },
+        }
+    )
+    monkeypatch.setattr(
+        analysis_screening,
+        "_fetch_analysis_snapshot_naver",
+        bundle_mock,
+        raising=False,
+    )
+
+    async def mock_get_indicators(symbol, indicators, market=None, preloaded_df=None):
+        assert symbol == "005930"
+        assert preloaded_df is not None
+        return {"indicators": {"rsi": {"14": 45.0}}}
+
+    monkeypatch.setattr(analysis_screening, "_get_indicators_impl", mock_get_indicators)
+
+    async def mock_get_support_resistance(symbol, market=None, preloaded_df=None):
+        assert symbol == "005930"
+        assert preloaded_df is not None
+        return {"supports": [{"price": 73000}], "resistances": [{"price": 77000}]}
+
+    monkeypatch.setattr(
+        analysis_screening,
+        "_get_support_resistance_impl",
+        mock_get_support_resistance,
+    )
+    monkeypatch.setattr(
+        analysis_screening,
+        "_build_recommendation_for_equity",
+        lambda analysis, market_type: None,
+    )
+
+    result = await tools["analyze_stock"]("005930", market="kr")
+
+    assert ohlcv_fetches == [("005930", "equity_kr", 250)]
+    quote_mock.assert_not_awaited()
+    standalone_valuation_mock.assert_not_awaited()
+    standalone_news_mock.assert_not_awaited()
+    standalone_opinions_mock.assert_not_awaited()
+    bundle_mock.assert_awaited_once_with("005930", 5, 10)
+    assert result["symbol"] == "005930"
+    assert result["market_type"] == "equity_kr"
+    assert result["source"] == "kis"
+    assert result["quote"] == {
+        "symbol": "005930",
+        "instrument_type": "equity_kr",
+        "price": 75000.0,
+        "open": 74000.0,
+        "high": 76000.0,
+        "low": 73000.0,
+        "volume": 1000000,
+        "value": 75000000000.0,
+        "source": "kis",
+    }
+    assert result["valuation"]["instrument_type"] == "equity_kr"
+    assert result["news"]["source"] == "naver"
+    assert result["opinions"]["source"] == "naver"
+    assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_analyze_stock_kr_falls_back_to_quote_helper_when_ohlcv_empty(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    async def mock_fetch_ohlcv(symbol, market_type, count):
+        _ = symbol, market_type, count
+        return pd.DataFrame(
+            columns=["date", "open", "high", "low", "close", "volume", "value"]
+        )
+
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
+
+    quote_mock = AsyncMock(
+        return_value={
+            "symbol": "005930",
+            "instrument_type": "equity_kr",
+            "price": 75100.0,
+            "open": 74100.0,
+            "high": 76100.0,
+            "low": 73100.0,
+            "volume": 1100000,
+            "value": 76000000000.0,
+            "source": "kis",
+        }
+    )
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_kr", quote_mock)
+
+    standalone_valuation_mock = AsyncMock(
+        side_effect=AssertionError("unexpected standalone KR valuation fetch")
+    )
+    _patch_runtime_attr(
+        monkeypatch, "_fetch_valuation_naver", standalone_valuation_mock
+    )
+    standalone_news_mock = AsyncMock(
+        side_effect=AssertionError("unexpected standalone KR news fetch")
+    )
+    _patch_runtime_attr(monkeypatch, "_fetch_news_naver", standalone_news_mock)
+    standalone_opinions_mock = AsyncMock(
+        side_effect=AssertionError("unexpected standalone KR opinions fetch")
+    )
+    _patch_runtime_attr(
+        monkeypatch, "_fetch_investment_opinions_naver", standalone_opinions_mock
+    )
+
+    bundle_mock = AsyncMock(
+        return_value={
+            "valuation": {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                "symbol": "005930",
+                "current_price": 75100,
+            },
+            "news": {
+                "symbol": "005930",
+                "market": "kr",
+                "source": "naver",
+                "count": 0,
+                "news": [],
+            },
+            "opinions": {
+                "instrument_type": "equity_kr",
+                "source": "naver",
+                "symbol": "005930",
+                "count": 0,
+                "opinions": [],
+                "consensus": {"total_count": 0, "current_price": 75100},
+            },
+        }
+    )
+    monkeypatch.setattr(
+        analysis_screening,
+        "_fetch_analysis_snapshot_naver",
+        bundle_mock,
+        raising=False,
+    )
+
+    async def mock_get_indicators(symbol, indicators, market=None, preloaded_df=None):
+        assert preloaded_df is not None
+        return {"indicators": {"rsi": {"14": None}}}
+
+    monkeypatch.setattr(analysis_screening, "_get_indicators_impl", mock_get_indicators)
+
+    async def mock_get_support_resistance(symbol, market=None, preloaded_df=None):
+        assert preloaded_df is not None
+        return {"supports": [], "resistances": []}
+
+    monkeypatch.setattr(
+        analysis_screening,
+        "_get_support_resistance_impl",
+        mock_get_support_resistance,
+    )
+    monkeypatch.setattr(
+        analysis_screening,
+        "_build_recommendation_for_equity",
+        lambda analysis, market_type: None,
+    )
+
+    result = await tools["analyze_stock"]("005930", market="kr")
+
+    quote_mock.assert_awaited_once_with("005930")
+    standalone_valuation_mock.assert_not_awaited()
+    standalone_news_mock.assert_not_awaited()
+    standalone_opinions_mock.assert_not_awaited()
+    bundle_mock.assert_awaited_once_with("005930", 5, 10)
+    assert result["quote"] == quote_mock.return_value
+    assert result["valuation"]["source"] == "naver"
+    assert result["news"]["source"] == "naver"
+    assert result["opinions"]["source"] == "naver"
 
 
 # ---------------------------------------------------------------------------
