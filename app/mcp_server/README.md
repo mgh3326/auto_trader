@@ -19,6 +19,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 ## Tools
 - `search_symbol(query, limit=20)`
 - `get_quote(symbol, market=None)`
+- `get_orderbook(symbol, market="kr")`
 - US equity quote price resolution uses Yahoo directly via `app.services.brokers.yahoo.client`
   - US quote response keeps `source: "yahoo"` and includes `previous_close/open/high/low/volume` from Yahoo `fast_info`
   - US equity Yahoo lookup failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
@@ -58,6 +59,34 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `manage_watch_alerts(action, market=None, symbol=None, metric=None, operator=None, threshold=None)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
+
+### `get_orderbook` spec
+Parameters:
+- `symbol`: KR equity symbol/code (required)
+- `market`: KR market alias only (`"kr"`, `"kospi"`, `"kosdaq"`, `"korea"`, `"kis"`, `"equity_kr"`); default `"kr"`
+
+Behavior:
+- Only KR equity orderbook is supported in v1; `market="us"` or `market="crypto"` raises an argument error
+- Symbol normalization follows the KR quote path, including zero-padding numeric codes such as `5930 -> 005930`
+- Valid KR requests use KIS `inquire-asking-price-exp-ccn` and return 10-level asks/bids, total residual quantities, and expected match metadata
+- Successful responses include `source: "kis"` and `instrument_type: "equity_kr"`
+- Invalid input raises; upstream KIS failures for otherwise valid KR requests return in-band error payloads via the shared MCP error contract
+
+Response format:
+```json
+{
+  "symbol": "005930",
+  "instrument_type": "equity_kr",
+  "source": "kis",
+  "asks": [{"price": 70100, "quantity": 123}],
+  "bids": [{"price": 70000, "quantity": 321}],
+  "total_ask_qty": 1000,
+  "total_bid_qty": 1500,
+  "bid_ask_ratio": 1.5,
+  "expected_price": 70050,
+  "expected_qty": 42
+}
+```
 
 ### KR order routing
 - Domestic order tools (`place_order`, `modify_order`, `cancel_order` with `market="kr"`) use the new KIS TR IDs (`TTTC0012U/TTTC0011U/TTTC0013U`, mock: `VTTC0012U/VTTC0011U/VTTC0013U`).

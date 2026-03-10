@@ -8,7 +8,7 @@ import pytest
 
 from app.services.domain_errors import UpstreamUnavailableError, ValidationError
 from app.services.market_data import service as market_data_service
-from app.services.market_data.contracts import Candle
+from app.services.market_data.contracts import Candle, OrderbookLevel, OrderbookSnapshot
 
 
 @pytest.mark.asyncio
@@ -148,3 +148,131 @@ async def test_get_ohlcv_kr_intraday_uses_shared_reader(
     assert candle.market == "equity_kr"
     assert candle.period == "5m"
     assert candle.timestamp == dt.datetime(2026, 2, 23, 9, 5, 0)
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_parses_kr_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            assert code == "005930"
+            assert market == "UN"
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "123",
+                    "askp2": "0",
+                    "askp_rsqn2": "999",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "321",
+                    "total_askp_rsqn": "1000",
+                    "total_bidp_rsqn": "1500",
+                },
+                {"antc_cnpr": "70050", "antc_cnqn": "42"},
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("5930", "kr")
+
+    assert snapshot == OrderbookSnapshot(
+        symbol="005930",
+        instrument_type="equity_kr",
+        source="kis",
+        asks=[OrderbookLevel(price=70100, quantity=123)],
+        bids=[OrderbookLevel(price=70000, quantity=321)],
+        total_ask_qty=1000,
+        total_bid_qty=1500,
+        bid_ask_ratio=1.5,
+        expected_price=70050,
+        expected_qty=42,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_falls_back_to_legacy_quantity_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            return (
+                {
+                    "askp1": "70200",
+                    "askp1_rsqn": "44",
+                    "bidp1": "69900",
+                    "bidp1_rsqn": "55",
+                    "total_askp_rsqn": "44",
+                    "total_bidp_rsqn": "55",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kospi")
+
+    assert snapshot.asks == [OrderbookLevel(price=70200, quantity=44)]
+    assert snapshot.bids == [OrderbookLevel(price=69900, quantity=55)]
+    assert snapshot.expected_price is None
+    assert snapshot.expected_qty is None
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_defaults_market_to_kr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            assert code == "005930"
+            assert market == "UN"
+            return (
+                {
+                    "askp1": "70200",
+                    "askp_rsqn1": "44",
+                    "bidp1": "69900",
+                    "bidp_rsqn1": "55",
+                    "total_askp_rsqn": "44",
+                    "total_bidp_rsqn": "55",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("5930")
+
+    assert snapshot.symbol == "005930"
+    assert snapshot.instrument_type == "equity_kr"
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_returns_none_ratio_when_total_ask_is_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyKIS:
+        async def inquire_orderbook_snapshot(self, code: str, market: str = "UN"):
+            return (
+                {
+                    "askp1": "70100",
+                    "askp_rsqn1": "10",
+                    "bidp1": "70000",
+                    "bidp_rsqn1": "20",
+                    "total_askp_rsqn": "0",
+                    "total_bidp_rsqn": "20",
+                },
+                None,
+            )
+
+    monkeypatch.setattr(market_data_service, "KISClient", lambda: DummyKIS())
+
+    snapshot = await market_data_service.get_orderbook("005930", "kr")
+
+    assert snapshot.bid_ask_ratio is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["us", "crypto"])
+async def test_get_orderbook_rejects_non_kr_markets(market: str) -> None:
+    with pytest.raises(ValueError, match="KR orderbook only supports KR market"):
+        await market_data_service.get_orderbook("005930", market)
