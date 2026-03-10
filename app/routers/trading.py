@@ -230,22 +230,14 @@ async def _get_current_price(
     db: AsyncSession,
 ) -> float:
     """현재가 조회"""
+    _ = db
     try:
         if market_type == MarketType.KR:
             price_frame = await kis_client.inquire_price(ticker)
             if price_frame.empty:
                 return 0
             return float(price_frame.iloc[-1].get("close", 0) or 0)
-
-        exchange_code = await _resolve_exchange_code(ticker, db)
-        price_frame = await kis_client.inquire_overseas_daily_price(
-            symbol=ticker,
-            exchange_code=exchange_code,
-            n=1,
-        )
-        if price_frame.empty:
-            return 0
-        return float(price_frame.iloc[-1].get("close", 0) or 0)
+        return 0
     except Exception as e:
         logger.warning(f"Failed to fetch current price: {e}")
         return 0

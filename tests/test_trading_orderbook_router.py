@@ -153,7 +153,9 @@ async def test_get_current_price_uses_kis_inquire_price_for_kr():
 
 
 @pytest.mark.asyncio
-async def test_get_current_price_uses_kis_overseas_daily_price_for_us(monkeypatch):
+async def test_get_current_price_fails_closed_for_us_without_live_quote(monkeypatch):
+    called = False
+
     class DummyKISClient:
         async def inquire_price(self, code: str, market: str = "UN") -> pd.DataFrame:
             raise AssertionError("KR price path should not be used for US")
@@ -165,10 +167,8 @@ async def test_get_current_price_uses_kis_overseas_daily_price_for_us(monkeypatc
             n: int = 200,
             period: str = "D",
         ) -> pd.DataFrame:
-            assert symbol == "AAPL"
-            assert exchange_code == "NYS"
-            assert n == 1
-            assert period == "D"
+            nonlocal called
+            called = True
             return pd.DataFrame([{"close": 211.5}])
 
     monkeypatch.setattr(
@@ -182,4 +182,5 @@ async def test_get_current_price_uses_kis_overseas_daily_price_for_us(monkeypatc
         db=AsyncMock(),
     )
 
-    assert price == 211.5
+    assert price == 0
+    assert called is False
