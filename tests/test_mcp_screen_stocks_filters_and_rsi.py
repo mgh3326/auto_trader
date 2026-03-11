@@ -1068,7 +1068,7 @@ class TestScreenStocksPhase2Spec:
     async def test_limit_zero_error(self):
         tools = build_tools()
 
-        with pytest.raises(ValueError, match="limit|between 1 and 50"):
+        with pytest.raises(ValueError, match="limit|at least 1"):
             await tools["screen_stocks"](
                 market="kr",
                 asset_type="stock",
@@ -1083,7 +1083,7 @@ class TestScreenStocksPhase2Spec:
             )
 
     @pytest.mark.asyncio
-    async def test_limit_over_50_capped(self, mock_krx_stocks, monkeypatch):
+    async def test_limit_over_100_capped(self, mock_krx_stocks, monkeypatch):
         async def mock_fetch_stock_all_cached(market):
             return mock_krx_stocks
 
@@ -1106,7 +1106,7 @@ class TestScreenStocksPhase2Spec:
         )
 
         assert result is not None
-        assert result["returned_count"] <= 50
+        assert result["returned_count"] <= 100
 
     @pytest.mark.asyncio
     async def test_strategy_preset_with_case_insensitive_inputs(

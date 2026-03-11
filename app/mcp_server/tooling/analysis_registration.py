@@ -154,7 +154,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         max_pbr: float | None = None,
         min_dividend_yield: float | None = None,
         max_rsi: float | None = None,
-        limit: int = 20,
+        limit: int = 50,
     ) -> dict[str, Any]:
         return await screen_stocks_impl(
             market=market,
