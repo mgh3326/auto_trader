@@ -89,6 +89,16 @@ Parameters:
 - `market`: Market to screen ("kr", "us", "crypto") (default: "kr")
 - `asset_type`: Asset type ("stock", "etf", "etn") - only applicable to KR
 - `category`: Category filter (ETF categories for KR, sector for US)
+- `sector`: Sector filter for KR/US stocks (default: None). Not supported for crypto or KR ETF/ETN requests
+- `sort_by`: Sort criteria ("volume", "trade_amount", "market_cap", "change_rate", "dividend_yield") (default: crypto="trade_amount", KR/US="volume")
+- `sort_order`: Sort order ("asc" or "desc") (default: "desc")
+- `min_market_cap`: Minimum market cap filter (억원 for KR, USD for US; not supported for crypto, warning returned)
+- `max_per`: Maximum P/E ratio filter (not applicable to crypto)
+- `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
+- `min_dividend`: Alias for `min_dividend_yield`. Accepts same format. If both specified, they must be equal
+- `min_analyst_buy`: Minimum analyst buy count filter (default: None). Only supported for KR/US stocks (not ETF/ETN)
+- `max_rsi`: Maximum RSI filter (0-100, filters out overbought)
+- `limit`: Maximum number of results to return (1-50, capped at 50)
 - `sort_by`: Sort criteria ("volume", "trade_amount", "market_cap", "change_rate", "dividend_yield") (default: crypto="trade_amount", KR/US="volume")
 - `sort_order`: Sort order ("asc" or "desc") (default: "desc")
 - `min_market_cap`: Minimum market cap filter (억원 for KR, USD for US; not supported for crypto, warning returned)
@@ -128,6 +138,13 @@ Market-specific behavior:
   - `sort_by="volume"` is not supported for crypto and returns an error (use `trade_amount`)
   - Crypto response payload uses `trade_amount_24h` and does not include `volume`
   - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
+  - `sector` and `min_analyst_buy` filters are not supported for crypto - returns error
+  - RSI calculated using OHLCV data (subset due to API limits: min(len(candidates), limit*3, 150))
+
+Filter compatibility and error semantics:
+- `sector` filter: Supported for KR/US stocks only. Returns error for crypto or KR ETF/ETN requests
+- `min_analyst_buy` filter: Supported for KR/US stocks only (not ETF/ETN). Returns error for crypto or non-stock asset types
+- `min_dividend` / `min_dividend_yield`: These are aliases. Accepts decimal (0.03) or percentage (3.0) formats. If both are specified with different values, returns error. Not supported for crypto
   - RSI calculated using OHLCV data (subset due to API limits: min(len(candidates), limit*3, 150))
 
 Advanced filters (PER/dividend/RSI) apply to subset:

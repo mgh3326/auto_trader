@@ -292,11 +292,14 @@ Parameters:
 - `market`: Market to screen - "kr", "us", "crypto" (default: "kr")
 - `asset_type`: Asset type - "stock", "etf", "etn" (only applicable to KR, default: None)
 - `category`: Category filter - ETF categories for KR, sector for US (default: None)
+- `sector`: Sector filter for KR/US stocks (default: None). Not supported for crypto or KR ETF/ETN requests
 - `sort_by`: Sort criteria - "volume", "trade_amount", "market_cap", "change_rate", "dividend_yield", "rsi" (default: crypto="rsi", KR/US="volume")
 - `sort_order`: Sort order - "asc" or "desc" (default: "desc")
 - `min_market_cap`: Minimum market cap (억원 for KR, USD for US; not supported for crypto)
 - `max_per`: Maximum P/E ratio filter (not applicable to crypto)
 - `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
+- `min_dividend`: Alias for `min_dividend_yield`. Accepts same format. If both specified, they must be equal
+- `min_analyst_buy`: Minimum analyst buy count filter (default: None). Only supported for KR/US stocks (not ETF/ETN)
 - `max_rsi`: Maximum RSI filter 0-100 (not applicable to sorting by dividend_yield in crypto)
 - `limit`: Maximum results 1-100 (default: 50)
 
@@ -331,6 +334,14 @@ Market-specific behavior:
   - Crypto response payload does not include `volume`; use `trade_amount_24h`
   - `market_cap` sorting is supported; public `market_cap` prefers CoinGecko cache values and falls back to TradingView `MARKET_CAP`, and final ordering uses that public value without silently falling back to `trade_amount_24h`
   - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
+  - `min_market_cap` filter is not supported; crypto responses return a warning that it was ignored
+  - `sector` and `min_analyst_buy` filters are not supported for crypto - returns error
+
+Filter compatibility and error semantics:
+- `sector` filter: Supported for KR/US stocks only. Returns error for crypto or KR ETF/ETN requests
+- `min_analyst_buy` filter: Supported for KR/US stocks only (not ETF/ETN). Returns error for crypto or non-stock asset types
+- `min_dividend` / `min_dividend_yield`: These are aliases. Accepts decimal (0.03) or percentage (3.0) formats. If both are specified with different values, returns error. Not supported for crypto
+- `category` and `sector`: These are aliases for US market. If both are specified with different values, returns error
   - `min_market_cap` filter is not supported; crypto responses return a warning that it was ignored
 
 #### Crypto Composite Score Formula (`recommend_stocks`)
@@ -399,6 +410,13 @@ Response format:
       "dividend_yield": 0.03,
       "rsi": 45.5,
       "adx": 23.1,
+      "sector": "Technology",  // Industry sector (can be null for some stocks)
+      "analyst_buy": 15,  // Number of analyst buy ratings (default: 0)
+      "analyst_hold": 3,  // Number of analyst hold ratings (default: 0)
+      "analyst_sell": 2,  // Number of analyst sell ratings (default: 0)
+      "avg_target": 85000.0,  // Average analyst target price (can be null)
+      "upside_pct": 6.25,  // Upside percentage based on analyst targets (can be null)
+      "market": "kr"
       "market": "kr"
     }
   ],
@@ -406,6 +424,16 @@ Response format:
   "returned_count": 20,  // Actual number of results returned (after limit)
   "filters_applied": {
     "market": "kr",
+    "asset_type": "stock",
+    "sector": "Technology",  // Applied sector filter (if specified)
+    "min_market_cap": 100000,
+    "max_per": 20,
+    "min_dividend_yield": 0.03,
+    "min_dividend_yield_input": 3.0,
+    "min_dividend_yield_normalized": 0.03,
+    "min_dividend_input": 3.0,  // Original min_dividend value if specified
+    "min_analyst_buy": 5,  // Applied minimum analyst buy count filter
+    "max_rsi": 70
     "asset_type": "stock",
     "min_market_cap": 100000,
     "max_per": 20,

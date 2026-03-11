@@ -5,6 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from typing import Any, cast
 
 from app.analysis.models import PriceAnalysis
 from app.core.templates import templates
@@ -13,20 +14,21 @@ from app.services.screener_service import ScreenerService
 
 router = APIRouter(tags=["Screener"])
 
-_SCREENER_SERVICE: ScreenerService | None = None
+_screener_service_singleton: ScreenerService | None = None
 
 
 def get_screener_service() -> ScreenerService:
-    global _SCREENER_SERVICE
-    if _SCREENER_SERVICE is None:
-        _SCREENER_SERVICE = ScreenerService()
-    return _SCREENER_SERVICE
+    global _screener_service_singleton
+    if _screener_service_singleton is None:
+        _screener_service_singleton = ScreenerService()
+    return _screener_service_singleton
 
 
 class ScreenerFilterRequest(BaseModel):
     market: Literal["kr", "us", "crypto"] = "kr"
     asset_type: Literal["stock", "etf", "etn"] | None = None
     category: str | None = None
+    sector: str | None = None
     strategy: str | None = None
     sort_by: str | None = None
     sort_order: Literal["asc", "desc"] = "desc"
@@ -34,6 +36,8 @@ class ScreenerFilterRequest(BaseModel):
     max_per: float | None = None
     max_pbr: float | None = None
     min_dividend_yield: float | None = None
+    min_dividend: float | None = None
+    min_analyst_buy: float | None = None
     max_rsi: float | None = None
     min_volume: float | None = None
     limit: int = Field(default=50, ge=1, le=100)
@@ -111,6 +115,7 @@ async def screener_list(
     market: Literal["kr", "us", "crypto"] = "kr",
     asset_type: Literal["stock", "etf", "etn"] | None = None,
     category: str | None = None,
+    sector: str | None = None,
     strategy: str | None = None,
     sort_by: str | None = None,
     sort_order: Literal["asc", "desc"] = "desc",
@@ -118,27 +123,37 @@ async def screener_list(
     max_per: float | None = Query(default=None),
     max_pbr: float | None = Query(default=None),
     min_dividend_yield: float | None = Query(default=None),
+    min_dividend: float | None = Query(default=None),
+    min_analyst_buy: float | None = Query(default=None),
     max_rsi: float | None = Query(default=None),
     min_volume: float | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
     service: ScreenerService = Depends(get_screener_service),
 ):
     try:
-        return await service.list_screening(
-            market=market,
-            asset_type=asset_type,
-            category=category,
-            strategy=strategy,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            min_market_cap=min_market_cap,
-            max_per=max_per,
-            max_pbr=max_pbr,
-            min_dividend_yield=min_dividend_yield,
-            max_rsi=max_rsi,
-            min_volume=min_volume,
-            limit=limit,
-        )
+        request_kwargs: dict[str, object | None] = {
+            "market": market,
+            "asset_type": asset_type,
+            "category": category,
+            "strategy": strategy,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "min_market_cap": min_market_cap,
+            "max_per": max_per,
+            "max_pbr": max_pbr,
+            "max_rsi": max_rsi,
+            "min_volume": min_volume,
+            "limit": limit,
+        }
+        if min_dividend_yield is not None or min_dividend is None:
+            request_kwargs["min_dividend_yield"] = min_dividend_yield
+        if sector is not None:
+            request_kwargs["sector"] = sector
+        if min_dividend is not None:
+            request_kwargs["min_dividend"] = min_dividend
+        if min_analyst_buy is not None:
+            request_kwargs["min_analyst_buy"] = min_analyst_buy
+        return await service.list_screening(**cast(Any, request_kwargs))
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
@@ -151,7 +166,16 @@ async def screener_refresh(
     service: ScreenerService = Depends(get_screener_service),
 ):
     try:
-        return await service.refresh_screening(**payload.model_dump())
+        request_kwargs = payload.model_dump()
+        if (
+            request_kwargs.get("min_dividend") is not None
+            and request_kwargs.get("min_dividend_yield") is None
+        ):
+            request_kwargs.pop("min_dividend_yield", None)
+        for key in ("sector", "min_dividend", "min_analyst_buy"):
+            if request_kwargs.get(key) is None:
+                request_kwargs.pop(key, None)
+        return await service.refresh_screening(**cast(Any, request_kwargs))
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)

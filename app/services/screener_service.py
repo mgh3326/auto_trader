@@ -4,13 +4,14 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import redis.asyncio as redis
 from redis.exceptions import WatchError
 
 from app.core.config import settings
+from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
 from app.mcp_server.tooling.analysis_tool_handlers import screen_stocks_impl
 from app.mcp_server.tooling.order_execution import _place_order_impl
 from app.services.openclaw_client import OpenClawClient
@@ -237,7 +238,7 @@ class ScreenerService:
             )
 
         for _ in range(3):
-            pipeline = pipeline_factory(transaction=True)
+            pipeline = cast(Any, pipeline_factory(transaction=True))
             try:
                 await pipeline.watch(status_key)
                 current_status = self._normalize_report_status(
@@ -305,6 +306,7 @@ class ScreenerService:
         market: str = "kr",
         asset_type: str | None = None,
         category: str | None = None,
+        sector: str | None = None,
         strategy: str | None = None,
         sort_by: str | None = None,
         sort_order: str | None = "desc",
@@ -312,26 +314,47 @@ class ScreenerService:
         max_per: float | None = None,
         max_pbr: float | None = None,
         min_dividend_yield: float | None = None,
+        min_dividend: float | None = None,
+        min_analyst_buy: float | None = None,
         max_rsi: float | None = None,
         min_volume: float | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        normalized_market = self._normalize_market(market)
+        normalized_request = normalize_screen_request(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+            sector=sector,
+            strategy=strategy,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=max_pbr,
+            min_dividend_yield=min_dividend_yield,
+            min_dividend=min_dividend,
+            min_analyst_buy=min_analyst_buy,
+            max_rsi=max_rsi,
+            limit=limit,
+        )
+        normalized_market = self._normalize_market(normalized_request["market"])
         normalized_sort_by = self._normalize_sort_by(normalized_market, sort_by)
         normalized_min_volume = self._normalize_min_volume(min_volume)
         request_limit = limit
         filters = {
             "market": normalized_market,
-            "asset_type": asset_type,
-            "category": category,
-            "strategy": strategy,
+            "asset_type": normalized_request["asset_type"],
+            "category": normalized_request["category_for_filters"],
+            "sector": normalized_request["sector"],
+            "strategy": normalized_request["strategy"],
             "sort_by": normalized_sort_by,
-            "sort_order": sort_order,
-            "min_market_cap": min_market_cap,
-            "max_per": max_per,
-            "max_pbr": max_pbr,
-            "min_dividend_yield": min_dividend_yield,
-            "max_rsi": max_rsi,
+            "sort_order": normalized_request["sort_order"],
+            "min_market_cap": normalized_request["min_market_cap"],
+            "max_per": normalized_request["max_per"],
+            "max_pbr": normalized_request["max_pbr"],
+            "min_dividend_yield": normalized_request["min_dividend_yield"],
+            "min_analyst_buy": normalized_request["min_analyst_buy"],
+            "max_rsi": normalized_request["max_rsi"],
             "min_volume": normalized_min_volume,
             "limit": request_limit,
         }
@@ -345,16 +368,70 @@ class ScreenerService:
             for key, value in filters.items()
             if value is not None and key != "min_volume"
         }
-        if normalized_min_volume is not None:
+        if (
+            normalized_min_volume is not None
+            or normalized_request["min_analyst_buy"] is not None
+        ):
             call_kwargs["limit"] = self._calculate_overfetch_limit(request_limit)
+        if normalized_request["min_dividend_input"] is not None:
+            call_kwargs["min_dividend"] = normalized_request["min_dividend_input"]
 
-        result = await screen_stocks_impl(**call_kwargs)
+        result = await screen_stocks_impl(**cast(Any, call_kwargs))
         filtered_result = self._apply_min_volume_filter(
             result,
             market=normalized_market,
             min_volume=normalized_min_volume,
             request_limit=request_limit,
         )
+        filters_applied = filtered_result.get("filters_applied")
+        normalized_filters_applied = (
+            dict(filters_applied) if isinstance(filters_applied, dict) else {}
+        )
+        normalized_filters_applied.setdefault("market", normalized_market)
+        normalized_filters_applied.setdefault(
+            "asset_type", normalized_request["asset_type"]
+        )
+        normalized_filters_applied.setdefault(
+            "category", normalized_request["category_for_filters"]
+        )
+        normalized_filters_applied.setdefault("sector", normalized_request["sector"])
+        normalized_filters_applied.setdefault(
+            "strategy", normalized_request["strategy"]
+        )
+        normalized_filters_applied.setdefault("sort_by", normalized_sort_by)
+        normalized_filters_applied.setdefault(
+            "sort_order", normalized_request["sort_order"]
+        )
+        normalized_filters_applied.setdefault(
+            "min_market_cap", normalized_request["min_market_cap"]
+        )
+        normalized_filters_applied.setdefault("max_per", normalized_request["max_per"])
+        normalized_filters_applied.setdefault("max_pbr", normalized_request["max_pbr"])
+        normalized_filters_applied.setdefault(
+            "min_dividend_yield", normalized_request["min_dividend_yield"]
+        )
+        normalized_filters_applied.setdefault(
+            "min_analyst_buy", normalized_request["min_analyst_buy"]
+        )
+        normalized_filters_applied.setdefault("max_rsi", normalized_request["max_rsi"])
+        normalized_filters_applied["min_volume"] = normalized_min_volume
+        if normalized_request["min_dividend_input"] is not None:
+            normalized_filters_applied["min_dividend_input"] = normalized_request[
+                "min_dividend_input"
+            ]
+            normalized_filters_applied["min_dividend_normalized"] = normalized_request[
+                "min_dividend_yield"
+            ]
+            normalized_filters_applied["min_dividend_yield_input"] = normalized_request[
+                "min_dividend_input"
+            ]
+            normalized_filters_applied["min_dividend_yield_normalized"] = (
+                normalized_request["min_dividend_yield"]
+            )
+        filtered_result = {
+            **filtered_result,
+            "filters_applied": normalized_filters_applied,
+        }
         await self._store_json(
             cache_key,
             self.SCREENING_CACHE_TTL_SECONDS,
@@ -367,6 +444,7 @@ class ScreenerService:
         market: str = "kr",
         asset_type: str | None = None,
         category: str | None = None,
+        sector: str | None = None,
         strategy: str | None = None,
         sort_by: str | None = None,
         sort_order: str | None = "desc",
@@ -374,32 +452,70 @@ class ScreenerService:
         max_per: float | None = None,
         max_pbr: float | None = None,
         min_dividend_yield: float | None = None,
+        min_dividend: float | None = None,
+        min_analyst_buy: float | None = None,
         max_rsi: float | None = None,
         min_volume: float | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        normalized_market = self._normalize_market(market)
+        normalized_request = normalize_screen_request(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+            sector=sector,
+            strategy=strategy,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=max_pbr,
+            min_dividend_yield=min_dividend_yield,
+            min_dividend=min_dividend,
+            min_analyst_buy=min_analyst_buy,
+            max_rsi=max_rsi,
+            limit=limit,
+        )
+        normalized_market = self._normalize_market(normalized_request["market"])
         normalized_sort_by = self._normalize_sort_by(normalized_market, sort_by)
         normalized_min_volume = self._normalize_min_volume(min_volume)
         filters = {
             "market": normalized_market,
-            "asset_type": asset_type,
-            "category": category,
-            "strategy": strategy,
+            "asset_type": normalized_request["asset_type"],
+            "category": normalized_request["category_for_filters"],
+            "sector": normalized_request["sector"],
+            "strategy": normalized_request["strategy"],
             "sort_by": normalized_sort_by,
-            "sort_order": sort_order,
-            "min_market_cap": min_market_cap,
-            "max_per": max_per,
-            "max_pbr": max_pbr,
-            "min_dividend_yield": min_dividend_yield,
-            "max_rsi": max_rsi,
+            "sort_order": normalized_request["sort_order"],
+            "min_market_cap": normalized_request["min_market_cap"],
+            "max_per": normalized_request["max_per"],
+            "max_pbr": normalized_request["max_pbr"],
+            "min_dividend_yield": normalized_request["min_dividend_yield"],
+            "min_analyst_buy": normalized_request["min_analyst_buy"],
+            "max_rsi": normalized_request["max_rsi"],
             "min_volume": normalized_min_volume,
             "limit": limit,
         }
         cache_key = self._screening_cache_key(filters)
         redis_client = await self._get_redis()
         await redis_client.delete(cache_key)
-        return await self.list_screening(**filters)
+        return await self.list_screening(
+            market=market,
+            asset_type=asset_type,
+            category=category,
+            sector=sector,
+            strategy=strategy,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            min_market_cap=min_market_cap,
+            max_per=max_per,
+            max_pbr=max_pbr,
+            min_dividend_yield=min_dividend_yield,
+            min_dividend=min_dividend,
+            min_analyst_buy=min_analyst_buy,
+            max_rsi=max_rsi,
+            min_volume=min_volume,
+            limit=limit,
+        )
 
     async def request_report(
         self, market: str, symbol: str, name: str | None = None

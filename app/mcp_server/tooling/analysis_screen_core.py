@@ -13,6 +13,10 @@ import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.async_rate_limiter import RateLimitExceededError
+from app.mcp_server.tooling.fundamentals_sources_naver import (
+    _fetch_screen_enrichment_kr,
+    _fetch_screen_enrichment_us,
+)
 from app.mcp_server.tooling.analysis_crypto_score import (
     calculate_crypto_metrics_from_ohlcv,
 )
@@ -54,6 +58,14 @@ DROP_THRESHOLD = -0.30
 MARKET_PANIC = -0.10
 CRYPTO_TOP_BY_VOLUME = 100
 COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
+_SCREEN_ENRICHMENT_FIELDS = (
+    "sector",
+    "analyst_buy",
+    "analyst_hold",
+    "analyst_sell",
+    "avg_target",
+    "upside_pct",
+)
 
 # TvScreener supported sort fields for stock screening
 # TvScreener supported sort fields for stock screening
@@ -235,6 +247,165 @@ def _clean_text(value: Any) -> str:
     if value != value:
         return ""
     return str(value).strip()
+
+
+def _apply_equity_enrichment_defaults(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    for field in _SCREEN_ENRICHMENT_FIELDS:
+        normalized.setdefault(field, None)
+    return normalized
+
+
+def _screen_row_symbol(row: dict[str, Any]) -> str | None:
+    for key in ("code", "symbol", "short_code"):
+        value = row.get(key)
+        text = str(value or "").strip().upper()
+        if text:
+            return text
+    return None
+
+
+def _is_equity_stock_row(row: dict[str, Any]) -> bool:
+    market = str(row.get("market") or "").strip().lower()
+    if market not in {"kr", "kospi", "kosdaq", "us"}:
+        return False
+    asset_type = row.get("asset_type")
+    if asset_type is None:
+        return True
+    return str(asset_type).strip().lower() == "stock"
+
+
+async def _decorate_screen_rows_with_equity_enrichment(
+    rows: list[dict[str, Any]],
+    *,
+    concurrency: int = 5,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if not rows:
+        return [], []
+
+    normalized_rows = [_apply_equity_enrichment_defaults(row) for row in rows]
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    warnings: list[str] = []
+
+    async def enrich_row(index: int, row: dict[str, Any]) -> None:
+        if not _is_equity_stock_row(row):
+            return
+
+        symbol = _screen_row_symbol(row)
+        market = str(row.get("market") or "").strip().lower()
+        if not symbol:
+            warnings.append(f"{market or 'unknown'}:<missing-symbol>: missing symbol")
+            return
+
+        fetcher = (
+            _fetch_screen_enrichment_us
+            if market == "us"
+            else _fetch_screen_enrichment_kr
+        )
+        async with semaphore:
+            try:
+                enrichment = await fetcher(symbol)
+            except Exception as exc:
+                warnings.append(f"{market}:{symbol}: {type(exc).__name__}: {exc}")
+                return
+
+        if not isinstance(enrichment, dict):
+            warnings.append(f"{market}:{symbol}: invalid enrichment payload")
+            return
+
+        for field in _SCREEN_ENRICHMENT_FIELDS:
+            normalized_rows[index][field] = enrichment.get(field)
+
+    await asyncio.gather(
+        *(enrich_row(index, row) for index, row in enumerate(normalized_rows))
+    )
+    return normalized_rows, warnings
+
+
+async def _decorate_screen_response_with_equity_enrichment(
+    response: dict[str, Any],
+    *,
+    market: str,
+    limit: int,
+    sort_by: str,
+    sort_order: str,
+    sector: str | None,
+    min_analyst_buy: float | None,
+    min_dividend_yield: float | None,
+    apply_post_filters: bool,
+) -> dict[str, Any]:
+    if market not in {"kr", "kospi", "kosdaq", "us"}:
+        return response
+
+    raw_results = response.get("results")
+    if not isinstance(raw_results, list):
+        return response
+
+    rows = [row for row in raw_results if isinstance(row, dict)]
+    if not rows:
+        return {**response, "results": [], "returned_count": 0}
+
+    candidate_rows = rows if apply_post_filters else rows[:limit]
+    (
+        decorated_rows,
+        enrichment_warnings,
+    ) = await _decorate_screen_rows_with_equity_enrichment(candidate_rows)
+
+    if apply_post_filters:
+        decorated_rows = _apply_post_enrichment_filters(
+            decorated_rows,
+            sector=sector,
+            min_analyst_buy=min_analyst_buy,
+            min_dividend_yield=min_dividend_yield,
+        )
+        final_rows = _sort_and_limit(decorated_rows, sort_by, sort_order, limit)
+        total_count = len(decorated_rows)
+    else:
+        final_rows = decorated_rows[:limit]
+        total_count = int(response.get("total_count", len(final_rows)) or 0)
+
+    merged_warnings = list(response.get("warnings") or [])
+    merged_warnings.extend(enrichment_warnings)
+    updated_response = {
+        **response,
+        "results": final_rows,
+        "total_count": total_count,
+        "returned_count": len(final_rows),
+    }
+    if merged_warnings:
+        updated_response["warnings"] = merged_warnings
+    return updated_response
+
+
+def _apply_post_enrichment_filters(
+    rows: list[dict[str, Any]],
+    *,
+    sector: str | None,
+    min_analyst_buy: float | None,
+    min_dividend_yield: float | None,
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    normalized_sector = _normalize_sector_value(sector)
+
+    for row in rows:
+        if normalized_sector is not None:
+            row_sector = _normalize_sector_value(_clean_text(row.get("sector")))
+            if row_sector != normalized_sector:
+                continue
+
+        if min_analyst_buy is not None:
+            analyst_buy = _to_optional_float(row.get("analyst_buy"))
+            if analyst_buy is None or analyst_buy < min_analyst_buy:
+                continue
+
+        if min_dividend_yield is not None:
+            dividend_yield = _to_optional_float(row.get("dividend_yield"))
+            if dividend_yield is None or dividend_yield < min_dividend_yield:
+                continue
+
+        filtered.append(row)
+
+    return filtered
 
 
 def _pick_display_name(row: Any) -> str:
@@ -419,6 +590,146 @@ def _normalize_sort_order(sort_order: str | None) -> str:
     if not sort_order:
         return "desc"
     return sort_order.lower()
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(str(value).split())
+    return normalized or None
+
+
+def _normalize_sector_value(sector: str | None) -> str | None:
+    normalized = _normalize_optional_text(sector)
+    if normalized is None:
+        return None
+    if normalized.isascii():
+        return normalized.title()
+    return normalized
+
+
+def _normalize_min_analyst_buy(value: float | None) -> float | None:
+    if value is None:
+        return None
+    if value < 0:
+        raise ValueError("min_analyst_buy must be >= 0")
+    return value
+
+
+def _normalize_min_dividend_value(
+    *,
+    min_dividend_yield: float | None,
+    min_dividend: float | None,
+) -> tuple[float | None, float | None]:
+    if min_dividend is None and min_dividend_yield is None:
+        return None, None
+    if min_dividend is not None and min_dividend_yield is not None:
+        _, normalized_min_dividend = _normalize_dividend_yield_threshold(min_dividend)
+        _, normalized_min_dividend_yield = _normalize_dividend_yield_threshold(
+            min_dividend_yield
+        )
+        if normalized_min_dividend != normalized_min_dividend_yield:
+            raise ValueError(
+                "min_dividend and min_dividend_yield cannot specify different values"
+            )
+        return min_dividend, normalized_min_dividend
+    canonical_input = min_dividend if min_dividend is not None else min_dividend_yield
+    _, normalized_value = _normalize_dividend_yield_threshold(canonical_input)
+    return canonical_input, normalized_value
+
+
+def normalize_screen_request(
+    *,
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    sector: str | None,
+    strategy: str | None,
+    sort_by: str | None,
+    sort_order: str | None,
+    min_market_cap: float | None,
+    max_per: float | None,
+    max_pbr: float | None,
+    min_dividend_yield: float | None,
+    min_dividend: float | None,
+    min_analyst_buy: float | None,
+    max_rsi: float | None,
+    limit: int,
+) -> dict[str, Any]:
+    normalized_market = _normalize_screen_market(market)
+    normalized_asset_type = _normalize_asset_type(asset_type)
+    normalized_category = _normalize_optional_text(category)
+    normalized_sector = _normalize_sector_value(sector)
+    normalized_strategy = _normalize_optional_text(strategy)
+    normalized_sort_by = _normalize_sort_by(sort_by)
+    normalized_sort_order = _normalize_sort_order(sort_order)
+    normalized_min_analyst_buy = _normalize_min_analyst_buy(min_analyst_buy)
+    min_dividend_input, normalized_min_dividend_yield = _normalize_min_dividend_value(
+        min_dividend_yield=min_dividend_yield,
+        min_dividend=min_dividend,
+    )
+
+    if normalized_category is not None and normalized_sector is not None:
+        category_alias = (
+            _normalize_sector_value(normalized_category)
+            if normalized_market == "us"
+            else normalized_category
+        )
+        if category_alias != normalized_sector:
+            raise ValueError("category and sector cannot specify different values")
+
+    effective_sector = normalized_sector
+    if (
+        effective_sector is None
+        and normalized_market == "us"
+        and normalized_category is not None
+    ):
+        effective_sector = _normalize_sector_value(normalized_category)
+
+    if effective_sector is not None:
+        if normalized_market == "crypto":
+            raise ValueError("crypto market does not support sector filter")
+        if normalized_market in {"kr", "kospi", "kosdaq"} and normalized_asset_type in {
+            "etf",
+            "etn",
+        }:
+            raise ValueError("sector filter is only supported for stock requests")
+
+    if normalized_min_analyst_buy is not None:
+        if normalized_market == "crypto":
+            raise ValueError("crypto market does not support min_analyst_buy filter")
+        if normalized_asset_type not in {None, "stock"}:
+            raise ValueError("min_analyst_buy is only supported for stock requests")
+
+    if min_dividend is not None and normalized_market == "crypto":
+        raise ValueError("crypto market does not support min_dividend filter")
+
+    category_for_filters = normalized_category
+    effective_category = normalized_category
+    if normalized_market == "us" and effective_sector is not None:
+        effective_category = effective_sector
+        if category_for_filters is None:
+            category_for_filters = effective_sector
+
+    return {
+        "market": normalized_market,
+        "asset_type": normalized_asset_type,
+        "category": normalized_category,
+        "category_for_filters": category_for_filters,
+        "effective_category": effective_category,
+        "sector": effective_sector,
+        "strategy": normalized_strategy,
+        "sort_by": normalized_sort_by,
+        "sort_order": normalized_sort_order,
+        "min_market_cap": min_market_cap,
+        "max_per": max_per,
+        "max_pbr": max_pbr,
+        "min_dividend_yield": normalized_min_dividend_yield,
+        "min_dividend_input": min_dividend_input,
+        "min_analyst_buy": normalized_min_analyst_buy,
+        "max_rsi": max_rsi,
+        "limit": limit,
+    }
 
 
 def _normalize_dividend_yield_threshold(
@@ -2534,6 +2845,9 @@ async def screen_stocks_unified(
     sort_by: str,
     sort_order: str,
     limit: int,
+    sector: str | None = None,
+    min_dividend: float | None = None,
+    min_analyst_buy: float | None = None,
     enrich_rsi: bool = True,
 ) -> dict[str, Any]:
     """Unified stock screening entry point with automatic data source selection.
@@ -2561,10 +2875,37 @@ async def screen_stocks_unified(
         Standardized screening response dict with results, filters_applied,
         meta (including source), and timestamp.
     """
-    normalized_market = _normalize_screen_market(market)
-    normalized_asset_type = _normalize_asset_type(asset_type)
-    normalized_sort_by = _normalize_sort_by(sort_by)
-    normalized_sort_order = _normalize_sort_order(sort_order)
+    normalized_request = normalize_screen_request(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sector=sector,
+        strategy=None,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        max_pbr=max_pbr,
+        min_dividend_yield=min_dividend_yield,
+        min_dividend=min_dividend,
+        min_analyst_buy=min_analyst_buy,
+        max_rsi=max_rsi,
+        limit=limit,
+    )
+    normalized_market = normalized_request["market"]
+    normalized_asset_type = normalized_request["asset_type"]
+    normalized_sort_by = normalized_request["sort_by"]
+    normalized_sort_order = normalized_request["sort_order"]
+    normalized_min_dividend_yield = normalized_request["min_dividend_yield"]
+    apply_post_enrichment_filters = (
+        normalized_market in {"kr", "kospi", "kosdaq", "us"}
+        and normalized_asset_type in {None, "stock"}
+        and (
+            normalized_request["sector"] is not None
+            or normalized_request["min_analyst_buy"] is not None
+        )
+    )
+    query_limit = min(limit * 5, 100) if apply_post_enrichment_filters else limit
 
     # Validate filters before processing
     _validate_screen_filters(
@@ -2572,69 +2913,116 @@ async def screen_stocks_unified(
         asset_type=normalized_asset_type,
         min_market_cap=min_market_cap,
         max_per=max_per,
-        min_dividend_yield=min_dividend_yield,
+        min_dividend_yield=normalized_min_dividend_yield,
         max_rsi=max_rsi,
         sort_by=normalized_sort_by,
     )
 
     # Route to appropriate implementation based on market and capabilities
     if normalized_market in ("kr", "kospi", "kosdaq"):
-        return await _screen_kr_with_fallback(
+        response = await _screen_kr_with_fallback(
             market=normalized_market,
             asset_type=normalized_asset_type,
-            category=category,
+            category=normalized_request["effective_category"],
             min_market_cap=min_market_cap,
             max_per=max_per,
             max_pbr=max_pbr,
-            min_dividend_yield=min_dividend_yield,
+            min_dividend_yield=normalized_min_dividend_yield,
             max_rsi=max_rsi,
             sort_by=normalized_sort_by,
             sort_order=normalized_sort_order,
-            limit=limit,
+            limit=query_limit,
             enrich_rsi=enrich_rsi,
         )
-
-    if normalized_market == "us":
-        return await _screen_us_with_fallback(
+    elif normalized_market == "us":
+        response = await _screen_us_with_fallback(
             market=normalized_market,
             asset_type=normalized_asset_type,
-            category=category,
+            category=normalized_request["effective_category"],
             min_market_cap=min_market_cap,
             max_per=max_per,
-            min_dividend_yield=min_dividend_yield,
+            min_dividend_yield=normalized_min_dividend_yield,
             max_rsi=max_rsi,
             sort_by=normalized_sort_by,
             sort_order=normalized_sort_order,
-            limit=limit,
+            limit=query_limit,
             enrich_rsi=enrich_rsi,
         )
-
-    if normalized_market == "crypto":
-        return await _screen_crypto_with_fallback(
+    elif normalized_market == "crypto":
+        response = await _screen_crypto_with_fallback(
             market=normalized_market,
             asset_type=normalized_asset_type,
-            category=category,
+            category=normalized_request["effective_category"],
             min_market_cap=min_market_cap,
             max_per=max_per,
-            min_dividend_yield=min_dividend_yield,
+            min_dividend_yield=normalized_min_dividend_yield,
             max_rsi=max_rsi,
             sort_by=normalized_sort_by,
             sort_order=normalized_sort_order,
             limit=limit,
         )
+    else:
+        response = _build_screen_response(
+            results=[],
+            total_count=0,
+            filters_applied={
+                "market": normalized_market,
+                "asset_type": normalized_asset_type,
+                "category": normalized_request["category_for_filters"],
+                "sector": normalized_request["sector"],
+            },
+            market=normalized_market,
+            warnings=[f"Unsupported market: {normalized_market}"],
+        )
 
-    # Fallback for unknown markets
-    return _build_screen_response(
-        results=[],
-        total_count=0,
-        filters_applied={
-            "market": normalized_market,
-            "asset_type": normalized_asset_type,
-            "category": category,
-        },
+    response = await _decorate_screen_response_with_equity_enrichment(
+        response,
         market=normalized_market,
-        warnings=[f"Unsupported market: {normalized_market}"],
+        limit=limit,
+        sort_by=normalized_sort_by,
+        sort_order=normalized_sort_order,
+        sector=normalized_request["sector"],
+        min_analyst_buy=normalized_request["min_analyst_buy"],
+        min_dividend_yield=normalized_min_dividend_yield,
+        apply_post_filters=apply_post_enrichment_filters,
     )
+
+    filters_applied = response.get("filters_applied")
+    normalized_filters_applied = (
+        dict(filters_applied) if isinstance(filters_applied, dict) else {}
+    )
+    normalized_filters_applied.setdefault("market", normalized_market)
+    normalized_filters_applied.setdefault("asset_type", normalized_asset_type)
+    normalized_filters_applied.setdefault(
+        "category", normalized_request["category_for_filters"]
+    )
+    normalized_filters_applied.setdefault("sector", normalized_request["sector"])
+    normalized_filters_applied.setdefault("sort_by", normalized_sort_by)
+    normalized_filters_applied.setdefault("sort_order", normalized_sort_order)
+    normalized_filters_applied.setdefault("min_market_cap", min_market_cap)
+    normalized_filters_applied.setdefault("max_per", max_per)
+    normalized_filters_applied.setdefault("max_pbr", max_pbr)
+    normalized_filters_applied.setdefault(
+        "min_dividend_yield", normalized_min_dividend_yield
+    )
+    normalized_filters_applied.setdefault(
+        "min_analyst_buy", normalized_request["min_analyst_buy"]
+    )
+    normalized_filters_applied.setdefault("max_rsi", max_rsi)
+    if normalized_request["min_dividend_input"] is not None:
+        normalized_filters_applied["min_dividend_input"] = normalized_request[
+            "min_dividend_input"
+        ]
+        normalized_filters_applied["min_dividend_normalized"] = (
+            normalized_min_dividend_yield
+        )
+        normalized_filters_applied["min_dividend_yield_input"] = normalized_request[
+            "min_dividend_input"
+        ]
+        normalized_filters_applied["min_dividend_yield_normalized"] = (
+            normalized_min_dividend_yield
+        )
+    return {**response, "filters_applied": normalized_filters_applied}
 
 
 async def _screen_kr_with_fallback(
@@ -2825,11 +3213,13 @@ __all__ = [
     "DEFAULT_TIMEOUTS",
     "TimeoutBehavior",
     "_with_timeout",
+    "_decorate_screen_rows_with_equity_enrichment",
     "_normalize_screen_market",
     "_normalize_asset_type",
     "_normalize_sort_by",
     "_normalize_sort_order",
     "_normalize_dividend_yield_threshold",
+    "normalize_screen_request",
     "_validate_screen_filters",
     "_apply_basic_filters",
     "_sort_and_limit",

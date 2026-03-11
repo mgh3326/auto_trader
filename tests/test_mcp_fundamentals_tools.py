@@ -28,6 +28,7 @@ import yfinance as yf
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import (
     analysis_analyze,
+    analysis_screen_core,
     analysis_screening,
     analysis_tool_handlers,
     fundamentals_sources_coingecko,
@@ -2700,7 +2701,6 @@ class TestGetInvestmentOpinions:
         assert result["consensus"]["avg_target_price"] is None
         assert result["consensus"]["current_price"] == 185.5
         assert result["consensus"]["upside_pct"] is None
-
     async def test_us_market_uses_recommendation_trend_counts_and_normalized_targets(
         self, monkeypatch
     ):
@@ -2890,6 +2890,313 @@ class TestGetInvestmentOpinions:
         assert result["consensus"]["total_count"] is None
         assert result["consensus"]["avg_target_price"] == 200.0
         assert result["consensus"]["current_price"] == 185.0
+
+
+@pytest.mark.asyncio
+class TestScreenEnrichmentHelpers:
+    async def test_kr_screen_enrichment_uses_sector_and_normalized_consensus(
+        self, monkeypatch
+    ) -> None:
+        async def mock_profile(symbol: str) -> dict[str, object]:
+            assert symbol == "005930"
+            return {"sector": "Semiconductors"}
+
+        async def mock_opinions(symbol: str, limit: int) -> dict[str, object]:
+            assert symbol == "005930"
+            assert limit == 10
+            return {
+                "symbol": symbol,
+                "count": 4,
+                "consensus": {
+                    "buy_count": 3,
+                    "hold_count": 1,
+                    "sell_count": 0,
+                    "avg_target_price": 91000,
+                    "upside_pct": 12.4,
+                },
+            }
+
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_company_profile_finnhub",
+            mock_profile,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_investment_opinions_naver",
+            mock_opinions,
+            raising=False,
+        )
+
+        result = await fundamentals_sources_naver._fetch_screen_enrichment_kr("005930")
+
+        assert result == {
+            "sector": "Semiconductors",
+            "analyst_buy": 3,
+            "analyst_hold": 1,
+            "analyst_sell": 0,
+            "avg_target": 91000,
+            "upside_pct": 12.4,
+        }
+
+    async def test_us_screen_enrichment_uses_yfinance_opinions_and_sector(
+        self, monkeypatch
+    ) -> None:
+        async def mock_opinions(symbol: str, limit: int) -> dict[str, object]:
+            assert symbol == "AAPL"
+            assert limit == 10
+            return {
+                "symbol": symbol,
+                "count": 5,
+                "consensus": {
+                    "buy_count": 2,
+                    "hold_count": 2,
+                    "sell_count": 1,
+                    "avg_target_price": 245.0,
+                    "upside_pct": 8.7,
+                },
+            }
+
+        async def mock_profile(symbol: str) -> dict[str, object]:
+            assert symbol == "AAPL"
+            return {"sector": "Technology"}
+
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_investment_opinions_yfinance",
+            mock_opinions,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_company_profile_finnhub",
+            mock_profile,
+            raising=False,
+        )
+
+        result = await fundamentals_sources_naver._fetch_screen_enrichment_us("AAPL")
+
+        assert result == {
+            "sector": "Technology",
+            "analyst_buy": 2,
+            "analyst_hold": 2,
+            "analyst_sell": 1,
+            "avg_target": 245.0,
+            "upside_pct": 8.7,
+        }
+
+    async def test_screen_enrichment_defaults_when_opinions_missing(
+        self, monkeypatch
+    ) -> None:
+        async def mock_opinions(symbol: str, limit: int) -> dict[str, object]:
+            return {"symbol": symbol, "count": 0, "opinions": [], "consensus": None}
+
+        async def mock_profile(symbol: str) -> dict[str, object]:
+            return {"sector": None}
+
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_investment_opinions_yfinance",
+            mock_opinions,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_company_profile_finnhub",
+            mock_profile,
+            raising=False,
+        )
+
+        result = await fundamentals_sources_naver._fetch_screen_enrichment_us("MSFT")
+
+        assert result == {
+            "sector": None,
+            "analyst_buy": 0,
+            "analyst_hold": 0,
+            "analyst_sell": 0,
+            "avg_target": None,
+            "upside_pct": None,
+        }
+
+    async def test_kr_screen_enrichment_keeps_analyst_data_when_profile_fails(
+        self, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def mock_profile(symbol: str) -> dict[str, object]:
+            assert symbol == "005930"
+            raise RuntimeError("profile unavailable")
+
+        async def mock_opinions(symbol: str, limit: int) -> dict[str, object]:
+            assert symbol == "005930"
+            assert limit == 10
+            return {
+                "symbol": symbol,
+                "count": 4,
+                "consensus": {
+                    "buy_count": 3,
+                    "hold_count": 1,
+                    "sell_count": 0,
+                    "avg_target_price": 91000,
+                    "upside_pct": 12.4,
+                },
+            }
+
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_company_profile_finnhub",
+            mock_profile,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_investment_opinions_naver",
+            mock_opinions,
+            raising=False,
+        )
+        caplog.set_level("WARNING")
+
+        result = await fundamentals_sources_naver._fetch_screen_enrichment_kr("005930")
+
+        assert result == {
+            "sector": None,
+            "analyst_buy": 3,
+            "analyst_hold": 1,
+            "analyst_sell": 0,
+            "avg_target": 91000,
+            "upside_pct": 12.4,
+        }
+        assert any("profile unavailable" in message for message in caplog.messages)
+
+    async def test_us_screen_enrichment_keeps_sector_when_opinions_fail(
+        self, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def mock_profile(symbol: str) -> dict[str, object]:
+            assert symbol == "AAPL"
+            return {"sector": "Technology"}
+
+        async def mock_opinions(symbol: str, limit: int) -> dict[str, object]:
+            assert symbol == "AAPL"
+            assert limit == 10
+            raise RuntimeError("opinions unavailable")
+
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_company_profile_finnhub",
+            mock_profile,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_investment_opinions_yfinance",
+            mock_opinions,
+            raising=False,
+        )
+        caplog.set_level("WARNING")
+
+        result = await fundamentals_sources_naver._fetch_screen_enrichment_us("AAPL")
+
+        assert result == {
+            "sector": "Technology",
+            "analyst_buy": 0,
+            "analyst_hold": 0,
+            "analyst_sell": 0,
+            "avg_target": None,
+            "upside_pct": None,
+        }
+        assert any("opinions unavailable" in message for message in caplog.messages)
+
+    async def test_screen_enrichment_raises_when_both_providers_fail(
+        self, monkeypatch
+    ) -> None:
+        async def mock_profile(symbol: str) -> dict[str, object]:
+            assert symbol == "MSFT"
+            raise RuntimeError("profile unavailable")
+
+        async def mock_opinions(symbol: str, limit: int) -> dict[str, object]:
+            assert symbol == "MSFT"
+            assert limit == 10
+            raise RuntimeError("opinions unavailable")
+
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_company_profile_finnhub",
+            mock_profile,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_investment_opinions_yfinance",
+            mock_opinions,
+            raising=False,
+        )
+
+        with pytest.raises(
+            RuntimeError, match="profile unavailable|opinions unavailable"
+        ):
+            await fundamentals_sources_naver._fetch_screen_enrichment_us("MSFT")
+
+    async def test_row_decoration_enriches_only_equities_and_collects_warnings(
+        self, monkeypatch
+    ) -> None:
+        async def mock_kr(symbol: str) -> dict[str, object]:
+            if symbol == "005930":
+                return {
+                    "sector": "Semiconductors",
+                    "analyst_buy": 4,
+                    "analyst_hold": 1,
+                    "analyst_sell": 0,
+                    "avg_target": 90000,
+                    "upside_pct": 20.0,
+                }
+            raise RuntimeError("kr enrichment failed")
+
+        async def mock_us(symbol: str) -> dict[str, object]:
+            return {
+                "sector": "Technology",
+                "analyst_buy": 10,
+                "analyst_hold": 3,
+                "analyst_sell": 1,
+                "avg_target": 250.0,
+                "upside_pct": 5.0,
+            }
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_screen_enrichment_kr",
+            mock_kr,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_screen_enrichment_us",
+            mock_us,
+            raising=False,
+        )
+
+        rows = [
+            {"code": "005930", "market": "kr", "name": "Samsung"},
+            {"code": "035420", "market": "kr", "name": "Naver"},
+            {"code": "AAPL", "market": "us", "name": "Apple"},
+            {"symbol": "KRW-BTC", "market": "crypto", "name": "Bitcoin"},
+        ]
+
+        (
+            decorated,
+            warnings,
+        ) = await analysis_screen_core._decorate_screen_rows_with_equity_enrichment(
+            rows,
+            concurrency=2,
+        )
+
+        assert decorated[0]["sector"] == "Semiconductors"
+        assert decorated[0]["analyst_buy"] == 4
+        assert decorated[1]["sector"] is None
+        assert decorated[1]["analyst_buy"] is None
+        assert decorated[2]["sector"] == "Technology"
+        assert decorated[2]["avg_target"] == 250.0
+        assert decorated[3]["sector"] is None
+        assert decorated[3]["analyst_buy"] is None
+        assert warnings == ["kr:035420: RuntimeError: kr enrichment failed"]
 
     async def test_analyze_stock_generates_recommendation_kr(self):
         """Test that _build_recommendation_for_equity generates recommendation for Korean stocks."""

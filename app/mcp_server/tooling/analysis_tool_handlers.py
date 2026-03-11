@@ -19,6 +19,7 @@ from app.mcp_server.tooling import analysis_screening
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
+from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
 from app.mcp_server.tooling.shared import (
     is_crypto_market as _is_crypto_market,
 )
@@ -517,6 +518,7 @@ async def screen_stocks_impl(
     market: Literal["kr", "kospi", "kosdaq", "us", "crypto"] = "kr",
     asset_type: Literal["stock", "etf", "etn"] | None = None,
     category: str | None = None,
+    sector: str | None = None,
     strategy: str | None = None,
     sort_by: Literal[
         "volume",
@@ -532,6 +534,8 @@ async def screen_stocks_impl(
     max_per: float | None = None,
     max_pbr: float | None = None,
     min_dividend_yield: float | None = None,
+    min_dividend: float | None = None,
+    min_analyst_buy: float | None = None,
     max_rsi: float | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
@@ -554,6 +558,24 @@ async def screen_stocks_impl(
         sort_order = preset.get("sort_order", sort_order)
         if max_rsi is None and "max_rsi" in preset:
             max_rsi = preset["max_rsi"]
+
+    normalized_request = normalize_screen_request(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sector=sector,
+        strategy=strategy,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        max_pbr=max_pbr,
+        min_dividend_yield=min_dividend_yield,
+        min_dividend=min_dividend,
+        min_analyst_buy=min_analyst_buy,
+        max_rsi=max_rsi,
+        limit=limit,
+    )
 
     normalized_market = analysis_screening._normalize_screen_market(market)
     normalized_asset_type = analysis_screening._normalize_asset_type(asset_type)
@@ -578,7 +600,7 @@ async def screen_stocks_impl(
         asset_type=normalized_asset_type,
         min_market_cap=min_market_cap,
         max_per=max_per,
-        min_dividend_yield=min_dividend_yield,
+        min_dividend_yield=normalized_request["min_dividend_yield"],
         max_rsi=max_rsi,
         sort_by=normalized_sort_by,
     )
@@ -587,10 +609,13 @@ async def screen_stocks_impl(
         market=normalized_market,
         asset_type=normalized_asset_type,
         category=category,
+        sector=sector,
         min_market_cap=min_market_cap,
         max_per=max_per,
         max_pbr=max_pbr,
         min_dividend_yield=min_dividend_yield,
+        min_dividend=min_dividend,
+        min_analyst_buy=min_analyst_buy,
         max_rsi=max_rsi,
         sort_by=normalized_sort_by,
         sort_order=normalized_sort_order,

@@ -1,10 +1,11 @@
+# pyright: reportMissingImports=false
 from __future__ import annotations
 
 from collections.abc import Generator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import pytest
+import pytest  # type: ignore[reportMissingImports]
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -182,6 +183,45 @@ def test_list_endpoint_calls_service(
     }
 
 
+def test_list_endpoint_forwards_new_fundamentals_filters(
+    client: tuple[TestClient, _FakeScreenerService],
+) -> None:
+    test_client, fake_service = client
+
+    response = test_client.get(
+        "/api/screener/list",
+        params={
+            "market": "us",
+            "sector": "Technology",
+            "min_analyst_buy": 7,
+            "min_dividend": 2.5,
+            "limit": 10,
+        },
+    )
+
+    assert response.status_code == 200
+    fake_service.list_screening.assert_awaited_once()
+    list_await_args = fake_service.list_screening.await_args
+    assert list_await_args is not None
+    assert list_await_args.kwargs == {
+        "market": "us",
+        "asset_type": None,
+        "category": None,
+        "sector": "Technology",
+        "strategy": None,
+        "sort_by": None,
+        "sort_order": "desc",
+        "min_market_cap": None,
+        "max_per": None,
+        "max_pbr": None,
+        "min_dividend": 2.5,
+        "min_analyst_buy": 7.0,
+        "max_rsi": None,
+        "min_volume": None,
+        "limit": 10,
+    }
+
+
 def test_list_endpoint_returns_400_for_validation_error() -> None:
     app = FastAPI()
     fake_service = _FakeScreenerService()
@@ -234,6 +274,45 @@ def test_refresh_endpoint_calls_service(
         "min_dividend_yield": None,
         "max_rsi": 50.0,
         "min_volume": 2500.0,
+        "limit": 5,
+    }
+
+
+def test_refresh_endpoint_forwards_new_fundamentals_filters(
+    client: tuple[TestClient, _FakeScreenerService],
+) -> None:
+    test_client, fake_service = client
+
+    response = test_client.post(
+        "/api/screener/refresh",
+        json={
+            "market": "us",
+            "sector": "Technology",
+            "min_analyst_buy": 9,
+            "min_dividend": 3.0,
+            "limit": 5,
+        },
+    )
+
+    assert response.status_code == 200
+    fake_service.refresh_screening.assert_awaited_once()
+    refresh_await_args = fake_service.refresh_screening.await_args
+    assert refresh_await_args is not None
+    assert refresh_await_args.kwargs == {
+        "market": "us",
+        "asset_type": None,
+        "category": None,
+        "sector": "Technology",
+        "strategy": None,
+        "sort_by": None,
+        "sort_order": "desc",
+        "min_market_cap": None,
+        "max_per": None,
+        "max_pbr": None,
+        "min_dividend": 3.0,
+        "min_analyst_buy": 9.0,
+        "max_rsi": None,
+        "min_volume": None,
         "limit": 5,
     }
 
