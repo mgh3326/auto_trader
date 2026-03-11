@@ -442,7 +442,7 @@ async def screen_stocks_impl(
     max_pbr: float | None = None,
     min_dividend_yield: float | None = None,
     max_rsi: float | None = None,
-    limit: int = 20,
+    limit: int = 50,
 ) -> dict[str, Any]:
     sort_by_specified = sort_by is not None
     strategy_applied = False

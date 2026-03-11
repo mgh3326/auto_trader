@@ -36,7 +36,7 @@ class ScreenerFilterRequest(BaseModel):
     min_dividend_yield: float | None = None
     max_rsi: float | None = None
     min_volume: float | None = None
-    limit: int = Field(default=20, ge=1, le=50)
+    limit: int = Field(default=50, ge=1, le=100)
 
 
 class ScreenerReportRequest(BaseModel):
@@ -120,7 +120,7 @@ async def screener_list(
     min_dividend_yield: float | None = Query(default=None),
     max_rsi: float | None = Query(default=None),
     min_volume: float | None = Query(default=None),
-    limit: int = Query(default=20, ge=1, le=50),
+    limit: int = Query(default=50, ge=1, le=100),
     service: ScreenerService = Depends(get_screener_service),
 ):
     try:

@@ -293,7 +293,7 @@ Parameters:
 - `max_per`: Maximum P/E ratio filter (not applicable to crypto)
 - `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
 - `max_rsi`: Maximum RSI filter 0-100 (not applicable to sorting by dividend_yield in crypto)
-- `limit`: Maximum results 1-50 (default: 20)
+- `limit`: Maximum results 1-100 (default: 50)
 
 Market-specific behavior:
 - **KR market**:
