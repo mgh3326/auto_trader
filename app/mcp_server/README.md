@@ -166,6 +166,29 @@ Symbol contract:
   - `"get_correlation does not support company-name inputs because it has no market parameter. Use ticker/code inputs directly."`
 - When at least 2 ticker/code inputs resolve and fetch successfully, the tool still returns a correlation matrix and includes failed symbols in `errors`.
 
+### `get_disclosures` spec
+Parameters:
+- `symbol`: Korean corporation lookup input (required)
+- `days`: Lookback window in days (default: 30)
+- `limit`: Maximum filings to return (default: 20)
+- `report_type`: Optional Korean disclosure group (`정기`, `주요사항`, `발행`, `지분`, `기타`)
+
+Symbol contract:
+- Direct 6-digit KR stock codes such as `005930` are passed through to OpenDartReader as-is.
+- Korean company names such as `삼성전자` are supported on a best-effort basis through OpenDartReader's exact-name corp lookup.
+- Blank or whitespace-only `symbol` inputs are rejected with an explicit in-band error payload (`success: false`, `error: "symbol is required"`, `filings: []`, `symbol: ""`).
+- Company-name inputs that OpenDartReader cannot resolve return an explicit in-band error payload with `success: false`; they do not silently degrade to an empty `filings` list.
+
+Behavior:
+- `report_type` maps internally to DART disclosure kinds: `정기 -> A`, `주요사항 -> B`, `발행 -> C`, `지분 -> D`, `기타 -> E`.
+- Unsupported `report_type` inputs return `success: false` instead of silently broadening the query.
+- Successful responses return the existing `filings` list shape with `date`, `report_nm`, `rcp_no`, and `corp_name`.
+- An empty DataFrame from OpenDartReader is treated as a successful lookup with `filings: []`.
+- The first process-local client initialization still downloads the OpenDART corp-code cache, so cold-start latency can be higher than warm calls.
+
+Error payload:
+- Failure responses include `success`, `error`, `filings`, and `symbol`.
+
 ### `manage_watch_alerts` spec
 Parameters:
 - `action`: Required action - `"add"`, `"remove"`, `"list"`
