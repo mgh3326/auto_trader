@@ -631,7 +631,7 @@ class TestGetShortInterest:
         tools = build_tools()
 
         async def mock_fetch_short_interest(code, days):
-            raise Exception("KIS API error")
+            raise RuntimeError("KIS API error")
 
         monkeypatch.setattr(
             market_data_service, "get_short_interest", mock_fetch_short_interest

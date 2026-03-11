@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -29,6 +30,7 @@ async def test_recommend_stocks_tool_uses_analysis_screening_alias(
         called.update(kwargs)
         budget = float(kwargs["budget"])
         strategy = str(kwargs["strategy"])
+        await asyncio.sleep(0)
         return {
             "recommendations": [],
             "total_amount": 0.0,

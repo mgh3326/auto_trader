@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 import pytest
@@ -15,19 +16,19 @@ def _mock_kr_sources(
 ) -> None:
     async def mock_fetch_stock_all_cached(market: str) -> list[dict[str, Any]]:
         if market == "STK":
-            return [dict(item) for item in stk]
+            return await asyncio.sleep(0, result=[dict(item) for item in stk])
         if market == "KSQ":
-            return [dict(item) for item in (ksq or [])]
-        return []
+            return await asyncio.sleep(0, result=[dict(item) for item in (ksq or [])])
+        return await asyncio.sleep(0, result=[])
 
     async def mock_fetch_etf_all_cached() -> list[dict[str, Any]]:
-        return [dict(item) for item in (etfs or [])]
+        return await asyncio.sleep(0, result=[dict(item) for item in (etfs or [])])
 
     async def mock_fetch_valuation_all_cached(
         market: str,
     ) -> dict[str, dict[str, Any]]:
         del market
-        return valuations or {}
+        return await asyncio.sleep(0, result=valuations or {})
 
     monkeypatch.setattr(
         analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
@@ -51,7 +52,7 @@ def _mock_empty_holdings(monkeypatch: pytest.MonkeyPatch) -> None:
         user_id: int,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None, str | None]:
         del include_current_price, user_id
-        return [], [], market, account
+        return await asyncio.sleep(0, result=([], [], market, account))
 
     monkeypatch.setattr(
         portfolio_holdings,

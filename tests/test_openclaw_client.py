@@ -524,8 +524,9 @@ async def test_send_fill_notification_forwards_telegram_when_openclaw_fails(
     assert result is None
     assert mock_cli.post.call_count == 4
     assert elapsed < 2.0
+    forwarded_message = mock_notifier.notify_openclaw_message.await_args.args[0]
     mock_notifier.notify_openclaw_message.assert_awaited_once_with(
-        forwarded_message := mock_notifier.notify_openclaw_message.await_args.args[0],
+        forwarded_message,
         correlation_id="corr-openclaw-fail-mirror-success",
         market_type="crypto",
     )

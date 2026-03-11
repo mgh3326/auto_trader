@@ -130,7 +130,7 @@ async def test_get_orderbook_returns_null_pressure_when_ratio_missing(
     assert result["pressure"] is None
     assert result["pressure_desc"] is None
     assert result["spread"] == 100
-    assert result["spread_pct"] == 0.143
+    assert result["spread_pct"] == pytest.approx(0.143)
 
 
 @pytest.mark.asyncio
