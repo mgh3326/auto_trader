@@ -168,6 +168,68 @@ class TestAnalyzeStock:
         assert "stop_loss" in rec
         assert "reasoning" in rec
 
+    async def test_build_recommendation_for_equity_exposes_rsi14(self):
+        """Test that rsi14 value is exposed in recommendation payload."""
+        analysis = {
+            "quote": {"price": 150.0},
+            "indicators": {"indicators": {"rsi": {"14": 45.8}}},
+            "support_resistance": {"supports": [], "resistances": []},
+        }
+        rec = shared.build_recommendation_for_equity(analysis, "equity_us")
+        assert rec is not None
+        assert rec["rsi14"] == 45.8
+
+    async def test_build_recommendation_for_equity_keeps_zero_rsi(self):
+        """Test that rsi14=0.0 is NOT treated as missing."""
+        analysis = {
+            "quote": {"price": 150.0},
+            "indicators": {"indicators": {"rsi": {"14": 0.0}}},
+            "support_resistance": {"supports": [], "resistances": []},
+        }
+        rec = shared.build_recommendation_for_equity(analysis, "equity_us")
+        assert rec is not None
+        assert rec["rsi14"] == 0.0
+
+    async def test_analyze_stock_us_includes_recommendation_rsi14(self, monkeypatch):
+        """Test that rsi14 is surfaced in recommendation payload for US market."""
+        tools = build_tools()
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            return pd.DataFrame(
+                {
+                    "date": ["2024-01-01"],
+                    "open": [150.0],
+                    "high": [155.0],
+                    "low": [148.0],
+                    "close": [150.0],
+                    "volume": [1000000],
+                }
+            )
+
+        async def mock_get_indicators(
+            symbol, indicators, market=None, preloaded_df=None
+        ):
+            return {"indicators": {"rsi": {"14": 45.8}, "bollinger": {"lower": 145.0}}}
+
+        async def mock_get_support_resistance(symbol, market=None, preloaded_df=None):
+            return {"supports": [{"price": 140.0}], "resistances": [{"price": 160.0}]}
+
+        async def mock_get_quote(symbol, market_type):
+            return {"symbol": symbol, "price": 150.0, "instrument_type": "equity_us"}
+
+        _patch_runtime_attr(
+            monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+        _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_get_indicators)
+        _patch_runtime_attr(
+            monkeypatch, "_get_support_resistance_impl", mock_get_support_resistance
+        )
+        _patch_runtime_attr(monkeypatch, "_get_quote_impl", mock_get_quote)
+
+        result = await tools["analyze_stock"]("AAPL", market="us")
+
+        assert result["recommendation"]["rsi14"] == 45.8
+
     async def test_recommendation_not_included_crypto(self, monkeypatch):
         tools = build_tools()
 
