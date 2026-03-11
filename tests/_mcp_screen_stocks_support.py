@@ -1,3 +1,4 @@
+# pyright: reportMissingImports=false
 """Tests for screen_stocks MCP tool."""
 
 import logging
@@ -11,7 +12,11 @@ import pytest
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.async_rate_limiter import RateLimitExceededError
-from app.mcp_server.tooling import analysis_screen_core
+from app.mcp_server.tooling import (
+    analysis_screen_core,
+    analysis_screening,
+    fundamentals_sources_naver,
+)
 from app.mcp_server.tooling.registry import register_all_tools
 from app.services import naver_finance
 from tests._mcp_tooling_support import _patch_runtime_attr
@@ -23,7 +28,7 @@ class _TvCondition:
     def __init__(self, label: str) -> None:
         self.label = label
 
-    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+    def __eq__(self, other: object) -> bool:
         return isinstance(other, _TvCondition) and self.label == other.label
 
     def __and__(self, other: object) -> object:
@@ -34,7 +39,7 @@ class _TvField:
     def __init__(self, label: str) -> None:
         self.label = label
 
-    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+    def __eq__(self, other: object) -> bool:
         return cast(bool, cast(object, _TvCondition(f"{self.label}=={other}")))
 
     def isin(self, other: object) -> _TvCondition:
@@ -1563,6 +1568,497 @@ class TestScreenStocksCrypto:
         assert symbols == ["KRW-ETH", "KRW-SOL", "KRW-BTC"]
         assert all("trade_amount_24h" in item for item in result["results"])
         assert all("volume" not in item for item in result["results"])
+
+
+class TestScreenStocksFundamentalsExpansion:
+    @pytest.mark.asyncio
+    async def test_screen_stocks_accepts_new_public_fundamentals_contract(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        async def fake_screen(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "results": [
+                    {
+                        "code": "AAPL",
+                        "name": "Apple Inc.",
+                        "sector": "Technology",
+                        "analyst_buy": 18,
+                        "analyst_hold": 6,
+                        "analyst_sell": 1,
+                        "avg_target": 245.0,
+                        "upside_pct": 12.4,
+                    }
+                ],
+                "total_count": 1,
+                "returned_count": 1,
+                "filters_applied": {
+                    "market": "us",
+                    "sector": "Technology",
+                    "min_analyst_buy": 10,
+                    "min_dividend_input": 2.5,
+                    "min_dividend_normalized": 0.025,
+                },
+                "market": "us",
+                "timestamp": "2026-03-11T00:00:00Z",
+                "meta": {"source": "fundamentals-expansion"},
+            }
+
+        monkeypatch.setattr(analysis_screening, "screen_stocks_unified", fake_screen)
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="us",
+            sector="Technology",
+            min_analyst_buy=10,
+            min_dividend=2.5,
+            limit=5,
+        )
+
+        assert captured["sector"] == "Technology"
+        assert captured["min_analyst_buy"] == 10
+        assert captured["min_dividend"] == 2.5
+        first = result["results"][0]
+        assert first["sector"] == "Technology"
+        assert first["analyst_buy"] == 18
+        assert first["analyst_hold"] == 6
+        assert first["analyst_sell"] == 1
+        assert first["avg_target"] == 245.0
+        assert first["upside_pct"] == 12.4
+        assert result["filters_applied"]["sector"] == "Technology"
+        assert result["filters_applied"]["min_analyst_buy"] == 10
+        assert result["filters_applied"]["min_dividend_input"] == 2.5
+        assert result["filters_applied"]["min_dividend_normalized"] == 0.025
+
+    @pytest.mark.asyncio
+    async def test_us_plain_tvscreener_requests_enrich_only_limited_rows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+        enriched_symbols: list[str] = []
+
+        async def mock_screen_us_via_tvscreener(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "stocks": [
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple Inc.",
+                        "price": 200.0,
+                        "change_percent": 1.0,
+                        "volume": 300.0,
+                        "market_cap": 3_000_000_000_000.0,
+                    },
+                    {
+                        "symbol": "MSFT",
+                        "name": "Microsoft Corp.",
+                        "price": 300.0,
+                        "change_percent": 0.5,
+                        "volume": 200.0,
+                        "market_cap": 2_500_000_000_000.0,
+                    },
+                    {
+                        "symbol": "NVDA",
+                        "name": "NVIDIA Corp.",
+                        "price": 400.0,
+                        "change_percent": 0.2,
+                        "volume": 100.0,
+                        "market_cap": 2_000_000_000_000.0,
+                    },
+                ],
+                "count": 3,
+                "filters_applied": {"sort_by": "volume", "sort_order": "desc"},
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_us(**kwargs: Any) -> dict[str, Any]:
+            raise AssertionError(
+                "legacy US path should not run for plain stock requests"
+            )
+
+        async def mock_fetch_screen_enrichment_us(symbol: str) -> dict[str, Any]:
+            enriched_symbols.append(symbol)
+            return {
+                "sector": "Technology",
+                "analyst_buy": 12,
+                "analyst_hold": 3,
+                "analyst_sell": 1,
+                "avg_target": 250.0,
+                "upside_pct": 10.0,
+            }
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_screen_us_via_tvscreener",
+            mock_screen_us_via_tvscreener,
+        )
+        monkeypatch.setattr(analysis_screen_core, "_screen_us", fail_legacy_us)
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_screen_enrichment_us",
+            mock_fetch_screen_enrichment_us,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type="stock",
+            sort_by="volume",
+            sort_order="desc",
+            limit=2,
+        )
+
+        assert captured["limit"] == 2
+        assert enriched_symbols == ["AAPL", "MSFT"]
+        assert result["returned_count"] == 2
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["results"][0]["sector"] == "Technology"
+        assert result["results"][0]["analyst_buy"] == 12
+        assert result["results"][0]["avg_target"] == 250.0
+        assert result["results"][1]["upside_pct"] == 10.0
+
+    @pytest.mark.asyncio
+    async def test_kr_sector_and_analyst_filters_apply_after_overfetch_enrichment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        async def mock_screen_kr_via_tvscreener(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "name": "Samsung Electronics Co., Ltd.",
+                        "price": 70000.0,
+                        "change_percent": 2.5,
+                        "volume": 600.0,
+                        "market_cap": 4_800_000.0,
+                        "market": "KOSPI",
+                    },
+                    {
+                        "symbol": "000660",
+                        "name": "SK hynix Inc.",
+                        "price": 150000.0,
+                        "change_percent": 1.5,
+                        "volume": 500.0,
+                        "market_cap": 1_500_000.0,
+                        "market": "KOSPI",
+                    },
+                    {
+                        "symbol": "035420",
+                        "name": "NAVER Corp.",
+                        "price": 200000.0,
+                        "change_percent": 1.0,
+                        "volume": 400.0,
+                        "market_cap": 900_000.0,
+                        "market": "KOSPI",
+                    },
+                    {
+                        "symbol": "051910",
+                        "name": "LG Chem, Ltd.",
+                        "price": 300000.0,
+                        "change_percent": 0.8,
+                        "volume": 300.0,
+                        "market_cap": 800_000.0,
+                        "market": "KOSPI",
+                    },
+                ],
+                "count": 4,
+                "filters_applied": {"sort_by": "volume", "sort_order": "desc"},
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_kr(**kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("legacy KR path should not run for stock requests")
+
+        enrichment_map = {
+            "005930": {
+                "sector": "전기전자",
+                "analyst_buy": 8,
+                "analyst_hold": 3,
+                "analyst_sell": 1,
+                "avg_target": 90000.0,
+                "upside_pct": 12.0,
+            },
+            "000660": {
+                "sector": "반도체",
+                "analyst_buy": 6,
+                "analyst_hold": 2,
+                "analyst_sell": 0,
+                "avg_target": 180000.0,
+                "upside_pct": 20.0,
+            },
+            "035420": {
+                "sector": "반도체",
+                "analyst_buy": 11,
+                "analyst_hold": 1,
+                "analyst_sell": 0,
+                "avg_target": 250000.0,
+                "upside_pct": 25.0,
+            },
+            "051910": {
+                "sector": "반도체",
+                "analyst_buy": 14,
+                "analyst_hold": 0,
+                "analyst_sell": 0,
+                "avg_target": 350000.0,
+                "upside_pct": 16.0,
+            },
+        }
+
+        async def mock_fetch_screen_enrichment_kr(symbol: str) -> dict[str, Any]:
+            return enrichment_map[symbol]
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_screen_kr_via_tvscreener",
+            mock_screen_kr_via_tvscreener,
+        )
+        monkeypatch.setattr(analysis_screen_core, "_screen_kr", fail_legacy_kr)
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_screen_enrichment_kr",
+            mock_fetch_screen_enrichment_kr,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            sector="반도체",
+            min_analyst_buy=10,
+            limit=2,
+        )
+
+        assert captured["limit"] == 10
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["returned_count"] == 2
+        assert [item["code"] for item in result["results"]] == ["035420", "051910"]
+        assert all(item["sector"] == "반도체" for item in result["results"])
+        assert all(item["analyst_buy"] >= 10 for item in result["results"])
+        assert result["filters_applied"]["sector"] == "반도체"
+        assert result["filters_applied"]["min_analyst_buy"] == 10
+
+    @pytest.mark.asyncio
+    async def test_kr_min_analyst_buy_uses_partial_enrichment_when_profile_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        async def mock_screen_kr_via_tvscreener(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "name": "Samsung Electronics Co., Ltd.",
+                        "price": 70000.0,
+                        "change_percent": 2.5,
+                        "volume": 600.0,
+                        "market_cap": 4_800_000.0,
+                        "market": "KOSPI",
+                    },
+                    {
+                        "symbol": "000660",
+                        "name": "SK hynix Inc.",
+                        "price": 150000.0,
+                        "change_percent": 1.5,
+                        "volume": 500.0,
+                        "market_cap": 1_500_000.0,
+                        "market": "KOSPI",
+                    },
+                ],
+                "count": 2,
+                "filters_applied": {"sort_by": "volume", "sort_order": "desc"},
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_kr(**kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("legacy KR path should not run for stock requests")
+
+        async def mock_profile(symbol: str) -> dict[str, Any]:
+            raise RuntimeError(f"profile unavailable for {symbol}")
+
+        async def mock_opinions(symbol: str, limit: int) -> dict[str, Any]:
+            assert limit == 10
+            consensus_by_symbol = {
+                "005930": {
+                    "buy_count": 11,
+                    "hold_count": 2,
+                    "sell_count": 0,
+                    "avg_target_price": 91000.0,
+                    "upside_pct": 30.0,
+                },
+                "000660": {
+                    "buy_count": 6,
+                    "hold_count": 1,
+                    "sell_count": 0,
+                    "avg_target_price": 180000.0,
+                    "upside_pct": 20.0,
+                },
+            }
+            return {
+                "symbol": symbol,
+                "count": 3,
+                "consensus": consensus_by_symbol[symbol],
+            }
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_screen_kr_via_tvscreener",
+            mock_screen_kr_via_tvscreener,
+        )
+        monkeypatch.setattr(analysis_screen_core, "_screen_kr", fail_legacy_kr)
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_company_profile_finnhub",
+            mock_profile,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_investment_opinions_naver",
+            mock_opinions,
+            raising=False,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            min_analyst_buy=10,
+            limit=2,
+        )
+
+        assert captured["limit"] == 10
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["returned_count"] == 1
+        assert [item["code"] for item in result["results"]] == ["005930"]
+        assert result["results"][0]["sector"] is None
+        assert result["results"][0]["analyst_buy"] == 11
+        assert result["filters_applied"]["min_analyst_buy"] == 10
+        assert not any(
+            "profile unavailable" in warning for warning in result.get("warnings", [])
+        )
+
+    @pytest.mark.asyncio
+    async def test_kr_screen_warns_when_both_enrichment_providers_fail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def mock_screen_kr_via_tvscreener(**kwargs: Any) -> dict[str, Any]:
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "name": "Samsung Electronics Co., Ltd.",
+                        "price": 70000.0,
+                        "change_percent": 2.5,
+                        "volume": 600.0,
+                        "market_cap": 4_800_000.0,
+                        "market": "KOSPI",
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {"sort_by": "volume", "sort_order": "desc"},
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_kr(**kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("legacy KR path should not run for stock requests")
+
+        async def mock_profile(symbol: str) -> dict[str, Any]:
+            raise RuntimeError(f"profile unavailable for {symbol}")
+
+        async def mock_opinions(symbol: str, limit: int) -> dict[str, Any]:
+            assert limit == 10
+            raise RuntimeError(f"opinions unavailable for {symbol}")
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_screen_kr_via_tvscreener",
+            mock_screen_kr_via_tvscreener,
+        )
+        monkeypatch.setattr(analysis_screen_core, "_screen_kr", fail_legacy_kr)
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_company_profile_finnhub",
+            mock_profile,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_investment_opinions_naver",
+            mock_opinions,
+            raising=False,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            min_analyst_buy=10,
+            limit=1,
+        )
+
+        assert result["returned_count"] == 0
+        assert result["total_count"] == 0
+        assert any(
+            "RuntimeError" in warning and "profile unavailable" in warning
+            for warning in result.get("warnings", [])
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kwargs", "pattern"),
+        [
+            ({"sector": "Layer1"}, ".*crypto.*sector.*"),
+            ({"min_analyst_buy": 5}, ".*crypto.*min_analyst_buy.*"),
+            ({"min_dividend": 2.0}, ".*crypto.*min_dividend.*"),
+        ],
+    )
+    async def test_crypto_rejects_new_fundamentals_filters(
+        self,
+        kwargs: dict[str, Any],
+        pattern: str,
+    ) -> None:
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match=pattern):
+            await tools["screen_stocks"](market="crypto", limit=5, **kwargs)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("asset_type", ["etf", "etn"])
+    async def test_kr_non_stock_requests_reject_min_analyst_buy(
+        self, asset_type: str
+    ) -> None:
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match=".*min_analyst_buy.*"):
+            await tools["screen_stocks"](
+                market="kr",
+                asset_type=asset_type,
+                min_analyst_buy=3,
+                limit=5,
+            )
+
+    @pytest.mark.asyncio
+    async def test_sector_and_category_conflict_raises_error(self) -> None:
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match=".*category.*sector.*"):
+            await tools["screen_stocks"](
+                market="us",
+                category="Technology",
+                sector="Semiconductors",
+                limit=5,
+            )
 
     @pytest.mark.asyncio
     async def test_crypto_per_filter_raises_error(self, mock_upbit_coins, monkeypatch):

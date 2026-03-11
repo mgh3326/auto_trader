@@ -1,9 +1,11 @@
+# pyright: reportMissingImports=false
 from __future__ import annotations
 
 import asyncio
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
-import pytest
+import pytest  # type: ignore[reportMissingImports]
 
 
 class _FakeRedis:
@@ -52,7 +54,7 @@ async def test_list_screening_uses_5m_cache(monkeypatch: pytest.MonkeyPatch) -> 
     )
     monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
 
-    service = ScreenerService(redis_client=fake_redis)
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
 
     first = await service.list_screening(market="us", limit=20)
     second = await service.list_screening(market="us", limit=20)
@@ -79,7 +81,7 @@ async def test_list_screening_coerces_crypto_volume_sort_to_trade_amount(
     )
     monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
 
-    service = ScreenerService(redis_client=fake_redis)
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
     result = await service.list_screening(
         market="crypto",
         sort_by="volume",
@@ -119,7 +121,7 @@ async def test_list_screening_filters_us_by_min_volume(
     )
     monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
 
-    service = ScreenerService(redis_client=fake_redis)
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
     result = await service.list_screening(market="us", min_volume=1000, limit=2)
 
     assert result["cache_hit"] is False
@@ -157,7 +159,7 @@ async def test_list_screening_filters_crypto_by_trade_amount_24h(
     )
     monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
 
-    service = ScreenerService(redis_client=fake_redis)
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
     result = await service.list_screening(market="crypto", min_volume=1000, limit=2)
 
     assert result["cache_hit"] is False
@@ -190,7 +192,7 @@ async def test_list_screening_uses_separate_cache_keys_for_min_volume(
     )
     monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
 
-    service = ScreenerService(redis_client=fake_redis)
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
 
     first = await service.list_screening(market="us", min_volume=1000, limit=1)
     second = await service.list_screening(market="us", min_volume=2000, limit=1)
@@ -203,6 +205,105 @@ async def test_list_screening_uses_separate_cache_keys_for_min_volume(
 
 
 @pytest.mark.asyncio
+async def test_list_screening_uses_separate_cache_keys_for_new_fundamentals_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.screener_service import ScreenerService
+
+    fake_redis = _FakeRedis()
+    mock_screen = AsyncMock(
+        return_value={
+            "results": [{"code": "AAPL", "sector": "Technology"}],
+            "total_count": 1,
+            "returned_count": 1,
+            "filters_applied": {"market": "us"},
+            "market": "us",
+        }
+    )
+    monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
+
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
+
+    first = await cast(Any, service).list_screening(
+        market="us",
+        sector="Technology",
+        min_analyst_buy=5,
+        min_dividend=2.0,
+        limit=1,
+    )
+    second = await cast(Any, service).list_screening(
+        market="us",
+        sector="Healthcare",
+        min_analyst_buy=5,
+        min_dividend=2.0,
+        limit=1,
+    )
+    third = await cast(Any, service).list_screening(
+        market="us",
+        sector="Technology",
+        min_analyst_buy=6,
+        min_dividend=2.0,
+        limit=1,
+    )
+    fourth = await cast(Any, service).list_screening(
+        market="us",
+        sector="Technology",
+        min_analyst_buy=5,
+        min_dividend=3.0,
+        limit=1,
+    )
+    fifth = await cast(Any, service).list_screening(
+        market="us",
+        sector="Technology",
+        min_analyst_buy=5,
+        min_dividend=2.0,
+        limit=1,
+    )
+
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is False
+    assert third["cache_hit"] is False
+    assert fourth["cache_hit"] is False
+    assert fifth["cache_hit"] is True
+    assert mock_screen.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_list_screening_overfetches_when_post_screen_analyst_filtering_is_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.screener_service import ScreenerService
+
+    fake_redis = _FakeRedis()
+    mock_screen = AsyncMock(
+        return_value={
+            "results": [
+                {"code": "AAPL", "analyst_buy": 12},
+                {"code": "MSFT", "analyst_buy": 10},
+                {"code": "NVDA", "analyst_buy": 8},
+            ],
+            "total_count": 3,
+            "returned_count": 3,
+            "filters_applied": {"market": "us"},
+            "market": "us",
+        }
+    )
+    monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
+
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
+    result = await cast(Any, service).list_screening(
+        market="us", min_analyst_buy=10, limit=2
+    )
+
+    assert result["cache_hit"] is False
+    await_args = mock_screen.await_args
+    assert await_args is not None
+    assert await_args.kwargs["market"] == "us"
+    assert await_args.kwargs["min_analyst_buy"] == 10
+    assert await_args.kwargs["limit"] == 6
+
+
+@pytest.mark.asyncio
 async def test_list_screening_rejects_negative_min_volume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -212,7 +313,7 @@ async def test_list_screening_rejects_negative_min_volume(
     mock_screen = AsyncMock(return_value={})
     monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
 
-    service = ScreenerService(redis_client=fake_redis)
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
 
     with pytest.raises(ValueError, match="min_volume must be >= 0"):
         await service.list_screening(market="us", min_volume=-1, limit=20)
@@ -245,7 +346,7 @@ async def test_refresh_screening_invalidates_cache(
     )
     monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
 
-    service = ScreenerService(redis_client=fake_redis)
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
 
     first = await service.list_screening(market="us", min_volume=1000, limit=5)
     cached = await service.list_screening(market="us", min_volume=1000, limit=5)
@@ -268,7 +369,9 @@ async def test_request_report_reuses_inflight_job() -> None:
     openclaw = AsyncMock()
     openclaw.request_analysis = AsyncMock(return_value="job-1")
 
-    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    service = ScreenerService(
+        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
+    )
 
     first = await service.request_report(market="us", symbol="AAPL", name="Apple")
     second = await service.request_report(market="us", symbol="AAPL", name="Apple")
@@ -293,7 +396,9 @@ async def test_request_report_concurrent_same_symbol_single_dispatch() -> None:
     openclaw = AsyncMock()
     openclaw.request_analysis = AsyncMock(side_effect=delayed_request_analysis)
 
-    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    service = ScreenerService(
+        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
+    )
 
     first, second = await asyncio.gather(
         service.request_report(market="us", symbol="AAPL", name="Apple"),
@@ -312,7 +417,7 @@ async def test_request_report_returns_failed_when_inflight_claim_is_unavailable(
     from app.services.screener_service import ScreenerService
 
     fake_redis = _AlwaysFailClaimRedis()
-    service = ScreenerService(redis_client=fake_redis)
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
 
     result = await service.request_report(market="us", symbol="AAPL", name="Apple")
 
@@ -333,7 +438,9 @@ async def test_request_report_does_not_downgrade_completed_status() -> None:
     openclaw = AsyncMock()
     openclaw.request_analysis = AsyncMock(return_value="job-race")
 
-    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    service = ScreenerService(
+        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
+    )
     fake_redis.store["screener:report:status:job-race"] = "completed"
 
     result = await service.request_report(market="us", symbol="AAPL", name="Apple")
@@ -351,7 +458,9 @@ async def test_get_report_status_marks_running_when_inflight_exists() -> None:
     openclaw = AsyncMock()
     openclaw.request_analysis = AsyncMock(return_value="job-running")
 
-    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    service = ScreenerService(
+        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
+    )
 
     queued = await service.request_report(market="us", symbol="AAPL", name="Apple")
     status = await service.get_report_status(queued["job_id"])
@@ -365,7 +474,7 @@ async def test_get_report_status_marks_running_when_inflight_exists() -> None:
 async def test_get_report_status_unknown_job_returns_not_found_failed() -> None:
     from app.services.screener_service import ScreenerService
 
-    service = ScreenerService(redis_client=_FakeRedis())
+    service = ScreenerService(redis_client=cast(Any, _FakeRedis()))
 
     result = await service.get_report_status("missing-job")
 
@@ -385,7 +494,9 @@ async def test_callback_completes_job_and_reuses_report() -> None:
     openclaw = AsyncMock()
     openclaw.request_analysis = AsyncMock(return_value="job-2")
 
-    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    service = ScreenerService(
+        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
+    )
 
     queued = await service.request_report(market="us", symbol="AAPL", name="Apple")
     assert queued["status"] == "queued"
@@ -426,7 +537,9 @@ async def test_request_report_marks_failed_when_openclaw_request_fails() -> None
     openclaw = AsyncMock()
     openclaw.request_analysis = AsyncMock(side_effect=RuntimeError("openclaw down"))
 
-    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    service = ScreenerService(
+        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
+    )
 
     result = await service.request_report(market="us", symbol="AAPL", name="Apple")
 
@@ -444,7 +557,7 @@ async def test_callback_with_unknown_instrument_type_marks_failed() -> None:
     from app.services.screener_service import ScreenerService
 
     fake_redis = _FakeRedis()
-    service = ScreenerService(redis_client=fake_redis)
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
 
     result = await service.process_callback(
         {
@@ -480,7 +593,9 @@ async def test_callback_payload_mismatch_marks_failed_and_clears_inflight() -> N
     fake_redis = _FakeRedis()
     openclaw = AsyncMock()
     openclaw.request_analysis = AsyncMock(return_value="job-mismatch")
-    service = ScreenerService(redis_client=fake_redis, openclaw_client=openclaw)
+    service = ScreenerService(
+        redis_client=cast(Any, fake_redis), openclaw_client=openclaw
+    )
 
     queued = await service.request_report(market="us", symbol="AAPL", name="Apple")
     assert queued["status"] == "queued"
@@ -524,7 +639,7 @@ async def test_place_order_confirm_maps_to_dry_run(
     mock_place = AsyncMock(return_value={"success": True})
     monkeypatch.setattr("app.services.screener_service._place_order_impl", mock_place)
 
-    service = ScreenerService(redis_client=fake_redis)
+    service = ScreenerService(redis_client=cast(Any, fake_redis))
 
     await service.place_order(
         market="us",

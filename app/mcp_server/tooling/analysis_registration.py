@@ -138,6 +138,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         market: Literal["kr", "kospi", "kosdaq", "us", "crypto"] = "kr",
         asset_type: Literal["stock", "etf", "etn"] | None = None,
         category: str | None = None,
+        sector: str | None = None,
         strategy: str | None = None,
         sort_by: Literal[
             "volume",
@@ -153,6 +154,8 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         max_per: float | None = None,
         max_pbr: float | None = None,
         min_dividend_yield: float | None = None,
+        min_dividend: float | None = None,
+        min_analyst_buy: float | None = None,
         max_rsi: float | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
@@ -160,6 +163,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             market=market,
             asset_type=asset_type,
             category=category,
+            sector=sector,
             strategy=strategy,
             sort_by=sort_by,
             sort_order=sort_order,
@@ -167,6 +171,8 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             max_per=max_per,
             max_pbr=max_pbr,
             min_dividend_yield=min_dividend_yield,
+            min_dividend=min_dividend,
+            min_analyst_buy=min_analyst_buy,
             max_rsi=max_rsi,
             limit=limit,
         )
