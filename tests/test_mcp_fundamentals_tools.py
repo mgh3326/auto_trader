@@ -14,6 +14,7 @@ This module contains tests for:
 - get_investment_opinions tool
 """
 
+import asyncio
 import dataclasses
 import json
 from unittest.mock import AsyncMock
@@ -411,6 +412,163 @@ class TestAnalyzeStock:
         # Both symbols should be normalized to 6-digit strings
         assert "012450" in result["results"]
         assert "005930" in result["results"]
+
+
+@pytest.mark.asyncio
+class TestAnalyzeStockBatch:
+    """Test analyze_stock_batch tool."""
+
+    async def test_analyze_stock_batch_registration(self):
+        """Test that analyze_stock_batch is registered as an MCP tool."""
+        tools = build_tools()
+
+        assert "analyze_stock_batch" in tools
+
+    async def test_analyze_stock_batch_quick_summary(self, monkeypatch):
+        """Test that analyze_stock_batch returns the compact summary contract."""
+        tools = build_tools()
+
+        mock_analysis = {
+            "symbol": "005930",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "quote": {"price": 75000},
+            "indicators": {
+                "indicators": {
+                    "rsi": {"14": 45.0},
+                    "bollinger": {"lower": 74000},
+                }
+            },
+            "support_resistance": {
+                "supports": [{"price": 73000}],
+                "resistances": [{"price": 77000, "strength": "medium"}],
+            },
+            "opinions": {
+                "consensus": {
+                    "buy_count": 2,
+                    "avg_target_price": 85000,
+                    "current_price": 75000,
+                }
+            },
+            "recommendation": {
+                "action": "hold",
+                "confidence": "low",
+            },
+            "news": [{"title": "Some news"}],
+            "profile": {"description": "Company profile"},
+        }
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return mock_analysis
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock_batch"](["005930"], market="kr")
+
+        assert result["summary"] == {
+            "total_symbols": 1,
+            "successful": 1,
+            "failed": 0,
+            "errors": [],
+        }
+        assert result["results"]["005930"] == {
+            "symbol": "005930",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "current_price": 75000,
+            "rsi_14": 45.0,
+            "consensus": {
+                "buy_count": 2,
+                "avg_target_price": 85000,
+                "current_price": 75000,
+            },
+            "recommendation": {
+                "action": "hold",
+                "confidence": "low",
+            },
+            "supports": [{"price": 73000}],
+            "resistances": [{"price": 77000, "strength": "medium"}],
+        }
+
+    async def test_analyze_stock_batch_quick_false_returns_full_payload(
+        self, monkeypatch
+    ):
+        """Test that quick=False returns the unsummarized full analysis payload."""
+        tools = build_tools()
+
+        mock_analysis = {
+            "symbol": "AAPL",
+            "market_type": "equity_us",
+            "source": "yahoo",
+            "quote": {"price": 185.5},
+            "news": [{"title": "Full payload should keep news"}],
+            "profile": {"name": "Apple Inc."},
+        }
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return mock_analysis
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock_batch"](
+            ["AAPL"], market="us", quick=False
+        )
+
+        assert result["summary"] == {
+            "total_symbols": 1,
+            "successful": 1,
+            "failed": 0,
+            "errors": [],
+        }
+        assert result["results"]["AAPL"] == mock_analysis
+
+    async def test_analyze_stock_batch_kr_symbol_normalization(self, monkeypatch):
+        """Test that analyze_stock_batch normalizes numeric KR symbols."""
+        tools = build_tools()
+
+        def mock_impl(symbol: str, market: str | None, include_peers: bool):
+            return {
+                "symbol": symbol,
+                "market_type": "equity_kr",
+                "source": "kis",
+                "quote": {"price": 75000},
+            }
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", mock_impl)
+
+        result = await tools["analyze_stock_batch"]([12450, "005930"], market="kr")
+
+        assert "results" in result
+        assert "012450" in result["results"]
+        assert "005930" in result["results"]
+
+    async def test_analyze_stock_batch_concurrency(self, monkeypatch):
+        """Test that analyze_stock_batch executes symbol analysis concurrently."""
+        tools = build_tools()
+        call_tracker = {"active": 0, "max_active": 0}
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            call_tracker["active"] += 1
+            call_tracker["max_active"] = max(
+                call_tracker["max_active"], call_tracker["active"]
+            )
+            await asyncio.sleep(0.01)
+            call_tracker["active"] -= 1
+            return {
+                "symbol": symbol,
+                "market_type": "equity_kr",
+                "source": "kis",
+                "quote": {"price": 75000},
+            }
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock_batch"](
+            ["005930", "000660", "035420"], market="kr"
+        )
+
+        assert "results" in result
+        assert call_tracker["max_active"] > 1, "Expected concurrent execution"
 
 
 @pytest.mark.asyncio

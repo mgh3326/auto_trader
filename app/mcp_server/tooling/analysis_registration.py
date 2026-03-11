@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from app.mcp_server.tooling.analysis_tool_handlers import (
     analyze_portfolio_impl,
+    analyze_stock_batch_impl,
     analyze_stock_impl,
     get_correlation_impl,
     get_disclosures_impl,
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 ANALYSIS_TOOL_NAMES: set[str] = {
     "analyze_stock",
     "analyze_portfolio",
+    "analyze_stock_batch",
     "screen_stocks",
     "recommend_stocks",
     "get_top_stocks",
@@ -127,6 +129,28 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             market=market,
             include_peers=include_peers,
         )
+
+    @mcp.tool(
+        name="analyze_stock_batch",
+        description=(
+            "Analyze multiple stocks in parallel with compact summaries. "
+            "Returns per-symbol compact summary (symbol, price, RSI, consensus, supports/resistances) "
+            "by default, or full analysis when quick=False."
+        ),
+    )
+    async def analyze_stock_batch(
+        symbols: list[str | int],
+        market: str | None = None,
+        include_peers: bool = False,
+        quick: bool = True,
+    ) -> dict[str, Any]:
+        return await analyze_stock_batch_impl(
+            symbols=symbols,
+            market=market,
+            include_peers=include_peers,
+            quick=quick,
+        )
+
 
     @mcp.tool(
         name="screen_stocks",
