@@ -8,6 +8,7 @@ ADX, Stochastic RSI, OBV, Fibonacci).
 from __future__ import annotations
 
 import datetime
+from statistics import median
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
@@ -194,8 +195,8 @@ def _classify_orderbook_pressure(ratio: float | None) -> str | None:
 def _build_orderbook_pressure_desc(
     *,
     pressure: str | None,
-    total_ask_qty: int,
-    total_bid_qty: int,
+    total_ask_qty: float,
+    total_bid_qty: float,
 ) -> str | None:
     if pressure is None:
         return None
@@ -218,7 +219,7 @@ def _build_orderbook_pressure_desc(
 
 def _calculate_orderbook_spread(
     snapshot: market_data_service.OrderbookSnapshot,
-) -> tuple[int | None, float | None]:
+) -> tuple[float | None, float | None]:
     if not snapshot.asks or not snapshot.bids:
         return None, None
 
@@ -233,11 +234,63 @@ def _calculate_orderbook_spread(
     return spread, spread_pct
 
 
+def _validate_crypto_orderbook_symbol_input(symbol: str | int) -> str:
+    value = str(symbol).strip().upper()
+    if not value:
+        raise ValueError("symbol is required")
+    if not value.startswith("KRW-"):
+        raise ValueError("crypto orderbook only supports KRW-* symbols")
+    return value
+
+
+def _build_orderbook_walls_for_side(
+    levels: list[market_data_service.OrderbookLevel],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    values: list[int] = []
+
+    for level in levels:
+        value_krw = int(round(level.price * level.quantity))
+        if value_krw <= 0:
+            continue
+        values.append(value_krw)
+        candidates.append(
+            {
+                "price": level.price,
+                "size": level.quantity,
+                "value_krw": value_krw,
+            }
+        )
+
+    if not values:
+        return []
+
+    baseline = median(values)
+    if baseline <= 0:
+        return []
+
+    walls = [entry for entry in candidates if entry["value_krw"] >= baseline * 2]
+    walls.sort(key=lambda entry: entry["value_krw"], reverse=True)
+    return walls[:3]
+
+
+def _build_orderbook_walls(
+    snapshot: market_data_service.OrderbookSnapshot,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if snapshot.instrument_type != "crypto":
+        return [], []
+    return (
+        _build_orderbook_walls_for_side(snapshot.bids),
+        _build_orderbook_walls_for_side(snapshot.asks),
+    )
+
+
 def _build_orderbook_payload(
     snapshot: market_data_service.OrderbookSnapshot,
 ) -> dict[str, Any]:
     pressure = _classify_orderbook_pressure(snapshot.bid_ask_ratio)
     spread, spread_pct = _calculate_orderbook_spread(snapshot)
+    bid_walls, ask_walls = _build_orderbook_walls(snapshot)
     return {
         "symbol": snapshot.symbol,
         "instrument_type": snapshot.instrument_type,
@@ -263,6 +316,8 @@ def _build_orderbook_payload(
         "spread_pct": spread_pct,
         "expected_price": snapshot.expected_price,
         "expected_qty": snapshot.expected_qty,
+        "bid_walls": bid_walls,
+        "ask_walls": ask_walls,
     }
 
 
@@ -738,33 +793,45 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_orderbook",
         description=(
-            "Get 10-level KR equity orderbook with total residual quantities and expected match metadata. "
-            "Only KR market is supported."
+            "Get 10-level orderbook data with total residual quantities and expected match metadata. "
+            "Supports KR equity and KRW crypto markets."
         ),
     )
     async def get_orderbook(symbol: str | int, market: str = "kr") -> dict[str, Any]:
-        symbol = _normalize_symbol_input(symbol, "kr")
-        if not symbol:
-            raise ValueError("symbol is required")
-
         requested_market = str(market or "kr").strip() or "kr"
         market_type = _normalize_market(requested_market)
         if market_type is None:
             raise ValueError(f"Unsupported market: {market}")
-        if market_type != "equity_kr":
-            raise ValueError("get_orderbook only supports KR market")
 
-        _, symbol = _resolve_market_type(symbol, "kr")
+        source = "kis"
+        instrument_type = "equity_kr"
+
+        if market_type == "equity_kr":
+            symbol = _normalize_symbol_input(symbol, "kr")
+            if not symbol:
+                raise ValueError("symbol is required")
+            _, symbol = _resolve_market_type(symbol, "kr")
+        elif market_type == "crypto":
+            symbol = _validate_crypto_orderbook_symbol_input(symbol)
+            source = "upbit"
+            instrument_type = "crypto"
+        else:
+            raise ValueError(
+                "get_orderbook only supports KR equity and KRW crypto markets"
+            )
 
         try:
-            snapshot = await market_data_service.get_orderbook(symbol, "kr")
+            snapshot = await market_data_service.get_orderbook(
+                symbol,
+                "crypto" if market_type == "crypto" else "kr",
+            )
             return _build_orderbook_payload(snapshot)
         except Exception as exc:
             return _error_payload_from_exception(
-                source="kis",
+                source=source,
                 exc=exc,
                 symbol=symbol,
-                instrument_type="equity_kr",
+                instrument_type=instrument_type,
             )
 
     @mcp.tool(

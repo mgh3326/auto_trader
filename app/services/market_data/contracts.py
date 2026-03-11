@@ -35,8 +35,8 @@ class Candle:
 
 @dataclass(slots=True)
 class OrderbookLevel:
-    price: int
-    quantity: int
+    price: float
+    quantity: float
 
 
 @dataclass(slots=True)
@@ -46,8 +46,8 @@ class OrderbookSnapshot:
     source: str
     asks: list[OrderbookLevel]
     bids: list[OrderbookLevel]
-    total_ask_qty: int
-    total_bid_qty: int
+    total_ask_qty: float
+    total_bid_qty: float
     bid_ask_ratio: float | None
     expected_price: int | None = None
     expected_qty: int | None = None
