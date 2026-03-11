@@ -5,12 +5,19 @@ import logging
 from typing import override
 from unittest.mock import AsyncMock
 
+import httpx
 import pandas as pd
 import pytest
 
-from app.services.domain_errors import UpstreamUnavailableError, ValidationError
+from app.services.domain_errors import (
+    RateLimitError,
+    SymbolNotFoundError,
+    UpstreamUnavailableError,
+    ValidationError,
+)
 from app.services.market_data import service as market_data_service
 from app.services.market_data.contracts import Candle, OrderbookLevel, OrderbookSnapshot
+from app.services.upbit_symbol_universe_service import UpbitSymbolUniverseLookupError
 from app.services.us_symbol_universe_service import (
     USSymbolInactiveError,
     USSymbolNotRegisteredError,
@@ -300,6 +307,10 @@ async def test_get_orderbook_parses_kr_snapshot(
         expected_price=70050,
         expected_qty=42,
     )
+    assert type(snapshot.asks[0].price) is int
+    assert type(snapshot.asks[0].quantity) is int
+    assert type(snapshot.total_ask_qty) is int
+    assert type(snapshot.total_bid_qty) is int
 
 
 @pytest.mark.asyncio
@@ -557,10 +568,165 @@ async def test_get_orderbook_returns_none_ratio_when_total_ask_is_zero(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("market", ["us", "crypto"])
-async def test_get_orderbook_rejects_non_kr_markets(market: str) -> None:
-    with pytest.raises(ValueError, match="KR orderbook only supports KR market"):
-        _ = await market_data_service.get_orderbook("005930", market)
+async def test_get_orderbook_parses_crypto_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_orderbook",
+        AsyncMock(
+            return_value={
+                "market": "KRW-BTC",
+                "timestamp": 1730000000,
+                "total_ask_size": 3.75,
+                "total_bid_size": 7.5,
+                "orderbook_units": [
+                    {
+                        "ask_price": 140.1,
+                        "bid_price": 139.9,
+                        "ask_size": 1.25,
+                        "bid_size": 2.5,
+                    }
+                ],
+            }
+        ),
+    )
+
+    snapshot = await market_data_service.get_orderbook("KRW-BTC", "crypto")
+
+    assert snapshot == OrderbookSnapshot(
+        symbol="KRW-BTC",
+        instrument_type="crypto",
+        source="upbit",
+        asks=[OrderbookLevel(price=140.1, quantity=1.25)],
+        bids=[OrderbookLevel(price=139.9, quantity=2.5)],
+        total_ask_qty=3.75,
+        total_bid_qty=7.5,
+        bid_ask_ratio=2.0,
+        expected_price=None,
+        expected_qty=None,
+    )
+    assert type(snapshot.asks[0].price) is float
+    assert type(snapshot.asks[0].quantity) is float
+    assert type(snapshot.total_ask_qty) is float
+    assert type(snapshot.total_bid_qty) is float
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_crypto_returns_none_ratio_when_total_ask_is_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_orderbook",
+        AsyncMock(
+            return_value={
+                "market": "KRW-BTC",
+                "timestamp": 1730000000,
+                "total_ask_size": 0.0,
+                "total_bid_size": 2.0,
+                "orderbook_units": [
+                    {
+                        "ask_price": 10.1,
+                        "bid_price": 10.0,
+                        "ask_size": 0.0,
+                        "bid_size": 2.0,
+                    }
+                ],
+            }
+        ),
+    )
+
+    snapshot = await market_data_service.get_orderbook("KRW-BTC", "crypto")
+
+    assert snapshot.bid_ask_ratio is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("symbol", ["BTC", "USDT-BTC"])
+async def test_get_orderbook_crypto_rejects_non_krw_raw_symbols(symbol: str) -> None:
+    with pytest.raises(
+        ValueError, match=r"crypto orderbook only supports KRW-\* symbols"
+    ):
+        await market_data_service.get_orderbook(symbol, "crypto")
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_crypto_maps_empty_response_to_symbol_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_orderbook",
+        AsyncMock(return_value={}),
+    )
+
+    with pytest.raises(SymbolNotFoundError, match="Symbol 'KRW-BTC' not found"):
+        await market_data_service.get_orderbook("KRW-BTC", "crypto")
+
+
+def _make_http_status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://api.upbit.com/v1/orderbook?markets=KRW-BTC")
+    response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError(
+        f"HTTP {status_code}",
+        request=request,
+        response=response,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [418, 429])
+async def test_get_orderbook_crypto_maps_rate_limit_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_orderbook",
+        AsyncMock(side_effect=_make_http_status_error(status_code)),
+    )
+
+    with pytest.raises(RateLimitError, match=f"HTTP {status_code}"):
+        await market_data_service.get_orderbook("KRW-BTC", "crypto")
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_crypto_preserves_upbit_lookup_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_orderbook",
+        AsyncMock(side_effect=UpbitSymbolUniverseLookupError("sync required")),
+    )
+
+    with pytest.raises(UpbitSymbolUniverseLookupError, match="sync required"):
+        await market_data_service.get_orderbook("KRW-BTC", "crypto")
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_crypto_maps_provider_value_error_to_upstream_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        market_data_service,
+        "fetch_orderbook",
+        AsyncMock(side_effect=ValueError("malformed provider payload")),
+    )
+
+    with pytest.raises(UpstreamUnavailableError, match="malformed provider payload"):
+        await market_data_service.get_orderbook("KRW-BTC", "crypto")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["us"])
+async def test_get_orderbook_rejects_unsupported_markets(market: str) -> None:
+    with pytest.raises(
+        ValueError,
+        match="get_orderbook only supports KR equity and KRW crypto markets",
+    ):
+        await market_data_service.get_orderbook("005930", market)
 
 
 @pytest.mark.asyncio

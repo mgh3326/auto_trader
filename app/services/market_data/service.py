@@ -4,6 +4,7 @@ import datetime as dt
 import logging
 from typing import Any
 
+import httpx
 import pandas as pd
 
 from app.core.async_rate_limiter import RateLimitExceededError
@@ -32,6 +33,8 @@ from app.services.market_data.contracts import (
     OrderbookSnapshot,
     Quote,
 )
+from app.services.upbit_orderbook import fetch_orderbook
+from app.services.upbit_symbol_universe_service import UpbitSymbolUniverseLookupError
 from app.services.us_intraday_candles_read_service import read_us_intraday_candles
 from app.services.us_symbol_universe_service import USSymbolUniverseLookupError
 
@@ -121,16 +124,33 @@ def _map_error(exc: Exception) -> Exception:
             SymbolNotFoundError,
             RateLimitError,
             UpstreamUnavailableError,
+            UpbitSymbolUniverseLookupError,
             USSymbolUniverseLookupError,
         ),
     ):
         return exc
     if isinstance(exc, RateLimitExceededError):
         return RateLimitError(str(exc))
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {
+        418,
+        429,
+    }:
+        return RateLimitError(str(exc))
+    if isinstance(exc, (httpx.HTTPStatusError, httpx.RequestError)):
+        return UpstreamUnavailableError(str(exc))
     text = str(exc)
     if "not found" in text.lower() or "no data" in text.lower():
         return SymbolNotFoundError(text)
     return UpstreamUnavailableError(text)
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _to_int(value: Any, default: int = 0) -> int:
@@ -149,6 +169,15 @@ def _to_optional_int(value: Any) -> int | None:
         return int(float(value))
     except (TypeError, ValueError):
         return None
+
+
+def _validate_crypto_orderbook_symbol(symbol: str) -> str:
+    value = str(symbol or "").strip().upper()
+    if not value:
+        raise ValidationError("symbol is required")
+    if not value.startswith("KRW-"):
+        raise ValueError("crypto orderbook only supports KRW-* symbols")
+    return value
 
 
 def _current_kst_datetime() -> dt.datetime:
@@ -234,6 +263,26 @@ def _parse_orderbook_levels(
         if quantity is None:
             quantity = output.get(f"{prefix}p{idx}_rsqn")
         levels.append(OrderbookLevel(price=price, quantity=_to_int(quantity)))
+    return levels
+
+
+def _parse_upbit_orderbook_levels(
+    orderbook_units: list[dict[str, Any]],
+    *,
+    side: str,
+) -> list[OrderbookLevel]:
+    price_key = f"{side}_price"
+    size_key = f"{side}_size"
+    levels: list[OrderbookLevel] = []
+    for unit in orderbook_units:
+        if not isinstance(unit, dict):
+            continue
+        price = _to_float(unit.get(price_key))
+        if price <= 0:
+            continue
+        levels.append(
+            OrderbookLevel(price=price, quantity=_to_float(unit.get(size_key)))
+        )
     return levels
 
 
@@ -329,8 +378,44 @@ async def get_quote(symbol: str, market: str) -> Quote:
 
 async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
     resolved_market = _normalize_market(market)
+    if resolved_market == "crypto":
+        resolved_symbol = _validate_crypto_orderbook_symbol(symbol)
+        try:
+            raw = await fetch_orderbook(resolved_symbol)
+            if not raw:
+                raise SymbolNotFoundError(f"Symbol '{resolved_symbol}' not found")
+
+            total_ask_qty = _to_float(raw.get("total_ask_size"))
+            total_bid_qty = _to_float(raw.get("total_bid_size"))
+            return OrderbookSnapshot(
+                symbol=resolved_symbol,
+                instrument_type="crypto",
+                source="upbit",
+                asks=_parse_upbit_orderbook_levels(
+                    raw.get("orderbook_units", []),
+                    side="ask",
+                ),
+                bids=_parse_upbit_orderbook_levels(
+                    raw.get("orderbook_units", []),
+                    side="bid",
+                ),
+                total_ask_qty=total_ask_qty,
+                total_bid_qty=total_bid_qty,
+                bid_ask_ratio=(
+                    round(total_bid_qty / total_ask_qty, 2)
+                    if total_ask_qty > 0
+                    else None
+                ),
+                expected_price=None,
+                expected_qty=None,
+            )
+        except Exception as exc:
+            raise _map_error(exc) from exc
+
     if resolved_market != "equity_kr":
-        raise ValueError("KR orderbook only supports KR market")
+        raise ValueError(
+            "get_orderbook only supports KR equity and KRW crypto markets"
+        )
     resolved_symbol = _normalize_symbol(symbol, resolved_market)
 
     try:
@@ -359,8 +444,6 @@ async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
             expected_price=expected_price,
             expected_qty=expected_qty,
         )
-    except ValueError:
-        raise
     except Exception as exc:
         raise _map_error(exc) from exc
 

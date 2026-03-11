@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.services.domain_errors import RateLimitError
 from app.services.market_data.contracts import OrderbookLevel, OrderbookSnapshot
 from tests._mcp_tooling_support import build_tools
 
@@ -56,7 +57,83 @@ async def test_get_orderbook_returns_kr_payload(
         "spread_pct": 0.143,
         "expected_price": 70050,
         "expected_qty": 42,
+        "bid_walls": [],
+        "ask_walls": [],
     }
+    assert type(result["asks"][0]["price"]) is int
+    assert type(result["asks"][0]["quantity"]) is int
+    assert type(result["total_ask_qty"]) is int
+    assert type(result["spread"]) is int
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_returns_crypto_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    get_orderbook_mock = AsyncMock(
+        return_value=_make_snapshot(
+            symbol="KRW-BTC",
+            instrument_type="crypto",
+            source="upbit",
+            asks=[
+                OrderbookLevel(price=10.5, quantity=1.0),
+                OrderbookLevel(price=11.0, quantity=5.0),
+                OrderbookLevel(price=12.0, quantity=1.0),
+            ],
+            bids=[
+                OrderbookLevel(price=10.0, quantity=1.0),
+                OrderbookLevel(price=9.5, quantity=5.0),
+                OrderbookLevel(price=9.0, quantity=1.0),
+            ],
+            total_ask_qty=7.0,
+            total_bid_qty=7.0,
+            bid_ask_ratio=1.0,
+            expected_price=None,
+            expected_qty=None,
+        )
+    )
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        get_orderbook_mock,
+    )
+    tools = build_tools()
+
+    result = await tools["get_orderbook"]("KRW-BTC", market="crypto")
+
+    get_orderbook_mock.assert_awaited_once_with("KRW-BTC", "crypto")
+    assert result == {
+        "symbol": "KRW-BTC",
+        "instrument_type": "crypto",
+        "source": "upbit",
+        "asks": [
+            {"price": 10.5, "quantity": 1.0},
+            {"price": 11.0, "quantity": 5.0},
+            {"price": 12.0, "quantity": 1.0},
+        ],
+        "bids": [
+            {"price": 10.0, "quantity": 1.0},
+            {"price": 9.5, "quantity": 5.0},
+            {"price": 9.0, "quantity": 1.0},
+        ],
+        "total_ask_qty": 7.0,
+        "total_bid_qty": 7.0,
+        "bid_ask_ratio": 1.0,
+        "pressure": "neutral",
+        "pressure_desc": "매수/매도 잔량이 균형권 - 중립",
+        "spread": 0.5,
+        "spread_pct": 5.0,
+        "expected_price": None,
+        "expected_qty": None,
+        "bid_walls": [{"price": 9.5, "size": 5.0, "value_krw": 48}],
+        "ask_walls": [{"price": 11.0, "size": 5.0, "value_krw": 55}],
+    }
+    assert type(result["asks"][0]["price"]) is float
+    assert type(result["asks"][0]["quantity"]) is float
+    assert type(result["total_ask_qty"]) is float
+    assert type(result["spread"]) is float
 
 
 @pytest.mark.asyncio
@@ -163,6 +240,8 @@ async def test_get_orderbook_preserves_null_expected_qty_in_payload(
         "spread_pct": 0.143,
         "expected_price": 70050,
         "expected_qty": None,
+        "bid_walls": [],
+        "ask_walls": [],
     }
 
 
@@ -226,6 +305,78 @@ async def test_get_orderbook_returns_error_payload_on_kis_failure(
 
 
 @pytest.mark.asyncio
+async def test_get_orderbook_returns_crypto_error_payload_on_upstream_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(side_effect=RateLimitError("slow down")),
+    )
+    tools = build_tools()
+
+    result = await tools["get_orderbook"]("KRW-BTC", market="crypto")
+
+    assert result["error"] == "slow down"
+    assert result["source"] == "upbit"
+    assert result["symbol"] == "KRW-BTC"
+    assert result["instrument_type"] == "crypto"
+    assert result["error_type"] == "RateLimitError"
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_detects_walls_using_side_median_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(
+            return_value=_make_snapshot(
+                symbol="KRW-BTC",
+                instrument_type="crypto",
+                source="upbit",
+                asks=[
+                    OrderbookLevel(price=100.0, quantity=1.0),
+                    OrderbookLevel(price=101.0, quantity=1.0),
+                    OrderbookLevel(price=104.0, quantity=1.0),
+                    OrderbookLevel(price=102.0, quantity=5.0),
+                    OrderbookLevel(price=103.0, quantity=6.0),
+                ],
+                bids=[
+                    OrderbookLevel(price=99.0, quantity=1.0),
+                    OrderbookLevel(price=98.0, quantity=3.0),
+                    OrderbookLevel(price=97.0, quantity=1.0),
+                    OrderbookLevel(price=95.0, quantity=1.0),
+                    OrderbookLevel(price=96.0, quantity=5.0),
+                ],
+                total_ask_qty=14.0,
+                total_bid_qty=11.0,
+                bid_ask_ratio=0.79,
+                expected_price=None,
+                expected_qty=None,
+            )
+        ),
+    )
+    tools = build_tools()
+
+    result = await tools["get_orderbook"]("KRW-BTC", market="crypto")
+
+    assert result["ask_walls"] == [
+        {"price": 103.0, "size": 6.0, "value_krw": 618},
+        {"price": 102.0, "size": 5.0, "value_krw": 510},
+    ]
+    assert result["bid_walls"] == [
+        {"price": 96.0, "size": 5.0, "value_krw": 480},
+        {"price": 98.0, "size": 3.0, "value_krw": 294},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_orderbook_raises_on_invalid_input() -> None:
     tools = build_tools()
 
@@ -237,5 +388,18 @@ async def test_get_orderbook_raises_on_invalid_input() -> None:
     ):
         await tools["get_orderbook"]("AAPL", market="kr")
 
-    with pytest.raises(ValueError, match="get_orderbook only supports KR market"):
+    with pytest.raises(
+        ValueError,
+        match="get_orderbook only supports KR equity and KRW crypto markets",
+    ):
         await tools["get_orderbook"]("005930", market="us")
+
+    with pytest.raises(
+        ValueError, match=r"crypto orderbook only supports KRW-\* symbols"
+    ):
+        await tools["get_orderbook"]("BTC", market="crypto")
+
+    with pytest.raises(
+        ValueError, match=r"crypto orderbook only supports KRW-\* symbols"
+    ):
+        await tools["get_orderbook"]("USDT-BTC", market="crypto")

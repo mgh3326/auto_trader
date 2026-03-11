@@ -72,18 +72,20 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
 ### `get_orderbook` spec
 Parameters:
-- `symbol`: KR equity symbol/code (required)
-- `market`: KR market alias only (`"kr"`, `"kospi"`, `"kosdaq"`, `"korea"`, `"kis"`, `"equity_kr"`); default `"kr"`
+- `symbol`: KR equity symbol/code or Upbit market code (required)
+- `market`: defaults to `"kr"`; supports KR aliases (`"kr"`, `"kospi"`, `"kosdaq"`, `"korea"`, `"kis"`, `"equity_kr"`) plus crypto aliases (`"crypto"`, `"upbit"`)
 
 Behavior:
-- Only KR equity orderbook is supported in v1; `market="us"` or `market="crypto"` raises an argument error
-- Symbol normalization follows the KR quote path, including zero-padding numeric codes such as `5930 -> 005930`
-- Valid KR requests use KIS `inquire-asking-price-exp-ccn` and return 10-level asks/bids, total residual quantities, and expected match metadata
+- KR requests follow the existing KR quote normalization path, including zero-padding numeric codes such as `5930 -> 005930`
+- Crypto orderbook requests require explicit `market="crypto"` (or `"upbit"`) and a raw `KRW-*` symbol such as `KRW-BTC`; plain coins (`BTC`) and non-KRW crypto pairs (`USDT-BTC`) raise an argument error
+- Valid KR requests use KIS `inquire-asking-price-exp-ccn` and return 10-level asks/bids, total residual quantities, expected match metadata, and integer-valued `price`, `quantity`, `total_ask_qty`, `total_bid_qty`, and `spread`
+- Valid crypto requests use Upbit orderbook data and return the same shared snapshot fields, but `price`, `quantity`, `total_ask_qty`, `total_bid_qty`, and `spread` can be fractional numbers
 - `expected_qty` keeps the public `int | null` contract; when KIS leaves `output2.antc_cnqn` blank or omits it, the response serializes `expected_qty` as `null` instead of inventing a fallback quantity
 - During the NXT session (`16:00`-`20:00` KST), KIS may return `expected_price` while leaving `expected_qty` blank or absent; this is treated as a valid upstream state, not an MCP error
-- Successful responses also include MCP-only derived fields: `pressure`, `pressure_desc`, `spread`, and `spread_pct`
-- Successful responses include `source: "kis"` and `instrument_type: "equity_kr"`
-- Invalid input raises; upstream KIS failures for otherwise valid KR requests return in-band error payloads via the shared MCP error contract
+- Successful responses always include MCP-only derived fields: `pressure`, `pressure_desc`, `spread`, `spread_pct`, `bid_walls`, and `ask_walls`
+- Successful KR responses use `source: "kis"`, `instrument_type: "equity_kr"`, and return `bid_walls: []`, `ask_walls: []`
+- Successful crypto responses use `source: "upbit"`, `instrument_type: "crypto"`, and may return non-empty wall arrays
+- Invalid input raises; upstream failures for otherwise valid requests return an in-band error payload via the shared MCP error contract. When the underlying exception is a `DomainServiceError`, the payload may also include `error_type`
 
 Response format:
 ```json
@@ -101,7 +103,9 @@ Response format:
   "spread": 100,
   "spread_pct": 0.143,
   "expected_price": 70050,
-  "expected_qty": null
+  "expected_qty": null,
+  "bid_walls": [],
+  "ask_walls": []
 }
 ```
 
@@ -116,8 +120,9 @@ Derived fields:
   - `ratio < 0.5` -> `strong_sell`
 - `pressure_desc` is a Korean interpretation string. `strong_buy`/`buy` use `total_bid_qty / total_ask_qty`, `strong_sell`/`sell` use `total_ask_qty / total_bid_qty`, and `neutral` is always `"매수/매도 잔량이 균형권 - 중립"`
 - If `bid_ask_ratio` is `null`, both `pressure` and `pressure_desc` are `null`
-- `spread` is `asks[0].price - bids[0].price` when both best levels exist; otherwise it is `null`
+- `spread` is `asks[0].price - bids[0].price` when both best levels exist; otherwise it is `null` (integer-valued for KR, fractional-capable for crypto)
 - `spread_pct` is `(spread / bids[0].price) * 100`, rounded to 3 decimal places, and becomes `null` when the best bid is missing or `<= 0`
+- `bid_walls` / `ask_walls` are MCP-only convenience fields. They are calculated only for crypto orderbooks by taking each side's `value_krw = round(price * quantity)`, using the side median as the baseline, selecting levels where `value_krw >= baseline * 2`, sorting by `value_krw` descending, and returning up to 3 entries shaped as `{price, size, value_krw}`
 
 ### KR order routing
 - Domestic order tools (`place_order`, `modify_order`, `cancel_order` with `market="kr"`) use the new KIS TR IDs (`TTTC0012U/TTTC0011U/TTTC0013U`, mock: `VTTC0012U/VTTC0011U/VTTC0013U`).
@@ -671,4 +676,3 @@ docker compose -f docker-compose.prod.yml up -d mcp
 ```
 
 > Note: current prod compose uses `network_mode: host`, so port publishing is handled by the host network.
-
