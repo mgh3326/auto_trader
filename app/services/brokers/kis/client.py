@@ -1,6 +1,7 @@
 # pyright: reportAttributeAccessIssue=false, reportImplicitOverride=false, reportPrivateUsage=false
 from __future__ import annotations
 
+import datetime
 from typing import Any, cast
 
 import pandas as pd
@@ -121,6 +122,20 @@ class KISClient(BaseKISClient):
     ) -> pd.DataFrame:
         return await self._market_data.inquire_daily_itemchartprice(
             code, market, n, adj, period, end_date, per_call_days
+        )
+
+    async def inquire_short_selling(
+        self,
+        code: str,
+        start_date: datetime.date,
+        end_date: datetime.date,
+        market: str = "J",
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        return await self._market_data.inquire_short_selling(
+            code,
+            start_date,
+            end_date,
+            market,
         )
 
     async def inquire_time_dailychartprice(

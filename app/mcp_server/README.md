@@ -55,6 +55,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR intraday degrades to DB-backed partial data when recent KIS minute overlay calls fail
   - KR intraday response rows add `session` and `venues` fields
 - `get_indicators(symbol, indicators, market=None)`
+- `get_investment_opinions(symbol, limit=10, market=None)`
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50)`
 - `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None)`
@@ -63,6 +64,11 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `manage_watch_alerts(action, market=None, symbol=None, metric=None, operator=None, threshold=None)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
+- `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
+  - Analyze multiple symbols in parallel and return compact per-symbol summaries
+  - Default `quick=True` returns compact summary with: symbol, current_price, rsi_14, consensus, recommendation, supports (top 3), resistances (top 3)
+  - Set `quick=False` for full analysis payload (like `analyze_portfolio`)
+  - Example: `analyze_stock_batch(symbols=["NVDA", "AMZN", "MSFT", "GOOGL"], market="us")`
 
 ### `get_orderbook` spec
 Parameters:
@@ -74,6 +80,8 @@ Behavior:
 - Crypto orderbook requests require explicit `market="crypto"` (or `"upbit"`) and a raw `KRW-*` symbol such as `KRW-BTC`; plain coins (`BTC`) and non-KRW crypto pairs (`USDT-BTC`) raise an argument error
 - Valid KR requests use KIS `inquire-asking-price-exp-ccn` and return 10-level asks/bids, total residual quantities, expected match metadata, and integer-valued `price`, `quantity`, `total_ask_qty`, `total_bid_qty`, and `spread`
 - Valid crypto requests use Upbit orderbook data and return the same shared snapshot fields, but `price`, `quantity`, `total_ask_qty`, `total_bid_qty`, and `spread` can be fractional numbers
+- `expected_qty` keeps the public `int | null` contract; when KIS leaves `output2.antc_cnqn` blank or omits it, the response serializes `expected_qty` as `null` instead of inventing a fallback quantity
+- During the NXT session (`16:00`-`20:00` KST), KIS may return `expected_price` while leaving `expected_qty` blank or absent; this is treated as a valid upstream state, not an MCP error
 - Successful responses always include MCP-only derived fields: `pressure`, `pressure_desc`, `spread`, `spread_pct`, `bid_walls`, and `ask_walls`
 - Successful KR responses use `source: "kis"`, `instrument_type: "equity_kr"`, and return `bid_walls: []`, `ask_walls: []`
 - Successful crypto responses use `source: "upbit"`, `instrument_type: "crypto"`, and may return non-empty wall arrays
@@ -95,11 +103,13 @@ Response format:
   "spread": 100,
   "spread_pct": 0.143,
   "expected_price": 70050,
-  "expected_qty": 42,
+  "expected_qty": null,
   "bid_walls": [],
   "ask_walls": []
 }
 ```
+
+`expected_qty: null` means KIS did not provide `antc_cnqn`; it does not by itself indicate a tool failure.
 
 Derived fields:
 - `pressure` is derived from `bid_ask_ratio` using fixed inclusive boundaries:
@@ -159,6 +169,17 @@ Examples:
 - Allowed: `symbol="KRW-ETC"` (market omitted)
 - Rejected: `symbol="ETC"` (market omitted)
 
+### `analyze_stock` spec
+
+Parameters:
+- `symbol`: Asset symbol/ticker/code (required; string or int accepted)
+- `market`: Market - `"kr"`, `"us"`, `"crypto"` (optional, inferred from symbol if omitted)
+- `include_peers`: Whether to include sector peer analysis for KR/US equities (default: false; ignored for crypto)
+
+Response notes:
+- Equity responses (KR/US markets) include `recommendation.rsi14` when RSI(14) is available from the indicator payload
+- This field provides a convenient summary; callers should continue to use `get_indicators` when they need the full indicator set rather than the summarized recommendation field
+
 ### `get_correlation` spec
 Parameters:
 - `symbols`: List of asset ticker/code inputs (required, 2-10 entries)
@@ -170,6 +191,52 @@ Symbol contract:
 - Company-name inputs such as `삼성전자` or `Apple Inc.` are rejected with:
   - `"get_correlation does not support company-name inputs because it has no market parameter. Use ticker/code inputs directly."`
 - When at least 2 ticker/code inputs resolve and fetch successfully, the tool still returns a correlation matrix and includes failed symbols in `errors`.
+
+### `get_disclosures` spec
+Parameters:
+- `symbol`: Korean corporation lookup input (required)
+- `days`: Lookback window in days (default: 30)
+- `limit`: Maximum filings to return (default: 20)
+- `report_type`: Optional Korean disclosure group (`정기`, `주요사항`, `발행`, `지분`, `기타`)
+
+Symbol contract:
+- Direct 6-digit KR stock codes such as `005930` are passed through to OpenDartReader as-is.
+- Korean company names such as `삼성전자` are supported on a best-effort basis through OpenDartReader's exact-name corp lookup.
+- Blank or whitespace-only `symbol` inputs are rejected with an explicit in-band error payload (`success: false`, `error: "symbol is required"`, `filings: []`, `symbol: ""`).
+- Company-name inputs that OpenDartReader cannot resolve return an explicit in-band error payload with `success: false`; they do not silently degrade to an empty `filings` list.
+
+Behavior:
+- `report_type` maps internally to DART disclosure kinds: `정기 -> A`, `주요사항 -> B`, `발행 -> C`, `지분 -> D`, `기타 -> E`.
+- Unsupported `report_type` inputs return `success: false` instead of silently broadening the query.
+- Successful responses return the existing `filings` list shape with `date`, `report_nm`, `rcp_no`, and `corp_name`.
+- An empty DataFrame from OpenDartReader is treated as a successful lookup with `filings: []`.
+- The first process-local client initialization still downloads the OpenDART corp-code cache, so cold-start latency can be higher than warm calls.
+
+Error payload:
+- Failure responses include `success`, `error`, `filings`, and `symbol`.
+
+### `get_investment_opinions` spec
+Parameters:
+- `symbol`: Asset ticker/code input (required)
+- `limit`: Maximum detailed opinion rows to return (default: 10)
+- `market`: Optional explicit market (`kr`, `us`)
+
+Behavior:
+- KR requests keep the existing Naver Finance path and return recent analyst opinions plus consensus statistics.
+- US requests use yfinance and keep the public top-level shape: `symbol`, `count`, `opinions`, `consensus`, plus optional `warning`.
+- US `opinions` remains the recent Yahoo `upgrades_downgrades` event list (firm/rating/date plus row-level `target_price` when Yahoo provides one).
+- US top-level `count` remains `len(opinions)`; it does **not** represent aggregate analyst coverage.
+- US `consensus.total_count` is the aggregate analyst coverage count from the current Yahoo `recommendationTrend` / `ticker.recommendations` row (`period="0m"` preferred).
+- US aggregate count mapping is:
+  - `buy_count = strongBuy + buy`
+  - `hold_count = hold`
+  - `sell_count = sell + strongSell`
+  - `strong_buy_count = strongBuy`
+  - `total_count = strongBuy + buy + hold + sell + strongSell`
+- US target statistics (`avg_target_price`, `median_target_price`, `min_target_price`, `max_target_price`, `current_price`, `upside_pct`) come from Yahoo `analyst_price_targets` after numeric normalization.
+- US target normalization accepts Yahoo raw dicts such as `{raw, fmt}`, plain numbers, and pandas/numpy scalars; `0`, negative, empty, and non-numeric placeholders are treated as unavailable.
+- When Yahoo analyst counts or target statistics are unavailable, the corresponding US `consensus` fields are returned as `null` instead of fabricated zeroes.
+- When Yahoo provides neither usable aggregate counts nor usable analyst target data, the US response includes a top-level `warning`.
 
 ### `manage_watch_alerts` spec
 Parameters:
@@ -230,13 +297,16 @@ Parameters:
 - `market`: Market to screen - "kr", "us", "crypto" (default: "kr")
 - `asset_type`: Asset type - "stock", "etf", "etn" (only applicable to KR, default: None)
 - `category`: Category filter - ETF categories for KR, sector for US (default: None)
+- `sector`: Sector filter for KR/US stocks (default: None). Not supported for crypto or KR ETF/ETN requests
 - `sort_by`: Sort criteria - "volume", "trade_amount", "market_cap", "change_rate", "dividend_yield", "rsi" (default: crypto="rsi", KR/US="volume")
 - `sort_order`: Sort order - "asc" or "desc" (default: "desc")
 - `min_market_cap`: Minimum market cap (억원 for KR, USD for US; not supported for crypto)
 - `max_per`: Maximum P/E ratio filter (not applicable to crypto)
 - `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
+- `min_dividend`: Alias for `min_dividend_yield`. Accepts same format. If both specified, they must be equal
+- `min_analyst_buy`: Minimum analyst buy count filter (default: None). Only supported for KR/US stocks (not ETF/ETN)
 - `max_rsi`: Maximum RSI filter 0-100 (not applicable to sorting by dividend_yield in crypto)
-- `limit`: Maximum results 1-50 (default: 20)
+- `limit`: Maximum results 1-100 (default: 50)
 
 Market-specific behavior:
 - **KR market**:
@@ -269,6 +339,14 @@ Market-specific behavior:
   - Crypto response payload does not include `volume`; use `trade_amount_24h`
   - `market_cap` sorting is supported; public `market_cap` prefers CoinGecko cache values and falls back to TradingView `MARKET_CAP`, and final ordering uses that public value without silently falling back to `trade_amount_24h`
   - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
+  - `min_market_cap` filter is not supported; crypto responses return a warning that it was ignored
+  - `sector` and `min_analyst_buy` filters are not supported for crypto - returns error
+
+Filter compatibility and error semantics:
+- `sector` filter: Supported for KR/US stocks only. Returns error for crypto or KR ETF/ETN requests
+- `min_analyst_buy` filter: Supported for KR/US stocks only (not ETF/ETN). Returns error for crypto or non-stock asset types
+- `min_dividend` / `min_dividend_yield`: These are aliases. Accepts decimal (0.03) or percentage (3.0) formats. If both are specified with different values, returns error. Not supported for crypto
+- `category` and `sector`: These are aliases for US market. If both are specified with different values, returns error
   - `min_market_cap` filter is not supported; crypto responses return a warning that it was ignored
 
 #### Crypto Composite Score Formula (`recommend_stocks`)
@@ -337,6 +415,13 @@ Response format:
       "dividend_yield": 0.03,
       "rsi": 45.5,
       "adx": 23.1,
+      "sector": "Technology",  // Industry sector (can be null for some stocks)
+      "analyst_buy": 15,  // Number of analyst buy ratings (default: 0)
+      "analyst_hold": 3,  // Number of analyst hold ratings (default: 0)
+      "analyst_sell": 2,  // Number of analyst sell ratings (default: 0)
+      "avg_target": 85000.0,  // Average analyst target price (can be null)
+      "upside_pct": 6.25,  // Upside percentage based on analyst targets (can be null)
+      "market": "kr"
       "market": "kr"
     }
   ],
@@ -344,6 +429,16 @@ Response format:
   "returned_count": 20,  // Actual number of results returned (after limit)
   "filters_applied": {
     "market": "kr",
+    "asset_type": "stock",
+    "sector": "Technology",  // Applied sector filter (if specified)
+    "min_market_cap": 100000,
+    "max_per": 20,
+    "min_dividend_yield": 0.03,
+    "min_dividend_yield_input": 3.0,
+    "min_dividend_yield_normalized": 0.03,
+    "min_dividend_input": 3.0,  // Original min_dividend value if specified
+    "min_analyst_buy": 5,  // Applied minimum analyst buy count filter
+    "max_rsi": 70
     "asset_type": "stock",
     "min_market_cap": 100000,
     "max_per": 20,

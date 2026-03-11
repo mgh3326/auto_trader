@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+from collections.abc import Callable
 from typing import Any, Literal
 
 import httpx
@@ -18,6 +19,7 @@ from app.mcp_server.tooling import analysis_screening
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
+from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
 from app.mcp_server.tooling.shared import (
     is_crypto_market as _is_crypto_market,
 )
@@ -60,41 +62,10 @@ def _resolve_correlation_symbol_input(symbol: str | int) -> tuple[str, str]:
     return analysis_screening._resolve_market_type(normalized_symbol, None)
 
 
-name_to_corp_map: dict[str, Any]
-prime_index: Any | None
-
 try:
     from app.services.disclosures.dart import list_filings
 except ImportError:
     list_filings = None
-
-try:
-    from data.disclosures.dart_corp_index import (
-        NAME_TO_CORP as _NAME_TO_CORP,
-    )
-    from data.disclosures.dart_corp_index import (
-        prime_index as _prime_index,
-    )
-
-    name_to_corp_map = _NAME_TO_CORP
-    prime_index = _prime_index
-except ImportError:
-    name_to_corp_map = {}
-    prime_index = None
-
-
-async def get_stock_name_by_code(code: str) -> str | None:
-    try:
-        from app.services.krx import get_stock_name_by_code as _get_stock_name_by_code
-
-        return await _get_stock_name_by_code(code)
-    except Exception as exc:
-        logger.debug(
-            "Failed to resolve stock code to Korean name: code=%s, error=%s",
-            code,
-            exc,
-        )
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -233,49 +204,18 @@ async def get_disclosures_impl(
     if list_filings is None:
         return {
             "success": False,
-            "error": "DART functionality not available (dart_fss package not installed)",
+            "error": "DART functionality not available",
+            "filings": [],
+            "symbol": symbol,
         }
 
-    korean_name = symbol.strip()
-
-    if korean_name.isdigit():
-        try:
-            resolved_name = await get_stock_name_by_code(korean_name)
-            if resolved_name:
-                korean_name = resolved_name
-        except Exception as exc:
-            logger.debug(
-                "Stock code conversion raised unexpected error: symbol=%s, error=%s",
-                symbol,
-                exc,
-            )
-            pass
-
-    if not name_to_corp_map:
-        if prime_index is None:
-            return {
-                "success": False,
-                "error": "DART index not available",
-                "symbol": symbol,
-            }
-        try:
-            await prime_index()
-        except Exception as exc:
-            return {
-                "success": False,
-                "error": f"Failed to prime DART index: {exc}",
-                "symbol": symbol,
-            }
-
     try:
-        result = await list_filings(korean_name, days, limit, report_type)
-        if isinstance(result, list):
-            return {"success": True, "filings": result}
-        return result
+        return await list_filings(symbol, days, limit, report_type)
     except Exception as exc:
         return {
             "success": False,
             "error": str(exc),
+            "filings": [],
             "symbol": symbol,
         }
 
@@ -429,11 +369,27 @@ async def analyze_stock_impl(
     return result
 
 
-async def analyze_portfolio_impl(
+async def _run_batch_analysis(
     symbols: list[str | int],
-    market: str | None = None,
-    include_peers: bool = False,
+    *,
+    market: str | None,
+    include_peers: bool,
+    formatter: Callable[[str, dict[str, Any]], dict[str, Any]],
 ) -> dict[str, Any]:
+    """Shared batch analysis executor for portfolio and stock batch analysis.
+
+    Args:
+        symbols: List of symbol inputs (1-10 entries)
+        market: Optional market override
+        include_peers: Whether to include peer analysis
+        formatter: Callable that receives (normalized_symbol, analysis_result) and returns formatted result
+
+    Returns:
+        Dict with 'results' (symbol -> formatted_result) and 'summary' keys
+
+    Raises:
+        ValueError: If symbols list is empty or exceeds 10 entries
+    """
     if not symbols:
         raise ValueError("symbols must contain at least one entry")
 
@@ -467,7 +423,8 @@ async def analyze_portfolio_impl(
     success_count = 0
     fail_count = 0
     for sym, result in zip(normalized_symbols, analyze_results, strict=True):
-        results[sym] = result
+        formatted_result = formatter(sym, result)
+        results[sym] = formatted_result
         if "error" not in result:
             success_count += 1
         else:
@@ -484,10 +441,84 @@ async def analyze_portfolio_impl(
     }
 
 
+def _summarize_analysis_result(
+    symbol: str,
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    """Convert full analysis into compact summary for batch responses."""
+    # If result is an error, pass through unchanged
+    if "error" in analysis:
+        return analysis
+
+    quote = analysis.get("quote") or {}
+    indicators = (analysis.get("indicators") or {}).get("indicators", {})
+    rsi = (indicators.get("rsi") or {}).get("14")
+    sr = analysis.get("support_resistance") or {}
+
+    return {
+        "symbol": symbol,
+        "market_type": analysis.get("market_type"),
+        "source": analysis.get("source"),
+        "current_price": quote.get("price") or quote.get("current_price"),
+        "rsi_14": rsi,
+        "consensus": ((analysis.get("opinions") or {}).get("consensus")),
+        "recommendation": analysis.get("recommendation"),
+        "supports": (sr.get("supports") or [])[:3],
+        "resistances": (sr.get("resistances") or [])[:3],
+    }
+
+
+async def analyze_stock_batch_impl(
+    symbols: list[str | int],
+    market: str | None = None,
+    include_peers: bool = False,
+    quick: bool = True,
+) -> dict[str, Any]:
+    """Analyze multiple symbols and return compact per-symbol summaries.
+    Args:
+        symbols: List of symbol inputs (1-10 entries)
+        market: Optional market override
+        include_peers: Whether to include peer analysis
+        quick: If True, return compact summary; if False, return full analysis
+    Returns:
+        Dict with 'results' (symbol -> summary) and 'summary' keys
+    """
+    formatter = _summarize_analysis_result if quick else (lambda _sym, result: result)
+    return await _run_batch_analysis(
+        symbols,
+        market=market,
+        include_peers=include_peers,
+        formatter=formatter,
+    )
+
+async def analyze_portfolio_impl(
+    symbols: list[str | int],
+    market: str | None = None,
+    include_peers: bool = False,
+) -> dict[str, Any]:
+    """Analyze a portfolio of symbols.
+
+    Args:
+        symbols: List of symbol inputs (1-10 entries)
+        market: Optional market override
+        include_peers: Whether to include peer analysis
+
+    Returns:
+        Dict with 'results' (symbol -> analysis_result) and 'summary' keys
+    """
+    return await _run_batch_analysis(
+        symbols,
+        market=market,
+        include_peers=include_peers,
+        formatter=lambda _sym, result: result,
+    )
+
+
 async def screen_stocks_impl(
     market: Literal["kr", "kospi", "kosdaq", "us", "crypto"] = "kr",
     asset_type: Literal["stock", "etf", "etn"] | None = None,
     category: str | None = None,
+    sector: str | None = None,
     strategy: str | None = None,
     sort_by: Literal[
         "volume",
@@ -503,8 +534,10 @@ async def screen_stocks_impl(
     max_per: float | None = None,
     max_pbr: float | None = None,
     min_dividend_yield: float | None = None,
+    min_dividend: float | None = None,
+    min_analyst_buy: float | None = None,
     max_rsi: float | None = None,
-    limit: int = 20,
+    limit: int = 50,
 ) -> dict[str, Any]:
     sort_by_specified = sort_by is not None
     strategy_applied = False
@@ -525,6 +558,24 @@ async def screen_stocks_impl(
         sort_order = preset.get("sort_order", sort_order)
         if max_rsi is None and "max_rsi" in preset:
             max_rsi = preset["max_rsi"]
+
+    normalized_request = normalize_screen_request(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sector=sector,
+        strategy=strategy,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        max_pbr=max_pbr,
+        min_dividend_yield=min_dividend_yield,
+        min_dividend=min_dividend,
+        min_analyst_buy=min_analyst_buy,
+        max_rsi=max_rsi,
+        limit=limit,
+    )
 
     normalized_market = analysis_screening._normalize_screen_market(market)
     normalized_asset_type = analysis_screening._normalize_asset_type(asset_type)
@@ -549,7 +600,7 @@ async def screen_stocks_impl(
         asset_type=normalized_asset_type,
         min_market_cap=min_market_cap,
         max_per=max_per,
-        min_dividend_yield=min_dividend_yield,
+        min_dividend_yield=normalized_request["min_dividend_yield"],
         max_rsi=max_rsi,
         sort_by=normalized_sort_by,
     )
@@ -558,10 +609,13 @@ async def screen_stocks_impl(
         market=normalized_market,
         asset_type=normalized_asset_type,
         category=category,
+        sector=sector,
         min_market_cap=min_market_cap,
         max_per=max_per,
         max_pbr=max_pbr,
         min_dividend_yield=min_dividend_yield,
+        min_dividend=min_dividend,
+        min_analyst_buy=min_analyst_buy,
         max_rsi=max_rsi,
         sort_by=normalized_sort_by,
         sort_order=normalized_sort_order,

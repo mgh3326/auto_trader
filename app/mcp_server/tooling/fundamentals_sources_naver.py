@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,7 +24,6 @@ from app.mcp_server.tooling.shared import normalize_value as _normalize_value
 from app.monitoring import build_yfinance_tracing_session
 from app.services import naver_finance
 from app.services.analyst_normalizer import (
-    build_consensus,
     normalize_rating_label,
     rating_to_bucket,
 )
@@ -39,7 +39,20 @@ class _YFinanceSnapshot:
 
     info: dict[str, Any] | None = None
     analyst_price_targets: dict[str, Any] | None = None
+    recommendations: Any = None  # DataFrame or None
     upgrades_downgrades: Any = None  # DataFrame or None
+
+
+_SCREEN_ENRICHMENT_DEFAULTS: dict[str, Any] = {
+    "sector": None,
+    "analyst_buy": 0,
+    "analyst_hold": 0,
+    "analyst_sell": 0,
+    "avg_target": None,
+    "upside_pct": None,
+}
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +80,227 @@ def _parse_naver_int(value: Any) -> int | None:
         return int(float(str(value).replace(",", "")))
     except (ValueError, TypeError):
         return None
+
+
+def _coerce_optional_number(value: Any) -> int | float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        if value != value:
+            return None
+        return value
+    return None
+
+
+def _build_screen_enrichment_payload(
+    *,
+    sector: Any,
+    consensus: Any,
+) -> dict[str, Any]:
+    normalized_sector = str(sector).strip() if sector is not None else ""
+    consensus_map = consensus if isinstance(consensus, dict) else {}
+    payload = dict(_SCREEN_ENRICHMENT_DEFAULTS)
+    payload["sector"] = normalized_sector or None
+    payload["analyst_buy"] = _parse_naver_int(consensus_map.get("buy_count")) or 0
+    payload["analyst_hold"] = _parse_naver_int(consensus_map.get("hold_count")) or 0
+    payload["analyst_sell"] = _parse_naver_int(consensus_map.get("sell_count")) or 0
+    payload["avg_target"] = _coerce_optional_number(
+        consensus_map.get("avg_target_price")
+    )
+    payload["upside_pct"] = _coerce_optional_number(consensus_map.get("upside_pct"))
+    return payload
+
+
+async def _fetch_screen_enrichment_payload(
+    *,
+    symbol: str,
+    profile_request: Any,
+    opinions_request: Any,
+    profile_provider: str,
+    opinions_provider: str,
+) -> dict[str, Any]:
+    profile_result, opinions_result = await asyncio.gather(
+        profile_request,
+        opinions_request,
+        return_exceptions=True,
+    )
+
+    profile_error = profile_result if isinstance(profile_result, Exception) else None
+    opinions_error = opinions_result if isinstance(opinions_result, Exception) else None
+
+    if profile_error is not None and opinions_error is not None:
+        raise profile_error from opinions_error
+
+    if profile_error is not None:
+        logger.warning(
+            "Screen enrichment profile provider failed for %s (%s): %s: %s",
+            symbol,
+            profile_provider,
+            type(profile_error).__name__,
+            profile_error,
+        )
+
+    if opinions_error is not None:
+        logger.warning(
+            "Screen enrichment opinions provider failed for %s (%s): %s: %s",
+            symbol,
+            opinions_provider,
+            type(opinions_error).__name__,
+            opinions_error,
+        )
+
+    profile = profile_result if isinstance(profile_result, dict) else None
+    opinions = opinions_result if isinstance(opinions_result, dict) else None
+    return _build_screen_enrichment_payload(
+        sector=(profile or {}).get("sector"),
+        consensus=(opinions or {}).get("consensus"),
+    )
+
+
+def _normalize_yahoo_numeric(
+    value: Any,
+    *,
+    zero_as_missing: bool = True,
+) -> float | None:
+    if isinstance(value, dict):
+        value = value.get("raw", value.get("fmt"))
+    value = _normalize_value(value)
+    if value in (None, ""):
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if zero_as_missing and number <= 0:
+        return None
+    return number
+
+
+def _normalize_yahoo_count(value: Any) -> int | None:
+    number = _normalize_yahoo_numeric(value, zero_as_missing=False)
+    if number is None or number < 0:
+        return None
+    return int(number)
+
+
+def _select_current_recommendation_row(recommendations: Any) -> dict[str, Any] | None:
+    if not isinstance(recommendations, pd.DataFrame) or recommendations.empty:
+        return None
+    current_rows = recommendations
+    if "period" in recommendations.columns:
+        period_rows = recommendations[recommendations["period"] == "0m"]
+        if not period_rows.empty:
+            current_rows = period_rows
+    row = current_rows.iloc[0]
+    if hasattr(row, "to_dict"):
+        row_dict: dict[str, Any] = {}
+        for key, value in row.to_dict().items():
+            row_dict[str(key)] = value
+        return row_dict
+    return None
+
+
+def _build_yahoo_count_consensus(recommendations: Any) -> dict[str, Any] | None:
+    current_row = _select_current_recommendation_row(recommendations)
+    if current_row is None:
+        return None
+
+    strong_buy = _normalize_yahoo_count(current_row.get("strongBuy"))
+    buy = _normalize_yahoo_count(current_row.get("buy"))
+    hold = _normalize_yahoo_count(current_row.get("hold"))
+    sell = _normalize_yahoo_count(current_row.get("sell"))
+    strong_sell = _normalize_yahoo_count(current_row.get("strongSell"))
+    if (
+        strong_buy is None
+        or buy is None
+        or hold is None
+        or sell is None
+        or strong_sell is None
+    ):
+        return None
+
+    strong_buy_count = strong_buy
+    buy_count = buy
+    hold_count = hold
+    sell_count = sell
+    strong_sell_count = strong_sell
+
+    total_count = (
+        strong_buy_count + buy_count + hold_count + sell_count + strong_sell_count
+    )
+    if total_count <= 0:
+        return None
+
+    return {
+        "buy_count": strong_buy_count + buy_count,
+        "hold_count": hold_count,
+        "sell_count": sell_count + strong_sell_count,
+        "strong_buy_count": strong_buy_count,
+        "total_count": total_count,
+    }
+
+
+def _build_yahoo_target_consensus(
+    targets: dict[str, Any] | None,
+    *,
+    fallback_current_price: float | None,
+) -> dict[str, Any] | None:
+    if not isinstance(targets, dict):
+        targets = {}
+
+    avg_target_price = _normalize_yahoo_numeric(targets.get("mean"))
+    median_target_price = _normalize_yahoo_numeric(targets.get("median"))
+    min_target_price = _normalize_yahoo_numeric(targets.get("low"))
+    max_target_price = _normalize_yahoo_numeric(targets.get("high"))
+    current_price = _normalize_yahoo_numeric(targets.get("current"))
+    if current_price is None:
+        current_price = fallback_current_price
+
+    if all(
+        value is None
+        for value in (
+            avg_target_price,
+            median_target_price,
+            min_target_price,
+            max_target_price,
+            current_price,
+        )
+    ):
+        return None
+
+    upside_pct = None
+    if avg_target_price is not None and current_price is not None and current_price > 0:
+        upside_pct = round((avg_target_price - current_price) / current_price * 100, 2)
+
+    return {
+        "avg_target_price": avg_target_price,
+        "median_target_price": median_target_price,
+        "min_target_price": min_target_price,
+        "max_target_price": max_target_price,
+        "current_price": current_price,
+        "upside_pct": upside_pct,
+    }
+
+
+def _empty_analyst_consensus(current_price: float | None) -> dict[str, Any]:
+    return {
+        "buy_count": None,
+        "hold_count": None,
+        "sell_count": None,
+        "strong_buy_count": None,
+        "total_count": None,
+        "avg_target_price": None,
+        "median_target_price": None,
+        "min_target_price": None,
+        "max_target_price": None,
+        "upside_pct": None,
+        "current_price": current_price,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -490,10 +724,16 @@ async def _fetch_investment_opinions_yfinance(
         session = build_yfinance_tracing_session()
     ticker = yf.Ticker(symbol, session=session)
 
-    def _collect() -> tuple[dict[str, Any] | None, Any, dict[str, Any] | None]:
+    def _collect() -> tuple[dict[str, Any] | None, Any, Any, dict[str, Any] | None]:
         targets = None
         try:
             targets = ticker.analyst_price_targets
+        except Exception:
+            pass
+
+        recommendations = None
+        try:
+            recommendations = ticker.recommendations
         except Exception:
             pass
 
@@ -508,21 +748,19 @@ async def _fetch_investment_opinions_yfinance(
             info = ticker.info
         except Exception:
             pass
-        return targets, ud, info
+        return targets, recommendations, ud, info
 
     # Use pre-fetched snapshot if available
     if snapshot is not None:
         targets = snapshot.analyst_price_targets
+        trend = snapshot.recommendations
         ud = snapshot.upgrades_downgrades
         info = snapshot.info
     else:
-        targets, ud, info = await loop.run_in_executor(None, _collect)
-    current_price = (info or {}).get("currentPrice")
+        targets, trend, ud, info = await loop.run_in_executor(None, _collect)
 
-    if isinstance(targets, dict) and current_price is None:
-        current_price = targets.get("current")
-
-    recommendations: list[dict[str, Any]] = []
+    current_price = _normalize_yahoo_numeric((info or {}).get("currentPrice"))
+    opinions: list[dict[str, Any]] = []
     if ud is not None and not ud.empty:
         df = ud.head(limit).reset_index()
         for _, row in df.iterrows():
@@ -538,47 +776,64 @@ async def _fetch_investment_opinions_yfinance(
                     else str(row.get("GradeDate", ""))[:10]
                 ),
             }
-            pt = row.get("currentPriceTarget")
-            if pt and pt > 0:
-                rec["target_price"] = float(pt)
-            recommendations.append(rec)
+            target_price = _normalize_yahoo_numeric(row.get("currentPriceTarget"))
+            if target_price is not None:
+                rec["target_price"] = target_price
+            opinions.append(rec)
 
-    consensus = build_consensus(recommendations, current_price)
-
+    target_consensus = _build_yahoo_target_consensus(
+        targets,
+        fallback_current_price=current_price,
+    )
+    usable_target_available = False
     if isinstance(targets, dict):
-        if targets.get("mean") and (
-            not consensus or not consensus.get("avg_target_price")
-        ):
-            if consensus is None:
-                consensus = {}
-            if not consensus.get("avg_target_price"):
-                consensus["avg_target_price"] = targets.get("mean")
-            if not consensus.get("median_target_price"):
-                consensus["median_target_price"] = targets.get("median")
-            if not consensus.get("min_target_price"):
-                consensus["min_target_price"] = targets.get("low")
-            if not consensus.get("max_target_price"):
-                consensus["max_target_price"] = targets.get("high")
-            if not consensus.get("current_price"):
-                consensus["current_price"] = current_price or targets.get("current")
+        usable_target_available = any(
+            _normalize_yahoo_numeric(targets.get(key)) is not None
+            for key in ("mean", "median", "low", "high", "current")
+        )
+    consensus = _empty_analyst_consensus(
+        current_price=(target_consensus or {}).get("current_price", current_price)
+    )
 
-            avg_target_price = consensus.get("avg_target_price")
-            if isinstance(avg_target_price, (int, float)) and isinstance(
-                current_price, (int, float)
-            ):
-                consensus["upside_pct"] = round(
-                    (avg_target_price - current_price) / current_price * 100,
-                    2,
-                )
+    count_consensus = _build_yahoo_count_consensus(trend)
+    if count_consensus is not None:
+        consensus.update(count_consensus)
+    if target_consensus is not None:
+        consensus.update(target_consensus)
 
-    return {
+    result = {
         "instrument_type": "equity_us",
         "source": "yfinance",
         "symbol": symbol.upper(),
-        "count": len(recommendations),
-        "opinions": recommendations,
+        "count": len(opinions),
+        "opinions": opinions,
         "consensus": consensus,
     }
+    if count_consensus is None and not usable_target_available:
+        result["warning"] = (
+            f"Yahoo analyst consensus data unavailable for {symbol.upper()}."
+        )
+    return result
+
+
+async def _fetch_screen_enrichment_kr(symbol: str) -> dict[str, Any]:
+    return await _fetch_screen_enrichment_payload(
+        symbol=symbol,
+        profile_request=_fetch_company_profile_finnhub(symbol),
+        opinions_request=_fetch_investment_opinions_naver(symbol, 10),
+        profile_provider="finnhub",
+        opinions_provider="naver",
+    )
+
+
+async def _fetch_screen_enrichment_us(symbol: str) -> dict[str, Any]:
+    return await _fetch_screen_enrichment_payload(
+        symbol=symbol,
+        profile_request=_fetch_company_profile_finnhub(symbol),
+        opinions_request=_fetch_investment_opinions_yfinance(symbol, 10),
+        profile_provider="finnhub",
+        opinions_provider="yfinance",
+    )
 
 
 async def _fetch_valuation_naver(symbol: str) -> dict[str, Any]:
@@ -930,6 +1185,8 @@ __all__ = [
     "_fetch_financials_yfinance",
     "_fetch_investment_opinions_naver",
     "_fetch_investment_opinions_yfinance",
+    "_fetch_screen_enrichment_kr",
+    "_fetch_screen_enrichment_us",
     "_fetch_investor_trends_naver",
     "_fetch_kimchi_premium",
     "_fetch_news_naver",

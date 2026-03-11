@@ -548,6 +548,72 @@ class MarketDataClient:
 
         return output1, output2
 
+    async def inquire_short_selling(
+        self,
+        code: str,
+        start_date: datetime.date,
+        end_date: datetime.date,
+        market: str = "J",
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        if start_date > end_date:
+            raise ValueError("start_date must be less than or equal to end_date")
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_INPUT_ISCD": code.zfill(6),
+            "FID_INPUT_DATE_1": start_date.strftime("%Y%m%d"),
+            "FID_INPUT_DATE_2": end_date.strftime("%Y%m%d"),
+        }
+
+        for attempt in range(2):
+            await self._parent._ensure_token()
+            hdr = self._parent._hdr_base | {
+                "authorization": f"Bearer {self._settings.kis_access_token}",
+                "tr_id": constants.DOMESTIC_SHORT_SELLING_TR,
+            }
+            js = await self._parent._request_with_rate_limit(
+                "GET",
+                f"{constants.BASE}{constants.DOMESTIC_SHORT_SELLING_URL}",
+                headers=hdr,
+                params=params,
+                timeout=5,
+                api_name="inquire_short_selling",
+                tr_id=constants.DOMESTIC_SHORT_SELLING_TR,
+            )
+
+            if js.get("rt_cd") == "0":
+                break
+
+            if attempt == 0 and js.get("msg_cd") in ["EGW00123", "EGW00121"]:
+                await self._parent._token_manager.clear_token()
+                continue
+
+            raise RuntimeError(f"{js.get('msg_cd')} {js.get('msg1')}")
+        else:
+            raise RuntimeError("Failed to fetch KIS daily short selling data")
+
+        output1 = js.get("output1")
+        if not isinstance(output1, dict):
+            raise RuntimeError(
+                "Malformed KIS short selling payload: expected output1 dict"
+            )
+
+        output2_raw = js.get("output2")
+        if output2_raw is None:
+            output2: list[dict[str, Any]] = []
+        elif isinstance(output2_raw, list):
+            if not all(isinstance(row, dict) for row in output2_raw):
+                raise RuntimeError(
+                    "Malformed KIS short selling payload: expected output2 list of objects"
+                )
+            output2 = output2_raw
+        else:
+            raise RuntimeError(
+                "Malformed KIS short selling payload: expected output2 list"
+            )
+
+        return output1, output2
+
     async def fetch_fundamental_info(self, code: str, market: str = "UN") -> dict:
         """
         종목의 기본 정보를 가져와 딕셔너리로 반환합니다.

@@ -570,7 +570,7 @@ class TestScreenStocksTvScreenerContract:
             max_rsi=40.0,
             sort_by="volume",
             sort_order="desc",
-            limit=20,
+            limit=50,
         )
 
         assert result["market"] == "us"

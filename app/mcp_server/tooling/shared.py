@@ -533,6 +533,52 @@ def recalculate_profit_fields(position: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _to_optional_consensus_count(value: Any) -> int | None:
+    normalized = normalize_value(value)
+    if normalized in (None, ""):
+        return None
+    try:
+        if pd.isna(normalized):
+            return None
+    except Exception:
+        pass
+    try:
+        return int(normalized)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_rsi14(indicators: dict[str, Any] | None) -> float | None:
+    """Extract RSI(14) value from various indicator payload shapes.
+
+    Handles:
+    - {"indicators": {"rsi": {"14": 45.8}}}
+    - {"rsi": {"14": 45.8}}
+    - {"rsi": 45.8} (scalar RSI)
+
+    Returns None only when RSI value is actually absent.
+    """
+    if not indicators:
+        return None
+
+    # Handle {"indicators": {...}} wrapper
+    indicators_dict = indicators.get("indicators", indicators)
+
+    rsi_data = indicators_dict.get("rsi")
+    if rsi_data is None:
+        return None
+
+    if isinstance(rsi_data, dict):
+        # Try "14" string key first, then 14 int key
+        rsi = rsi_data.get("14")
+        if rsi is None:
+            rsi = rsi_data.get(14)
+        return rsi
+    elif isinstance(rsi_data, (int, float)):
+        return float(rsi_data)
+
+    return None
+
 def build_recommendation_for_equity(
     analysis: dict[str, Any],
     market_type: str,
@@ -554,6 +600,7 @@ def build_recommendation_for_equity(
     recommendation: dict[str, Any] = {
         "action": "hold",
         "confidence": "low",
+        "rsi14": None,
         "buy_zones": [],
         "sell_targets": [],
         "stop_loss": None,
@@ -564,37 +611,39 @@ def build_recommendation_for_equity(
     score = 0
     max_score = 0
 
-    if indicators:
-        indicators_dict = indicators.get("indicators", indicators)
-        rsi_data = indicators_dict.get("rsi")
-        rsi = None
-        if isinstance(rsi_data, dict):
-            rsi = rsi_data.get("14") or rsi_data.get(14)
-        elif isinstance(rsi_data, (int, float)):
-            rsi = rsi_data
-
-        if rsi:
-            max_score += 2
-            if rsi < 30:
-                score += 2
-                reasoning_parts.append(f"RSI {rsi:.1f} (oversold)")
-            elif rsi < 40:
-                score += 1
-                reasoning_parts.append(f"RSI {rsi:.1f} (bearish)")
-            elif rsi > 70:
-                score -= 2
-                reasoning_parts.append(f"RSI {rsi:.1f} (overbought)")
-            elif rsi > 60:
-                score -= 1
-                reasoning_parts.append(f"RSI {rsi:.1f} (bullish)")
+    # Use helper for RSI extraction
+    rsi = _extract_rsi14(indicators)
+    if rsi is not None:  # FIX: use "is not None" to keep 0.0
+        recommendation["rsi14"] = rsi  # NEW: store rsi14 in recommendation
+        max_score += 2
+        if rsi < 30:
+            score += 2
+            reasoning_parts.append(f"RSI {rsi:.1f} (oversold)")
+        elif rsi < 40:
+            score += 1
+            reasoning_parts.append(f"RSI {rsi:.1f} (bearish)")
+        elif rsi > 70:
+            score -= 2
+            reasoning_parts.append(f"RSI {rsi:.1f} (overbought)")
+        elif rsi > 60:
+            score -= 1
+            reasoning_parts.append(f"RSI {rsi:.1f} (bullish)")
 
     if consensus:
-        buy_count = consensus.get("buy_count", 0)
-        sell_count = consensus.get("sell_count", 0)
-        strong_buy_count = consensus.get("strong_buy_count", 0)
-        total = consensus.get("total_count", 0)
+        buy_count = _to_optional_consensus_count(consensus.get("buy_count"))
+        sell_count = _to_optional_consensus_count(consensus.get("sell_count"))
+        strong_buy_count = _to_optional_consensus_count(
+            consensus.get("strong_buy_count")
+        )
+        total = _to_optional_consensus_count(consensus.get("total_count"))
 
-        if total > 0:
+        if (
+            total is not None
+            and total > 0
+            and buy_count is not None
+            and sell_count is not None
+            and strong_buy_count is not None
+        ):
             max_score += 2
             buy_ratio = buy_count / total
             sell_ratio = sell_count / total

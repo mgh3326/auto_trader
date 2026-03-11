@@ -9,6 +9,7 @@ from app.services.market_data.service import (
     get_ohlcv,
     get_orderbook,
     get_quote,
+    get_short_interest,
 )
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "OrderbookSnapshot",
     "get_quote",
     "get_orderbook",
+    "get_short_interest",
     "get_ohlcv",
     "get_kr_volume_rank",
 ]

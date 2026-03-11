@@ -485,6 +485,25 @@ class TestScreenStocksCrypto:
             )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kwargs", "pattern"),
+        [
+            ({"sector": "Layer1"}, ".*crypto.*sector.*"),
+            ({"min_analyst_buy": 5}, ".*crypto.*min_analyst_buy.*"),
+            ({"min_dividend": 2.0}, ".*crypto.*min_dividend.*"),
+        ],
+    )
+    async def test_crypto_new_equity_fundamentals_filters_raise_errors(
+        self,
+        kwargs: dict[str, object],
+        pattern: str,
+    ) -> None:
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match=pattern):
+            await tools["screen_stocks"](market="crypto", limit=5, **kwargs)
+
+    @pytest.mark.asyncio
     async def test_crypto_enriches_metrics_without_explicit_rsi_filters(
         self, mock_upbit_coins, monkeypatch
     ):
