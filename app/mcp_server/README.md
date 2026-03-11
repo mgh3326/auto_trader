@@ -63,6 +63,11 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `manage_watch_alerts(action, market=None, symbol=None, metric=None, operator=None, threshold=None)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.
+- `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
+  - Analyze multiple symbols in parallel and return compact per-symbol summaries
+  - Default `quick=True` returns compact summary with: symbol, current_price, rsi_14, consensus, recommendation, supports (top 3), resistances (top 3)
+  - Set `quick=False` for full analysis payload (like `analyze_portfolio`)
+  - Example: `analyze_stock_batch(symbols=["NVDA", "AMZN", "MSFT", "GOOGL"], market="us")`
 
 ### `get_orderbook` spec
 Parameters:
@@ -603,3 +608,4 @@ docker compose -f docker-compose.prod.yml up -d mcp
 ```
 
 > Note: current prod compose uses `network_mode: host`, so port publishing is handled by the host network.
+

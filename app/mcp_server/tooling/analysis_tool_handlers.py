@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+from collections.abc import Callable
 from typing import Any, Literal
 
 import httpx
@@ -367,11 +368,27 @@ async def analyze_stock_impl(
     return result
 
 
-async def analyze_portfolio_impl(
+async def _run_batch_analysis(
     symbols: list[str | int],
-    market: str | None = None,
-    include_peers: bool = False,
+    *,
+    market: str | None,
+    include_peers: bool,
+    formatter: Callable[[str, dict[str, Any]], dict[str, Any]],
 ) -> dict[str, Any]:
+    """Shared batch analysis executor for portfolio and stock batch analysis.
+
+    Args:
+        symbols: List of symbol inputs (1-10 entries)
+        market: Optional market override
+        include_peers: Whether to include peer analysis
+        formatter: Callable that receives (normalized_symbol, analysis_result) and returns formatted result
+
+    Returns:
+        Dict with 'results' (symbol -> formatted_result) and 'summary' keys
+
+    Raises:
+        ValueError: If symbols list is empty or exceeds 10 entries
+    """
     if not symbols:
         raise ValueError("symbols must contain at least one entry")
 
@@ -405,7 +422,8 @@ async def analyze_portfolio_impl(
     success_count = 0
     fail_count = 0
     for sym, result in zip(normalized_symbols, analyze_results, strict=True):
-        results[sym] = result
+        formatted_result = formatter(sym, result)
+        results[sym] = formatted_result
         if "error" not in result:
             success_count += 1
         else:
@@ -420,6 +438,79 @@ async def analyze_portfolio_impl(
             "errors": errors,
         },
     }
+
+
+def _summarize_analysis_result(
+    symbol: str,
+    analysis: dict[str, Any],
+) -> dict[str, Any]:
+    """Convert full analysis into compact summary for batch responses."""
+    # If result is an error, pass through unchanged
+    if "error" in analysis:
+        return analysis
+
+    quote = analysis.get("quote") or {}
+    indicators = (analysis.get("indicators") or {}).get("indicators", {})
+    rsi = (indicators.get("rsi") or {}).get("14")
+    sr = analysis.get("support_resistance") or {}
+
+    return {
+        "symbol": symbol,
+        "market_type": analysis.get("market_type"),
+        "source": analysis.get("source"),
+        "current_price": quote.get("price") or quote.get("current_price"),
+        "rsi_14": rsi,
+        "consensus": ((analysis.get("opinions") or {}).get("consensus")),
+        "recommendation": analysis.get("recommendation"),
+        "supports": (sr.get("supports") or [])[:3],
+        "resistances": (sr.get("resistances") or [])[:3],
+    }
+
+
+async def analyze_stock_batch_impl(
+    symbols: list[str | int],
+    market: str | None = None,
+    include_peers: bool = False,
+    quick: bool = True,
+) -> dict[str, Any]:
+    """Analyze multiple symbols and return compact per-symbol summaries.
+    Args:
+        symbols: List of symbol inputs (1-10 entries)
+        market: Optional market override
+        include_peers: Whether to include peer analysis
+        quick: If True, return compact summary; if False, return full analysis
+    Returns:
+        Dict with 'results' (symbol -> summary) and 'summary' keys
+    """
+    formatter = _summarize_analysis_result if quick else (lambda _sym, result: result)
+    return await _run_batch_analysis(
+        symbols,
+        market=market,
+        include_peers=include_peers,
+        formatter=formatter,
+    )
+
+async def analyze_portfolio_impl(
+    symbols: list[str | int],
+    market: str | None = None,
+    include_peers: bool = False,
+) -> dict[str, Any]:
+    """Analyze a portfolio of symbols.
+
+    Args:
+        symbols: List of symbol inputs (1-10 entries)
+        market: Optional market override
+        include_peers: Whether to include peer analysis
+
+    Returns:
+        Dict with 'results' (symbol -> analysis_result) and 'summary' keys
+    """
+    return await _run_batch_analysis(
+        symbols,
+        market=market,
+        include_peers=include_peers,
+        formatter=lambda _sym, result: result,
+    )
 
 
 async def screen_stocks_impl(
