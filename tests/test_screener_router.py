@@ -90,6 +90,9 @@ def test_screener_dashboard_page(
     assert 'class="stack page-sidebar"' in body
     assert 'id="filter-form"' in body
     assert 'id="min-volume"' in body
+    assert 'id="limit"' in body
+    assert 'max="100"' in body
+    assert 'value="50"' in body
     assert 'id="results-table"' in body
     assert 'id="results-cards"' in body
     assert 'class="results-table-wrap screener-results-table-wrap"' in body
