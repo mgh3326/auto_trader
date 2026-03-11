@@ -320,3 +320,105 @@ async def test_profile_change_log_changed_by_not_null() -> None:
                 await session.commit()
     finally:
         await _cleanup_user(user_id)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_tier_rule_default_version_and_market_filter_toggle_roundtrip() -> None:
+    await _ensure_trade_profile_tables()
+    user_id, _, _ = await _create_user_and_accounts()
+    try:
+        async with SessionLocal() as session:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO tier_rule_params
+                        (user_id, instrument_type, tier, profile, param_type, params, updated_by)
+                    VALUES
+                        (:user_id, :instrument_type, 1, 'balanced', 'common', '{"cash_reserve_pct": 10}'::jsonb, 'test_runner')
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "instrument_type": InstrumentType.equity_us.value,
+                },
+            )
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO market_filters
+                        (user_id, instrument_type, filter_name, params, enabled, updated_by)
+                    VALUES
+                        (:user_id, :instrument_type, 'kill_switch', '{"enabled": false}'::jsonb, true, 'test_runner')
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "instrument_type": InstrumentType.crypto.value,
+                },
+            )
+            await session.commit()
+
+        async with SessionLocal() as session:
+            tier_row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT version
+                        FROM tier_rule_params
+                        WHERE user_id = :user_id
+                          AND instrument_type = :instrument_type
+                          AND tier = 1
+                          AND profile = 'balanced'
+                          AND param_type = 'common'
+                        """
+                    ),
+                    {
+                        "user_id": user_id,
+                        "instrument_type": InstrumentType.equity_us.value,
+                    },
+                )
+            ).scalar_one()
+            assert tier_row == 1
+
+            await session.execute(
+                text(
+                    """
+                    UPDATE market_filters
+                    SET enabled = false,
+                        params = '{"enabled": true}'::jsonb,
+                        updated_by = 'test_runner_update'
+                    WHERE user_id = :user_id
+                      AND instrument_type = :instrument_type
+                      AND filter_name = 'kill_switch'
+                    """
+                ),
+                {
+                    "user_id": user_id,
+                    "instrument_type": InstrumentType.crypto.value,
+                },
+            )
+            await session.commit()
+
+        async with SessionLocal() as session:
+            row = (
+                await session.execute(
+                    text(
+                        """
+                        SELECT enabled, params ->> 'enabled' AS params_enabled
+                        FROM market_filters
+                        WHERE user_id = :user_id
+                          AND instrument_type = :instrument_type
+                          AND filter_name = 'kill_switch'
+                        """
+                    ),
+                    {
+                        "user_id": user_id,
+                        "instrument_type": InstrumentType.crypto.value,
+                    },
+                )
+            ).one()
+            assert row.enabled is False
+            assert row.params_enabled == "true"
+    finally:
+        await _cleanup_user(user_id)

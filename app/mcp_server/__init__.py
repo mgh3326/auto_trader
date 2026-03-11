@@ -44,4 +44,10 @@ AVAILABLE_TOOL_NAMES = [
     "manage_watch_alerts",
     "get_asset_profile",
     "set_asset_profile",
+    "get_tier_rule_params",
+    "set_tier_rule_params",
+    "get_market_filters",
+    "set_market_filter",
+    "delete_asset_profile",
+    "prepare_trade_draft",
 ]
