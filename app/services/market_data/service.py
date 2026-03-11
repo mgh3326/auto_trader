@@ -413,9 +413,7 @@ async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
             raise _map_error(exc) from exc
 
     if resolved_market != "equity_kr":
-        raise ValueError(
-            "get_orderbook only supports KR equity and KRW crypto markets"
-        )
+        raise ValueError("get_orderbook only supports KR equity and KRW crypto markets")
     resolved_symbol = _normalize_symbol(symbol, resolved_market)
 
     try:
