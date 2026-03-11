@@ -55,6 +55,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR intraday degrades to DB-backed partial data when recent KIS minute overlay calls fail
   - KR intraday response rows add `session` and `venues` fields
 - `get_indicators(symbol, indicators, market=None)`
+- `get_investment_opinions(symbol, limit=10, market=None)`
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50)`
 - `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None)`
@@ -192,6 +193,29 @@ Behavior:
 
 Error payload:
 - Failure responses include `success`, `error`, `filings`, and `symbol`.
+
+### `get_investment_opinions` spec
+Parameters:
+- `symbol`: Asset ticker/code input (required)
+- `limit`: Maximum detailed opinion rows to return (default: 10)
+- `market`: Optional explicit market (`kr`, `us`)
+
+Behavior:
+- KR requests keep the existing Naver Finance path and return recent analyst opinions plus consensus statistics.
+- US requests use yfinance and keep the public top-level shape: `symbol`, `count`, `opinions`, `consensus`, plus optional `warning`.
+- US `opinions` remains the recent Yahoo `upgrades_downgrades` event list (firm/rating/date plus row-level `target_price` when Yahoo provides one).
+- US top-level `count` remains `len(opinions)`; it does **not** represent aggregate analyst coverage.
+- US `consensus.total_count` is the aggregate analyst coverage count from the current Yahoo `recommendationTrend` / `ticker.recommendations` row (`period="0m"` preferred).
+- US aggregate count mapping is:
+  - `buy_count = strongBuy + buy`
+  - `hold_count = hold`
+  - `sell_count = sell + strongSell`
+  - `strong_buy_count = strongBuy`
+  - `total_count = strongBuy + buy + hold + sell + strongSell`
+- US target statistics (`avg_target_price`, `median_target_price`, `min_target_price`, `max_target_price`, `current_price`, `upside_pct`) come from Yahoo `analyst_price_targets` after numeric normalization.
+- US target normalization accepts Yahoo raw dicts such as `{raw, fmt}`, plain numbers, and pandas/numpy scalars; `0`, negative, empty, and non-numeric placeholders are treated as unavailable.
+- When Yahoo analyst counts or target statistics are unavailable, the corresponding US `consensus` fields are returned as `null` instead of fabricated zeroes.
+- When Yahoo provides neither usable aggregate counts nor usable analyst target data, the US response includes a top-level `warning`.
 
 ### `manage_watch_alerts` spec
 Parameters:

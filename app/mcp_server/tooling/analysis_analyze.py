@@ -178,6 +178,7 @@ def _append_common_tasks(
 def _collect_yfinance_snapshot(yf_ticker: Any) -> _YFinanceSnapshot:
     info = None
     targets = None
+    recommendations = None
     upgrades_downgrades = None
     try:
         info = yf_ticker.info
@@ -188,12 +189,17 @@ def _collect_yfinance_snapshot(yf_ticker: Any) -> _YFinanceSnapshot:
     except Exception:
         pass
     try:
+        recommendations = yf_ticker.recommendations
+    except Exception:
+        pass
+    try:
         upgrades_downgrades = yf_ticker.upgrades_downgrades
     except Exception:
         pass
     return _YFinanceSnapshot(
         info=info,
         analyst_price_targets=targets,
+        recommendations=recommendations,
         upgrades_downgrades=upgrades_downgrades,
     )
 

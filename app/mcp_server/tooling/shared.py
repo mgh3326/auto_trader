@@ -533,6 +533,21 @@ def recalculate_profit_fields(position: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _to_optional_consensus_count(value: Any) -> int | None:
+    normalized = normalize_value(value)
+    if normalized in (None, ""):
+        return None
+    try:
+        if pd.isna(normalized):
+            return None
+    except Exception:
+        pass
+    try:
+        return int(normalized)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_recommendation_for_equity(
     analysis: dict[str, Any],
     market_type: str,
@@ -589,12 +604,20 @@ def build_recommendation_for_equity(
                 reasoning_parts.append(f"RSI {rsi:.1f} (bullish)")
 
     if consensus:
-        buy_count = consensus.get("buy_count", 0)
-        sell_count = consensus.get("sell_count", 0)
-        strong_buy_count = consensus.get("strong_buy_count", 0)
-        total = consensus.get("total_count", 0)
+        buy_count = _to_optional_consensus_count(consensus.get("buy_count"))
+        sell_count = _to_optional_consensus_count(consensus.get("sell_count"))
+        strong_buy_count = _to_optional_consensus_count(
+            consensus.get("strong_buy_count")
+        )
+        total = _to_optional_consensus_count(consensus.get("total_count"))
 
-        if total > 0:
+        if (
+            total is not None
+            and total > 0
+            and buy_count is not None
+            and sell_count is not None
+            and strong_buy_count is not None
+        ):
             max_score += 2
             buy_ratio = buy_count / total
             sell_ratio = sell_count / total
