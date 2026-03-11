@@ -158,6 +158,17 @@ Examples:
 - Allowed: `symbol="KRW-ETC"` (market omitted)
 - Rejected: `symbol="ETC"` (market omitted)
 
+### `analyze_stock` spec
+
+Parameters:
+- `symbol`: Asset symbol/ticker/code (required; string or int accepted)
+- `market`: Market - `"kr"`, `"us"`, `"crypto"` (optional, inferred from symbol if omitted)
+- `include_peers`: Whether to include sector peer analysis for KR/US equities (default: false; ignored for crypto)
+
+Response notes:
+- Equity responses (KR/US markets) include `recommendation.rsi14` when RSI(14) is available from the indicator payload
+- This field provides a convenient summary; callers should continue to use `get_indicators` when they need the full indicator set rather than the summarized recommendation field
+
 ### `get_correlation` spec
 Parameters:
 - `symbols`: List of asset ticker/code inputs (required, 2-10 entries)
