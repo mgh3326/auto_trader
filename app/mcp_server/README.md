@@ -73,6 +73,8 @@ Behavior:
 - Only KR equity orderbook is supported in v1; `market="us"` or `market="crypto"` raises an argument error
 - Symbol normalization follows the KR quote path, including zero-padding numeric codes such as `5930 -> 005930`
 - Valid KR requests use KIS `inquire-asking-price-exp-ccn` and return 10-level asks/bids, total residual quantities, and expected match metadata
+- `expected_qty` keeps the public `int | null` contract; when KIS leaves `output2.antc_cnqn` blank or omits it, the response serializes `expected_qty` as `null` instead of inventing a fallback quantity
+- During the NXT session (`16:00`-`20:00` KST), KIS may return `expected_price` while leaving `expected_qty` blank or absent; this is treated as a valid upstream state, not an MCP error
 - Successful responses also include MCP-only derived fields: `pressure`, `pressure_desc`, `spread`, and `spread_pct`
 - Successful responses include `source: "kis"` and `instrument_type: "equity_kr"`
 - Invalid input raises; upstream KIS failures for otherwise valid KR requests return in-band error payloads via the shared MCP error contract
@@ -93,9 +95,11 @@ Response format:
   "spread": 100,
   "spread_pct": 0.143,
   "expected_price": 70050,
-  "expected_qty": 42
+  "expected_qty": null
 }
 ```
+
+`expected_qty: null` means KIS did not provide `antc_cnqn`; it does not by itself indicate a tool failure.
 
 Derived fields:
 - `pressure` is derived from `bid_ask_ratio` using fixed inclusive boundaries:
