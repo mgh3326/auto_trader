@@ -2813,6 +2813,213 @@ async def test_analyze_stock_kr_falls_back_to_quote_helper_when_ohlcv_empty(
     assert result["opinions"]["source"] == "naver"
 
 
+@pytest.mark.asyncio
+async def test_analyze_stock_crypto_uses_extended_default_indicators(monkeypatch):
+    tools = build_tools()
+    indicator_calls: list[dict[str, object]] = []
+    expected_indicators = ["rsi", "macd", "bollinger", "sma", "adx", "stoch_rsi"]
+
+    async def mock_fetch_ohlcv(symbol, market_type, count):
+        assert symbol == "KRW-BTC"
+        assert market_type == "crypto"
+        assert count == 250
+        return pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=250, freq="D"),
+                "open": [100.0] * 250,
+                "high": [110.0] * 250,
+                "low": [90.0] * 250,
+                "close": [105.0] * 250,
+                "volume": [1000.0] * 250,
+                "value": [105000.0] * 250,
+            }
+        )
+
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_quote_crypto",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "instrument_type": "crypto",
+                "price": 105.0,
+                "source": "upbit",
+            }
+        ),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_news_finnhub",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "market": "crypto",
+                "source": "finnhub",
+                "count": 0,
+                "news": [],
+            }
+        ),
+    )
+
+    async def mock_get_indicators(symbol, indicators, market=None, preloaded_df=None):
+        indicator_calls.append(
+            {
+                "symbol": symbol,
+                "indicators": list(indicators),
+                "market": market,
+                "has_preloaded_df": preloaded_df is not None,
+            }
+        )
+        return {
+            "indicators": {
+                "rsi": {"14": 48.2},
+                "macd": {"macd": 1.0, "signal": 0.8, "histogram": 0.2},
+                "bollinger": {"upper": 112.0, "middle": 105.0, "lower": 98.0},
+                "sma": {"5": 104.0, "20": 101.0},
+                "adx": {"adx": 27.4, "plus_di": 31.2, "minus_di": 18.7},
+                "stoch_rsi": {"k": 61.5, "d": 55.1},
+            }
+        }
+
+    monkeypatch.setattr(analysis_analyze, "_get_indicators_impl", mock_get_indicators)
+
+    async def mock_get_support_resistance(symbol, market=None, preloaded_df=None):
+        assert symbol == "KRW-BTC"
+        assert preloaded_df is not None
+        return {"supports": [{"price": 95.0}], "resistances": [{"price": 115.0}]}
+
+    monkeypatch.setattr(
+        analysis_analyze,
+        "_get_support_resistance_impl",
+        mock_get_support_resistance,
+    )
+
+    result = await tools["analyze_stock"]("KRW-BTC", market="crypto")
+
+    assert indicator_calls == [
+        {
+            "symbol": "KRW-BTC",
+            "indicators": expected_indicators,
+            "market": None,
+            "has_preloaded_df": True,
+        }
+    ]
+    assert result["indicators"]["indicators"]["adx"] == {
+        "adx": 27.4,
+        "plus_di": 31.2,
+        "minus_di": 18.7,
+    }
+    assert result["indicators"]["indicators"]["stoch_rsi"] == {"k": 61.5, "d": 55.1}
+    assert result["errors"] == []
+    assert "recommendation" not in result
+
+
+@pytest.mark.asyncio
+async def test_analyze_portfolio_crypto_reuses_analyze_stock_default_indicators(
+    monkeypatch,
+):
+    tools = build_tools()
+    indicator_calls: list[list[str]] = []
+    fanout_calls: list[tuple[str, str | None, bool]] = []
+    expected_indicators = ["rsi", "macd", "bollinger", "sma", "adx", "stoch_rsi"]
+
+    async def mock_fetch_ohlcv(symbol, market_type, count):
+        assert symbol == "KRW-BTC"
+        assert market_type == "crypto"
+        assert count == 250
+        return pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=250, freq="D"),
+                "open": [100.0] * 250,
+                "high": [110.0] * 250,
+                "low": [90.0] * 250,
+                "close": [105.0] * 250,
+                "volume": [1000.0] * 250,
+                "value": [105000.0] * 250,
+            }
+        )
+
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_quote_crypto",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "instrument_type": "crypto",
+                "price": 105.0,
+                "source": "upbit",
+            }
+        ),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_news_finnhub",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "market": "crypto",
+                "source": "finnhub",
+                "count": 0,
+                "news": [],
+            }
+        ),
+    )
+
+    async def mock_get_indicators(symbol, indicators, market=None, preloaded_df=None):
+        assert symbol == "KRW-BTC"
+        assert preloaded_df is not None
+        indicator_calls.append(list(indicators))
+        return {
+            "indicators": {
+                "adx": {"adx": 27.4, "plus_di": 31.2, "minus_di": 18.7},
+                "stoch_rsi": {"k": 61.5, "d": 55.1},
+            }
+        }
+
+    monkeypatch.setattr(analysis_analyze, "_get_indicators_impl", mock_get_indicators)
+    monkeypatch.setattr(
+        analysis_analyze,
+        "_get_support_resistance_impl",
+        AsyncMock(return_value={"supports": [], "resistances": []}),
+    )
+
+    real_analyze_stock_impl = analysis_screening._analyze_stock_impl
+
+    async def tracking_analyze_stock_impl(
+        symbol: str, market: str | None, include_peers: bool
+    ):
+        fanout_calls.append((symbol, market, include_peers))
+        return await real_analyze_stock_impl(symbol, market, include_peers)
+
+    monkeypatch.setattr(
+        analysis_screening,
+        "_analyze_stock_impl",
+        tracking_analyze_stock_impl,
+    )
+
+    result = await tools["analyze_portfolio"](["KRW-BTC"], market="crypto")
+
+    assert fanout_calls == [("KRW-BTC", "crypto", False)]
+    assert indicator_calls == [expected_indicators]
+    assert result["summary"] == {
+        "total_symbols": 1,
+        "successful": 1,
+        "failed": 0,
+        "errors": [],
+    }
+    assert result["results"]["KRW-BTC"]["indicators"]["indicators"]["adx"] == {
+        "adx": 27.4,
+        "plus_di": 31.2,
+        "minus_di": 18.7,
+    }
+    assert result["results"]["KRW-BTC"]["indicators"]["indicators"]["stoch_rsi"] == {
+        "k": 61.5,
+        "d": 55.1,
+    }
+
+
 # ---------------------------------------------------------------------------
 # TestParseNaverNum
 # ---------------------------------------------------------------------------
