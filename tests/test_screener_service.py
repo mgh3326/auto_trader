@@ -322,6 +322,35 @@ async def test_list_screening_rejects_negative_min_volume(
 
 
 @pytest.mark.asyncio
+async def test_list_screening_min_volume_overfetch_caps_at_100(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.screener_service import ScreenerService
+
+    fake_redis = _FakeRedis()
+    mock_screen = AsyncMock(
+        return_value={
+            "results": [{"code": "AAPL", "volume": 1000}],
+            "total_count": 1,
+            "returned_count": 1,
+            "filters_applied": {"market": "us"},
+            "market": "us",
+        }
+    )
+    monkeypatch.setattr("app.services.screener_service.screen_stocks_impl", mock_screen)
+
+    service = ScreenerService(redis_client=fake_redis)
+    result = await service.list_screening(market="us", min_volume=1000, limit=80)
+
+    assert result["cache_hit"] is False
+    await_args = mock_screen.await_args
+    assert await_args is not None
+    call_kwargs = await_args.kwargs
+    # With limit=80, overfetch should be min(100, max(80*3, 80)) = min(100, 240) = 100
+    assert call_kwargs["limit"] == 100
+
+
+@pytest.mark.asyncio
 async def test_refresh_screening_invalidates_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

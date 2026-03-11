@@ -14,11 +14,13 @@ This module contains tests for:
 - get_investment_opinions tool
 """
 
+import asyncio
 import dataclasses
 import json
 from unittest.mock import AsyncMock
 
 import httpx
+import numpy as np
 import pandas as pd
 import pytest
 import yfinance as yf
@@ -169,6 +171,128 @@ class TestAnalyzeStock:
         assert "stop_loss" in rec
         assert "reasoning" in rec
 
+    async def test_recommendation_generation_skips_unavailable_consensus_counts(self):
+        mock_analysis = {
+            "symbol": "AAPL",
+            "market_type": "equity_us",
+            "source": "yahoo",
+            "quote": {"price": 150.0},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": None,
+                    "hold_count": None,
+                    "sell_count": None,
+                    "strong_buy_count": None,
+                    "total_count": None,
+                    "avg_target_price": None,
+                    "max_target_price": None,
+                }
+            },
+        }
+
+        recommendation = shared.build_recommendation_for_equity(
+            mock_analysis, "equity_us"
+        )
+
+        assert recommendation is not None
+        assert recommendation["action"] == "hold"
+        assert recommendation["confidence"] == "low"
+        assert "Analyst consensus" not in recommendation["reasoning"]
+
+    async def test_recommendation_generation_skips_partially_unavailable_consensus_counts(
+        self,
+    ):
+        mock_analysis = {
+            "symbol": "AAPL",
+            "market_type": "equity_us",
+            "source": "yahoo",
+            "quote": {"price": 150.0},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {
+                "consensus": {
+                    "buy_count": None,
+                    "hold_count": 2,
+                    "sell_count": 8,
+                    "strong_buy_count": None,
+                    "total_count": 10,
+                    "avg_target_price": None,
+                    "max_target_price": None,
+                }
+            },
+        }
+
+        recommendation = shared.build_recommendation_for_equity(
+            mock_analysis, "equity_us"
+        )
+
+        assert recommendation is not None
+        assert recommendation["action"] == "hold"
+        assert recommendation["confidence"] == "low"
+        assert "Analyst consensus" not in recommendation["reasoning"]
+
+    async def test_build_recommendation_for_equity_exposes_rsi14(self):
+        """Test that rsi14 value is exposed in recommendation payload."""
+        analysis = {
+            "quote": {"price": 150.0},
+            "indicators": {"indicators": {"rsi": {"14": 45.8}}},
+            "support_resistance": {"supports": [], "resistances": []},
+        }
+        rec = shared.build_recommendation_for_equity(analysis, "equity_us")
+        assert rec is not None
+        assert rec["rsi14"] == 45.8
+
+    async def test_build_recommendation_for_equity_keeps_zero_rsi(self):
+        """Test that rsi14=0.0 is NOT treated as missing."""
+        analysis = {
+            "quote": {"price": 150.0},
+            "indicators": {"indicators": {"rsi": {"14": 0.0}}},
+            "support_resistance": {"supports": [], "resistances": []},
+        }
+        rec = shared.build_recommendation_for_equity(analysis, "equity_us")
+        assert rec is not None
+        assert rec["rsi14"] == 0.0
+
+    async def test_analyze_stock_us_includes_recommendation_rsi14(self, monkeypatch):
+        """Test that rsi14 is surfaced in recommendation payload for US market."""
+        tools = build_tools()
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            return pd.DataFrame(
+                {
+                    "date": ["2024-01-01"],
+                    "open": [150.0],
+                    "high": [155.0],
+                    "low": [148.0],
+                    "close": [150.0],
+                    "volume": [1000000],
+                }
+            )
+
+        async def mock_get_indicators(
+            symbol, indicators, market=None, preloaded_df=None
+        ):
+            return {"indicators": {"rsi": {"14": 45.8}, "bollinger": {"lower": 145.0}}}
+
+        async def mock_get_support_resistance(symbol, market=None, preloaded_df=None):
+            return {"supports": [{"price": 140.0}], "resistances": [{"price": 160.0}]}
+
+        async def mock_get_quote(symbol, market_type):
+            return {"symbol": symbol, "price": 150.0, "instrument_type": "equity_us"}
+
+        _patch_runtime_attr(
+            monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+        _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_get_indicators)
+        _patch_runtime_attr(
+            monkeypatch, "_get_support_resistance_impl", mock_get_support_resistance
+        )
+        _patch_runtime_attr(monkeypatch, "_get_quote_impl", mock_get_quote)
+
+        result = await tools["analyze_stock"]("AAPL", market="us")
+
+        assert result["recommendation"]["rsi14"] == 45.8
+
     async def test_recommendation_not_included_crypto(self, monkeypatch):
         tools = build_tools()
 
@@ -289,6 +413,163 @@ class TestAnalyzeStock:
         # Both symbols should be normalized to 6-digit strings
         assert "012450" in result["results"]
         assert "005930" in result["results"]
+
+
+@pytest.mark.asyncio
+class TestAnalyzeStockBatch:
+    """Test analyze_stock_batch tool."""
+
+    async def test_analyze_stock_batch_registration(self):
+        """Test that analyze_stock_batch is registered as an MCP tool."""
+        tools = build_tools()
+
+        assert "analyze_stock_batch" in tools
+
+    async def test_analyze_stock_batch_quick_summary(self, monkeypatch):
+        """Test that analyze_stock_batch returns the compact summary contract."""
+        tools = build_tools()
+
+        mock_analysis = {
+            "symbol": "005930",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "quote": {"price": 75000},
+            "indicators": {
+                "indicators": {
+                    "rsi": {"14": 45.0},
+                    "bollinger": {"lower": 74000},
+                }
+            },
+            "support_resistance": {
+                "supports": [{"price": 73000}],
+                "resistances": [{"price": 77000, "strength": "medium"}],
+            },
+            "opinions": {
+                "consensus": {
+                    "buy_count": 2,
+                    "avg_target_price": 85000,
+                    "current_price": 75000,
+                }
+            },
+            "recommendation": {
+                "action": "hold",
+                "confidence": "low",
+            },
+            "news": [{"title": "Some news"}],
+            "profile": {"description": "Company profile"},
+        }
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return mock_analysis
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock_batch"](["005930"], market="kr")
+
+        assert result["summary"] == {
+            "total_symbols": 1,
+            "successful": 1,
+            "failed": 0,
+            "errors": [],
+        }
+        assert result["results"]["005930"] == {
+            "symbol": "005930",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "current_price": 75000,
+            "rsi_14": 45.0,
+            "consensus": {
+                "buy_count": 2,
+                "avg_target_price": 85000,
+                "current_price": 75000,
+            },
+            "recommendation": {
+                "action": "hold",
+                "confidence": "low",
+            },
+            "supports": [{"price": 73000}],
+            "resistances": [{"price": 77000, "strength": "medium"}],
+        }
+
+    async def test_analyze_stock_batch_quick_false_returns_full_payload(
+        self, monkeypatch
+    ):
+        """Test that quick=False returns the unsummarized full analysis payload."""
+        tools = build_tools()
+
+        mock_analysis = {
+            "symbol": "AAPL",
+            "market_type": "equity_us",
+            "source": "yahoo",
+            "quote": {"price": 185.5},
+            "news": [{"title": "Full payload should keep news"}],
+            "profile": {"name": "Apple Inc."},
+        }
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return mock_analysis
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock_batch"](
+            ["AAPL"], market="us", quick=False
+        )
+
+        assert result["summary"] == {
+            "total_symbols": 1,
+            "successful": 1,
+            "failed": 0,
+            "errors": [],
+        }
+        assert result["results"]["AAPL"] == mock_analysis
+
+    async def test_analyze_stock_batch_kr_symbol_normalization(self, monkeypatch):
+        """Test that analyze_stock_batch normalizes numeric KR symbols."""
+        tools = build_tools()
+
+        def mock_impl(symbol: str, market: str | None, include_peers: bool):
+            return {
+                "symbol": symbol,
+                "market_type": "equity_kr",
+                "source": "kis",
+                "quote": {"price": 75000},
+            }
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", mock_impl)
+
+        result = await tools["analyze_stock_batch"]([12450, "005930"], market="kr")
+
+        assert "results" in result
+        assert "012450" in result["results"]
+        assert "005930" in result["results"]
+
+    async def test_analyze_stock_batch_concurrency(self, monkeypatch):
+        """Test that analyze_stock_batch executes symbol analysis concurrently."""
+        tools = build_tools()
+        call_tracker = {"active": 0, "max_active": 0}
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            call_tracker["active"] += 1
+            call_tracker["max_active"] = max(
+                call_tracker["max_active"], call_tracker["active"]
+            )
+            await asyncio.sleep(0.01)
+            call_tracker["active"] -= 1
+            return {
+                "symbol": symbol,
+                "market_type": "equity_kr",
+                "source": "kis",
+                "quote": {"price": 75000},
+            }
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock_batch"](
+            ["005930", "000660", "035420"], market="kr"
+        )
+
+        assert "results" in result
+        assert call_tracker["max_active"] > 1, "Expected concurrent execution"
 
 
 @pytest.mark.asyncio
@@ -2417,9 +2698,198 @@ class TestGetInvestmentOpinions:
             "AAPL", 10
         )
 
-        assert result["consensus"]["avg_target_price"] == "N/A"
+        assert result["consensus"]["avg_target_price"] is None
         assert result["consensus"]["current_price"] == 185.5
         assert result["consensus"]["upside_pct"] is None
+    async def test_us_market_uses_recommendation_trend_counts_and_normalized_targets(
+        self, monkeypatch
+    ):
+        class MockTicker:
+            def __init__(self, symbol: str, session=None):
+                assert session is not None
+                self.symbol = symbol
+                self.analyst_price_targets = {
+                    "mean": {"raw": 200.0, "fmt": "200.00"},
+                    "median": np.float64(198.0),
+                    "low": {"raw": pd.Series([180.0], dtype="Float64").iloc[0]},
+                    "high": np.float64(220.0),
+                    "current": {"raw": 185.0, "fmt": "185.00"},
+                }
+                self.recommendations = pd.DataFrame(
+                    [
+                        {
+                            "period": "-1m",
+                            "strongBuy": 4,
+                            "buy": 6,
+                            "hold": 5,
+                            "sell": 2,
+                            "strongSell": 1,
+                        },
+                        {
+                            "period": "0m",
+                            "strongBuy": 5,
+                            "buy": 7,
+                            "hold": 8,
+                            "sell": 3,
+                            "strongSell": 2,
+                        },
+                    ]
+                )
+                self.upgrades_downgrades = pd.DataFrame()
+                self.info = {"currentPrice": 184.0}
+
+        monkeypatch.setattr(yf, "Ticker", MockTicker)
+
+        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
+            "AAPL", 10
+        )
+
+        assert result["count"] == 0
+        assert result["opinions"] == []
+        assert result["consensus"]["buy_count"] == 12
+        assert result["consensus"]["hold_count"] == 8
+        assert result["consensus"]["sell_count"] == 5
+        assert result["consensus"]["strong_buy_count"] == 5
+        assert result["consensus"]["total_count"] == 25
+        assert result["consensus"]["avg_target_price"] == 200.0
+        assert result["consensus"]["median_target_price"] == 198.0
+        assert result["consensus"]["min_target_price"] == 180.0
+        assert result["consensus"]["max_target_price"] == 220.0
+        assert result["consensus"]["current_price"] == 185.0
+        assert result["consensus"]["upside_pct"] == 8.11
+
+    async def test_us_market_returns_warning_for_unavailable_yahoo_consensus(
+        self, monkeypatch
+    ):
+        class MockTicker:
+            def __init__(self, symbol: str, session=None):
+                assert session is not None
+                self.symbol = symbol
+                self.analyst_price_targets = {
+                    "mean": {"raw": 0, "fmt": "0.00"},
+                    "median": None,
+                    "low": "",
+                    "high": {"raw": 0},
+                    "current": {"raw": 0, "fmt": "0.00"},
+                }
+                self.recommendations = pd.DataFrame(
+                    [
+                        {
+                            "period": "0m",
+                            "strongBuy": 0,
+                            "buy": 0,
+                            "hold": 0,
+                            "sell": 0,
+                            "strongSell": 0,
+                        }
+                    ]
+                )
+                self.upgrades_downgrades = pd.DataFrame()
+                self.info = {"currentPrice": 185.0}
+
+        monkeypatch.setattr(yf, "Ticker", MockTicker)
+
+        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
+            "AAPL", 10
+        )
+
+        assert result["count"] == 0
+        assert result["opinions"] == []
+        assert result["consensus"]["buy_count"] is None
+        assert result["consensus"]["hold_count"] is None
+        assert result["consensus"]["sell_count"] is None
+        assert result["consensus"]["strong_buy_count"] is None
+        assert result["consensus"]["total_count"] is None
+        assert result["consensus"]["avg_target_price"] is None
+        assert result["consensus"]["median_target_price"] is None
+        assert result["consensus"]["min_target_price"] is None
+        assert result["consensus"]["max_target_price"] is None
+        assert result["consensus"]["upside_pct"] is None
+        assert "warning" in result
+        assert "Yahoo" in result["warning"]
+
+    async def test_us_market_normalizes_fmt_only_target_dicts(self, monkeypatch):
+        class MockTicker:
+            def __init__(self, symbol: str, session=None):
+                assert session is not None
+                self.symbol = symbol
+                self.analyst_price_targets = {
+                    "mean": {"fmt": "200.00"},
+                    "median": {"fmt": "198.00"},
+                    "low": {"fmt": "180.00"},
+                    "high": {"fmt": "220.00"},
+                    "current": {"fmt": "185.00"},
+                }
+                self.recommendations = pd.DataFrame(
+                    [
+                        {
+                            "period": "0m",
+                            "strongBuy": 5,
+                            "buy": 7,
+                            "hold": 8,
+                            "sell": 3,
+                            "strongSell": 2,
+                        }
+                    ]
+                )
+                self.upgrades_downgrades = pd.DataFrame()
+                self.info = {"currentPrice": 184.0}
+
+        monkeypatch.setattr(yf, "Ticker", MockTicker)
+
+        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
+            "AAPL", 10
+        )
+
+        assert result["consensus"]["avg_target_price"] == 200.0
+        assert result["consensus"]["median_target_price"] == 198.0
+        assert result["consensus"]["min_target_price"] == 180.0
+        assert result["consensus"]["max_target_price"] == 220.0
+        assert result["consensus"]["current_price"] == 185.0
+        assert result["consensus"]["upside_pct"] == 8.11
+
+    async def test_us_market_keeps_partial_recommendation_counts_unavailable(
+        self, monkeypatch
+    ):
+        class MockTicker:
+            def __init__(self, symbol: str, session=None):
+                assert session is not None
+                self.symbol = symbol
+                self.analyst_price_targets = {
+                    "mean": 200.0,
+                    "median": 198.0,
+                    "low": 180.0,
+                    "high": 220.0,
+                    "current": 185.0,
+                }
+                self.recommendations = pd.DataFrame(
+                    [
+                        {
+                            "period": "0m",
+                            "strongBuy": 5,
+                            "buy": 7,
+                            "hold": np.nan,
+                            "sell": 3,
+                            "strongSell": 2,
+                        }
+                    ]
+                )
+                self.upgrades_downgrades = pd.DataFrame()
+                self.info = {"currentPrice": 184.0}
+
+        monkeypatch.setattr(yf, "Ticker", MockTicker)
+
+        result = await fundamentals_sources_naver._fetch_investment_opinions_yfinance(
+            "AAPL", 10
+        )
+
+        assert result["consensus"]["buy_count"] is None
+        assert result["consensus"]["hold_count"] is None
+        assert result["consensus"]["sell_count"] is None
+        assert result["consensus"]["strong_buy_count"] is None
+        assert result["consensus"]["total_count"] is None
+        assert result["consensus"]["avg_target_price"] == 200.0
+        assert result["consensus"]["current_price"] == 185.0
 
 
 @pytest.mark.asyncio
@@ -2792,9 +3262,11 @@ class TestScreenEnrichmentHelpers:
 
 
 @pytest.mark.asyncio
-async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
+async def test_analyze_stock_us_reuses_preloaded_yfinance_analyst_snapshot(
+    monkeypatch,
+):
     tools = build_tools()
-    yf_info_calls = []
+    yf_calls = {"info": 0, "targets": 0, "recommendations": 0, "ud": 0}
 
     async def mock_fetch_ohlcv(symbol, market_type, count):
         return pd.DataFrame(
@@ -2810,6 +3282,37 @@ async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
 
     _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
 
+    async def mock_get_quote(symbol, market_type):
+        return {
+            "symbol": symbol,
+            "instrument_type": "equity_us",
+            "price": 150.0,
+            "source": "yahoo",
+        }
+
+    monkeypatch.setattr(analysis_analyze, "_get_quote_impl", mock_get_quote)
+
+    async def mock_get_indicators(symbol, indicators, market=None, preloaded_df=None):
+        assert preloaded_df is not None
+        return {"indicators": {"rsi": {"14": 45.0}}}
+
+    monkeypatch.setattr(analysis_analyze, "_get_indicators_impl", mock_get_indicators)
+
+    async def mock_get_support_resistance(symbol, market=None, preloaded_df=None):
+        assert preloaded_df is not None
+        return {"supports": [], "resistances": []}
+
+    monkeypatch.setattr(
+        analysis_analyze,
+        "_get_support_resistance_impl",
+        mock_get_support_resistance,
+    )
+    monkeypatch.setattr(
+        analysis_analyze,
+        "_build_recommendation_for_equity",
+        lambda analysis, market_type: None,
+    )
+
     class MockKISClient:
         pass
 
@@ -2819,7 +3322,7 @@ async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
         class MockTicker:
             @property
             def info(self):
-                yf_info_calls.append(f"info:{symbol}")
+                yf_calls["info"] += 1
                 return {
                     "shortName": f"{symbol} Inc",
                     "currentPrice": 150.0,
@@ -2833,11 +3336,44 @@ async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
 
             @property
             def analyst_price_targets(self):
-                return {"mean": 180.0, "median": 175.0, "low": 150.0, "high": 200.0}
+                yf_calls["targets"] += 1
+                return {
+                    "mean": {"raw": 180.0, "fmt": "180.00"},
+                    "median": 175.0,
+                    "low": 150.0,
+                    "high": 200.0,
+                    "current": 150.0,
+                }
+
+            @property
+            def recommendations(self):
+                yf_calls["recommendations"] += 1
+                return pd.DataFrame(
+                    [
+                        {
+                            "period": "0m",
+                            "strongBuy": 3,
+                            "buy": 4,
+                            "hold": 2,
+                            "sell": 1,
+                            "strongSell": 0,
+                        }
+                    ]
+                )
 
             @property
             def upgrades_downgrades(self):
-                return pd.DataFrame()
+                yf_calls["ud"] += 1
+                return pd.DataFrame(
+                    [
+                        {
+                            "Firm": "Firm A",
+                            "ToGrade": "Hold",
+                            "GradeDate": pd.Timestamp("2024-01-02"),
+                            "currentPriceTarget": 160.0,
+                        }
+                    ]
+                )
 
         return MockTicker()
 
@@ -2861,14 +3397,18 @@ async def test_analyze_stock_us_reuses_yfinance_info(monkeypatch):
 
     result = await tools["analyze_stock"]("AAPL", market="us")
 
-    info_calls = [c for c in yf_info_calls if c.startswith("info:")]
-    assert len(info_calls) == 1, (
-        f"Expected 1 info call, got {len(info_calls)}: {info_calls}"
-    )
+    assert yf_calls == {"info": 1, "targets": 1, "recommendations": 1, "ud": 1}
 
     assert result["symbol"] == "AAPL"
     assert "valuation" in result
     assert "opinions" in result
+    assert result["opinions"]["count"] == 1
+    assert result["opinions"]["opinions"][0]["firm"] == "Firm A"
+    assert result["opinions"]["consensus"]["buy_count"] == 7
+    assert result["opinions"]["consensus"]["hold_count"] == 2
+    assert result["opinions"]["consensus"]["sell_count"] == 1
+    assert result["opinions"]["consensus"]["strong_buy_count"] == 3
+    assert result["opinions"]["consensus"]["total_count"] == 10
 
 
 @pytest.mark.asyncio
@@ -3119,6 +3659,213 @@ async def test_analyze_stock_kr_falls_back_to_quote_helper_when_ohlcv_empty(
     assert result["valuation"]["source"] == "naver"
     assert result["news"]["source"] == "naver"
     assert result["opinions"]["source"] == "naver"
+
+
+@pytest.mark.asyncio
+async def test_analyze_stock_crypto_uses_extended_default_indicators(monkeypatch):
+    tools = build_tools()
+    indicator_calls: list[dict[str, object]] = []
+    expected_indicators = ["rsi", "macd", "bollinger", "sma", "adx", "stoch_rsi"]
+
+    async def mock_fetch_ohlcv(symbol, market_type, count):
+        assert symbol == "KRW-BTC"
+        assert market_type == "crypto"
+        assert count == 250
+        return pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=250, freq="D"),
+                "open": [100.0] * 250,
+                "high": [110.0] * 250,
+                "low": [90.0] * 250,
+                "close": [105.0] * 250,
+                "volume": [1000.0] * 250,
+                "value": [105000.0] * 250,
+            }
+        )
+
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_quote_crypto",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "instrument_type": "crypto",
+                "price": 105.0,
+                "source": "upbit",
+            }
+        ),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_news_finnhub",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "market": "crypto",
+                "source": "finnhub",
+                "count": 0,
+                "news": [],
+            }
+        ),
+    )
+
+    async def mock_get_indicators(symbol, indicators, market=None, preloaded_df=None):
+        indicator_calls.append(
+            {
+                "symbol": symbol,
+                "indicators": list(indicators),
+                "market": market,
+                "has_preloaded_df": preloaded_df is not None,
+            }
+        )
+        return {
+            "indicators": {
+                "rsi": {"14": 48.2},
+                "macd": {"macd": 1.0, "signal": 0.8, "histogram": 0.2},
+                "bollinger": {"upper": 112.0, "middle": 105.0, "lower": 98.0},
+                "sma": {"5": 104.0, "20": 101.0},
+                "adx": {"adx": 27.4, "plus_di": 31.2, "minus_di": 18.7},
+                "stoch_rsi": {"k": 61.5, "d": 55.1},
+            }
+        }
+
+    monkeypatch.setattr(analysis_analyze, "_get_indicators_impl", mock_get_indicators)
+
+    async def mock_get_support_resistance(symbol, market=None, preloaded_df=None):
+        assert symbol == "KRW-BTC"
+        assert preloaded_df is not None
+        return {"supports": [{"price": 95.0}], "resistances": [{"price": 115.0}]}
+
+    monkeypatch.setattr(
+        analysis_analyze,
+        "_get_support_resistance_impl",
+        mock_get_support_resistance,
+    )
+
+    result = await tools["analyze_stock"]("KRW-BTC", market="crypto")
+
+    assert indicator_calls == [
+        {
+            "symbol": "KRW-BTC",
+            "indicators": expected_indicators,
+            "market": None,
+            "has_preloaded_df": True,
+        }
+    ]
+    assert result["indicators"]["indicators"]["adx"] == {
+        "adx": 27.4,
+        "plus_di": 31.2,
+        "minus_di": 18.7,
+    }
+    assert result["indicators"]["indicators"]["stoch_rsi"] == {"k": 61.5, "d": 55.1}
+    assert result["errors"] == []
+    assert "recommendation" not in result
+
+
+@pytest.mark.asyncio
+async def test_analyze_portfolio_crypto_reuses_analyze_stock_default_indicators(
+    monkeypatch,
+):
+    tools = build_tools()
+    indicator_calls: list[list[str]] = []
+    fanout_calls: list[tuple[str, str | None, bool]] = []
+    expected_indicators = ["rsi", "macd", "bollinger", "sma", "adx", "stoch_rsi"]
+
+    async def mock_fetch_ohlcv(symbol, market_type, count):
+        assert symbol == "KRW-BTC"
+        assert market_type == "crypto"
+        assert count == 250
+        return pd.DataFrame(
+            {
+                "date": pd.date_range("2024-01-01", periods=250, freq="D"),
+                "open": [100.0] * 250,
+                "high": [110.0] * 250,
+                "low": [90.0] * 250,
+                "close": [105.0] * 250,
+                "volume": [1000.0] * 250,
+                "value": [105000.0] * 250,
+            }
+        )
+
+    _patch_runtime_attr(monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_quote_crypto",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "instrument_type": "crypto",
+                "price": 105.0,
+                "source": "upbit",
+            }
+        ),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_fetch_news_finnhub",
+        AsyncMock(
+            return_value={
+                "symbol": "KRW-BTC",
+                "market": "crypto",
+                "source": "finnhub",
+                "count": 0,
+                "news": [],
+            }
+        ),
+    )
+
+    async def mock_get_indicators(symbol, indicators, market=None, preloaded_df=None):
+        assert symbol == "KRW-BTC"
+        assert preloaded_df is not None
+        indicator_calls.append(list(indicators))
+        return {
+            "indicators": {
+                "adx": {"adx": 27.4, "plus_di": 31.2, "minus_di": 18.7},
+                "stoch_rsi": {"k": 61.5, "d": 55.1},
+            }
+        }
+
+    monkeypatch.setattr(analysis_analyze, "_get_indicators_impl", mock_get_indicators)
+    monkeypatch.setattr(
+        analysis_analyze,
+        "_get_support_resistance_impl",
+        AsyncMock(return_value={"supports": [], "resistances": []}),
+    )
+
+    real_analyze_stock_impl = analysis_screening._analyze_stock_impl
+
+    async def tracking_analyze_stock_impl(
+        symbol: str, market: str | None, include_peers: bool
+    ):
+        fanout_calls.append((symbol, market, include_peers))
+        return await real_analyze_stock_impl(symbol, market, include_peers)
+
+    monkeypatch.setattr(
+        analysis_screening,
+        "_analyze_stock_impl",
+        tracking_analyze_stock_impl,
+    )
+
+    result = await tools["analyze_portfolio"](["KRW-BTC"], market="crypto")
+
+    assert fanout_calls == [("KRW-BTC", "crypto", False)]
+    assert indicator_calls == [expected_indicators]
+    assert result["summary"] == {
+        "total_symbols": 1,
+        "successful": 1,
+        "failed": 0,
+        "errors": [],
+    }
+    assert result["results"]["KRW-BTC"]["indicators"]["indicators"]["adx"] == {
+        "adx": 27.4,
+        "plus_di": 31.2,
+        "minus_di": 18.7,
+    }
+    assert result["results"]["KRW-BTC"]["indicators"]["indicators"]["stoch_rsi"] == {
+        "k": 61.5,
+        "d": 55.1,
+    }
 
 
 # ---------------------------------------------------------------------------

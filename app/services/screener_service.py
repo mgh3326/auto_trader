@@ -125,7 +125,7 @@ class ScreenerService:
 
     @staticmethod
     def _calculate_overfetch_limit(request_limit: int) -> int:
-        return min(50, max(request_limit * 3, request_limit))
+        return min(100, max(request_limit * 3, request_limit))
 
     @staticmethod
     def _volume_metric_for_row(market: ScreenMarket, row: dict[str, Any]) -> float:
@@ -318,7 +318,7 @@ class ScreenerService:
         min_analyst_buy: float | None = None,
         max_rsi: float | None = None,
         min_volume: float | None = None,
-        limit: int = 20,
+        limit: int = 50,
     ) -> dict[str, Any]:
         normalized_request = normalize_screen_request(
             market=market,
@@ -456,7 +456,7 @@ class ScreenerService:
         min_analyst_buy: float | None = None,
         max_rsi: float | None = None,
         min_volume: float | None = None,
-        limit: int = 20,
+        limit: int = 50,
     ) -> dict[str, Any]:
         normalized_request = normalize_screen_request(
             market=market,

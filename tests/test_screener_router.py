@@ -91,6 +91,9 @@ def test_screener_dashboard_page(
     assert 'class="stack page-sidebar"' in body
     assert 'id="filter-form"' in body
     assert 'id="min-volume"' in body
+    assert 'id="limit"' in body
+    assert 'max="100"' in body
+    assert 'value="50"' in body
     assert 'id="results-table"' in body
     assert 'id="results-cards"' in body
     assert 'class="results-table-wrap screener-results-table-wrap"' in body
@@ -331,6 +334,32 @@ def test_list_endpoint_returns_400_for_negative_min_volume() -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "min_volume must be >= 0"
+
+
+def test_list_endpoint_uses_default_limit_50(
+    client: tuple[TestClient, _FakeScreenerService],
+) -> None:
+    test_client, fake_service = client
+
+    response = test_client.get("/api/screener/list", params={"market": "us"})
+
+    assert response.status_code == 200
+    fake_service.list_screening.assert_awaited_once()
+    list_await_args = fake_service.list_screening.await_args
+    assert list_await_args is not None
+    assert list_await_args.kwargs["limit"] == 50
+
+
+def test_list_endpoint_rejects_limit_over_100() -> None:
+    app = FastAPI()
+    fake_service = _FakeScreenerService()
+    app.include_router(screener.router)
+    app.dependency_overrides[screener.get_screener_service] = lambda: fake_service
+
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        response = test_client.get("/api/screener/list", params={"limit": 101})
+
+    assert response.status_code == 422
 
 
 def test_report_request_endpoint(

@@ -43,6 +43,15 @@ _KR_ANALYZE_PATCH_SURFACES = (
     _fetch_valuation_naver,
 )
 
+DEFAULT_ANALYZE_STOCK_INDICATORS: tuple[str, ...] = (
+    "rsi",
+    "macd",
+    "bollinger",
+    "sma",
+    "adx",
+    "stoch_rsi",
+)
+
 
 async def _get_quote_impl(symbol: str, market_type: str) -> dict[str, Any] | None:
     if market_type == "crypto":
@@ -155,7 +164,7 @@ def _append_common_tasks(
                 asyncio.create_task(
                     _get_indicators_impl(
                         normalized_symbol,
-                        ["rsi", "macd", "bollinger", "sma"],
+                        list(DEFAULT_ANALYZE_STOCK_INDICATORS),
                         None,
                         preloaded_df=ohlcv_df,
                     )
@@ -178,6 +187,7 @@ def _append_common_tasks(
 def _collect_yfinance_snapshot(yf_ticker: Any) -> _YFinanceSnapshot:
     info = None
     targets = None
+    recommendations = None
     upgrades_downgrades = None
     try:
         info = yf_ticker.info
@@ -188,12 +198,17 @@ def _collect_yfinance_snapshot(yf_ticker: Any) -> _YFinanceSnapshot:
     except Exception:
         pass
     try:
+        recommendations = yf_ticker.recommendations
+    except Exception:
+        pass
+    try:
         upgrades_downgrades = yf_ticker.upgrades_downgrades
     except Exception:
         pass
     return _YFinanceSnapshot(
         info=info,
         analyst_price_targets=targets,
+        recommendations=recommendations,
         upgrades_downgrades=upgrades_downgrades,
     )
 
