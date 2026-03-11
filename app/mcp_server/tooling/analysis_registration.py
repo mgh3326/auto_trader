@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.mcp_server.tooling.analysis_tool_handlers import (
     analyze_portfolio_impl,
@@ -48,7 +48,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         market: str = "kr",
         ranking_type: str = "volume",
         limit: int = 20,
-    ) -> dict:
+    ) -> dict[str, Any]:
         return await get_top_stocks_impl(
             market=market,
             ranking_type=ranking_type,
@@ -59,8 +59,8 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         name="get_disclosures",
         description=(
             "Get DART (OPENDART) disclosure filings for Korean corporations. "
-            "Supports both 6-digit stock codes (e.g., '005930') and Korean company names "
-            "(e.g., '삼성전자') by automatically resolving stock codes to Korean names. "
+            "Supports direct 6-digit stock-code inputs (e.g., '005930') and best-effort "
+            "Korean company-name inputs (e.g., '삼성전자'). "
             "Returns filing date, report name, report number, and "
             "corporation name."
         ),
@@ -70,7 +70,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         days: int = 30,
         limit: int = 20,
         report_type: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         return await get_disclosures_impl(
             symbol=symbol,
             days=days,
@@ -89,7 +89,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
     async def get_correlation(
         symbols: list[str],
         period: int = 60,
-    ) -> dict:
+    ) -> dict[str, Any]:
         return await get_correlation_impl(symbols=symbols, period=period)
 
     @mcp.tool(
@@ -103,7 +103,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         symbol: str | int,
         market: str | None = None,
         include_peers: bool = False,
-    ) -> dict:
+    ) -> dict[str, Any]:
         return await analyze_stock_impl(
             symbol=symbol,
             market=market,
@@ -121,7 +121,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         symbols: list[str | int],
         market: str | None = None,
         include_peers: bool = False,
-    ) -> dict:
+    ) -> dict[str, Any]:
         return await analyze_portfolio_impl(
             symbols=symbols,
             market=market,
@@ -135,19 +135,27 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         ),
     )
     async def screen_stocks(
-        market: str = "kr",
-        asset_type: str | None = None,
+        market: Literal["kr", "kospi", "kosdaq", "us", "crypto"] = "kr",
+        asset_type: Literal["stock", "etf", "etn"] | None = None,
         category: str | None = None,
         strategy: str | None = None,
-        sort_by: str | None = None,
-        sort_order: str = "desc",
+        sort_by: Literal[
+            "volume",
+            "trade_amount",
+            "market_cap",
+            "change_rate",
+            "dividend_yield",
+            "rsi",
+        ]
+        | None = None,
+        sort_order: Literal["asc", "desc"] = "desc",
         min_market_cap: float | None = None,
         max_per: float | None = None,
         max_pbr: float | None = None,
         min_dividend_yield: float | None = None,
         max_rsi: float | None = None,
         limit: int = 20,
-    ) -> dict:
+    ) -> dict[str, Any]:
         return await screen_stocks_impl(
             market=market,
             asset_type=asset_type,
@@ -177,7 +185,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         sectors: list[str] | None = None,
         max_positions: int = 5,
         exclude_held: bool = True,
-    ) -> dict:
+    ) -> dict[str, Any]:
         return await recommend_stocks_impl(
             budget=budget,
             market=market,
@@ -192,7 +200,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
         name="get_dividends",
         description="Get dividend information for US stocks (via yfinance).",
     )
-    async def get_dividends(symbol: str) -> dict:
+    async def get_dividends(symbol: str) -> dict[str, Any]:
         return await get_dividends_impl(symbol=symbol)
 
     @mcp.tool(
@@ -201,7 +209,7 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             "Get the Crypto Fear & Greed Index from Alternative.me with current and history."
         ),
     )
-    async def get_fear_greed_index(days: int = 7) -> dict:
+    async def get_fear_greed_index(days: int = 7) -> dict[str, Any]:
         return await get_fear_greed_index_impl(days=days)
 
 

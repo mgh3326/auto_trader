@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import math
 from typing import Any, TypedDict
 
 type CryptoCandidate = dict[str, Any]
@@ -34,12 +35,13 @@ class CoinGeckoPayload(TypedDict, total=False):
 def _to_optional_float(value: Any) -> float | None:
     if value is None:
         return None
-    if value != value:
-        return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if math.isnan(number):
+        return None
+    return number
 
 
 def _extract_market_symbol(symbol: Any) -> str | None:

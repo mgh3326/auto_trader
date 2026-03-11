@@ -144,15 +144,32 @@ class TradeNotifier:
         Returns:
             Discord webhook URL for the market type, or None if not configured
         """
-        # Normalize market type - handle both English and Korean
-        market_type_normalized = market_type.strip()
+        market_type_normalized = market_type.strip().lower()
 
-        # Map market types to webhooks
-        if market_type_normalized in ("US", "해외주식"):
+        if market_type_normalized in {
+            "us",
+            "usa",
+            "overseas",
+            "equity_us",
+            "해외주식",
+            "nas",
+            "nasd",
+            "nasdaq",
+            "nys",
+            "nyse",
+            "ams",
+            "amex",
+        }:
             return self._discord_webhook_us
-        elif market_type_normalized == "국내주식":
+        elif market_type_normalized in {
+            "kr",
+            "krx",
+            "domestic",
+            "equity_kr",
+            "국내주식",
+        }:
             return self._discord_webhook_kr
-        elif market_type_normalized == "암호화폐":
+        elif market_type_normalized in {"crypto", "cryptocurrency", "coin", "암호화폐"}:
             return self._discord_webhook_crypto
         else:
             logger.warning(f"Unknown market type: {market_type}")
@@ -1709,6 +1726,7 @@ class TradeNotifier:
         parse_mode: str = "Markdown",
         *,
         correlation_id: str | None = None,
+        market_type: str | None = None,
     ) -> bool:
         """
         Forward an OpenClaw outbound message to Discord or Telegram.
@@ -1738,10 +1756,17 @@ class TradeNotifier:
                 )
                 return False
 
-            # Try Discord first
-            if self._discord_webhook_alerts:
+            webhook_url: str | None = None
+            if market_type is not None:
+                webhook_url = self._get_webhook_for_market_type(market_type)
+                if webhook_url is None:
+                    discord_result = "skipped(no_market_webhook)"
+            else:
+                webhook_url = self._discord_webhook_alerts
+
+            if webhook_url:
                 discord_success = await self._send_to_discord_content_single(
-                    message, self._discord_webhook_alerts
+                    message, webhook_url
                 )
                 if discord_success:
                     discord_result = "success"

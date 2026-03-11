@@ -73,6 +73,8 @@ Behavior:
 - Only KR equity orderbook is supported in v1; `market="us"` or `market="crypto"` raises an argument error
 - Symbol normalization follows the KR quote path, including zero-padding numeric codes such as `5930 -> 005930`
 - Valid KR requests use KIS `inquire-asking-price-exp-ccn` and return 10-level asks/bids, total residual quantities, and expected match metadata
+- `expected_qty` keeps the public `int | null` contract; when KIS leaves `output2.antc_cnqn` blank or omits it, the response serializes `expected_qty` as `null` instead of inventing a fallback quantity
+- During the NXT session (`16:00`-`20:00` KST), KIS may return `expected_price` while leaving `expected_qty` blank or absent; this is treated as a valid upstream state, not an MCP error
 - Successful responses also include MCP-only derived fields: `pressure`, `pressure_desc`, `spread`, and `spread_pct`
 - Successful responses include `source: "kis"` and `instrument_type: "equity_kr"`
 - Invalid input raises; upstream KIS failures for otherwise valid KR requests return in-band error payloads via the shared MCP error contract
@@ -93,9 +95,11 @@ Response format:
   "spread": 100,
   "spread_pct": 0.143,
   "expected_price": 70050,
-  "expected_qty": 42
+  "expected_qty": null
 }
 ```
+
+`expected_qty: null` means KIS did not provide `antc_cnqn`; it does not by itself indicate a tool failure.
 
 Derived fields:
 - `pressure` is derived from `bid_ask_ratio` using fixed inclusive boundaries:
@@ -165,6 +169,29 @@ Symbol contract:
 - Company-name inputs such as `삼성전자` or `Apple Inc.` are rejected with:
   - `"get_correlation does not support company-name inputs because it has no market parameter. Use ticker/code inputs directly."`
 - When at least 2 ticker/code inputs resolve and fetch successfully, the tool still returns a correlation matrix and includes failed symbols in `errors`.
+
+### `get_disclosures` spec
+Parameters:
+- `symbol`: Korean corporation lookup input (required)
+- `days`: Lookback window in days (default: 30)
+- `limit`: Maximum filings to return (default: 20)
+- `report_type`: Optional Korean disclosure group (`정기`, `주요사항`, `발행`, `지분`, `기타`)
+
+Symbol contract:
+- Direct 6-digit KR stock codes such as `005930` are passed through to OpenDartReader as-is.
+- Korean company names such as `삼성전자` are supported on a best-effort basis through OpenDartReader's exact-name corp lookup.
+- Blank or whitespace-only `symbol` inputs are rejected with an explicit in-band error payload (`success: false`, `error: "symbol is required"`, `filings: []`, `symbol: ""`).
+- Company-name inputs that OpenDartReader cannot resolve return an explicit in-band error payload with `success: false`; they do not silently degrade to an empty `filings` list.
+
+Behavior:
+- `report_type` maps internally to DART disclosure kinds: `정기 -> A`, `주요사항 -> B`, `발행 -> C`, `지분 -> D`, `기타 -> E`.
+- Unsupported `report_type` inputs return `success: false` instead of silently broadening the query.
+- Successful responses return the existing `filings` list shape with `date`, `report_nm`, `rcp_no`, and `corp_name`.
+- An empty DataFrame from OpenDartReader is treated as a successful lookup with `filings: []`.
+- The first process-local client initialization still downloads the OpenDART corp-code cache, so cold-start latency can be higher than warm calls.
+
+Error payload:
+- Failure responses include `success`, `error`, `filings`, and `symbol`.
 
 ### `manage_watch_alerts` spec
 Parameters:

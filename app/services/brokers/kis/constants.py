@@ -20,6 +20,9 @@ DOMESTIC_DAILY_CHART_URL = (
 )
 DOMESTIC_DAILY_CHART_TR = "FHKST03010100"  # 일봉·주식·실전/모의 공통
 
+DOMESTIC_SHORT_SELLING_URL = "/uapi/domestic-stock/v1/quotations/daily-short-sale"
+DOMESTIC_SHORT_SELLING_TR = "FHPST04830000"
+
 DOMESTIC_MINUTE_CHART_URL = (
     "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
 )

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from typing import Any
 
 import pandas as pd
 
 from app.core.async_rate_limiter import RateLimitExceededError
+from app.core.timezone import KST, now_kst
+from app.services import naver_finance
 from app.services.brokers.kis.client import KISClient
 from app.services.brokers.upbit.client import fetch_multiple_current_prices
 from app.services.brokers.upbit.client import fetch_ohlcv as fetch_upbit_ohlcv
@@ -31,6 +34,8 @@ from app.services.market_data.contracts import (
 )
 from app.services.us_intraday_candles_read_service import read_us_intraday_candles
 from app.services.us_symbol_universe_service import USSymbolUniverseLookupError
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_market(market: str) -> str:
@@ -144,6 +149,77 @@ def _to_optional_int(value: Any) -> int | None:
         return int(float(value))
     except (TypeError, ValueError):
         return None
+
+
+def _current_kst_datetime() -> dt.datetime:
+    return now_kst()
+
+
+def _get_orderbook_session_hint(now_kst: dt.datetime | None = None) -> str:
+    current = now_kst or _current_kst_datetime()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=KST)
+    else:
+        current = current.astimezone(KST)
+    current_time = current.timetz().replace(tzinfo=None)
+    if dt.time(9, 0) <= current_time < dt.time(15, 30):
+        return "regular"
+    if dt.time(16, 0) <= current_time < dt.time(20, 0):
+        return "nxt"
+    return "other"
+
+
+def _extract_expected_match_metadata(
+    symbol: str,
+    output2: dict[str, Any] | None,
+) -> tuple[int | None, int | None]:
+    if output2 is None:
+        logger.info(
+            "Orderbook expected_qty unavailable: symbol=%s session_hint=%s antc_cnpr=%r antc_cnqn=%r output2_keys=%s",
+            symbol,
+            _get_orderbook_session_hint(),
+            None,
+            None,
+            [],
+        )
+        return None, None
+
+    raw_expected_price = output2.get("antc_cnpr")
+    raw_expected_qty = output2.get("antc_cnqn")
+    expected_price = _to_optional_int(raw_expected_price)
+    expected_qty = _to_optional_int(raw_expected_qty)
+
+    if raw_expected_qty in (None, ""):
+        logger.info(
+            "Orderbook expected_qty unavailable: symbol=%s session_hint=%s antc_cnpr=%r antc_cnqn=%r output2_keys=%s",
+            symbol,
+            _get_orderbook_session_hint(),
+            raw_expected_price,
+            raw_expected_qty,
+            sorted(output2),
+        )
+
+    return expected_price, expected_qty
+
+
+def _to_optional_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_kis_date(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if len(text) == 8 and text.isdigit():
+        formatted = f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+        try:
+            return dt.date.fromisoformat(formatted).isoformat()
+        except ValueError:
+            return None
+    return None
 
 
 def _parse_orderbook_levels(
@@ -263,6 +339,10 @@ async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
             code=resolved_symbol,
             market="UN",
         )
+        expected_price, expected_qty = _extract_expected_match_metadata(
+            resolved_symbol,
+            output2,
+        )
         total_ask_qty = _to_int(output1.get("total_askp_rsqn"))
         total_bid_qty = _to_int(output1.get("total_bidp_rsqn"))
         return OrderbookSnapshot(
@@ -276,19 +356,77 @@ async def get_orderbook(symbol: str, market: str = "kr") -> OrderbookSnapshot:
             bid_ask_ratio=(
                 round(total_bid_qty / total_ask_qty, 2) if total_ask_qty > 0 else None
             ),
-            expected_price=(
-                _to_optional_int(output2.get("antc_cnpr"))
-                if output2 is not None
-                else None
-            ),
-            expected_qty=(
-                _to_optional_int(output2.get("antc_cnqn"))
-                if output2 is not None
-                else None
-            ),
+            expected_price=expected_price,
+            expected_qty=expected_qty,
         )
     except ValueError:
         raise
+    except Exception as exc:
+        raise _map_error(exc) from exc
+
+
+async def get_short_interest(symbol: str, days: int = 20) -> dict[str, object]:
+    resolved_symbol = _normalize_symbol(symbol, "equity_kr")
+    capped_days = min(max(days, 1), 60)
+    end_date = dt.date.today()
+    start_date = end_date - dt.timedelta(days=capped_days * 2)
+
+    try:
+        kis = KISClient()
+        output1, output2 = await kis.inquire_short_selling(
+            code=resolved_symbol,
+            start_date=start_date,
+            end_date=end_date,
+            market="J",
+        )
+        name = (
+            output1.get("hts_kor_isnm")
+            or output1.get("prdt_name")
+            or output1.get("name")
+            or None
+        )
+        if not name:
+            try:
+                info = await naver_finance.fetch_company_profile(resolved_symbol)
+                name = info.get("name") or None
+            except Exception:
+                name = None
+
+        short_data: list[dict[str, object]] = []
+        for row in output2:
+            date = _format_kis_date(row.get("stck_bsop_date"))
+            if date is None:
+                continue
+            short_data.append(
+                {
+                    "date": date,
+                    "short_volume": _to_optional_int(row.get("ssts_cntg_qty")),
+                    "short_amount": _to_optional_int(row.get("ssts_tr_pbmn")),
+                    "short_ratio": _to_optional_float(row.get("ssts_vol_rlim")),
+                    "total_volume": _to_optional_int(row.get("acml_vol")),
+                    "total_amount": _to_optional_int(row.get("acml_tr_pbmn")),
+                }
+            )
+
+        short_data = sorted(short_data, key=lambda row: str(row["date"]), reverse=True)[
+            :capped_days
+        ]
+
+        valid_ratios: list[float] = []
+        for row in short_data:
+            ratio = row["short_ratio"]
+            if isinstance(ratio, int | float):
+                valid_ratios.append(float(ratio))
+        avg_short_ratio = (
+            round(sum(valid_ratios) / len(valid_ratios), 2) if valid_ratios else None
+        )
+
+        return {
+            "symbol": resolved_symbol,
+            "name": name,
+            "short_data": short_data,
+            "avg_short_ratio": avg_short_ratio,
+        }
     except Exception as exc:
         raise _map_error(exc) from exc
 
@@ -400,6 +538,7 @@ async def get_ohlcv(
 __all__ = [
     "get_quote",
     "get_orderbook",
+    "get_short_interest",
     "get_ohlcv",
     "get_kr_volume_rank",
     "Quote",

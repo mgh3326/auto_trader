@@ -60,41 +60,10 @@ def _resolve_correlation_symbol_input(symbol: str | int) -> tuple[str, str]:
     return analysis_screening._resolve_market_type(normalized_symbol, None)
 
 
-name_to_corp_map: dict[str, Any]
-prime_index: Any | None
-
 try:
     from app.services.disclosures.dart import list_filings
 except ImportError:
     list_filings = None
-
-try:
-    from data.disclosures.dart_corp_index import (
-        NAME_TO_CORP as _NAME_TO_CORP,
-    )
-    from data.disclosures.dart_corp_index import (
-        prime_index as _prime_index,
-    )
-
-    name_to_corp_map = _NAME_TO_CORP
-    prime_index = _prime_index
-except ImportError:
-    name_to_corp_map = {}
-    prime_index = None
-
-
-async def get_stock_name_by_code(code: str) -> str | None:
-    try:
-        from app.services.krx import get_stock_name_by_code as _get_stock_name_by_code
-
-        return await _get_stock_name_by_code(code)
-    except Exception as exc:
-        logger.debug(
-            "Failed to resolve stock code to Korean name: code=%s, error=%s",
-            code,
-            exc,
-        )
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -233,49 +202,18 @@ async def get_disclosures_impl(
     if list_filings is None:
         return {
             "success": False,
-            "error": "DART functionality not available (dart_fss package not installed)",
+            "error": "DART functionality not available",
+            "filings": [],
+            "symbol": symbol,
         }
 
-    korean_name = symbol.strip()
-
-    if korean_name.isdigit():
-        try:
-            resolved_name = await get_stock_name_by_code(korean_name)
-            if resolved_name:
-                korean_name = resolved_name
-        except Exception as exc:
-            logger.debug(
-                "Stock code conversion raised unexpected error: symbol=%s, error=%s",
-                symbol,
-                exc,
-            )
-            pass
-
-    if not name_to_corp_map:
-        if prime_index is None:
-            return {
-                "success": False,
-                "error": "DART index not available",
-                "symbol": symbol,
-            }
-        try:
-            await prime_index()
-        except Exception as exc:
-            return {
-                "success": False,
-                "error": f"Failed to prime DART index: {exc}",
-                "symbol": symbol,
-            }
-
     try:
-        result = await list_filings(korean_name, days, limit, report_type)
-        if isinstance(result, list):
-            return {"success": True, "filings": result}
-        return result
+        return await list_filings(symbol, days, limit, report_type)
     except Exception as exc:
         return {
             "success": False,
             "error": str(exc),
+            "filings": [],
             "symbol": symbol,
         }
 

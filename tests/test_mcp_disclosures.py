@@ -1,25 +1,42 @@
-"""Tests for get_disclosures_impl with automatic code conversion."""
+import inspect
+from collections.abc import Callable
+from typing import Any, cast
 
 import pytest
 
 from app.mcp_server.tooling import analysis_tool_handlers as handlers
+from app.mcp_server.tooling.analysis_registration import register_analysis_tools
 
 
-class TestGetDisclosuresImplCodeConversion:
-    """Test get_disclosures_impl automatic code to name conversion."""
+class DummyMCP:
+    def __init__(self) -> None:
+        self.tools: dict[str, Callable[..., Any]] = {}
+        self.descriptions: dict[str, str] = {}
 
+    def tool(self, name: str, description: str):
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            self.tools[name] = func
+            self.descriptions[name] = description
+            return func
+
+        return decorator
+
+
+class TestGetDisclosuresImpl:
     @pytest.mark.asyncio
-    async def test_numeric_code_auto_conversion(self, monkeypatch):
-        """Test numeric code is converted to Korean name before DART lookup."""
-        captured_calls = []
+    async def test_passes_stock_code_directly_to_service(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured: dict[str, object] = {}
 
-        async def mock_get_stock_name_by_code(code):
-            if code == "005930":
-                return "삼성전자"
-            return None
-
-        async def mock_list_filings(symbol, days, limit, report_type):
-            captured_calls.append(
+        async def mock_list_filings(
+            symbol: str,
+            days: int,
+            limit: int,
+            report_type: str | None,
+        ) -> dict[str, object]:
+            captured.update(
                 {
                     "symbol": symbol,
                     "days": days,
@@ -27,137 +44,141 @@ class TestGetDisclosuresImplCodeConversion:
                     "report_type": report_type,
                 }
             )
-            return [{"title": "공시 제목", "date": "2026-01-01"}]
+            return {"success": True, "filings": []}
 
-        async def mock_prime_index():
-            pass
+        monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
 
-        monkeypatch.setattr(
-            handlers, "get_stock_name_by_code", mock_get_stock_name_by_code
+        result = await handlers.get_disclosures_impl(
+            symbol="005930",
+            days=30,
+            limit=3,
+            report_type="정기",
         )
-        monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
-        monkeypatch.setattr(handlers, "name_to_corp_map", {"삼성전자": "00126380"})
-        monkeypatch.setattr(handlers, "prime_index", mock_prime_index)
 
-        result = await handlers.get_disclosures_impl(symbol="005930", days=30, limit=3)
-
-        assert result["success"] is True
-        assert len(captured_calls) == 1
-        assert captured_calls[0]["symbol"] == "삼성전자"
-        assert captured_calls[0]["days"] == 30
-        assert captured_calls[0]["limit"] == 3
+        assert result == {"success": True, "filings": []}
+        assert captured == {
+            "symbol": "005930",
+            "days": 30,
+            "limit": 3,
+            "report_type": "정기",
+        }
 
     @pytest.mark.asyncio
-    async def test_korean_name_direct_input(self, monkeypatch):
-        """Test Korean name is used directly without conversion."""
-        conversion_called = False
+    async def test_passes_company_name_directly_to_service(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured: list[str] = []
 
-        async def mock_get_stock_name_by_code(code):
-            nonlocal conversion_called
-            conversion_called = True
-            return None
-
-        captured_symbol = []
-
-        async def mock_list_filings(symbol, days, limit, report_type):
-            captured_symbol.append(symbol)
-            return []
-
-        async def mock_prime_index():
-            pass
-
-        monkeypatch.setattr(
-            handlers, "get_stock_name_by_code", mock_get_stock_name_by_code
-        )
-        monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
-        monkeypatch.setattr(handlers, "name_to_corp_map", {"삼성전자": "00126380"})
-        monkeypatch.setattr(handlers, "prime_index", mock_prime_index)
-
-        result = await handlers.get_disclosures_impl(symbol="삼성전자", days=30)
-
-        assert result["success"] is True
-        assert not conversion_called, "Should not call conversion for Korean name"
-        assert captured_symbol[0] == "삼성전자"
-
-    @pytest.mark.asyncio
-    async def test_conversion_failure_graceful_fallback(self, monkeypatch):
-        """Test conversion returning None falls back to original code."""
-        captured_symbol = []
-
-        async def mock_get_stock_name_by_code(code):
-            return None
-
-        async def mock_list_filings(symbol, days, limit, report_type):
-            captured_symbol.append(symbol)
-            return []
-
-        async def mock_prime_index():
-            pass
-
-        monkeypatch.setattr(
-            handlers, "get_stock_name_by_code", mock_get_stock_name_by_code
-        )
-        monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
-        monkeypatch.setattr(handlers, "name_to_corp_map", {})
-        monkeypatch.setattr(handlers, "prime_index", mock_prime_index)
-
-        result = await handlers.get_disclosures_impl(symbol="999999", days=30)
-
-        assert result["success"] is True
-        assert captured_symbol[0] == "999999"
-
-    @pytest.mark.asyncio
-    async def test_conversion_exception_graceful_fallback(self, monkeypatch):
-        """Test conversion raising exception falls back to original code."""
-        captured_symbol = []
-
-        async def mock_get_stock_name_by_code(code):
-            raise RuntimeError("KRX API error")
-
-        async def mock_list_filings(symbol, days, limit, report_type):
-            captured_symbol.append(symbol)
-            return []
-
-        async def mock_prime_index():
-            pass
-
-        monkeypatch.setattr(
-            handlers, "get_stock_name_by_code", mock_get_stock_name_by_code
-        )
-        monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
-        monkeypatch.setattr(handlers, "name_to_corp_map", {})
-        monkeypatch.setattr(handlers, "prime_index", mock_prime_index)
-
-        result = await handlers.get_disclosures_impl(symbol="005930", days=30)
-
-        assert result["success"] is True
-        assert captured_symbol[0] == "005930"
-
-    @pytest.mark.asyncio
-    async def test_prime_index_failure_returns_error(self, monkeypatch):
-        """Test prime_index failure returns error payload."""
-
-        async def mock_prime_index():
-            raise RuntimeError("DART index load failed")
-
-        async def mock_list_filings(symbol, days, limit, report_type):
-            return []
+        async def mock_list_filings(
+            symbol: str,
+            days: int,
+            limit: int,
+            report_type: str | None,
+        ) -> dict[str, object]:
+            captured.append(symbol)
+            return {"success": True, "filings": []}
 
         monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
-        monkeypatch.setattr(handlers, "name_to_corp_map", {})
-        monkeypatch.setattr(handlers, "prime_index", mock_prime_index)
 
-        result = await handlers.get_disclosures_impl(symbol="삼성전자", days=30)
+        result = await handlers.get_disclosures_impl(symbol="삼성전자", days=7, limit=2)
 
-        assert result["success"] is False
-        assert "Failed to prime DART index" in result["error"]
+        assert result == {"success": True, "filings": []}
+        assert captured == ["삼성전자"]
 
     @pytest.mark.asyncio
-    async def test_list_filings_none_returns_unavailable_error(self, monkeypatch):
-        """Test list_filings=None returns unavailable error."""
+    async def test_service_error_is_returned_without_handler_translation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def mock_list_filings(
+            symbol: str,
+            days: int,
+            limit: int,
+            report_type: str | None,
+        ) -> dict[str, object]:
+            return {
+                "success": False,
+                "error": 'could not find "없는회사"',
+                "filings": [],
+                "symbol": symbol,
+            }
+
+        monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
+
+        result = await handlers.get_disclosures_impl(symbol="없는회사", days=5, limit=1)
+
+        assert result == {
+            "success": False,
+            "error": 'could not find "없는회사"',
+            "filings": [],
+            "symbol": "없는회사",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("symbol", "normalized_symbol"),
+        [("", ""), ("   ", "")],
+    )
+    async def test_blank_symbol_error_payload_is_passed_through(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        symbol: str,
+        normalized_symbol: str,
+    ) -> None:
+        async def mock_list_filings(
+            symbol: str,
+            days: int,
+            limit: int,
+            report_type: str | None,
+        ) -> dict[str, object]:
+            del days, limit, report_type
+            assert symbol == normalized_symbol or symbol.strip() == normalized_symbol
+            return {
+                "success": False,
+                "error": "symbol is required",
+                "filings": [],
+                "symbol": normalized_symbol,
+            }
+
+        monkeypatch.setattr(handlers, "list_filings", mock_list_filings)
+
+        result = await handlers.get_disclosures_impl(symbol=symbol, days=5, limit=1)
+
+        assert result == {
+            "success": False,
+            "error": "symbol is required",
+            "filings": [],
+            "symbol": normalized_symbol,
+        }
+
+    @pytest.mark.asyncio
+    async def test_missing_service_returns_generic_dart_unavailable_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         monkeypatch.setattr(handlers, "list_filings", None)
 
         result = await handlers.get_disclosures_impl(symbol="005930", days=30)
 
-        assert result["success"] is False
-        assert "dart_fss package not installed" in result["error"]
+        assert result == {
+            "success": False,
+            "error": "DART functionality not available",
+            "filings": [],
+            "symbol": "005930",
+        }
+
+
+def test_registers_get_disclosures_public_contract() -> None:
+    mcp = DummyMCP()
+
+    register_analysis_tools(cast(Any, mcp))
+
+    tool = mcp.tools["get_disclosures"]
+    signature = inspect.signature(tool)
+
+    assert list(signature.parameters) == ["symbol", "days", "limit", "report_type"]
+    assert signature.parameters["days"].default == 30
+    assert signature.parameters["limit"].default == 20
+    assert signature.parameters["report_type"].default is None
+    assert "direct 6-digit stock-code inputs" in mcp.descriptions["get_disclosures"]

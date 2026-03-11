@@ -130,7 +130,40 @@ async def test_get_orderbook_returns_null_pressure_when_ratio_missing(
     assert result["pressure"] is None
     assert result["pressure_desc"] is None
     assert result["spread"] == 100
-    assert result["spread_pct"] == 0.143
+    assert result["spread_pct"] == pytest.approx(0.143)
+
+
+@pytest.mark.asyncio
+async def test_get_orderbook_preserves_null_expected_qty_in_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import market_data_quotes
+
+    monkeypatch.setattr(
+        market_data_quotes.market_data_service,
+        "get_orderbook",
+        AsyncMock(return_value=_make_snapshot(expected_qty=None)),
+    )
+    tools = build_tools()
+
+    result = await tools["get_orderbook"]("5930")
+
+    assert result == {
+        "symbol": "005930",
+        "instrument_type": "equity_kr",
+        "source": "kis",
+        "asks": [{"price": 70100, "quantity": 123}],
+        "bids": [{"price": 70000, "quantity": 321}],
+        "total_ask_qty": 1000,
+        "total_bid_qty": 1500,
+        "bid_ask_ratio": 1.5,
+        "pressure": "buy",
+        "pressure_desc": "매수잔량이 매도잔량의 1.5배 - 매수 압력",
+        "spread": 100,
+        "spread_pct": 0.143,
+        "expected_price": 70050,
+        "expected_qty": None,
+    }
 
 
 @pytest.mark.asyncio
