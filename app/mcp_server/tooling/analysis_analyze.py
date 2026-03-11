@@ -43,6 +43,15 @@ _KR_ANALYZE_PATCH_SURFACES = (
     _fetch_valuation_naver,
 )
 
+DEFAULT_ANALYZE_STOCK_INDICATORS: tuple[str, ...] = (
+    "rsi",
+    "macd",
+    "bollinger",
+    "sma",
+    "adx",
+    "stoch_rsi",
+)
+
 
 async def _get_quote_impl(symbol: str, market_type: str) -> dict[str, Any] | None:
     if market_type == "crypto":
@@ -150,7 +159,7 @@ async def analyze_stock_impl(
             asyncio.create_task(
                 _get_indicators_impl(
                     normalized_symbol,
-                    ["rsi", "macd", "bollinger", "sma"],
+                    list(DEFAULT_ANALYZE_STOCK_INDICATORS),
                     None,
                     preloaded_df=ohlcv_df,
                 )
