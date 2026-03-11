@@ -579,6 +579,7 @@ def _extract_rsi14(indicators: dict[str, Any] | None) -> float | None:
 
     return None
 
+
 def build_recommendation_for_equity(
     analysis: dict[str, Any],
     market_type: str,

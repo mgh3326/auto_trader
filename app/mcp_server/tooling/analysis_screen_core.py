@@ -13,14 +13,14 @@ import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.async_rate_limiter import RateLimitExceededError
-from app.mcp_server.tooling.fundamentals_sources_naver import (
-    _fetch_screen_enrichment_kr,
-    _fetch_screen_enrichment_us,
-)
 from app.mcp_server.tooling.analysis_crypto_score import (
     calculate_crypto_metrics_from_ohlcv,
 )
 from app.mcp_server.tooling.analysis_screen_crypto import finalize_crypto_screen
+from app.mcp_server.tooling.fundamentals_sources_naver import (
+    _fetch_screen_enrichment_kr,
+    _fetch_screen_enrichment_us,
+)
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_rsi,
     _fetch_ohlcv_for_indicators,

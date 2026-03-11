@@ -151,7 +151,6 @@ def register_analysis_tools(mcp: FastMCP) -> None:
             quick=quick,
         )
 
-
     @mcp.tool(
         name="screen_stocks",
         description=(

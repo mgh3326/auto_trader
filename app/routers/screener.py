@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
-from typing import Any, cast
 
 from app.analysis.models import PriceAnalysis
 from app.core.templates import templates

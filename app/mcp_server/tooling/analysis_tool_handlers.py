@@ -16,10 +16,10 @@ import httpx
 import yfinance as yf
 
 from app.mcp_server.tooling import analysis_screening
+from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
-from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
 from app.mcp_server.tooling.shared import (
     is_crypto_market as _is_crypto_market,
 )
@@ -490,6 +490,7 @@ async def analyze_stock_batch_impl(
         include_peers=include_peers,
         formatter=formatter,
     )
+
 
 async def analyze_portfolio_impl(
     symbols: list[str | int],

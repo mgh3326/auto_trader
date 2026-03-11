@@ -61,6 +61,7 @@ async def test_screen_stocks_tool_uses_analysis_screening_facade(
     assert called["market"] == "kr"
     assert called["limit"] == 50
 
+
 @pytest.mark.asyncio
 async def test_screen_stocks_tool_uses_analysis_screening_normalizer(
     monkeypatch: pytest.MonkeyPatch,

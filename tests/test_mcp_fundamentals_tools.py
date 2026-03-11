@@ -511,9 +511,7 @@ class TestAnalyzeStockBatch:
 
         _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
 
-        result = await tools["analyze_stock_batch"](
-            ["AAPL"], market="us", quick=False
-        )
+        result = await tools["analyze_stock_batch"](["AAPL"], market="us", quick=False)
 
         assert result["summary"] == {
             "total_symbols": 1,
@@ -2701,6 +2699,7 @@ class TestGetInvestmentOpinions:
         assert result["consensus"]["avg_target_price"] is None
         assert result["consensus"]["current_price"] == 185.5
         assert result["consensus"]["upside_pct"] is None
+
     async def test_us_market_uses_recommendation_trend_counts_and_normalized_targets(
         self, monkeypatch
     ):
