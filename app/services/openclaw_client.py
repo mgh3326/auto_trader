@@ -50,14 +50,21 @@ class OpenClawClient:
         alert_type: str,
         *,
         correlation_id: str | None = None,
+        market_type: str | None = None,
     ) -> None:
         try:
             notifier = get_trade_notifier()
-            if correlation_id is None:
+            notifier_kwargs: dict[str, str] = {}
+            if correlation_id is not None:
+                notifier_kwargs["correlation_id"] = correlation_id
+            if market_type is not None:
+                notifier_kwargs["market_type"] = market_type
+
+            if not notifier_kwargs:
                 sent = await notifier.notify_openclaw_message(message)
             else:
                 sent = await notifier.notify_openclaw_message(
-                    message, correlation_id=correlation_id
+                    message, **notifier_kwargs
                 )
             if sent:
                 logger.debug(
@@ -246,6 +253,7 @@ class OpenClawClient:
                 message,
                 alert_type="fill",
                 correlation_id=correlation_id,
+                market_type=normalized_order.market_type,
             )
 
         if delivered_to_openclaw:

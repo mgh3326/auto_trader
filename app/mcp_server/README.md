@@ -75,6 +75,7 @@ Behavior:
 - Valid KR requests use KIS `inquire-asking-price-exp-ccn` and return 10-level asks/bids, total residual quantities, and expected match metadata
 - `expected_qty` keeps the public `int | null` contract; when KIS leaves `output2.antc_cnqn` blank or omits it, the response serializes `expected_qty` as `null` instead of inventing a fallback quantity
 - During the NXT session (`16:00`-`20:00` KST), KIS may return `expected_price` while leaving `expected_qty` blank or absent; this is treated as a valid upstream state, not an MCP error
+- Successful responses also include MCP-only derived fields: `pressure`, `pressure_desc`, `spread`, and `spread_pct`
 - Successful responses include `source: "kis"` and `instrument_type: "equity_kr"`
 - Invalid input raises; upstream KIS failures for otherwise valid KR requests return in-band error payloads via the shared MCP error contract
 
@@ -89,12 +90,28 @@ Response format:
   "total_ask_qty": 1000,
   "total_bid_qty": 1500,
   "bid_ask_ratio": 1.5,
+  "pressure": "buy",
+  "pressure_desc": "매수잔량이 매도잔량의 1.5배 - 매수 압력",
+  "spread": 100,
+  "spread_pct": 0.143,
   "expected_price": 70050,
   "expected_qty": null
 }
 ```
 
 `expected_qty: null` means KIS did not provide `antc_cnqn`; it does not by itself indicate a tool failure.
+
+Derived fields:
+- `pressure` is derived from `bid_ask_ratio` using fixed inclusive boundaries:
+  - `ratio > 2.0` -> `strong_buy`
+  - `ratio > 1.3` (i.e. 1.3 excluded) -> `buy`
+  - `ratio >= 0.7` (i.e. 0.7 included, up to 1.3 inclusive) -> `neutral`
+  - `ratio >= 0.5` (i.e. 0.5 included, below 0.7) -> `sell`
+  - `ratio < 0.5` -> `strong_sell`
+- `pressure_desc` is a Korean interpretation string. `strong_buy`/`buy` use `total_bid_qty / total_ask_qty`, `strong_sell`/`sell` use `total_ask_qty / total_bid_qty`, and `neutral` is always `"매수/매도 잔량이 균형권 - 중립"`
+- If `bid_ask_ratio` is `null`, both `pressure` and `pressure_desc` are `null`
+- `spread` is `asks[0].price - bids[0].price` when both best levels exist; otherwise it is `null`
+- `spread_pct` is `(spread / bids[0].price) * 100`, rounded to 3 decimal places, and becomes `null` when the best bid is missing or `<= 0`
 
 ### KR order routing
 - Domestic order tools (`place_order`, `modify_order`, `cancel_order` with `market="kr"`) use the new KIS TR IDs (`TTTC0012U/TTTC0011U/TTTC0013U`, mock: `VTTC0012U/VTTC0011U/VTTC0013U`).
@@ -152,6 +169,29 @@ Symbol contract:
 - Company-name inputs such as `삼성전자` or `Apple Inc.` are rejected with:
   - `"get_correlation does not support company-name inputs because it has no market parameter. Use ticker/code inputs directly."`
 - When at least 2 ticker/code inputs resolve and fetch successfully, the tool still returns a correlation matrix and includes failed symbols in `errors`.
+
+### `get_disclosures` spec
+Parameters:
+- `symbol`: Korean corporation lookup input (required)
+- `days`: Lookback window in days (default: 30)
+- `limit`: Maximum filings to return (default: 20)
+- `report_type`: Optional Korean disclosure group (`정기`, `주요사항`, `발행`, `지분`, `기타`)
+
+Symbol contract:
+- Direct 6-digit KR stock codes such as `005930` are passed through to OpenDartReader as-is.
+- Korean company names such as `삼성전자` are supported on a best-effort basis through OpenDartReader's exact-name corp lookup.
+- Blank or whitespace-only `symbol` inputs are rejected with an explicit in-band error payload (`success: false`, `error: "symbol is required"`, `filings: []`, `symbol: ""`).
+- Company-name inputs that OpenDartReader cannot resolve return an explicit in-band error payload with `success: false`; they do not silently degrade to an empty `filings` list.
+
+Behavior:
+- `report_type` maps internally to DART disclosure kinds: `정기 -> A`, `주요사항 -> B`, `발행 -> C`, `지분 -> D`, `기타 -> E`.
+- Unsupported `report_type` inputs return `success: false` instead of silently broadening the query.
+- Successful responses return the existing `filings` list shape with `date`, `report_nm`, `rcp_no`, and `corp_name`.
+- An empty DataFrame from OpenDartReader is treated as a successful lookup with `filings: []`.
+- The first process-local client initialization still downloads the OpenDART corp-code cache, so cold-start latency can be higher than warm calls.
+
+Error payload:
+- Failure responses include `success`, `error`, `filings`, and `symbol`.
 
 ### `manage_watch_alerts` spec
 Parameters:

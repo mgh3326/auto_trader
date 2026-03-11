@@ -152,6 +152,13 @@ async def test_finalize_crypto_screen_forces_rsi_sort_to_asc() -> None:
     assert result["meta"]["filtered_by_crash"] == 0
 
 
+def test_to_optional_float_treats_nan_strings_as_missing() -> None:
+    from app.mcp_server.tooling.analysis_screen_crypto import _to_optional_float
+
+    assert _to_optional_float("nan") is None
+    assert _to_optional_float(float("nan")) is None
+
+
 @pytest.mark.asyncio
 async def test_enrich_crypto_indicators_uses_upbit_bulk_query(
     crypto_candidates: list[dict[str, object]],

@@ -25,6 +25,7 @@ class FillOrder:
     order_id: str | None = None
     order_type: str | None = None
     fill_status: str | None = None
+    market_type: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -70,6 +71,88 @@ def _normalize_fill_status(value: Any) -> str | None:
     normalized = text.lower()
     if normalized in {"filled", "partial"}:
         return normalized
+    return None
+
+
+def _normalize_market_type(value: Any) -> str | None:
+    text = _safe_text_or_none(value)
+    if text is None:
+        return None
+
+    normalized = text.lower()
+    aliases = {
+        "kr": "kr",
+        "krx": "kr",
+        "korea": "kr",
+        "korean": "kr",
+        "domestic": "kr",
+        "equity_kr": "kr",
+        "국내주식": "kr",
+        "300": "kr",
+        "us": "us",
+        "usa": "us",
+        "overseas": "us",
+        "equity_us": "us",
+        "해외주식": "us",
+        "nas": "us",
+        "nasd": "us",
+        "nasdaq": "us",
+        "nys": "us",
+        "nyse": "us",
+        "ams": "us",
+        "amex": "us",
+        "512": "us",
+        "513": "us",
+        "529": "us",
+        "crypto": "crypto",
+        "cryptocurrency": "crypto",
+        "coin": "crypto",
+        "암호화폐": "crypto",
+    }
+    return aliases.get(normalized)
+
+
+def _looks_like_kr_symbol(symbol: str) -> bool:
+    return symbol.isdigit() and len(symbol) == 6
+
+
+def _looks_like_crypto_symbol(symbol: str) -> bool:
+    normalized = symbol.strip().upper()
+    return normalized.startswith("KRW-") or normalized.startswith("USDT-")
+
+
+def _looks_like_us_symbol(symbol: str) -> bool:
+    normalized = symbol.strip()
+    if not normalized or normalized != normalized.upper():
+        return False
+    if normalized == "UNKNOWN":
+        return False
+    if _looks_like_crypto_symbol(normalized):
+        return False
+    cleaned = normalized.replace(".", "").replace("-", "").replace("/", "")
+    return (
+        bool(cleaned)
+        and cleaned[0].isalpha()
+        and cleaned.isalnum()
+        and 1 <= len(cleaned) <= 10
+    )
+
+
+def _resolve_fill_market_type(
+    raw: Mapping[str, Any], *, symbol: str, account: str | None = None
+) -> str | None:
+    explicit_market = _normalize_market_type(
+        _pick_first(raw, ["market_type", "market", "ovrs_excg_cd", "prdt_type_cd"])
+    )
+    if explicit_market is not None:
+        return explicit_market
+    normalized_account = _safe_text_or_none(account or raw.get("account"))
+    if normalized_account is not None and normalized_account.lower() == "upbit":
+        return "crypto"
+    if _looks_like_kr_symbol(symbol):
+        return "kr"
+    if _looks_like_us_symbol(symbol):
+        return "us"
     return None
 
 
@@ -119,20 +202,24 @@ def coerce_fill_order(order: FillOrderLike) -> FillOrder:
     if isinstance(order, FillOrder):
         return order
 
+    symbol = str(order.get("symbol") or "UNKNOWN")
+    account = str(order.get("account") or "unknown")
+
     return FillOrder(
-        symbol=str(order.get("symbol") or "UNKNOWN"),
+        symbol=symbol,
         side=_normalize_side(str(order.get("side") or "")),
         filled_price=_safe_float(order.get("filled_price")),
         filled_qty=_safe_float(order.get("filled_qty")),
         filled_amount=_safe_float(order.get("filled_amount")),
         filled_at=_parse_timestamp(order.get("filled_at")),
-        account=str(order.get("account") or "unknown"),
+        account=account,
         order_price=_safe_float_or_none(order.get("order_price")),
         order_id=_safe_text_or_none(order.get("order_id")),
         order_type=_safe_text_or_none(order.get("order_type")),
         fill_status=_normalize_fill_status(
             _pick_first(order, ["fill_status", "execution_status"])
         ),
+        market_type=_resolve_fill_market_type(order, symbol=symbol, account=account),
     )
 
 
@@ -170,11 +257,13 @@ def normalize_upbit_fill(raw: Mapping[str, Any]) -> FillOrder:
         order_id=_safe_text_or_none(_pick_first(raw, ["uuid", "order_id"])),
         order_type=_safe_text_or_none(_pick_first(raw, ["order_type", "ord_type"])),
         fill_status="filled",
+        market_type="crypto",
     )
 
 
 def normalize_kis_fill(raw: Mapping[str, Any]) -> FillOrder:
     symbol = str(_pick_first(raw, ["symbol", "pdno", "mksc_shrn_iscd"]) or "UNKNOWN")
+    account = str(_pick_first(raw, ["account"]) or "kis")
     side = _normalize_side(
         str(_pick_first(raw, ["side", "sll_buy_dvsn_cd", "buy_sell", "bsop_gb"]) or "")
     )
@@ -204,7 +293,7 @@ def normalize_kis_fill(raw: Mapping[str, Any]) -> FillOrder:
                 raw, ["filled_at", "timestamp", "exec_time", "ord_tmd", "ccld_time"]
             )
         ),
-        account=str(_pick_first(raw, ["account"]) or "kis"),
+        account=account,
         order_price=_safe_float_or_none(
             _pick_first(raw, ["order_price", "ord_unpr", "ft_ord_unpr3"])
         ),
@@ -215,6 +304,7 @@ def normalize_kis_fill(raw: Mapping[str, Any]) -> FillOrder:
         fill_status=_normalize_fill_status(
             _pick_first(raw, ["fill_status", "execution_status"])
         ),
+        market_type=_resolve_fill_market_type(raw, symbol=symbol, account=account),
     )
 
 

@@ -917,12 +917,223 @@ class TestKISInquireOrderbook:
         assert output2 is None
 
 
+@pytest.mark.asyncio
+async def test_kis_inquire_short_selling_uses_daily_short_sale_contract(monkeypatch):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    ensure_token = AsyncMock()
+    monkeypatch.setattr(client, "_ensure_token", ensure_token)
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output1": {"stck_shrn_iscd": "005930", "data_cnt": "1"},
+            "output2": [
+                {
+                    "stck_bsop_date": "20260219",
+                    "sstp_shrn_vol": "12345",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    output1, output2 = await client.inquire_short_selling(
+        "5930",
+        date(2026, 2, 1),
+        date(2026, 2, 19),
+    )
+
+    assert output1 == {"stck_shrn_iscd": "005930", "data_cnt": "1"}
+    assert output2 == [
+        {
+            "stck_bsop_date": "20260219",
+            "sstp_shrn_vol": "12345",
+        }
+    ]
+    ensure_token.assert_awaited_once()
+    request_mock.assert_awaited_once()
+
+    await_args = request_mock.await_args
+    assert await_args is not None
+    assert await_args.args[0] == "GET"
+    assert await_args.args[1].endswith("/daily-short-sale")
+    assert await_args.kwargs["tr_id"] == "FHPST04830000"
+    assert await_args.kwargs["api_name"] == "inquire_short_selling"
+    assert await_args.kwargs["params"] == {
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_INPUT_ISCD": "005930",
+        "FID_INPUT_DATE_1": "20260201",
+        "FID_INPUT_DATE_2": "20260219",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_code", ["EGW00123", "EGW00121"])
+async def test_kis_inquire_short_selling_retries_once_on_token_errors(
+    monkeypatch,
+    error_code,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    ensure_token = AsyncMock()
+    monkeypatch.setattr(client, "_ensure_token", ensure_token)
+    request_mock = AsyncMock(
+        side_effect=[
+            {"rt_cd": "1", "msg_cd": error_code, "msg1": "token expired"},
+            {
+                "rt_cd": "0",
+                "output1": {"stck_shrn_iscd": "005930"},
+                "output2": [{"stck_bsop_date": "20260219"}],
+            },
+        ]
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+    client._token_manager = AsyncMock()
+    client._token_manager.clear_token = AsyncMock(return_value=None)
+
+    output1, output2 = await client.inquire_short_selling(
+        "005930",
+        date(2026, 2, 1),
+        date(2026, 2, 19),
+    )
+
+    assert output1 == {"stck_shrn_iscd": "005930"}
+    assert output2 == [{"stck_bsop_date": "20260219"}]
+    assert request_mock.await_count == 2
+    assert ensure_token.await_count == 2
+    client._token_manager.clear_token.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_short_selling_normalizes_missing_output2_to_empty_list(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(
+        return_value={
+            "rt_cd": "0",
+            "output1": {"stck_shrn_iscd": "005930", "data_cnt": "0"},
+        }
+    )
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    output1, output2 = await client.inquire_short_selling(
+        "005930",
+        date(2026, 2, 1),
+        date(2026, 2, 19),
+    )
+
+    assert output1 == {"stck_shrn_iscd": "005930", "data_cnt": "0"}
+    assert output2 == []
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_short_selling_fast_fails_on_invalid_date_range(monkeypatch):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    ensure_token = AsyncMock()
+    request_mock = AsyncMock()
+    monkeypatch.setattr(client, "_ensure_token", ensure_token)
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    with pytest.raises(ValueError, match="start_date"):
+        await client.inquire_short_selling(
+            "005930",
+            date(2026, 2, 19),
+            date(2026, 2, 1),
+        )
+
+    ensure_token.assert_not_awaited()
+    request_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_short_selling_propagates_non_token_api_failures(monkeypatch):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    ensure_token = AsyncMock()
+    request_mock = AsyncMock(
+        return_value={"rt_cd": "1", "msg_cd": "ERROR123", "msg1": "bad request"}
+    )
+    monkeypatch.setattr(client, "_ensure_token", ensure_token)
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+    client._token_manager = AsyncMock()
+    client._token_manager.clear_token = AsyncMock(return_value=None)
+
+    with pytest.raises(RuntimeError, match="ERROR123 bad request"):
+        await client.inquire_short_selling(
+            "005930",
+            date(2026, 2, 1),
+            date(2026, 2, 19),
+        )
+
+    ensure_token.assert_awaited_once()
+    request_mock.assert_awaited_once()
+    client._token_manager.clear_token.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        ({"rt_cd": "0", "output1": [], "output2": []}, "output1"),
+        (
+            {
+                "rt_cd": "0",
+                "output1": {"stck_shrn_iscd": "005930"},
+                "output2": {"stck_bsop_date": "20260219"},
+            },
+            "output2",
+        ),
+        (
+            {
+                "rt_cd": "0",
+                "output1": {"stck_shrn_iscd": "005930"},
+                "output2": [{"stck_bsop_date": "20260219"}, "bad-row"],
+            },
+            "objects",
+        ),
+    ],
+)
+async def test_kis_inquire_short_selling_raises_on_malformed_payload(
+    monkeypatch,
+    payload,
+    match,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    monkeypatch.setattr(
+        client, "_request_with_rate_limit", AsyncMock(return_value=payload)
+    )
+
+    with pytest.raises(RuntimeError, match=match):
+        await client.inquire_short_selling(
+            "005930",
+            date(2026, 2, 1),
+            date(2026, 2, 19),
+        )
+
+
 class TestKISRateLimitLookup:
     @pytest.mark.parametrize(
         ("api_key", "expected_rate", "expected_period"),
         [
             (
                 "FHKST03010100|/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                20,
+                1.0,
+            ),
+            (
+                "FHPST04830000|/uapi/domestic-stock/v1/quotations/daily-short-sale",
                 20,
                 1.0,
             ),
