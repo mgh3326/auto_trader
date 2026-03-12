@@ -238,16 +238,6 @@ class UnifiedWebSocketMonitor:
         self, order: FillOrder, *, correlation_id: str | None = None
     ) -> None:
         """OpenClaw로 체결 알림 전송 (fire-and-forget)"""
-        if not settings.OPENCLAW_ENABLED:
-            logger.info(
-                "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
-                "result=skipped reason=openclaw_disabled",
-                correlation_id,
-                order.symbol,
-                order.account,
-            )
-            return
-
         if order.account == "upbit" and order.filled_amount < MIN_FILL_NOTIFY_AMOUNT:
             logger.debug(
                 "Fill below minimum notify amount (%s < %s), skipping: %s",
@@ -274,10 +264,10 @@ class UnifiedWebSocketMonitor:
             order.filled_amount,
         )
         try:
-            request_id = await self.openclaw_client.send_fill_notification(
+            result = await self.openclaw_client.send_fill_notification(
                 order, correlation_id=correlation_id
             )
-            if request_id:
+            if result.status == "success":
                 self.fills_forwarded += 1
                 self.last_openclaw_success_at = datetime.now(UTC).isoformat()
                 logger.info(
@@ -286,15 +276,26 @@ class UnifiedWebSocketMonitor:
                     correlation_id,
                     order.symbol,
                     order.account,
-                    request_id,
+                    result.request_id,
+                )
+            elif result.status == "skipped":
+                logger.info(
+                    "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
+                    "result=skipped reason=%s",
+                    correlation_id,
+                    order.symbol,
+                    order.account,
+                    result.reason,
                 )
             else:
                 logger.warning(
                     "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
-                    "result=failed request_id=<none>",
+                    "result=failed reason=%s request_id=%s",
                     correlation_id,
                     order.symbol,
                     order.account,
+                    result.reason,
+                    result.request_id or "<none>",
                 )
         except Exception as e:
             logger.error(

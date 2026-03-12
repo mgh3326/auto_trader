@@ -7,6 +7,19 @@ import pytest
 
 from app.core.config import settings
 from app.services.fill_notification import FillOrder
+from app.services.openclaw_client import FillNotificationDeliveryResult
+
+
+def _success_result(request_id: str = "req-123") -> FillNotificationDeliveryResult:
+    return FillNotificationDeliveryResult(status="success", request_id=request_id)
+
+
+def _skipped_result(reason: str) -> FillNotificationDeliveryResult:
+    return FillNotificationDeliveryResult(status="skipped", reason=reason)
+
+
+def _failed_result(reason: str = "request_failed") -> FillNotificationDeliveryResult:
+    return FillNotificationDeliveryResult(status="failed", reason=reason)
 
 
 @pytest.fixture
@@ -25,7 +38,7 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value="req-123")
+        send_mock = AsyncMock(return_value=_success_result())
         monitor.openclaw_client.send_fill_notification = send_mock
 
         await monitor._on_upbit_order(
@@ -50,7 +63,7 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value="req-123")
+        send_mock = AsyncMock(return_value=_success_result())
         monitor.openclaw_client.send_fill_notification = send_mock
 
         await monitor._on_upbit_order(
@@ -72,7 +85,7 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value="req-456")
+        send_mock = AsyncMock(return_value=_success_result("req-456"))
         monitor.openclaw_client.send_fill_notification = send_mock
 
         await monitor._on_kis_execution(
@@ -102,7 +115,7 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value="req-456")
+        send_mock = AsyncMock(return_value=_success_result("req-456"))
         monitor.openclaw_client.send_fill_notification = send_mock
 
         await monitor._on_kis_execution(
@@ -124,7 +137,7 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value="req-456")
+        send_mock = AsyncMock(return_value=_success_result("req-456"))
         monitor.openclaw_client.send_fill_notification = send_mock
 
         await monitor._on_kis_execution(
@@ -252,7 +265,7 @@ class TestUnifiedWebSocketMonitor:
         assert monitor.is_running is False
 
     @pytest.mark.asyncio
-    async def test_send_fill_notification_disabled(
+    async def test_send_fill_notification_disabled_still_routes_through_client(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(settings, "OPENCLAW_ENABLED", False)
@@ -260,7 +273,7 @@ class TestUnifiedWebSocketMonitor:
 
         monitor = UnifiedWebSocketMonitor()
         monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value="req-123"
+            return_value=_success_result()
         )
 
         await monitor._send_fill_notification(
@@ -275,7 +288,7 @@ class TestUnifiedWebSocketMonitor:
             )
         )
 
-        monitor.openclaw_client.send_fill_notification.assert_not_awaited()
+        monitor.openclaw_client.send_fill_notification.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_send_fill_notification_skips_upbit_below_minimum(
@@ -284,7 +297,7 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import MIN_FILL_NOTIFY_AMOUNT, UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value="req-123")
+        send_mock = AsyncMock(return_value=_success_result())
         monitor.openclaw_client.send_fill_notification = send_mock
 
         caplog.set_level("DEBUG")
@@ -311,7 +324,7 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value="req-123")
+        send_mock = AsyncMock(return_value=_success_result())
         monitor.openclaw_client.send_fill_notification = send_mock
 
         await monitor._send_fill_notification(
@@ -335,7 +348,7 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value=None)
+        send_mock = AsyncMock(return_value=_failed_result())
         monitor.openclaw_client.send_fill_notification = send_mock
 
         await monitor._send_fill_notification(
@@ -372,11 +385,12 @@ class TestUnifiedWebSocketMonitor:
         caplog.set_level("INFO")
 
         monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value="req-123"
+            return_value=_success_result()
         )
         await monitor._send_fill_notification(order, correlation_id="corr-success")
         assert monitor.fills_forwarded == 1
         assert monitor.last_openclaw_success_at is not None
+        success_timestamp = monitor.last_openclaw_success_at
         assert "correlation_id=corr-success" in caplog.text
         assert "OpenClaw send start" in caplog.text
         assert "OpenClaw send result" in caplog.text
@@ -384,15 +398,20 @@ class TestUnifiedWebSocketMonitor:
         assert "Notification pipeline result" not in caplog.text
 
         caplog.clear()
-        monitor.openclaw_client.send_fill_notification = AsyncMock(return_value=None)
+        monitor.openclaw_client.send_fill_notification = AsyncMock(
+            return_value=_failed_result()
+        )
         await monitor._send_fill_notification(order, correlation_id="corr-failed")
         assert "correlation_id=corr-failed" in caplog.text
         assert "OpenClaw send result" in caplog.text
         assert "result=failed" in caplog.text
+        assert "reason=request_failed" in caplog.text
+        assert monitor.fills_forwarded == 1
+        assert monitor.last_openclaw_success_at == success_timestamp
 
         caplog.clear()
         monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value="req-skip"
+            return_value=_success_result("req-skip")
         )
         monitor.mode = "upbit"
         await monitor._send_fill_notification(
@@ -410,6 +429,42 @@ class TestUnifiedWebSocketMonitor:
         assert "correlation_id=corr-skipped" in caplog.text
         assert "OpenClaw send result" in caplog.text
         assert "result=skipped" in caplog.text
+        assert monitor.fills_forwarded == 1
+        assert monitor.last_openclaw_success_at == success_timestamp
+
+    @pytest.mark.asyncio
+    async def test_send_fill_notification_logs_client_skip_reason(
+        self, mock_settings: None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="kis")
+        order = FillOrder(
+            symbol="AAPL",
+            side="bid",
+            filled_price=195.5,
+            filled_qty=2,
+            filled_amount=391,
+            filled_at="2024-01-01T00:00:00Z",
+            account="kis",
+            market_type="us",
+        )
+
+        caplog.set_level("INFO")
+        monitor.openclaw_client.send_fill_notification = AsyncMock(
+            return_value=_skipped_result("missing_analysis_thread")
+        )
+
+        await monitor._send_fill_notification(
+            order, correlation_id="corr-missing-thread"
+        )
+
+        assert "correlation_id=corr-missing-thread" in caplog.text
+        assert "result=skipped" in caplog.text
+        assert "reason=missing_analysis_thread" in caplog.text
+        assert "result=failed" not in caplog.text
+        assert monitor.fills_forwarded == 0
+        assert monitor.last_openclaw_success_at is None
 
     @pytest.mark.asyncio
     async def test_log_health_status_uses_kis_state_fields(
