@@ -143,6 +143,25 @@ class TestBudgetAllocation:
         assert allocated == []
         assert remaining == 50_000
 
+    def test_allocate_budget_equal_mode_dedupes_symbols(self):
+        candidates = [
+            {"symbol": "AAA", "price": 1000, "score": 80, "rsi": 35},
+            {"symbol": "AAA", "price": 1000, "score": 70, "rsi": 40},
+            {"symbol": "BBB", "price": 1000, "score": 60, "rsi": 45},
+        ]
+
+        allocated, remaining = analysis_recommend.allocate_budget(
+            candidates,
+            10_000,
+            5,
+            mode="equal",
+        )
+
+        symbols = [item["symbol"] for item in allocated]
+        assert symbols.count("AAA") == 1
+        assert symbols.count("BBB") == 1
+        assert remaining == 0
+
 
 def test_empty_recommend_response_keeps_contract_shape() -> None:
     result = analysis_recommend._empty_recommend_response(
@@ -158,6 +177,26 @@ def test_empty_recommend_response_keeps_contract_shape() -> None:
     assert result["warnings"] == ["example"]
     assert result["fallback_applied"] is False
     assert result["diagnostics"] == {"phase": "test"}
+
+
+def test_prepare_recommend_request_returns_context_object_for_crypto() -> None:
+    context = analysis_recommend._prepare_recommend_request(
+        budget=1_000_000,
+        market="crypto",
+        strategy="balanced",
+        exclude_symbols=None,
+        sectors=["ignored-sector"],
+        max_positions=3,
+        exclude_held=True,
+    )
+
+    assert type(context).__name__ == "RecommendRequestContext"
+    assert context.normalized_market == "crypto"
+    assert context.screen_category is None
+    assert context.sort_by == "rsi"
+    assert context.sort_order == "asc"
+    assert context.max_pbr is None
+    assert any("crypto market" in warning for warning in context.warnings)
 
 
 class TestCandidateNormalization:
