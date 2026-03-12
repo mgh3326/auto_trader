@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import traceback
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from app.mcp_server.scoring import calc_composite_score, generate_reason
@@ -35,6 +36,35 @@ from app.mcp_server.tooling.shared import (
 )
 
 CRYPTO_PREFILTER_LIMIT = 30
+
+
+@dataclass(frozen=True, slots=True)
+class RecommendRequestContext:
+    budget: float
+    exclude_held: bool
+    exclude_symbols: list[str] | None
+    candidate_limit: int
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+    max_positions: int = 0
+    normalized_market: str = "kr"
+    screen_asset_type: str | None = None
+    screen_category: str | None = None
+    sort_by: str = "volume"
+    sort_order: str = "desc"
+    min_market_cap: float | None = None
+    max_per: float | None = None
+    max_pbr: float | None = None
+    min_dividend_yield: float | None = None
+    max_rsi: float | None = None
+    strategy_description: str = ""
+    validated_strategy: str = "balanced"
+    warnings: list[str] = field(default_factory=list)
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
 
 
 def _build_crypto_rsi_reason(item: dict[str, Any]) -> str:
@@ -159,14 +189,9 @@ async def _enrich_crypto_composite_metrics(
     return results
 
 
-def _allocate_budget_equal(
+def _dedupe_allocatable_candidates(
     candidates: list[dict[str, Any]],
-    budget: float,
-    max_positions: int,
-) -> tuple[list[dict[str, Any]], float]:
-    if not candidates or budget <= 0:
-        return [], round(budget, 2)
-
+) -> list[dict[str, Any]]:
     deduped_candidates: list[dict[str, Any]] = []
     seen_symbols: set[str] = set()
     for item in candidates:
@@ -179,19 +204,44 @@ def _allocate_budget_equal(
         seen_symbols.add(symbol)
         deduped_candidates.append(item)
 
+    return deduped_candidates
+
+
+def allocate_budget(
+    candidates: list[dict[str, Any]],
+    budget: float,
+    max_positions: int,
+    *,
+    mode: str = "weighted",
+) -> tuple[list[dict[str, Any]], float]:
+    if not candidates or budget <= 0:
+        return [], round(budget, 2)
+
+    if mode not in {"weighted", "equal"}:
+        raise ValueError("mode must be one of: weighted, equal")
+
+    deduped_candidates = _dedupe_allocatable_candidates(candidates)
+
     top_candidates = deduped_candidates[:max_positions]
     if not top_candidates:
         return [], round(budget, 2)
 
     equal_ratio = 1.0 / len(top_candidates)
-    target_per_position = budget * equal_ratio
+    total_score = sum(
+        max(_to_float(item.get("score"), default=0.0), 0.0) for item in top_candidates
+    )
 
     allocated: list[dict[str, Any]] = []
     remaining = float(budget)
 
     for item in top_candidates:
         price = item.get("price", 0)
-        target_amount = target_per_position
+        if mode == "equal":
+            alloc_ratio = equal_ratio
+        else:
+            score = max(_to_float(item.get("score"), default=0.0), 0.0)
+            alloc_ratio = (score / total_score) if total_score > 0 else equal_ratio
+        target_amount = budget * alloc_ratio
         quantity = int(target_amount / price) if price > 0 else 0
         if quantity <= 0:
             continue
@@ -213,10 +263,17 @@ def _allocate_budget_equal(
         )
 
     if allocated and remaining > 0:
-        sorted_allocated = sorted(
-            allocated,
-            key=lambda x: _to_float(x.get("rsi") or 999, default=999),
-        )
+        if mode == "equal":
+            sorted_allocated = sorted(
+                allocated,
+                key=lambda item: _to_float(item.get("rsi") or 999, default=999),
+            )
+        else:
+            sorted_allocated = sorted(
+                allocated,
+                key=lambda item: _to_float(item.get("score"), default=0.0),
+                reverse=True,
+            )
         for rec in sorted_allocated:
             price = _to_float(rec.get("price"), default=0.0)
             if price <= 0 or remaining < price:
@@ -231,6 +288,14 @@ def _allocate_budget_equal(
             break
 
     return allocated, round(remaining, 2)
+
+
+def _allocate_budget_equal(
+    candidates: list[dict[str, Any]],
+    budget: float,
+    max_positions: int,
+) -> tuple[list[dict[str, Any]], float]:
+    return allocate_budget(candidates, budget, max_positions, mode="equal")
 
 
 def _normalize_recommend_market(market: str | None) -> str:
@@ -323,78 +388,7 @@ def _allocate_budget(
     budget: float,
     max_positions: int,
 ) -> tuple[list[dict[str, Any]], float]:
-    if not candidates or budget <= 0:
-        return [], round(budget, 2)
-
-    deduped_candidates: list[dict[str, Any]] = []
-    seen_symbols: set[str] = set()
-    for item in candidates:
-        symbol = str(item.get("symbol", "")).strip().upper()
-        price = _to_float(item.get("price"), default=0.0)
-        if not symbol or symbol in seen_symbols:
-            continue
-        if price <= 0:
-            continue
-        seen_symbols.add(symbol)
-        deduped_candidates.append(item)
-
-    top_candidates = deduped_candidates[:max_positions]
-    if not top_candidates:
-        return [], round(budget, 2)
-
-    total_score = sum(
-        max(_to_float(item.get("score"), default=0.0), 0.0) for item in top_candidates
-    )
-    equal_ratio = 1.0 / len(top_candidates)
-
-    allocated: list[dict[str, Any]] = []
-    remaining = float(budget)
-
-    for item in top_candidates:
-        price = item.get("price", 0)
-        score = max(_to_float(item.get("score"), default=0.0), 0.0)
-        alloc_ratio = (score / total_score) if total_score > 0 else equal_ratio
-        target_amount = budget * alloc_ratio
-        quantity = int(target_amount / price) if price > 0 else 0
-        if quantity <= 0:
-            continue
-
-        amount = price * quantity
-        if amount > remaining:
-            quantity = int(remaining / price)
-            if quantity <= 0:
-                continue
-            amount = price * quantity
-
-        remaining -= amount
-        allocated.append(
-            {
-                **item,
-                "quantity": quantity,
-                "amount": round(amount, 2),
-            }
-        )
-
-    if allocated and remaining > 0:
-        sorted_allocated = sorted(
-            allocated,
-            key=lambda item: _to_float(item.get("score"), default=0.0),
-            reverse=True,
-        )
-        for rec in sorted_allocated:
-            price = _to_float(rec.get("price"), default=0.0)
-            if price <= 0 or remaining < price:
-                continue
-            extra_qty = int(remaining / price)
-            if extra_qty <= 0:
-                continue
-            extra_amount = price * extra_qty
-            rec["quantity"] += extra_qty
-            rec["amount"] = round(rec.get("amount", 0) + extra_amount, 2)
-            remaining -= extra_amount
-            break
-
-    return allocated, round(remaining, 2)
+    return allocate_budget(candidates, budget, max_positions, mode="weighted")
 
 
 def _prepare_recommend_request(
@@ -406,7 +400,7 @@ def _prepare_recommend_request(
     sectors: list[str] | None,
     max_positions: int,
     exclude_held: bool,
-) -> dict[str, Any]:
+) -> RecommendRequestContext:
     if budget <= 0:
         raise ValueError("budget must be positive")
     if max_positions < 1 or max_positions > 20:
@@ -429,30 +423,19 @@ def _prepare_recommend_request(
         "fallback_applied": False,
         "active_thresholds": {},
     }
-    request = {
-        "budget": budget,
-        "exclude_held": exclude_held,
-        "exclude_symbols": exclude_symbols,
-        "candidate_limit": min(100, max(50, max_positions * 20)),
-        "diagnostics": diagnostics,
-        "max_positions": max_positions,
-        "normalized_market": normalized_market,
-        "screen_asset_type": None,
-        "screen_category": sectors[0] if sectors else None,
-        "sort_by": strategy_screen_params.get("sort_by", "volume"),
-        "sort_order": strategy_screen_params.get("sort_order", "desc"),
-        "min_market_cap": strategy_screen_params.get("min_market_cap"),
-        "max_per": strategy_screen_params.get("max_per"),
-        "max_pbr": strategy_screen_params.get("max_pbr"),
-        "min_dividend_yield": strategy_screen_params.get("min_dividend_yield"),
-        "max_rsi": strategy_screen_params.get("max_rsi"),
-        "strategy_description": strategy_description,
-        "validated_strategy": validated_strategy,
-        "warnings": warnings,
-    }
+    candidate_limit = min(100, max(50, max_positions * 20))
+    screen_asset_type = None
+    screen_category = sectors[0] if sectors else None
+    sort_by = strategy_screen_params.get("sort_by", "volume")
+    sort_order = strategy_screen_params.get("sort_order", "desc")
+    min_market_cap = strategy_screen_params.get("min_market_cap")
+    max_per = strategy_screen_params.get("max_per")
+    max_pbr = strategy_screen_params.get("max_pbr")
+    min_dividend_yield = strategy_screen_params.get("min_dividend_yield")
+    max_rsi = strategy_screen_params.get("max_rsi")
 
     if normalized_market == "crypto":
-        if request["screen_category"] is not None:
+        if screen_category is not None:
             warnings.append(
                 "crypto market does not support sectors/category filter; ignored."
             )
@@ -461,34 +444,50 @@ def _prepare_recommend_request(
                 f"crypto market에서 strategy='{validated_strategy}'는 무시됩니다. "
                 "RSI ascending 정렬 고정."
             )
-        request.update(
-            {
-                "screen_category": None,
-                "sort_by": "rsi",
-                "sort_order": "asc",
-                "min_market_cap": None,
-                "max_per": None,
-                "max_pbr": None,
-                "min_dividend_yield": None,
-                "max_rsi": None,
-            }
-        )
+        screen_category = None
+        sort_by = "rsi"
+        sort_order = "asc"
+        min_market_cap = None
+        max_per = None
+        max_pbr = None
+        min_dividend_yield = None
+        max_rsi = None
 
-    if normalized_market == "us" and request["max_pbr"] is not None:
+    if normalized_market == "us" and max_pbr is not None:
         warnings.append("us market screener does not support max_pbr filter; ignored.")
-        request["max_pbr"] = None
+        max_pbr = None
 
     logger.debug(
         "recommend_stocks strategy params strategy=%s params=%s",
         validated_strategy,
         strategy_screen_params,
     )
-    return request
+    return RecommendRequestContext(
+        budget=budget,
+        exclude_held=exclude_held,
+        exclude_symbols=exclude_symbols,
+        candidate_limit=candidate_limit,
+        diagnostics=diagnostics,
+        max_positions=max_positions,
+        normalized_market=normalized_market,
+        screen_asset_type=screen_asset_type,
+        screen_category=screen_category,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        max_pbr=max_pbr,
+        min_dividend_yield=min_dividend_yield,
+        max_rsi=max_rsi,
+        strategy_description=strategy_description,
+        validated_strategy=validated_strategy,
+        warnings=warnings,
+    )
 
 
 async def _collect_kr_candidates(
     *,
-    request: dict[str, Any],
+    request: RecommendRequestContext,
     screen_kr_fn: Callable[..., Awaitable[dict[str, Any]]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     screen_result = await screen_kr_fn(
@@ -526,7 +525,7 @@ async def _collect_kr_candidates(
 
 async def _collect_us_candidates(
     *,
-    request: dict[str, Any],
+    request: RecommendRequestContext,
     top_stocks_fallback: Any,
     top_stocks_override: Any,
 ) -> list[dict[str, Any]]:
@@ -565,7 +564,7 @@ async def _collect_us_candidates(
 
 async def _collect_crypto_candidates(
     *,
-    request: dict[str, Any],
+    request: RecommendRequestContext,
     screen_crypto_fn: Callable[..., Awaitable[dict[str, Any]]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     screen_result = await screen_crypto_fn(
@@ -614,7 +613,7 @@ async def _collect_crypto_candidates(
 async def _apply_exclusions_and_dedupe(
     *,
     candidates: list[dict[str, Any]],
-    request: dict[str, Any],
+    request: RecommendRequestContext,
     collect_positions_fn: Callable[..., Awaitable[Any]],
     dedupe: bool = True,
     warn_when_all_excluded: bool = True,
@@ -690,7 +689,7 @@ async def _apply_kr_relaxed_fallback(
     *,
     candidates: list[dict[str, Any]],
     exclude_set: set[str],
-    request: dict[str, Any],
+    request: RecommendRequestContext,
     screen_kr_fn: Callable[..., Awaitable[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     if not (
@@ -1011,7 +1010,7 @@ async def recommend_stocks_impl(
         _get_indicators_impl,
     )
 
-    request = _prepare_recommend_request(
+    request: RecommendRequestContext = _prepare_recommend_request(
         budget=budget,
         market=market,
         strategy=strategy,
@@ -1228,8 +1227,6 @@ async def recommend_stocks_impl(
 normalize_recommend_market = _normalize_recommend_market
 build_recommend_reason = _build_recommend_reason
 normalize_candidate = _normalize_candidate
-allocate_budget = _allocate_budget
-
 __all__ = [
     "_normalize_recommend_market",
     "_build_recommend_reason",

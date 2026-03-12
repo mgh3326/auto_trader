@@ -74,7 +74,7 @@ class TestRecommendStocksIntegration:
                 budget=300_000,
                 market="kr",
                 strategy="balanced",
-                asset_type="stock",  # type: ignore[call-arg]
+                asset_type="stock",
             )
 
     @pytest.mark.asyncio
@@ -84,7 +84,7 @@ class TestRecommendStocksIntegration:
                 budget=300_000,
                 market="kr",
                 strategy="balanced",
-                account="kis",  # type: ignore[call-arg]
+                account="kis",
             )
 
     @pytest.mark.asyncio

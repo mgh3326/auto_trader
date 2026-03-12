@@ -26,6 +26,8 @@ __all__ = [
 
 def test_analysis_screening_reexports_screen_contract_helpers() -> None:
     assert callable(analysis_screening.screen_stocks_unified)
+    assert callable(analysis_screening.normalize_screen_request)
+    assert callable(analysis_screening.build_screen_response)
     assert callable(analysis_screening._normalize_screen_market)
     assert callable(analysis_screening._normalize_asset_type)
     assert callable(analysis_screening._normalize_sort_by)
