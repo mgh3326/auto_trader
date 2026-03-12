@@ -16,10 +16,6 @@ def test_public_websocket_ssl_context_verifies_by_default() -> None:
     assert ssl_context.check_hostname is True
 
 
-def test_public_websocket_ssl_context_supports_explicit_insecure_mode() -> None:
-    client = UpbitPublicWebSocketClient(verify_ssl=False)
-
-    ssl_context = client._create_ssl_context()
-
-    assert ssl_context.verify_mode == ssl.CERT_NONE
-    assert ssl_context.check_hostname is False
+def test_public_websocket_rejects_explicit_insecure_mode() -> None:
+    with pytest.raises(ValueError, match="verify_ssl=False is no longer supported"):
+        UpbitPublicWebSocketClient(verify_ssl=False)

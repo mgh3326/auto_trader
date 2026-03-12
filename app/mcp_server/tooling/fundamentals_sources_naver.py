@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import json
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,7 +87,7 @@ def _coerce_optional_number(value: Any) -> int | float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        if value != value:
+        if math.isnan(float(value)):
             return None
         return value
     return None

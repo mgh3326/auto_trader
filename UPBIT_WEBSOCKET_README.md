@@ -116,16 +116,11 @@ UPBIT_SECRET_KEY=your_upbit_secret_key_here
 ```
 [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate
 ```
-**해결책**: 이미 코드에서 자동으로 처리됩니다. 기본적으로 `verify_ssl=False`로 설정되어 SSL 검증을 비활성화합니다.
+**해결책**: SSL 검증은 항상 활성화됩니다. 로컬 신뢰 저장소를 정리한 뒤 다시 연결하세요.
 
-**수동 설정**:
-```python
-# SSL 검증 활성화 (권장하지 않음)
-service = UpbitOrderAnalysisService(
-    analyzer_callback=your_callback,
-    verify_ssl=True
-)
-```
+- python.org 설치본을 쓰는 경우 `/Applications/Python 3.x/Install Certificates.command`를 실행합니다.
+- macOS 키체인 또는 사내 프록시 환경에서 필요한 루트/중간 인증서를 신뢰하도록 추가합니다.
+- 시스템 시간이 크게 틀어지지 않았는지 확인합니다.
 
 ### WebSocket 연결 실패
 - 업비트 API 키 확인

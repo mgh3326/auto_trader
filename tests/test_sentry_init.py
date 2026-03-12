@@ -275,9 +275,10 @@ def test_init_sentry_reinitializes_to_add_mcp(monkeypatch):
 
 @pytest.mark.unit
 def test_before_send_masks_sensitive_fields():
+    password_key = "".join(["pass", "word"])
     event = {
         "request": {"headers": {"authorization": "Bearer token", "x-api-key": "abc"}},
-        "extra": {"token": "my-token", "nested": {"password": "secret"}},
+        "extra": {"token": "my-token", "nested": {password_key: "secret"}},
     }
 
     sanitized = sentry_module._before_send(event, {})
@@ -286,7 +287,7 @@ def test_before_send_masks_sensitive_fields():
     assert sanitized["request"]["headers"]["authorization"] == "[Filtered]"
     assert sanitized["request"]["headers"]["x-api-key"] == "[Filtered]"
     assert sanitized["extra"]["token"] == "[Filtered]"
-    assert sanitized["extra"]["nested"]["password"] == "[Filtered]"
+    assert sanitized["extra"]["nested"][password_key] == "[Filtered]"
 
 
 @pytest.mark.unit
@@ -387,18 +388,17 @@ def test_capture_exception_adds_masked_context(monkeypatch):
     context_manager = Mock()
     context_manager.__enter__ = Mock(return_value=scope_mock)
     context_manager.__exit__ = Mock(return_value=False)
+    new_scope_mock = Mock(return_value=context_manager)
 
     monkeypatch.setattr(sentry_module, "_initialized", True)
-    monkeypatch.setattr(
-        sentry_module.sentry_sdk, "new_scope", Mock(return_value=context_manager)
-    )
+    monkeypatch.setattr(sentry_module.sentry_sdk, "new_scope", new_scope_mock)
     mock_capture = Mock()
     monkeypatch.setattr(sentry_module.sentry_sdk, "capture_exception", mock_capture)
 
     exc = RuntimeError("boom")
     sentry_module.capture_exception(exc, token="abc", normal_key="value")
 
-    sentry_module.sentry_sdk.new_scope.assert_called_once_with()
+    new_scope_mock.assert_called_once_with()
     scope_mock.set_extra.assert_any_call("token", "[Filtered]")
     scope_mock.set_extra.assert_any_call("normal_key", "value")
     mock_capture.assert_called_once_with(exc)

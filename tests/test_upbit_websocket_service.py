@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.upbit_websocket import UpbitMyOrderWebSocket
+from app.services.upbit_websocket import (
+    UpbitMyOrderWebSocket,
+    UpbitOrderAnalysisService,
+)
 
 
 @pytest.mark.unit
@@ -89,10 +92,10 @@ class TestUpbitMyOrderWebSocket:
         assert ssl_context.verify_mode == ssl.CERT_REQUIRED
         assert ssl_context.check_hostname is True
 
-    def test_create_ssl_context_supports_explicit_insecure_mode(self):
-        client = UpbitMyOrderWebSocket(verify_ssl=False)
+    def test_create_ssl_context_rejects_explicit_insecure_mode(self):
+        with pytest.raises(ValueError, match="verify_ssl=False is no longer supported"):
+            UpbitMyOrderWebSocket(verify_ssl=False)
 
-        ssl_context = client._create_ssl_context()
-
-        assert ssl_context.verify_mode == ssl.CERT_NONE
-        assert ssl_context.check_hostname is False
+    def test_order_analysis_service_rejects_explicit_insecure_mode(self):
+        with pytest.raises(ValueError, match="verify_ssl=False is no longer supported"):
+            UpbitOrderAnalysisService(verify_ssl=False)
