@@ -13,12 +13,12 @@ from tenacity import wait_fixed
 import app.services.openclaw_client as openclaw_client
 from app.core.config import settings
 from app.monitoring.trade_notifier import TradeNotifier, get_trade_notifier
+from app.services.fill_notification import FillOrder, format_fill_message
 from app.services.openclaw_client import (
     FillNotificationDeliveryResult,
     OpenClawClient,
     _build_openclaw_message,
 )
-from app.services.fill_notification import FillOrder, format_fill_message
 
 
 def test_build_openclaw_message_includes_callback_and_schema() -> None:
