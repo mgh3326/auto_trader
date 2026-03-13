@@ -792,9 +792,8 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
         "_fetch_quote_equity_kr",
         AsyncMock(return_value={"price": 71000.0}),
     )
-    _patch_runtime_attr(
-        monkeypatch, "_fetch_quote_equity_us", AsyncMock(return_value={"price": 220.0})
-    )
+    us_quote_mock = AsyncMock(return_value={"price": 220.0})
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", us_quote_mock)
     monkeypatch.setattr(
         upbit_service,
         "fetch_multiple_current_prices",
@@ -821,6 +820,13 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
     assert kis_kr["evaluation_amount"] == 142000.0
     assert kis_kr["profit_loss"] == 2000.0
     assert kis_kr["profit_rate"] == 1.43
+
+    kis_us = next(item for item in kis_account["positions"] if item["symbol"] == "AAPL")
+    assert kis_us["current_price"] == 210.0
+    assert kis_us["evaluation_amount"] == 210.0
+    assert kis_us["profit_loss"] == 10.0
+    assert kis_us["profit_rate"] == 5.0
+    us_quote_mock.assert_not_awaited()
 
     upbit_account = next(
         item for item in result["accounts"] if item["account"] == "upbit"
@@ -1732,6 +1738,467 @@ async def test_get_holdings_preserves_kis_values_on_yahoo_failure(monkeypatch):
         assert error["stage"] == "current_price"
         # Check that error message is in expected format (contains the symbol)
         assert "not found" in error["error"]
+
+
+@pytest.mark.asyncio
+async def test_collect_portfolio_positions_skips_yahoo_for_kis_us_with_valid_numeric_snapshot(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import portfolio_holdings
+
+    positions = [
+        {
+            "account": "kis",
+            "account_name": "기본 계좌",
+            "broker": "kis",
+            "source": "kis_api",
+            "instrument_type": "equity_us",
+            "market": "us",
+            "symbol": "AAPL",
+            "name": "Apple",
+            "quantity": 1.0,
+            "avg_buy_price": 200.0,
+            "current_price": 210.0,
+            "evaluation_amount": 210.0,
+            "profit_loss": 0.0,
+            "profit_rate": 0.0,
+        }
+    ]
+
+    async def fake_collect_kis_positions(market_filter):
+        assert market_filter == "equity_us"
+        return positions, []
+
+    quote_mock = AsyncMock(return_value={"price": 220.0})
+
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions
+    )
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "_collect_upbit_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    monkeypatch.setattr(portfolio_holdings, "_fetch_quote_equity_us", quote_mock)
+
+    (
+        result_positions,
+        result_errors,
+        _,
+        _,
+    ) = await portfolio_holdings._collect_portfolio_positions(
+        account="kis",
+        market="us",
+        include_current_price=True,
+    )
+
+    assert result_errors == []
+    assert result_positions == positions
+    assert result_positions[0]["current_price"] == 210.0
+    assert result_positions[0]["evaluation_amount"] == 210.0
+    assert result_positions[0]["profit_loss"] == 0.0
+    assert result_positions[0]["profit_rate"] == 0.0
+    quote_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kis_price_value", ["", "0"])
+async def test_get_holdings_fetches_yahoo_only_for_kis_us_missing_price_and_recalculates(
+    monkeypatch, kis_price_value
+):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return [
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_item_name": "Apple Inc.",
+                    "ovrs_cblc_qty": "1",
+                    "pchs_avg_pric": "200.0",
+                    "now_pric2": "210.0",
+                    "ovrs_stck_evlu_amt": "210.0",
+                    "frcr_evlu_pfls_amt": "10.0",
+                    "evlu_pfls_rt": "5.0",
+                },
+                {
+                    "ovrs_pdno": "AMZN",
+                    "ovrs_item_name": "Amazon.com Inc.",
+                    "ovrs_cblc_qty": "10",
+                    "pchs_avg_pric": "150.0",
+                    "now_pric2": kis_price_value,
+                    "ovrs_stck_evlu_amt": "1600.0",
+                    "frcr_evlu_pfls_amt": "100.0",
+                    "evlu_pfls_rt": "6.67",
+                },
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    quote_mock = AsyncMock(return_value={"price": 165.0})
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", quote_mock)
+
+    result = await tools["get_holdings"](account="kis", market="us")
+
+    assert result["total_accounts"] == 1
+    assert result["total_positions"] == 2
+    assert result["errors"] == []
+
+    positions_by_symbol = {
+        position["symbol"]: position for position in result["accounts"][0]["positions"]
+    }
+
+    aapl = positions_by_symbol["AAPL"]
+    assert aapl["current_price"] == 210.0
+    assert aapl["evaluation_amount"] == 210.0
+    assert aapl["profit_loss"] == 10.0
+    assert aapl["profit_rate"] == 5.0
+    assert "price_error" not in aapl
+
+    amzn = positions_by_symbol["AMZN"]
+    assert amzn["current_price"] == 165.0
+    assert amzn["evaluation_amount"] == 1650.0
+    assert amzn["profit_loss"] == 150.0
+    assert amzn["profit_rate"] == 10.0
+    assert "price_error" not in amzn
+
+    quote_mock.assert_awaited_once_with("AMZN")
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_fetches_yahoo_for_kis_us_with_missing_kis_metrics(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return [
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_item_name": "Apple Inc.",
+                    "ovrs_cblc_qty": "1",
+                    "pchs_avg_pric": "200.0",
+                    "now_pric2": "210.0",
+                    "ovrs_stck_evlu_amt": "",
+                    "frcr_evlu_pfls_amt": "",
+                    "evlu_pfls_rt": "",
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    quote_mock = AsyncMock(return_value={"price": 220.0})
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", quote_mock)
+
+    result = await tools["get_holdings"](account="kis", market="us")
+
+    assert result["total_accounts"] == 1
+    assert result["total_positions"] == 1
+    assert result["errors"] == []
+
+    aapl = result["accounts"][0]["positions"][0]
+    assert aapl["symbol"] == "AAPL"
+    assert aapl["current_price"] == 220.0
+    assert aapl["evaluation_amount"] == 220.0
+    assert aapl["profit_loss"] == 20.0
+    assert aapl["profit_rate"] == 10.0
+    assert "price_error" not in aapl
+
+    quote_mock.assert_awaited_once_with("AAPL")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evaluation_amount_raw", ["0", " "])
+async def test_get_holdings_fetches_yahoo_for_kis_us_with_invalid_evaluation_amount(
+    monkeypatch,
+    evaluation_amount_raw,
+):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return [
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_item_name": "Apple Inc.",
+                    "ovrs_cblc_qty": "1",
+                    "pchs_avg_pric": "200.0",
+                    "now_pric2": "210.0",
+                    "ovrs_stck_evlu_amt": evaluation_amount_raw,
+                    "frcr_evlu_pfls_amt": "10.0",
+                    "evlu_pfls_rt": "5.0",
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    quote_mock = AsyncMock(return_value={"price": 220.0})
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", quote_mock)
+
+    result = await tools["get_holdings"](account="kis", market="us")
+
+    assert result["total_accounts"] == 1
+    assert result["total_positions"] == 1
+    assert result["errors"] == []
+
+    aapl = result["accounts"][0]["positions"][0]
+    assert aapl["symbol"] == "AAPL"
+    assert aapl["current_price"] == 220.0
+    assert aapl["evaluation_amount"] == 220.0
+    assert aapl["profit_loss"] == 20.0
+    assert aapl["profit_rate"] == 10.0
+    assert "price_error" not in aapl
+
+    quote_mock.assert_awaited_once_with("AAPL")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profit_loss_raw", "profit_rate_raw"),
+    [(" ", "5.0"), ("abc", "5.0"), ("10.0", " "), ("10.0", "abc")],
+)
+async def test_get_holdings_fetches_yahoo_for_kis_us_with_invalid_profit_metrics(
+    monkeypatch,
+    profit_loss_raw,
+    profit_rate_raw,
+):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return [
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_item_name": "Apple Inc.",
+                    "ovrs_cblc_qty": "1",
+                    "pchs_avg_pric": "200.0",
+                    "now_pric2": "210.0",
+                    "ovrs_stck_evlu_amt": "210.0",
+                    "frcr_evlu_pfls_amt": profit_loss_raw,
+                    "evlu_pfls_rt": profit_rate_raw,
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    quote_mock = AsyncMock(return_value={"price": 220.0})
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", quote_mock)
+
+    result = await tools["get_holdings"](account="kis", market="us")
+
+    assert result["total_accounts"] == 1
+    assert result["total_positions"] == 1
+    assert result["errors"] == []
+
+    aapl = result["accounts"][0]["positions"][0]
+    assert aapl["symbol"] == "AAPL"
+    assert aapl["current_price"] == 220.0
+    assert aapl["evaluation_amount"] == 220.0
+    assert aapl["profit_loss"] == 20.0
+    assert aapl["profit_rate"] == 10.0
+    assert "price_error" not in aapl
+
+    quote_mock.assert_awaited_once_with("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_keeps_kis_us_price_when_manual_same_symbol_uses_yahoo(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return [
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_item_name": "Apple Inc.",
+                    "ovrs_cblc_qty": "1",
+                    "pchs_avg_pric": "200.0",
+                    "now_pric2": "210.0",
+                    "ovrs_stck_evlu_amt": "210.0",
+                    "frcr_evlu_pfls_amt": "10.0",
+                    "evlu_pfls_rt": "5.0",
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(
+            return_value=(
+                [
+                    {
+                        "account": "toss",
+                        "account_name": "미국 주식",
+                        "broker": "toss",
+                        "source": "manual",
+                        "instrument_type": "equity_us",
+                        "market": "us",
+                        "symbol": "AAPL",
+                        "name": "Apple Manual",
+                        "quantity": 2.0,
+                        "avg_buy_price": 190.0,
+                        "current_price": None,
+                        "evaluation_amount": None,
+                        "profit_loss": None,
+                        "profit_rate": None,
+                    }
+                ],
+                [],
+            )
+        ),
+    )
+    quote_mock = AsyncMock(return_value={"price": 225.0})
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", quote_mock)
+
+    result = await tools["get_holdings"](market="us", minimum_value=0)
+
+    assert result["total_accounts"] == 2
+    assert result["total_positions"] == 2
+
+    accounts_by_id = {account["account"]: account for account in result["accounts"]}
+    kis_aapl = accounts_by_id["kis"]["positions"][0]
+    manual_aapl = accounts_by_id["toss"]["positions"][0]
+
+    assert kis_aapl["current_price"] == 210.0
+    assert kis_aapl["evaluation_amount"] == 210.0
+    assert kis_aapl["profit_loss"] == 10.0
+    assert kis_aapl["profit_rate"] == 5.0
+    assert "price_error" not in kis_aapl
+
+    assert manual_aapl["current_price"] == 225.0
+    assert manual_aapl["evaluation_amount"] == 450.0
+    assert manual_aapl["profit_loss"] == 70.0
+    assert manual_aapl["profit_rate"] == 18.42
+    assert "price_error" not in manual_aapl
+
+    quote_mock.assert_awaited_once_with("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_get_holdings_only_records_yahoo_error_for_same_symbol_manual_fallback(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class DummyKISClient:
+        async def fetch_my_stocks(self):
+            return []
+
+        async def fetch_my_us_stocks(self):
+            return [
+                {
+                    "ovrs_pdno": "AAPL",
+                    "ovrs_item_name": "Apple Inc.",
+                    "ovrs_cblc_qty": "1",
+                    "pchs_avg_pric": "200.0",
+                    "now_pric2": "210.0",
+                    "ovrs_stck_evlu_amt": "210.0",
+                    "frcr_evlu_pfls_amt": "10.0",
+                    "evlu_pfls_rt": "5.0",
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(
+            return_value=(
+                [
+                    {
+                        "account": "toss",
+                        "account_name": "미국 주식",
+                        "broker": "toss",
+                        "source": "manual",
+                        "instrument_type": "equity_us",
+                        "market": "us",
+                        "symbol": "AAPL",
+                        "name": "Apple Manual",
+                        "quantity": 2.0,
+                        "avg_buy_price": 190.0,
+                        "current_price": None,
+                        "evaluation_amount": None,
+                        "profit_loss": None,
+                        "profit_rate": None,
+                    }
+                ],
+                [],
+            )
+        ),
+    )
+
+    async def raise_yahoo(symbol: str) -> dict[str, object]:
+        raise ValueError(f"Symbol '{symbol}' not found")
+
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", raise_yahoo)
+
+    result = await tools["get_holdings"](market="us", minimum_value=0)
+
+    accounts_by_id = {account["account"]: account for account in result["accounts"]}
+    kis_aapl = accounts_by_id["kis"]["positions"][0]
+    manual_aapl = accounts_by_id["toss"]["positions"][0]
+
+    assert kis_aapl["current_price"] == 210.0
+    assert kis_aapl["evaluation_amount"] == 210.0
+    assert kis_aapl["profit_loss"] == 10.0
+    assert kis_aapl["profit_rate"] == 5.0
+    assert "price_error" not in kis_aapl
+
+    assert manual_aapl["current_price"] is None
+    assert manual_aapl["evaluation_amount"] is None
+    assert manual_aapl["profit_loss"] is None
+    assert manual_aapl["profit_rate"] is None
+    assert manual_aapl["price_error"] == "Symbol 'AAPL' not found"
+
+    assert result["errors"] == [
+        {
+            "source": "yahoo",
+            "market": "us",
+            "symbol": "AAPL",
+            "stage": "current_price",
+            "error": "Symbol 'AAPL' not found",
+        }
+    ]
 
 
 @pytest.mark.asyncio

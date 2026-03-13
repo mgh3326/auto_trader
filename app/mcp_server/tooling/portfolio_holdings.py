@@ -81,6 +81,9 @@ from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
 from app.mcp_server.tooling.shared import (
+    to_optional_float as _to_optional_float,
+)
+from app.mcp_server.tooling.shared import (
     value_for_minimum_filter as _value_for_minimum_filter,
 )
 from app.services.brokers.kis.client import KISClient
@@ -157,6 +160,15 @@ async def _collect_kis_positions(
                 if quantity <= 0:
                     continue
 
+                current_price_raw = stock.get("now_pric2")
+                evaluation_amount_raw = stock.get("ovrs_stck_evlu_amt")
+                profit_loss_raw = stock.get("frcr_evlu_pfls_amt")
+                profit_rate_raw = stock.get("evlu_pfls_rt")
+                current_price = _to_optional_float(current_price_raw)
+                evaluation_amount = _to_optional_float(evaluation_amount_raw)
+                profit_loss = _to_optional_float(profit_loss_raw)
+                profit_rate = _to_optional_float(profit_rate_raw)
+
                 positions.append(
                     {
                         "account": "kis",
@@ -172,11 +184,14 @@ async def _collect_kis_positions(
                         "name": stock.get("ovrs_item_name") or stock.get("ovrs_pdno"),
                         "quantity": quantity,
                         "avg_buy_price": _to_float(stock.get("pchs_avg_pric")),
-                        "current_price": _to_float(stock.get("now_pric2"), default=0.0)
-                        or None,
-                        "evaluation_amount": _to_float(stock.get("ovrs_stck_evlu_amt")),
-                        "profit_loss": _to_float(stock.get("frcr_evlu_pfls_amt")),
-                        "profit_rate": _to_float(stock.get("evlu_pfls_rt")),
+                        "current_price": (
+                            current_price
+                            if current_price is not None and current_price > 0
+                            else None
+                        ),
+                        "evaluation_amount": evaluation_amount,
+                        "profit_loss": profit_loss,
+                        "profit_rate": profit_rate,
                     }
                 )
         except Exception as exc:
@@ -297,6 +312,36 @@ async def _collect_manual_positions(
     return positions, errors
 
 
+def _has_valid_kis_equity_us_snapshot(position: dict[str, Any]) -> bool:
+    if position.get("source") != "kis_api":
+        return False
+
+    if str(position.get("instrument_type") or "") != "equity_us":
+        return False
+
+    current_price = _to_optional_float(position.get("current_price"))
+    evaluation_amount = _to_optional_float(position.get("evaluation_amount"))
+    profit_loss = _to_optional_float(position.get("profit_loss"))
+    profit_rate = _to_optional_float(position.get("profit_rate"))
+
+    return (
+        current_price is not None
+        and current_price > 0
+        and evaluation_amount is not None
+        and evaluation_amount > 0
+        and profit_loss is not None
+        and profit_rate is not None
+    )
+
+
+def _position_needs_current_price_refresh(position: dict[str, Any]) -> bool:
+    instrument_type = str(position.get("instrument_type") or "")
+    if _has_valid_kis_equity_us_snapshot(position):
+        return False
+
+    return instrument_type in {"equity_kr", "equity_us", "crypto"}
+
+
 async def _fetch_price_map_for_positions(
     positions: list[dict[str, Any]],
 ) -> tuple[
@@ -311,6 +356,7 @@ async def _fetch_price_map_for_positions(
             _normalize_position_symbol(position["symbol"], "crypto")
             for position in positions
             if position["instrument_type"] == "crypto"
+            and _position_needs_current_price_refresh(position)
         }
     )
 
@@ -414,6 +460,7 @@ async def _fetch_price_map_for_positions(
                 (position["instrument_type"], position["symbol"])
                 for position in positions
                 if position["instrument_type"] in {"equity_kr", "equity_us"}
+                and _position_needs_current_price_refresh(position)
             }
         )
     ]
@@ -504,13 +551,14 @@ async def _collect_portfolio_positions(
         errors.extend(price_errors)
         for position in positions:
             key = (position["instrument_type"], position["symbol"])
+            needs_price_refresh = _position_needs_current_price_refresh(position)
             price = price_map.get(key)
-            if price is not None:
+            if price is not None and needs_price_refresh:
                 position["current_price"] = price
                 _recalculate_profit_fields(position)
             else:
                 error = error_map.get(key)
-                if error is not None:
+                if error is not None and needs_price_refresh:
                     position["price_error"] = error
     else:
         for position in positions:
