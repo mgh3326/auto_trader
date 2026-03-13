@@ -28,6 +28,7 @@ init_sentry(
 from fastmcp import FastMCP  # noqa: E402
 
 from app.mcp_server.auth import build_auth_provider  # noqa: E402
+from app.mcp_server.sentry_middleware import McpToolCallSentryMiddleware  # noqa: E402
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
@@ -42,6 +43,7 @@ mcp = FastMCP(
     auth=auth_provider,
 )
 
+mcp.add_middleware(McpToolCallSentryMiddleware())
 register_all_tools(mcp)
 
 

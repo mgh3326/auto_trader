@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 from typing import Any
@@ -16,6 +17,11 @@ try:
     from sentry_sdk.integrations.mcp import MCPIntegration
 except ImportError:  # pragma: no cover - dependent on sentry-sdk version
     MCPIntegration = None
+
+try:
+    from mcp.server.lowlevel.server import request_ctx as _mcp_request_ctx
+except ImportError:  # pragma: no cover - dependent on MCP SDK availability
+    _mcp_request_ctx = None
 
 from app.core.config import settings
 
@@ -296,6 +302,107 @@ def init_sentry(
     except Exception:
         logger.exception("Failed to initialize Sentry for service=%s", service_name)
         return False
+
+
+_MAX_STRING_LENGTH = 1024
+_MAX_SEQUENCE_LENGTH = 25
+_MAX_DICT_KEYS = 25
+_TRUNCATED_MARKER = "...[truncated]"
+
+
+def _truncate_for_sentry(value: Any) -> Any:
+    """Truncate oversized values for Sentry structured context.
+
+    Limits:
+        * Strings – first 1 024 characters.
+        * Lists / tuples – first 25 elements.
+        * Dicts – first 25 keys.
+
+    A visible marker is appended whenever a value is truncated.
+    The function is pure – the original *value* is never mutated.
+    """
+    if isinstance(value, str):
+        if len(value) > _MAX_STRING_LENGTH:
+            return value[:_MAX_STRING_LENGTH] + _TRUNCATED_MARKER
+        return value
+
+    if isinstance(value, dict):
+        keys = list(value.keys())
+        if len(keys) > _MAX_DICT_KEYS:
+            result = {k: _truncate_for_sentry(value[k]) for k in keys[:_MAX_DICT_KEYS]}
+            result[_TRUNCATED_MARKER] = f"{len(keys) - _MAX_DICT_KEYS} more keys"
+            return result
+        return {k: _truncate_for_sentry(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        is_tuple = isinstance(value, tuple)
+        if len(value) > _MAX_SEQUENCE_LENGTH:
+            items: list[Any] = [
+                _truncate_for_sentry(item) for item in value[:_MAX_SEQUENCE_LENGTH]
+            ]
+            items.append(
+                f"...[truncated: {len(value) - _MAX_SEQUENCE_LENGTH} more items]"
+            )
+            return tuple(items) if is_tuple else items
+        items = [_truncate_for_sentry(item) for item in value]
+        return tuple(items) if is_tuple else items
+
+    return value
+
+
+def build_mcp_tool_call_context(
+    tool_name: str, arguments: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Build a sanitized, truncated structured context for an MCP tool call.
+
+    Reuses the project-wide sensitive-key filter and applies size limits
+    so the payload stays within Sentry's recommended context size.
+
+    Returns a dict with exactly two keys: ``tool_name`` and ``arguments``.
+    """
+    safe_args = _truncate_for_sentry(_sanitize_in_place(copy.deepcopy(arguments or {})))
+    return {
+        "tool_name": tool_name,
+        "arguments": safe_args,
+    }
+
+
+def get_mcp_http_scopes() -> (
+    tuple[sentry_sdk.Scope | None, sentry_sdk.Scope | None] | None
+):
+    if _mcp_request_ctx is None:
+        return None
+
+    try:
+        ctx = _mcp_request_ctx.get()
+    except LookupError:
+        return None
+
+    if ctx is None or not hasattr(ctx, "request") or ctx.request is None:
+        return None
+
+    request_scope = getattr(ctx.request, "scope", None)
+    if not isinstance(request_scope, dict) or request_scope.get("type") != "http":
+        return None
+
+    state = request_scope.get("state")
+    if not isinstance(state, dict):
+        return None
+
+    return (
+        state.get("sentry_sdk.isolation_scope"),
+        state.get("sentry_sdk.current_scope"),
+    )
+
+
+def enrich_mcp_tool_call_scope(
+    scope: sentry_sdk.Scope, tool_name: str, arguments: dict[str, Any] | None
+) -> None:
+    scope.set_tag("mcp.tool.name", tool_name)
+    scope.set_context(
+        "mcp_tool_call",
+        build_mcp_tool_call_context(tool_name, arguments),
+    )
 
 
 def capture_exception(exc: BaseException, **context: Any) -> None:
