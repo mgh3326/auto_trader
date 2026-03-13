@@ -1,6 +1,6 @@
 import asyncio
-from urllib.parse import parse_qs, urlparse
 from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 

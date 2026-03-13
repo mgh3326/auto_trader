@@ -8,8 +8,6 @@ import pandas as pd
 import sentry_sdk
 import yfinance as yf
 
-logger = logging.getLogger(__name__)
-
 from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
     _fetch_news_finnhub,
@@ -39,6 +37,8 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
 from app.monitoring import build_yfinance_tracing_session
+
+logger = logging.getLogger(__name__)
 
 # Keep direct KR helper bindings available for test monkeypatch compatibility.
 _KR_ANALYZE_PATCH_SURFACES = (

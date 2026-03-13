@@ -1610,9 +1610,6 @@ class TestCloseApprovalKeyRedis:
         assert mod._redis_client is None
 
 
-
-
-
 # =============================================================================
 # H0GSCNI0 Synthetic Contract Tests
 # =============================================================================
@@ -1788,22 +1785,22 @@ class TestH0GSCNI0SyntheticContract:
         client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=True)
 
         payload = (
-            "ACCT0001^"      # 0: account
-            "ORDER00001^"    # 1: order_id
-            "TRX0000001^"    # 2: tr_code placeholder
-            "PROD^"          # 3: reserved
-            "02^"            # 4: side (bid)
-            "9^"             # 5: rctf_cls (unique value)
-            "RESERVED^"      # 6: reserved
-            "META^"          # 7: symbol (unique)
-            "42^"            # 8: filled_qty (unique)
-            "999.99^"        # 9: filled_price (unique)
-            "093001^"        # 10: filled_at
-            "8^"             # 11: rfus_yn (unique)
-            "7^"             # 12: cntg_yn (unique)
-            "77^"            # 13: acpt_yn (unique)
-            "NYSE^"          # 14: exchange
-            "0000000042"     # 15: order_qty (unique)
+            "ACCT0001^"  # 0: account
+            "ORDER00001^"  # 1: order_id
+            "TRX0000001^"  # 2: tr_code placeholder
+            "PROD^"  # 3: reserved
+            "02^"  # 4: side (bid)
+            "9^"  # 5: rctf_cls (unique value)
+            "RESERVED^"  # 6: reserved
+            "META^"  # 7: symbol (unique)
+            "42^"  # 8: filled_qty (unique)
+            "999.99^"  # 9: filled_price (unique)
+            "093001^"  # 10: filled_at
+            "8^"  # 11: rfus_yn (unique)
+            "7^"  # 12: cntg_yn (unique)
+            "77^"  # 13: acpt_yn (unique)
+            "NYSE^"  # 14: exchange
+            "0000000042"  # 15: order_qty (unique)
         )
         message = f"0|H0GSCNI0|1|{payload}"
 

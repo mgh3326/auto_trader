@@ -1246,7 +1246,9 @@ class TestScreenStocksTvScreenerContract:
             }
 
         async def fail_legacy_us(**kwargs: Any) -> dict[str, Any]:
-            raise AssertionError("legacy US path should not run for technology category")
+            raise AssertionError(
+                "legacy US path should not run for technology category"
+            )
 
         async def fail_enrichment(symbol: str, **kwargs: Any) -> dict[str, Any]:
             raise AssertionError(
@@ -1282,6 +1284,7 @@ class TestScreenStocksTvScreenerContract:
         assert captured["category"] == "Technology"
         assert result["filters_applied"]["sector"] == "Technology"
         assert result["results"][0]["sector"] == "Technology"
+
     @pytest.mark.asyncio
     async def test_kr_stock_request_with_max_rsi_still_uses_tvscreener(
         self, monkeypatch
