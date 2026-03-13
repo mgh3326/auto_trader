@@ -96,6 +96,39 @@ class TestUnifiedWebSocketMonitor:
         assert send_mock.await_args.kwargs["correlation_id"] == "corr-kis-1"
 
     @pytest.mark.asyncio
+    async def test_on_kis_execution_forwards_us_currency_for_overseas_fill(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor()
+        send_mock = AsyncMock(return_value="req-789")
+        monitor.openclaw_client.send_fill_notification = send_mock
+
+        await monitor._on_kis_execution(
+            {
+                "symbol": "BAC",
+                "side": "buy",
+                "execution_status": "filled",
+                "filled_price": 47.9,
+                "filled_qty": 23,
+                "filled_amount": 1101.7,
+                "market": "us",
+                "currency": "USD",
+                "correlation_id": "corr-kis-us-1",
+            }
+        )
+
+        send_mock.assert_awaited_once()
+        fill_order = send_mock.call_args.args[0]
+        assert isinstance(fill_order, FillOrder)
+        assert fill_order.symbol == "BAC"
+        assert fill_order.market_type == "us"
+        assert fill_order.currency == "USD"
+        assert send_mock.await_args is not None
+        assert send_mock.await_args.kwargs["correlation_id"] == "corr-kis-us-1"
+
+    @pytest.mark.asyncio
     async def test_on_kis_execution_skips_domestic_without_fill_yn(
         self, mock_settings: None
     ) -> None:
