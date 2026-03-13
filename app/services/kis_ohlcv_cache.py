@@ -3,17 +3,21 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
+from functools import lru_cache
 
+import exchange_calendars as xcals
 import pandas as pd
 import redis.asyncio as redis
 
 from app.core.config import settings
+from app.core.timezone import KST, now_kst
 
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_PERIODS = {"day", "1h"}
 _DAY_COLUMNS = ["date", "open", "high", "low", "close", "volume", "value"]
+_KRX_DAILY_CACHE_CUTOFF = time(15, 35)
 _HOURLY_COLUMNS = [
     "datetime",
     "date",
@@ -81,6 +85,37 @@ def _coerce_datetime(value: object) -> pd.Timestamp | None:
     return parsed
 
 
+def _coerce_kst_datetime(now: datetime | None = None) -> datetime:
+    current = now or now_kst()
+    if current.tzinfo is None:
+        return current.replace(tzinfo=KST)
+    return current.astimezone(KST)
+
+
+@lru_cache(maxsize=1)
+def _get_xkrx_calendar():
+    return xcals.get_calendar("XKRX")
+
+
+def _is_session_day_kst(target_day: date) -> bool:
+    calendar = _get_xkrx_calendar()
+    return bool(calendar.is_session(pd.Timestamp(target_day)))
+
+
+def _latest_session_day_on_or_before(target_day: date) -> date | None:
+    calendar = _get_xkrx_calendar()
+    start = pd.Timestamp(target_day - timedelta(days=30))
+    end = pd.Timestamp(target_day)
+    sessions = calendar.sessions_in_range(start, end)
+    if len(sessions) == 0:
+        return None
+    return pd.Timestamp(sessions[-1]).date()
+
+
+def _latest_session_day_before(target_day: date) -> date | None:
+    return _latest_session_day_on_or_before(target_day - timedelta(days=1))
+
+
 def _canonicalize_frame(period: str, frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return _empty_dataframe(period)
@@ -128,15 +163,33 @@ def _is_cache_fresh(
     if frame.empty:
         return False
 
-    current = pd.Timestamp(now or datetime.now())
-    if pd.isna(current):
-        return False
-
     if period == "day":
+        current_kst = _coerce_kst_datetime(now)
         latest = pd.to_datetime(frame.get("date"), errors="coerce").max()
         if pd.isna(latest):
             return False
-        return latest.date() >= current.date()
+        latest_date = latest.date()
+        current_date = current_kst.date()
+        if latest_date > current_date:
+            return True
+
+        current_time = current_kst.time()
+        is_session_day = _is_session_day_kst(current_date)
+        if not is_session_day:
+            return latest_date == _latest_session_day_on_or_before(current_date)
+
+        if current_time < time(9, 0):
+            previous_session_day = _latest_session_day_before(current_date)
+            return latest_date == current_date or latest_date == previous_session_day
+
+        if current_time < _KRX_DAILY_CACHE_CUTOFF:
+            return False
+
+        return latest_date == current_date
+
+    current = pd.Timestamp(now or datetime.now())
+    if pd.isna(current):
+        return False
 
     latest = pd.to_datetime(frame.get("datetime"), errors="coerce").max()
     if pd.isna(latest):
