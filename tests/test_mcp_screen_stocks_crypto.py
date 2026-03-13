@@ -1,6 +1,7 @@
 import asyncio
 from urllib.parse import parse_qs, urlparse
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 import pytest
@@ -1968,3 +1969,109 @@ class TestScreenStocksCrypto:
 
         assert result["results"][0]["market_cap"] == 1_900_000_000_000_000
         assert any("stale cache was used" in w for w in result["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_crypto_large_ticker_enrichment_uses_real_batched_client_path(
+        self,
+        fake_crypto_tvscreener_module,
+        monkeypatch,
+    ) -> None:
+        requested_batches: list[list[str]] = []
+        candidate_count = 120
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": [
+                    f"UPBIT:COIN{index:03d}KRW" for index in range(candidate_count)
+                ],
+                "name": [f"COIN{index:03d}KRW" for index in range(candidate_count)],
+                "description": [
+                    f"Coin {index:03d}" for index in range(candidate_count)
+                ],
+                "price": [1_000.0 + index for index in range(candidate_count)],
+                "change_percent": [-0.01 for _ in range(candidate_count)],
+                "relative_strength_index_14": [40.0 for _ in range(candidate_count)],
+                "average_directional_index_14": [20.0 for _ in range(candidate_count)],
+                "volume_24h_in_usd": [10_000.0 for _ in range(candidate_count)],
+                "value_traded": [
+                    1_000_000_000.0 - index for index in range(candidate_count)
+                ],
+                "market_cap": [100_000_000_000.0 for _ in range(candidate_count)],
+                "exchange": ["UPBIT" for _ in range(candidate_count)],
+            }
+        )
+
+        async def fake_request_json(url: str, params=None):
+            assert params is None
+            batch_codes = parse_qs(urlparse(url).query)["markets"][0].split(",")
+            requested_batches.append(batch_codes)
+            return [
+                {
+                    "market": market_code,
+                    "acc_trade_volume_24h": float(index + 1),
+                }
+                for index, market_code in enumerate(batch_codes)
+            ]
+
+        async def mock_fetch_ohlcv(
+            symbol: str, market_type: str, count: int
+        ) -> pd.DataFrame:
+            assert symbol.startswith("KRW-COIN")
+            assert market_type == "crypto"
+            assert count == 50
+            close = [100.0 + i for i in range(50)]
+            return pd.DataFrame(
+                {
+                    "open": close,
+                    "high": [value + 10.0 for value in close],
+                    "low": [value - 10.0 for value in close],
+                    "close": close,
+                    "volume": [1_000.0] * 49 + [1_500.0],
+                }
+            )
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(upbit_service, "_request_json", fake_request_json)
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_market_display_names",
+            AsyncMock(return_value={}),
+            raising=False,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="trade_amount",
+            sort_order="desc",
+            limit=25,
+        )
+
+        query_kwargs = tv_service.query_crypto_screener.await_args.kwargs
+        assert query_kwargs["limit"] == 125
+        assert [len(batch) for batch in requested_batches] == [50, 50, 20]
+        assert len(result["results"]) == 25
+        assert all(item["volume_24h"] > 0.0 for item in result["results"])
+        assert not any(
+            "volume_24h defaulted to 0.0" in warning for warning in result["warnings"]
+        )
