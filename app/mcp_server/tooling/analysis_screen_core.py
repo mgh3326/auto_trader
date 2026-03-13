@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import inspect
 import logging
+import math
 import time
 from typing import Any, cast
 
@@ -155,18 +156,23 @@ async def _with_timeout(
 def _to_optional_float(value: Any) -> float | None:
     if value is None:
         return None
-    if value != value:
-        return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if math.isnan(number):
+        return None
+    return number
 
 
 def _to_optional_int(value: Any) -> int | None:
     if value is None:
         return None
-    if value != value:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number):
         return None
     try:
         return int(value)
@@ -245,9 +251,15 @@ def _kr_market_codes(market: str) -> tuple[list[str], str]:
 def _clean_text(value: Any) -> str:
     if value is None:
         return ""
-    if value != value:
+    text = str(value).strip()
+    if not text:
         return ""
-    return str(value).strip()
+    try:
+        if math.isnan(float(text)):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return text
 
 
 def _apply_equity_enrichment_defaults(row: dict[str, Any]) -> dict[str, Any]:
