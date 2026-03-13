@@ -14,7 +14,11 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.manual_holdings import MarketType
-from app.services.us_symbol_universe_service import USSymbolNotRegisteredError
+from app.services.us_symbol_universe_service import (
+    USSymbolInactiveError,
+    USSymbolNotRegisteredError,
+    USSymbolUniverseEmptyError,
+)
 
 VERSIONS_DIR = Path("alembic/versions")
 SQL_HELPER_PATH = Path("scripts/sql/us_candles_timescale.sql")
@@ -26,6 +30,9 @@ AGGREGATE_VIEWS = [
     "us_candles_1h",
 ]
 ALL_OBJECTS = [BASE_TABLE, *AGGREGATE_VIEWS]
+US_UNIVERSE_SYNC_HINT = (
+    "Sync required: uv run python scripts/sync_us_symbol_universe.py"
+)
 
 
 def _read_migration(pattern: str) -> tuple[Path, str]:
@@ -466,6 +473,9 @@ async def test_sync_us_candles_no_target_symbols_returns_kr_style_summary(
         "sessions": 7,
         "skipped": True,
         "reason": "no_target_symbols",
+        "skip_reasons": {},
+        "skipped_symbols": [],
+        "lookup_refresh_attempted": False,
         "symbols_total": 0,
         "symbol_venues_total": 0,
         "pairs_processed": 0,
@@ -479,7 +489,7 @@ async def test_sync_us_candles_no_target_symbols_returns_kr_style_summary(
 
 
 @pytest.mark.asyncio
-async def test_sync_us_candles_propagates_us_symbol_universe_sync_hint(
+async def test_sync_us_candles_refreshes_symbol_universe_and_skips_unresolved_symbol(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.services.us_candles_sync_service as svc
@@ -493,23 +503,275 @@ async def test_sync_us_candles_propagates_us_symbol_universe_sync_hint(
     monkeypatch.setattr(svc, "AsyncSessionLocal", lambda: fake_session)
     monkeypatch.setattr(svc, "KISClient", lambda: kis_client)
     monkeypatch.setattr(svc, "ManualHoldingsService", lambda session: manual_service)
-    monkeypatch.setattr(svc, "_get_xnys_calendar", lambda: _FakeCalendar())
+    monkeypatch.setattr(
+        svc,
+        "_select_closed_sessions",
+        lambda now_utc, sessions: [
+            SimpleNamespace(
+                open_utc=datetime(2026, 3, 7, 14, 30, tzinfo=UTC),
+                last_minute_utc=datetime(2026, 3, 7, 20, 59, tzinfo=UTC),
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        svc,
+        "get_us_exchange_by_symbol",
+        AsyncMock(
+            side_effect=[
+                USSymbolNotRegisteredError(
+                    f"US symbol 'AAPL' is not registered in us_symbol_universe. {US_UNIVERSE_SYNC_HINT}"
+                ),
+                USSymbolNotRegisteredError(
+                    f"US symbol 'AAPL' is not registered in us_symbol_universe. {US_UNIVERSE_SYNC_HINT}"
+                ),
+            ]
+        ),
+    )
+    sync_universe = AsyncMock(
+        return_value={"total": 1, "inserted": 0, "updated": 1, "deactivated": 0}
+    )
+    monkeypatch.setattr(svc, "sync_us_symbol_universe", sync_universe, raising=False)
+
+    result = await svc.sync_us_candles(mode="backfill")
+
+    assert result == {
+        "mode": "backfill",
+        "sessions": 10,
+        "skipped": True,
+        "skip_reasons": {"unresolved_symbol_after_refresh": 1},
+        "skipped_symbols": ["AAPL"],
+        "lookup_refresh_attempted": True,
+        "symbols_total": 1,
+        "symbol_venues_total": 1,
+        "pairs_processed": 0,
+        "pairs_skipped": 1,
+        "rows_upserted": 0,
+        "pages_fetched": 0,
+    }
+    sync_universe.assert_awaited_once_with(db=fake_session)
+    assert fake_session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_us_candles_refreshes_symbol_universe_and_retries_current_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.us_candles_sync_service as svc
+
+    fake_session = _RecordingSession()
+    fetch_my_us_stocks = AsyncMock(return_value=[{"ovrs_pdno": "BRK/B"}])
+    get_holdings_by_user = AsyncMock(return_value=[])
+    get_us_exchange = AsyncMock(
+        side_effect=[
+            USSymbolNotRegisteredError(
+                f"US symbol 'BRK.B' is not registered in us_symbol_universe. {US_UNIVERSE_SYNC_HINT}"
+            ),
+            "NYSE",
+        ]
+    )
+    sync_universe = AsyncMock(
+        return_value={"total": 2, "inserted": 1, "updated": 0, "deactivated": 0}
+    )
+    collect_window_rows = AsyncMock(return_value=([], 1))
+    upsert_rows = AsyncMock(return_value=0)
+
+    monkeypatch.setattr(svc, "AsyncSessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        svc, "KISClient", lambda: SimpleNamespace(fetch_my_us_stocks=fetch_my_us_stocks)
+    )
+    monkeypatch.setattr(
+        svc,
+        "ManualHoldingsService",
+        lambda session: SimpleNamespace(get_holdings_by_user=get_holdings_by_user),
+    )
+    monkeypatch.setattr(svc, "get_us_exchange_by_symbol", get_us_exchange)
+    monkeypatch.setattr(svc, "sync_us_symbol_universe", sync_universe, raising=False)
+    monkeypatch.setattr(
+        svc,
+        "_select_closed_sessions",
+        lambda now_utc, sessions: [
+            SimpleNamespace(
+                open_utc=datetime(2026, 3, 7, 14, 30, tzinfo=UTC),
+                last_minute_utc=datetime(2026, 3, 7, 20, 59, tzinfo=UTC),
+            )
+        ],
+    )
+    monkeypatch.setattr(svc, "_collect_window_rows", collect_window_rows)
+    monkeypatch.setattr(svc, "_upsert_rows", upsert_rows)
+
+    result = await svc.sync_us_candles(mode="backfill", sessions=3)
+
+    assert result == {
+        "mode": "backfill",
+        "sessions": 3,
+        "skipped": False,
+        "skip_reasons": {},
+        "skipped_symbols": [],
+        "lookup_refresh_attempted": True,
+        "symbols_total": 1,
+        "symbol_venues_total": 1,
+        "pairs_processed": 1,
+        "pairs_skipped": 0,
+        "rows_upserted": 0,
+        "pages_fetched": 1,
+    }
+    sync_universe.assert_awaited_once_with(db=fake_session)
+    assert get_us_exchange.await_count == 2
+    collect_window_rows.assert_awaited_once()
+    upsert_rows.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_us_candles_skips_only_unresolved_symbols_after_single_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.us_candles_sync_service as svc
+
+    fake_session = _RecordingSession()
+    fetch_my_us_stocks = AsyncMock(
+        return_value=[
+            {"ovrs_pdno": "BRK/B"},
+            {"ovrs_pdno": "MSFT"},
+            {"ovrs_pdno": "ZZZZ"},
+        ]
+    )
+    get_holdings_by_user = AsyncMock(return_value=[])
+    sync_universe = AsyncMock(
+        return_value={"total": 3, "inserted": 1, "updated": 1, "deactivated": 0}
+    )
+    collect_window_rows = AsyncMock(return_value=([], 1))
+    upsert_rows = AsyncMock(return_value=0)
+
+    attempts = {"BRK.B": 0, "MSFT": 0, "ZZZZ": 0}
+
+    async def _resolve_exchange(symbol: str, db: AsyncSession | None = None) -> str:
+        _ = db
+        attempts[symbol] += 1
+        if symbol == "BRK.B":
+            raise USSymbolNotRegisteredError(
+                f"US symbol 'BRK.B' is not registered in us_symbol_universe. {US_UNIVERSE_SYNC_HINT}"
+            )
+        if symbol == "MSFT":
+            return "NASD"
+        raise USSymbolInactiveError(
+            f"US symbol 'ZZZZ' is inactive in us_symbol_universe. {US_UNIVERSE_SYNC_HINT}"
+        )
+
+    monkeypatch.setattr(svc, "AsyncSessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        svc, "KISClient", lambda: SimpleNamespace(fetch_my_us_stocks=fetch_my_us_stocks)
+    )
+    monkeypatch.setattr(
+        svc,
+        "ManualHoldingsService",
+        lambda session: SimpleNamespace(get_holdings_by_user=get_holdings_by_user),
+    )
+    monkeypatch.setattr(svc, "get_us_exchange_by_symbol", _resolve_exchange)
+    monkeypatch.setattr(svc, "sync_us_symbol_universe", sync_universe, raising=False)
+    monkeypatch.setattr(
+        svc,
+        "_select_closed_sessions",
+        lambda now_utc, sessions: [
+            SimpleNamespace(
+                open_utc=datetime(2026, 3, 7, 14, 30, tzinfo=UTC),
+                last_minute_utc=datetime(2026, 3, 7, 20, 59, tzinfo=UTC),
+            )
+        ],
+    )
+    monkeypatch.setattr(svc, "_collect_window_rows", collect_window_rows)
+    monkeypatch.setattr(svc, "_upsert_rows", upsert_rows)
+
+    result = await svc.sync_us_candles(mode="backfill")
+
+    assert result == {
+        "mode": "backfill",
+        "sessions": 10,
+        "skipped": False,
+        "skip_reasons": {"unresolved_symbol_after_refresh": 2},
+        "skipped_symbols": ["BRK.B", "ZZZZ"],
+        "lookup_refresh_attempted": True,
+        "symbols_total": 3,
+        "symbol_venues_total": 3,
+        "pairs_processed": 1,
+        "pairs_skipped": 2,
+        "rows_upserted": 0,
+        "pages_fetched": 1,
+    }
+    sync_universe.assert_awaited_once_with(db=fake_session)
+    assert attempts == {"BRK.B": 2, "MSFT": 1, "ZZZZ": 1}
+    collect_window_rows.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_us_candles_propagates_refresh_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.us_candles_sync_service as svc
+
+    fake_session = _RecordingSession()
+    kis_client = SimpleNamespace(
+        fetch_my_us_stocks=AsyncMock(return_value=[{"ovrs_pdno": "BRK/B"}])
+    )
+    manual_service = SimpleNamespace(get_holdings_by_user=AsyncMock(return_value=[]))
+
+    monkeypatch.setattr(svc, "AsyncSessionLocal", lambda: fake_session)
+    monkeypatch.setattr(svc, "KISClient", lambda: kis_client)
+    monkeypatch.setattr(svc, "ManualHoldingsService", lambda session: manual_service)
     monkeypatch.setattr(
         svc,
         "get_us_exchange_by_symbol",
         AsyncMock(
             side_effect=USSymbolNotRegisteredError(
-                "us_symbol_universe is empty. "
-                "Sync required: uv run python scripts/sync_us_symbol_universe.py"
+                f"US symbol 'BRK.B' is not registered in us_symbol_universe. {US_UNIVERSE_SYNC_HINT}"
             )
         ),
     )
+    monkeypatch.setattr(
+        svc,
+        "sync_us_symbol_universe",
+        AsyncMock(side_effect=RuntimeError("refresh failed")),
+        raising=False,
+    )
 
-    with pytest.raises(
-        USSymbolNotRegisteredError,
-        match="Sync required: uv run python scripts/sync_us_symbol_universe.py",
-    ):
-        await svc.sync_us_candles(mode="incremental")
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        _ = await svc.sync_us_candles(mode="backfill")
+
+
+@pytest.mark.asyncio
+async def test_sync_us_candles_raises_when_refresh_leaves_universe_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.us_candles_sync_service as svc
+
+    fake_session = _RecordingSession()
+    kis_client = SimpleNamespace(
+        fetch_my_us_stocks=AsyncMock(return_value=[{"ovrs_pdno": "BRK/B"}])
+    )
+    manual_service = SimpleNamespace(get_holdings_by_user=AsyncMock(return_value=[]))
+
+    monkeypatch.setattr(svc, "AsyncSessionLocal", lambda: fake_session)
+    monkeypatch.setattr(svc, "KISClient", lambda: kis_client)
+    monkeypatch.setattr(svc, "ManualHoldingsService", lambda session: manual_service)
+    monkeypatch.setattr(
+        svc,
+        "get_us_exchange_by_symbol",
+        AsyncMock(
+            side_effect=USSymbolNotRegisteredError(
+                f"US symbol 'BRK.B' is not registered in us_symbol_universe. {US_UNIVERSE_SYNC_HINT}"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        svc,
+        "sync_us_symbol_universe",
+        AsyncMock(
+            return_value={"total": 0, "inserted": 0, "updated": 0, "deactivated": 0}
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(USSymbolUniverseEmptyError, match="us_symbol_universe is empty"):
+        _ = await svc.sync_us_candles(mode="backfill")
 
 
 @pytest.mark.asyncio
@@ -544,6 +806,8 @@ async def test_sync_us_candles_incremental_skips_when_current_minute_is_not_trad
     assert result["sessions"] == 10
     assert result["skipped"] is True
     assert result["skip_reasons"] == {"outside_trading_minute": 2}
+    assert result["skipped_symbols"] == []
+    assert result["lookup_refresh_attempted"] is False
     assert result["symbols_total"] == 2
     assert result["symbol_venues_total"] == 2
     assert result["pairs_processed"] == 0
@@ -553,6 +817,63 @@ async def test_sync_us_candles_incremental_skips_when_current_minute_is_not_trad
     get_holdings_by_user.assert_awaited_once_with(user_id=77, market_type=MarketType.US)
     fetch_my_us_stocks.assert_awaited_once()
     assert fake_session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_sync_us_candles_persists_refresh_before_outside_trading_minute_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.us_candles_sync_service as svc
+
+    fake_session = _RecordingSession()
+    fetch_my_us_stocks = AsyncMock(return_value=[{"ovrs_pdno": "BRK/B"}])
+    get_holdings_by_user = AsyncMock(return_value=[])
+    get_us_exchange = AsyncMock(
+        side_effect=[
+            USSymbolNotRegisteredError(
+                f"US symbol 'BRK.B' is not registered in us_symbol_universe. {US_UNIVERSE_SYNC_HINT}"
+            ),
+            "NYSE",
+        ]
+    )
+    sync_universe = AsyncMock(
+        return_value={"total": 1, "inserted": 1, "updated": 0, "deactivated": 0}
+    )
+
+    monkeypatch.setattr(svc, "datetime", _FrozenDateTime)
+    monkeypatch.setattr(svc, "AsyncSessionLocal", lambda: fake_session)
+    monkeypatch.setattr(
+        svc, "KISClient", lambda: SimpleNamespace(fetch_my_us_stocks=fetch_my_us_stocks)
+    )
+    monkeypatch.setattr(
+        svc,
+        "ManualHoldingsService",
+        lambda session: SimpleNamespace(get_holdings_by_user=get_holdings_by_user),
+    )
+    monkeypatch.setattr(svc, "get_us_exchange_by_symbol", get_us_exchange)
+    monkeypatch.setattr(svc, "sync_us_symbol_universe", sync_universe, raising=False)
+    monkeypatch.setattr(
+        svc, "_get_xnys_calendar", lambda: _FakeCalendar(trading_minute=False)
+    )
+
+    result = await svc.sync_us_candles(mode="incremental")
+
+    assert result == {
+        "mode": "incremental",
+        "sessions": 10,
+        "skipped": True,
+        "skip_reasons": {"outside_trading_minute": 1},
+        "skipped_symbols": [],
+        "lookup_refresh_attempted": True,
+        "symbols_total": 1,
+        "symbol_venues_total": 1,
+        "pairs_processed": 0,
+        "pairs_skipped": 1,
+        "rows_upserted": 0,
+        "pages_fetched": 0,
+    }
+    sync_universe.assert_awaited_once_with(db=fake_session)
+    assert fake_session.commits == 1
 
 
 @pytest.mark.asyncio
@@ -598,6 +919,8 @@ async def test_sync_us_candles_backfill_returns_kr_style_final_summary(
         "sessions": 3,
         "skipped": False,
         "skip_reasons": {},
+        "skipped_symbols": [],
+        "lookup_refresh_attempted": False,
         "symbols_total": 1,
         "symbol_venues_total": 1,
         "pairs_processed": 1,
@@ -962,7 +1285,15 @@ async def test_run_us_candles_sync_success_payload(
     monkeypatch.setattr(
         us_candles,
         "sync_us_candles",
-        AsyncMock(return_value={"mode": "incremental", "rows_upserted": 11}),
+        AsyncMock(
+            return_value={
+                "mode": "incremental",
+                "rows_upserted": 11,
+                "lookup_refresh_attempted": True,
+                "skipped_symbols": ["BRK.B"],
+                "skip_reasons": {"unresolved_symbol_after_refresh": 1},
+            }
+        ),
     )
 
     result = await us_candles.run_us_candles_sync(mode="incremental")
@@ -970,6 +1301,9 @@ async def test_run_us_candles_sync_success_payload(
     assert result["status"] == "completed"
     assert result["mode"] == "incremental"
     assert result["rows_upserted"] == 11
+    assert result["lookup_refresh_attempted"] is True
+    assert result["skipped_symbols"] == ["BRK.B"]
+    assert result["skip_reasons"] == {"unresolved_symbol_after_refresh": 1}
 
 
 @pytest.mark.asyncio
@@ -998,13 +1332,24 @@ async def test_us_task_payload_success(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         us_candles_tasks,
         "run_us_candles_sync",
-        AsyncMock(return_value={"status": "completed", "rows_upserted": 3}),
+        AsyncMock(
+            return_value={
+                "status": "completed",
+                "rows_upserted": 3,
+                "lookup_refresh_attempted": True,
+                "skipped_symbols": ["BRK.B"],
+                "skip_reasons": {"unresolved_symbol_after_refresh": 1},
+            }
+        ),
     )
 
     result = await us_candles_tasks.sync_us_candles_incremental_task()
 
     assert result["status"] == "completed"
     assert result["rows_upserted"] == 3
+    assert result["lookup_refresh_attempted"] is True
+    assert result["skipped_symbols"] == ["BRK.B"]
+    assert result["skip_reasons"] == {"unresolved_symbol_after_refresh": 1}
 
 
 @pytest.mark.asyncio
@@ -1032,7 +1377,7 @@ def test_us_task_schedule_metadata() -> None:
 
     assert 'task_name="candles.us.sync"' in module_source
     assert (
-        'schedule=[{"cron": "*/1 * * * *", "cron_offset": "Asia/Seoul"}]'
+        'schedule=[{"cron": "*/10 * * * *", "cron_offset": "Asia/Seoul"}]'
         in module_source
     )
     assert task_package.us_candles_tasks in task_package.TASKIQ_TASK_MODULES
