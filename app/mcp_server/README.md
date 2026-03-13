@@ -15,6 +15,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `service:auto-trader-api op:http.client span.description:"GET /v1/finance/screener"`
 - `profile` flamegraph and `trace` spans are different datasets, so some frames may appear only in profiling.
 - It is normal to see only high-level spans when a tool does not execute DB/HTTP operations.
+- MCP tool call arguments are attached as structured Sentry context (`mcp_tool_call`) via `McpToolCallSentryMiddleware`:
+  - Context fields: `tool_name` (string), `arguments` (dict, sanitized and truncated)
+  - Tag: `mcp.tool.name` for issue-level filtering
+  - Sensitive values (`token`, `secret`, `password`, `authorization`, `cookie`) are masked to `[Filtered]`
+  - Large arguments are truncated (strings: 1024 chars, lists/dicts: 25 items) with a visible `[truncated]` marker
+  - The middleware never calls `capture_exception` directly; exception capture is handled by Sentry's `MCPIntegration`
 
 ## Tools
 - `search_symbol(query, limit=20)`
