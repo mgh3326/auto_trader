@@ -644,6 +644,8 @@ Filtering rules:
 - If `include_current_price=False`, `minimum_value` filtering is skipped
 - When `minimum_value=None`, per-currency thresholds are automatically applied based on `instrument_type`: `equity_kr` and `crypto` use 5000, `equity_us` uses 10
 - When `minimum_value` is a number, that uniform threshold is applied to all positions
+- KIS US holdings keep KIS-provided snapshot values when the KIS snapshot is numerically valid: `current_price > 0`, `evaluation_amount > 0`, and `profit_loss` / `profit_rate` are parseable numbers
+- KIS US holdings fall back to Yahoo only when that KIS snapshot is missing or invalid; Yahoo is a fallback refresh path, not the default for valid KIS US holdings
 - Upbit crypto current prices are fetched via batch ticker request (`/v1/ticker?markets=...`)
 - During Upbit holdings collection, coins that raise `UpbitSymbolNotRegisteredError` or `UpbitSymbolInactiveError` on name lookup are silently skipped (not added to `errors`).
 - Before batch ticker request, tradable markets are loaded from `upbit_symbol_universe` and only valid holdings symbols are included in the batch
