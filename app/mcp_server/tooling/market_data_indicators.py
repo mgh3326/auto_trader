@@ -11,6 +11,7 @@ import pandas as pd
 
 import app.services.brokers.upbit.client as upbit_service
 import app.services.brokers.yahoo.client as yahoo_service
+import app.services.kis_ohlcv_cache as kis_ohlcv_cache
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
@@ -91,8 +92,17 @@ async def _fetch_ohlcv_for_indicators(
     if market_type == "equity_kr":
         capped_count = min(count, 250)
         kis = KISClient()
-        return await kis.inquire_daily_itemchartprice(
-            code=symbol, market="UN", n=capped_count, period="D"
+
+        async def _raw_fetch_kr_daily(n: int) -> pd.DataFrame:
+            return await kis.inquire_daily_itemchartprice(
+                code=symbol, market="UN", n=n, period="D"
+            )
+
+        return await kis_ohlcv_cache.get_candles(
+            symbol=symbol,
+            count=capped_count,
+            period="day",
+            raw_fetcher=_raw_fetch_kr_daily,
         )
     capped_count = min(count, 250)
     return await yahoo_service.fetch_ohlcv(
@@ -109,8 +119,17 @@ async def _fetch_ohlcv_for_volume_profile(
         )
     if market_type == "equity_kr":
         kis = KISClient()
-        return await kis.inquire_daily_itemchartprice(
-            code=symbol, market="UN", n=period_days, period="D"
+
+        async def _raw_fetch_kr_daily_vp(n: int) -> pd.DataFrame:
+            return await kis.inquire_daily_itemchartprice(
+                code=symbol, market="UN", n=n, period="D"
+            )
+
+        return await kis_ohlcv_cache.get_candles(
+            symbol=symbol,
+            count=period_days,
+            period="day",
+            raw_fetcher=_raw_fetch_kr_daily_vp,
         )
     return await yahoo_service.fetch_ohlcv(
         ticker=symbol, days=period_days, period="day"

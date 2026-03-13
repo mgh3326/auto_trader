@@ -343,6 +343,7 @@ async def test_fetch_ohlcv_for_indicators_crypto_uses_upbit_service_boundary(
 async def test_fetch_ohlcv_for_indicators_kr_uses_un_market(monkeypatch):
     service_df = _single_row_df()
     called: dict[str, object] = {}
+    cache_called: dict[str, object] = {}
 
     class DummyKISClient:
         async def inquire_daily_itemchartprice(self, code, market, n, period):
@@ -352,13 +353,25 @@ async def test_fetch_ohlcv_for_indicators_kr_uses_un_market(monkeypatch):
             called["period"] = period
             return service_df
 
+    async def mock_get_candles(symbol, count, period, raw_fetcher, route=None):
+        cache_called["symbol"] = symbol
+        cache_called["count"] = count
+        cache_called["period"] = period
+        return await raw_fetcher(count)
+
     monkeypatch.setattr(market_data_indicators, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_indicators.kis_ohlcv_cache, "get_candles", mock_get_candles
+    )
 
     result = await market_data_indicators._fetch_ohlcv_for_indicators(
         "005930", "equity_kr", count=300
     )
 
     assert len(result) == 1
+    assert cache_called["symbol"] == "005930"
+    assert cache_called["count"] == 250
+    assert cache_called["period"] == "day"
     assert called["code"] == "005930"
     assert called["market"] == "UN"
     assert called["n"] == 250
@@ -369,6 +382,7 @@ async def test_fetch_ohlcv_for_indicators_kr_uses_un_market(monkeypatch):
 async def test_fetch_ohlcv_for_volume_profile_kr_uses_un_market(monkeypatch):
     service_df = _single_row_df()
     called: dict[str, object] = {}
+    cache_called: dict[str, object] = {}
 
     class DummyKISClient:
         async def inquire_daily_itemchartprice(self, code, market, n, period):
@@ -378,13 +392,25 @@ async def test_fetch_ohlcv_for_volume_profile_kr_uses_un_market(monkeypatch):
             called["period"] = period
             return service_df
 
+    async def mock_get_candles(symbol, count, period, raw_fetcher, route=None):
+        cache_called["symbol"] = symbol
+        cache_called["count"] = count
+        cache_called["period"] = period
+        return await raw_fetcher(count)
+
     monkeypatch.setattr(market_data_indicators, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_indicators.kis_ohlcv_cache, "get_candles", mock_get_candles
+    )
 
     result = await market_data_indicators._fetch_ohlcv_for_volume_profile(
         "005930", "equity_kr", period_days=60
     )
 
     assert len(result) == 1
+    assert cache_called["symbol"] == "005930"
+    assert cache_called["count"] == 60
+    assert cache_called["period"] == "day"
     assert called["code"] == "005930"
     assert called["market"] == "UN"
     assert called["n"] == 60
@@ -670,3 +696,105 @@ async def test_get_support_resistance_uses_single_ohlcv_fetch(monkeypatch):
     assert len(fetch_calls) == 1
     assert fetch_calls[0][0] == "AAPL"
     assert result["symbol"] == "AAPL"
+
+
+# ---------------------------------------------------------------------------
+# KR OHLCV cache integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_ohlcv_for_indicators_kr_warm_cache_avoids_kis_call(monkeypatch):
+    """When cache returns data, KIS raw fetcher should NOT be called."""
+    service_df = _single_row_df()
+    kis_called = False
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, **kwargs):
+            nonlocal kis_called
+            kis_called = True
+            return service_df
+
+    async def mock_get_candles_warm(symbol, count, period, raw_fetcher, route=None):
+        return service_df
+
+    monkeypatch.setattr(market_data_indicators, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_indicators.kis_ohlcv_cache, "get_candles", mock_get_candles_warm
+    )
+
+    result = await market_data_indicators._fetch_ohlcv_for_indicators(
+        "005930", "equity_kr", count=250
+    )
+
+    assert len(result) == 1
+    assert not kis_called, "KIS should not be called when cache is warm"
+
+
+@pytest.mark.asyncio
+async def test_fetch_ohlcv_for_indicators_crypto_unaffected_by_cache(monkeypatch):
+    """Crypto path should NOT use kis_ohlcv_cache at all."""
+    cache_called = False
+
+    async def mock_get_candles(**kwargs):
+        nonlocal cache_called
+        cache_called = True
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        market_data_indicators.kis_ohlcv_cache, "get_candles", mock_get_candles
+    )
+
+    rows = 50
+    dates = pd.date_range("2024-01-01", periods=rows, freq="D")
+
+    async def mock_upbit_fetch(market, days, period, end_date=None):
+        return pd.DataFrame(
+            {
+                "date": dates[:days],
+                "open": [100.0] * min(days, rows),
+                "high": [110.0] * min(days, rows),
+                "low": [90.0] * min(days, rows),
+                "close": [105.0] * min(days, rows),
+                "volume": [1000] * min(days, rows),
+            }
+        )
+
+    monkeypatch.setattr(upbit_service, "fetch_ohlcv", mock_upbit_fetch)
+
+    result = await market_data_indicators._fetch_ohlcv_for_indicators(
+        "KRW-BTC", "crypto", count=50
+    )
+
+    assert not cache_called, "Crypto path should not use kis_ohlcv_cache"
+    assert len(result) == rows
+
+
+@pytest.mark.asyncio
+async def test_fetch_ohlcv_for_volume_profile_kr_warm_cache_avoids_kis_call(
+    monkeypatch,
+):
+    """Volume profile warm cache path should NOT call KIS."""
+    service_df = _single_row_df()
+    kis_called = False
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, **kwargs):
+            nonlocal kis_called
+            kis_called = True
+            return service_df
+
+    async def mock_get_candles(symbol, count, period, raw_fetcher, route=None):
+        return service_df
+
+    monkeypatch.setattr(market_data_indicators, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        market_data_indicators.kis_ohlcv_cache, "get_candles", mock_get_candles
+    )
+
+    result = await market_data_indicators._fetch_ohlcv_for_volume_profile(
+        "005930", "equity_kr", period_days=60
+    )
+
+    assert len(result) == 1
+    assert not kis_called, "KIS should not be called when cache is warm"
