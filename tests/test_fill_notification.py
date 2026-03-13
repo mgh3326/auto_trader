@@ -97,6 +97,41 @@ class TestNormalizeKisFill:
         assert order.account == "kis"
         assert order.market_type == "us"
 
+    def test_normalize_overseas_fields_preserve_explicit_currency(self) -> None:
+        raw = {
+            "symbol": "BAC",
+            "side": "02",
+            "filled_price": "47.9",
+            "filled_qty": "23",
+            "filled_amount": "1101.7",
+            "filled_at": "2026-02-14T09:30:00-05:00",
+            "market": "us",
+            "currency": "USD",
+        }
+
+        order = normalize_kis_fill(raw)
+
+        assert order.market_type == "us"
+        assert order.currency == "USD"
+
+    def test_normalize_overseas_fields_defaults_currency_to_usd_for_us_market(
+        self,
+    ) -> None:
+        raw = {
+            "symbol": "BAC",
+            "side": "02",
+            "filled_price": "47.9",
+            "filled_qty": "23",
+            "filled_amount": "1101.7",
+            "filled_at": "2026-02-14T09:30:00-05:00",
+            "market_type": "us",
+        }
+
+        order = normalize_kis_fill(raw)
+
+        assert order.market_type == "us"
+        assert order.currency == "USD"
+
     def test_normalize_kis_fill_prefers_explicit_market_field_over_symbol_inference(
         self,
     ) -> None:
@@ -160,6 +195,23 @@ class TestNormalizeKisFill:
         )
 
         assert order.market_type == "kr"
+
+    def test_coerce_fill_order_preserves_explicit_currency(self) -> None:
+        order = coerce_fill_order(
+            {
+                "symbol": "BAC",
+                "side": "02",
+                "filled_price": 47.9,
+                "filled_qty": 23,
+                "filled_amount": 1101.7,
+                "filled_at": "2026-02-14T09:30:00",
+                "account": "kis",
+                "market_type": "us",
+                "currency": "USD",
+            }
+        )
+
+        assert order.currency == "USD"
 
     @pytest.mark.parametrize(
         ("market", "expected_market_type"),
@@ -250,6 +302,25 @@ class TestNormalizeKisFill:
 
         assert order.symbol == "UNKNOWN"
         assert order.market_type is None
+
+    @pytest.mark.parametrize("symbol", ["PROD", "ENV", "ORDER123"])
+    def test_coerce_fill_order_does_not_infer_us_market_from_reserved_tokens(
+        self, symbol: str
+    ) -> None:
+        order = coerce_fill_order(
+            {
+                "symbol": symbol,
+                "side": "02",
+                "filled_price": 100,
+                "filled_qty": 1,
+                "filled_amount": 100,
+                "filled_at": "2026-02-14T09:30:00",
+                "account": "kis",
+            }
+        )
+
+        assert order.market_type is None
+        assert order.currency is None
 
     def test_normalize_missing_fields_best_effort(self) -> None:
         order = normalize_kis_fill({})
@@ -361,3 +432,41 @@ class TestFormatFillMessage:
 
         assert "🟢 체결 알림" in message
         assert "구분: 매수 부분체결" in message
+
+    def test_format_us_fill_uses_usd_currency_output(self) -> None:
+        order = FillOrder(
+            symbol="BAC",
+            side="bid",
+            filled_price=47.9,
+            filled_qty=23,
+            filled_amount=1101.7,
+            filled_at="2026-02-14T09:30:00-05:00",
+            account="kis",
+            market_type="us",
+            currency="USD",
+        )
+
+        message = format_fill_message(order)
+
+        assert "체결가: $47.90" in message
+        assert "금액: $1,101.70" in message
+
+    def test_format_us_fill_normalizes_lowercase_currency_on_fill_order_input(
+        self,
+    ) -> None:
+        order = FillOrder(
+            symbol="BAC",
+            side="bid",
+            filled_price=47.9,
+            filled_qty=23,
+            filled_amount=1101.7,
+            filled_at="2026-02-14T09:30:00-05:00",
+            account="kis",
+            market_type="us",
+            currency="usd",
+        )
+
+        message = format_fill_message(order)
+
+        assert "체결가: $47.90" in message
+        assert "금액: $1,101.70" in message

@@ -10,6 +10,15 @@ from app.services import krx
 from app.services.krx import KRXSessionManager
 
 
+def _mock_krx_settings(
+    member_id: str = "testuser", credential: str = "testpass"
+) -> MagicMock:
+    mock_settings = MagicMock()
+    mock_settings.krx_member_id = member_id
+    mock_settings.krx_password = credential
+    return mock_settings
+
+
 class TestKRXCaching:
     """Test KRX Redis caching and in-memory fallback."""
 
@@ -904,10 +913,12 @@ class TestKRXValuationCacheRecovery:
 
         await krx.fetch_valuation_all(market="ALL")
 
-        assert captured_cache_data is not None
+        assert isinstance(captured_cache_data, list)
         assert len(captured_cache_data) == 1
-        assert captured_cache_data[0]["ISU_SRT_CD"] == "005930"
-        assert captured_cache_data[0]["per"] == 12.5
+        cached_entry = captured_cache_data[0]
+        assert isinstance(cached_entry, dict)
+        assert cached_entry["ISU_SRT_CD"] == "005930"
+        assert cached_entry["per"] == 12.5
 
 
 class TestGetStockNameByCode:
@@ -1016,7 +1027,7 @@ class TestKRXSessionManager:
         manager = KRXSessionManager()
         monkeypatch.setattr(
             "app.services.krx.settings",
-            MagicMock(krx_member_id="testuser", krx_password="testpass"),
+            _mock_krx_settings(),
         )
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -1046,7 +1057,7 @@ class TestKRXSessionManager:
         manager = KRXSessionManager()
         monkeypatch.setattr(
             "app.services.krx.settings",
-            MagicMock(krx_member_id="testuser", krx_password="testpass"),
+            _mock_krx_settings(),
         )
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -1077,7 +1088,7 @@ class TestKRXSessionManager:
         manager = KRXSessionManager()
         monkeypatch.setattr(
             "app.services.krx.settings",
-            MagicMock(krx_member_id="testuser", krx_password="testpass"),
+            _mock_krx_settings(),
         )
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -1099,7 +1110,7 @@ class TestKRXSessionManager:
         manager = KRXSessionManager()
         monkeypatch.setattr(
             "app.services.krx.settings",
-            MagicMock(krx_member_id="testuser", krx_password="testpass"),
+            _mock_krx_settings(),
         )
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -1122,7 +1133,7 @@ class TestKRXSessionManager:
         manager = KRXSessionManager()
         monkeypatch.setattr(
             "app.services.krx.settings",
-            MagicMock(krx_member_id="testuser", krx_password="testpass"),
+            _mock_krx_settings(),
         )
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -1146,7 +1157,7 @@ class TestKRXSessionManager:
         manager = KRXSessionManager()
         monkeypatch.setattr(
             "app.services.krx.settings",
-            MagicMock(krx_member_id="testuser", krx_password="testpass"),
+            _mock_krx_settings(),
         )
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -1190,7 +1201,7 @@ class TestKRXSessionManager:
         manager = KRXSessionManager()
         monkeypatch.setattr(
             "app.services.krx.settings",
-            MagicMock(krx_member_id="", krx_password=""),
+            _mock_krx_settings(member_id="", credential=""),
         )
 
         # Mock the client creation
@@ -1213,7 +1224,7 @@ class TestKRXSessionManager:
         manager = KRXSessionManager()
         monkeypatch.setattr(
             "app.services.krx.settings",
-            MagicMock(krx_member_id="", krx_password=""),
+            _mock_krx_settings(member_id="", credential=""),
         )
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -1237,7 +1248,7 @@ class TestKRXSessionManager:
         manager = KRXSessionManager()
         monkeypatch.setattr(
             "app.services.krx.settings",
-            MagicMock(krx_member_id="testuser", krx_password="testpass"),
+            _mock_krx_settings(),
         )
 
         login_call_count = 0

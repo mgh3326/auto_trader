@@ -4,12 +4,24 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_US_SYMBOL_RESERVED_TOKENS = {
+    "PROD",
+    "RESERVED",
+    "ENV",
+    "HTS",
+    "NASD",
+    "NASDAQ",
+    "NYSE",
+    "AMEX",
+    "KRX",
+}
 
 
 @dataclass
@@ -26,6 +38,7 @@ class FillOrder:
     order_type: str | None = None
     fill_status: str | None = None
     market_type: str | None = None
+    currency: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -112,6 +125,48 @@ def _normalize_market_type(value: Any) -> str | None:
     return aliases.get(normalized)
 
 
+def _normalize_currency(value: Any) -> str | None:
+    text = _safe_text_or_none(value)
+    if text is None:
+        return None
+
+    normalized = text.upper()
+    aliases = {
+        "USD": "USD",
+        "$": "USD",
+        "US DOLLAR": "USD",
+        "KRW": "KRW",
+        "WON": "KRW",
+        "원": "KRW",
+        "KRW원": "KRW",
+    }
+    return aliases.get(normalized, normalized if normalized in {"USD", "KRW"} else None)
+
+
+def _default_currency_for_market(
+    market_type: str | None, *, account: str | None = None
+) -> str | None:
+    if market_type == "us":
+        return "USD"
+    if market_type in {"kr", "crypto"}:
+        return "KRW"
+    normalized_account = _safe_text_or_none(account)
+    if normalized_account is not None and normalized_account.lower() == "upbit":
+        return "KRW"
+    return None
+
+
+def _resolve_fill_currency(
+    raw: Mapping[str, Any], *, market_type: str | None, account: str | None = None
+) -> str | None:
+    explicit_currency = _normalize_currency(
+        _pick_first(raw, ["currency", "currency_code", "settlement_currency"])
+    )
+    if explicit_currency is not None:
+        return explicit_currency
+    return _default_currency_for_market(market_type, account=account)
+
+
 def _looks_like_kr_symbol(symbol: str) -> bool:
     return symbol.isdigit() and len(symbol) == 6
 
@@ -130,12 +185,15 @@ def _looks_like_us_symbol(symbol: str) -> bool:
     if _looks_like_crypto_symbol(normalized):
         return False
     cleaned = normalized.replace(".", "").replace("-", "").replace("/", "")
-    return (
-        bool(cleaned)
-        and cleaned[0].isalpha()
-        and cleaned.isalnum()
-        and 1 <= len(cleaned) <= 10
-    )
+    if not cleaned or not cleaned[0].isalpha():
+        return False
+    if cleaned in _US_SYMBOL_RESERVED_TOKENS:
+        return False
+    if cleaned.startswith(("ORDER", "ACNT", "ACCOUNT", "CUST", "USER")):
+        return False
+    if any(ch.isdigit() for ch in cleaned) and len(cleaned) >= 8:
+        return False
+    return bool(cleaned) and cleaned.isalnum() and 1 <= len(cleaned) <= 10
 
 
 def _resolve_fill_market_type(
@@ -200,10 +258,20 @@ def _parse_timestamp(value: Any) -> str:
 
 def coerce_fill_order(order: FillOrderLike) -> FillOrder:
     if isinstance(order, FillOrder):
-        return order
+        market_type = order.market_type or _resolve_fill_market_type(
+            order.to_dict(), symbol=order.symbol, account=order.account
+        )
+        currency = _normalize_currency(order.currency) or _resolve_fill_currency(
+            order.to_dict(), market_type=market_type, account=order.account
+        )
+        if market_type == order.market_type and currency == order.currency:
+            return order
+        return replace(order, market_type=market_type, currency=currency)
 
     symbol = str(order.get("symbol") or "UNKNOWN")
     account = str(order.get("account") or "unknown")
+    market_type = _resolve_fill_market_type(order, symbol=symbol, account=account)
+    currency = _resolve_fill_currency(order, market_type=market_type, account=account)
 
     return FillOrder(
         symbol=symbol,
@@ -219,7 +287,8 @@ def coerce_fill_order(order: FillOrderLike) -> FillOrder:
         fill_status=_normalize_fill_status(
             _pick_first(order, ["fill_status", "execution_status"])
         ),
-        market_type=_resolve_fill_market_type(order, symbol=symbol, account=account),
+        market_type=market_type,
+        currency=currency,
     )
 
 
@@ -258,6 +327,7 @@ def normalize_upbit_fill(raw: Mapping[str, Any]) -> FillOrder:
         order_type=_safe_text_or_none(_pick_first(raw, ["order_type", "ord_type"])),
         fill_status="filled",
         market_type="crypto",
+        currency="KRW",
     )
 
 
@@ -282,6 +352,9 @@ def normalize_kis_fill(raw: Mapping[str, Any]) -> FillOrder:
     if filled_price == 0 or filled_qty == 0:
         logger.debug("KIS best-effort fill normalization fallback: raw=%s", raw)
 
+    market_type = _resolve_fill_market_type(raw, symbol=symbol, account=account)
+    currency = _resolve_fill_currency(raw, market_type=market_type, account=account)
+
     return FillOrder(
         symbol=symbol,
         side=side,
@@ -304,7 +377,8 @@ def normalize_kis_fill(raw: Mapping[str, Any]) -> FillOrder:
         fill_status=_normalize_fill_status(
             _pick_first(raw, ["fill_status", "execution_status"])
         ),
-        market_type=_resolve_fill_market_type(raw, symbol=symbol, account=account),
+        market_type=market_type,
+        currency=currency,
     )
 
 
@@ -332,6 +406,16 @@ def _format_krw(value: float) -> str:
     return f"{text}원"
 
 
+def _format_usd(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def _format_money(value: float, currency: str | None) -> str:
+    if currency == "USD":
+        return _format_usd(value)
+    return _format_krw(value)
+
+
 def _format_quantity(value: float) -> str:
     rounded = round(value)
     if abs(value - rounded) < 1e-12:
@@ -357,9 +441,9 @@ def format_fill_message(order: FillOrderLike) -> str:
         f"{side_emoji} 체결 알림\n\n"
         f"종목: {normalized.symbol}\n"
         f"구분: {side_text} {fill_label}\n"
-        f"체결가: {_format_krw(normalized.filled_price)}{price_diff}\n"
+        f"체결가: {_format_money(normalized.filled_price, normalized.currency)}{price_diff}\n"
         f"수량: {_format_quantity(normalized.filled_qty)}\n"
-        f"금액: {_format_krw(normalized.filled_amount)}\n"
+        f"금액: {_format_money(normalized.filled_amount, normalized.currency)}\n"
         f"시간: {normalized.filled_at}\n\n"
         f"계좌: {normalized.account}"
     )

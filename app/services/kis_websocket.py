@@ -123,6 +123,18 @@ _SIDE_MAP = {
     "매수": "bid",
 }
 
+_US_SYMBOL_RESERVED_TOKENS = {
+    "PROD",
+    "RESERVED",
+    "ENV",
+    "HTS",
+    "NASD",
+    "NASDAQ",
+    "NYSE",
+    "AMEX",
+    "KRX",
+}
+
 OVERSEAS_FILL_FIELDS = {
     "side": 4,
     "rctf_cls": 5,
@@ -810,9 +822,16 @@ class KISExecutionWebSocket:
             )
 
         if not parsed.get("symbol"):
-            parsed["symbol"] = (
-                self._extract_symbol(payload_fields, parsed["market"]) or ""
+            allow_symbol_fallback = not (
+                parsed["tr_code"] in OVERSEAS_EXECUTION_TR_CODES
+                and len(payload_fields) > OVERSEAS_FILL_FIELDS["symbol"]
             )
+            if allow_symbol_fallback:
+                parsed["symbol"] = (
+                    self._extract_symbol(payload_fields, parsed["market"]) or ""
+                )
+            else:
+                parsed["symbol"] = ""
 
         if parsed["tr_code"] in EXECUTION_TR_CODES and (
             not parsed.get("filled_price") or not parsed.get("filled_qty")
@@ -1086,6 +1105,7 @@ class KISExecutionWebSocket:
             "filled_qty": filled_qty,
             "filled_amount": filled_amount,
             "filled_at": filled_at,
+            "currency": "USD",
             "order_qty": order_qty,
             "rctf_cls": rctf_cls,
             "acpt_yn": acpt_yn,
@@ -1230,14 +1250,24 @@ class KISExecutionWebSocket:
             stripped = token.strip()
             if market == "kr" and stripped.isdigit() and len(stripped) == 6:
                 return stripped
-            if (
-                market == "us"
-                and stripped.replace(".", "").replace("-", "").isalnum()
-                and not stripped.replace(".", "").replace("-", "").isdigit()
-                and stripped.upper() == stripped
-                and 1 <= len(stripped) <= 10
-            ):
-                return stripped
+            if market != "us":
+                continue
+
+            normalized = stripped.upper()
+            cleaned = normalized.replace(".", "").replace("-", "").replace("/", "")
+            if not cleaned or not cleaned.isalnum() or not (1 <= len(cleaned) <= 10):
+                continue
+            if not cleaned[0].isalpha() or cleaned.isdigit():
+                continue
+            if normalized != stripped:
+                continue
+            if cleaned in _US_SYMBOL_RESERVED_TOKENS:
+                continue
+            if cleaned.startswith(("ORDER", "ACNT", "ACCOUNT", "CUST", "USER")):
+                continue
+            if any(ch.isdigit() for ch in cleaned) and len(cleaned) >= 8:
+                continue
+            return stripped
         return None
 
     def _extract_timestamp(self, value: str | None) -> str:

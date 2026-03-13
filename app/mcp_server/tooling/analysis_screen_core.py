@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import inspect
 import logging
 import sentry_sdk
+import math
 import time
 from typing import Any, cast
 
@@ -158,18 +160,23 @@ async def _with_timeout(
 def _to_optional_float(value: Any) -> float | None:
     if value is None:
         return None
-    if value != value:
-        return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if math.isnan(number):
+        return None
+    return number
 
 
 def _to_optional_int(value: Any) -> int | None:
     if value is None:
         return None
-    if value != value:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number):
         return None
     try:
         return int(value)
@@ -248,16 +255,80 @@ def _kr_market_codes(market: str) -> tuple[list[str], str]:
 def _clean_text(value: Any) -> str:
     if value is None:
         return ""
-    if value != value:
+    text = str(value).strip()
+    if not text:
         return ""
-    return str(value).strip()
+    try:
+        if math.isnan(float(text)):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return text
 
 
 def _apply_equity_enrichment_defaults(row: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(row)
     for field in _SCREEN_ENRICHMENT_FIELDS:
         normalized.setdefault(field, None)
+    sector = _clean_text(normalized.get("sector"))
+    normalized["sector"] = sector or None
+    for field in ("analyst_buy", "analyst_hold", "analyst_sell"):
+        normalized[field] = _to_optional_int(normalized.get(field))
+    avg_target = _to_optional_float(normalized.get("avg_target"))
+    normalized["avg_target"] = avg_target
+    upside_pct = _to_optional_float(normalized.get("upside_pct"))
+    if upside_pct is None:
+        upside_pct = _compute_target_upside_pct(
+            avg_target=avg_target,
+            current_price=_to_optional_float(
+                _get_first_present(normalized, "close", "price")
+            ),
+        )
+    normalized["upside_pct"] = upside_pct
     return normalized
+
+
+def _compute_target_upside_pct(
+    *, avg_target: float | None, current_price: float | None
+) -> float | None:
+    if avg_target is None or current_price is None or current_price <= 0:
+        return None
+    return round((avg_target - current_price) / current_price * 100, 2)
+
+
+def _row_has_complete_screen_enrichment(row: dict[str, Any]) -> bool:
+    if row.get("sector") is None:
+        return False
+    if any(
+        row.get(field) is None
+        for field in ("analyst_buy", "analyst_hold", "analyst_sell")
+    ):
+        return False
+    return row.get("avg_target") is not None and row.get("upside_pct") is not None
+
+
+def _filter_supported_keyword_args(
+    func: Any,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        parameters = inspect.signature(func).parameters.values()
+    except (TypeError, ValueError):
+        return kwargs
+
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters):
+        return kwargs
+
+    accepted_names = {
+        param.name
+        for param in parameters
+        if param.kind
+        in {
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+    }
+    return {name: value for name, value in kwargs.items() if name in accepted_names}
 
 
 def _screen_row_symbol(row: dict[str, Any]) -> str | None:
@@ -290,6 +361,14 @@ async def _decorate_screen_rows_with_equity_enrichment(
     normalized_rows = [_apply_equity_enrichment_defaults(row) for row in rows]
     semaphore = asyncio.Semaphore(max(1, concurrency))
     warnings: list[str] = []
+    yfinance_session: Any | None = None
+    if any(
+        str(row.get("market") or "").strip().lower() == "us"
+        and _is_equity_stock_row(row)
+        and not _row_has_complete_screen_enrichment(row)
+        for row in normalized_rows
+    ):
+        yfinance_session = build_yfinance_tracing_session()
 
     async def enrich_row(index: int, row: dict[str, Any]) -> None:
         if not _is_equity_stock_row(row):
@@ -300,15 +379,28 @@ async def _decorate_screen_rows_with_equity_enrichment(
         if not symbol:
             warnings.append(f"{market or 'unknown'}:<missing-symbol>: missing symbol")
             return
+        if market == "us" and _row_has_complete_screen_enrichment(row):
+            return
 
-        fetcher = (
-            _fetch_screen_enrichment_us
-            if market == "us"
-            else _fetch_screen_enrichment_kr
-        )
         async with semaphore:
             try:
-                enrichment = await fetcher(symbol)
+                if market == "us":
+                    enrichment_kwargs = _filter_supported_keyword_args(
+                        _fetch_screen_enrichment_us,
+                        {
+                            "current_price": _to_optional_float(
+                                _get_first_present(row, "close", "price")
+                            ),
+                            "session": yfinance_session,
+                            "include_opinion_history": False,
+                        },
+                    )
+                    enrichment = await _fetch_screen_enrichment_us(
+                        symbol,
+                        **enrichment_kwargs,
+                    )
+                else:
+                    enrichment = await _fetch_screen_enrichment_kr(symbol)
             except Exception as exc:
                 warnings.append(f"{market}:{symbol}: {type(exc).__name__}: {exc}")
                 return
@@ -318,11 +410,20 @@ async def _decorate_screen_rows_with_equity_enrichment(
             return
 
         for field in _SCREEN_ENRICHMENT_FIELDS:
-            normalized_rows[index][field] = enrichment.get(field)
+            current_value = normalized_rows[index].get(field)
+            incoming_value = enrichment.get(field)
+            if current_value is None and incoming_value is not None:
+                normalized_rows[index][field] = incoming_value
 
-    await asyncio.gather(
-        *(enrich_row(index, row) for index, row in enumerate(normalized_rows))
-    )
+    try:
+        await asyncio.gather(
+            *(enrich_row(index, row) for index, row in enumerate(normalized_rows))
+        )
+    finally:
+        if yfinance_session is not None:
+            close = getattr(yfinance_session, "close", None)
+            if callable(close):
+                close()
     return normalized_rows, warnings
 
 
@@ -389,11 +490,11 @@ def _apply_post_enrichment_filters(
     min_dividend_yield: float | None,
 ) -> list[dict[str, Any]]:
     filtered: list[dict[str, Any]] = []
-    normalized_sector = _normalize_sector_value(sector)
+    normalized_sector = _normalize_sector_compare_key(sector)
 
     for row in rows:
         if normalized_sector is not None:
-            row_sector = _normalize_sector_value(_clean_text(row.get("sector")))
+            row_sector = _normalize_sector_compare_key(_clean_text(row.get("sector")))
             if row_sector != normalized_sector:
                 continue
 
@@ -604,13 +705,30 @@ def _normalize_optional_text(value: str | None) -> str | None:
 
 
 def _normalize_sector_value(sector: str | None) -> str | None:
+    return _normalize_optional_text(sector)
+
+
+def _normalize_sector_compare_key(sector: str | None) -> str | None:
     normalized = _normalize_optional_text(sector)
     if normalized is None:
         return None
     if normalized.isascii():
-        return normalized.title()
+        return normalized.casefold()
     return normalized
 
+
+def _canonicalize_us_sector_label(sector: str) -> str:
+    """Canonicalize a US sector label for the TradingView tvscreener provider.
+
+    General ASCII strings → title case (``"technology"`` → ``"Technology"``).
+    Short ASCII tokens (≤3 chars) → upper case (``"ai"`` → ``"AI"``).
+    Non-ASCII values → whitespace cleanup only (unchanged).
+    """
+    if not sector.isascii():
+        return sector
+    if len(sector) <= 3:
+        return sector.upper()
+    return sector.title()
 
 def _normalize_min_analyst_buy(value: float | None) -> float | None:
     if value is None:
@@ -675,11 +793,11 @@ def normalize_screen_request(
 
     if normalized_category is not None and normalized_sector is not None:
         category_alias = (
-            _normalize_sector_value(normalized_category)
+            _normalize_sector_compare_key(normalized_category)
             if normalized_market == "us"
-            else normalized_category
+            else _normalize_optional_text(normalized_category)
         )
-        if category_alias != normalized_sector:
+        if category_alias != _normalize_sector_compare_key(normalized_sector):
             raise ValueError("category and sector cannot specify different values")
 
     effective_sector = normalized_sector
@@ -689,6 +807,8 @@ def normalize_screen_request(
         and normalized_category is not None
     ):
         effective_sector = _normalize_sector_value(normalized_category)
+    if normalized_market == "us" and effective_sector is not None:
+        effective_sector = _canonicalize_us_sector_label(effective_sector)
 
     if effective_sector is not None:
         if normalized_market == "crypto":
@@ -767,7 +887,7 @@ def _can_use_tvscreener_stock_path(
         return asset_type in {None, "stock"} and category is None
 
     if market == "us":
-        return asset_type in {None, "stock"} and category is None
+        return asset_type in {None, "stock"}
 
     return False
 
@@ -793,6 +913,55 @@ def _map_tvscreener_stock_row(
     }
     if row.get("pbr") is not None or market in {"kr", "kospi", "kosdaq"}:
         mapped["pbr"] = row.get("pbr")
+    if market == "us":
+        sector = _clean_text(_get_first_present(row, "sector.tr", "sector"))
+        if sector:
+            mapped["sector"] = sector
+        recommendation_buy = _to_optional_int(
+            _get_first_present(row, "recommendation_buy", "analyst_buy")
+        )
+        recommendation_over = _to_optional_int(
+            _get_first_present(row, "recommendation_over")
+        )
+        recommendation_hold = _to_optional_int(
+            _get_first_present(row, "recommendation_hold", "analyst_hold")
+        )
+        recommendation_sell = _to_optional_int(
+            _get_first_present(row, "recommendation_sell", "analyst_sell")
+        )
+        recommendation_under = _to_optional_int(
+            _get_first_present(row, "recommendation_under")
+        )
+        if recommendation_buy is not None or recommendation_over is not None:
+            mapped["analyst_buy"] = (recommendation_buy or 0) + (
+                recommendation_over or 0
+            )
+        if recommendation_hold is not None:
+            mapped["analyst_hold"] = recommendation_hold
+        if recommendation_sell is not None or recommendation_under is not None:
+            mapped["analyst_sell"] = (recommendation_sell or 0) + (
+                recommendation_under or 0
+            )
+        avg_target = _to_optional_float(
+            _get_first_present(
+                row,
+                "price_target_average",
+                "price_target_1y",
+                "avg_target",
+            )
+        )
+        if avg_target is not None:
+            mapped["avg_target"] = avg_target
+        upside_pct = _to_optional_float(
+            _get_first_present(row, "price_target_1y_delta", "upside_pct")
+        )
+        if upside_pct is None:
+            upside_pct = _compute_target_upside_pct(
+                avg_target=avg_target,
+                current_price=_to_optional_float(mapped.get("close")),
+            )
+        if upside_pct is not None:
+            mapped["upside_pct"] = upside_pct
     return mapped
 
 
@@ -2273,6 +2442,40 @@ async def _screen_us_via_tvscreener(
             "DIVIDEND_YIELD_FORWARD",
             "DIVIDEND_YIELD_RECENT",
         )
+        sector_field = _get_tvscreener_attr(StockField, "SECTOR")
+        sector_display_field = _get_tvscreener_attr(StockField, "SECTOR_TR")
+        recommendation_buy_field = _get_tvscreener_attr(
+            StockField,
+            "RECOMMENDATION_BUY",
+        )
+        recommendation_over_field = _get_tvscreener_attr(
+            StockField,
+            "RECOMMENDATION_OVER",
+        )
+        recommendation_hold_field = _get_tvscreener_attr(
+            StockField,
+            "RECOMMENDATION_HOLD",
+        )
+        recommendation_sell_field = _get_tvscreener_attr(
+            StockField,
+            "RECOMMENDATION_SELL",
+        )
+        recommendation_under_field = _get_tvscreener_attr(
+            StockField,
+            "RECOMMENDATION_UNDER",
+        )
+        price_target_average_field = _get_tvscreener_attr(
+            StockField,
+            "PRICE_TARGET_AVERAGE",
+        )
+        price_target_field = _get_tvscreener_attr(
+            StockField,
+            "PRICE_TARGET_1Y",
+        )
+        price_target_delta_field = _get_tvscreener_attr(
+            StockField,
+            "PRICE_TARGET_1Y_DELTA",
+        )
 
         if sort_by == "market_cap" and market_cap_field is None:
             result["error"] = "tvscreener market-cap field unavailable"
@@ -2288,6 +2491,9 @@ async def _screen_us_via_tvscreener(
             return result
         if min_dividend_yield is not None and dividend_field is None:
             result["error"] = "tvscreener dividend-yield field unavailable"
+            return result
+        if category is not None and sector_field is None:
+            result["error"] = "tvscreener sector field unavailable"
             return result
 
         columns = [
@@ -2306,6 +2512,20 @@ async def _screen_us_via_tvscreener(
             columns.append(pe_field)
         if dividend_field is not None:
             columns.append(dividend_field)
+        for optional_field in (
+            sector_display_field,
+            sector_field,
+            recommendation_buy_field,
+            recommendation_over_field,
+            recommendation_hold_field,
+            recommendation_sell_field,
+            recommendation_under_field,
+            price_target_average_field,
+            price_target_field,
+            price_target_delta_field,
+        ):
+            if optional_field is not None:
+                columns.append(optional_field)
 
         try:
             columns.append(StockField.COUNTRY)
@@ -2327,6 +2547,8 @@ async def _screen_us_via_tvscreener(
             where_conditions.append(pe_field <= max_per)
         if min_dividend_yield_normalized is not None and dividend_field is not None:
             where_conditions.append(dividend_field >= min_dividend_yield_normalized)
+        if category is not None and sector_field is not None:
+            where_conditions.append(sector_field == category)
 
         logger.info(
             "[Screen-US-TV] Querying StockScreener for US stocks "
@@ -2382,11 +2604,79 @@ async def _screen_us_via_tvscreener(
                         "dividend_yield_recent",
                     )
                 ),
+                "sector": _get_first_present(row, "sector.tr", "sector"),
+                "recommendation_buy": _to_optional_int(
+                    _get_first_present(row, "recommendation_buy")
+                ),
+                "recommendation_over": _to_optional_int(
+                    _get_first_present(row, "recommendation_over")
+                ),
+                "recommendation_hold": _to_optional_int(
+                    _get_first_present(row, "recommendation_hold")
+                ),
+                "recommendation_sell": _to_optional_int(
+                    _get_first_present(row, "recommendation_sell")
+                ),
+                "recommendation_under": _to_optional_int(
+                    _get_first_present(row, "recommendation_under")
+                ),
+                "price_target_average": _to_optional_float(
+                    _get_first_present(row, "price_target_average")
+                ),
+                "price_target_1y": _to_optional_float(
+                    _get_first_present(row, "price_target_1y")
+                ),
+                "price_target_1y_delta": _to_optional_float(
+                    _get_first_present(row, "price_target_1y_delta")
+                ),
                 "market": market,
                 "country": str(row.get("country", "")).strip()
                 if "country" in row
                 else "United States",
             }
+            sector = _clean_text(_get_first_present(row, "sector.tr", "sector"))
+            if sector:
+                stock["sector"] = sector
+            recommendation_buy = _to_optional_int(
+                _get_first_present(row, "recommendation_buy")
+            )
+            recommendation_over = _to_optional_int(
+                _get_first_present(row, "recommendation_over")
+            )
+            recommendation_hold = _to_optional_int(
+                _get_first_present(row, "recommendation_hold")
+            )
+            recommendation_sell = _to_optional_int(
+                _get_first_present(row, "recommendation_sell")
+            )
+            recommendation_under = _to_optional_int(
+                _get_first_present(row, "recommendation_under")
+            )
+            if recommendation_buy is not None or recommendation_over is not None:
+                stock["analyst_buy"] = (recommendation_buy or 0) + (
+                    recommendation_over or 0
+                )
+            if recommendation_hold is not None:
+                stock["analyst_hold"] = recommendation_hold
+            if recommendation_sell is not None or recommendation_under is not None:
+                stock["analyst_sell"] = (recommendation_sell or 0) + (
+                    recommendation_under or 0
+                )
+            avg_target = _to_optional_float(
+                _get_first_present(row, "price_target_average", "price_target_1y")
+            )
+            if avg_target is not None:
+                stock["avg_target"] = avg_target
+            upside_pct = _to_optional_float(
+                _get_first_present(row, "price_target_1y_delta")
+            )
+            if upside_pct is None:
+                upside_pct = _compute_target_upside_pct(
+                    avg_target=avg_target,
+                    current_price=price,
+                )
+            if upside_pct is not None:
+                stock["upside_pct"] = upside_pct
             stock["change_rate"] = stock["change_percent"]
             stocks.append(stock)
 

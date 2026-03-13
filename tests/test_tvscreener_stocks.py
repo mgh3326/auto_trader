@@ -10,6 +10,7 @@ import pytest
 from app.mcp_server.tooling.analysis_screen_core import (
     _screen_kr_via_tvscreener,
     _screen_us_via_tvscreener,
+    normalize_screen_request,
 )
 
 
@@ -206,6 +207,75 @@ async def test_screen_us_passes_combined_filters_without_bitwise_and(
         fake_tvscreener_module.StockField.AVERAGE_DIRECTIONAL_INDEX_14 >= 25.0,
     ]
     assert result["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_screen_us_queries_and_maps_optional_analyst_fields(
+    fake_tvscreener_module: SimpleNamespace,
+) -> None:
+    fake_tvscreener_module.StockField.SECTOR = _Field("sector")
+    fake_tvscreener_module.StockField.RECOMMENDATION_BUY = _Field("recommendation_buy")
+    fake_tvscreener_module.StockField.RECOMMENDATION_HOLD = _Field(
+        "recommendation_hold"
+    )
+    fake_tvscreener_module.StockField.RECOMMENDATION_SELL = _Field(
+        "recommendation_sell"
+    )
+    fake_tvscreener_module.StockField.PRICE_TARGET_AVERAGE = _Field(
+        "price_target_average"
+    )
+
+    service = AsyncMock()
+    service.query_stock_screener.return_value = pd.DataFrame(
+        {
+            "symbol": ["NASDAQ:AAPL"],
+            "description": ["Apple Inc."],
+            "name": ["AAPL"],
+            "price": [175.5],
+            "relative_strength_index_14": [35.2],
+            "average_directional_index_14": [25.6],
+            "volume": [75_000_000.0],
+            "change_percent": [1.2],
+            "market_capitalization": [2_800_000_000_000.0],
+            "price_to_earnings_ratio_ttm": [28.5],
+            "dividend_yield_forward": [0.005],
+            "sector": ["Technology"],
+            "recommendation_buy": [22],
+            "recommendation_hold": [14],
+            "recommendation_sell": [2],
+            "price_target_average": [205.0],
+            "country": ["United States"],
+        }
+    )
+
+    with (
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            return_value=fake_tvscreener_module,
+        ),
+        patch(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            return_value=service,
+        ),
+    ):
+        result = await _screen_us_via_tvscreener(category="Technology", limit=5)
+
+    kwargs = service.query_stock_screener.await_args.kwargs
+    assert fake_tvscreener_module.StockField.SECTOR in kwargs["columns"]
+    assert fake_tvscreener_module.StockField.RECOMMENDATION_BUY in kwargs["columns"]
+    assert fake_tvscreener_module.StockField.RECOMMENDATION_HOLD in kwargs["columns"]
+    assert fake_tvscreener_module.StockField.RECOMMENDATION_SELL in kwargs["columns"]
+    assert fake_tvscreener_module.StockField.PRICE_TARGET_AVERAGE in kwargs["columns"]
+    assert kwargs["where_clause"] == [
+        fake_tvscreener_module.StockField.SECTOR == "Technology"
+    ]
+    assert result["error"] is None
+    assert result["stocks"][0]["sector"] == "Technology"
+    assert result["stocks"][0]["analyst_buy"] == 22
+    assert result["stocks"][0]["analyst_hold"] == 14
+    assert result["stocks"][0]["analyst_sell"] == 2
+    assert result["stocks"][0]["avg_target"] == 205.0
+    assert result["stocks"][0]["upside_pct"] == 16.81
 
 
 @pytest.mark.asyncio
@@ -500,3 +570,47 @@ class TestStockScreeningIntegration:
             first = result["stocks"][0]
             assert ":" not in first["symbol"]
             assert first["name"]
+
+
+class TestNormalizeScreenRequestUsSectorCanonicalization:
+    """normalize_screen_request must title-case US sector labels."""
+
+    def test_us_category_lowercase_technology_becomes_title_case(self) -> None:
+        result = normalize_screen_request(
+            market="us",
+            asset_type=None,
+            category="technology",
+            sector=None,
+            strategy=None,
+            sort_by=None,
+            sort_order=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            min_dividend=None,
+            min_analyst_buy=None,
+            max_rsi=None,
+            limit=10,
+        )
+        assert result["sector"] == "Technology"
+
+    def test_us_category_lowercase_acronym_ai_becomes_uppercase(self) -> None:
+        result = normalize_screen_request(
+            market="us",
+            asset_type=None,
+            category="ai",
+            sector=None,
+            strategy=None,
+            sort_by=None,
+            sort_order=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            min_dividend=None,
+            min_analyst_buy=None,
+            max_rsi=None,
+            limit=10,
+        )
+        assert result["sector"] == "AI"

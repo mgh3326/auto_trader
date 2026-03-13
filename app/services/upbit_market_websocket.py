@@ -19,6 +19,7 @@ from app.services.websocket_connection_manager import manager
 logger = logging.getLogger(__name__)
 
 UPBIT_PUBLIC_WS_URL = "wss://api.upbit.com/websocket/v1"
+_VERIFY_SSL_UNSUPPORTED_MESSAGE = "verify_ssl=False is no longer supported. Configure your local trust store to resolve certificate issues."
 
 
 class UpbitPublicWebSocketClient:
@@ -42,9 +43,13 @@ class UpbitPublicWebSocketClient:
             subscription_type: Type of subscription ("ticker", "orderbook", "trade")
             codes: List of market codes to subscribe (e.g., ["KRW-BTC", "KRW-ETH"])
                    None means subscribe to all markets
-            verify_ssl: SSL certificate verification (default: True)
+            verify_ssl: Signature-compatibility flag. False is rejected because
+                certificate verification is always required.
             on_message: Optional callback for received messages
         """
+        if not verify_ssl:
+            raise ValueError(_VERIFY_SSL_UNSUPPORTED_MESSAGE)
+
         self.websocket_url = UPBIT_PUBLIC_WS_URL
         self.subscription_type = subscription_type
         self.codes = codes
@@ -60,12 +65,7 @@ class UpbitPublicWebSocketClient:
     def _create_ssl_context(self):
         """Create SSL context for WebSocket connection."""
         ssl_context = ssl.create_default_context()
-        if self.verify_ssl:
-            logger.info("SSL certificate verification enabled")
-        else:
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            logger.warning("SSL certificate verification explicitly disabled")
+        logger.info("SSL certificate verification enabled")
         return ssl_context
 
     def _create_subscribe_message(self) -> list[dict[str, Any]]:

@@ -6,6 +6,7 @@ import asyncio
 import datetime
 import json
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,7 +87,7 @@ def _coerce_optional_number(value: Any) -> int | float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        if value != value:
+        if math.isnan(float(value)):
             return None
         return value
     return None
@@ -816,6 +817,69 @@ async def _fetch_investment_opinions_yfinance(
     return result
 
 
+async def _fetch_investment_opinions_yfinance_screen(
+    symbol: str,
+    *,
+    current_price: float | None = None,
+    session: Any | None = None,
+) -> dict[str, Any]:
+    loop = asyncio.get_running_loop()
+    if session is None:
+        session = build_yfinance_tracing_session()
+    ticker = yf.Ticker(symbol, session=session)
+
+    def _collect() -> tuple[dict[str, Any] | None, Any]:
+        targets = None
+        try:
+            targets = ticker.analyst_price_targets
+        except Exception:
+            pass
+
+        recommendations = None
+        try:
+            recommendations = ticker.recommendations
+        except Exception:
+            pass
+
+        return targets, recommendations
+
+    targets, trend = await loop.run_in_executor(None, _collect)
+
+    target_consensus = _build_yahoo_target_consensus(
+        targets,
+        fallback_current_price=current_price,
+    )
+    usable_target_available = False
+    if isinstance(targets, dict):
+        usable_target_available = any(
+            _normalize_yahoo_numeric(targets.get(key)) is not None
+            for key in ("mean", "median", "low", "high", "current")
+        )
+
+    consensus = _empty_analyst_consensus(
+        current_price=(target_consensus or {}).get("current_price", current_price)
+    )
+    count_consensus = _build_yahoo_count_consensus(trend)
+    if count_consensus is not None:
+        consensus.update(count_consensus)
+    if target_consensus is not None:
+        consensus.update(target_consensus)
+
+    result = {
+        "instrument_type": "equity_us",
+        "source": "yfinance",
+        "symbol": symbol.upper(),
+        "count": 0,
+        "opinions": [],
+        "consensus": consensus,
+    }
+    if count_consensus is None and not usable_target_available:
+        result["warning"] = (
+            f"Yahoo analyst consensus data unavailable for {symbol.upper()}."
+        )
+    return result
+
+
 async def _fetch_screen_enrichment_kr(symbol: str) -> dict[str, Any]:
     return await _fetch_screen_enrichment_payload(
         symbol=symbol,
@@ -826,13 +890,47 @@ async def _fetch_screen_enrichment_kr(symbol: str) -> dict[str, Any]:
     )
 
 
-async def _fetch_screen_enrichment_us(symbol: str) -> dict[str, Any]:
+async def _fetch_screen_enrichment_us(
+    symbol: str,
+    *,
+    current_price: float | None = None,
+    session: Any | None = None,
+    include_opinion_history: bool = True,
+) -> dict[str, Any]:
+    opinions_request: Any
+    opinions_provider: str
+    if include_opinion_history:
+        if session is None:
+            opinions_request = _fetch_investment_opinions_yfinance(symbol, 10)
+        else:
+            opinions_request = _fetch_investment_opinions_yfinance(
+                symbol,
+                10,
+                session=session,
+            )
+        opinions_provider = "yfinance"
+    else:
+        if current_price is None and session is None:
+            opinions_request = _fetch_investment_opinions_yfinance_screen(symbol)
+        elif session is None:
+            opinions_request = _fetch_investment_opinions_yfinance_screen(
+                symbol,
+                current_price=current_price,
+            )
+        else:
+            opinions_request = _fetch_investment_opinions_yfinance_screen(
+                symbol,
+                current_price=current_price,
+                session=session,
+            )
+        opinions_provider = "yfinance_screen"
+
     return await _fetch_screen_enrichment_payload(
         symbol=symbol,
         profile_request=_fetch_company_profile_finnhub(symbol),
-        opinions_request=_fetch_investment_opinions_yfinance(symbol, 10),
+        opinions_request=opinions_request,
         profile_provider="finnhub",
-        opinions_provider="yfinance",
+        opinions_provider=opinions_provider,
     )
 
 

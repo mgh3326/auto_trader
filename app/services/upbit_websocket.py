@@ -19,6 +19,7 @@ from app.services.upbit_symbol_universe_service import (
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
+_VERIFY_SSL_UNSUPPORTED_MESSAGE = "verify_ssl=False is no longer supported. Configure your local trust store to resolve certificate issues."
 
 
 class UpbitMyOrderWebSocket:
@@ -33,8 +34,12 @@ class UpbitMyOrderWebSocket:
         Args:
             on_order_callback: 주문/체결 데이터 수신 시 호출될 콜백 함수
                               함수 시그니처: async def callback(order_data: dict) -> None
-            verify_ssl: SSL 인증서 검증 여부 (기본값: True)
+            verify_ssl: 시그니처 호환용 플래그입니다. False는 지원하지 않으며,
+                인증서 검증은 항상 활성화됩니다.
         """
+        if not verify_ssl:
+            raise ValueError(_VERIFY_SSL_UNSUPPORTED_MESSAGE)
+
         self.websocket_url = "wss://api.upbit.com/websocket/v1/private"
         self.on_order_callback = on_order_callback
         self.verify_ssl = verify_ssl
@@ -48,12 +53,7 @@ class UpbitMyOrderWebSocket:
     def _create_ssl_context(self):
         """SSL 컨텍스트 생성"""
         ssl_context = ssl.create_default_context()
-        if self.verify_ssl:
-            logger.info("SSL 인증서 검증을 사용합니다.")
-        else:
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            logger.warning("SSL 인증서 검증을 명시적으로 비활성화했습니다.")
+        logger.info("SSL 인증서 검증을 사용합니다.")
 
         return ssl_context
 
@@ -259,8 +259,12 @@ class UpbitOrderAnalysisService:
         Args:
             analyzer_callback: 분석 수행 콜백 함수
                               함수 시그니처: async def callback(coin_name: str) -> None
-            verify_ssl: SSL 인증서 검증 여부 (기본값: True)
+            verify_ssl: 시그니처 호환용 플래그입니다. False는 지원하지 않으며,
+                인증서 검증은 항상 활성화됩니다.
         """
+        if not verify_ssl:
+            raise ValueError(_VERIFY_SSL_UNSUPPORTED_MESSAGE)
+
         self.analyzer_callback = analyzer_callback
         self.verify_ssl = verify_ssl
         self.websocket_client = None

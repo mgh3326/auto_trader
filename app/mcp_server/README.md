@@ -319,11 +319,13 @@ Market-specific behavior:
   - ETN (`asset_type="etn"`) not supported - returns error
 
 - **US market**:
-  - Default `asset_type in {None, "stock"}` + `category=None` requests use tvscreener first
-  - Successful stock responses expose `meta.source = "tvscreener"` and include `adx` in each result row
-  - Category/unsupported requests fall back to the legacy yfinance path
+  - Default `asset_type in {None, "stock"}` requests use tvscreener first, including US `category`/`sector` alias filters when the TradingView sector field is available
+  - Successful stock responses expose `meta.source = "tvscreener"`, include `adx`, and preserve public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) from tvscreener when available
+  - Post-screen enrichment skips per-row Finnhub/yfinance fan-out when those public fields are already populated; missing fields fall back to lightweight yfinance/Finnhub enrichment
+  - Unsupported sorts or missing tvscreener sector metadata fall back to the legacy yfinance path
   - Legacy yfinance maps: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio.lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
   - Legacy yfinance sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
+  - Legacy yfinance screen enrichment reuses a request-scoped session for repeated analyst-target lookups
   - Yahoo OHLCV (`day/week/month`) requests use Redis closed-candle cache at the service boundary
   - Closed-bucket cutoff uses NYSE session close via `exchange_calendars` (`XNYS`), including DST/holidays/early close
 
@@ -644,6 +646,8 @@ Filtering rules:
 - If `include_current_price=False`, `minimum_value` filtering is skipped
 - When `minimum_value=None`, per-currency thresholds are automatically applied based on `instrument_type`: `equity_kr` and `crypto` use 5000, `equity_us` uses 10
 - When `minimum_value` is a number, that uniform threshold is applied to all positions
+- KIS US holdings keep KIS-provided snapshot values when the KIS snapshot is numerically valid: `current_price > 0`, `evaluation_amount > 0`, and `profit_loss` / `profit_rate` are parseable numbers
+- KIS US holdings fall back to Yahoo only when that KIS snapshot is missing or invalid; Yahoo is a fallback refresh path, not the default for valid KIS US holdings
 - Upbit crypto current prices are fetched via batch ticker request (`/v1/ticker?markets=...`)
 - During Upbit holdings collection, coins that raise `UpbitSymbolNotRegisteredError` or `UpbitSymbolInactiveError` on name lookup are silently skipped (not added to `errors`).
 - Before batch ticker request, tradable markets are loaded from `upbit_symbol_universe` and only valid holdings symbols are included in the batch
