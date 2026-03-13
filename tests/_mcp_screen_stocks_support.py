@@ -911,6 +911,378 @@ class TestScreenStocksTvScreenerContract:
         assert result["results"][0]["adx"] == 31.4
 
     @pytest.mark.asyncio
+    async def test_us_category_and_analyst_filter_stay_on_tvscreener_without_network_enrichment(
+        self, monkeypatch
+    ):
+        async def mock_screen_us_via_tvscreener(**kwargs):
+            assert kwargs["market"] == "us"
+            assert kwargs["asset_type"] is None
+            assert kwargs["category"] == "Technology"
+            assert kwargs["limit"] == 5
+            return {
+                "stocks": [
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple Inc.",
+                        "price": 175.5,
+                        "change_percent": 1.2,
+                        "volume": 75000000.0,
+                        "market_cap": 2800000000000,
+                        "rsi": 35.2,
+                        "adx": 31.4,
+                        "market": "us",
+                        "sector": "Technology",
+                        "analyst_buy": 18,
+                        "analyst_hold": 4,
+                        "analyst_sell": 1,
+                        "avg_target": 210.0,
+                        "upside_pct": 19.66,
+                    },
+                    {
+                        "symbol": "IBM",
+                        "name": "IBM",
+                        "price": 190.0,
+                        "change_percent": 0.4,
+                        "volume": 12000000.0,
+                        "market_cap": 170000000000,
+                        "rsi": 42.0,
+                        "adx": 22.0,
+                        "market": "us",
+                        "sector": "Technology",
+                        "analyst_buy": 7,
+                        "analyst_hold": 8,
+                        "analyst_sell": 2,
+                        "avg_target": 195.0,
+                        "upside_pct": 2.63,
+                    },
+                ],
+                "count": 2,
+                "filters_applied": {
+                    "market": "us",
+                    "asset_type": None,
+                    "category": "Technology",
+                    "sort_by": "volume",
+                    "sort_order": "desc",
+                },
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_us(**kwargs):
+            raise AssertionError(
+                "legacy US path should not run for category/analyst tvscreener requests"
+            )
+
+        async def fail_enrichment(symbol: str, **kwargs):
+            raise AssertionError(
+                f"network enrichment should not run for pre-enriched tvscreener row {symbol}"
+            )
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            mock_screen_us_via_tvscreener,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            fail_legacy_us,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._fetch_screen_enrichment_us",
+            fail_enrichment,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type=None,
+            category="Technology",
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            min_analyst_buy=10,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=1,
+        )
+
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["total_count"] == 1
+        assert result["returned_count"] == 1
+        assert result["filters_applied"]["category"] == "Technology"
+        assert result["filters_applied"]["min_analyst_buy"] == 10
+        first = result["results"][0]
+        assert first["code"] == "AAPL"
+        assert first["sector"] == "Technology"
+        assert first["analyst_buy"] == 18
+        assert first["analyst_hold"] == 4
+        assert first["analyst_sell"] == 1
+        assert first["avg_target"] == 210.0
+        assert first["upside_pct"] == 19.66
+
+    @pytest.mark.asyncio
+    async def test_us_enrichment_fallback_only_runs_for_rows_missing_tvscreener_fields(
+        self, monkeypatch
+    ):
+        fetch_enrichment = AsyncMock(
+            return_value={
+                "sector": "Software",
+                "analyst_buy": 16,
+                "analyst_hold": 5,
+                "analyst_sell": 1,
+                "avg_target": 470.0,
+                "upside_pct": 14.63,
+            }
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_screen_enrichment_us",
+            fetch_enrichment,
+        )
+
+        (
+            rows,
+            warnings,
+        ) = await analysis_screen_core._decorate_screen_rows_with_equity_enrichment(
+            [
+                {
+                    "code": "AAPL",
+                    "market": "us",
+                    "sector": "Technology",
+                    "analyst_buy": 20,
+                    "analyst_hold": 3,
+                    "analyst_sell": 1,
+                    "avg_target": 225.0,
+                    "upside_pct": 11.8,
+                },
+                {
+                    "code": "MSFT",
+                    "market": "us",
+                    "sector": None,
+                    "analyst_buy": None,
+                    "analyst_hold": None,
+                    "analyst_sell": None,
+                    "avg_target": None,
+                    "upside_pct": None,
+                },
+            ]
+        )
+
+        assert warnings == []
+        assert fetch_enrichment.await_count == 1
+        assert fetch_enrichment.await_args is not None
+        assert fetch_enrichment.await_args.args[0] == "MSFT"
+        assert rows[0]["sector"] == "Technology"
+        assert rows[0]["analyst_buy"] == 20
+        assert rows[0]["avg_target"] == 225.0
+        assert rows[1]["sector"] == "Software"
+        assert rows[1]["analyst_buy"] == 16
+        assert rows[1]["analyst_hold"] == 5
+        assert rows[1]["analyst_sell"] == 1
+        assert rows[1]["avg_target"] == 470.0
+        assert rows[1]["upside_pct"] == 14.63
+
+    @pytest.mark.asyncio
+    async def test_us_enrichment_fallback_preserves_existing_tvscreener_values(
+        self, monkeypatch
+    ):
+        fetch_enrichment = AsyncMock(
+            return_value={
+                "sector": None,
+                "analyst_buy": 0,
+                "analyst_hold": 0,
+                "analyst_sell": 0,
+                "avg_target": 220.0,
+                "upside_pct": 10.0,
+            }
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_screen_enrichment_us",
+            fetch_enrichment,
+        )
+
+        (
+            rows,
+            warnings,
+        ) = await analysis_screen_core._decorate_screen_rows_with_equity_enrichment(
+            [
+                {
+                    "code": "AAPL",
+                    "market": "us",
+                    "sector": "Technology",
+                    "analyst_buy": 18,
+                    "analyst_hold": 4,
+                    "analyst_sell": 1,
+                    "avg_target": None,
+                    "upside_pct": None,
+                    "close": 200.0,
+                }
+            ]
+        )
+
+        assert warnings == []
+        assert fetch_enrichment.await_count == 1
+        assert rows[0]["sector"] == "Technology"
+        assert rows[0]["analyst_buy"] == 18
+        assert rows[0]["analyst_hold"] == 4
+        assert rows[0]["analyst_sell"] == 1
+        assert rows[0]["avg_target"] == 220.0
+        assert rows[0]["upside_pct"] == 10.0
+
+    @pytest.mark.asyncio
+    async def test_us_category_preserves_acronym_case_for_tvscreener_filter(
+        self, monkeypatch
+    ):
+        captured: dict[str, Any] = {}
+
+        async def mock_screen_us_via_tvscreener(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "stocks": [
+                    {
+                        "symbol": "AI",
+                        "name": "C3.ai, Inc.",
+                        "price": 30.0,
+                        "change_percent": 1.5,
+                        "volume": 1000.0,
+                        "market_cap": 4_000_000_000.0,
+                        "market": "us",
+                        "sector": "AI",
+                        "analyst_buy": 9,
+                        "analyst_hold": 4,
+                        "analyst_sell": 1,
+                        "avg_target": 36.0,
+                        "upside_pct": 20.0,
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {
+                    "market": "us",
+                    "asset_type": None,
+                    "category": "AI",
+                    "sort_by": "volume",
+                    "sort_order": "desc",
+                },
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_us(**kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("legacy US path should not run for AI category")
+
+        async def fail_enrichment(symbol: str, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError(
+                f"network enrichment should not run for pre-enriched tvscreener row {symbol}"
+            )
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_screen_us_via_tvscreener",
+            mock_screen_us_via_tvscreener,
+        )
+        monkeypatch.setattr(analysis_screen_core, "_screen_us", fail_legacy_us)
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_screen_enrichment_us",
+            fail_enrichment,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type=None,
+            category="AI",
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=1,
+        )
+
+        assert captured["category"] == "AI"
+        assert result["filters_applied"]["category"] == "AI"
+        assert result["filters_applied"]["sector"] == "AI"
+        assert result["results"][0]["sector"] == "AI"
+
+    @pytest.mark.asyncio
+    async def test_us_category_lowercase_technology_canonicalized_for_tvscreener(
+        self, monkeypatch
+    ):
+        captured: dict[str, Any] = {}
+
+        async def mock_screen_us_via_tvscreener(**kwargs: Any) -> dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "stocks": [
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple Inc.",
+                        "price": 200.0,
+                        "change_percent": 0.5,
+                        "volume": 50_000.0,
+                        "market_cap": 3_000_000_000_000.0,
+                        "market": "us",
+                        "sector": "Technology",
+                        "analyst_buy": 30,
+                        "analyst_hold": 5,
+                        "analyst_sell": 1,
+                        "avg_target": 250.0,
+                        "upside_pct": 25.0,
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {
+                    "market": "us",
+                    "asset_type": None,
+                    "category": "Technology",
+                    "sort_by": "volume",
+                    "sort_order": "desc",
+                },
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_us(**kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("legacy US path should not run for technology category")
+
+        async def fail_enrichment(symbol: str, **kwargs: Any) -> dict[str, Any]:
+            raise AssertionError(
+                f"network enrichment should not run for pre-enriched tvscreener row {symbol}"
+            )
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_screen_us_via_tvscreener",
+            mock_screen_us_via_tvscreener,
+        )
+        monkeypatch.setattr(analysis_screen_core, "_screen_us", fail_legacy_us)
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_screen_enrichment_us",
+            fail_enrichment,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type=None,
+            category="technology",
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=1,
+        )
+
+        assert captured["category"] == "Technology"
+        assert result["filters_applied"]["sector"] == "Technology"
+        assert result["results"][0]["sector"] == "Technology"
+    @pytest.mark.asyncio
     async def test_kr_stock_request_with_max_rsi_still_uses_tvscreener(
         self, monkeypatch
     ):
@@ -1679,7 +2051,9 @@ class TestScreenStocksFundamentalsExpansion:
                 "legacy US path should not run for plain stock requests"
             )
 
-        async def mock_fetch_screen_enrichment_us(symbol: str) -> dict[str, Any]:
+        async def mock_fetch_screen_enrichment_us(
+            symbol: str, **kwargs: Any
+        ) -> dict[str, Any]:
             enriched_symbols.append(symbol)
             return {
                 "sector": "Technology",

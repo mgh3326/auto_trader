@@ -129,9 +129,11 @@ Market-specific behavior:
   - Category filter auto-limits to ETFs if `asset_type=None`
   - ETN (`asset_type="etn"`) not supported - returns error
 
-- **US market**: Uses yfinance screener.
-  - Filters: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio_lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
-  - Sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
+- **US market**: Uses tvscreener first for stock requests, then falls back to yfinance when TradingView fields are unavailable or the request needs an unsupported sort.
+  - US `category`/`sector` filters stay on the tvscreener path when TradingView sector metadata is available
+  - Public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) are filled directly from tvscreener when possible; missing values use lightweight Finnhub/yfinance fallback
+  - Legacy yfinance filters: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio_lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
+  - Legacy yfinance sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
 
 - **Crypto market**: Uses Upbit top traded coins.
   - Default sort is `trade_amount` and maps to `acc_trade_price_24h` (24h traded value in KRW)
