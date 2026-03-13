@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 UPBIT_REST = "https://api.upbit.com/v1"
 UPBIT_CANDLES_RATE_LIMIT_KEY = "GET /v1/candles/*"
+_UPBIT_TICKER_BATCH_SIZE = 50
 _INTERVAL_TO_ENDPOINT = {
     "day": "days",
     "week": "weeks",
@@ -583,17 +584,22 @@ async def fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
         - acc_trade_volume_24h: 24시간 누적 거래량
         - acc_trade_price_24h: 24시간 누적 거래대금
     """
-    if not market_codes:
+    normalized_codes = _normalize_market_codes(market_codes)
+    if not normalized_codes:
         return []
 
-    query = urlencode(
-        {"markets": ",".join(market_codes)},
-        quote_via=quote,
-        safe=",",
-    )
-    url = f"{UPBIT_REST}/ticker?{query}"
+    tickers: list[dict] = []
+    for offset in range(0, len(normalized_codes), _UPBIT_TICKER_BATCH_SIZE):
+        batch_codes = normalized_codes[offset : offset + _UPBIT_TICKER_BATCH_SIZE]
+        query = urlencode(
+            {"markets": ",".join(batch_codes)},
+            quote_via=quote,
+            safe=",",
+        )
+        url = f"{UPBIT_REST}/ticker?{query}"
+        tickers.extend(await _request_json(url))
 
-    return await _request_json(url)
+    return tickers
 
 
 async def fetch_multiple_current_prices(

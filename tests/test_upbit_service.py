@@ -1,4 +1,5 @@
 import asyncio
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import AsyncMock
 
 import pytest
@@ -277,3 +278,85 @@ async def test_fetch_top_traded_coins_fail_fast_when_universe_missing(monkeypatc
         await upbit.fetch_top_traded_coins("KRW")
 
     fetch_tickers.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_multiple_tickers_batches_large_requests(monkeypatch):
+    requested_batches: list[list[str]] = []
+    normalized_codes = [f"KRW-COIN{index:03d}" for index in range(120)]
+    market_codes = normalized_codes + [normalized_codes[0], normalized_codes[1]]
+
+    async def fake_request_json(url: str, params=None):
+        assert params is None
+        batch_codes = parse_qs(urlparse(url).query)["markets"][0].split(",")
+        requested_batches.append(batch_codes)
+        return [
+            {
+                "market": market_code,
+                "trade_price": float(index),
+                "acc_trade_price_24h": float(index),
+            }
+            for index, market_code in enumerate(batch_codes)
+        ]
+
+    monkeypatch.setattr(upbit, "_request_json", fake_request_json)
+
+    result = await upbit.fetch_multiple_tickers(market_codes)
+
+    assert [len(batch) for batch in requested_batches] == [50, 50, 20]
+    assert requested_batches[0] == normalized_codes[:50]
+    assert requested_batches[1] == normalized_codes[50:100]
+    assert requested_batches[2] == normalized_codes[100:120]
+    assert [item["market"] for item in result] == normalized_codes
+
+
+@pytest.mark.asyncio
+async def test_fetch_top_traded_coins_sorts_across_batched_ticker_results(monkeypatch):
+    requested_batches: list[list[str]] = []
+    active_markets = [f"KRW-COIN{index:03d}" for index in range(119, -1, -1)]
+
+    async def fake_request_json(url: str, params=None):
+        assert params is None
+        batch_codes = parse_qs(urlparse(url).query)["markets"][0].split(",")
+        requested_batches.append(batch_codes)
+        return [
+            {
+                "market": market_code,
+                "acc_trade_price_24h": float(market_code.removeprefix("KRW-COIN")),
+            }
+            for market_code in batch_codes
+        ]
+
+    get_active_markets = AsyncMock(return_value=active_markets)
+
+    monkeypatch.setattr(upbit, "get_active_upbit_markets", get_active_markets)
+    monkeypatch.setattr(upbit, "_request_json", fake_request_json)
+
+    result = await upbit.fetch_top_traded_coins("KRW")
+
+    get_active_markets.assert_awaited_once_with(quote_currency="KRW")
+    assert [len(batch) for batch in requested_batches] == [50, 50, 20]
+    assert len(result) == 120
+    assert result[0]["market"] == "KRW-COIN119"
+    assert result[-1]["market"] == "KRW-COIN000"
+
+
+@pytest.mark.asyncio
+async def test_fetch_multiple_tickers_propagates_later_batch_errors(monkeypatch):
+    requested_batches: list[list[str]] = []
+    market_codes = [f"KRW-COIN{index:03d}" for index in range(120)]
+
+    async def fake_request_json(url: str, params=None):
+        assert params is None
+        batch_codes = parse_qs(urlparse(url).query)["markets"][0].split(",")
+        requested_batches.append(batch_codes)
+        if len(requested_batches) == 2:
+            raise RuntimeError("second batch failed")
+        return [{"market": market_code} for market_code in batch_codes]
+
+    monkeypatch.setattr(upbit, "_request_json", fake_request_json)
+
+    with pytest.raises(RuntimeError, match="second batch failed"):
+        await upbit.fetch_multiple_tickers(market_codes)
+
+    assert [len(batch) for batch in requested_batches] == [50, 50]
