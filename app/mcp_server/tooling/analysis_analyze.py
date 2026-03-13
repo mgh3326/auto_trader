@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import pandas as pd
+import sentry_sdk
 import yfinance as yf
+
+logger = logging.getLogger(__name__)
 
 from app.mcp_server.tooling.fundamentals_sources_finnhub import (
     _fetch_company_profile_finnhub,
@@ -389,9 +393,14 @@ async def analyze_stock_impl(
     market_type, normalized_symbol = _resolve_market_type(symbol, market)
     analysis = _build_analysis_payload(normalized_symbol, market_type)
     loop = asyncio.get_running_loop()
-    ohlcv_df = await _fetch_ohlcv_for_indicators(
-        normalized_symbol, market_type, count=250
-    )
+
+    with sentry_sdk.start_span(
+        op="analyze_stock.ohlcv_fetch",
+        name=f"OHLCV fetch {market_type} {normalized_symbol}",
+    ):
+        ohlcv_df = await _fetch_ohlcv_for_indicators(
+            normalized_symbol, market_type, count=250
+        )
     ohlcv_60d = ohlcv_df.tail(60) if len(ohlcv_df) >= 60 else ohlcv_df
 
     preloaded_quote, named_tasks = _prepare_quote_tasks(
@@ -407,12 +416,21 @@ async def analyze_stock_impl(
         named_tasks, normalized_symbol, market_type, include_peers
     )
 
-    task_results = await _gather_task_results(named_tasks)
-    _apply_common_results(analysis, task_results, preloaded_quote)
-    _apply_market_specific_results(analysis, task_results, market_type)
-    _apply_sector_peers_result(analysis, task_results, market_type, include_peers)
-    analysis["errors"] = []
-    _apply_recommendation(analysis, market_type)
+    with sentry_sdk.start_span(
+        op="analyze_stock.gather_tasks",
+        name=f"gather tasks {market_type} {normalized_symbol}",
+    ):
+        task_results = await _gather_task_results(named_tasks)
+
+    with sentry_sdk.start_span(
+        op="analyze_stock.assemble_response",
+        name=f"assemble response {market_type} {normalized_symbol}",
+    ):
+        _apply_common_results(analysis, task_results, preloaded_quote)
+        _apply_market_specific_results(analysis, task_results, market_type)
+        _apply_sector_peers_result(analysis, task_results, market_type, include_peers)
+        analysis["errors"] = []
+        _apply_recommendation(analysis, market_type)
 
     return analysis
 
