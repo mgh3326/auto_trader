@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import sentry_sdk
 import time
 from typing import Any, cast
 
@@ -12,7 +13,10 @@ import httpx
 import yfinance as yf
 
 import app.services.brokers.upbit.client as upbit_service
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.async_rate_limiter import RateLimitExceededError
+from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.analysis_crypto_score import (
     calculate_crypto_metrics_from_ohlcv,
 )
@@ -958,6 +962,89 @@ def _empty_rsi_enrichment_diagnostics() -> dict[str, Any]:
         "timeout": 0,
         "error_samples": [],
     }
+
+
+async def _run_crypto_indicator_enrichment(
+    enrichment_items: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    filtered: list[dict[str, Any]],
+    limit: int,
+) -> dict[str, Any]:
+    metric_diagnostics = _empty_rsi_enrichment_diagnostics()
+    metric_diagnostics["attempted"] = len(enrichment_items)
+    _enrich_semaphore = asyncio.Semaphore(5)
+    _enrich_succeeded = 0
+    _enrich_failed = 0
+    _enrich_timeout = 0
+    _enrich_error_samples: list[str] = []
+
+    async def _enrich_single_item(item: dict[str, Any]) -> None:
+        nonlocal _enrich_succeeded, _enrich_failed, _enrich_timeout
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if not symbol:
+            return
+        async with _enrich_semaphore:
+            try:
+                df = await asyncio.wait_for(
+                    _fetch_ohlcv_for_indicators(symbol, "crypto", count=50),
+                    timeout=_timeout_seconds("crypto_enrichment"),
+                )
+                metrics = calculate_crypto_metrics_from_ohlcv(df)
+            except TimeoutError:
+                _enrich_timeout += 1
+                if len(_enrich_error_samples) < 3:
+                    _enrich_error_samples.append(f"TimeoutError: {symbol}")
+                return
+            except Exception as exc:
+                _enrich_failed += 1
+                if len(_enrich_error_samples) < 3:
+                    _enrich_error_samples.append(f"{type(exc).__name__}: {exc}"[:100])
+                return
+            _enrich_succeeded += 1
+            item["volume_ratio"] = metrics.get("volume_ratio")
+            item["candle_type"] = metrics.get("candle_type") or "flat"
+            item["plus_di"] = metrics.get("plus_di")
+            item["minus_di"] = metrics.get("minus_di")
+            if item.get("adx") is None:
+                item["adx"] = metrics.get("adx")
+            if item.get("rsi") is None:
+                item["rsi"] = metrics.get("rsi")
+                item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
+
+    with sentry_sdk.start_span(
+        op="crypto.screen.enrichment",
+        name="crypto indicator enrichment",
+    ) as enrich_span:
+        enrich_span.set_data("candidate_count", len(candidates))
+        enrich_span.set_data("filtered_count", len(filtered))
+        enrich_span.set_data("limit", limit)
+        enrich_span.set_data("concurrency", 5)
+        await asyncio.gather(
+            *[_enrich_single_item(item) for item in enrichment_items],
+            return_exceptions=True,
+        )
+
+    metric_diagnostics["succeeded"] = _enrich_succeeded
+    metric_diagnostics["failed"] = _enrich_failed
+    metric_diagnostics["timeout"] = _enrich_timeout
+    metric_diagnostics["error_samples"] = _enrich_error_samples[:3]
+    return metric_diagnostics
+
+
+async def _run_crypto_coingecko_fetch() -> dict[str, Any]:
+    with sentry_sdk.start_span(
+        op="crypto.screen.coingecko",
+        name="crypto coingecko fetch",
+    ) as cg_span:
+        coingecko_payload = await _CRYPTO_MARKET_CAP_CACHE.get()
+        cg_span.set_data("coingecko_cached", coingecko_payload.get("cached", False))
+        if "stale" in coingecko_payload:
+            cg_span.set_data("coingecko_stale", coingecko_payload.get("stale", False))
+        if "error" in coingecko_payload:
+            cg_span.set_data(
+                "coingecko_error_present", bool(coingecko_payload.get("error"))
+            )
+        return coingecko_payload
 
 
 def _finalize_rsi_enrichment_diagnostics(
@@ -2664,14 +2751,29 @@ async def _screen_crypto_via_tvscreener(
     market_codes = [
         str(item.get("symbol") or "").strip().upper() for item in raw_results
     ]
+    _db: AsyncSession = cast(AsyncSession, cast(object, AsyncSessionLocal()))
     try:
-        display_names = await get_upbit_market_display_names(market_codes)
-    except Exception as exc:
-        display_names = {}
-        warnings.append(
-            "Upbit symbol-universe names unavailable; TradingView description/name fallback used "
-            f"({type(exc).__name__}: {exc})"
-        )
+        try:
+            display_names = await get_upbit_market_display_names(market_codes, db=_db)
+        except Exception as exc:
+            display_names = {}
+            warnings.append(
+                "Upbit symbol-universe names unavailable; TradingView description/name fallback used "
+                f"({type(exc).__name__}: {exc})"
+            )
+
+        warning_markets: set[str] = set()
+        try:
+            warning_markets = await get_upbit_warning_markets(
+                quote_currency="KRW", db=_db
+            )
+        except Exception as exc:
+            warnings.append(
+                "market warning details unavailable; warning filter skipped "
+                f"({type(exc).__name__}: {exc})"
+            )
+    finally:
+        await _db.close()
 
     ticker_volume_map: dict[str, float] = {}
     if market_codes:
@@ -2712,15 +2814,6 @@ async def _screen_crypto_via_tvscreener(
             warnings.append(
                 "KRW-BTC change rate is missing; crash filter uses btc_change_24h=0.0 fallback."
             )
-
-    warning_markets: set[str] = set()
-    try:
-        warning_markets = await get_upbit_warning_markets(quote_currency="KRW")
-    except Exception as exc:
-        warnings.append(
-            "market warning details unavailable; warning filter skipped "
-            f"({type(exc).__name__}: {exc})"
-        )
 
     filtered_by_warning = 0
     filtered_by_crash = 0
@@ -2777,45 +2870,20 @@ async def _screen_crypto_via_tvscreener(
     else:
         filtered = candidates
 
-    metric_diagnostics = _empty_rsi_enrichment_diagnostics()
-    metric_diagnostics["attempted"] = len(filtered[:limit])
-    timeout_count = 0
-    for item in filtered[:limit]:
-        symbol = str(item.get("symbol") or "").strip().upper()
-        if not symbol:
-            continue
-        try:
-            df = await asyncio.wait_for(
-                _fetch_ohlcv_for_indicators(symbol, "crypto", count=50),
-                timeout=_timeout_seconds("crypto_enrichment"),
+    enrichment_items = filtered[:limit]
+    async with asyncio.TaskGroup() as tg:
+        enrichment_task = tg.create_task(
+            _run_crypto_indicator_enrichment(
+                enrichment_items,
+                candidates,
+                filtered,
+                limit,
             )
-            metrics = calculate_crypto_metrics_from_ohlcv(df)
-        except TimeoutError:
-            timeout_count += 1
-            error_samples = cast(list[str], metric_diagnostics["error_samples"])
-            if len(error_samples) < 3:
-                error_samples.append(f"TimeoutError: {symbol}")
-            continue
-        except Exception as exc:
-            metric_diagnostics["failed"] = int(metric_diagnostics["failed"] or 0) + 1
-            error_samples = cast(list[str], metric_diagnostics["error_samples"])
-            if len(error_samples) < 3:
-                error_samples.append(f"{type(exc).__name__}: {exc}"[:100])
-            continue
-        metric_diagnostics["succeeded"] = int(metric_diagnostics["succeeded"] or 0) + 1
-        item["volume_ratio"] = metrics.get("volume_ratio")
-        item["candle_type"] = metrics.get("candle_type") or "flat"
-        item["plus_di"] = metrics.get("plus_di")
-        item["minus_di"] = metrics.get("minus_di")
-        if item.get("adx") is None:
-            item["adx"] = metrics.get("adx")
-        if item.get("rsi") is None:
-            item["rsi"] = metrics.get("rsi")
-            item["rsi_bucket"] = _compute_rsi_bucket(item.get("rsi"))
+        )
+        coingecko_fetch_task = tg.create_task(_run_crypto_coingecko_fetch())
+    metric_diagnostics = enrichment_task.result()
+    coingecko_payload = coingecko_fetch_task.result()
 
-    if timeout_count > 0:
-        metric_diagnostics["timeout"] = timeout_count
-    coingecko_payload = await _CRYPTO_MARKET_CAP_CACHE.get()
     return await finalize_crypto_screen(
         candidates=candidates,
         filters_applied=filters_applied,

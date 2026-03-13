@@ -1351,7 +1351,7 @@ class TestScreenStocksCrypto:
                 {"market": "KRW-XRP", "acc_trade_volume_24h": 99_999.0},
             ]
 
-        async def mock_warning_markets(*, quote_currency: str) -> set[str]:
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
             assert quote_currency == "KRW"
             return {"KRW-ETH"}
 
@@ -2337,7 +2337,7 @@ class TestScreenStocksFundamentalsExpansion:
                 {"market": code, "acc_trade_volume_24h": 1.0} for code in market_codes
             ]
 
-        async def mock_warning_markets(*, quote_currency: str) -> set[str]:
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
             assert quote_currency == "KRW"
             return set()
 
@@ -2425,7 +2425,7 @@ class TestScreenStocksFundamentalsExpansion:
                 {"market": code, "acc_trade_volume_24h": 1.0} for code in market_codes
             ]
 
-        async def mock_warning_markets(*, quote_currency: str) -> set[str]:
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
             assert quote_currency == "KRW"
             return set()
 
