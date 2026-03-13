@@ -51,6 +51,14 @@ def _build_overseas_message(
     return f"0|H0GSCNI0|1|{payload}"
 
 
+def _build_synthetic_overseas_bac_message(*, symbol: str = "BAC") -> str:
+    payload = (
+        "mgh3326^1234567890^0030145286^PROD^02^0^RESERVED^"
+        f"{symbol}^23^47.90^093001^0^2^00^ENV^0000000023"
+    )
+    return f"0|H0GSCNI0|1|{payload}"
+
+
 @pytest.mark.unit
 class TestKISWebSocketApprovalKey:
     """Tests for Approval Key issuance"""
@@ -565,6 +573,21 @@ class TestKISWebSocketClient:
         assert result["order_qty"] == 10
         assert result["execution_status"] == "partial"
         assert "T09:30:01" in result["filled_at"]
+
+    @pytest.mark.asyncio
+    async def test_parse_message_keeps_synthetic_overseas_bac_fill_in_usd(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        result = client._parse_message(_build_synthetic_overseas_bac_message())
+
+        assert result is not None
+        assert result["symbol"] == "BAC"
+        assert result["filled_qty"] == 23
+        assert result["filled_price"] == 47.9
+        assert result["filled_amount"] == 1101.7
+        assert result["currency"] == "USD"
 
     @pytest.mark.asyncio
     async def test_parse_message_marks_overseas_order_notice_when_cntg_yn_not_two(
@@ -1144,6 +1167,22 @@ class TestKISWebSocketClient:
 
         assert client._extract_symbol(fields, "us") == "AAPL"
 
+    def test_extract_symbol_rejects_reserved_and_account_like_us_tokens(
+        self, execution_callback
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        fields = [
+            "1234567890",
+            "PROD",
+            "RESERVED",
+            "ENV",
+            "BAC",
+            "093001",
+        ]
+
+        assert client._extract_symbol(fields, "us") == "BAC"
+
     def test_parse_overseas_execution_logs_error_on_insufficient_fields(
         self, execution_callback, caplog
     ):
@@ -1166,6 +1205,24 @@ class TestKISWebSocketClient:
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
 
         payload = "mgh3326^6762259301^0030145286^prod^02^0^^^3^201.5^093001^0^2^00^^10"
+        message = f"0|H0GSCNI0|1|{payload}"
+
+        with caplog.at_level("ERROR"):
+            result = client._parse_message(message)
+
+        assert result is not None
+        assert result.get("symbol") == ""
+        assert not result.get("filled_price")
+        assert not result.get("filled_qty")
+        assert client._is_execution_event(result) is False
+        assert "missing symbol" in caplog.text.lower()
+
+    def test_parse_overseas_execution_with_empty_symbol_slot_does_not_revive_bac_fallback(
+        self, execution_callback, caplog
+    ) -> None:
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        payload = "mgh3326^1234567890^0030145286^PROD^02^0^^^23^47.90^093001^0^2^00^BAC^0000000023"
         message = f"0|H0GSCNI0|1|{payload}"
 
         with caplog.at_level("ERROR"):
@@ -1551,3 +1608,214 @@ class TestCloseApprovalKeyRedis:
         assert mock_redis.close.call_count == 1  # Not called again
 
         assert mod._redis_client is None
+
+
+
+
+
+# =============================================================================
+# H0GSCNI0 Synthetic Contract Tests
+# =============================================================================
+# These tests verify the current parser contract for overseas execution
+# (H0GSCNI0) message parsing. They use synthetic payloads that match the
+# documented KIS WebSocket API structure but are NOT based on actual decrypted
+# evidence captures.
+#
+# WARNING: These are synthetic tests only. Real evidence-backed regression
+# requires sanitized decrypted ^ payload from live trading captures.
+# See issue #283 for evidence requirements.
+# =============================================================================
+
+
+def _build_synthetic_h0gscni0_message(
+    *,
+    symbol: str = "TSLA",
+    filled_qty: str = "10",
+    filled_price: str = "248.50",
+    order_qty: str = "0000000010",
+    rctf_cls: str = "0",
+    acpt_yn: str = "00",
+    rfus_yn: str = "0",
+    cntg_yn: str = "2",
+    side: str = "02",
+) -> str:
+    """
+    Build a synthetic H0GSCNI0 message for parser contract testing.
+
+    SYNTHETIC ONLY - Not based on actual decrypted evidence.
+    Payload structure follows KIS API documentation conventions.
+    """
+    payload = (
+        f"ACCT0001^ORDER00001^TRX0000001^PROD^{side}^{rctf_cls}^RESERVED^"
+        f"{symbol}^{filled_qty}^{filled_price}^153045^{rfus_yn}^{cntg_yn}^{acpt_yn}^NASDAQ^{order_qty}"
+    )
+    return f"0|H0GSCNI0|1|{payload}"
+
+
+@pytest.mark.unit
+class TestH0GSCNI0SyntheticContract:
+    """
+    Synthetic contract tests for H0GSCNI0 (overseas execution) parsing.
+
+    These tests verify the current parser behavior against synthetic payloads.
+    They do NOT constitute evidence-backed regression (see issue #283).
+    """
+
+    @pytest.mark.asyncio
+    async def test_synthetic_h0gscni0_full_fill_parsing(self) -> None:
+        """
+        Test synthetic H0GSCNI0 full fill message parsing.
+
+        Synthetic case: Full fill (cntg_yn=2, filled_qty == order_qty)
+        Verifies: Parser extracts expected fields with USD currency
+        """
+        client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=True)
+
+        message = _build_synthetic_h0gscni0_message(
+            symbol="TSLA",
+            filled_qty="10",
+            filled_price="248.50",
+            order_qty="0000000010",
+            cntg_yn="2",
+            side="02",  # bid (buy)
+        )
+
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["tr_code"] == "H0GSCNI0"
+        assert result["market"] == "us"
+        assert result["symbol"] == "TSLA"
+        assert result["side"] == "bid"
+        assert result["filled_qty"] == 10.0
+        assert result["filled_price"] == 248.50
+        assert result["filled_amount"] == 2485.0
+        assert result["order_qty"] == 10.0
+        assert result["currency"] == "USD"
+        assert result["execution_status"] == "filled"
+        assert client._is_execution_event(result) is True
+
+    @pytest.mark.asyncio
+    async def test_synthetic_h0gscni0_partial_fill_parsing(self) -> None:
+        """
+        Test synthetic H0GSCNI0 partial fill message parsing.
+
+        Synthetic case: Partial fill (cntg_yn=2, filled_qty < order_qty)
+        Verifies: Parser returns partial status
+        """
+        client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=True)
+
+        message = _build_synthetic_h0gscni0_message(
+            symbol="AAPL",
+            filled_qty="5",
+            filled_price="175.25",
+            order_qty="0000000010",
+            cntg_yn="2",
+            side="01",  # ask (sell)
+        )
+
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["symbol"] == "AAPL"
+        assert result["side"] == "ask"
+        assert result["filled_qty"] == 5.0
+        assert result["filled_price"] == 175.25
+        assert result["order_qty"] == 10.0
+        assert result["currency"] == "USD"
+        assert result["execution_status"] == "partial"
+        assert client._is_execution_event(result) is True
+
+    @pytest.mark.asyncio
+    async def test_synthetic_h0gscni0_sell_side_parsing(self) -> None:
+        """
+        Test synthetic H0GSCNI0 sell-side (ask) message parsing.
+
+        Synthetic case: Sell order with side=01 (ask)
+        Verifies: Side correctly normalized to 'ask'
+        """
+        client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=True)
+
+        message = _build_synthetic_h0gscni0_message(
+            symbol="NVDA",
+            filled_qty="3",
+            filled_price="875.00",
+            side="01",  # ask (sell)
+        )
+
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["symbol"] == "NVDA"
+        assert result["side"] == "ask"
+        assert result["filled_qty"] == 3.0
+        assert result["filled_price"] == 875.00
+        assert result["currency"] == "USD"
+
+    @pytest.mark.asyncio
+    async def test_synthetic_h0gscni0_rejected_status(self) -> None:
+        """
+        Test synthetic H0GSCNI0 rejected order status parsing.
+
+        Synthetic case: Rejected order (rfus_yn=1)
+        Verifies: execution_status='rejected', not an execution event
+        """
+        client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=True)
+
+        message = _build_synthetic_h0gscni0_message(
+            symbol="GOOGL",
+            filled_qty="0",
+            filled_price="0",
+            rfus_yn="1",  # rejected
+            cntg_yn="0",
+        )
+
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["symbol"] == "GOOGL"
+        assert result["rfus_yn"] == "1"
+        assert result["execution_status"] == "rejected"
+        assert client._is_execution_event(result) is False
+
+    @pytest.mark.asyncio
+    async def test_synthetic_h0gscni0_field_slot_positions(self) -> None:
+        """
+        Test that H0GSCNI0 fields are extracted from documented slot positions.
+
+        Uses unique values at each position to verify slot mapping.
+        """
+        client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=True)
+
+        payload = (
+            "ACCT0001^"      # 0: account
+            "ORDER00001^"    # 1: order_id
+            "TRX0000001^"    # 2: tr_code placeholder
+            "PROD^"          # 3: reserved
+            "02^"            # 4: side (bid)
+            "9^"             # 5: rctf_cls (unique value)
+            "RESERVED^"      # 6: reserved
+            "META^"          # 7: symbol (unique)
+            "42^"            # 8: filled_qty (unique)
+            "999.99^"        # 9: filled_price (unique)
+            "093001^"        # 10: filled_at
+            "8^"             # 11: rfus_yn (unique)
+            "7^"             # 12: cntg_yn (unique)
+            "77^"            # 13: acpt_yn (unique)
+            "NYSE^"          # 14: exchange
+            "0000000042"     # 15: order_qty (unique)
+        )
+        message = f"0|H0GSCNI0|1|{payload}"
+
+        result = client._parse_message(message)
+
+        assert result is not None
+        assert result["symbol"] == "META"
+        assert result["filled_qty"] == 42.0
+        assert result["filled_price"] == 999.99
+        assert result["rctf_cls"] == "9"
+        assert result["acpt_yn"] == "77"
+        assert result["rfus_yn"] == "8"
+        assert result["cntg_yn"] == "7"
+        assert result["order_qty"] == 42.0
+        assert result["currency"] == "USD"
