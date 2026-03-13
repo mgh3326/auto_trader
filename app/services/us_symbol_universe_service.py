@@ -11,8 +11,10 @@ from typing import Any
 import httpx
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.db import AsyncSessionLocal
+from app.core.symbol import to_db_symbol
 from app.models.us_symbol_universe import USSymbolUniverse
 
 logger = logging.getLogger(__name__)
@@ -96,7 +98,7 @@ def _parse_cod_rows(lines: list[str], exchange: str) -> tuple[list[_UniverseRow]
             skipped += 1
             continue
 
-        symbol = _normalize_symbol(columns[4])
+        symbol = to_db_symbol(_normalize_symbol(columns[4]))
         if not symbol:
             skipped += 1
             continue
@@ -233,7 +235,7 @@ async def _has_any_rows(db: AsyncSession) -> bool:
 
 
 async def _resolve_active_symbol_row(db: AsyncSession, symbol: str) -> USSymbolUniverse:
-    normalized_symbol = _normalize_symbol(symbol)
+    normalized_symbol = to_db_symbol(_normalize_symbol(symbol))
     if not normalized_symbol:
         raise ValueError("symbol is required")
 
@@ -335,15 +337,26 @@ async def _search_us_symbols_impl(
     if not normalized_query:
         return []
 
-    pattern = f"%{normalized_query}%"
+    raw_symbol_query = _normalize_symbol(query)
+    canonical_symbol_query = to_db_symbol(raw_symbol_query)
+    symbol_predicates: list[ColumnElement[bool]] = []
+    seen_symbol_queries: set[str] = set()
+
+    for symbol_query in (raw_symbol_query, canonical_symbol_query):
+        if symbol_query in seen_symbol_queries:
+            continue
+        seen_symbol_queries.add(symbol_query)
+        symbol_predicates.append(USSymbolUniverse.symbol.ilike(f"%{symbol_query}%"))
+
+    name_pattern = f"%{normalized_query}%"
     stmt = (
         select(USSymbolUniverse)
         .where(
             USSymbolUniverse.is_active.is_(True),
             or_(
-                USSymbolUniverse.symbol.ilike(pattern),
-                USSymbolUniverse.name_kr.ilike(pattern),
-                USSymbolUniverse.name_en.ilike(pattern),
+                *symbol_predicates,
+                USSymbolUniverse.name_kr.ilike(name_pattern),
+                USSymbolUniverse.name_en.ilike(name_pattern),
             ),
         )
         .order_by(USSymbolUniverse.symbol.asc())

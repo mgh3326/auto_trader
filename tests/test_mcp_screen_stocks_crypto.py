@@ -1,8 +1,10 @@
-from unittest.mock import AsyncMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 import pytest
+import sentry_sdk
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import analysis_screen_core
@@ -47,7 +49,7 @@ class TestScreenStocksCrypto:
                 {"market": "KRW-XRP", "acc_trade_volume_24h": 99_999.0},
             ]
 
-        async def mock_warning_markets(*, quote_currency: str) -> set[str]:
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
             assert quote_currency == "KRW"
             return {"KRW-ETH"}
 
@@ -175,12 +177,779 @@ class TestScreenStocksCrypto:
         assert "volume" not in first
 
     @pytest.mark.asyncio
+    async def test_crypto_enrichment_runs_in_parallel(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:BTCKRW", "UPBIT:ETHKRW", "UPBIT:XRPKRW"],
+                "name": ["BTCKRW", "ETHKRW", "XRPKRW"],
+                "description": ["Bitcoin TV", "Ethereum TV", "Ripple TV"],
+                "price": [150_000_000.0, 5_000_000.0, 3_000.0],
+                "change_percent": [-0.12, -0.02, -0.31],
+                "relative_strength_index_14": [45.5, 32.1, 28.2],
+                "average_directional_index_14": [25.3, 18.7, 42.1],
+                "volume_24h_in_usd": [156_000_000.0, 95_000_000.0, 44_000_000.0],
+                "value_traded": [900_000_000_000.0, 1_200_000_000.0, 700_000_000.0],
+                "market_cap": [
+                    2_500_000_000_000_000.0,
+                    500_000_000_000_000.0,
+                    50_000_000_000_000.0,
+                ],
+                "exchange": ["UPBIT", "UPBIT", "UPBIT"],
+            }
+        )
+
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, object]]:
+            assert market_codes == ["KRW-BTC", "KRW-ETH", "KRW-XRP"]
+            return [
+                {"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0},
+                {"market": "KRW-ETH", "acc_trade_volume_24h": 54_321.0},
+                {"market": "KRW-XRP", "acc_trade_volume_24h": 99_999.0},
+            ]
+
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+            assert quote_currency == "KRW"
+            assert db is mock_session
+            return set()
+
+        async def mock_market_cap_cache_get() -> dict[str, object]:
+            return {
+                "data": {
+                    "BTC": {"market_cap": 3_000_000_000_000_000, "market_cap_rank": 1}
+                },
+                "cached": True,
+                "age_seconds": 1.5,
+                "stale": False,
+                "error": None,
+            }
+
+        current_concurrent = 0
+        max_concurrent = 0
+
+        async def mock_fetch_ohlcv(
+            symbol: str, market_type: str, count: int
+        ) -> pd.DataFrame:
+            nonlocal current_concurrent, max_concurrent
+            assert symbol in {"KRW-BTC", "KRW-ETH", "KRW-XRP"}
+            assert market_type == "crypto"
+            assert count == 50
+            current_concurrent += 1
+            max_concurrent = max(max_concurrent, current_concurrent)
+            try:
+                await asyncio.sleep(0.05)
+            finally:
+                current_concurrent -= 1
+            close = [100.0 + i for i in range(50)]
+            volume = [1_000.0] * 49 + [1_500.0]
+            return pd.DataFrame(
+                {
+                    "open": close,
+                    "high": [value + 10.0 for value in close],
+                    "low": [value - 10.0 for value in close],
+                    "close": close,
+                    "volume": volume,
+                }
+            )
+
+        mock_session = MagicMock()
+        mock_session.close = AsyncMock()
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_tickers",
+            mock_fetch_multiple_tickers,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_warning_markets",
+            mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            mock_market_cap_cache_get,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_market_display_names",
+            AsyncMock(
+                return_value={
+                    "KRW-BTC": {
+                        "korean_name": "비트코인",
+                        "english_name": "Bitcoin",
+                    },
+                    "KRW-ETH": {
+                        "korean_name": "이더리움",
+                        "english_name": "Ethereum",
+                    },
+                    "KRW-XRP": {
+                        "korean_name": "리플",
+                        "english_name": "Ripple",
+                    },
+                }
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "AsyncSessionLocal",
+            lambda: mock_session,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_order="desc",
+            limit=3,
+        )
+
+        assert result["returned_count"] == 3
+        assert max_concurrent > 1
+        assert max_concurrent <= 5
+
+    @pytest.mark.asyncio
+    async def test_crypto_coingecko_overlaps_with_enrichment(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:BTCKRW", "UPBIT:ETHKRW", "UPBIT:XRPKRW"],
+                "name": ["BTCKRW", "ETHKRW", "XRPKRW"],
+                "description": ["Bitcoin TV", "Ethereum TV", "Ripple TV"],
+                "price": [150_000_000.0, 5_000_000.0, 3_000.0],
+                "change_percent": [-0.01, -0.02, -0.03],
+                "relative_strength_index_14": [45.5, 32.1, 28.2],
+                "average_directional_index_14": [25.3, 18.7, 42.1],
+                "volume_24h_in_usd": [156_000_000.0, 95_000_000.0, 44_000_000.0],
+                "value_traded": [900_000_000_000.0, 1_200_000_000.0, 700_000_000.0],
+                "market_cap": [
+                    2_500_000_000_000_000.0,
+                    500_000_000_000_000.0,
+                    50_000_000_000_000.0,
+                ],
+                "exchange": ["UPBIT", "UPBIT", "UPBIT"],
+            }
+        )
+
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, object]]:
+            assert market_codes == ["KRW-BTC", "KRW-ETH", "KRW-XRP"]
+            return [
+                {"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0},
+                {"market": "KRW-ETH", "acc_trade_volume_24h": 54_321.0},
+                {"market": "KRW-XRP", "acc_trade_volume_24h": 99_999.0},
+            ]
+
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+            assert quote_currency == "KRW"
+            assert db is mock_session
+            return set()
+
+        coingecko_started = asyncio.Event()
+        enrichment_done = asyncio.Event()
+
+        async def mock_market_cap_cache_get() -> dict[str, object]:
+            coingecko_started.set()
+            await enrichment_done.wait()
+            return {
+                "data": {
+                    "BTC": {"market_cap": 3_000_000_000_000_000, "market_cap_rank": 1}
+                },
+                "cached": True,
+                "age_seconds": 1.5,
+                "stale": False,
+                "error": None,
+            }
+
+        async def mock_fetch_ohlcv(
+            symbol: str, market_type: str, count: int
+        ) -> pd.DataFrame:
+            assert symbol == "KRW-BTC"
+            assert market_type == "crypto"
+            assert count == 50
+            await asyncio.wait_for(coingecko_started.wait(), timeout=0.5)
+            close = [100.0 + i for i in range(50)]
+            volume = [1_000.0] * 49 + [1_500.0]
+            enrichment_done.set()
+            return pd.DataFrame(
+                {
+                    "open": close,
+                    "high": [value + 10.0 for value in close],
+                    "low": [value - 10.0 for value in close],
+                    "close": close,
+                    "volume": volume,
+                }
+            )
+
+        mock_session = MagicMock()
+        mock_session.close = AsyncMock()
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_tickers",
+            mock_fetch_multiple_tickers,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_warning_markets",
+            mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            mock_market_cap_cache_get,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_market_display_names",
+            AsyncMock(
+                return_value={
+                    "KRW-BTC": {
+                        "korean_name": "비트코인",
+                        "english_name": "Bitcoin",
+                    },
+                    "KRW-ETH": {
+                        "korean_name": "이더리움",
+                        "english_name": "Ethereum",
+                    },
+                    "KRW-XRP": {
+                        "korean_name": "리플",
+                        "english_name": "Ripple",
+                    },
+                }
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "AsyncSessionLocal",
+            lambda: mock_session,
+        )
+
+        tools = build_tools()
+        await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_order="desc",
+            limit=1,
+        )
+
+        assert coingecko_started.is_set()
+
+    @pytest.mark.asyncio
+    async def test_crypto_cancellation_does_not_leak_coingecko_task(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:BTCKRW"],
+                "name": ["BTCKRW"],
+                "description": ["Bitcoin TV"],
+                "price": [150_000_000.0],
+                "change_percent": [-0.01],
+                "relative_strength_index_14": [45.5],
+                "average_directional_index_14": [25.3],
+                "volume_24h_in_usd": [156_000_000.0],
+                "value_traded": [900_000_000_000.0],
+                "market_cap": [2_500_000_000_000_000.0],
+                "exchange": ["UPBIT"],
+            }
+        )
+
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, object]]:
+            assert market_codes == ["KRW-BTC"]
+            return [{"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0}]
+
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+            assert quote_currency == "KRW"
+            assert db is mock_session
+            return set()
+
+        coingecko_started = asyncio.Event()
+        enrichment_started = asyncio.Event()
+        allow_exit = asyncio.Event()
+        coingecko_cancelled = False
+
+        async def mock_market_cap_cache_get() -> dict[str, object]:
+            nonlocal coingecko_cancelled
+            coingecko_started.set()
+            try:
+                await allow_exit.wait()
+            except asyncio.CancelledError:
+                coingecko_cancelled = True
+                raise
+            return {
+                "data": {},
+                "cached": False,
+                "age_seconds": None,
+                "stale": False,
+                "error": None,
+            }
+
+        async def mock_fetch_ohlcv(
+            symbol: str, market_type: str, count: int
+        ) -> pd.DataFrame:
+            assert symbol == "KRW-BTC"
+            assert market_type == "crypto"
+            assert count == 50
+            enrichment_started.set()
+            await allow_exit.wait()
+            raise AssertionError("enrichment should be cancelled before completion")
+
+        mock_session = MagicMock()
+        mock_session.close = AsyncMock()
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_tickers",
+            mock_fetch_multiple_tickers,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_warning_markets",
+            mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            mock_market_cap_cache_get,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_market_display_names",
+            AsyncMock(
+                return_value={
+                    "KRW-BTC": {
+                        "korean_name": "비트코인",
+                        "english_name": "Bitcoin",
+                    }
+                }
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "AsyncSessionLocal",
+            lambda: mock_session,
+        )
+
+        tools = build_tools()
+        screen_task = asyncio.create_task(
+            tools["screen_stocks"](
+                market="crypto",
+                asset_type=None,
+                category=None,
+                min_market_cap=None,
+                max_per=None,
+                min_dividend_yield=None,
+                max_rsi=None,
+                sort_order="desc",
+                limit=1,
+            )
+        )
+
+        try:
+            await asyncio.wait_for(coingecko_started.wait(), timeout=0.5)
+            await asyncio.wait_for(enrichment_started.wait(), timeout=0.5)
+            screen_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await screen_task
+            assert coingecko_cancelled is True
+        finally:
+            allow_exit.set()
+
+    @pytest.mark.asyncio
+    async def test_crypto_coingecko_span_wraps_actual_fetch(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        active_spans: list[tuple[str, str, object]] = []
+
+        class _DummySpan:
+            def __init__(self) -> None:
+                self.data: dict[str, object] = {}
+
+            def set_data(self, key: str, value: object) -> None:
+                self.data[key] = value
+
+        class _DummySpanContext:
+            def __init__(self, op: str, name: str, span: _DummySpan) -> None:
+                self._op = op
+                self._name = name
+                self._span = span
+
+            def __enter__(self) -> _DummySpan:
+                active_spans.append((self._op, self._name, self._span))
+                return self._span
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                active_spans.pop()
+                return False
+
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:BTCKRW"],
+                "name": ["BTCKRW"],
+                "description": ["Bitcoin TV"],
+                "price": [150_000_000.0],
+                "change_percent": [-0.01],
+                "relative_strength_index_14": [45.5],
+                "average_directional_index_14": [25.3],
+                "volume_24h_in_usd": [156_000_000.0],
+                "value_traded": [900_000_000_000.0],
+                "market_cap": [2_500_000_000_000_000.0],
+                "exchange": ["UPBIT"],
+            }
+        )
+
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, object]]:
+            assert market_codes == ["KRW-BTC"]
+            return [{"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0}]
+
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+            assert quote_currency == "KRW"
+            assert db is mock_session
+            return set()
+
+        async def mock_market_cap_cache_get() -> dict[str, object]:
+            assert active_spans
+            assert active_spans[-1][0] == "crypto.screen.coingecko"
+            assert active_spans[-1][1] == "crypto coingecko fetch"
+            return {
+                "data": {
+                    "BTC": {
+                        "market_cap": 3_000_000_000_000_000,
+                        "market_cap_rank": 1,
+                    }
+                },
+                "cached": True,
+                "age_seconds": 1.5,
+                "stale": True,
+                "error": "TimeoutError: stale cache used",
+            }
+
+        async def mock_fetch_ohlcv(
+            symbol: str, market_type: str, count: int
+        ) -> pd.DataFrame:
+            assert symbol == "KRW-BTC"
+            assert market_type == "crypto"
+            assert count == 50
+            close = [100.0 + i for i in range(50)]
+            volume = [1_000.0] * 49 + [1_500.0]
+            return pd.DataFrame(
+                {
+                    "open": close,
+                    "high": [value + 10.0 for value in close],
+                    "low": [value - 10.0 for value in close],
+                    "close": close,
+                    "volume": volume,
+                }
+            )
+
+        started: list[tuple[str, str, _DummySpan]] = []
+
+        def fake_start_span(op: str, name: str) -> _DummySpanContext:
+            span = _DummySpan()
+            started.append((op, name, span))
+            return _DummySpanContext(op, name, span)
+
+        mock_session = MagicMock()
+        mock_session.close = AsyncMock()
+
+        monkeypatch.setattr(sentry_sdk, "start_span", fake_start_span)
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_tickers",
+            mock_fetch_multiple_tickers,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_warning_markets",
+            mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            mock_market_cap_cache_get,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_market_display_names",
+            AsyncMock(
+                return_value={
+                    "KRW-BTC": {
+                        "korean_name": "비트코인",
+                        "english_name": "Bitcoin",
+                    }
+                }
+            ),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "AsyncSessionLocal",
+            lambda: mock_session,
+        )
+
+        tools = build_tools()
+        await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_order="desc",
+            limit=1,
+        )
+
+        coingecko_span = next(
+            span_info
+            for span_info in started
+            if span_info[0] == "crypto.screen.coingecko"
+        )
+        assert coingecko_span[1] == "crypto coingecko fetch"
+        assert coingecko_span[2].data["coingecko_cached"] is True
+        assert coingecko_span[2].data["coingecko_stale"] is True
+        assert coingecko_span[2].data["coingecko_error_present"] is True
+
+    @pytest.mark.asyncio
+    async def test_crypto_db_session_reuse_for_display_names_and_warnings(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:BTCKRW", "UPBIT:ETHKRW", "UPBIT:XRPKRW"],
+                "name": ["BTCKRW", "ETHKRW", "XRPKRW"],
+                "description": ["Bitcoin TV", "Ethereum TV", "Ripple TV"],
+                "price": [150_000_000.0, 5_000_000.0, 3_000.0],
+                "change_percent": [-0.01, -0.02, -0.03],
+                "relative_strength_index_14": [45.5, 32.1, 28.2],
+                "average_directional_index_14": [25.3, 18.7, 42.1],
+                "volume_24h_in_usd": [156_000_000.0, 95_000_000.0, 44_000_000.0],
+                "value_traded": [900_000_000_000.0, 1_200_000_000.0, 700_000_000.0],
+                "market_cap": [
+                    2_500_000_000_000_000.0,
+                    500_000_000_000_000.0,
+                    50_000_000_000_000.0,
+                ],
+                "exchange": ["UPBIT", "UPBIT", "UPBIT"],
+            }
+        )
+
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, object]]:
+            assert market_codes == ["KRW-BTC", "KRW-ETH", "KRW-XRP"]
+            return [
+                {"market": "KRW-BTC", "acc_trade_volume_24h": 12_345.0},
+                {"market": "KRW-ETH", "acc_trade_volume_24h": 54_321.0},
+                {"market": "KRW-XRP", "acc_trade_volume_24h": 99_999.0},
+            ]
+
+        display_name_dbs: list[object] = []
+        warning_dbs: list[object] = []
+
+        async def mock_get_upbit_market_display_names(
+            market_codes: list[str], db=None
+        ) -> dict[str, dict[str, str]]:
+            assert market_codes == ["KRW-BTC", "KRW-ETH", "KRW-XRP"]
+            display_name_dbs.append(db)
+            return {
+                "KRW-BTC": {"korean_name": "비트코인", "english_name": "Bitcoin"},
+                "KRW-ETH": {"korean_name": "이더리움", "english_name": "Ethereum"},
+                "KRW-XRP": {"korean_name": "리플", "english_name": "Ripple"},
+            }
+
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
+            assert quote_currency == "KRW"
+            warning_dbs.append(db)
+            return set()
+
+        async def mock_market_cap_cache_get() -> dict[str, object]:
+            return {
+                "data": {
+                    "BTC": {"market_cap": 3_000_000_000_000_000, "market_cap_rank": 1}
+                },
+                "cached": True,
+                "age_seconds": 1.5,
+                "stale": False,
+                "error": None,
+            }
+
+        async def mock_fetch_ohlcv(
+            symbol: str, market_type: str, count: int
+        ) -> pd.DataFrame:
+            assert symbol == "KRW-BTC"
+            assert market_type == "crypto"
+            assert count == 50
+            close = [100.0 + i for i in range(50)]
+            volume = [1_000.0] * 49 + [1_500.0]
+            return pd.DataFrame(
+                {
+                    "open": close,
+                    "high": [value + 10.0 for value in close],
+                    "low": [value - 10.0 for value in close],
+                    "close": close,
+                    "volume": volume,
+                }
+            )
+
+        mock_session = MagicMock()
+        mock_session.close = AsyncMock()
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_tickers",
+            mock_fetch_multiple_tickers,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_warning_markets",
+            mock_warning_markets,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            mock_market_cap_cache_get,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_market_display_names",
+            mock_get_upbit_market_display_names,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "AsyncSessionLocal",
+            lambda: mock_session,
+        )
+
+        tools = build_tools()
+        await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_order="desc",
+            limit=1,
+        )
+
+        assert len(display_name_dbs) == 1
+        assert len(warning_dbs) == 1
+        assert display_name_dbs[0] is mock_session
+        assert warning_dbs[0] is mock_session
+        assert display_name_dbs[0] is warning_dbs[0]
+
+    @pytest.mark.asyncio
     async def test_crypto_rsi_desc_warning_and_meta_are_stable_across_public_paths(
         self,
         fake_crypto_tvscreener_module,
         monkeypatch,
     ) -> None:
-        async def mock_warning_markets(*, quote_currency: str) -> set[str]:
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
             assert quote_currency == "KRW"
             return set()
 
@@ -632,7 +1401,7 @@ class TestScreenStocksCrypto:
                 {"market": code, "acc_trade_volume_24h": 1.0} for code in market_codes
             ]
 
-        async def mock_warning_markets(*, quote_currency: str) -> set[str]:
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
             assert quote_currency == "KRW"
             return set()
 
@@ -720,7 +1489,7 @@ class TestScreenStocksCrypto:
                 {"market": code, "acc_trade_volume_24h": 1.0} for code in market_codes
             ]
 
-        async def mock_warning_markets(*, quote_currency: str) -> set[str]:
+        async def mock_warning_markets(db=None, *, quote_currency: str) -> set[str]:
             assert quote_currency == "KRW"
             return set()
 

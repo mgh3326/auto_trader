@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.us_symbol_universe import USSymbolUniverse
 from app.services import us_symbol_universe_service
@@ -79,6 +83,45 @@ class _FakeSession:
 
     async def flush(self):
         self.flushed = True
+
+
+class _ScalarOneResult:
+    def __init__(self, value):
+        self._value = value
+
+    def scalar_one_or_none(self):
+        return self._value
+
+
+class _LookupSession:
+    def __init__(self, rows: dict[str, USSymbolUniverse]):
+        self._rows = rows
+
+    async def execute(self, stmt):
+        wc = getattr(stmt, "whereclause", None)
+        if wc is not None:
+            symbol: str = getattr(wc.right, "value", "")
+            return _ScalarOneResult(self._rows.get(symbol))
+        first = next(iter(self._rows), None)
+        return _ScalarOneResult(first)
+
+
+@asynccontextmanager
+async def _search_session(
+    db_path: Path,
+    rows: list[USSymbolUniverse],
+) -> AsyncIterator[AsyncSession]:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(USSymbolUniverse.__table__.create)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        session.add_all(rows)
+        await session.commit()
+        yield session
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -238,3 +281,169 @@ async def test_script_main_returns_nonzero_on_exception(monkeypatch):
 
     assert code == 1
     capture_mock.assert_called_once()
+
+
+@pytest.mark.parametrize("raw_symbol", ["BRK/B", "BRK-B"])
+def test_parse_cod_rows_canonicalizes_symbol_separators(raw_symbol):
+    lines = [_cod_line(raw_symbol, "버크셔B", "Berkshire B")]
+    rows, skipped = us_symbol_universe_service._parse_cod_rows(lines, "NYSE")
+    assert len(rows) == 1
+    assert rows[0].symbol == "BRK.B"
+    assert skipped == 0
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_canonicalizes_symbol_keys(monkeypatch):
+    async def fake_download(zip_name: str) -> list[str]:
+        if zip_name == "nasmst.cod.zip":
+            return [_cod_line("AAPL", "애플", "Apple Inc.")]
+        if zip_name == "nysmst.cod.zip":
+            return [_cod_line("BRK/B", "버크셔B", "Berkshire Hathaway B")]
+        if zip_name == "amsmst.cod.zip":
+            return [_cod_line("SPY", "SPDR", "SPDR S&P 500 ETF")]
+        raise AssertionError(zip_name)
+
+    monkeypatch.setattr(
+        us_symbol_universe_service, "_download_cod_lines", fake_download
+    )
+
+    snapshot = await us_symbol_universe_service.build_us_symbol_universe_snapshot()
+
+    assert "BRK.B" in snapshot
+    assert "BRK/B" not in snapshot
+    assert snapshot["BRK.B"].exchange == "NYSE"
+    assert snapshot["BRK.B"].symbol == "BRK.B"
+
+
+@pytest.mark.asyncio
+async def test_sync_deactivates_legacy_non_canonical_symbol(monkeypatch):
+    snapshot = {
+        "BRK.B": us_symbol_universe_service._UniverseRow(
+            symbol="BRK.B",
+            exchange="NYSE",
+            name_kr="버크셔B",
+            name_en="Berkshire B",
+        ),
+    }
+    monkeypatch.setattr(
+        us_symbol_universe_service,
+        "build_us_symbol_universe_snapshot",
+        AsyncMock(return_value=snapshot),
+    )
+
+    db = _FakeSession(
+        [
+            USSymbolUniverse(
+                symbol="BRK/B",
+                exchange="NYSE",
+                name_kr="버크셔B",
+                name_en="Berkshire B",
+                is_active=True,
+            ),
+        ]
+    )
+
+    result = await us_symbol_universe_service.sync_us_symbol_universe(db=db)
+
+    assert result["inserted"] == 1
+    assert result["deactivated"] == 1
+    assert db.rows["BRK.B"].is_active is True
+    assert db.rows["BRK/B"].is_active is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_symbol", ["BRK.B", "BRK/B", "BRK-B"])
+async def test_get_exchange_lookup_accepts_all_symbol_formats(input_symbol):
+    row = USSymbolUniverse(
+        symbol="BRK.B",
+        exchange="NYSE",
+        name_kr="버크셔B",
+        name_en="Berkshire B",
+        is_active=True,
+    )
+    db = _LookupSession({"BRK.B": row})
+
+    exchange = await us_symbol_universe_service.get_us_exchange_by_symbol(
+        input_symbol, db=db
+    )
+    assert exchange == "NYSE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["BRK.B", "BRK/B", "BRK-B"])
+async def test_search_us_symbols_accepts_all_separator_variants_for_canonical_row(
+    tmp_path: Path,
+    query: str,
+):
+    row = USSymbolUniverse(
+        symbol="BRK.B",
+        exchange="NYSE",
+        name_kr="버크셔B",
+        name_en="Berkshire Hathaway B",
+        is_active=True,
+    )
+
+    async with _search_session(tmp_path / "canonical-search.db", [row]) as db:
+        results = await us_symbol_universe_service.search_us_symbols(
+            query, limit=10, db=db
+        )
+
+    assert results == [
+        {
+            "symbol": "BRK.B",
+            "name": "버크셔B",
+            "instrument_type": "equity_us",
+            "exchange": "NYSE",
+            "is_active": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_us_symbols_matches_legacy_separator_row_during_transition(
+    tmp_path: Path,
+):
+    row = USSymbolUniverse(
+        symbol="BRK/B",
+        exchange="NYSE",
+        name_kr="버크셔B",
+        name_en="Berkshire Hathaway B",
+        is_active=True,
+    )
+
+    async with _search_session(tmp_path / "legacy-search.db", [row]) as db:
+        results = await us_symbol_universe_service.search_us_symbols(
+            "BRK/B", limit=10, db=db
+        )
+
+    assert results == [
+        {
+            "symbol": "BRK/B",
+            "name": "버크셔B",
+            "instrument_type": "equity_us",
+            "exchange": "NYSE",
+            "is_active": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["버크셔", "Berkshire"])
+async def test_search_us_symbols_keeps_name_search_behavior(
+    tmp_path: Path,
+    query: str,
+):
+    row = USSymbolUniverse(
+        symbol="BRK.B",
+        exchange="NYSE",
+        name_kr="버크셔 해서웨이 B",
+        name_en="Berkshire Hathaway B",
+        is_active=True,
+    )
+
+    async with _search_session(tmp_path / "name-search.db", [row]) as db:
+        results = await us_symbol_universe_service.search_us_symbols(
+            query, limit=10, db=db
+        )
+
+    assert [result["symbol"] for result in results] == ["BRK.B"]
