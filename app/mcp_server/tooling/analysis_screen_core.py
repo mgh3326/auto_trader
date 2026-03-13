@@ -6,17 +6,16 @@ import asyncio
 import datetime
 import inspect
 import logging
-import sentry_sdk
 import math
 import time
 from typing import Any, cast
 
 import httpx
+import sentry_sdk
 import yfinance as yf
-
-import app.services.brokers.upbit.client as upbit_service
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.services.brokers.upbit.client as upbit_service
 from app.core.async_rate_limiter import RateLimitExceededError
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.analysis_crypto_score import (
@@ -729,6 +728,7 @@ def _canonicalize_us_sector_label(sector: str) -> str:
     if len(sector) <= 3:
         return sector.upper()
     return sector.title()
+
 
 def _normalize_min_analyst_buy(value: float | None) -> float | None:
     if value is None:
