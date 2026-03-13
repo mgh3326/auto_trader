@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import logging
 import random
 import time
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 UPBIT_REST = "https://api.upbit.com/v1"
 UPBIT_CANDLES_RATE_LIMIT_KEY = "GET /v1/candles/*"
+_UPBIT_TICKER_BATCH_SIZE = 50
 _INTERVAL_TO_ENDPOINT = {
     "day": "days",
     "week": "weeks",
@@ -46,6 +48,10 @@ def _get_ticker_cache_lock() -> asyncio.Lock:
         _ticker_cache_lock = asyncio.Lock()
         _ticker_cache_lock_loop = loop
     return _ticker_cache_lock
+
+
+def _get_upbit_ohlcv_cache_service() -> Any:
+    return importlib.import_module("app.services.upbit_ohlcv_cache")
 
 
 def _safe_parse_retry_after(value: str | None) -> float:
@@ -87,7 +93,9 @@ def _get_upbit_rate_limit(api_key: str) -> tuple[int, float]:
     return settings.upbit_rate_limit_rate, settings.upbit_rate_limit_period
 
 
-async def _request_json(url: str, params: dict | None = None) -> list[dict]:
+async def _request_json(
+    url: str, params: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     # Extract path from URL for per-API rate limiting
     from urllib.parse import urlparse
 
@@ -164,7 +172,7 @@ async def _request_json(url: str, params: dict | None = None) -> list[dict]:
     raise RateLimitExceededError(f"Upbit rate limit retries exhausted for {url}")
 
 
-async def fetch_my_coins() -> list[dict]:
+async def fetch_my_coins() -> list[dict[str, Any]]:
     return await _request_with_auth("GET", f"{UPBIT_REST}/accounts")
 
 
@@ -228,8 +236,7 @@ async def fetch_ohlcv(
         normalized_period in {"day", "week", "month"}
         and settings.upbit_ohlcv_cache_enabled
     ):
-        from app.services import upbit_ohlcv_cache as upbit_ohlcv_cache_service
-
+        upbit_ohlcv_cache_service = _get_upbit_ohlcv_cache_service()
         cached = await upbit_ohlcv_cache_service.get_closed_candles(
             market,
             count=request_count,
@@ -369,8 +376,7 @@ def _filter_closed_buckets(
     if normalized_period not in {"day", "week", "month"}:
         return df
 
-    from app.services import upbit_ohlcv_cache as upbit_ohlcv_cache_service
-
+    upbit_ohlcv_cache_service = _get_upbit_ohlcv_cache_service()
     last_closed_bucket = upbit_ohlcv_cache_service.get_last_closed_bucket_kst(
         normalized_period,
         now,
@@ -469,7 +475,7 @@ async def fetch_1min_candles(market: str = "KRW-BTC", count: int = 20) -> pd.Dat
     return await fetch_minute_candles(market, unit=1, count=count)
 
 
-async def fetch_fundamental_info(market: str = "KRW-BTC") -> dict:
+async def fetch_fundamental_info(market: str = "KRW-BTC") -> dict[str, Any]:
     """
     암호화폐의 기본 정보를 가져와 딕셔너리로 반환합니다.
     :param market: 업비트 마켓코드 (예: "KRW-BTC", "USDT-ETH")
@@ -534,7 +540,7 @@ async def fetch_all_market_details(fiat: str | None = "KRW") -> list[dict[str, A
     return [m for m in markets if isinstance(m, dict)]
 
 
-async def fetch_top_traded_coins(fiat: str = "KRW") -> list[dict]:
+async def fetch_top_traded_coins(fiat: str = "KRW") -> list[dict[str, Any]]:
     """
     지정된 fiat 시장의 모든 코인을 24시간 거래대금 순으로 정렬하여 반환합니다.
     """
@@ -560,7 +566,7 @@ async def fetch_top_traded_coins(fiat: str = "KRW") -> list[dict]:
     return sorted_coins
 
 
-async def fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
+async def fetch_multiple_tickers(market_codes: list[str]) -> list[dict[str, Any]]:
     """
     여러 마켓의 현재가 정보를 한 번에 조회합니다.
 
@@ -583,17 +589,22 @@ async def fetch_multiple_tickers(market_codes: list[str]) -> list[dict]:
         - acc_trade_volume_24h: 24시간 누적 거래량
         - acc_trade_price_24h: 24시간 누적 거래대금
     """
-    if not market_codes:
+    normalized_codes = _normalize_market_codes(market_codes)
+    if not normalized_codes:
         return []
 
-    query = urlencode(
-        {"markets": ",".join(market_codes)},
-        quote_via=quote,
-        safe=",",
-    )
-    url = f"{UPBIT_REST}/ticker?{query}"
+    tickers: list[dict[str, Any]] = []
+    for offset in range(0, len(normalized_codes), _UPBIT_TICKER_BATCH_SIZE):
+        batch_codes = normalized_codes[offset : offset + _UPBIT_TICKER_BATCH_SIZE]
+        query = urlencode(
+            {"markets": ",".join(batch_codes)},
+            quote_via=quote,
+            safe=",",
+        )
+        url = f"{UPBIT_REST}/ticker?{query}"
+        tickers.extend(await _request_json(url))
 
-    return await _request_json(url)
+    return tickers
 
 
 async def fetch_multiple_current_prices(
@@ -758,7 +769,10 @@ async def fetch_multiple_current_prices_cached(
 
 
 async def _request_with_auth(
-    method: str, url: str, query_params: dict = None, body_params: dict = None
+    method: str,
+    url: str,
+    query_params: dict[str, Any] | None = None,
+    body_params: dict[str, Any] | None = None,
 ) -> Any:
     import hashlib
     from urllib.parse import unquote, urlencode, urlparse
@@ -861,7 +875,7 @@ async def _request_with_auth(
     raise RateLimitExceededError(f"Upbit rate limit retries exhausted for {url}")
 
 
-async def fetch_open_orders(market: str = None) -> list[dict]:
+async def fetch_open_orders(market: str | None = None) -> list[dict[str, Any]]:
     """체결 대기 중인 주문 목록을 조회합니다.
 
     Parameters
@@ -894,7 +908,7 @@ async def fetch_open_orders(market: str = None) -> list[dict]:
     return await _request_with_auth("GET", url, query_params=params)
 
 
-async def cancel_orders(order_uuids: list[str]) -> list[dict]:
+async def cancel_orders(order_uuids: list[str]) -> list[dict[str, Any]]:
     """주문을 취소합니다.
 
     Parameters
@@ -924,7 +938,7 @@ async def cancel_orders(order_uuids: list[str]) -> list[dict]:
     return results
 
 
-async def place_sell_order(market: str, volume: str, price: str) -> dict:
+async def place_sell_order(market: str, volume: str, price: str) -> dict[str, Any]:
     """지정가 매도 주문을 넣습니다.
 
     Parameters
@@ -961,7 +975,7 @@ async def place_sell_order(market: str, volume: str, price: str) -> dict:
     return await _request_with_auth("POST", url, body_params=body_params)
 
 
-async def place_market_sell_order(market: str, volume: str) -> dict:
+async def place_market_sell_order(market: str, volume: str) -> dict[str, Any]:
     """시장가 전량 매도 주문을 넣습니다.
 
     Parameters
@@ -995,8 +1009,11 @@ async def place_market_sell_order(market: str, volume: str) -> dict:
 
 
 async def place_buy_order(
-    market: str, price: str, volume: str = None, ord_type: str = "limit"
-) -> dict:
+    market: str,
+    price: str,
+    volume: str | None = None,
+    ord_type: str = "limit",
+) -> dict[str, Any]:
     """매수 주문을 넣습니다.
 
     Parameters
@@ -1045,7 +1062,7 @@ async def place_buy_order(
     return await _request_with_auth("POST", url, body_params=body_params)
 
 
-async def place_market_buy_order(market: str, price: str) -> dict:
+async def place_market_buy_order(market: str, price: str) -> dict[str, Any]:
     """시장가 매수 주문을 넣습니다 (지정 금액만큼 매수).
 
     Parameters
@@ -1070,7 +1087,9 @@ async def place_market_buy_order(market: str, price: str) -> dict:
     return await place_buy_order(market, price, ord_type="price")
 
 
-async def fetch_closed_orders(market: str | None = None, limit: int = 20) -> list[dict]:
+async def fetch_closed_orders(
+    market: str | None = None, limit: int = 20
+) -> list[dict[str, Any]]:
     """
     체결 완료 주문 목록 조회
 
@@ -1100,7 +1119,7 @@ async def fetch_closed_orders(market: str | None = None, limit: int = 20) -> lis
     return await _request_with_auth("GET", url, query_params=params)
 
 
-async def fetch_order_detail(order_uuid: str) -> dict:
+async def fetch_order_detail(order_uuid: str) -> dict[str, Any]:
     """
     단건 주문 상세 조회
 
@@ -1120,7 +1139,7 @@ async def cancel_and_reorder(
     order_uuid: str,
     new_price: float,
     new_quantity: float | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """
     주문 취소 후 재주문 (지정가 대기주문만 지원)
 
@@ -1178,6 +1197,15 @@ async def cancel_and_reorder(
     # 4. 가격 보정 (업비트 단위에 맞춰)
     side = original_order.get("side")
     market = original_order.get("market")
+    if not isinstance(market, str) or not market:
+        return {
+            "original_order": original_order,
+            "cancel_result": {
+                "success": False,
+                "error": "Original order is missing market",
+            },
+            "new_order": None,
+        }
     adjusted_price = adjust_price_to_upbit_unit(new_price)
 
     # 5. 취소 후 재주문

@@ -1032,7 +1032,7 @@ def test_us_task_schedule_metadata() -> None:
 
     assert 'task_name="candles.us.sync"' in module_source
     assert (
-        'schedule=[{"cron": "*/1 * * * *", "cron_offset": "Asia/Seoul"}]'
+        'schedule=[{"cron": "*/10 * * * *", "cron_offset": "Asia/Seoul"}]'
         in module_source
     )
     assert task_package.us_candles_tasks in task_package.TASKIQ_TASK_MODULES
