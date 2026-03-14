@@ -320,7 +320,6 @@ class Settings(BaseSettings):
     # Sentry
     SENTRY_DSN: str = ""
     SENTRY_ENVIRONMENT: str | None = None
-    SENTRY_RELEASE: str | None = None
     SENTRY_TRACES_SAMPLE_RATE: float = 1.0
     SENTRY_PROFILES_SAMPLE_RATE: float = 1.0
     SENTRY_SEND_DEFAULT_PII: bool = True

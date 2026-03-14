@@ -18,7 +18,6 @@ REDIS_URL=redis://localhost:6379/0
 
 SENTRY_DSN=
 SENTRY_ENVIRONMENT=
-SENTRY_RELEASE=
 SENTRY_TRACES_SAMPLE_RATE=1.0
 SENTRY_PROFILES_SAMPLE_RATE=1.0
 SENTRY_SEND_DEFAULT_PII=true
@@ -58,5 +57,6 @@ Application Exception
 ### Sentry 이벤트가 보이지 않는 경우
 
 - `SENTRY_DSN` 값 확인
+- Docker 실행은 제공된 스크립트/예제로 주입한 빌드 SHA를 사용하고, 비컨테이너 로컬 실행은 현재 git HEAD에서 release를 자동 해상도함
 - `SENTRY_ENABLE_LOG_EVENTS` / 샘플링 설정 확인
 - 프로세스 로그에서 sentry init 메시지 확인

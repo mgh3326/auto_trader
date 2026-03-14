@@ -20,7 +20,8 @@ chmod 755 tmp logs
 
 # Docker 이미지 빌드
 echo "🔨 Docker 이미지 빌드 중..."
-docker build -f Dockerfile.api -t auto_trader-api:local .
+vcs_ref="$(git rev-parse HEAD)"
+docker build --build-arg VCS_REF="$vcs_ref" -f Dockerfile.api -t auto_trader-api:local .
 
 # 기존 컨테이너 정리 (선택적)
 echo "🧹 기존 컨테이너 정리 중..."
@@ -48,5 +49,5 @@ echo "  - 컨테이너 제거: docker rm auto_trader_api"
 echo ""
 echo "🐳 Docker Compose 사용법:"
 echo "  - DB/Redis만: docker compose up -d"
-echo "  - API만: docker compose -f docker-compose.api.yml up -d"
-echo "  - 전체 스택: docker compose -f docker-compose.full.yml up -d"
+echo "  - API만: VCS_REF=$(git rev-parse HEAD) docker compose -f docker-compose.api.yml up -d --build"
+echo "  - 전체 스택: VCS_REF=$(git rev-parse HEAD) docker compose -f docker-compose.full.yml up -d --build"

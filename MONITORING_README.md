@@ -25,7 +25,6 @@
 ```bash
 SENTRY_DSN=
 SENTRY_ENVIRONMENT=
-SENTRY_RELEASE=
 SENTRY_TRACES_SAMPLE_RATE=1.0
 SENTRY_PROFILES_SAMPLE_RATE=1.0
 SENTRY_SEND_DEFAULT_PII=true
@@ -62,5 +61,6 @@ docker compose -f docker-compose.prod.yml logs -f kis_websocket
 
 Sentry UI 확인 항목:
 - `service:auto-trader-api` 등 태그 필터로 프로세스 분리 조회
+- release가 현재 배포 커밋 SHA로 표시되는지 확인
 - API/worker/ws/mcp 이벤트 유입 확인
 - 트랜잭션 및 프로파일 생성 확인

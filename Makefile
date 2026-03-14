@@ -92,10 +92,11 @@ sync-kr-candles-incremental: ## Incremental KR candles sync (venue-gated)
 	uv run python scripts/sync_kr_candles.py --mode incremental
 
 docker-build: ## Build Docker image
-	docker build -t auto-trader .
+	vcs_ref="$$(git rev-parse HEAD)"; \
+	docker build --build-arg VCS_REF="$$vcs_ref" -f Dockerfile.api -t auto_trader-api:local .
 
-docker-run: ## Run Docker container
-	docker run -p 8000:8000 auto-trader
+docker-run: docker-build ## Run Docker container
+	docker run --rm --env-file .env -p 8000:8000 auto_trader-api:local
 
-docker-test: ## Run tests in Docker
-	docker run --rm auto-trader uv run pytest tests/ -v
+docker-test: docker-build ## Run tests in Docker
+	docker run --rm auto_trader-api:local uv run pytest tests/ -v

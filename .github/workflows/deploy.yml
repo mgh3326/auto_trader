@@ -70,6 +70,8 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
           push: true
           build-args: |
             GITHUB_SHA=${{ github.sha }}
