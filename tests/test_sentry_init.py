@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from sentry_sdk.types import Event, Log
 
 import app.monitoring.sentry as sentry_module
 
@@ -24,7 +27,6 @@ def reset_sentry_state(monkeypatch):
     )
     monkeypatch.setattr(sentry_module.settings, "SENTRY_DSN", "")
     monkeypatch.setattr(sentry_module.settings, "SENTRY_ENVIRONMENT", None)
-    monkeypatch.setattr(sentry_module.settings, "SENTRY_RELEASE", None)
     monkeypatch.setattr(sentry_module.settings, "SENTRY_TRACES_SAMPLE_RATE", 1.0)
     monkeypatch.setattr(sentry_module.settings, "SENTRY_PROFILES_SAMPLE_RATE", 1.0)
     monkeypatch.setattr(sentry_module.settings, "SENTRY_SEND_DEFAULT_PII", True)
@@ -45,18 +47,27 @@ def test_init_sentry_no_dsn(monkeypatch):
 
 
 @pytest.mark.unit
-def test_init_sentry_with_fastapi(monkeypatch):
+def test_init_sentry_uses_build_vcs_ref_release_with_fastapi(monkeypatch):
     monkeypatch.setattr(
         sentry_module.settings,
         "SENTRY_DSN",
         "https://public@example.ingest.sentry.io/1",
     )
-    monkeypatch.setenv("GITHUB_SHA", "abc123")
+
+    expected_release = "a" * 40
+
+    def fake_read_text(self: Path, *, encoding: str) -> str:
+        assert self == Path("/app/.build-vcs-ref")
+        assert encoding == "utf-8"
+        return f"  {expected_release}\n"
 
     mock_init = Mock()
     mock_set_tag = Mock()
+    mock_run = Mock()
     monkeypatch.setattr(sentry_module.sentry_sdk, "init", mock_init)
     monkeypatch.setattr(sentry_module.sentry_sdk, "set_tag", mock_set_tag)
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    monkeypatch.setattr(subprocess, "run", mock_run)
 
     result = sentry_module.init_sentry(
         "auto-trader-api",
@@ -68,11 +79,12 @@ def test_init_sentry_with_fastapi(monkeypatch):
     kwargs = mock_init.call_args.kwargs
     assert kwargs["dsn"] == "https://public@example.ingest.sentry.io/1"
     assert kwargs["environment"] == "development"
-    assert kwargs["release"] == "abc123"
+    assert kwargs["release"] == expected_release
     assert kwargs["traces_sample_rate"] == 1.0
     assert kwargs["profiles_sample_rate"] == 1.0
     assert kwargs["send_default_pii"] is True
     assert kwargs["before_send_transaction"] is sentry_module._before_send_transaction
+    mock_run.assert_not_called()
 
     integration_names = {
         type(integration).__name__ for integration in kwargs["integrations"]
@@ -83,6 +95,106 @@ def test_init_sentry_with_fastapi(monkeypatch):
     mock_set_tag.assert_any_call("service", "auto-trader-api")
     mock_set_tag.assert_any_call("runtime", "python")
     mock_set_tag.assert_any_call("app", "auto-trader")
+
+
+@pytest.mark.unit
+def test_init_sentry_uses_git_sha_when_build_vcs_ref_missing(monkeypatch):
+    monkeypatch.setattr(
+        sentry_module.settings,
+        "SENTRY_DSN",
+        "https://public@example.ingest.sentry.io/1",
+    )
+
+    expected_release = "b" * 40
+
+    def fake_read_text(self: Path, *, encoding: str) -> str:
+        assert self == Path("/app/.build-vcs-ref")
+        assert encoding == "utf-8"
+        raise FileNotFoundError
+
+    mock_init = Mock()
+    mock_run = Mock(
+        return_value=subprocess.CompletedProcess(
+            args=["git", "rev-parse", "HEAD"],
+            returncode=0,
+            stdout=f"{expected_release}\n",
+        )
+    )
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", mock_init)
+    monkeypatch.setattr(sentry_module.sentry_sdk, "set_tag", Mock())
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    result = sentry_module.init_sentry("auto-trader-api")
+
+    assert result is True
+    assert mock_init.call_args.kwargs["release"] == expected_release
+    mock_run.assert_called_once_with(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.unit
+def test_init_sentry_uses_git_sha_when_build_vcs_ref_blank(monkeypatch):
+    monkeypatch.setattr(
+        sentry_module.settings,
+        "SENTRY_DSN",
+        "https://public@example.ingest.sentry.io/1",
+    )
+
+    expected_release = "c" * 40
+
+    mock_init = Mock()
+    mock_run = Mock(
+        return_value=subprocess.CompletedProcess(
+            args=["git", "rev-parse", "HEAD"],
+            returncode=0,
+            stdout=f"{expected_release}\n",
+        )
+    )
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", mock_init)
+    monkeypatch.setattr(sentry_module.sentry_sdk, "set_tag", Mock())
+    monkeypatch.setattr(Path, "read_text", lambda self, *, encoding: " \n ")
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    result = sentry_module.init_sentry("auto-trader-api")
+
+    assert result is True
+    assert mock_init.call_args.kwargs["release"] == expected_release
+    mock_run.assert_called_once()
+
+
+@pytest.mark.unit
+def test_init_sentry_uses_none_release_when_build_vcs_ref_and_git_fail(monkeypatch):
+    monkeypatch.setattr(
+        sentry_module.settings,
+        "SENTRY_DSN",
+        "https://public@example.ingest.sentry.io/1",
+    )
+
+    mock_init = Mock()
+    mock_run = Mock(
+        side_effect=subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["git", "rev-parse", "HEAD"],
+        )
+    )
+    monkeypatch.setattr(sentry_module.sentry_sdk, "init", mock_init)
+    monkeypatch.setattr(sentry_module.sentry_sdk, "set_tag", Mock())
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda self, *, encoding: (_ for _ in ()).throw(OSError("no file")),
+    )
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    result = sentry_module.init_sentry("auto-trader-api")
+
+    assert result is True
+    assert mock_init.call_args.kwargs["release"] is None
 
 
 @pytest.mark.unit
@@ -276,7 +388,7 @@ def test_init_sentry_reinitializes_to_add_mcp(monkeypatch):
 @pytest.mark.unit
 def test_before_send_masks_sensitive_fields():
     password_key = "".join(["pass", "word"])
-    event = {
+    event: Event = {
         "request": {"headers": {"authorization": "Bearer token", "x-api-key": "abc"}},
         "extra": {"token": "my-token", "nested": {password_key: "secret"}},
     }
@@ -284,15 +396,24 @@ def test_before_send_masks_sensitive_fields():
     sanitized = sentry_module._before_send(event, {})
 
     assert sanitized is not None
-    assert sanitized["request"]["headers"]["authorization"] == "[Filtered]"
-    assert sanitized["request"]["headers"]["x-api-key"] == "[Filtered]"
-    assert sanitized["extra"]["token"] == "[Filtered]"
-    assert sanitized["extra"]["nested"][password_key] == "[Filtered]"
+    request = sanitized.get("request")
+    assert isinstance(request, dict)
+    headers = request.get("headers")
+    assert isinstance(headers, dict)
+    assert headers["authorization"] == "[Filtered]"
+    assert headers["x-api-key"] == "[Filtered]"
+
+    extra = sanitized.get("extra")
+    assert isinstance(extra, dict)
+    assert extra["token"] == "[Filtered]"
+    nested = extra.get("nested")
+    assert isinstance(nested, dict)
+    assert nested[password_key] == "[Filtered]"
 
 
 @pytest.mark.unit
 def test_before_send_drops_healthz_uvicorn_access_log():
-    event = {
+    event: Event = {
         "logger": "uvicorn.access",
         "logentry": {
             "formatted": '127.0.0.1:52778 - "GET /healthz HTTP/1.1" 200',
@@ -306,9 +427,14 @@ def test_before_send_drops_healthz_uvicorn_access_log():
 
 @pytest.mark.unit
 def test_before_send_log_drops_healthz_uvicorn_access_log():
-    sentry_log = {
+    sentry_log: Log = {
+        "severity_text": "error",
+        "severity_number": 17,
         "body": '127.0.0.1:52778 - "GET /healthz HTTP/1.1" 200',
         "attributes": {"logger.name": "uvicorn.access"},
+        "time_unix_nano": 1,
+        "trace_id": None,
+        "span_id": None,
     }
 
     dropped = sentry_module._before_send_log(sentry_log, {})
@@ -318,20 +444,25 @@ def test_before_send_log_drops_healthz_uvicorn_access_log():
 
 @pytest.mark.unit
 def test_before_send_log_keeps_non_healthz_uvicorn_access_log():
-    sentry_log = {
+    sentry_log: Log = {
+        "severity_text": "error",
+        "severity_number": 17,
         "body": '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 200',
         "attributes": {"logger.name": "uvicorn.access"},
+        "time_unix_nano": 1,
+        "trace_id": None,
+        "span_id": None,
     }
 
     kept = sentry_module._before_send_log(sentry_log, {})
 
     assert kept is not None
-    assert kept["body"] == '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 200'
+    assert kept.get("body") == '127.0.0.1:52778 - "GET /api/v1/orders HTTP/1.1" 200'
 
 
 @pytest.mark.unit
 def test_before_send_transaction_renames_mcp_tool_call():
-    event = {
+    event: Event = {
         "transaction": "POST http://127.0.0.1:8765/mcp",
         "spans": [
             {
@@ -347,13 +478,15 @@ def test_before_send_transaction_renames_mcp_tool_call():
     renamed = sentry_module._before_send_transaction(event, {})
 
     assert renamed is not None
-    assert renamed["transaction"] == "tools/call get_support_resistance"
-    assert renamed["transaction_info"]["source"] == "custom"
+    assert renamed.get("transaction") == "tools/call get_support_resistance"
+    transaction_info = renamed.get("transaction_info")
+    assert isinstance(transaction_info, dict)
+    assert transaction_info["source"] == "custom"
 
 
 @pytest.mark.unit
 def test_before_send_transaction_drops_protocol_noise_without_mcp_span():
-    event = {
+    event: Event = {
         "transaction": "POST http://127.0.0.1:8765/mcp",
         "spans": [
             {
@@ -370,7 +503,7 @@ def test_before_send_transaction_drops_protocol_noise_without_mcp_span():
 
 @pytest.mark.unit
 def test_before_send_transaction_keeps_non_mcp_transactions():
-    event = {
+    event: Event = {
         "transaction": "GET /api/v1/orders",
         "spans": [],
     }
@@ -379,7 +512,7 @@ def test_before_send_transaction_keeps_non_mcp_transactions():
 
     assert kept is event
     assert kept is not None
-    assert kept["transaction"] == "GET /api/v1/orders"
+    assert kept.get("transaction") == "GET /api/v1/orders"
 
 
 @pytest.mark.unit

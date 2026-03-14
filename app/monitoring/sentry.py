@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-import os
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import sentry_sdk
@@ -11,6 +12,7 @@ from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.httpx import HttpxIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+from sentry_sdk.types import Breadcrumb, Event, Hint, Log
 
 try:
     from sentry_sdk.integrations.mcp import MCPIntegration
@@ -20,6 +22,8 @@ except ImportError:  # pragma: no cover - dependent on sentry-sdk version
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+_BUILD_VCS_REF_PATH = Path("/app/.build-vcs-ref")
 
 _initialized = False
 _enabled_integration_flags: dict[str, bool] = {
@@ -49,9 +53,7 @@ def _is_healthcheck_access_log(logger_name: str | None, message: str | None) -> 
     return "/healthz" in message and '" 200' in message
 
 
-def _extract_log_context(
-    payload: dict[str, Any], hint: dict[str, Any]
-) -> tuple[str | None, str | None]:
+def _extract_log_context(payload: Event, hint: Hint) -> tuple[str | None, str | None]:
     logger_name: str | None = None
     message: str | None = None
 
@@ -87,7 +89,7 @@ def _extract_log_context(
 
 
 def _extract_sentry_log_context(
-    sentry_log: dict[str, Any], hint: dict[str, Any]
+    sentry_log: Log, hint: Hint
 ) -> tuple[str | None, str | None]:
     logger_name: str | None = None
     attributes = sentry_log.get("attributes")
@@ -131,16 +133,14 @@ def _sanitize_in_place(value: Any, parent_key: str | None = None) -> Any:
     return value
 
 
-def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] | None:
+def _before_send(event: Event, hint: Hint) -> Event | None:
     logger_name, message = _extract_log_context(event, hint)
     if _is_healthcheck_access_log(logger_name, message):
         return None
     return _sanitize_in_place(event)
 
 
-def _before_breadcrumb(
-    crumb: dict[str, Any], hint: dict[str, Any]
-) -> dict[str, Any] | None:
+def _before_breadcrumb(crumb: Breadcrumb, hint: Hint) -> Breadcrumb | None:
     del hint
     category = crumb.get("category")
     message = crumb.get("message")
@@ -150,18 +150,14 @@ def _before_breadcrumb(
     return _sanitize_in_place(crumb)
 
 
-def _before_send_log(
-    sentry_log: dict[str, Any], hint: dict[str, Any]
-) -> dict[str, Any] | None:
+def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
     logger_name, message = _extract_sentry_log_context(sentry_log, hint)
     if _is_healthcheck_access_log(logger_name, message):
         return None
     return _sanitize_in_place(sentry_log)
 
 
-def _before_send_transaction(
-    event: dict[str, Any], hint: dict[str, Any]
-) -> dict[str, Any] | None:
+def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
     del hint
 
     transaction_name = event.get("transaction", "")
@@ -200,6 +196,29 @@ def _before_send_transaction(
     return None
 
 
+def _resolve_release() -> str | None:
+    try:
+        release = _BUILD_VCS_REF_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        release = ""
+
+    if release:
+        return release
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    release = result.stdout.strip()
+    return release or None
+
+
 def init_sentry(
     service_name: str,
     enable_fastapi: bool = False,
@@ -231,7 +250,7 @@ def init_sentry(
         return False
 
     environment = settings.SENTRY_ENVIRONMENT or settings.ENVIRONMENT
-    release = settings.SENTRY_RELEASE or os.getenv("GITHUB_SHA")
+    release = _resolve_release()
     log_event_level = logging.ERROR if settings.SENTRY_ENABLE_LOG_EVENTS else None
 
     integrations: list[Any] = [
@@ -269,7 +288,7 @@ def init_sentry(
                 ),
                 sorted(key for key, enabled in effective_flags.items() if enabled),
             )
-        sentry_sdk.init(
+        _ = sentry_sdk.init(
             dsn=dsn,
             environment=environment,
             release=release,

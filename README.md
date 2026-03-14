@@ -309,7 +309,6 @@ OTEL/Grafana 전용 스택은 제거되었습니다.
 ```bash
 SENTRY_DSN=
 SENTRY_ENVIRONMENT=
-SENTRY_RELEASE=
 SENTRY_TRACES_SAMPLE_RATE=1.0
 SENTRY_PROFILES_SAMPLE_RATE=1.0
 SENTRY_SEND_DEFAULT_PII=true
@@ -319,6 +318,7 @@ SENTRY_ENABLE_LOG_EVENTS=true
 ### 운영 정책
 
 - `SENTRY_DSN`이 있으면 환경과 무관하게 활성화
+- release는 Docker 스크립트/예제로 주입한 컨테이너 빌드 SHA를 우선 사용하고, 비컨테이너 로컬 실행은 현재 git HEAD에서 자동 해상도
 - 단일 프로젝트에서 `service` 태그로 프로세스 분리
 - `logger.error` 이벤트 수집 활성화
 - 민감 필드(`authorization`, `cookie`, `token`, `secret`, `password`)는 마스킹

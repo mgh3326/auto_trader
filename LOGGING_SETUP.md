@@ -24,7 +24,6 @@ LOG_LEVEL=INFO
 ```bash
 SENTRY_DSN=
 SENTRY_ENVIRONMENT=
-SENTRY_RELEASE=
 SENTRY_TRACES_SAMPLE_RATE=1.0
 SENTRY_PROFILES_SAMPLE_RATE=1.0
 SENTRY_SEND_DEFAULT_PII=true
@@ -42,6 +41,7 @@ uv run python -m app.mcp_server.main
 ## 운영 체크리스트
 
 - `SENTRY_DSN`가 정확히 주입되었는지 확인
+- release가 자동으로 현재 배포 커밋 SHA로 태깅되는지 확인
 - 서비스별 `service` 태그로 이벤트 분리 확인
 - 에러/트레이스/프로파일 유입 확인
 - 민감 필드 마스킹 적용 여부 확인

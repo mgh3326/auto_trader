@@ -37,6 +37,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        VCS_REF: ${VCS_REF:-}
     container_name: auto_trader_api
     ports: [ "8001:8000" ]
     env_file:
@@ -63,6 +65,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        VCS_REF: ${VCS_REF:-}
     container_name: auto_trader_worker
     command: >
       bash -lc "uv run taskiq worker app.core.taskiq_broker:broker app.tasks"
@@ -81,6 +85,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+      args:
+        VCS_REF: ${VCS_REF:-}
     container_name: auto_trader_scheduler
     command: >
       bash -lc "uv run taskiq scheduler app.core.scheduler:sched app.tasks"

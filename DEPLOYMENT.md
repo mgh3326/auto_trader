@@ -22,11 +22,11 @@ cp env.prod.example .env.prod
 Sentry:
 - `SENTRY_DSN`
 - `SENTRY_ENVIRONMENT`
-- `SENTRY_RELEASE`
 - `SENTRY_TRACES_SAMPLE_RATE=1.0`
 - `SENTRY_PROFILES_SAMPLE_RATE=1.0`
 - `SENTRY_SEND_DEFAULT_PII=true`
 - `SENTRY_ENABLE_LOG_EVENTS=true`
+- release는 이미지 빌드 SHA가 자동으로 주입됩니다.
 
 선택 항목 (HTTPS reverse proxy):
 - `ACME_EMAIL`

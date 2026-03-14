@@ -40,7 +40,8 @@ fi
 
 # API Docker Compose 실행
 echo "🏃 API Docker Compose 실행 중..."
-docker compose -f docker-compose.api.yml up -d --build
+vcs_ref="$(git rev-parse HEAD)"
+VCS_REF="$vcs_ref" docker compose -f docker-compose.api.yml up -d --build
 
 echo "✅ Auto Trader API가 실행되었습니다!"
 echo "📍 API 주소: http://localhost:8001"
@@ -50,5 +51,4 @@ echo "📋 유용한 명령어:"
 echo "  - 로그 확인: docker compose -f docker-compose.api.yml logs -f"
 echo "  - API 중지: docker compose -f docker-compose.api.yml down"
 echo "  - 전체 중지: docker compose down && docker compose -f docker-compose.api.yml down"
-
 

@@ -46,7 +46,7 @@ docker compose down
 ./run_api_compose.sh
 
 # 또는 직접 실행
-docker compose -f docker-compose.api.yml up -d --build
+VCS_REF=$(git rev-parse HEAD) docker compose -f docker-compose.api.yml up -d --build
 ```
 
 - API 서버: `http://localhost:8001`
@@ -56,7 +56,12 @@ docker compose -f docker-compose.api.yml up -d --build
 모든 서비스를 한번에 실행:
 
 ```bash
-docker compose -f docker-compose.full.yml up -d --build
+# 스크립트 조합 (권장)
+docker compose up -d
+./run_api_compose.sh
+
+# 또는 직접 실행
+VCS_REF=$(git rev-parse HEAD) docker compose -f docker-compose.full.yml up -d --build
 ```
 
 ### 4. 단일 API 컨테이너 실행
@@ -68,7 +73,7 @@ Docker Compose 없이 API만 실행:
 ./run_docker.sh
 
 # 또는 직접 실행
-docker build -f Dockerfile.api -t auto_trader-api:local .
+docker build --build-arg VCS_REF="$(git rev-parse HEAD)" -f Dockerfile.api -t auto_trader-api:local .
 docker run --env-file .env -p 8001:8000 \
   -v "$(pwd)/tmp:/app/tmp" \
   auto_trader-api:local
@@ -93,6 +98,7 @@ docker run --env-file .env -p 8001:8000 \
 - `.dockerignore` 파일로 빌드 컨텍스트 최적화
 - 멀티 스테이지 빌드 준비
 - Poetry를 통한 의존성 관리
+- 로컬 Docker 빌드는 스크립트 또는 `VCS_REF=$(git rev-parse HEAD)` 예제로 빌드 SHA를 주입
 
 ## 환경 설정
 
@@ -149,8 +155,7 @@ docker ps --filter "name=auto_trader"
 docker exec -it auto_trader_api bash
 
 # 이미지 재빌드
-docker compose -f docker-compose.api.yml up -d --build --force-recreate
+VCS_REF=$(git rev-parse HEAD) docker compose -f docker-compose.api.yml up -d --build --force-recreate
 ```
-
 
 

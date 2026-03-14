@@ -45,12 +45,13 @@ Sentry:
 ```bash
 SENTRY_DSN=https://<key>@o0.ingest.sentry.io/0
 SENTRY_ENVIRONMENT=production
-SENTRY_RELEASE=
 SENTRY_TRACES_SAMPLE_RATE=1.0
 SENTRY_PROFILES_SAMPLE_RATE=1.0
 SENTRY_SEND_DEFAULT_PII=true
 SENTRY_ENABLE_LOG_EVENTS=true
 ```
+
+릴리즈는 이미지 빌드 SHA 또는 현재 git HEAD에서 자동 해상도됩니다.
 
 선택 (Caddy):
 
