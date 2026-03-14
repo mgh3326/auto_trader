@@ -5,7 +5,9 @@ Symbol Trade Settings Router
 사용자별 기본 거래 설정도 관리
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from typing import Annotated, TypedDict
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,9 +45,93 @@ SYMBOL_SETTINGS_UPDATABLE_FIELDS = {
 }
 
 
+class BuyPriceEntry(TypedDict):
+    price_name: str
+    price: float
+
+
+class EstimatedBuyPriceEntry(TypedDict):
+    price_name: str
+    price: float
+    quantity: float
+    cost: float
+
+
+def _coerce_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_str(value: object, default: str = "") -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return default
+    return str(value)
+
+
+def _build_analysis_buy_prices(analysis: object) -> list[BuyPriceEntry]:
+    buy_prices: list[BuyPriceEntry] = []
+    for field_name, price_name in (
+        ("appropriate_buy_min", "appropriate_buy_min"),
+        ("appropriate_buy_max", "appropriate_buy_max"),
+        ("buy_hope_min", "buy_hope_min"),
+        ("buy_hope_max", "buy_hope_max"),
+    ):
+        price = _coerce_optional_float(getattr(analysis, field_name, None))
+        if price is not None:
+            buy_prices.append({"price_name": price_name, "price": price})
+    return buy_prices
+
+
+def _coerce_estimated_buy_prices(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+
+    rows: list[dict[str, object]] = []
+    for item in value:
+        if isinstance(item, dict):
+            rows.append(dict(item))
+    return rows
+
+
+def _estimated_cost_response_from_result(
+    result: dict[str, object],
+) -> "EstimatedCostResponse":
+    return EstimatedCostResponse(
+        symbol=_coerce_str(result.get("symbol")),
+        quantity_per_order=_coerce_optional_float(result.get("quantity_per_order"))
+        or 0.0,
+        buy_prices=_coerce_estimated_buy_prices(result.get("buy_prices")),
+        total_orders=_coerce_int(result.get("total_orders")),
+        total_quantity=_coerce_optional_float(result.get("total_quantity")) or 0.0,
+        total_cost=_coerce_optional_float(result.get("total_cost")) or 0.0,
+        currency=_coerce_str(result.get("currency"), "KRW"),
+    )
+
+
 async def get_user_from_request(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
     """웹 세션 또는 API 토큰에서 사용자 조회"""
     # 먼저 request.state.user 확인 (AuthMiddleware에서 설정)
@@ -121,7 +207,7 @@ class EstimatedCostResponse(BaseModel):
 
     symbol: str
     quantity_per_order: float
-    buy_prices: list[dict]
+    buy_prices: list[dict[str, object]]
     total_orders: int
     total_quantity: float
     total_cost: float
@@ -187,7 +273,7 @@ class UserTradeDefaultsResponse(BaseModel):
 @router.get("/user-defaults", response_model=UserTradeDefaultsResponse)
 async def get_user_defaults(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """현재 사용자의 기본 거래 설정 조회"""
     user = await get_user_from_request(request, db)
@@ -218,7 +304,7 @@ async def get_user_defaults(
 async def update_user_defaults(
     request_data: UserTradeDefaultsUpdate,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """현재 사용자의 기본 거래 설정 업데이트"""
     user = await get_user_from_request(request, db)
@@ -268,9 +354,9 @@ async def update_user_defaults(
 @router.get("/symbols", response_model=list[SymbolSettingsResponse])
 async def get_all_settings(
     request: Request,
-    active_only: bool = True,
-    instrument_type: InstrumentType | None = None,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    active_only: Annotated[bool, Query()] = True,
+    instrument_type: Annotated[InstrumentType | None, Query()] = None,
 ):
     """현재 사용자의 모든 종목 설정 조회"""
     user = await get_user_from_request(request, db)
@@ -302,7 +388,7 @@ async def get_all_settings(
 @router.get("/symbols/domestic/estimated-cost", response_model=AllEstimatedCostResponse)
 async def get_domestic_estimated_costs(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """국내 주식 예상 매수 비용 합계 (미체결 매수 주문 금액 차감)
 
@@ -333,29 +419,7 @@ async def get_domestic_estimated_costs(
             continue
 
         # 매수 가격 추출
-        buy_prices = []
-        if analysis.appropriate_buy_min is not None:
-            buy_prices.append(
-                {
-                    "price_name": "appropriate_buy_min",
-                    "price": float(analysis.appropriate_buy_min),
-                }
-            )
-        if analysis.appropriate_buy_max is not None:
-            buy_prices.append(
-                {
-                    "price_name": "appropriate_buy_max",
-                    "price": float(analysis.appropriate_buy_max),
-                }
-            )
-        if analysis.buy_hope_min is not None:
-            buy_prices.append(
-                {"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)}
-            )
-        if analysis.buy_hope_max is not None:
-            buy_prices.append(
-                {"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)}
-            )
+        buy_prices = _build_analysis_buy_prices(analysis)
 
         if not buy_prices:
             continue
@@ -371,8 +435,8 @@ async def get_domestic_estimated_costs(
             currency="KRW",
         )
 
-        results.append(EstimatedCostResponse(**result))
-        grand_total += result["total_cost"]
+        results.append(_estimated_cost_response_from_result(result))
+        grand_total += _coerce_optional_float(result.get("total_cost")) or 0.0
 
     # 미체결 매수 주문 조회 및 금액 계산
     pending_buy_cost = 0.0
@@ -404,7 +468,7 @@ async def get_domestic_estimated_costs(
 @router.get("/symbols/overseas/estimated-cost", response_model=AllEstimatedCostResponse)
 async def get_overseas_estimated_costs(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """해외 주식 예상 매수 비용 합계 (미체결 매수 주문 금액 차감)
 
@@ -435,29 +499,7 @@ async def get_overseas_estimated_costs(
             continue
 
         # 매수 가격 추출
-        buy_prices = []
-        if analysis.appropriate_buy_min is not None:
-            buy_prices.append(
-                {
-                    "price_name": "appropriate_buy_min",
-                    "price": float(analysis.appropriate_buy_min),
-                }
-            )
-        if analysis.appropriate_buy_max is not None:
-            buy_prices.append(
-                {
-                    "price_name": "appropriate_buy_max",
-                    "price": float(analysis.appropriate_buy_max),
-                }
-            )
-        if analysis.buy_hope_min is not None:
-            buy_prices.append(
-                {"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)}
-            )
-        if analysis.buy_hope_max is not None:
-            buy_prices.append(
-                {"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)}
-            )
+        buy_prices = _build_analysis_buy_prices(analysis)
 
         if not buy_prices:
             continue
@@ -473,8 +515,8 @@ async def get_overseas_estimated_costs(
             currency="USD",
         )
 
-        results.append(EstimatedCostResponse(**result))
-        grand_total += result["total_cost"]
+        results.append(_estimated_cost_response_from_result(result))
+        grand_total += _coerce_optional_float(result.get("total_cost")) or 0.0
 
     # 미체결 매수 주문 조회 및 금액 계산
     pending_buy_cost = 0.0
@@ -506,7 +548,7 @@ async def get_overseas_estimated_costs(
 @router.get("/symbols/all/estimated-cost", response_model=AllEstimatedCostResponse)
 async def get_all_estimated_costs(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """현재 사용자의 모든 활성 종목 예상 매수 비용 합계
 
@@ -531,29 +573,7 @@ async def get_all_estimated_costs(
             continue
 
         # 매수 가격 추출
-        buy_prices = []
-        if analysis.appropriate_buy_min is not None:
-            buy_prices.append(
-                {
-                    "price_name": "appropriate_buy_min",
-                    "price": float(analysis.appropriate_buy_min),
-                }
-            )
-        if analysis.appropriate_buy_max is not None:
-            buy_prices.append(
-                {
-                    "price_name": "appropriate_buy_max",
-                    "price": float(analysis.appropriate_buy_max),
-                }
-            )
-        if analysis.buy_hope_min is not None:
-            buy_prices.append(
-                {"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)}
-            )
-        if analysis.buy_hope_max is not None:
-            buy_prices.append(
-                {"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)}
-            )
+        buy_prices = _build_analysis_buy_prices(analysis)
 
         if not buy_prices:
             continue
@@ -571,8 +591,8 @@ async def get_all_estimated_costs(
             currency=currency,
         )
 
-        results.append(EstimatedCostResponse(**result))
-        grand_total += result["total_cost"]
+        results.append(_estimated_cost_response_from_result(result))
+        grand_total += _coerce_optional_float(result.get("total_cost")) or 0.0
 
     return AllEstimatedCostResponse(
         symbols=results,
@@ -586,7 +606,7 @@ async def get_all_estimated_costs(
 @router.get("/symbols/crypto/estimated-cost", response_model=AllEstimatedCostResponse)
 async def get_crypto_estimated_costs(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """암호화폐 예상 매수 비용 합계 (미체결 매수 주문 금액 차감)
 
@@ -646,29 +666,7 @@ async def get_crypto_estimated_costs(
             continue
 
         # 매수 가격 추출
-        buy_prices = []
-        if analysis.appropriate_buy_min is not None:
-            buy_prices.append(
-                {
-                    "price_name": "appropriate_buy_min",
-                    "price": float(analysis.appropriate_buy_min),
-                }
-            )
-        if analysis.appropriate_buy_max is not None:
-            buy_prices.append(
-                {
-                    "price_name": "appropriate_buy_max",
-                    "price": float(analysis.appropriate_buy_max),
-                }
-            )
-        if analysis.buy_hope_min is not None:
-            buy_prices.append(
-                {"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)}
-            )
-        if analysis.buy_hope_max is not None:
-            buy_prices.append(
-                {"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)}
-            )
+        buy_prices = _build_analysis_buy_prices(analysis)
 
         if not buy_prices:
             continue
@@ -689,28 +687,28 @@ async def get_crypto_estimated_costs(
         total_cost = buy_amount * len(limited_buy_prices)
 
         # 결과 생성
-        result = {
-            "symbol": market,
-            "quantity_per_order": buy_amount,
-            "buy_prices": [
-                {
-                    "price_name": p["price_name"],
-                    "price": p["price"],
-                    "quantity": buy_amount / p["price"] if p["price"] > 0 else 0,
-                    "cost": buy_amount,
-                }
-                for p in limited_buy_prices
-            ],
-            "total_orders": len(limited_buy_prices),
-            "total_quantity": sum(
-                buy_amount / p["price"] if p["price"] > 0 else 0
-                for p in limited_buy_prices
-            ),
-            "total_cost": total_cost,
-            "currency": "KRW",
-        }
-
-        results.append(EstimatedCostResponse(**result))
+        results.append(
+            EstimatedCostResponse(
+                symbol=market,
+                quantity_per_order=buy_amount,
+                buy_prices=[
+                    {
+                        "price_name": p["price_name"],
+                        "price": p["price"],
+                        "quantity": buy_amount / p["price"] if p["price"] > 0 else 0.0,
+                        "cost": buy_amount,
+                    }
+                    for p in limited_buy_prices
+                ],
+                total_orders=len(limited_buy_prices),
+                total_quantity=sum(
+                    buy_amount / p["price"] if p["price"] > 0 else 0.0
+                    for p in limited_buy_prices
+                ),
+                total_cost=total_cost,
+                currency="KRW",
+            )
+        )
         grand_total += total_cost
 
     # 미체결 매수 주문 조회 및 금액 계산
@@ -749,7 +747,7 @@ async def get_crypto_estimated_costs(
 async def get_settings_by_symbol(
     symbol: str,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """현재 사용자의 특정 종목 설정 조회"""
     user = await get_user_from_request(request, db)
@@ -784,7 +782,7 @@ async def get_settings_by_symbol(
 async def create_settings(
     request_data: SymbolSettingsCreate,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """현재 사용자의 종목 설정 생성"""
     user = await get_user_from_request(request, db)
@@ -838,7 +836,7 @@ async def update_settings(
     symbol: str,
     request_data: SymbolSettingsUpdate,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """현재 사용자의 종목 설정 업데이트"""
     user = await get_user_from_request(request, db)
@@ -894,7 +892,7 @@ async def update_settings(
 async def delete_settings(
     symbol: str,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """현재 사용자의 종목 설정 삭제"""
     user = await get_user_from_request(request, db)
@@ -912,7 +910,7 @@ async def delete_settings(
 async def get_estimated_cost(
     symbol: str,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """특정 종목의 예상 매수 비용 계산
 
@@ -939,29 +937,7 @@ async def get_estimated_cost(
         )
 
     # 매수 가격 추출
-    buy_prices = []
-    if analysis.appropriate_buy_min is not None:
-        buy_prices.append(
-            {
-                "price_name": "appropriate_buy_min",
-                "price": float(analysis.appropriate_buy_min),
-            }
-        )
-    if analysis.appropriate_buy_max is not None:
-        buy_prices.append(
-            {
-                "price_name": "appropriate_buy_max",
-                "price": float(analysis.appropriate_buy_max),
-            }
-        )
-    if analysis.buy_hope_min is not None:
-        buy_prices.append(
-            {"price_name": "buy_hope_min", "price": float(analysis.buy_hope_min)}
-        )
-    if analysis.buy_hope_max is not None:
-        buy_prices.append(
-            {"price_name": "buy_hope_max", "price": float(analysis.buy_hope_max)}
-        )
+    buy_prices = _build_analysis_buy_prices(analysis)
 
     if not buy_prices:
         raise HTTPException(
@@ -982,4 +958,4 @@ async def get_estimated_cost(
         currency=currency,
     )
 
-    return EstimatedCostResponse(**result)
+    return _estimated_cost_response_from_result(result)
