@@ -678,6 +678,7 @@ Environment variables:
 - `MCP_HOST` : `0.0.0.0`
 - `MCP_PORT` : `8765`
 - `MCP_PATH` : `/mcp`
+- `MCP_GRACEFUL_SHUTDOWN_TIMEOUT` : `10` (seconds, HTTP transports only: `sse` / `streamable-http`)
 - `MCP_USER_ID` : `1` (manual holdings 조회에 사용할 기본 사용자 ID)
 
 Example:

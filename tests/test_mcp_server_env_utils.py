@@ -1,6 +1,28 @@
+import importlib.util
+from pathlib import Path
+
 import pytest
 
-from app.mcp_server.env_utils import _env, _env_int, get_finnhub_api_key
+
+def _load_env_utils_module():
+    env_utils_path = (
+        Path(__file__).resolve().parents[1] / "app" / "mcp_server" / "env_utils.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "test_env_utils_module", env_utils_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_env_utils = _load_env_utils_module()
+_env = _env_utils._env
+_env_int = _env_utils._env_int
+get_finnhub_api_key = _env_utils.get_finnhub_api_key
+get_mcp_graceful_shutdown_timeout = _env_utils.get_mcp_graceful_shutdown_timeout
 
 
 @pytest.mark.unit
@@ -59,3 +81,28 @@ class TestGetFinnhubApiKey:
     def test_returns_none_when_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("FINNHUB_API_KEY", "")
         assert get_finnhub_api_key() is None
+
+
+@pytest.mark.unit
+class TestGetMcpGracefulShutdownTimeout:
+    def test_returns_timeout_when_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "25")
+        assert get_mcp_graceful_shutdown_timeout() == 25
+
+    def test_returns_default_when_not_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", raising=False)
+        assert get_mcp_graceful_shutdown_timeout() == 10
+
+    def test_returns_default_when_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "")
+        assert get_mcp_graceful_shutdown_timeout() == 10
+
+    def test_returns_default_on_invalid_value(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", "invalid")
+        assert get_mcp_graceful_shutdown_timeout() == 10
+        assert "Invalid integer" in caplog.text
+        assert "MCP_GRACEFUL_SHUTDOWN_TIMEOUT" in caplog.text
