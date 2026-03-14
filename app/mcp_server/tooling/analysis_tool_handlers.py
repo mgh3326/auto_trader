@@ -463,9 +463,15 @@ def _summarize_analysis_result(
         "rsi_14": rsi,
         "consensus": ((analysis.get("opinions") or {}).get("consensus")),
         "recommendation": analysis.get("recommendation"),
-        "supports": (sr.get("supports") or [])[:3],
-        "resistances": (sr.get("resistances") or [])[:3],
+        "supports": _take_level_preview(sr.get("supports")),
+        "resistances": _take_level_preview(sr.get("resistances")),
     }
+
+
+def _take_level_preview(raw_levels: Any) -> list[Any]:
+    if isinstance(raw_levels, (list, tuple)):
+        return list(raw_levels[:3])
+    return []
 
 
 async def analyze_stock_batch_impl(

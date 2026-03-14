@@ -491,6 +491,32 @@ class TestAnalyzeStockBatch:
             "resistances": [{"price": 77000, "strength": "medium"}],
         }
 
+    async def test_analyze_stock_batch_quick_summary_ignores_non_sequence_levels(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+
+        mock_analysis = {
+            "symbol": "005930",
+            "market_type": "equity_kr",
+            "source": "kis",
+            "quote": {"price": 75000},
+            "support_resistance": {
+                "supports": {"price": 73000},
+                "resistances": "77000",
+            },
+        }
+
+        async def fake_impl(symbol: str, market: str | None, include_peers: bool):
+            return mock_analysis
+
+        _patch_runtime_attr(monkeypatch, "_analyze_stock_impl", fake_impl)
+
+        result = await tools["analyze_stock_batch"](["005930"], market="kr")
+
+        assert result["results"]["005930"]["supports"] == []
+        assert result["results"]["005930"]["resistances"] == []
+
     async def test_analyze_stock_batch_quick_false_returns_full_payload(
         self, monkeypatch
     ):
