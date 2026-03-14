@@ -191,7 +191,8 @@ if [ "$HEALTH_CHECK" = true ]; then
     echo "📋 Debug commands:"
     echo "  curl -f $HEALTH_URL"
     echo "  curl -f $N8N_HEALTH_URL"
-    echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE logs --tail=50 api n8n"
+    echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE logs --tail=50 api"
+    echo "  docker compose -f docker-compose.n8n.yml logs --tail=50 n8n"
     echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE logs --tail=50"
     echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE ps"
     exit 1

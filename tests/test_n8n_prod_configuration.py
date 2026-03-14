@@ -50,3 +50,14 @@ def test_n8n_readme_references_separate_compose() -> None:
     content = README_PATH.read_text(encoding="utf-8")
 
     assert "docker-compose.n8n.yml" in content
+
+
+def test_deploy_script_debug_commands_split_by_stack() -> None:
+    content = DEPLOY_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    # 잘못된 combined 명령어가 없어야 함
+    assert "logs --tail=50 api n8n" not in content
+
+    # prod stack과 n8n stack 디버그 명령어가 분리되어야 함
+    assert "logs --tail=50 api" in content
+    assert "docker compose -f docker-compose.n8n.yml logs --tail=50 n8n" in content
