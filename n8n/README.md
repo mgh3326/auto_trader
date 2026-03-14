@@ -65,6 +65,14 @@ n8n은 내부 전용으로 `127.0.0.1:5678`에 고정 바인딩됩니다.
 ## 배포
 
 ```bash
-# .env.prod 와 함께 실행
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d n8n
+# 별도 compose 파일로 실행 (caddy와 동일 패턴)
+docker compose -f docker-compose.n8n.yml up -d
+
+# 로그 확인
+docker compose -f docker-compose.n8n.yml logs -f
+
+# 중지
+docker compose -f docker-compose.n8n.yml down
 ```
+
+`network_mode: host`이므로 auto_trader API/MCP와 localhost로 직접 통신 가능.

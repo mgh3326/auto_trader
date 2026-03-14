@@ -46,6 +46,9 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 
 # HTTPS reverse proxy가 필요하면 별도로 실행
 docker compose -f docker-compose.monitoring-rpi.yml up -d caddy
+
+# n8n 워크플로우 자동화 (별도 compose)
+docker compose -f docker-compose.n8n.yml up -d
 ```
 
 ## 3. 서비스 확인
@@ -72,7 +75,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f worker
 docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f mcp
 docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f upbit_websocket
 docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f kis_websocket
-docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f n8n
+docker compose -f docker-compose.n8n.yml logs -f  # n8n
 ```
 
 ## 5. Sentry 확인

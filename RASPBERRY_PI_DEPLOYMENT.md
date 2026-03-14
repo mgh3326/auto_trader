@@ -79,7 +79,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f worker
 docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f mcp
 docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f upbit_websocket
 docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f kis_websocket
-docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f n8n
+docker compose -f docker-compose.n8n.yml logs -f  # n8n
 
 # Caddy 로그
 docker compose -f docker-compose.monitoring-rpi.yml logs -f caddy
