@@ -169,4 +169,29 @@ services:
           memory: 128M
           cpus: '0.125'
 
+  n8n:
+    image: n8nio/n8n
+    container_name: auto_trader_n8n_prod
+    restart: unless-stopped
+    network_mode: host # auto_trader API/MCP에 localhost로 직접 접근
+    environment:
+      - N8N_PORT=${N8N_PORT:-5678}
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
+      - GENERIC_TIMEZONE=Asia/Seoul
+      - TZ=Asia/Seoul
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_VERSION_NOTIFICATIONS_ENABLED=false
+    volumes:
+      - ./n8n/data:/home/node/.n8n
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
+
 # 네이티브 PostgreSQL과 Redis 사용으로 볼륨/네트워크 불필요
