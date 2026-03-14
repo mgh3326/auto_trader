@@ -26,6 +26,16 @@ n8n 2.x는 owner 기반 User Management를 사용합니다.
 - **내부 전용**: `N8N_LISTEN_ADDRESS=127.0.0.1`로 localhost만 바인딩
 - 외부 접근: SSH 터널 사용 (`ssh -L 5678:localhost:5678 user@host`)
 
+## 헬스체크
+
+`QUEUE_HEALTH_CHECK_ACTIVE=true`로 `/healthz` 엔드포인트가 활성화되어 있습니다.
+
+```bash
+curl -f http://127.0.0.1:5678/healthz
+```
+
+Docker healthcheck + `scripts/healthcheck.sh` 모두 이 엔드포인트를 사용합니다.
+
 ## 워크플로우 관리
 
 n8n UI에서 워크플로우 수정 후 export:

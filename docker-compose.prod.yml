@@ -182,6 +182,7 @@ services:
       - TZ=Asia/Seoul
       - N8N_DIAGNOSTICS_ENABLED=false
       - N8N_VERSION_NOTIFICATIONS_ENABLED=false
+      - QUEUE_HEALTH_CHECK_ACTIVE=true
     volumes:
       - ./n8n/data:/home/node/.n8n
     healthcheck:

@@ -120,7 +120,7 @@ echo -e "${GREEN}✅ Environment check passed${NC}"
 # 롤백 처리 (다른 단계 건너뜀)
 if [ "$ROLLBACK" = true ]; then
     echo -e "${YELLOW}🔄 Rolling back services...${NC}"
-    docker compose -f "$COMPOSE_FILE" down
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" down
 
     echo "Rollback requires manual image tag specification."
     echo "Example: docker tag ghcr.io/$GITHUB_REPOSITORY:previous ghcr.io/$GITHUB_REPOSITORY:latest"
@@ -143,7 +143,7 @@ fi
 
 # 1. 최신 이미지 Pull (기존 서비스 유지 — 순단 없음)
 echo -e "${YELLOW}📦 Pulling latest Docker images...${NC}"
-docker compose -f "$COMPOSE_FILE" pull
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull
 echo -e "${GREEN}✅ Images pulled${NC}"
 
 # 2. 마이그레이션 (컨테이너 안에서 실행)
@@ -151,13 +151,13 @@ if [ "$SKIP_MIGRATE" = true ]; then
     echo -e "${YELLOW}⏭️  Skipping migrations${NC}"
 elif [ "$AUTO_MIGRATE" = true ]; then
     echo -e "${YELLOW}🔄 Running migrations (in Docker container)...${NC}"
-    docker compose -f "$COMPOSE_FILE" --profile migration run --rm migration
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" --profile migration run --rm migration
     echo -e "${GREEN}✅ Migrations completed${NC}"
 fi
 
 # 3. 서비스 배포 (핵심: down 없이 up -d로 변경분만 재생성)
 echo -e "${YELLOW}🚀 Deploying services...${NC}"
-docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --remove-orphans
 echo -e "${GREEN}✅ Services updated${NC}"
 
 # 4. 헬스체크
@@ -172,8 +172,8 @@ if [ "$HEALTH_CHECK" = true ]; then
             echo -e "${GREEN}🎉 Deployment completed in ${DEPLOY_DURATION}s${NC}"
             echo ""
             echo "📋 Useful commands:"
-            echo "  docker compose -f $COMPOSE_FILE logs -f    # View logs"
-            echo "  docker compose -f $COMPOSE_FILE ps         # Check status"
+            echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE logs -f    # View logs"
+            echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE ps         # Check status"
             echo ""
 
             # 오래된 이미지 정리
@@ -188,8 +188,8 @@ if [ "$HEALTH_CHECK" = true ]; then
     echo -e "${RED}🔴 Health check failed after $((HEALTH_RETRIES * HEALTH_INTERVAL))s!${NC}"
     echo ""
     echo "📋 Debug commands:"
-    echo "  docker compose -f $COMPOSE_FILE logs --tail=50"
-    echo "  docker compose -f $COMPOSE_FILE ps"
+    echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE logs --tail=50"
+    echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE ps"
     exit 1
 else
     DEPLOY_END=$(date +%s)
