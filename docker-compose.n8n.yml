@@ -14,6 +14,7 @@ services:
       - N8N_DIAGNOSTICS_ENABLED=false
       - N8N_VERSION_NOTIFICATIONS_ENABLED=false
       - QUEUE_HEALTH_CHECK_ACTIVE=true
+      - NODES_EXCLUDE=[]  # n8n v2는 executeCommand를 기본 비활성화. 내부 전용이므로 허용
     volumes:
       - ./n8n/data:/home/node/.n8n
     healthcheck:
