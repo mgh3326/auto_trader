@@ -51,10 +51,12 @@ echo -e "${BLUE}🐳 Docker Containers${NC}"
 check_service "api" "docker ps --filter 'name=auto_trader_api_prod' --filter 'status=running' | grep -q auto_trader_api_prod" "API Container"
 check_service "upbit_websocket" "docker ps --filter 'name=auto_trader_upbit_ws_prod' --filter 'status=running' | grep -q auto_trader_upbit_ws_prod" "Upbit WebSocket Container"
 check_service "kis_websocket" "docker ps --filter 'name=auto_trader_kis_ws_prod' --filter 'status=running' | grep -q auto_trader_kis_ws_prod" "KIS WebSocket Container"
+check_service "n8n" "docker ps --filter 'name=auto_trader_n8n_prod' --filter 'status=running' | grep -q auto_trader_n8n_prod" "n8n Container"
 
 # API 엔드포인트 체크
 echo -e "${BLUE}🌐 API Endpoints${NC}"
 check_service "api-health" "curl -f -s http://localhost:8000/healthz >/dev/null" "API Health Endpoint"
+check_service "n8n-health" "wget -q --spider http://127.0.0.1:5678/healthz 2>/dev/null || curl -f -s http://127.0.0.1:5678/healthz >/dev/null" "n8n Health Endpoint"
 
 # 로그 체크 (최근 에러)
 echo -e "${BLUE}📋 Recent Logs${NC}"

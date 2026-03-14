@@ -11,10 +11,10 @@ cp env.prod.example .env.prod
 nano .env.prod
 
 # 마이그레이션
-docker compose -f docker-compose.prod.yml --profile migration up migration
+docker compose --env-file .env.prod -f docker-compose.prod.yml --profile migration up migration
 
 # 서비스 실행
-docker compose -f docker-compose.prod.yml up -d
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 
 # HTTPS reverse proxy가 필요하면
 docker compose -f docker-compose.monitoring-rpi.yml up -d caddy
@@ -63,21 +63,23 @@ DOMAIN_NAME=your_domain.com
 ## 3. 실행 및 확인
 
 ```bash
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+docker compose --env-file .env.prod -f docker-compose.prod.yml pull
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 
-docker compose -f docker-compose.prod.yml ps
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 curl http://localhost:8000/healthz
+curl http://127.0.0.1:5678/healthz   # n8n
 ```
 
 로그 확인:
 
 ```bash
-docker compose -f docker-compose.prod.yml logs -f api
-docker compose -f docker-compose.prod.yml logs -f worker
-docker compose -f docker-compose.prod.yml logs -f mcp
-docker compose -f docker-compose.prod.yml logs -f upbit_websocket
-docker compose -f docker-compose.prod.yml logs -f kis_websocket
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f api
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f worker
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f mcp
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f upbit_websocket
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f kis_websocket
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f n8n
 
 # Caddy 로그
 docker compose -f docker-compose.monitoring-rpi.yml logs -f caddy
@@ -93,13 +95,13 @@ docker compose -f docker-compose.monitoring-rpi.yml logs -f caddy
 
 ```bash
 # 재시작
-docker compose -f docker-compose.prod.yml restart
+docker compose --env-file .env.prod -f docker-compose.prod.yml restart
 
 # 중지
-docker compose -f docker-compose.prod.yml stop
+docker compose --env-file .env.prod -f docker-compose.prod.yml stop
 
 # 중지 및 제거
-docker compose -f docker-compose.prod.yml down
+docker compose --env-file .env.prod -f docker-compose.prod.yml down
 ```
 
 ## 6. 성능 점검

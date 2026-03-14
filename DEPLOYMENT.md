@@ -36,13 +36,13 @@ Sentry:
 
 ```bash
 # 이미지 pull
-docker compose -f docker-compose.prod.yml pull
+docker compose --env-file .env.prod -f docker-compose.prod.yml pull
 
 # 마이그레이션
-docker compose -f docker-compose.prod.yml --profile migration up migration
+docker compose --env-file .env.prod -f docker-compose.prod.yml --profile migration up migration
 
 # 서비스 실행
-docker compose -f docker-compose.prod.yml up -d
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 
 # HTTPS reverse proxy가 필요하면 별도로 실행
 docker compose -f docker-compose.monitoring-rpi.yml up -d caddy
@@ -51,8 +51,9 @@ docker compose -f docker-compose.monitoring-rpi.yml up -d caddy
 ## 3. 서비스 확인
 
 ```bash
-docker compose -f docker-compose.prod.yml ps
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
 curl http://localhost:8000/healthz
+curl http://127.0.0.1:5678/healthz   # n8n
 ```
 
 주요 서비스:
@@ -61,15 +62,17 @@ curl http://localhost:8000/healthz
 - `mcp`
 - `upbit_websocket`
 - `kis_websocket`
+- `n8n`
 
 ## 4. 로그 확인
 
 ```bash
-docker compose -f docker-compose.prod.yml logs -f api
-docker compose -f docker-compose.prod.yml logs -f worker
-docker compose -f docker-compose.prod.yml logs -f mcp
-docker compose -f docker-compose.prod.yml logs -f upbit_websocket
-docker compose -f docker-compose.prod.yml logs -f kis_websocket
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f api
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f worker
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f mcp
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f upbit_websocket
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f kis_websocket
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f n8n
 ```
 
 ## 5. Sentry 확인
@@ -86,15 +89,15 @@ docker compose -f docker-compose.prod.yml logs -f kis_websocket
 
 ```bash
 git pull origin production
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d
+docker compose --env-file .env.prod -f docker-compose.prod.yml pull
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 ```
 
 ## 7. 롤백
 
 ```bash
-docker compose -f docker-compose.prod.yml down
-docker compose -f docker-compose.prod.yml up -d
+docker compose --env-file .env.prod -f docker-compose.prod.yml down
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
 ```
 
 ## 8. 문제 해결
