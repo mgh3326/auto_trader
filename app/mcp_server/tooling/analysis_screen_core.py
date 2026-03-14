@@ -6,17 +6,16 @@ import asyncio
 import datetime
 import inspect
 import logging
-import sentry_sdk
 import math
 import time
 from typing import Any, cast
 
 import httpx
+import sentry_sdk
 import yfinance as yf
-
-import app.services.brokers.upbit.client as upbit_service
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.services.brokers.upbit.client as upbit_service
 from app.core.async_rate_limiter import RateLimitExceededError
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.analysis_crypto_score import (
@@ -42,6 +41,7 @@ from app.services.krx import (
     fetch_valuation_all_cached,
 )
 from app.services.tvscreener_service import (
+    TvScreenerCapabilitySnapshot,
     TvScreenerError,
     TvScreenerRateLimitError,
     TvScreenerService,
@@ -72,10 +72,6 @@ _SCREEN_ENRICHMENT_FIELDS = (
     "avg_target",
     "upside_pct",
 )
-
-# TvScreener supported sort fields for stock screening
-# TvScreener supported sort fields for stock screening
-_TVSCREENER_STOCK_SORTS = {"volume", "change_rate", "market_cap", "dividend_yield"}
 
 # ---------------------------------------------------------------------------
 # Timeout Policy Configuration
@@ -730,6 +726,7 @@ def _canonicalize_us_sector_label(sector: str) -> str:
         return sector.upper()
     return sector.title()
 
+
 def _normalize_min_analyst_buy(value: float | None) -> float | None:
     if value is None:
         return None
@@ -866,30 +863,107 @@ def _normalize_dividend_yield_threshold(
     return value, normalized_value
 
 
+def _required_tvscreener_stock_capabilities(
+    *,
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    sort_by: str,
+    min_market_cap: float | None,
+    max_per: float | None,
+    min_dividend_yield: float | None,
+) -> set[str]:
+    if market in {"kr", "kospi", "kosdaq"}:
+        if asset_type not in {None, "stock"} or category is not None:
+            return set()
+        return {"volume", "change_rate", "rsi", "adx"}
+
+    if market == "us":
+        if asset_type not in {None, "stock"}:
+            return set()
+
+        required = {"volume", "change_rate", "rsi", "adx"}
+        if sort_by == "market_cap" or min_market_cap is not None:
+            required.add("market_cap")
+        if max_per is not None:
+            required.add("pe")
+        if sort_by == "dividend_yield" or min_dividend_yield is not None:
+            required.add("dividend_yield")
+        if category is not None:
+            required.add("sector")
+        return required
+
+    return set()
+
+
+async def _get_tvscreener_stock_capability_snapshot(
+    *,
+    market: str,
+    asset_type: str | None,
+    category: str | None,
+    sort_by: str,
+    min_market_cap: float | None,
+    max_per: float | None,
+    min_dividend_yield: float | None,
+) -> TvScreenerCapabilitySnapshot | None:
+    required_capabilities = _required_tvscreener_stock_capabilities(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sort_by=sort_by,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        min_dividend_yield=min_dividend_yield,
+    )
+    if not required_capabilities:
+        return None
+
+    try:
+        tvscreener_service = TvScreenerService(timeout=_timeout_seconds("tvscreener"))
+        return await tvscreener_service.get_stock_capabilities(
+            market=market,
+            capability_names=required_capabilities,
+        )
+    except Exception as exc:
+        logger.debug(
+            "tvscreener stock capability snapshot failed for %s: %s: %s",
+            market,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
 def _can_use_tvscreener_stock_path(
     *,
     market: str,
     asset_type: str | None,
     category: str | None,
     sort_by: str,
-    max_rsi: float | None,
+    min_market_cap: float | None,
+    max_per: float | None,
+    min_dividend_yield: float | None,
+    capability_snapshot: TvScreenerCapabilitySnapshot | None,
 ) -> bool:
-    """Determine if tvscreener path can be used for the given parameters.
-
-    TvScreener supports specific sort fields and simple stock queries only.
-    ETF, category filters, and unsupported sorts require legacy path.
-    """
-    _ = max_rsi  # Reserved for future compatibility
-    if sort_by not in _TVSCREENER_STOCK_SORTS:
+    if capability_snapshot is None:
         return False
 
-    if market in {"kr", "kospi", "kosdaq"}:
-        return asset_type in {None, "stock"} and category is None
+    required_capabilities = _required_tvscreener_stock_capabilities(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sort_by=sort_by,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        min_dividend_yield=min_dividend_yield,
+    )
+    if not required_capabilities:
+        return False
 
-    if market == "us":
-        return asset_type in {None, "stock"}
-
-    return False
+    return all(
+        capability_snapshot.is_usable(capability_name)
+        for capability_name in required_capabilities
+    )
 
 
 def _map_tvscreener_stock_row(
@@ -3398,12 +3472,24 @@ async def _screen_kr_with_fallback(
     enrich_rsi: bool,
 ) -> dict[str, Any]:
     """Screen Korean market with tvscreener fallback to legacy."""
+    capability_snapshot = await _get_tvscreener_stock_capability_snapshot(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sort_by=sort_by,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        min_dividend_yield=min_dividend_yield,
+    )
     if _can_use_tvscreener_stock_path(
         market=market,
         asset_type=asset_type,
         category=category,
         sort_by=sort_by,
-        max_rsi=max_rsi,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        min_dividend_yield=min_dividend_yield,
+        capability_snapshot=capability_snapshot,
     ):
         try:
             tvscreener_result = await _screen_kr_via_tvscreener(
@@ -3467,12 +3553,24 @@ async def _screen_us_with_fallback(
     enrich_rsi: bool,
 ) -> dict[str, Any]:
     """Screen US market with tvscreener fallback to legacy."""
+    capability_snapshot = await _get_tvscreener_stock_capability_snapshot(
+        market=market,
+        asset_type=asset_type,
+        category=category,
+        sort_by=sort_by,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        min_dividend_yield=min_dividend_yield,
+    )
     if _can_use_tvscreener_stock_path(
         market=market,
         asset_type=asset_type,
         category=category,
         sort_by=sort_by,
-        max_rsi=max_rsi,
+        min_market_cap=min_market_cap,
+        max_per=max_per,
+        min_dividend_yield=min_dividend_yield,
+        capability_snapshot=capability_snapshot,
     ):
         try:
             tvscreener_result = await _screen_us_via_tvscreener(
