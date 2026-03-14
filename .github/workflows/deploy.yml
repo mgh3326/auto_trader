@@ -73,6 +73,8 @@ jobs:
           build-args: |
             VCS_REF=${{ github.sha }}
           push: true
+          build-args: |
+            GITHUB_SHA=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.image }}

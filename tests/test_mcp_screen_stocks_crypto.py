@@ -1805,58 +1805,6 @@ class TestScreenStocksCrypto:
         assert result["meta"]["coingecko_age_seconds"] == pytest.approx(2.0)
 
     @pytest.mark.asyncio
-    async def test_crypto_coingecko_stale_fallback_adds_warning(self, monkeypatch):
-        async def mock_fetch_top_traded_coins(fiat):
-            return [
-                {
-                    "market": "KRW-BTC",
-                    "trade_price": 100_000_000,
-                    "signed_change_rate": -0.01,
-                    "acc_trade_price_24h": 1_000_000_000_000,
-                    "rsi": 30.0,
-                }
-            ]
-
-        async def mock_market_cap_cache_get():
-            return {
-                "data": {
-                    "BTC": {"market_cap": 1_900_000_000_000_000, "market_cap_rank": 1}
-                },
-                "cached": True,
-                "age_seconds": 1200.0,
-                "stale": True,
-                "error": "TimeoutError: boom",
-            }
-
-        monkeypatch.setattr(
-            upbit_service,
-            "fetch_top_traded_coins",
-            mock_fetch_top_traded_coins,
-        )
-        monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
-            "get",
-            mock_market_cap_cache_get,
-        )
-
-        tools = build_tools()
-        result = await tools["screen_stocks"](
-            market="crypto",
-            asset_type=None,
-            category=None,
-            min_market_cap=None,
-            max_per=None,
-            min_dividend_yield=None,
-            max_rsi=None,
-            sort_by="rsi",
-            sort_order="asc",
-            limit=20,
-        )
-
-        assert result["results"][0]["market_cap"] == 1_900_000_000_000_000
-        assert any("stale cache was used" in w for w in result["warnings"])
-
-    @pytest.mark.asyncio
     async def test_crypto_large_ticker_enrichment_uses_real_batched_client_path(
         self,
         fake_crypto_tvscreener_module,
@@ -1926,17 +1874,24 @@ class TestScreenStocksCrypto:
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
-        monkeypatch.setattr(upbit_service, "_request_json", fake_request_json)
         monkeypatch.setattr(
             analysis_screen_core,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
+        monkeypatch.setattr(upbit_service, "_request_json", fake_request_json)
         monkeypatch.setattr(
-            analysis_screen_core,
-            "get_upbit_market_display_names",
-            AsyncMock(return_value={}),
-            raising=False,
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            AsyncMock(
+                return_value={
+                    "data": {},
+                    "cached": False,
+                    "age_seconds": None,
+                    "stale": False,
+                    "error": None,
+                }
+            ),
         )
 
         tools = build_tools()
@@ -1961,3 +1916,55 @@ class TestScreenStocksCrypto:
         assert not any(
             "volume_24h defaulted to 0.0" in warning for warning in result["warnings"]
         )
+
+    @pytest.mark.asyncio
+    async def test_crypto_coingecko_stale_fallback_adds_warning(self, monkeypatch):
+        async def mock_fetch_top_traded_coins(fiat):
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "trade_price": 100_000_000,
+                    "signed_change_rate": -0.01,
+                    "acc_trade_price_24h": 1_000_000_000_000,
+                    "rsi": 30.0,
+                }
+            ]
+
+        async def mock_market_cap_cache_get():
+            return {
+                "data": {
+                    "BTC": {"market_cap": 1_900_000_000_000_000, "market_cap_rank": 1}
+                },
+                "cached": True,
+                "age_seconds": 1200.0,
+                "stale": True,
+                "error": "TimeoutError: boom",
+            }
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            mock_market_cap_cache_get,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="rsi",
+            sort_order="asc",
+            limit=20,
+        )
+
+        assert result["results"][0]["market_cap"] == 1_900_000_000_000_000
+        assert any("stale cache was used" in w for w in result["warnings"])

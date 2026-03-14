@@ -1,7 +1,7 @@
 import logging
 
 from app.core.config import settings
-from app.mcp_server.env_utils import _env, _env_int
+from app.mcp_server.env_utils import _env, _env_int, get_mcp_graceful_shutdown_timeout
 from app.monitoring.sentry import capture_exception, init_sentry
 
 # ──────────────────────────────────────────────────────────────────────
@@ -28,6 +28,7 @@ init_sentry(
 from fastmcp import FastMCP  # noqa: E402
 
 from app.mcp_server.auth import build_auth_provider  # noqa: E402
+from app.mcp_server.sentry_middleware import McpToolCallSentryMiddleware  # noqa: E402
 from app.mcp_server.tooling import register_all_tools  # noqa: E402
 
 _auth_token = _env("MCP_AUTH_TOKEN", "")
@@ -42,6 +43,7 @@ mcp = FastMCP(
     auth=auth_provider,
 )
 
+mcp.add_middleware(McpToolCallSentryMiddleware())
 register_all_tools(mcp)
 
 
@@ -70,10 +72,22 @@ def main() -> None:
         if mcp_type == "stdio":
             mcp.run(transport="stdio")
         elif mcp_type == "sse":
-            mcp.run(transport="sse", host=mcp_host, port=mcp_port, path=mcp_path)
-        elif mcp_type == "streamable-http":
+            graceful_shutdown_timeout = get_mcp_graceful_shutdown_timeout()
             mcp.run(
-                transport="streamable-http", host=mcp_host, port=mcp_port, path=mcp_path
+                transport="sse",
+                host=mcp_host,
+                port=mcp_port,
+                path=mcp_path,
+                uvicorn_config={"timeout_graceful_shutdown": graceful_shutdown_timeout},
+            )
+        elif mcp_type == "streamable-http":
+            graceful_shutdown_timeout = get_mcp_graceful_shutdown_timeout()
+            mcp.run(
+                transport="streamable-http",
+                host=mcp_host,
+                port=mcp_port,
+                path=mcp_path,
+                uvicorn_config={"timeout_graceful_shutdown": graceful_shutdown_timeout},
             )
         else:
             raise ValueError(f"Unsupported MCP_TYPE: {mcp_type}")

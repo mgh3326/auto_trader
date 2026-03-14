@@ -12,6 +12,8 @@ import logging
 import re
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 import pandas as pd
@@ -75,6 +77,51 @@ def _normalize_where_clauses(where_clause: Any | None) -> list[Any]:
     return [where_clause]
 
 
+def _has_probe_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    try:
+        return not bool(pd.isna(value))
+    except TypeError:
+        return True
+
+
+def _evaluate_stock_probe_result(
+    *,
+    capability_name: str,
+    field: object,
+    result: pd.DataFrame,
+) -> TvScreenerCapabilityState:
+    if result.empty:
+        return TvScreenerCapabilityState.UNKNOWN
+
+    expected_columns = {
+        _normalize_column_name(field),
+        *(
+            _normalize_column_name(alias)
+            for alias in _STOCK_CAPABILITY_ALIASES.get(capability_name, ())
+        ),
+    }
+    expected_columns.discard("")
+
+    matching_columns = [
+        column
+        for column in result.columns
+        if _normalize_column_name(column) in expected_columns
+    ]
+    if not matching_columns:
+        return TvScreenerCapabilityState.UNKNOWN
+
+    for column in matching_columns:
+        series = result[column]
+        if any(_has_probe_value(value) for value in series.tolist()):
+            return TvScreenerCapabilityState.USABLE
+
+    return TvScreenerCapabilityState.UNKNOWN
+
+
 class TvScreenerError(Exception):
     """Base exception for TvScreener service errors."""
 
@@ -97,6 +144,114 @@ class TvScreenerTimeoutError(TvScreenerError):
     """Raised when a TvScreener request times out."""
 
     pass
+
+
+class TvScreenerCapabilityState(StrEnum):
+    USABLE = "usable"
+    UNSUPPORTED = "unsupported"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class TvScreenerCapabilitySnapshot:
+    screener: str
+    market: str
+    statuses: dict[str, TvScreenerCapabilityState]
+    fields: dict[str, object | None]
+
+    def status(self, capability_name: str) -> TvScreenerCapabilityState:
+        return self.statuses.get(capability_name, TvScreenerCapabilityState.UNKNOWN)
+
+    def field(self, capability_name: str) -> object | None:
+        return self.fields.get(capability_name)
+
+    def is_usable(self, capability_name: str) -> bool:
+        return (
+            self.status(capability_name) is TvScreenerCapabilityState.USABLE
+            and self.field(capability_name) is not None
+        )
+
+
+_STOCK_CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "name": ("NAME",),
+    "price": ("PRICE",),
+    "rsi": ("RELATIVE_STRENGTH_INDEX_14",),
+    "adx": ("AVERAGE_DIRECTIONAL_INDEX_14",),
+    "volume": ("VOLUME",),
+    "change_rate": ("CHANGE_PERCENT",),
+    "market_cap": ("MARKET_CAPITALIZATION", "MARKET_CAP_BASIC"),
+    "pe": ("PRICE_TO_EARNINGS_RATIO_TTM", "PRICE_TO_EARNINGS_TTM"),
+    "pbr": ("PRICE_TO_BOOK_FQ",),
+    "dividend_yield": ("DIVIDEND_YIELD_FORWARD", "DIVIDEND_YIELD_RECENT"),
+    "sector": ("SECTOR",),
+}
+
+_CRYPTO_CAPABILITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "name": ("NAME",),
+    "description": ("DESCRIPTION",),
+    "price": ("PRICE",),
+    "rsi": ("RELATIVE_STRENGTH_INDEX_14",),
+    "adx": ("AVERAGE_DIRECTIONAL_INDEX_14",),
+    "value_traded": ("VALUE_TRADED",),
+    "market_cap": ("MARKET_CAP",),
+}
+
+_CAPABILITY_CACHE_MISS = object()
+
+
+class _TvScreenerCapabilityRegistry:
+    def __init__(self) -> None:
+        self._field_cache: dict[tuple[str, str], object | None] = {}
+        self._status_cache: dict[tuple[str, str, str], TvScreenerCapabilityState] = {}
+        self._probe_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
+
+    def get_field(self, screener: str, capability_name: str) -> object:
+        return self._field_cache.get(
+            (screener, capability_name),
+            _CAPABILITY_CACHE_MISS,
+        )
+
+    def set_field(
+        self,
+        screener: str,
+        capability_name: str,
+        field: object | None,
+    ) -> None:
+        self._field_cache[(screener, capability_name)] = field
+
+    def get_status(
+        self,
+        screener: str,
+        market: str,
+        capability_name: str,
+    ) -> TvScreenerCapabilityState | None:
+        return self._status_cache.get((screener, market, capability_name))
+
+    def set_status(
+        self,
+        screener: str,
+        market: str,
+        capability_name: str,
+        status: TvScreenerCapabilityState,
+    ) -> None:
+        self._status_cache[(screener, market, capability_name)] = status
+
+    def get_probe_lock(
+        self,
+        screener: str,
+        market: str,
+        capability_name: str,
+    ) -> asyncio.Lock:
+        cache_key = (screener, market, capability_name)
+        lock = self._probe_locks.get(cache_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._probe_locks[cache_key] = lock
+        return lock
+
+
+_shared_capability_registry = _TvScreenerCapabilityRegistry()
+_STOCK_CAPABILITY_PROBE_LIMIT = 3
 
 
 class TvScreenerService:
@@ -123,6 +278,7 @@ class TvScreenerService:
         max_retries: int = 3,
         base_delay: float = 1.0,
         timeout: float = 30.0,
+        capability_registry: _TvScreenerCapabilityRegistry | None = None,
     ) -> None:
         """Initialize TvScreener service.
 
@@ -139,6 +295,7 @@ class TvScreenerService:
         self.base_delay = base_delay
         self.timeout = timeout
         self._field_cache: dict[str, list[tuple[str, Any]]] = {}
+        self._capability_registry = capability_registry or _shared_capability_registry
         logger.info(
             "TvScreenerService initialized with max_retries=%d, base_delay=%.1fs, timeout=%.1fs",
             max_retries,
@@ -386,6 +543,273 @@ class TvScreenerService:
 
         return available_fields
 
+    @staticmethod
+    def _normalize_stock_market(market: str) -> str:
+        normalized = str(market or "").strip().lower()
+        if normalized in {"kr", "kospi", "kosdaq", "korea"}:
+            return "kr"
+        if normalized in {"us", "america", "united states"}:
+            return "us"
+        return normalized
+
+    async def _resolve_capability_fields(
+        self,
+        *,
+        screener: str,
+        screener_class: type,
+        field_enum: type,
+        capability_aliases: dict[str, tuple[str, ...]],
+        capability_names: set[str],
+    ) -> dict[str, object | None]:
+        available_fields = dict(await self.discover_fields(screener_class, field_enum))
+        resolved_fields: dict[str, object | None] = {}
+
+        for capability_name in capability_names:
+            cached_field = self._capability_registry.get_field(
+                screener, capability_name
+            )
+            if cached_field is _CAPABILITY_CACHE_MISS:
+                resolved_field: object | None = None
+                for alias in capability_aliases.get(capability_name, ()):
+                    if alias in available_fields:
+                        resolved_field = available_fields[alias]
+                        break
+                    field_value = getattr(field_enum, alias, None)
+                    if field_value is not None and not callable(field_value):
+                        resolved_field = field_value
+                        break
+                self._capability_registry.set_field(
+                    screener,
+                    capability_name,
+                    resolved_field,
+                )
+                cached_field = resolved_field
+
+            resolved_fields[capability_name] = (
+                None if cached_field is _CAPABILITY_CACHE_MISS else cached_field
+            )
+
+        return resolved_fields
+
+    async def _probe_stock_capability(
+        self,
+        *,
+        market: str,
+        capability_name: str,
+        field: object,
+    ) -> TvScreenerCapabilityState:
+        normalized_market = self._normalize_stock_market(market)
+        cached_status = self._capability_registry.get_status(
+            "stock",
+            normalized_market,
+            capability_name,
+        )
+        if cached_status is not None:
+            return cached_status
+
+        probe_lock = self._capability_registry.get_probe_lock(
+            "stock",
+            normalized_market,
+            capability_name,
+        )
+
+        async with probe_lock:
+            cached_status = self._capability_registry.get_status(
+                "stock",
+                normalized_market,
+                capability_name,
+            )
+            if cached_status is not None:
+                return cached_status
+
+            try:
+                tvscreener = _import_tvscreener()
+                StockField = tvscreener.StockField
+                Market = tvscreener.Market
+            except ImportError:
+                return TvScreenerCapabilityState.UNKNOWN
+
+            probe_columns = [StockField.NAME]
+            if field != StockField.NAME:
+                probe_columns.append(field)
+
+            probe_markets = None
+            probe_country = None
+            if normalized_market == "kr":
+                probe_markets = [Market.KOREA]
+            elif normalized_market == "us":
+                probe_markets = [Market.AMERICA]
+                probe_country = "United States"
+            else:
+                return TvScreenerCapabilityState.UNKNOWN
+
+            try:
+                probe_result = await self.query_stock_screener(
+                    columns=probe_columns,
+                    where_clause=None,
+                    country=probe_country,
+                    markets=probe_markets,
+                    limit=_STOCK_CAPABILITY_PROBE_LIMIT,
+                )
+            except TvScreenerMalformedRequestError:
+                status = TvScreenerCapabilityState.UNSUPPORTED
+            except (
+                TvScreenerError,
+                TvScreenerRateLimitError,
+                TvScreenerTimeoutError,
+            ):
+                return TvScreenerCapabilityState.UNKNOWN
+            else:
+                status = _evaluate_stock_probe_result(
+                    capability_name=capability_name,
+                    field=field,
+                    result=probe_result,
+                )
+
+            self._capability_registry.set_status(
+                "stock",
+                normalized_market,
+                capability_name,
+                status,
+            )
+            return status
+
+    async def get_stock_capabilities(
+        self,
+        *,
+        market: str,
+        capability_names: Iterable[str],
+    ) -> TvScreenerCapabilitySnapshot:
+        requested_capabilities = {
+            str(capability_name).strip()
+            for capability_name in capability_names
+            if str(capability_name).strip()
+        }
+        normalized_market = self._normalize_stock_market(market)
+
+        if not requested_capabilities:
+            return TvScreenerCapabilitySnapshot(
+                screener="stock",
+                market=normalized_market,
+                statuses={},
+                fields={},
+            )
+
+        try:
+            tvscreener = _import_tvscreener()
+        except ImportError:
+            return TvScreenerCapabilitySnapshot(
+                screener="stock",
+                market=normalized_market,
+                statuses=dict.fromkeys(
+                    requested_capabilities, TvScreenerCapabilityState.UNKNOWN
+                ),
+                fields=dict.fromkeys(requested_capabilities),
+            )
+
+        resolved_fields = await self._resolve_capability_fields(
+            screener="stock",
+            screener_class=tvscreener.StockScreener,
+            field_enum=tvscreener.StockField,
+            capability_aliases=_STOCK_CAPABILITY_ALIASES,
+            capability_names=requested_capabilities,
+        )
+
+        capability_fields: dict[str, object | None] = {}
+        capability_statuses: dict[str, TvScreenerCapabilityState] = {}
+
+        for capability_name in requested_capabilities:
+            resolved_field = resolved_fields.get(capability_name)
+            capability_fields[capability_name] = resolved_field
+
+            if resolved_field is None:
+                self._capability_registry.set_status(
+                    "stock",
+                    normalized_market,
+                    capability_name,
+                    TvScreenerCapabilityState.UNSUPPORTED,
+                )
+                capability_statuses[capability_name] = (
+                    TvScreenerCapabilityState.UNSUPPORTED
+                )
+                continue
+
+            cached_status = self._capability_registry.get_status(
+                "stock",
+                normalized_market,
+                capability_name,
+            )
+            if cached_status is not None:
+                capability_statuses[capability_name] = cached_status
+                continue
+
+            capability_statuses[capability_name] = await self._probe_stock_capability(
+                market=normalized_market,
+                capability_name=capability_name,
+                field=resolved_field,
+            )
+
+        return TvScreenerCapabilitySnapshot(
+            screener="stock",
+            market=normalized_market,
+            statuses=capability_statuses,
+            fields=capability_fields,
+        )
+
+    async def get_crypto_capabilities(
+        self,
+        capability_names: Iterable[str],
+    ) -> TvScreenerCapabilitySnapshot:
+        requested_capabilities = {
+            str(capability_name).strip()
+            for capability_name in capability_names
+            if str(capability_name).strip()
+        }
+
+        if not requested_capabilities:
+            return TvScreenerCapabilitySnapshot(
+                screener="crypto",
+                market="crypto",
+                statuses={},
+                fields={},
+            )
+
+        try:
+            tvscreener = _import_tvscreener()
+        except ImportError:
+            return TvScreenerCapabilitySnapshot(
+                screener="crypto",
+                market="crypto",
+                statuses=dict.fromkeys(
+                    requested_capabilities, TvScreenerCapabilityState.UNKNOWN
+                ),
+                fields=dict.fromkeys(requested_capabilities),
+            )
+
+        resolved_fields = await self._resolve_capability_fields(
+            screener="crypto",
+            screener_class=tvscreener.CryptoScreener,
+            field_enum=tvscreener.CryptoField,
+            capability_aliases=_CRYPTO_CAPABILITY_ALIASES,
+            capability_names=requested_capabilities,
+        )
+
+        capability_statuses = {
+            capability_name: (
+                TvScreenerCapabilityState.USABLE
+                if resolved_fields.get(capability_name) is not None
+                else TvScreenerCapabilityState.UNSUPPORTED
+            )
+            for capability_name in requested_capabilities
+        }
+
+        return TvScreenerCapabilitySnapshot(
+            screener="crypto",
+            market="crypto",
+            statuses=capability_statuses,
+            fields=resolved_fields,
+        )
+
     async def query_crypto_screener(
         self,
         columns: list[Any],
@@ -560,6 +984,8 @@ def get_tvscreener_service() -> TvScreenerService:
 
 
 __all__ = [
+    "TvScreenerCapabilitySnapshot",
+    "TvScreenerCapabilityState",
     "TvScreenerService",
     "TvScreenerError",
     "TvScreenerRateLimitError",

@@ -15,6 +15,12 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `service:auto-trader-api op:http.client span.description:"GET /v1/finance/screener"`
 - `profile` flamegraph and `trace` spans are different datasets, so some frames may appear only in profiling.
 - It is normal to see only high-level spans when a tool does not execute DB/HTTP operations.
+- MCP tool call arguments are attached as structured Sentry context (`mcp_tool_call`) via `McpToolCallSentryMiddleware`:
+  - Context fields: `tool_name` (string), `arguments` (dict, sanitized and truncated)
+  - Tag: `mcp.tool.name` for issue-level filtering
+  - Sensitive values (`token`, `secret`, `password`, `authorization`, `cookie`) are masked to `[Filtered]`
+  - Large arguments are truncated (strings: 1024 chars, lists/dicts: 25 items) with a visible `[truncated]` marker
+  - The middleware never calls `capture_exception` directly; exception capture is handled by Sentry's `MCPIntegration`
 
 ## Tools
 - `search_symbol(query, limit=20)`
@@ -310,7 +316,7 @@ Parameters:
 
 Market-specific behavior:
 - **KR market**:
-  - Default `asset_type in {None, "stock"}` + `category=None` requests use tvscreener first
+  - Default `asset_type in {None, "stock"}` + `category=None` requests use tvscreener only when verified KR stock-query capabilities cover the request; otherwise they fall back to the legacy KRX/Naver path before entering tvscreener
   - Successful stock responses expose `meta.source = "tvscreener"` and include `adx` in each result row
   - ETF/category requests stay on the legacy KRX/Naver path
   - KRX data cached with 300s TTL (Redis) + in-memory fallback
@@ -319,10 +325,11 @@ Market-specific behavior:
   - ETN (`asset_type="etn"`) not supported - returns error
 
 - **US market**:
-  - Default `asset_type in {None, "stock"}` requests use tvscreener first, including US `category`/`sector` alias filters when the TradingView sector field is available
+  - Default `asset_type in {None, "stock"}` requests use tvscreener only when verified US stock-query capabilities cover the request
+  - US `category`/`sector` alias requests stay on the tvscreener path only when the TradingView sector filter capability is verified; otherwise they fall back to legacy before running the tv query
   - Successful stock responses expose `meta.source = "tvscreener"`, include `adx`, and preserve public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) from tvscreener when available
   - Post-screen enrichment skips per-row Finnhub/yfinance fan-out when those public fields are already populated; missing fields fall back to lightweight yfinance/Finnhub enrichment
-  - Unsupported sorts or missing tvscreener sector metadata fall back to the legacy yfinance path
+  - Unsupported or unverified tvscreener request-critical capabilities fall back to the legacy yfinance path
   - Legacy yfinance maps: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio.lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
   - Legacy yfinance sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
   - Legacy yfinance screen enrichment reuses a request-scoped session for repeated analyst-target lookups
@@ -672,6 +679,7 @@ Environment variables:
 - `MCP_HOST` : `0.0.0.0`
 - `MCP_PORT` : `8765`
 - `MCP_PATH` : `/mcp`
+- `MCP_GRACEFUL_SHUTDOWN_TIMEOUT` : `10` (seconds, HTTP transports only: `sse` / `streamable-http`)
 - `MCP_USER_ID` : `1` (manual holdings 조회에 사용할 기본 사용자 ID)
 
 Example:

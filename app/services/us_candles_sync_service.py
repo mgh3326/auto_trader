@@ -1,6 +1,7 @@
 # pyright: reportMissingTypeStubs=none
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -18,11 +19,24 @@ from app.core.symbol import to_db_symbol
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
 from app.services.manual_holdings_service import ManualHoldingsService
-from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
+from app.services.us_symbol_universe_service import (
+    USSymbolInactiveError,
+    USSymbolNotRegisteredError,
+    USSymbolUniverseEmptyError,
+    get_us_exchange_by_symbol,
+    sync_us_symbol_universe,
+)
 
 _NY = ZoneInfo("America/New_York")
 _OVERLAP_MINUTES = 5
 _PAGE_SIZE = 120
+_UNRESOLVED_SYMBOL_SKIP_REASON = "unresolved_symbol_after_refresh"
+_US_UNIVERSE_EMPTY_MESSAGE = (
+    "us_symbol_universe is empty. "
+    "Sync required: uv run python scripts/sync_us_symbol_universe.py"
+)
+
+logger = logging.getLogger(__name__)
 
 type TimestampLike = datetime | pd.Timestamp | str
 
@@ -112,6 +126,13 @@ class MinuteCandleRow:
     close: float
     volume: float
     value: float
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSymbolPairs:
+    symbol_pairs: list[tuple[str, str]]
+    skipped_symbols: list[str]
+    lookup_refresh_attempted: bool
 
 
 class OverseasMinuteChartPageProtocol(Protocol):
@@ -206,6 +227,54 @@ def _build_symbol_union(
             symbols.add(symbol)
 
     return symbols
+
+
+async def _resolve_symbol_pairs(
+    *,
+    session: AsyncSession,
+    target_symbols: set[str],
+) -> ResolvedSymbolPairs:
+    symbol_pairs: list[tuple[str, str]] = []
+    skipped_symbols: list[str] = []
+    lookup_refresh_attempted = False
+
+    for symbol in sorted(target_symbols):
+        try:
+            exchange = await get_us_exchange_by_symbol(symbol, db=session)
+        except (USSymbolNotRegisteredError, USSymbolInactiveError) as exc:
+            if not lookup_refresh_attempted:
+                refresh_result = await sync_us_symbol_universe(db=session)
+                lookup_refresh_attempted = True
+                if int(refresh_result.get("total", 0)) <= 0:
+                    raise USSymbolUniverseEmptyError(
+                        _US_UNIVERSE_EMPTY_MESSAGE
+                    ) from exc
+                await session.commit()
+                try:
+                    exchange = await get_us_exchange_by_symbol(symbol, db=session)
+                except (USSymbolNotRegisteredError, USSymbolInactiveError) as retry_exc:
+                    logger.warning(
+                        "Skipping unresolved US candle sync symbol after universe refresh symbol=%s error=%s",
+                        symbol,
+                        retry_exc,
+                    )
+                    skipped_symbols.append(symbol)
+                    continue
+            else:
+                logger.warning(
+                    "Skipping unresolved US candle sync symbol after universe refresh symbol=%s error=%s",
+                    symbol,
+                    exc,
+                )
+                skipped_symbols.append(symbol)
+                continue
+        symbol_pairs.append((symbol, exchange))
+
+    return ResolvedSymbolPairs(
+        symbol_pairs=symbol_pairs,
+        skipped_symbols=skipped_symbols,
+        lookup_refresh_attempted=lookup_refresh_attempted,
+    )
 
 
 def _select_closed_sessions(now_utc: datetime, sessions: int) -> list[SessionWindow]:
@@ -485,6 +554,9 @@ async def sync_us_candles(
                 "sessions": session_count,
                 "skipped": True,
                 "reason": "no_target_symbols",
+                "skip_reasons": {},
+                "skipped_symbols": [],
+                "lookup_refresh_attempted": False,
                 "symbols_total": 0,
                 "symbol_venues_total": 0,
                 "pairs_processed": 0,
@@ -493,20 +565,29 @@ async def sync_us_candles(
                 "pages_fetched": 0,
             }
 
-        symbol_pairs = [
-            (symbol, await get_us_exchange_by_symbol(symbol, db=session))
-            for symbol in sorted(target_symbols)
-        ]
-        pairs_total = len(symbol_pairs)
+        resolution = await _resolve_symbol_pairs(
+            session=session, target_symbols=target_symbols
+        )
+        symbol_pairs = resolution.symbol_pairs
+        skipped_symbols = resolution.skipped_symbols
+        lookup_refresh_attempted = resolution.lookup_refresh_attempted
+        skipped_reasons: dict[str, int] = {}
+        if skipped_symbols:
+            skipped_reasons[_UNRESOLVED_SYMBOL_SKIP_REASON] = len(skipped_symbols)
+        pairs_total = len(symbol_pairs) + len(skipped_symbols)
 
         windows: list[SessionWindow]
         if normalized_mode == "incremental":
             if not calendar.is_trading_minute(pd.Timestamp(now_utc)):
+                if symbol_pairs:
+                    skipped_reasons["outside_trading_minute"] = len(symbol_pairs)
                 return {
                     "mode": normalized_mode,
                     "sessions": session_count,
                     "skipped": True,
-                    "skip_reasons": {"outside_trading_minute": len(symbol_pairs)},
+                    "skip_reasons": skipped_reasons,
+                    "skipped_symbols": skipped_symbols,
+                    "lookup_refresh_attempted": lookup_refresh_attempted,
                     "symbols_total": len(target_symbols),
                     "symbol_venues_total": pairs_total,
                     "pairs_processed": 0,
@@ -538,7 +619,7 @@ async def sync_us_candles(
         pairs_processed = 0
         rows_upserted = 0
         pages_fetched = 0
-        pairs_skipped = 0
+        pairs_skipped = len(skipped_symbols)
 
         for symbol, exchange in symbol_pairs:
             pair_rows: list[MinuteCandleRow] = []
@@ -587,7 +668,9 @@ async def sync_us_candles(
             "mode": normalized_mode,
             "sessions": session_count,
             "skipped": pairs_processed == 0,
-            "skip_reasons": {},
+            "skip_reasons": skipped_reasons,
+            "skipped_symbols": skipped_symbols,
+            "lookup_refresh_attempted": lookup_refresh_attempted,
             "symbols_total": len(target_symbols),
             "symbol_venues_total": pairs_total,
             "pairs_processed": pairs_processed,

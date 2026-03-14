@@ -27,11 +27,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.13-slim AS final
 
 ARG VCS_REF=""
+ARG GITHUB_SHA=unknown
 
 # 환경 변수 설정
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    GITHUB_SHA=$GITHUB_SHA
 
 # 필수 OS 패키지 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \

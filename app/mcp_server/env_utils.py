@@ -27,3 +27,8 @@ def _env_int(name: str, default: int) -> int:
 def get_finnhub_api_key() -> str | None:
     """Get Finnhub API key from environment."""
     return _env("FINNHUB_API_KEY")
+
+
+def get_mcp_graceful_shutdown_timeout() -> int:
+    """Get MCP HTTP graceful shutdown timeout in seconds."""
+    return _env_int("MCP_GRACEFUL_SHUTDOWN_TIMEOUT", 10)
