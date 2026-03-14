@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 N8N_COMPOSE_PATH = REPO_ROOT / "docker-compose.n8n.yml"
 PROD_COMPOSE_PATH = REPO_ROOT / "docker-compose.prod.yml"
@@ -24,16 +23,16 @@ def test_n8n_in_separate_compose_file() -> None:
 def test_n8n_compose_uses_fixed_internal_port_for_healthcheck() -> None:
     content = N8N_COMPOSE_PATH.read_text(encoding="utf-8")
 
-    assert 'N8N_PORT' not in content
-    assert 'N8N_LISTEN_ADDRESS=127.0.0.1' in content
-    assert 'QUEUE_HEALTH_CHECK_ACTIVE=true' in content
-    assert '127.0.0.1:5678/healthz' in content
+    assert "N8N_LISTEN_ADDRESS=127.0.0.1" in content
+    assert "QUEUE_HEALTH_CHECK_ACTIVE=true" in content
+    assert "127.0.0.1:5678/healthz" in content
+    assert "N8N_PORT" not in content
 
 
 def test_deploy_script_requires_api_and_n8n_health() -> None:
     content = DEPLOY_SCRIPT_PATH.read_text(encoding="utf-8")
 
-    assert 'N8N_HEALTH_URL=' in content
+    assert "N8N_HEALTH_URL=" in content
     assert 'curl -sf "$HEALTH_URL" > /dev/null 2>&1' in content
     assert 'curl -sf "$N8N_HEALTH_URL" > /dev/null 2>&1' in content
 
