@@ -316,7 +316,7 @@ Parameters:
 
 Market-specific behavior:
 - **KR market**:
-  - Default `asset_type in {None, "stock"}` + `category=None` requests use tvscreener first
+  - Default `asset_type in {None, "stock"}` + `category=None` requests use tvscreener only when verified KR stock-query capabilities cover the request; otherwise they fall back to the legacy KRX/Naver path before entering tvscreener
   - Successful stock responses expose `meta.source = "tvscreener"` and include `adx` in each result row
   - ETF/category requests stay on the legacy KRX/Naver path
   - KRX data cached with 300s TTL (Redis) + in-memory fallback
@@ -325,10 +325,11 @@ Market-specific behavior:
   - ETN (`asset_type="etn"`) not supported - returns error
 
 - **US market**:
-  - Default `asset_type in {None, "stock"}` requests use tvscreener first, including US `category`/`sector` alias filters when the TradingView sector field is available
+  - Default `asset_type in {None, "stock"}` requests use tvscreener only when verified US stock-query capabilities cover the request
+  - US `category`/`sector` alias requests stay on the tvscreener path only when the TradingView sector filter capability is verified; otherwise they fall back to legacy before running the tv query
   - Successful stock responses expose `meta.source = "tvscreener"`, include `adx`, and preserve public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) from tvscreener when available
   - Post-screen enrichment skips per-row Finnhub/yfinance fan-out when those public fields are already populated; missing fields fall back to lightweight yfinance/Finnhub enrichment
-  - Unsupported sorts or missing tvscreener sector metadata fall back to the legacy yfinance path
+  - Unsupported or unverified tvscreener request-critical capabilities fall back to the legacy yfinance path
   - Legacy yfinance maps: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio.lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
   - Legacy yfinance sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
   - Legacy yfinance screen enrichment reuses a request-scoped session for repeated analyst-target lookups

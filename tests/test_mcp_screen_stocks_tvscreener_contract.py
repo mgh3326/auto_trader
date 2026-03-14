@@ -1,8 +1,50 @@
 import pytest
 
+from app.services.tvscreener_service import (
+    TvScreenerCapabilitySnapshot,
+    TvScreenerCapabilityState,
+)
 from tests._mcp_tooling_support import build_tools
 
 pytest_plugins = ("tests._mcp_tooling_support",)
+
+
+def _stock_capability_snapshot(
+    market: str,
+    **statuses: TvScreenerCapabilityState,
+) -> TvScreenerCapabilitySnapshot:
+    return TvScreenerCapabilitySnapshot(
+        screener="stock",
+        market=market,
+        statuses=statuses,
+        fields={
+            name: name if state is TvScreenerCapabilityState.USABLE else None
+            for name, state in statuses.items()
+        },
+    )
+
+
+def _install_stock_capabilities(
+    monkeypatch,
+    *,
+    overrides: dict[str, TvScreenerCapabilityState] | None = None,
+) -> None:
+    capability_overrides = dict(overrides or {})
+
+    async def mock_get_stock_capabilities(self, *, market, capability_names):
+        del self
+        normalized_market = "kr" if market in {"kr", "kospi", "kosdaq"} else market
+        statuses = {
+            name: capability_overrides.get(name, TvScreenerCapabilityState.USABLE)
+            for name in capability_names
+        }
+        return _stock_capability_snapshot(normalized_market, **statuses)
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+        mock_get_stock_capabilities,
+        raising=False,
+    )
 
 
 class TestScreenStocksTvScreenerContract:
@@ -52,6 +94,7 @@ class TestScreenStocksTvScreenerContract:
             "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -138,6 +181,7 @@ class TestScreenStocksTvScreenerContract:
             "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -211,6 +255,7 @@ class TestScreenStocksTvScreenerContract:
             "app.mcp_server.tooling.analysis_screen_core._screen_kr",
             fail_legacy_kr,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -273,6 +318,7 @@ class TestScreenStocksTvScreenerContract:
             "app.mcp_server.tooling.analysis_screen_core._screen_us",
             fail_legacy_us,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -336,6 +382,7 @@ class TestScreenStocksTvScreenerContract:
             "app.mcp_server.tooling.analysis_screen_core._screen_kr",
             fail_legacy_kr,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -400,6 +447,7 @@ class TestScreenStocksTvScreenerContract:
             "app.mcp_server.tooling.analysis_screen_core._screen_us",
             fail_legacy_us,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -474,6 +522,7 @@ class TestScreenStocksTvScreenerContract:
             "app.mcp_server.tooling.analysis_screen_core._screen_us",
             mock_screen_us,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -523,6 +572,7 @@ class TestScreenStocksTvScreenerContract:
             "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
+        _install_stock_capabilities(monkeypatch)
 
         tools = build_tools()
         result = await tools["screen_stocks"](
@@ -543,20 +593,56 @@ class TestScreenStocksTvScreenerContract:
         assert result["filters_applied"]["market"] == market
 
     @pytest.mark.asyncio
-    async def test_us_category_with_max_rsi_falls_back_to_legacy_path(
-        self, mock_yfinance_screen, monkeypatch
+    @pytest.mark.asyncio
+    async def test_us_sector_request_uses_tvscreener_when_capability_verified(
+        self, monkeypatch
     ):
-        import yfinance as yf
-
-        async def fail_if_called(**kwargs):
-            raise AssertionError(
-                "tvscreener path should not run for market_cap sorting"
+        async def mock_get_stock_capabilities(self, *, market, capability_names):
+            assert market == "us"
+            assert "sector" in capability_names
+            return _stock_capability_snapshot(
+                market,
+                volume=TvScreenerCapabilityState.USABLE,
+                change_rate=TvScreenerCapabilityState.USABLE,
+                rsi=TvScreenerCapabilityState.USABLE,
+                adx=TvScreenerCapabilityState.USABLE,
+                sector=TvScreenerCapabilityState.USABLE,
             )
 
-        monkeypatch.setattr(yf, "screen", mock_yfinance_screen)
+        async def mock_screen_us_via_tvscreener(**kwargs):
+            assert kwargs["category"] == "Technology"
+            return {
+                "stocks": [
+                    {
+                        "symbol": "AAPL",
+                        "name": "Apple Inc.",
+                        "price": 175.5,
+                        "change_percent": 1.2,
+                        "volume": 75_000_000.0,
+                        "sector": "Technology",
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {"sort_by": "volume", "sort_order": "desc"},
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_us(**kwargs):
+            raise AssertionError("legacy US path should not run when sector is usable")
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+            mock_get_stock_capabilities,
+            raising=False,
+        )
         monkeypatch.setattr(
             "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
-            fail_if_called,
+            mock_screen_us_via_tvscreener,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            fail_legacy_us,
         )
 
         tools = build_tools()
@@ -567,14 +653,170 @@ class TestScreenStocksTvScreenerContract:
             min_market_cap=None,
             max_per=None,
             min_dividend_yield=None,
-            max_rsi=40.0,
+            max_rsi=None,
             sort_by="volume",
             sort_order="desc",
-            limit=50,
+            limit=5,
         )
 
-        assert result["market"] == "us"
-        assert "results" in result
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["results"][0]["sector"] == "Technology"
+
+    @pytest.mark.asyncio
+    async def test_us_sector_request_falls_back_to_legacy_when_capability_missing(
+        self, monkeypatch
+    ):
+        async def mock_get_stock_capabilities(self, *, market, capability_names):
+            assert market == "us"
+            assert "sector" in capability_names
+            return _stock_capability_snapshot(
+                market,
+                volume=TvScreenerCapabilityState.USABLE,
+                change_rate=TvScreenerCapabilityState.USABLE,
+                rsi=TvScreenerCapabilityState.USABLE,
+                adx=TvScreenerCapabilityState.USABLE,
+                sector=TvScreenerCapabilityState.UNSUPPORTED,
+            )
+
+        async def fail_tvscreener_us(**kwargs):
+            raise AssertionError(
+                "tvscreener US path should not run when sector capability is unsupported"
+            )
+
+        async def mock_screen_us(**kwargs):
+            return {
+                "results": [
+                    {
+                        "code": "AAPL",
+                        "name": "Apple Inc.",
+                        "close": 175.5,
+                        "change_rate": 1.2,
+                        "volume": 75_000_000.0,
+                        "sector": "Technology",
+                        "market": "us",
+                    }
+                ],
+                "total_count": 1,
+                "returned_count": 1,
+                "filters_applied": {
+                    "market": "us",
+                    "category": "Technology",
+                    "sort_by": "volume",
+                    "sort_order": "desc",
+                },
+                "market": "us",
+                "timestamp": "2026-03-07T00:00:00+00:00",
+                "meta": {"source": "legacy"},
+            }
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+            mock_get_stock_capabilities,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            fail_tvscreener_us,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            mock_screen_us,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type=None,
+            category="Technology",
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["meta"]["source"] == "legacy"
+        assert result["results"][0]["code"] == "AAPL"
+
+    @pytest.mark.asyncio
+    async def test_us_sector_request_falls_back_to_legacy_when_capability_unknown(
+        self, monkeypatch
+    ):
+        async def mock_get_stock_capabilities(self, *, market, capability_names):
+            assert market == "us"
+            assert "sector" in capability_names
+            return _stock_capability_snapshot(
+                market,
+                volume=TvScreenerCapabilityState.USABLE,
+                change_rate=TvScreenerCapabilityState.USABLE,
+                rsi=TvScreenerCapabilityState.USABLE,
+                adx=TvScreenerCapabilityState.USABLE,
+                sector=TvScreenerCapabilityState.UNKNOWN,
+            )
+
+        async def fail_tvscreener_us(**kwargs):
+            raise AssertionError(
+                "tvscreener US path should not run when sector capability is unknown"
+            )
+
+        async def mock_screen_us(**kwargs):
+            return {
+                "results": [
+                    {
+                        "code": "AAPL",
+                        "name": "Apple Inc.",
+                        "close": 175.5,
+                        "change_rate": 1.2,
+                        "volume": 75_000_000.0,
+                        "sector": "Technology",
+                        "market": "us",
+                    }
+                ],
+                "total_count": 1,
+                "returned_count": 1,
+                "filters_applied": {
+                    "market": "us",
+                    "category": "Technology",
+                    "sort_by": "volume",
+                    "sort_order": "desc",
+                },
+                "market": "us",
+                "timestamp": "2026-03-07T00:00:00+00:00",
+                "meta": {"source": "legacy"},
+            }
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+            mock_get_stock_capabilities,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            fail_tvscreener_us,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            mock_screen_us,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="us",
+            asset_type=None,
+            category="Technology",
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["meta"]["source"] == "legacy"
+        assert result["results"][0]["code"] == "AAPL"
 
     @pytest.mark.asyncio
     async def test_kr_category_with_max_rsi_falls_back_to_legacy_path(
@@ -628,3 +870,149 @@ class TestScreenStocksTvScreenerContract:
 
         assert result["filters_applied"]["asset_type"] == "etf"
         assert result["filters_applied"]["category"] == "반도체"
+
+    @pytest.mark.asyncio
+    async def test_kr_default_stock_request_uses_tvscreener_when_capabilities_verified(
+        self, monkeypatch
+    ):
+        async def mock_get_stock_capabilities(self, *, market, capability_names):
+            assert market == "kr"
+            assert {"volume", "change_rate", "rsi", "adx"}.issubset(capability_names)
+            return _stock_capability_snapshot(
+                market,
+                volume=TvScreenerCapabilityState.USABLE,
+                change_rate=TvScreenerCapabilityState.USABLE,
+                rsi=TvScreenerCapabilityState.USABLE,
+                adx=TvScreenerCapabilityState.USABLE,
+            )
+
+        async def mock_screen_kr_via_tvscreener(**kwargs):
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "name": "Samsung Electronics Co., Ltd.",
+                        "price": 70000.0,
+                        "change_percent": 2.5,
+                        "volume": 15_000_000.0,
+                        "rsi": 41.2,
+                        "adx": 23.5,
+                        "market": "KOSPI",
+                    }
+                ],
+                "count": 1,
+                "filters_applied": {"sort_by": "volume", "sort_order": "desc"},
+                "source": "tvscreener",
+                "error": None,
+            }
+
+        async def fail_legacy_kr(**kwargs):
+            raise AssertionError("legacy KR path should not run when capabilities pass")
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+            mock_get_stock_capabilities,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            mock_screen_kr_via_tvscreener,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
+            fail_legacy_kr,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=35.0,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["meta"]["source"] == "tvscreener"
+        assert result["results"][0]["adx"] == 23.5
+
+    @pytest.mark.asyncio
+    async def test_kr_request_falls_back_to_legacy_when_capability_unverified(
+        self, monkeypatch
+    ):
+        async def mock_get_stock_capabilities(self, *, market, capability_names):
+            assert market == "kr"
+            return _stock_capability_snapshot(
+                market,
+                volume=TvScreenerCapabilityState.UNKNOWN,
+                change_rate=TvScreenerCapabilityState.USABLE,
+                rsi=TvScreenerCapabilityState.USABLE,
+                adx=TvScreenerCapabilityState.USABLE,
+            )
+
+        async def fail_tvscreener_kr(**kwargs):
+            raise AssertionError(
+                "tvscreener KR path should not run when a required capability is unknown"
+            )
+
+        async def mock_screen_kr(**kwargs):
+            return {
+                "results": [
+                    {
+                        "code": "005930",
+                        "name": "삼성전자",
+                        "close": 70000.0,
+                        "change_rate": 2.5,
+                        "volume": 15_000_000.0,
+                        "market": "KOSPI",
+                    }
+                ],
+                "total_count": 1,
+                "returned_count": 1,
+                "filters_applied": {
+                    "market": "kr",
+                    "asset_type": "stock",
+                    "sort_by": "volume",
+                    "sort_order": "desc",
+                },
+                "market": "kr",
+                "meta": {"source": "legacy", "rsi_enrichment": {"error_samples": []}},
+                "timestamp": "2026-03-07T00:00:00+00:00",
+            }
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+            mock_get_stock_capabilities,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            fail_tvscreener_kr,
+        )
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
+            mock_screen_kr,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="kr",
+            asset_type="stock",
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            max_pbr=None,
+            min_dividend_yield=None,
+            max_rsi=35.0,
+            sort_by="volume",
+            sort_order="desc",
+            limit=5,
+        )
+
+        assert result["meta"]["source"] == "legacy"
+        assert result["results"][0]["code"] == "005930"
