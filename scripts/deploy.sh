@@ -17,6 +17,7 @@ NC='\033[0m'
 COMPOSE_FILE="docker-compose.prod.yml"
 ENV_FILE=".env.prod"
 HEALTH_URL="http://localhost:8000/healthz"
+N8N_HEALTH_URL="http://127.0.0.1:5678/healthz"
 HEALTH_RETRIES=15
 HEALTH_INTERVAL=3
 
@@ -164,10 +165,10 @@ echo -e "${GREEN}✅ Services updated${NC}"
 if [ "$HEALTH_CHECK" = true ]; then
     echo -e "${YELLOW}🏥 Running health check...${NC}"
     for i in $(seq 1 $HEALTH_RETRIES); do
-        if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
+        if curl -sf "$HEALTH_URL" > /dev/null 2>&1 && curl -sf "$N8N_HEALTH_URL" > /dev/null 2>&1; then
             DEPLOY_END=$(date +%s)
             DEPLOY_DURATION=$((DEPLOY_END - DEPLOY_START))
-            echo -e "${GREEN}✅ Health check passed!${NC}"
+            echo -e "${GREEN}✅ API and n8n health checks passed!${NC}"
             echo ""
             echo -e "${GREEN}🎉 Deployment completed in ${DEPLOY_DURATION}s${NC}"
             echo ""
@@ -188,6 +189,9 @@ if [ "$HEALTH_CHECK" = true ]; then
     echo -e "${RED}🔴 Health check failed after $((HEALTH_RETRIES * HEALTH_INTERVAL))s!${NC}"
     echo ""
     echo "📋 Debug commands:"
+    echo "  curl -f $HEALTH_URL"
+    echo "  curl -f $N8N_HEALTH_URL"
+    echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE logs --tail=50 api n8n"
     echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE logs --tail=50"
     echo "  docker compose --env-file $ENV_FILE -f $COMPOSE_FILE ps"
     exit 1

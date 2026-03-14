@@ -58,11 +58,9 @@ docker exec auto_trader_n8n_prod n8n import:workflow \
   --input=/home/node/.n8n/workflows/
 ```
 
-## 환경변수 (.env.prod)
+## 런타임 계약
 
-| 변수 | 설명 | 기본값 |
-|------|------|--------|
-| `N8N_PORT` | 웹 UI 포트 | 5678 |
+n8n은 내부 전용으로 `127.0.0.1:5678`에 고정 바인딩됩니다.
 
 ## 배포
 
