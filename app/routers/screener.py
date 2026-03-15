@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
@@ -111,23 +111,23 @@ async def screener_report_page(request: Request, job_id: str):
 
 @router.get("/api/screener/list")
 async def screener_list(
-    market: Literal["kr", "us", "crypto"] = "kr",
-    asset_type: Literal["stock", "etf", "etn"] | None = None,
-    category: str | None = None,
-    sector: str | None = None,
-    strategy: str | None = None,
-    sort_by: str | None = None,
-    sort_order: Literal["asc", "desc"] = "desc",
-    min_market_cap: float | None = Query(default=None),
-    max_per: float | None = Query(default=None),
-    max_pbr: float | None = Query(default=None),
-    min_dividend_yield: float | None = Query(default=None),
-    min_dividend: float | None = Query(default=None),
-    min_analyst_buy: float | None = Query(default=None),
-    max_rsi: float | None = Query(default=None),
-    min_volume: float | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=100),
-    service: ScreenerService = Depends(get_screener_service),
+    service: Annotated[ScreenerService, Depends(get_screener_service)],
+    market: Annotated[Literal["kr", "us", "crypto"], Query()] = "kr",
+    asset_type: Annotated[Literal["stock", "etf", "etn"] | None, Query()] = None,
+    category: Annotated[str | None, Query()] = None,
+    sector: Annotated[str | None, Query()] = None,
+    strategy: Annotated[str | None, Query()] = None,
+    sort_by: Annotated[str | None, Query()] = None,
+    sort_order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    min_market_cap: Annotated[float | None, Query()] = None,
+    max_per: Annotated[float | None, Query()] = None,
+    max_pbr: Annotated[float | None, Query()] = None,
+    min_dividend_yield: Annotated[float | None, Query()] = None,
+    min_dividend: Annotated[float | None, Query()] = None,
+    min_analyst_buy: Annotated[float | None, Query()] = None,
+    max_rsi: Annotated[float | None, Query()] = None,
+    min_volume: Annotated[float | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
     try:
         request_kwargs: dict[str, object | None] = {
@@ -162,7 +162,7 @@ async def screener_list(
 @router.post("/api/screener/refresh")
 async def screener_refresh(
     payload: ScreenerFilterRequest,
-    service: ScreenerService = Depends(get_screener_service),
+    service: Annotated[ScreenerService, Depends(get_screener_service)],
 ):
     try:
         request_kwargs = payload.model_dump()
@@ -184,7 +184,7 @@ async def screener_refresh(
 @router.post("/api/screener/report")
 async def screener_request_report(
     payload: ScreenerReportRequest,
-    service: ScreenerService = Depends(get_screener_service),
+    service: Annotated[ScreenerService, Depends(get_screener_service)],
 ):
     return await service.request_report(
         market=payload.market,
@@ -196,7 +196,7 @@ async def screener_request_report(
 @router.get("/api/screener/report/{job_id}")
 async def screener_report_status(
     job_id: str,
-    service: ScreenerService = Depends(get_screener_service),
+    service: Annotated[ScreenerService, Depends(get_screener_service)],
 ):
     return await service.get_report_status(job_id)
 
@@ -204,8 +204,8 @@ async def screener_report_status(
 @router.post("/api/screener/callback")
 async def screener_callback(
     payload: ScreenerCallbackRequest,
-    _: None = Depends(_require_openclaw_callback_token),
-    service: ScreenerService = Depends(get_screener_service),
+    _: Annotated[None, Depends(_require_openclaw_callback_token)],
+    service: Annotated[ScreenerService, Depends(get_screener_service)],
 ):
     return await service.process_callback(payload.model_dump(exclude_none=True))
 
@@ -213,7 +213,7 @@ async def screener_callback(
 @router.post("/api/screener/order")
 async def screener_order(
     payload: ScreenerOrderRequest,
-    service: ScreenerService = Depends(get_screener_service),
+    service: Annotated[ScreenerService, Depends(get_screener_service)],
 ):
     return await service.place_order(
         market=payload.market,

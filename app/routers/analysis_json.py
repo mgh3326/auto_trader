@@ -1,4 +1,6 @@
 import json
+from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
@@ -10,6 +12,12 @@ from app.core.templates import templates
 from app.models.analysis import StockAnalysisResult, StockInfo
 
 router = APIRouter(prefix="/analysis-json", tags=["JSON Analysis Results"])
+
+
+def _isoformat_or_none(value: object) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return None
 
 
 def _normalize_reasons(raw_reasons) -> list[str]:
@@ -47,13 +55,13 @@ async def analysis_json_dashboard_page(request: Request):
 
 @router.get("/api/results")
 async def get_analysis_results(
-    db: AsyncSession = Depends(get_db),
-    instrument_type: str | None = Query(None, description="상품 타입 필터"),
-    symbol: str | None = Query(None, description="종목 코드 필터"),
-    model_name: str | None = Query(None, description="모델명 필터"),
-    decision: str | None = Query(None, description="투자 결정 필터"),
-    page: int = Query(1, ge=1, description="페이지 번호"),
-    page_size: int = Query(20, ge=1, le=100, description="페이지 크기"),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    instrument_type: Annotated[str | None, Query(description="상품 타입 필터")] = None,
+    symbol: Annotated[str | None, Query(description="종목 코드 필터")] = None,
+    model_name: Annotated[str | None, Query(description="모델명 필터")] = None,
+    decision: Annotated[str | None, Query(description="투자 결정 필터")] = None,
+    page: Annotated[int, Query(ge=1, description="페이지 번호")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100, description="페이지 크기")] = 20,
 ):
     """JSON 분석 결과를 조회하는 API"""
     # 기본 쿼리 생성 (StockInfo와 JOIN)
@@ -92,7 +100,7 @@ async def get_analysis_results(
     if decision and decision != "전체":
         count_query = count_query.where(StockAnalysisResult.decision == decision)
 
-    total_count = await db.scalar(count_query)
+    total_count = int(await db.scalar(count_query) or 0)
 
     # 페이지네이션 적용
     query = query.order_by(StockAnalysisResult.created_at.desc())
@@ -124,9 +132,7 @@ async def get_analysis_results(
                 "sell_target_max": analysis_result.sell_target_max,
                 "reasons": _normalize_reasons(analysis_result.reasons),
                 "detailed_text": analysis_result.detailed_text,
-                "created_at": analysis_result.created_at.isoformat()
-                if analysis_result.created_at
-                else None,
+                "created_at": _isoformat_or_none(analysis_result.created_at),
             }
         )
 
@@ -141,7 +147,7 @@ async def get_analysis_results(
 
 def _build_analysis_response(
     analysis_result: StockAnalysisResult, stock_info: StockInfo
-) -> dict:
+) -> dict[str, object]:
     """분석 결과를 응답 형식으로 변환하는 헬퍼 함수"""
     reasons = _normalize_reasons(analysis_result.reasons)
 
@@ -171,15 +177,16 @@ def _build_analysis_response(
         },
         "reasons": reasons,
         "detailed_text": analysis_result.detailed_text,
-        "created_at": analysis_result.created_at.isoformat()
-        if analysis_result.created_at
-        else None,
+        "created_at": _isoformat_or_none(analysis_result.created_at),
         "prompt": analysis_result.prompt,
     }
 
 
 @router.get("/api/detail/{result_id}")
-async def get_analysis_detail(result_id: int, db: AsyncSession = Depends(get_db)):
+async def get_analysis_detail(
+    result_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     """특정 분석 결과의 상세 정보를 조회하는 API"""
 
     query = (
@@ -200,7 +207,8 @@ async def get_analysis_detail(result_id: int, db: AsyncSession = Depends(get_db)
 
 @router.get("/api/detail/by-symbol/{symbol}")
 async def get_latest_analysis_by_symbol(
-    symbol: str, db: AsyncSession = Depends(get_db)
+    symbol: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """특정 종목의 최신 분석 결과를 조회하는 API"""
 
@@ -223,7 +231,7 @@ async def get_latest_analysis_by_symbol(
 
 
 @router.get("/api/filters")
-async def get_filter_options(db: AsyncSession = Depends(get_db)):
+async def get_filter_options(db: Annotated[AsyncSession, Depends(get_db)]):
     """필터 옵션을 조회하는 API"""
 
     # 상품 타입 옵션 (StockInfo에서 조회)
@@ -260,7 +268,7 @@ async def get_filter_options(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/api/statistics")
-async def get_analysis_statistics(db: AsyncSession = Depends(get_db)):
+async def get_analysis_statistics(db: Annotated[AsyncSession, Depends(get_db)]):
     """분석 통계를 조회하는 API"""
 
     # 전체 분석 개수 (활성화된 주식만)

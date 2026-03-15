@@ -6,7 +6,7 @@ Symbol Trade Settings Service
 """
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypedDict
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -180,7 +180,7 @@ class SymbolTradeSettingsService:
             query = query.where(SymbolTradeSettings.user_id == user_id)
         result = await self.db.execute(query)
         await self.db.commit()
-        return result.rowcount > 0
+        return _rowcount(result) > 0
 
     async def deactivate(self, symbol: str, user_id: int | None = None) -> bool:
         """설정 비활성화"""
@@ -189,7 +189,7 @@ class SymbolTradeSettingsService:
             query = query.where(SymbolTradeSettings.user_id == user_id)
         result = await self.db.execute(query.values(is_active=False))
         await self.db.commit()
-        return result.rowcount > 0
+        return _rowcount(result) > 0
 
     async def activate(self, symbol: str, user_id: int | None = None) -> bool:
         """설정 활성화"""
@@ -198,12 +198,31 @@ class SymbolTradeSettingsService:
             query = query.where(SymbolTradeSettings.user_id == user_id)
         result = await self.db.execute(query.values(is_active=True))
         await self.db.commit()
-        return result.rowcount > 0
+        return _rowcount(result) > 0
+
+
+class BuyPriceInput(TypedDict):
+    price_name: str
+    price: float
+
+
+class BuyPriceResult(TypedDict):
+    price_name: str
+    price: float
+    quantity: float
+    cost: float
+
+
+def _rowcount(result: object) -> int:
+    value = getattr(result, "rowcount", None)
+    if isinstance(value, int):
+        return value
+    return 0
 
 
 def calculate_estimated_order_cost(
     symbol: str,
-    buy_prices: list[dict[str, float]],
+    buy_prices: list[BuyPriceInput],
     quantity_per_order: float,
     currency: str = "KRW",
 ) -> dict[str, Any]:
@@ -229,7 +248,7 @@ def calculate_estimated_order_cost(
             "currency": "KRW"
         }
     """
-    result_prices = []
+    result_prices: list[BuyPriceResult] = []
     total_quantity = 0
     total_cost = 0.0
 

@@ -5,6 +5,7 @@ Manual Holdings Router
 """
 
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -73,8 +74,8 @@ async def manual_holdings_page(request: Request):
 
 @router.get("/api/broker-accounts", response_model=list[BrokerAccountResponse])
 async def list_broker_accounts(
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """브로커 계좌 목록 조회"""
     service = BrokerAccountService(db)
@@ -85,8 +86,8 @@ async def list_broker_accounts(
 @router.post("/api/broker-accounts", response_model=BrokerAccountResponse)
 async def create_broker_account(
     data: BrokerAccountCreate,
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """브로커 계좌 생성"""
     service = BrokerAccountService(db)
@@ -117,8 +118,8 @@ async def create_broker_account(
 async def update_broker_account(
     account_id: int,
     data: BrokerAccountUpdate,
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """브로커 계좌 수정"""
     service = BrokerAccountService(db)
@@ -136,8 +137,8 @@ async def update_broker_account(
 @router.delete("/api/broker-accounts/{account_id}")
 async def delete_broker_account(
     account_id: int,
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """브로커 계좌 삭제"""
     service = BrokerAccountService(db)
@@ -157,10 +158,10 @@ async def delete_broker_account(
 
 @router.get("/api/holdings", response_model=list[ManualHoldingResponse])
 async def list_holdings(
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
     market_type: MarketType | None = None,
     broker_type: BrokerType | None = None,
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
 ):
     """수동 보유 종목 목록 조회"""
     service = ManualHoldingsService(db)
@@ -184,8 +185,8 @@ async def list_holdings(
 @router.post("/api/holdings", response_model=ManualHoldingResponse)
 async def create_holding(
     data: ManualHoldingCreate,
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """수동 보유 종목 등록"""
     # 브로커 계좌 조회 또는 생성
@@ -226,8 +227,8 @@ async def create_holding(
 @router.post("/api/holdings/bulk", response_model=list[ManualHoldingResponse])
 async def create_holdings_bulk(
     data: ManualHoldingBulkCreate,
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """수동 보유 종목 일괄 등록"""
     account_service = BrokerAccountService(db)
@@ -276,8 +277,8 @@ async def create_holdings_bulk(
 async def update_holding(
     holding_id: int,
     data: ManualHoldingUpdate,
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """수동 보유 종목 수정"""
     service = ManualHoldingsService(db)
@@ -299,8 +300,8 @@ async def update_holding(
 @router.delete("/api/holdings/{holding_id}")
 async def delete_holding(
     holding_id: int,
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """수동 보유 종목 삭제"""
     service = ManualHoldingsService(db)
@@ -320,10 +321,10 @@ async def delete_holding(
 
 @router.get("/api/stock-aliases/search", response_model=StockAliasSearchResult)
 async def search_stock_aliases(
-    q: str = Query(..., min_length=1, description="검색어"),
+    q: Annotated[str, Query(min_length=1, description="검색어")],
+    db: Annotated[AsyncSession, Depends(get_db)],
     market_type: MarketType | None = None,
-    limit: int = Query(default=20, le=100),
-    db: AsyncSession = Depends(get_db),
+    limit: Annotated[int, Query(le=100)] = 20,
 ):
     """종목 별칭 검색"""
     service = StockAliasService(db)
@@ -337,7 +338,7 @@ async def search_stock_aliases(
 @router.post("/api/stock-aliases", response_model=StockAliasResponse)
 async def create_stock_alias(
     data: StockAliasCreate,
-    db: AsyncSession = Depends(get_db),
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """종목 별칭 등록"""
     service = StockAliasService(db)
@@ -360,8 +361,8 @@ async def create_stock_alias(
 
 @router.post("/api/stock-aliases/seed-toss")
 async def seed_toss_stock_aliases(
-    current_user: User = Depends(get_authenticated_user),
-    db: AsyncSession = Depends(get_db),
+    current_user: Annotated[User, Depends(get_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """토스 종목 별칭 기본 데이터 시딩"""
     count = await seed_toss_aliases(db)

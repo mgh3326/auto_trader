@@ -1,4 +1,6 @@
 import json
+from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -11,6 +13,18 @@ from app.jobs.analyze import run_analysis_for_stock
 from app.models.analysis import StockAnalysisResult, StockInfo
 
 router = APIRouter(prefix="/stock-latest", tags=["Stock Latest Analysis"])
+
+
+def _isoformat_or_none(value: object) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return None
+
+
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return False
 
 
 def _normalize_reasons(raw_reasons) -> list[str]:
@@ -50,12 +64,12 @@ async def stock_latest_dashboard_page(request: Request):
 
 @router.get("/api/latest-results")
 async def get_latest_analysis_results(
-    db: AsyncSession = Depends(get_db),
-    instrument_type: str | None = Query(None, description="상품 타입 필터"),
-    symbol: str | None = Query(None, description="종목 코드 필터"),
-    decision: str | None = Query(None, description="투자 결정 필터"),
-    page: int = Query(1, ge=1, description="페이지 번호"),
-    page_size: int = Query(20, ge=1, le=100, description="페이지 크기"),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    instrument_type: Annotated[str | None, Query(description="상품 타입 필터")] = None,
+    symbol: Annotated[str | None, Query(description="종목 코드 필터")] = None,
+    decision: Annotated[str | None, Query(description="투자 결정 필터")] = None,
+    page: Annotated[int, Query(ge=1, description="페이지 번호")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100, description="페이지 크기")] = 20,
 ):
     """종목별 최신 분석 결과를 조회하는 API"""
 
@@ -100,7 +114,7 @@ async def get_latest_analysis_results(
     # 전체 개수 조회
     count_subquery = base_query.subquery()
     count_query = select(func.count()).select_from(count_subquery)
-    total_count = await db.scalar(count_query)
+    total_count = int(await db.scalar(count_query) or 0)
 
     # 페이지네이션 적용 (최신 분석 순으로 정렬)
     query = base_query.order_by(latest_analysis_subquery.c.latest_created_at.desc())
@@ -134,9 +148,7 @@ async def get_latest_analysis_results(
                     "buy_hope_max": analysis_result.buy_hope_max,
                     "sell_target_min": analysis_result.sell_target_min,
                     "sell_target_max": analysis_result.sell_target_max,
-                    "created_at": analysis_result.created_at.isoformat()
-                    if analysis_result.created_at
-                    else None,
+                    "created_at": _isoformat_or_none(analysis_result.created_at),
                 },
             }
         )
@@ -153,9 +165,9 @@ async def get_latest_analysis_results(
 @router.get("/api/stock/{stock_info_id}/history")
 async def get_stock_analysis_history(
     stock_info_id: int,
-    db: AsyncSession = Depends(get_db),
-    page: int = Query(1, ge=1, description="페이지 번호"),
-    page_size: int = Query(10, ge=1, le=50, description="페이지 크기"),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    page: Annotated[int, Query(ge=1, description="페이지 번호")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50, description="페이지 크기")] = 10,
 ):
     """특정 종목의 분석 이력을 조회하는 API"""
 
@@ -178,7 +190,7 @@ async def get_stock_analysis_history(
     count_query = select(func.count(StockAnalysisResult.id)).where(
         StockAnalysisResult.stock_info_id == stock_info_id
     )
-    total_count = await db.scalar(count_query)
+    total_count = int(await db.scalar(count_query) or 0)
 
     # 페이지네이션 적용
     history_query = history_query.offset((page - 1) * page_size).limit(page_size)
@@ -215,9 +227,7 @@ async def get_stock_analysis_history(
                 },
                 "reasons": reasons,
                 "detailed_text": analysis.detailed_text,
-                "created_at": analysis.created_at.isoformat()
-                if analysis.created_at
-                else None,
+                "created_at": _isoformat_or_none(analysis.created_at),
             }
         )
 
@@ -239,7 +249,7 @@ async def get_stock_analysis_history(
 
 
 @router.get("/api/filters")
-async def get_filter_options(db: AsyncSession = Depends(get_db)):
+async def get_filter_options(db: Annotated[AsyncSession, Depends(get_db)]):
     """필터 옵션을 조회하는 API"""
 
     # 상품 타입 옵션 (StockInfo에서 조회)
@@ -296,7 +306,10 @@ async def get_filter_options(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/api/analyze-status/{stock_info_id}")
-async def get_analysis_status(stock_info_id: int, db: AsyncSession = Depends(get_db)):
+async def get_analysis_status(
+    stock_info_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     """특정 종목의 분석 상태를 확인하는 API"""
 
     # 종목 정보 확인
@@ -327,9 +340,7 @@ async def get_analysis_status(stock_info_id: int, db: AsyncSession = Depends(get
         },
         "latest_analysis": {
             "id": latest_analysis.id,
-            "created_at": latest_analysis.created_at.isoformat()
-            if latest_analysis.created_at
-            else None,
+            "created_at": _isoformat_or_none(latest_analysis.created_at),
             "model_name": latest_analysis.model_name,
             "decision": latest_analysis.decision,
             "confidence": latest_analysis.confidence,
@@ -340,7 +351,9 @@ async def get_analysis_status(stock_info_id: int, db: AsyncSession = Depends(get
 
 
 @router.get("/api/statistics")
-async def get_latest_analysis_statistics(db: AsyncSession = Depends(get_db)):
+async def get_latest_analysis_statistics(
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     """최신 분석 통계를 조회하는 API"""
 
     # 최신 분석 결과 서브쿼리
@@ -354,8 +367,11 @@ async def get_latest_analysis_statistics(db: AsyncSession = Depends(get_db)):
     )
 
     # 활성 종목 수
-    active_stocks_count = await db.scalar(
-        select(func.count(StockInfo.id)).where(StockInfo.is_active == True)
+    active_stocks_count = int(
+        await db.scalar(
+            select(func.count(StockInfo.id)).where(StockInfo.is_active == True)
+        )
+        or 0
     )
 
     # 최신 분석이 있는 종목 수
@@ -368,8 +384,8 @@ async def get_latest_analysis_statistics(db: AsyncSession = Depends(get_db)):
         .where(StockInfo.is_active == True)
         .subquery()
     )
-    analyzed_stocks_count = await db.scalar(
-        select(func.count()).select_from(analyzed_stocks_subquery)
+    analyzed_stocks_count = int(
+        await db.scalar(select(func.count()).select_from(analyzed_stocks_subquery)) or 0
     )
 
     # 투자 결정별 통계 (최신 분석 기준)
@@ -433,7 +449,10 @@ async def get_latest_analysis_statistics(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/api/analyze/{stock_info_id}")
-async def trigger_new_analysis(stock_info_id: int, db: AsyncSession = Depends(get_db)):
+async def trigger_new_analysis(
+    stock_info_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
     # 종목 정보 확인
     stock_info_query = select(StockInfo).where(StockInfo.id == stock_info_id)
     stock_info_result = await db.execute(stock_info_query)
@@ -442,11 +461,16 @@ async def trigger_new_analysis(stock_info_id: int, db: AsyncSession = Depends(ge
     if not stock_info:
         raise HTTPException(status_code=404, detail="종목을 찾을 수 없습니다.")
 
-    if not stock_info.is_active:
+    if not _coerce_bool(stock_info.is_active):
         raise HTTPException(status_code=400, detail="비활성화된 종목입니다.")
 
+    symbol = str(stock_info.symbol)
+    name = str(stock_info.name)
+    instrument_type = str(stock_info.instrument_type)
     result = await run_analysis_for_stock(
-        stock_info.symbol, stock_info.name, stock_info.instrument_type
+        symbol,
+        name,
+        instrument_type,
     )
 
     return {
