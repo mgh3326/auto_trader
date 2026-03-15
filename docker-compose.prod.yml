@@ -117,10 +117,12 @@ services:
     env_file:
       - .env.prod
     environment:
-      WS_MONITOR_HEARTBEAT_PATH: ${WS_MONITOR_HEARTBEAT_PATH:-/tmp/websocket_monitor_heartbeat.json}
+      WS_MONITOR_HEARTBEAT_PATH: /shared/heartbeat/upbit.json
       WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS: ${WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS:-5}
       WS_MONITOR_RECONNECT_DELAY_SECONDS: ${WS_MONITOR_RECONNECT_DELAY_SECONDS:-5}
       WS_MONITOR_EXPECT_MODE: upbit
+    volumes:
+      - ws-heartbeat:/shared/heartbeat
     depends_on:
       - api
     restart: unless-stopped
@@ -146,10 +148,12 @@ services:
     env_file:
       - .env.prod
     environment:
-      WS_MONITOR_HEARTBEAT_PATH: ${WS_MONITOR_HEARTBEAT_PATH:-/tmp/websocket_monitor_heartbeat.json}
+      WS_MONITOR_HEARTBEAT_PATH: /shared/heartbeat/kis.json
       WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS: ${WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS:-5}
       WS_MONITOR_RECONNECT_DELAY_SECONDS: ${WS_MONITOR_RECONNECT_DELAY_SECONDS:-5}
       WS_MONITOR_EXPECT_MODE: kis
+    volumes:
+      - ws-heartbeat:/shared/heartbeat
     depends_on:
       - api
     restart: unless-stopped
@@ -168,6 +172,10 @@ services:
         reservations:
           memory: 128M
           cpus: '0.125'
+
+volumes:
+  ws-heartbeat:
+    name: auto_trader_ws_heartbeat
 
 # n8n은 docker-compose.n8n.yml에서 별도 관리 (caddy와 동일 패턴)
 # 네이티브 PostgreSQL과 Redis 사용으로 볼륨/네트워크 불필요
