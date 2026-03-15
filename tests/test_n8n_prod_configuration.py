@@ -29,12 +29,13 @@ def test_n8n_compose_uses_fixed_internal_port_for_healthcheck() -> None:
     assert "N8N_PORT" not in content
 
 
-def test_deploy_script_requires_api_and_n8n_health() -> None:
+def test_deploy_script_checks_api_only() -> None:
+    """deploy script는 API 헬스체크만 수행하며 n8n은 체크하지 않는다."""
     content = DEPLOY_SCRIPT_PATH.read_text(encoding="utf-8")
 
-    assert "N8N_HEALTH_URL=" in content
+    assert "N8N_HEALTH_URL=" not in content
     assert 'curl -sf "$HEALTH_URL" > /dev/null 2>&1' in content
-    assert 'curl -sf "$N8N_HEALTH_URL" > /dev/null 2>&1' in content
+    assert 'curl -sf "$N8N_HEALTH_URL" > /dev/null 2>&1' not in content
 
 
 def test_n8n_readme_documents_fixed_internal_port() -> None:
@@ -51,12 +52,9 @@ def test_n8n_readme_references_separate_compose() -> None:
     assert "docker-compose.n8n.yml" in content
 
 
-def test_deploy_script_debug_commands_split_by_stack() -> None:
+def test_deploy_script_has_only_prod_debug_commands() -> None:
+    """deploy.sh는 prod stack 디버그 명령어만 포함한다."""
     content = DEPLOY_SCRIPT_PATH.read_text(encoding="utf-8")
 
-    # 잘못된 combined 명령어가 없어야 함
-    assert "logs --tail=50 api n8n" not in content
-
-    # prod stack과 n8n stack 디버그 명령어가 분리되어야 함
+    assert "docker-compose.n8n.yml" not in content
     assert "logs --tail=50 api" in content
-    assert "docker compose -f docker-compose.n8n.yml logs --tail=50 n8n" in content

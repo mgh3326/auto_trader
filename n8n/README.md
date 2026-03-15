@@ -60,7 +60,15 @@ docker exec auto_trader_n8n_prod n8n import:workflow \
 
 ## 런타임 계약
 
-n8n은 내부 전용으로 `127.0.0.1:5678`에 고정 바인딩됩니다.
+n8n은 낮부 전용으로 `127.0.0.1:5678`에 고정 바인딩됩니다.
+
+## 배포 및 소유권 경계
+
+**중요**: `n8n`은 `scripts/deploy.sh`와 별개로 관리됩니다.
+
+- `deploy.sh`는 API stack (`docker-compose.prod.yml`)만 배포하고 검증합니다
+- `n8n`은 별도 compose 파일로 수동/독립적으로 시작/중지/업데이트합니다
+- `deploy.sh`는 `n8n`의 시작, 재시작, 또는 헬스체크를 수행하지 않습니다
 
 ## 배포
 
