@@ -1,9 +1,11 @@
 """Authentication middleware for protecting web routes."""
 
-from typing import ClassVar
+from contextlib import AbstractAsyncContextManager
+from typing import ClassVar, cast
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.auth.web_router import get_current_user_from_session
@@ -44,6 +46,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     PUBLIC_API_PATHS: ClassVar[list[str]] = [
         "/api/v1/openclaw/callback",
         "/api/screener/callback",
+        "/api/n8n/pending-orders",
     ]
     LEGACY_DEPRECATED_PREFIXES: ClassVar[list[str]] = [
         "/manual-holdings",
@@ -83,6 +86,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         )
 
     @staticmethod
+    async def _load_user(request: Request):
+        session_manager = cast(
+            AbstractAsyncContextManager[AsyncSession],
+            cast(object, AsyncSessionLocal()),
+        )
+        async with session_manager as db:
+            return await get_current_user_from_session(request, db)
+
+    @staticmethod
     def _is_api_request_path(path: str) -> bool:
         """Treat both '/api/*' and '*/api/*' paths as API requests."""
         return path.startswith("/api/") or "/api/" in path or path.endswith("/api")
@@ -106,8 +118,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Handle API endpoints with explicit public allowlist
         if is_api_request:
-            async with AsyncSessionLocal() as db:
-                user = await get_current_user_from_session(request, db)
+            user = await self._load_user(request)
 
             if not user:
                 return JSONResponse(
@@ -122,19 +133,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # This is a simple heuristic: if it's a GET request
         # and might return HTML
         if request.method == "GET":
-            async with AsyncSessionLocal() as db:
-                user = await get_current_user_from_session(request, db)
+            user = await self._load_user(request)
 
-                # If not authenticated, redirect to login
-                if not user:
-                    # Save the original URL to redirect back after login
-                    next_url = str(request.url)
-                    return RedirectResponse(
-                        url=f"/web-auth/login?next={next_url}",
-                        status_code=303,
-                    )
+            # If not authenticated, redirect to login
+            if not user:
+                # Save the original URL to redirect back after login
+                next_url = str(request.url)
+                return RedirectResponse(
+                    url=f"/web-auth/login?next={next_url}",
+                    status_code=303,
+                )
 
-                # Store user in request state for use in route handlers
-                request.state.user = user
+            # Store user in request state for use in route handlers
+            request.state.user = user
 
         return await call_next(request)
