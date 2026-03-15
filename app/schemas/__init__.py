@@ -24,6 +24,11 @@ from .manual_holdings import (
     StockAliasResponse,
     StockAliasSearchResult,
 )
+from .n8n import (
+    N8nPendingOrderItem,
+    N8nPendingOrdersResponse,
+    N8nPendingOrderSummary,
+)
 from .research_backtest import BacktestPairSummary, BacktestRunSummary
 
 __all__ = [
@@ -40,6 +45,9 @@ __all__ = [
     "StockAliasCreate",
     "StockAliasResponse",
     "StockAliasSearchResult",
+    "N8nPendingOrderItem",
+    "N8nPendingOrderSummary",
+    "N8nPendingOrdersResponse",
     # Portfolio
     "HoldingInfoResponse",
     "ReferencePricesResponse",

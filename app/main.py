@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.responses import Response
 
 from app.auth.admin_router import router as admin_router
 from app.auth.router import router as auth_router
@@ -23,6 +24,7 @@ from app.routers import (
     deprecated_pages,
     health,
     kospi200,
+    n8n,
     news_analysis,
     openclaw_callback,
     orderbook,
@@ -41,6 +43,15 @@ from app.services.error_serialization import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _typed_rate_limit_exceeded_handler(request: Request, exc: Exception) -> Response:
+    if isinstance(exc, RateLimitExceeded):
+        return _rate_limit_exceeded_handler(request, exc)
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": "Rate limit exceeded"},
+    )
 
 
 def configure_logging() -> None:
@@ -91,7 +102,7 @@ def create_app() -> FastAPI:
 
     # Add slowapi state for rate limiting
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(RateLimitExceeded, _typed_rate_limit_exceeded_handler)
 
     # Add global exception handler for detailed error logging
     @app.exception_handler(Exception)
@@ -133,6 +144,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(analysis_json.router)
     app.include_router(news_analysis.router)
+    app.include_router(n8n.router)
     app.include_router(openclaw_callback.router)
     app.include_router(stock_latest.router)
     app.include_router(symbol_settings.router)
