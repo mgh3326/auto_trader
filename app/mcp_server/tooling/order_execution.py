@@ -7,9 +7,6 @@ import json
 from typing import Any, Literal
 
 import app.services.brokers.upbit.client as upbit_service
-from app.services.brokers.upbit.client import (
-    parse_upbit_account_row as _parse_upbit_account_row,
-)
 from app.core.config import settings
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling.market_data_quotes import (
@@ -32,6 +29,9 @@ from app.mcp_server.tooling.shared import (
 from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
+)
+from app.services.brokers.upbit.client import (
+    parse_upbit_account_row as _parse_upbit_account_row,
 )
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
