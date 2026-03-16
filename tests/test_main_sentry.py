@@ -8,6 +8,7 @@ import pytest
 from starlette.requests import Request
 
 import app.main as main_module
+from app.monitoring.sentry import _before_send
 
 
 def _build_request(path: str = "/boom") -> Request:
@@ -64,3 +65,87 @@ async def test_global_exception_handler_captures_to_sentry(monkeypatch):
     assert str(called_error) == "boom"
     assert capture_mock.call_args.kwargs["path"] == "/boom"
     assert capture_mock.call_args.kwargs["method"] == "GET"
+
+
+class TestYfinanceLogEventFiltering:
+    """yfinance internal logger ERROR events are filtered from Sentry."""
+
+    def test_yfinance_invalid_crumb_event_is_dropped(self):
+        """yfinance logger 'Invalid Crumb' error should not create Sentry event."""
+        event = {
+            "logger": "yfinance",
+            "message": 'HTTP Error 401: {"finance":{"error":{"description":"Invalid Crumb"}}}',
+            "level": "error",
+        }
+        hint: dict = {
+            "log_record": type(
+                "LogRecord",
+                (),
+                {
+                    "name": "yfinance",
+                    "getMessage": lambda self: event["message"],
+                },
+            )(),
+        }
+        result = _before_send(event, hint)
+        assert result is None  # dropped
+
+    def test_yfinance_invalid_cookie_event_is_dropped(self):
+        """yfinance logger 'Invalid Cookie' error should not create Sentry event."""
+        event = {
+            "logger": "yfinance",
+            "message": 'HTTP Error 401: {"finance":{"error":{"description":"Invalid Cookie"}}}',
+            "level": "error",
+        }
+        hint: dict = {
+            "log_record": type(
+                "LogRecord",
+                (),
+                {
+                    "name": "yfinance",
+                    "getMessage": lambda self: event["message"],
+                },
+            )(),
+        }
+        result = _before_send(event, hint)
+        assert result is None
+
+    def test_non_yfinance_401_event_is_kept(self):
+        """Non-yfinance 401 errors should still be captured."""
+        event = {
+            "logger": "app.services.kis",
+            "message": "HTTP 401 Unauthorized",
+            "level": "error",
+        }
+        hint: dict = {
+            "log_record": type(
+                "LogRecord",
+                (),
+                {
+                    "name": "app.services.kis",
+                    "getMessage": lambda self: event["message"],
+                },
+            )(),
+        }
+        result = _before_send(event, hint)
+        assert result is not None  # kept
+
+    def test_yfinance_non_crumb_error_is_kept(self):
+        """yfinance errors that are NOT crumb/cookie related should be kept."""
+        event = {
+            "logger": "yfinance",
+            "message": "Connection timeout for AAPL",
+            "level": "error",
+        }
+        hint: dict = {
+            "log_record": type(
+                "LogRecord",
+                (),
+                {
+                    "name": "yfinance",
+                    "getMessage": lambda self: event["message"],
+                },
+            )(),
+        }
+        result = _before_send(event, hint)
+        assert result is not None  # kept

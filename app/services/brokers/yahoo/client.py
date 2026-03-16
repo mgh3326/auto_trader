@@ -1,5 +1,7 @@
 # app/services/yahoo.py
 import asyncio
+import logging
+import urllib.error
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -9,6 +11,8 @@ import yfinance as yf
 from app.core.config import settings
 from app.core.symbol import to_yahoo_symbol
 from app.monitoring import build_yfinance_tracing_session
+
+logger = logging.getLogger(__name__)
 
 
 def _flatten_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -63,6 +67,16 @@ def _to_int_or_none(value: Any) -> int | None:
         return None
 
 
+_CRUMB_RETRY_MAX = 1
+
+
+def _is_crumb_auth_error(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError) and exc.code == 401:
+        return True
+    msg = str(exc).lower()
+    return "invalid crumb" in msg or "invalid cookie" in msg
+
+
 async def fetch_ohlcv(
     ticker: str,
     days: int = 100,
@@ -103,44 +117,54 @@ async def _fetch_ohlcv_raw(
     period: str = "day",
     end_date: datetime | None = None,
 ) -> pd.DataFrame:
-    period_map = {
-        "day": "1d",
-        "week": "1wk",
-        "month": "1mo",
-        "1h": "60m",
-    }
+    period_map = {"day": "1d", "week": "1wk", "month": "1mo", "1h": "60m"}
     if period not in period_map:
         raise ValueError(f"period must be one of {list(period_map.keys())}")
 
-    yahoo_ticker = to_yahoo_symbol(ticker)  # DB형식 . -> Yahoo형식 -
+    yahoo_ticker = to_yahoo_symbol(ticker)
     end = (end_date.date() if end_date else datetime.now(UTC).date()) + timedelta(
         days=1
     )
-
-    # 주봉/월봉은 더 넓은 기간 필요
     multiplier = {"day": 2, "week": 10, "month": 40, "1h": 2}.get(period, 2)
     start = end - timedelta(days=days * multiplier)
-    session = build_yfinance_tracing_session()
 
-    df = yf.download(
-        yahoo_ticker,
-        start=start,
-        end=end,
-        interval=period_map[period],
-        progress=False,
-        auto_adjust=False,
-        session=session,
-    )
-    df = _flatten_cols(df).reset_index(names="date")
-    df = (
-        df.assign(date=lambda d: pd.to_datetime(d["date"]).dt.date)
-        .loc[:, ["date", "open", "high", "low", "close", "volume"]]
-        .tail(days)
-        .reset_index(drop=True)
-    )
-    if df.empty:
-        raise ValueError(f"{ticker} OHLCV not found")
-    return df
+    last_exc: BaseException | None = None
+    for attempt in range(_CRUMB_RETRY_MAX + 1):
+        session = build_yfinance_tracing_session()
+        try:
+            df = yf.download(
+                yahoo_ticker,
+                start=start,
+                end=end,
+                interval=period_map[period],
+                progress=False,
+                auto_adjust=False,
+                session=session,
+            )
+            df = _flatten_cols(df).reset_index(names="date")
+            df = (
+                df.assign(date=lambda d: pd.to_datetime(d["date"]).dt.date)
+                .loc[:, ["date", "open", "high", "low", "close", "volume"]]
+                .tail(days)
+                .reset_index(drop=True)
+            )
+            if df.empty:
+                raise ValueError(f"{ticker} OHLCV not found")
+            return df
+        except Exception as exc:
+            last_exc = exc
+            if _is_crumb_auth_error(exc) and attempt < _CRUMB_RETRY_MAX:
+                logger.warning(
+                    "Yahoo crumb/auth error for %s OHLCV (attempt %d/%d), retrying: %s",
+                    yahoo_ticker,
+                    attempt + 1,
+                    _CRUMB_RETRY_MAX + 1,
+                    exc,
+                )
+                continue
+            raise
+
+    raise last_exc  # type: ignore[misc]
 
 
 def _filter_closed_buckets_nyse(
@@ -173,37 +197,54 @@ def _filter_closed_buckets_nyse(
 
 
 def _fetch_fast_info_sync(ticker: str) -> dict[str, Any]:
-    yahoo_ticker = to_yahoo_symbol(ticker)  # DB형식 . -> Yahoo형식 -
-    session = build_yfinance_tracing_session()
-    info = yf.Ticker(yahoo_ticker, session=session).fast_info
+    yahoo_ticker = to_yahoo_symbol(ticker)
+    last_exc: BaseException | None = None
 
-    return {
-        "symbol": ticker,
-        "previous_close": _to_float_or_none(
-            _fast_info_get(
-                info,
-                "regular_market_previous_close",
-                "regularMarketPreviousClose",
-                "previous_close",
-                "previousClose",
-            )
-        ),
-        "open": _to_float_or_none(_fast_info_get(info, "open")),
-        "high": _to_float_or_none(_fast_info_get(info, "day_high", "dayHigh")),
-        "low": _to_float_or_none(_fast_info_get(info, "day_low", "dayLow")),
-        "close": _to_float_or_none(
-            _fast_info_get(
-                info,
-                "last_price",
-                "lastPrice",
-                "regular_market_price",
-                "regularMarketPrice",
-            )
-        ),
-        "volume": _to_int_or_none(
-            _fast_info_get(info, "last_volume", "lastVolume", "volume")
-        ),
-    }
+    for attempt in range(_CRUMB_RETRY_MAX + 1):
+        session = build_yfinance_tracing_session()
+        try:
+            info = yf.Ticker(yahoo_ticker, session=session).fast_info
+            return {
+                "symbol": ticker,
+                "previous_close": _to_float_or_none(
+                    _fast_info_get(
+                        info,
+                        "regular_market_previous_close",
+                        "regularMarketPreviousClose",
+                        "previous_close",
+                        "previousClose",
+                    )
+                ),
+                "open": _to_float_or_none(_fast_info_get(info, "open")),
+                "high": _to_float_or_none(_fast_info_get(info, "day_high", "dayHigh")),
+                "low": _to_float_or_none(_fast_info_get(info, "day_low", "dayLow")),
+                "close": _to_float_or_none(
+                    _fast_info_get(
+                        info,
+                        "last_price",
+                        "lastPrice",
+                        "regular_market_price",
+                        "regularMarketPrice",
+                    )
+                ),
+                "volume": _to_int_or_none(
+                    _fast_info_get(info, "last_volume", "lastVolume", "volume")
+                ),
+            }
+        except Exception as exc:
+            last_exc = exc
+            if _is_crumb_auth_error(exc) and attempt < _CRUMB_RETRY_MAX:
+                logger.warning(
+                    "Yahoo crumb/auth error for %s (attempt %d/%d), retrying with fresh session: %s",
+                    yahoo_ticker,
+                    attempt + 1,
+                    _CRUMB_RETRY_MAX + 1,
+                    exc,
+                )
+                continue
+            raise
+
+    raise last_exc  # type: ignore[misc]
 
 
 def _fetch_price_sync(ticker: str) -> pd.DataFrame:
@@ -233,19 +274,33 @@ async def fetch_fast_info(ticker: str) -> dict[str, Any]:
 
 
 async def fetch_fundamental_info(ticker: str) -> dict:
-    """
-    yf.Ticker(ticker).info에서 PER, PBR, EPS, BPS, 배당수익률 등
-    주요 펀더멘털 지표를 가져와 딕셔너리로 반환합니다.
-    """
-    yahoo_ticker = to_yahoo_symbol(ticker)  # DB형식 . -> Yahoo형식 -
-    session = build_yfinance_tracing_session()
-    info = yf.Ticker(yahoo_ticker, session=session).info
+    yahoo_ticker = to_yahoo_symbol(ticker)
 
-    fundamental_data = {
-        "PER": info.get("trailingPE"),
-        "PBR": info.get("priceToBook"),
-        "EPS": info.get("trailingEps"),
-        "BPS": info.get("bookValue"),
-        "Dividend Yield": info.get("trailingAnnualDividendYield"),
-    }
-    return fundamental_data
+    def _fetch_sync() -> dict:
+        last_exc: BaseException | None = None
+        for attempt in range(_CRUMB_RETRY_MAX + 1):
+            session = build_yfinance_tracing_session()
+            try:
+                info = yf.Ticker(yahoo_ticker, session=session).info
+                return {
+                    "PER": info.get("trailingPE"),
+                    "PBR": info.get("priceToBook"),
+                    "EPS": info.get("trailingEps"),
+                    "BPS": info.get("bookValue"),
+                    "Dividend Yield": info.get("trailingAnnualDividendYield"),
+                }
+            except Exception as exc:
+                last_exc = exc
+                if _is_crumb_auth_error(exc) and attempt < _CRUMB_RETRY_MAX:
+                    logger.warning(
+                        "Yahoo crumb/auth error for %s fundamentals (attempt %d/%d), retrying: %s",
+                        yahoo_ticker,
+                        attempt + 1,
+                        _CRUMB_RETRY_MAX + 1,
+                        exc,
+                    )
+                    continue
+                raise
+        raise last_exc  # type: ignore[misc]
+
+    return await asyncio.to_thread(_fetch_sync)
