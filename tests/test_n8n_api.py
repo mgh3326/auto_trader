@@ -1073,3 +1073,63 @@ class TestN8nPendingOrdersEndpoint:
         assert data["orders"] == []
         assert data["summary"]["total"] == 0
         assert data["errors"] == [{"market": "all", "error": "boom"}]
+
+    def test_response_includes_fmt_fields(self, client: TestClient) -> None:
+        with patch(
+            "app.routers.n8n.fetch_pending_orders",
+            new_callable=AsyncMock,
+            return_value={
+                "success": True,
+                "orders": [
+                    {
+                        "order_id": "KR-001",
+                        "symbol": "005930",
+                        "raw_symbol": "005930",
+                        "market": "kr",
+                        "side": "buy",
+                        "status": "pending",
+                        "order_price": 70000.0,
+                        "current_price": 71000.0,
+                        "gap_pct": 1.43,
+                        "amount_krw": 700000.0,
+                        "quantity": 10.0,
+                        "remaining_qty": 10.0,
+                        "created_at": "2026-03-16T10:00:00+09:00",
+                        "age_hours": 6,
+                        "age_days": 0,
+                        "currency": "KRW",
+                        "order_price_fmt": "7.0만",
+                        "current_price_fmt": "7.1만",
+                        "gap_pct_fmt": "+1.4%",
+                        "amount_fmt": "70.0만",
+                        "age_fmt": "6시간",
+                        "summary_line": "005930 buy @7.0만 (현재 7.1만, +1.4%, 70.0만, 6시간)",
+                    }
+                ],
+                "summary": {
+                    "total": 1,
+                    "buy_count": 1,
+                    "sell_count": 0,
+                    "total_buy_krw": 700000.0,
+                    "total_sell_krw": 0.0,
+                    "total_buy_fmt": "70.0만",
+                    "total_sell_fmt": "0",
+                    "title": "📋 미체결 리뷰 — 03/16 (1건, 매수 1 / 매도 0)",
+                },
+                "errors": [],
+            },
+        ):
+            response = client.get("/api/n8n/pending-orders?market=kr")
+
+        assert response.status_code == 200
+        data = response.json()
+        order = data["orders"][0]
+        assert order["order_price_fmt"] == "7.0만"
+        assert order["summary_line"].startswith("005930 buy")
+        assert data["summary"]["total_buy_fmt"] == "70.0만"
+        assert data["summary"]["title"].startswith("📋")
+
+        # Backward compatibility: raw fields still present
+        assert order["order_price"] == 70000.0
+        assert order["gap_pct"] == 1.43
+        assert data["summary"]["total_buy_krw"] == 700000.0
