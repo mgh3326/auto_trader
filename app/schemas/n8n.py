@@ -32,6 +32,24 @@ class N8nPendingOrderItem(BaseModel):
         ..., description="Days since order creation, computed from hours"
     )
     currency: str = Field(..., description="Order currency: KRW or USD")
+    # Pre-formatted display fields (populated by server, None if not enriched)
+    order_price_fmt: str | None = Field(
+        None, description="Formatted order price for display"
+    )
+    current_price_fmt: str | None = Field(
+        None, description="Formatted current price for display"
+    )
+    gap_pct_fmt: str | None = Field(
+        None, description="Formatted gap percentage with sign, e.g. +14.0%"
+    )
+    amount_fmt: str | None = Field(
+        None, description="Formatted KRW amount, e.g. 31.2만"
+    )
+    age_fmt: str | None = Field(None, description="Formatted age, e.g. 1일 or 5시간")
+    summary_line: str | None = Field(
+        None,
+        description="One-line order summary, e.g. APT buy @2,470 (현재 2,166, +14.0%, 31.2만, 1일)",
+    )
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         json_schema_extra={
@@ -68,6 +86,17 @@ class N8nPendingOrderSummary(BaseModel):
     total_sell_krw: float = Field(
         ...,
         description="Total pending sell amount in KRW for orders with available KRW amounts",
+    )
+    # Pre-formatted display fields
+    total_buy_fmt: str | None = Field(
+        None, description="Formatted total buy amount, e.g. 47.8만"
+    )
+    total_sell_fmt: str | None = Field(
+        None, description="Formatted total sell amount, e.g. 3,460.4만"
+    )
+    title: str | None = Field(
+        None,
+        description="Summary title line, e.g. 📋 미체결 리뷰 — 03/16 (13건, 매수 4 / 매도 9)",
     )
 
     model_config: ClassVar[ConfigDict] = ConfigDict(

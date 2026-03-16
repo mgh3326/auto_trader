@@ -677,13 +677,12 @@ class TestN8nPendingOrdersService:
                 market="all", include_current_price=False
             )
 
-        assert result["summary"] == {
-            "total": 2,
-            "buy_count": 1,
-            "sell_count": 1,
-            "total_buy_krw": 0.0,
-            "total_sell_krw": 60_000.0,
-        }
+        summary = result["summary"]
+        assert summary["total"] == 2
+        assert summary["buy_count"] == 1
+        assert summary["sell_count"] == 1
+        assert summary["total_buy_krw"] == 0.0
+        assert summary["total_sell_krw"] == 60_000.0
 
     @pytest.mark.asyncio
     async def test_min_amount_keeps_us_orders_with_null_amount_krw(self) -> None:
@@ -761,13 +760,11 @@ class TestN8nPendingOrdersService:
             )
 
         summary = result["summary"]
-        assert summary == {
-            "total": 2,
-            "buy_count": 1,
-            "sell_count": 1,
-            "total_buy_krw": 50_000.0,
-            "total_sell_krw": 60_000.0,
-        }
+        assert summary["total"] == 2
+        assert summary["buy_count"] == 1
+        assert summary["sell_count"] == 1
+        assert summary["total_buy_krw"] == 50_000.0
+        assert summary["total_sell_krw"] == 60_000.0
 
     @pytest.mark.asyncio
     async def test_side_filter_passthrough(self) -> None:
@@ -792,8 +789,117 @@ class TestN8nPendingOrdersService:
         assert _infer_market_from_order(_make_crypto_order()) == "crypto"
         assert _infer_market_from_order(_make_kr_order()) == "kr"
 
+    @pytest.mark.asyncio
+    async def test_orders_include_fmt_fields(self) -> None:
+        from app.services.n8n_pending_orders_service import fetch_pending_orders
 
-@pytest.mark.unit
+        as_of = datetime.fromisoformat("2026-03-17T12:00:00+09:00")
+
+        with (
+            patch(
+                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                new_callable=AsyncMock,
+                return_value=_impl_result(
+                    orders=[
+                        _make_kr_order(
+                            ordered_price=70_000,
+                            ordered_qty=10,
+                            remaining_qty=10,
+                            ordered_at="20260316 120000",
+                        )
+                    ],
+                    market="kr",
+                ),
+            ),
+            patch(
+                "app.services.n8n_pending_orders_service.get_quote",
+                new_callable=AsyncMock,
+                return_value=type("Quote", (), {"price": 71_000.0})(),
+            ),
+        ):
+            result = await fetch_pending_orders(
+                market="kr",
+                include_current_price=True,
+                as_of=as_of,
+            )
+
+        order = result["orders"][0]
+        assert order["order_price_fmt"] == "7.0만"
+        assert order["current_price_fmt"] == "7.1만"
+        assert order["gap_pct_fmt"] is not None
+        assert order["amount_fmt"] is not None
+        assert order["age_fmt"] == "1일"
+        assert "005930" in order["summary_line"]
+        assert "buy" in order["summary_line"]
+
+    @pytest.mark.asyncio
+    async def test_summary_includes_fmt_fields(self) -> None:
+        from app.services.n8n_pending_orders_service import fetch_pending_orders
+
+        as_of = datetime.fromisoformat("2026-03-16T16:00:00+09:00")
+
+        orders = [
+            _make_kr_order(
+                side="buy",
+                ordered_price=10_000,
+                remaining_qty=5,
+                order_id="KR-001",
+                ordered_at="20260316 100000",
+            ),
+            _make_kr_order(
+                side="sell",
+                ordered_price=20_000,
+                remaining_qty=3,
+                symbol="000660",
+                order_id="KR-002",
+                ordered_at="20260316 110000",
+            ),
+        ]
+        with patch(
+            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            new_callable=AsyncMock,
+            return_value=_impl_result(orders=orders, market="kr"),
+        ):
+            result = await fetch_pending_orders(
+                market="kr",
+                include_current_price=False,
+                as_of=as_of,
+            )
+
+        summary = result["summary"]
+        assert summary["total_buy_fmt"] == "5.0만"
+        assert summary["total_sell_fmt"] == "6.0만"
+        assert "03/16" in summary["title"]
+        assert "매수 1" in summary["title"]
+        assert "매도 1" in summary["title"]
+
+    @pytest.mark.asyncio
+    async def test_fmt_fields_present_without_current_price(self) -> None:
+        from app.services.n8n_pending_orders_service import fetch_pending_orders
+
+        as_of = datetime.fromisoformat("2026-03-16T16:00:00+09:00")
+
+        with patch(
+            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            new_callable=AsyncMock,
+            return_value=_impl_result(
+                orders=[_make_crypto_order(ordered_at="2026-03-16T10:00:00+09:00")],
+                market="crypto",
+            ),
+        ):
+            result = await fetch_pending_orders(
+                market="crypto",
+                include_current_price=False,
+                as_of=as_of,
+            )
+
+        order = result["orders"][0]
+        assert order["order_price_fmt"] is not None
+        assert order["current_price_fmt"] == "-"
+        assert order["gap_pct_fmt"] == "-"
+        assert order["summary_line"] is not None
+
+
 class TestN8nPendingOrdersEndpoint:
     @pytest.fixture
     def client(self) -> TestClient:
@@ -963,3 +1069,63 @@ class TestN8nPendingOrdersEndpoint:
         assert data["orders"] == []
         assert data["summary"]["total"] == 0
         assert data["errors"] == [{"market": "all", "error": "boom"}]
+
+    def test_response_includes_fmt_fields(self, client: TestClient) -> None:
+        with patch(
+            "app.routers.n8n.fetch_pending_orders",
+            new_callable=AsyncMock,
+            return_value={
+                "success": True,
+                "orders": [
+                    {
+                        "order_id": "KR-001",
+                        "symbol": "005930",
+                        "raw_symbol": "005930",
+                        "market": "kr",
+                        "side": "buy",
+                        "status": "pending",
+                        "order_price": 70000.0,
+                        "current_price": 71000.0,
+                        "gap_pct": 1.43,
+                        "amount_krw": 700000.0,
+                        "quantity": 10.0,
+                        "remaining_qty": 10.0,
+                        "created_at": "2026-03-16T10:00:00+09:00",
+                        "age_hours": 6,
+                        "age_days": 0,
+                        "currency": "KRW",
+                        "order_price_fmt": "7.0만",
+                        "current_price_fmt": "7.1만",
+                        "gap_pct_fmt": "+1.4%",
+                        "amount_fmt": "70.0만",
+                        "age_fmt": "6시간",
+                        "summary_line": "005930 buy @7.0만 (현재 7.1만, +1.4%, 70.0만, 6시간)",
+                    }
+                ],
+                "summary": {
+                    "total": 1,
+                    "buy_count": 1,
+                    "sell_count": 0,
+                    "total_buy_krw": 700000.0,
+                    "total_sell_krw": 0.0,
+                    "total_buy_fmt": "70.0만",
+                    "total_sell_fmt": "0",
+                    "title": "📋 미체결 리뷰 — 03/16 (1건, 매수 1 / 매도 0)",
+                },
+                "errors": [],
+            },
+        ):
+            response = client.get("/api/n8n/pending-orders?market=kr")
+
+        assert response.status_code == 200
+        data = response.json()
+        order = data["orders"][0]
+        assert order["order_price_fmt"] == "7.0만"
+        assert order["summary_line"].startswith("005930 buy")
+        assert data["summary"]["total_buy_fmt"] == "70.0만"
+        assert data["summary"]["title"].startswith("📋")
+
+        # Backward compatibility: raw fields still present
+        assert order["order_price"] == 70000.0
+        assert order["gap_pct"] == 1.43
+        assert data["summary"]["total_buy_krw"] == 700000.0
