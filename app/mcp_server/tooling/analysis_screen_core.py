@@ -1101,8 +1101,6 @@ def _validate_screen_filters(
                 "Crypto market does not support sorting by 'dividend_yield'"
             )
     else:
-        if sort_by == "rsi":
-            raise ValueError("RSI sorting is only supported for crypto market")
         if sort_by == "trade_amount":
             raise ValueError(
                 "'trade_amount' sorting is only supported for crypto market"
@@ -1654,6 +1652,10 @@ async def _screen_kr(
         )
     else:
         filtered = sorted_candidates
+
+    # Re-sort by RSI after enrichment (RSI values didn't exist during initial sort)
+    if sort_by == "rsi":
+        filtered = _sort_and_limit(filtered, sort_by, sort_order, len(filtered))
 
     results = filtered[:limit]
     return _build_screen_response(
