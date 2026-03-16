@@ -324,6 +324,7 @@ Market-specific behavior:
 - **KR market**:
   - Default `asset_type in {None, "stock"}` + `category=None` requests use tvscreener only when verified KR stock-query capabilities cover the request; otherwise they fall back to the legacy KRX/Naver path before entering tvscreener
   - Successful stock responses expose `meta.source = "tvscreener"` and include `adx` in each result row
+  - `sort_by="rsi"` is supported via tvscreener RSI data; legacy path falls back to OHLCV-based RSI enrichment
   - ETF/category requests stay on the legacy KRX/Naver path
   - KRX data cached with 300s TTL (Redis) + in-memory fallback
   - Trading date auto-fallback (up to 10 days back)
@@ -333,6 +334,7 @@ Market-specific behavior:
 - **US market**:
   - Default `asset_type in {None, "stock"}` requests use tvscreener only when verified US stock-query capabilities cover the request
   - US `category`/`sector` alias requests stay on the tvscreener path only when the TradingView sector filter capability is verified; otherwise they fall back to legacy before running the tv query
+  - `sort_by="rsi"` is supported via tvscreener RSI data; legacy yfinance path falls back to OHLCV-based RSI enrichment
   - Successful stock responses expose `meta.source = "tvscreener"`, include `adx`, and preserve public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) from tvscreener when available
   - Post-screen enrichment skips per-row Finnhub/yfinance fan-out when those public fields are already populated; missing fields fall back to lightweight yfinance/Finnhub enrichment
   - Unsupported or unverified tvscreener request-critical capabilities fall back to the legacy yfinance path

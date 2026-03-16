@@ -2500,62 +2500,113 @@ class TestScreenStocksFundamentalsExpansion:
             )
 
     @pytest.mark.asyncio
-    async def test_kr_sort_by_rsi_raises_error(self, mock_krx_stocks, monkeypatch):
-        """Test KR market raises ValueError for sort_by='rsi'."""
+    async def test_kr_sort_by_rsi_succeeds(self, mock_krx_stocks, monkeypatch):
+        """Test KR market allows sort_by='rsi' (tvscreener provides RSI)."""
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "fetch_stock_all_cached",
+            AsyncMock(return_value=mock_krx_stocks),
+        )
 
-        async def mock_fetch_stock_all_cached(market):
-            return mock_krx_stocks
+        # Mock tvscreener capability to return usable
+        async def mock_tvscreener_kr(*args, **kwargs):
+            return {
+                "stocks": [
+                    {
+                        "symbol": "005930",
+                        "short_code": "005930",
+                        "code": "005930",
+                        "name": "삼성전자",
+                        "price": 80000,
+                        "rsi": 35.0,
+                        "adx": 20.0,
+                        "volume": 1000000,
+                        "change_percent": 1.5,
+                        "change_rate": 1.5,
+                        "market_cap": 480000000000000,
+                        "market": "kr",
+                    }
+                ],
+                "source": "tvscreener",
+                "count": 1,
+                "filters_applied": {},
+                "error": None,
+            }
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            analysis_screen_core, "_screen_kr_via_tvscreener", mock_tvscreener_kr
+        )
+
+        # Mock capability check to allow tvscreener path
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_can_use_tvscreener_stock_path",
+            lambda **kwargs: True,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_get_tvscreener_stock_capability_snapshot",
+            AsyncMock(return_value=object()),
         )
 
         tools = build_tools()
-
-        with pytest.raises(
-            ValueError, match="RSI sorting is only supported for crypto"
-        ):
-            await tools["screen_stocks"](
-                market="kr",
-                asset_type="stock",
-                category=None,
-                min_market_cap=None,
-                max_per=None,
-                min_dividend_yield=None,
-                max_rsi=None,
-                sort_by="rsi",
-                sort_order="asc",
-                limit=20,
-            )
+        result = await tools["screen_stocks"](
+            market="kr",
+            sort_by="rsi",
+            sort_order="asc",
+            limit=20,
+        )
+        assert "results" in result
 
     @pytest.mark.asyncio
-    async def test_us_sort_by_rsi_raises_error(self, monkeypatch):
-        """Test US market raises ValueError for sort_by='rsi'."""
+    async def test_us_sort_by_rsi_succeeds(self, monkeypatch):
+        """Test US market allows sort_by='rsi' (tvscreener provides RSI)."""
 
-        import yfinance as yf
+        async def mock_tvscreener_us(*args, **kwargs):
+            return {
+                "stocks": [
+                    {
+                        "symbol": "AAPL",
+                        "code": "AAPL",
+                        "name": "Apple Inc",
+                        "price": 180.0,
+                        "rsi": 42.0,
+                        "adx": 25.0,
+                        "volume": 50000000,
+                        "change_percent": 0.8,
+                        "change_rate": 0.8,
+                        "market_cap": 2800000000000,
+                        "market": "us",
+                    }
+                ],
+                "source": "tvscreener",
+                "count": 1,
+                "filters_applied": {},
+                "error": None,
+            }
 
-        def mock_yfinance_screen_func(query, size, sortField, sortAsc, session=None):
-            return {"quotes": []}
-
-        monkeypatch.setattr(yf, "screen", mock_yfinance_screen_func)
+        monkeypatch.setattr(
+            analysis_screen_core, "_screen_us_via_tvscreener", mock_tvscreener_us
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_can_use_tvscreener_stock_path",
+            lambda **kwargs: True,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_get_tvscreener_stock_capability_snapshot",
+            AsyncMock(return_value=object()),
+        )
 
         tools = build_tools()
-
-        with pytest.raises(
-            ValueError, match="RSI sorting is only supported for crypto"
-        ):
-            await tools["screen_stocks"](
-                market="us",
-                asset_type=None,
-                category=None,
-                min_market_cap=None,
-                max_per=None,
-                min_dividend_yield=None,
-                max_rsi=None,
-                sort_by="rsi",
-                sort_order="asc",
-                limit=20,
-            )
+        result = await tools["screen_stocks"](
+            market="us",
+            sort_by="rsi",
+            sort_order="asc",
+            limit=20,
+        )
+        assert "results" in result
 
     @pytest.mark.asyncio
     async def test_kr_sort_by_trade_amount_raises_error(
