@@ -1371,3 +1371,126 @@ async def test_place_order_kr_equity_balance_lookup_failure_blocks_real_order(
     assert "dry_run" not in result
     assert "OPSQ2001 CMA_EVLU_AMT_ICLD_YN error" in result["error"]
     assert len(order_calls) == 0
+
+
+# ----------------------------------------------------------------------
+# Crypto sell orderable vs locked regression tests
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_place_order_crypto_sell_exceeds_orderable_with_locked(monkeypatch):
+    tools = build_tools()
+
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
+            return {"KRW-BTC": 50000000.0}
+
+        async def fetch_my_coins(self):
+            return [
+                {
+                    "currency": "BTC",
+                    "balance": 0.03,
+                    "locked": 0.02,
+                    "avg_buy_price": 50000000.0,
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="market",
+        quantity=0.05,
+        dry_run=True,
+    )
+
+    assert result["success"] is False
+    assert "orderable balance 0.03" in result["error"]
+    assert "locked=0.02" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_crypto_market_sell_uses_orderable_only(monkeypatch):
+    tools = build_tools()
+
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
+            return {"KRW-BTC": 50000000.0}
+
+        async def fetch_my_coins(self):
+            return [
+                {
+                    "currency": "BTC",
+                    "balance": 0.03,
+                    "locked": 0.02,
+                    "avg_buy_price": 50000000.0,
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "estimated_value": 1500000.0,
+                "realized_pnl": 0.0,
+                "avg_buy_price": 50000000.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="market",
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["quantity"] == 0.03
+
+
+@pytest.mark.asyncio
+async def test_place_order_crypto_sell_locked_zero_still_works(monkeypatch):
+    tools = build_tools()
+
+    class DummyUpbit:
+        async def fetch_multiple_current_prices(self, symbols, use_cache=True):
+            return {"KRW-BTC": 50000000.0}
+
+        async def fetch_my_coins(self):
+            return [
+                {
+                    "currency": "BTC",
+                    "balance": 0.5,
+                    "locked": 0,
+                    "avg_buy_price": 40000000.0,
+                }
+            ]
+
+    _patch_runtime_attr(monkeypatch, "upbit_service", DummyUpbit())
+    _patch_runtime_attr(
+        monkeypatch,
+        "_preview_order",
+        AsyncMock(
+            return_value={
+                "estimated_value": 25000000.0,
+                "realized_pnl": 5000000.0,
+                "avg_buy_price": 40000000.0,
+            }
+        ),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="sell",
+        order_type="market",
+        dry_run=True,
+    )
+
+    assert result["success"] is True
+    assert result["quantity"] == 0.5

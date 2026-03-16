@@ -130,6 +130,12 @@ Derived fields:
 - `spread_pct` is `(spread / bids[0].price) * 100`, rounded to 3 decimal places, and becomes `null` when the best bid is missing or `<= 0`
 - `bid_walls` / `ask_walls` are MCP-only convenience fields. They are calculated only for crypto orderbooks by taking each side's `value_krw = round(price * quantity)`, using the side median as the baseline, selecting levels where `value_krw >= baseline * 2`, sorting by `value_krw` descending, and returning up to 3 entries shaped as `{price, size, value_krw}`
 
+### Crypto sell orderable validation
+- Crypto `place_order(..., side="sell")` uses **orderable balance only** (`balance` from Upbit `/v1/accounts`), not total holdings (`balance + locked`).
+- `locked` coins are already committed to pending orders and cannot be sold.
+- `quantity=None` (full sell) defaults to the orderable balance.
+- If `quantity > orderable balance`, the tool returns `success: false` with an error containing `requested`, `orderable`, and `locked` values instead of forwarding to Upbit.
+
 ### KR order routing
 - Domestic order tools (`place_order`, `modify_order`, `cancel_order` with `market="kr"`) use the new KIS TR IDs (`TTTC0012U/TTTC0011U/TTTC0013U`, mock: `VTTC0012U/VTTC0011U/VTTC0013U`).
 - Domestic order requests (`order-cash`, `order-rvsecncl`) route with `EXCG_ID_DVSN_CD="SOR"`.
