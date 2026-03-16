@@ -1,0 +1,6 @@
+{
+  "setup": [
+    "make install-dev\ncp /Users/robin/PycharmProjects/auto_trader/.env.test .\ncp /Users/robin/PycharmProjects/auto_trader/.env ."
+  ],
+  "teardown": []
+}
