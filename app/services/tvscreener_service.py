@@ -851,6 +851,11 @@ class TvScreenerService:
             def _execute_query() -> pd.DataFrame:
                 screener = CryptoScreener()
                 query = screener.select(*columns)
+                if query is None:
+                    raise TvScreenerError(
+                        "CryptoScreener.select() returned None. "
+                        f"Columns: {columns[:3]}... (total {len(columns)})"
+                    )
 
                 for condition in where_clauses:
                     query = query.where(condition)

@@ -618,7 +618,20 @@ async def fetch_multiple_tickers(market_codes: list[str]) -> list[dict[str, Any]
             safe=",",
         )
         url = f"{UPBIT_REST}/ticker?{query}"
-        tickers.extend(await _request_json(url))
+        try:
+            batch_tickers = await _request_json(url)
+            tickers.extend(batch_tickers)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                # Some market codes may be invalid/delisted
+                logger.warning(
+                    "[upbit] Batch ticker request returned 404 for markets: %s. "
+                    "Skipping batch and continuing with others.",
+                    ", ".join(batch_codes[:5])
+                    + ("..." if len(batch_codes) > 5 else ""),
+                )
+                continue
+            raise
 
     return tickers
 
