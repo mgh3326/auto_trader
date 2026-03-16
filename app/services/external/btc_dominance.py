@@ -87,4 +87,3 @@ async def fetch_btc_dominance() -> dict[str, Any] | None:
     except Exception as exc:
         logger.warning(f"Failed to parse BTC dominance response: {exc}")
         return None
-

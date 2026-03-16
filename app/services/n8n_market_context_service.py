@@ -23,9 +23,9 @@ from app.schemas.n8n import (
     N8nSymbolContext,
 )
 from app.services.brokers.upbit.client import fetch_multiple_tickers
+from app.services.external.btc_dominance import fetch_btc_dominance
 from app.services.external.economic_calendar import fetch_economic_events_today
 from app.services.external.fear_greed import fetch_fear_greed
-from app.services.external.btc_dominance import fetch_btc_dominance
 from app.services.n8n_formatting import fmt_gap, fmt_price
 from app.services.n8n_pending_orders_service import fetch_pending_orders
 
