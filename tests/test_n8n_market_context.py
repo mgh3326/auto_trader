@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -114,6 +114,43 @@ class TestMarketContextEndpoint:
             call_kwargs = mock_fetch.call_args.kwargs
             assert call_kwargs["include_fear_greed"] is False
 
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_market_context_with_btc_dominance(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Test that market context endpoint returns BTC dominance data."""
+        with patch(
+            "app.services.n8n_market_context_service.fetch_btc_dominance",
+        ) as mock_btc, patch(
+            "app.services.n8n_market_context_service.fetch_fear_greed",
+        ) as mock_fg, patch(
+            "app.services.n8n_market_context_service.fetch_economic_events_today",
+        ) as mock_econ:
+            mock_btc.return_value = {
+                "btc_dominance": 61.5,
+                "total_market_cap_change_24h": 2.3,
+            }
+            mock_fg.return_value = {
+                "value": 45,
+                "label": "Neutral",
+                "previous": 42,
+                "trend": "improving",
+            }
+            mock_econ.return_value = []
+
+            response = client.get("/api/n8n/market-context")
+            assert response.status_code == 200
+            data = response.json()
+
+            assert (
+                data["market_overview"]["btc_dominance"] == 61.5
+            )
+            assert (
+                data["market_overview"]["total_market_cap_change_24h"] == 2.3
+            )
+
     def test_endpoint_handles_service_error(self, client: TestClient) -> None:
         """Test that endpoint returns 500 on service error."""
         with patch("app.routers.n8n.fetch_market_context") as mock_fetch:
@@ -200,6 +237,57 @@ class TestFearGreedService:
         ):
             result = await fetch_fear_greed()
 
+            assert result is None
+
+
+@pytest.mark.unit
+class TestBtcDominanceService:
+    """Tests for BTC dominance service."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_btc_dominance_success(self) -> None:
+        """Test successful BTC dominance fetch."""
+        from app.services.external.btc_dominance import (
+            _clear_btc_dominance_cache,
+            fetch_btc_dominance,
+        )
+
+        _clear_btc_dominance_cache()
+
+        mock_response = {
+            "data": {
+                "market_cap_percentage": {"btc": 61.2, "eth": 12.5},
+                "market_cap_change_percentage_24h_usd": 2.3,
+            }
+        }
+
+        with patch(
+            "app.services.external.btc_dominance.httpx.AsyncClient.get",
+            return_value=MagicMock(
+                raise_for_status=lambda: None,
+                json=lambda: mock_response,
+            ),
+        ):
+            result = await fetch_btc_dominance()
+            assert result is not None
+            assert result["btc_dominance"] == 61.2
+            assert result["total_market_cap_change_24h"] == 2.3
+
+    @pytest.mark.asyncio
+    async def test_fetch_btc_dominance_handles_error(self) -> None:
+        """Test BTC dominance fetch handles API errors."""
+        from app.services.external.btc_dominance import (
+            _clear_btc_dominance_cache,
+            fetch_btc_dominance,
+        )
+
+        _clear_btc_dominance_cache()
+
+        with patch(
+            "app.services.external.btc_dominance.httpx.AsyncClient.get",
+            side_effect=Exception("Network error"),
+        ):
+            result = await fetch_btc_dominance()
             assert result is None
 
 
