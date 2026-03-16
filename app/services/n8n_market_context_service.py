@@ -7,8 +7,6 @@ import logging
 from datetime import datetime
 from typing import Any
 
-import pandas as pd
-
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.market_data_indicators import (
     _calculate_adx,
@@ -139,7 +137,7 @@ async def _compute_symbol_indicators(symbol: str) -> dict[str, Any] | None:
 async def _fetch_crypto_market_overview() -> dict[str, Any]:
     """Fetch crypto market overview data (BTC dominance, market cap change)."""
     try:
-        tickers = await fetch_multiple_tickers(["KRW-BTC", "KRW-ETH"])
+        await fetch_multiple_tickers(["KRW-BTC", "KRW-ETH"])
 
         btc_dominance = None
         total_market_cap_change = None

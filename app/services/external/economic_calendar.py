@@ -7,8 +7,6 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-import httpx
-
 from app.core.timezone import now_kst
 
 logger = logging.getLogger(__name__)
