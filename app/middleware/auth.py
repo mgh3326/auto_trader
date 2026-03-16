@@ -47,6 +47,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/api/v1/openclaw/callback",
         "/api/screener/callback",
         "/api/n8n/pending-orders",
+        "/api/n8n/market-context",
     ]
     LEGACY_DEPRECATED_PREFIXES: ClassVar[list[str]] = [
         "/manual-holdings",

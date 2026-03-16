@@ -7,7 +7,14 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from app.core.timezone import now_kst
-from app.schemas.n8n import N8nPendingOrdersResponse, N8nPendingOrderSummary
+from app.schemas.n8n import (
+    N8nPendingOrdersResponse,
+    N8nPendingOrderSummary,
+    N8nMarketContextResponse,
+    N8nMarketContextSummary,
+    N8nMarketOverview,
+)
+from app.services.n8n_market_context_service import fetch_market_context
 from app.services.n8n_pending_orders_service import fetch_pending_orders
 
 logger = logging.getLogger(__name__)
@@ -50,6 +57,9 @@ async def get_pending_orders(
                 sell_count=0,
                 total_buy_krw=0.0,
                 total_sell_krw=0.0,
+                total_buy_fmt=None,
+                total_sell_fmt=None,
+                title=None,
             ),
             errors=[{"market": market, "error": str(exc)}],
         )
@@ -61,5 +71,76 @@ async def get_pending_orders(
         market=market,
         orders=result["orders"],
         summary=N8nPendingOrderSummary(**result["summary"]),
+        errors=result["errors"],
+    )
+
+
+@router.get("/market-context", response_model=N8nMarketContextResponse)
+async def get_market_context(
+    market: Literal["crypto", "kr", "us", "all"] = Query(
+        "crypto", description="Market filter (crypto only for now)"
+    ),
+    symbols: str | None = Query(
+        None,
+        description="Comma-separated symbols (e.g. 'BTC,ETH,SOL'). If null, uses pending+holdings",
+    ),
+    include_fear_greed: bool = Query(True, description="Include Fear & Greed Index"),
+    include_economic_calendar: bool = Query(
+        True, description="Include today's economic events"
+    ),
+) -> N8nMarketContextResponse | JSONResponse:
+    """
+    Get comprehensive market context with technical indicators.
+
+    Provides RSI, ADX, Stochastic RSI, trend analysis, and market sentiment
+    for specified symbols. Also includes Fear & Greed Index and economic calendar.
+    """
+    as_of_dt = now_kst().replace(microsecond=0)
+    as_of = as_of_dt.isoformat()
+
+    symbol_list: list[str] | None = None
+    if symbols:
+        symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+
+    try:
+        result = await fetch_market_context(
+            market=market,
+            symbols=symbol_list,
+            include_fear_greed=include_fear_greed,
+            include_economic_calendar=include_economic_calendar,
+            as_of=as_of_dt,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to build n8n market context response")
+        payload = N8nMarketContextResponse(
+            success=False,
+            as_of=as_of,
+            market=market,
+            market_overview=N8nMarketOverview(
+                fear_greed=None,
+                btc_dominance=None,
+                total_market_cap_change_24h=None,
+                economic_events_today=[],
+            ),
+            symbols=[],
+            summary=N8nMarketContextSummary(
+                total_symbols=0,
+                bullish_count=0,
+                bearish_count=0,
+                neutral_count=0,
+                avg_rsi=None,
+                market_sentiment="neutral",
+            ),
+            errors=[{"error": str(exc)}],
+        )
+        return JSONResponse(status_code=500, content=payload.model_dump())
+
+    return N8nMarketContextResponse(
+        success=True,
+        as_of=as_of,
+        market=market,
+        market_overview=result["market_overview"],
+        symbols=result["symbols"],
+        summary=result["summary"],
         errors=result["errors"],
     )
