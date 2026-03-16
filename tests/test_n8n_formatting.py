@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 
@@ -211,16 +213,12 @@ class TestBuildSummaryTitle:
     def test_title_format(self) -> None:
         from app.services.n8n_formatting import build_summary_title
 
-        from datetime import datetime
-
         as_of = datetime.fromisoformat("2026-03-16T16:00:00+09:00")
         result = build_summary_title(total=13, buy_count=4, sell_count=9, as_of=as_of)
         assert result == "📋 미체결 리뷰 — 03/16 (13건, 매수 4 / 매도 9)"
 
     def test_title_zero_orders(self) -> None:
         from app.services.n8n_formatting import build_summary_title
-
-        from datetime import datetime
 
         as_of = datetime.fromisoformat("2026-03-16T10:00:00+09:00")
         result = build_summary_title(total=0, buy_count=0, sell_count=0, as_of=as_of)

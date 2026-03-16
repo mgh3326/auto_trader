@@ -677,13 +677,12 @@ class TestN8nPendingOrdersService:
                 market="all", include_current_price=False
             )
 
-        assert result["summary"] == {
-            "total": 2,
-            "buy_count": 1,
-            "sell_count": 1,
-            "total_buy_krw": 0.0,
-            "total_sell_krw": 60_000.0,
-        }
+        summary = result["summary"]
+        assert summary["total"] == 2
+        assert summary["buy_count"] == 1
+        assert summary["sell_count"] == 1
+        assert summary["total_buy_krw"] == 0.0
+        assert summary["total_sell_krw"] == 60_000.0
 
     @pytest.mark.asyncio
     async def test_min_amount_keeps_us_orders_with_null_amount_krw(self) -> None:
@@ -761,13 +760,11 @@ class TestN8nPendingOrdersService:
             )
 
         summary = result["summary"]
-        assert summary == {
-            "total": 2,
-            "buy_count": 1,
-            "sell_count": 1,
-            "total_buy_krw": 50_000.0,
-            "total_sell_krw": 60_000.0,
-        }
+        assert summary["total"] == 2
+        assert summary["buy_count"] == 1
+        assert summary["sell_count"] == 1
+        assert summary["total_buy_krw"] == 50_000.0
+        assert summary["total_sell_krw"] == 60_000.0
 
     @pytest.mark.asyncio
     async def test_side_filter_passthrough(self) -> None:
@@ -797,7 +794,6 @@ class TestN8nPendingOrdersService:
         from app.services.n8n_pending_orders_service import fetch_pending_orders
 
         as_of = datetime.fromisoformat("2026-03-17T12:00:00+09:00")
-        ordered_at = "2026-03-16T12:00:00+09:00"
 
         with (
             patch(
