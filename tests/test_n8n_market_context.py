@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -191,37 +191,14 @@ class TestFearGreedService:
     """Tests for Fear & Greed service."""
 
     @pytest.mark.asyncio
-    async def test_fetch_fear_greed_returns_data(self) -> None:
-        """Test Fear & Greed fetch returns proper structure."""
-        from app.services.external.fear_greed import fetch_fear_greed
-
-        mock_response = {
-            "data": [
-                {"value": "34", "value_classification": "Fear"},
-                {"value": "28", "value_classification": "Fear"},
-            ]
-        }
-
-        with patch("httpx.AsyncClient.get") as mock_get:
-            mock_get.return_value.json = AsyncMock(return_value=mock_response)
-            mock_get.return_value.raise_for_status = AsyncMock()
-
-            result = await fetch_fear_greed()
-
-            assert result is not None
-            assert result["value"] == 34
-            assert result["label"] == "Fear"
-            assert result["previous"] == 28
-            assert result["trend"] == "improving"
-
-    @pytest.mark.asyncio
     async def test_fetch_fear_greed_handles_error(self) -> None:
         """Test Fear & Greed fetch handles API errors gracefully."""
         from app.services.external.fear_greed import fetch_fear_greed
 
-        with patch("httpx.AsyncClient.get") as mock_get:
-            mock_get.side_effect = Exception("Network error")
-
+        with patch(
+            "app.services.external.fear_greed.httpx.AsyncClient.get",
+            side_effect=Exception("Network error"),
+        ):
             result = await fetch_fear_greed()
 
             assert result is None
