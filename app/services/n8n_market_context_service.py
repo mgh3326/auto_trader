@@ -318,10 +318,11 @@ async def fetch_market_context(
             if isinstance(event, dict):
                 economic_events_models.append(N8nEconomicEvent(**event))
 
+    safe_overview = market_overview if isinstance(market_overview, dict) else {}
     market_overview_obj = N8nMarketOverview(
         fear_greed=fear_greed_model,
-        btc_dominance=market_overview.get("btc_dominance"),
-        total_market_cap_change_24h=market_overview.get("total_market_cap_change_24h"),
+        btc_dominance=safe_overview.get("btc_dominance"),
+        total_market_cap_change_24h=safe_overview.get("total_market_cap_change_24h"),
         economic_events_today=economic_events_models,
     )
 
