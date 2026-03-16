@@ -1,5 +1,6 @@
 # n8n 워크플로우 자동화 (별도 compose — caddy와 동일 패턴)
 # 배포: docker compose -f docker-compose.n8n.yml up -d
+name: n8n-automation
 services:
   n8n:
     image: n8nio/n8n:2.11.4
