@@ -121,13 +121,17 @@ class TestMarketContextEndpoint:
         client: TestClient,
     ) -> None:
         """Test that market context endpoint returns BTC dominance data."""
-        with patch(
-            "app.services.n8n_market_context_service.fetch_btc_dominance",
-        ) as mock_btc, patch(
-            "app.services.n8n_market_context_service.fetch_fear_greed",
-        ) as mock_fg, patch(
-            "app.services.n8n_market_context_service.fetch_economic_events_today",
-        ) as mock_econ:
+        with (
+            patch(
+                "app.services.n8n_market_context_service.fetch_btc_dominance",
+            ) as mock_btc,
+            patch(
+                "app.services.n8n_market_context_service.fetch_fear_greed",
+            ) as mock_fg,
+            patch(
+                "app.services.n8n_market_context_service.fetch_economic_events_today",
+            ) as mock_econ,
+        ):
             mock_btc.return_value = {
                 "btc_dominance": 61.5,
                 "total_market_cap_change_24h": 2.3,
@@ -144,12 +148,59 @@ class TestMarketContextEndpoint:
             assert response.status_code == 200
             data = response.json()
 
-            assert (
-                data["market_overview"]["btc_dominance"] == 61.5
-            )
-            assert (
-                data["market_overview"]["total_market_cap_change_24h"] == 2.3
-            )
+            assert data["market_overview"]["btc_dominance"] == 61.5
+            assert data["market_overview"]["total_market_cap_change_24h"] == 2.3
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_market_context_with_economic_events(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Test that market context endpoint returns economic events."""
+        with (
+            patch(
+                "app.services.n8n_market_context_service.fetch_btc_dominance",
+            ) as mock_btc,
+            patch(
+                "app.services.n8n_market_context_service.fetch_fear_greed",
+            ) as mock_fg,
+            patch(
+                "app.services.n8n_market_context_service.fetch_economic_events_today",
+            ) as mock_econ,
+        ):
+            mock_btc.return_value = {
+                "btc_dominance": 61.5,
+                "total_market_cap_change_24h": 2.3,
+            }
+            mock_fg.return_value = {
+                "value": 45,
+                "label": "Neutral",
+                "previous": 42,
+                "trend": "improving",
+            }
+            mock_econ.return_value = [
+                {
+                    "time": "21:30 KST",
+                    "event": "US CPI",
+                    "importance": "high",
+                    "previous": "2.4%",
+                    "forecast": "2.3%",
+                }
+            ]
+
+            response = client.get("/api/n8n/market-context")
+            assert response.status_code == 200
+            data = response.json()
+
+            assert "economic_events_today" in data["market_overview"]
+            events = data["market_overview"]["economic_events_today"]
+            assert len(events) >= 1
+
+            first_event = events[0]
+            assert "time" in first_event
+            assert "event" in first_event
+            assert "importance" in first_event
 
     def test_endpoint_handles_service_error(self, client: TestClient) -> None:
         """Test that endpoint returns 500 on service error."""
@@ -161,6 +212,68 @@ class TestMarketContextEndpoint:
             data = response.json()
             assert data["success"] is False
             assert len(data["errors"]) > 0
+
+
+@pytest.mark.unit
+class TestFinnhubEconomicCalendar:
+    """Tests for Finnhub economic calendar integration."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_calendar_success(self) -> None:
+        """Test successful economic calendar fetch."""
+        from app.mcp_server.tooling.fundamentals_sources_finnhub import (
+            fetch_economic_calendar_finnhub,
+        )
+
+        mock_response = [
+            {
+                "time": "08:30",
+                "country": "US",
+                "event": "CPI",
+                "actual": "2.4%",
+                "previous": "2.3%",
+                "estimate": "2.3%",
+                "impact": "high",
+            },
+            {
+                "time": "14:00",
+                "country": "US",
+                "event": "FOMC Statement",
+                "actual": None,
+                "previous": None,
+                "estimate": None,
+                "impact": "high",
+            },
+        ]
+
+        with patch(
+            "app.mcp_server.tooling.fundamentals_sources_finnhub._get_finnhub_client",
+        ) as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.economic_calendar.return_value = mock_response
+            mock_client.return_value = mock_instance
+
+            result = await fetch_economic_calendar_finnhub("2026-03-16", "2026-03-16")
+
+            assert result is not None
+            assert len(result) == 2
+            assert result[0]["event"] == "CPI"
+            assert result[0]["country"] == "US"
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_calendar_handles_error(self) -> None:
+        """Test economic calendar fetch handles API errors."""
+        from app.mcp_server.tooling.fundamentals_sources_finnhub import (
+            fetch_economic_calendar_finnhub,
+        )
+
+        with patch(
+            "app.mcp_server.tooling.fundamentals_sources_finnhub._get_finnhub_client",
+        ) as mock_client:
+            mock_client.side_effect = Exception("API error")
+
+            result = await fetch_economic_calendar_finnhub("2026-03-16", "2026-03-16")
+            assert result is None
 
 
 @pytest.mark.unit
@@ -206,6 +319,40 @@ class TestMarketContextService:
         assert _classify_strength(20.0) == "weak"
 
         assert _classify_strength(None) == "weak"
+
+    @pytest.mark.asyncio
+    async def test_is_high_importance_event(self) -> None:
+        """Test high-importance event detection."""
+        from app.services.external.economic_calendar import _is_high_importance_event
+
+        assert _is_high_importance_event("US CPI") is True
+        assert _is_high_importance_event("FOMC Meeting") is True
+        assert _is_high_importance_event("Non-Farm Payrolls") is True
+        assert _is_high_importance_event("GDP Growth") is True
+        assert _is_high_importance_event("Retail Sales") is True
+        assert _is_high_importance_event("Earnings Report") is False
+        assert _is_high_importance_event("Dividend Announcement") is False
+
+    @pytest.mark.asyncio
+    async def test_convert_time_to_kst(self) -> None:
+        """Test time conversion to KST."""
+        from app.services.external.economic_calendar import _convert_time_to_kst
+
+        assert _convert_time_to_kst("08:30") == "22:30 KST"
+        assert _convert_time_to_kst("14:00") == "04:00 KST"
+        assert _convert_time_to_kst("") == "00:00 KST"
+        assert _convert_time_to_kst("invalid") == "00:00 KST"
+
+    @pytest.mark.asyncio
+    async def test_determine_importance(self) -> None:
+        """Test importance level determination."""
+        from app.services.external.economic_calendar import _determine_importance
+
+        assert _determine_importance("CPI Release", None) == "high"
+        assert _determine_importance("FOMC Statement", None) == "high"
+        assert _determine_importance("Some Event", "low") == "low"
+        assert _determine_importance("Some Event", "medium") == "medium"
+        assert _determine_importance("Some Event", None) == "medium"
 
     @pytest.mark.asyncio
     async def test_normalize_crypto_symbol(self) -> None:
