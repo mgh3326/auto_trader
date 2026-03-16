@@ -10,6 +10,7 @@ from app.mcp_server.tooling.shared import resolve_market_type
 from app.services.brokers.upbit.client import fetch_multiple_current_prices_cached
 from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.market_data import get_quote
+from app.services.n8n_formatting import enrich_order_fmt, enrich_summary_fmt
 
 _MARKETS: tuple[str, ...] = ("crypto", "kr", "us")
 _EQUITY_QUOTE_CONCURRENCY = 5
@@ -295,11 +296,17 @@ async def fetch_pending_orders(
     for order in filtered_orders:
         order.pop("_created_dt", None)
 
+    for order in filtered_orders:
+        enrich_order_fmt(order)
+
+    summary = _build_summary(filtered_orders)
+    enrich_summary_fmt(summary, as_of=effective_as_of)
+
     return {
         "success": bool(filtered_orders) or not errors,
         "market": market,
         "orders": filtered_orders,
-        "summary": _build_summary(filtered_orders),
+        "summary": summary,
         "errors": errors,
     }
 

@@ -792,8 +792,118 @@ class TestN8nPendingOrdersService:
         assert _infer_market_from_order(_make_crypto_order()) == "crypto"
         assert _infer_market_from_order(_make_kr_order()) == "kr"
 
+    @pytest.mark.asyncio
+    async def test_orders_include_fmt_fields(self) -> None:
+        from app.services.n8n_pending_orders_service import fetch_pending_orders
 
-@pytest.mark.unit
+        as_of = datetime.fromisoformat("2026-03-17T12:00:00+09:00")
+        ordered_at = "2026-03-16T12:00:00+09:00"
+
+        with (
+            patch(
+                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                new_callable=AsyncMock,
+                return_value=_impl_result(
+                    orders=[
+                        _make_kr_order(
+                            ordered_price=70_000,
+                            ordered_qty=10,
+                            remaining_qty=10,
+                            ordered_at="20260316 120000",
+                        )
+                    ],
+                    market="kr",
+                ),
+            ),
+            patch(
+                "app.services.n8n_pending_orders_service.get_quote",
+                new_callable=AsyncMock,
+                return_value=type("Quote", (), {"price": 71_000.0})(),
+            ),
+        ):
+            result = await fetch_pending_orders(
+                market="kr",
+                include_current_price=True,
+                as_of=as_of,
+            )
+
+        order = result["orders"][0]
+        assert order["order_price_fmt"] == "7.0만"
+        assert order["current_price_fmt"] == "7.1만"
+        assert order["gap_pct_fmt"] is not None
+        assert order["amount_fmt"] is not None
+        assert order["age_fmt"] == "1일"
+        assert "005930" in order["summary_line"]
+        assert "buy" in order["summary_line"]
+
+    @pytest.mark.asyncio
+    async def test_summary_includes_fmt_fields(self) -> None:
+        from app.services.n8n_pending_orders_service import fetch_pending_orders
+
+        as_of = datetime.fromisoformat("2026-03-16T16:00:00+09:00")
+
+        orders = [
+            _make_kr_order(
+                side="buy",
+                ordered_price=10_000,
+                remaining_qty=5,
+                order_id="KR-001",
+                ordered_at="20260316 100000",
+            ),
+            _make_kr_order(
+                side="sell",
+                ordered_price=20_000,
+                remaining_qty=3,
+                symbol="000660",
+                order_id="KR-002",
+                ordered_at="20260316 110000",
+            ),
+        ]
+        with patch(
+            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            new_callable=AsyncMock,
+            return_value=_impl_result(orders=orders, market="kr"),
+        ):
+            result = await fetch_pending_orders(
+                market="kr",
+                include_current_price=False,
+                as_of=as_of,
+            )
+
+        summary = result["summary"]
+        assert summary["total_buy_fmt"] == "5.0만"
+        assert summary["total_sell_fmt"] == "6.0만"
+        assert "03/16" in summary["title"]
+        assert "매수 1" in summary["title"]
+        assert "매도 1" in summary["title"]
+
+    @pytest.mark.asyncio
+    async def test_fmt_fields_present_without_current_price(self) -> None:
+        from app.services.n8n_pending_orders_service import fetch_pending_orders
+
+        as_of = datetime.fromisoformat("2026-03-16T16:00:00+09:00")
+
+        with patch(
+            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            new_callable=AsyncMock,
+            return_value=_impl_result(
+                orders=[_make_crypto_order(ordered_at="2026-03-16T10:00:00+09:00")],
+                market="crypto",
+            ),
+        ):
+            result = await fetch_pending_orders(
+                market="crypto",
+                include_current_price=False,
+                as_of=as_of,
+            )
+
+        order = result["orders"][0]
+        assert order["order_price_fmt"] is not None
+        assert order["current_price_fmt"] == "-"
+        assert order["gap_pct_fmt"] == "-"
+        assert order["summary_line"] is not None
+
+
 class TestN8nPendingOrdersEndpoint:
     @pytest.fixture
     def client(self) -> TestClient:
