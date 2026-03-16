@@ -73,6 +73,20 @@ def _is_yfinance_crumb_error(logger_name: str | None, message: str | None) -> bo
     return any(pattern in msg_lower for pattern in _YFINANCE_CRUMB_PATTERNS)
 
 
+_YFINANCE_NOISE_PATTERNS = (
+    "possibly delisted",
+    "No data found",
+    "no price data found",
+    "symbol may be delisted",
+)
+
+
+def _is_yfinance_noise_log(logger_name: str | None, message: str | None) -> bool:
+    if logger_name != "yfinance" or not message:
+        return False
+    return any(pattern in message for pattern in _YFINANCE_NOISE_PATTERNS)
+
+
 def _extract_log_context(payload: Event, hint: Hint) -> tuple[str | None, str | None]:
     logger_name: str | None = None
     message: str | None = None
@@ -159,6 +173,8 @@ def _before_send(event: Event, hint: Hint) -> Event | None:
         return None
     if _is_yfinance_crumb_error(logger_name, message):
         return None
+    if _is_yfinance_noise_log(logger_name, message):
+        return None
     return _sanitize_in_place(event)
 
 
@@ -175,6 +191,8 @@ def _before_breadcrumb(crumb: Breadcrumb, hint: Hint) -> Breadcrumb | None:
 def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
     logger_name, message = _extract_sentry_log_context(sentry_log, hint)
     if _is_healthcheck_access_log(logger_name, message):
+        return None
+    if _is_yfinance_noise_log(logger_name, message):
         return None
     return _sanitize_in_place(sentry_log)
 
