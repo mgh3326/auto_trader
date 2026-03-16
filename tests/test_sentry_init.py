@@ -535,3 +535,113 @@ def test_capture_exception_adds_masked_context(monkeypatch):
     scope_mock.set_extra.assert_any_call("token", "[Filtered]")
     scope_mock.set_extra.assert_any_call("normal_key", "value")
     mock_capture.assert_called_once_with(exc)
+
+
+@pytest.mark.unit
+class TestYfinanceNoiseFilter:
+    def test_yfinance_possibly_delisted_event_dropped(self):
+        event: Event = {
+            "logger": "yfinance",
+            "logentry": {
+                "message": (
+                    "$DIREXION TESLA 2X: possibly delisted; no price data found "
+                    ' (period=5d) (Yahoo error = "No data found, symbol may be '
+                    'delisted")'
+                ),
+                "formatted": (
+                    "$DIREXION TESLA 2X: possibly delisted; no price data found "
+                    ' (period=5d) (Yahoo error = "No data found, symbol may be '
+                    'delisted")'
+                ),
+            },
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_yfinance_no_data_found_event_dropped(self):
+        event: Event = {
+            "logger": "yfinance",
+            "logentry": {
+                "message": "TSLL: No data found for this date range, symbol may be delisted",
+                "formatted": "TSLL: No data found for this date range, symbol may be delisted",
+            },
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_yfinance_no_price_data_event_dropped(self):
+        event: Event = {
+            "logger": "yfinance",
+            "logentry": {
+                "message": "AAPL: possibly delisted; no price data found (period=1y)",
+                "formatted": "AAPL: possibly delisted; no price data found (period=1y)",
+            },
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_yfinance_real_error_not_dropped(self):
+        event: Event = {
+            "logger": "yfinance",
+            "logentry": {
+                "message": "Connection timeout to Yahoo Finance API",
+                "formatted": "Connection timeout to Yahoo Finance API",
+            },
+        }
+        assert sentry_module._before_send(event, {}) is not None
+
+    def test_non_yfinance_error_not_dropped(self):
+        event: Event = {
+            "logger": "app.services",
+            "logentry": {
+                "message": "Database connection failed",
+                "formatted": "Database connection failed",
+            },
+        }
+        assert sentry_module._before_send(event, {}) is not None
+
+    def test_healthcheck_still_filtered(self):
+        event: Event = {
+            "logger": "uvicorn.access",
+            "logentry": {
+                "formatted": '127.0.0.1:52778 - "GET /healthz HTTP/1.1" 200',
+            },
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_before_send_log_drops_yfinance_noise(self):
+        sentry_log: Log = {
+            "severity_text": "error",
+            "severity_number": 17,
+            "body": (
+                "$DIREXION TESLA 2X: possibly delisted; no price data found "
+                ' (period=1y) (Yahoo error = "No data found, symbol may be '
+                'delisted")'
+            ),
+            "attributes": {"logger.name": "yfinance"},
+            "time_unix_nano": 1,
+            "trace_id": None,
+            "span_id": None,
+        }
+        assert sentry_module._before_send_log(sentry_log, {}) is None
+
+    def test_before_send_log_keeps_real_yfinance_errors(self):
+        sentry_log: Log = {
+            "severity_text": "error",
+            "severity_number": 17,
+            "body": "Failed to decode JSON response from Yahoo Finance",
+            "attributes": {"logger.name": "yfinance"},
+            "time_unix_nano": 1,
+            "trace_id": None,
+            "span_id": None,
+        }
+        assert sentry_module._before_send_log(sentry_log, {}) is not None
+
+    def test_before_send_log_keeps_non_yfinance_logs(self):
+        sentry_log: Log = {
+            "severity_text": "error",
+            "severity_number": 17,
+            "body": "Trade executed successfully",
+            "attributes": {"logger.name": "app.services.trading"},
+            "time_unix_nano": 1,
+            "trace_id": None,
+            "span_id": None,
+        }
+        assert sentry_module._before_send_log(sentry_log, {}) is not None
