@@ -59,6 +59,20 @@ def _is_healthcheck_access_log(logger_name: str | None, message: str | None) -> 
     return "/healthz" in message and '" 200' in message
 
 
+_YFINANCE_CRUMB_PATTERNS = ("invalid crumb", "invalid cookie")
+
+
+def _is_yfinance_crumb_error(logger_name: str | None, message: str | None) -> bool:
+    if not logger_name or not isinstance(logger_name, str):
+        return False
+    if not logger_name.startswith("yfinance"):
+        return False
+    if not message or not isinstance(message, str):
+        return False
+    msg_lower = message.lower()
+    return any(pattern in msg_lower for pattern in _YFINANCE_CRUMB_PATTERNS)
+
+
 def _extract_log_context(payload: Event, hint: Hint) -> tuple[str | None, str | None]:
     logger_name: str | None = None
     message: str | None = None
@@ -142,6 +156,8 @@ def _sanitize_in_place(value: Any, parent_key: str | None = None) -> Any:
 def _before_send(event: Event, hint: Hint) -> Event | None:
     logger_name, message = _extract_log_context(event, hint)
     if _is_healthcheck_access_log(logger_name, message):
+        return None
+    if _is_yfinance_crumb_error(logger_name, message):
         return None
     return _sanitize_in_place(event)
 

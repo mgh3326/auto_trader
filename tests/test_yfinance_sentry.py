@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import urllib.error
 from typing import Any
 
 import pytest
@@ -8,6 +9,10 @@ from curl_cffi.requests import Session
 
 import app.monitoring.yfinance_sentry as yfinance_sentry_module
 from app.monitoring.yfinance_sentry import SentryTracingCurlSession
+from app.services.brokers.yahoo.client import (
+    _fetch_fast_info_sync,
+    fetch_fundamental_info,
+)
 
 
 class _DummyResponse:
@@ -191,3 +196,149 @@ def test_build_tracing_session_uses_chrome_impersonation(
 
     assert isinstance(session, _FakeSession)
     assert captured["kwargs"] == {"impersonate": "chrome"}
+
+
+class TestYahooRetryOnCrumbError:
+    """Yahoo client retries on 401 Invalid Crumb with fresh session."""
+
+    def test_retries_on_http_401_and_succeeds(self, monkeypatch):
+        """First call raises 401, second call succeeds with new session."""
+        call_count = 0
+        sessions_created = []
+
+        def fake_build_session():
+            session = object()
+            sessions_created.append(session)
+            return session
+
+        def fake_ticker(symbol, session=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise urllib.error.HTTPError(
+                    url="https://query2.finance.yahoo.com/v8/finance/chart/BRK-B",
+                    code=401,
+                    msg='{"finance":{"error":{"description":"Invalid Crumb"}}}',
+                    hdrs=None,
+                    fp=None,
+                )
+
+            # Second call succeeds
+            class FakeInfo:
+                regular_market_previous_close = 100.0
+                open = 101.0
+                day_high = 102.0
+                day_low = 99.0
+                last_price = 101.5
+                last_volume = 1000
+
+                def get(self, key):
+                    return None
+
+            class FakeTicker:
+                fast_info = FakeInfo()
+
+            return FakeTicker()
+
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            fake_build_session,
+        )
+        monkeypatch.setattr("app.services.brokers.yahoo.client.yf.Ticker", fake_ticker)
+
+        result = _fetch_fast_info_sync("BRK.B")
+        assert result["close"] == 101.5
+        assert call_count == 2
+        assert len(sessions_created) == 2  # fresh session for retry
+
+    def test_does_not_retry_on_non_401_error(self, monkeypatch):
+        """Non-401 errors are raised immediately without retry."""
+        call_count = 0
+
+        def fake_build_session():
+            return object()
+
+        def fake_ticker(symbol, session=None):
+            nonlocal call_count
+            call_count += 1
+            raise ConnectionError("Network unreachable")
+
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            fake_build_session,
+        )
+        monkeypatch.setattr("app.services.brokers.yahoo.client.yf.Ticker", fake_ticker)
+
+        with pytest.raises(ConnectionError, match="Network unreachable"):
+            _fetch_fast_info_sync("AAPL")
+        assert call_count == 1  # no retry
+
+    def test_raises_after_max_retries_exhausted(self, monkeypatch):
+        """After max retries, the original error is raised."""
+        call_count = 0
+
+        def fake_build_session():
+            return object()
+
+        def fake_ticker(symbol, session=None):
+            nonlocal call_count
+            call_count += 1
+            raise urllib.error.HTTPError(
+                url="https://query2.finance.yahoo.com/v8/finance/chart/BRK-B",
+                code=401,
+                msg="Invalid Crumb",
+                hdrs=None,
+                fp=None,
+            )
+
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            fake_build_session,
+        )
+        monkeypatch.setattr("app.services.brokers.yahoo.client.yf.Ticker", fake_ticker)
+
+        with pytest.raises(urllib.error.HTTPError):
+            _fetch_fast_info_sync("BRK.B")
+        assert call_count == 2  # initial + 1 retry
+
+
+class TestFetchFundamentalInfoRetry:
+    @pytest.mark.asyncio
+    async def test_retries_on_crumb_error(self, monkeypatch):
+        call_count = 0
+
+        def fake_build_session():
+            return object()
+
+        def fake_ticker(symbol, session=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise urllib.error.HTTPError(
+                    url="https://query2.finance.yahoo.com/v10/finance/quoteSummary/AAPL",
+                    code=401,
+                    msg="Invalid Crumb",
+                    hdrs=None,
+                    fp=None,
+                )
+
+            class FakeTicker:
+                info = {
+                    "trailingPE": 25.0,
+                    "priceToBook": 8.5,
+                    "trailingEps": 6.0,
+                    "bookValue": 4.0,
+                    "trailingAnnualDividendYield": 0.005,
+                }
+
+            return FakeTicker()
+
+        monkeypatch.setattr(
+            "app.services.brokers.yahoo.client.build_yfinance_tracing_session",
+            fake_build_session,
+        )
+        monkeypatch.setattr("app.services.brokers.yahoo.client.yf.Ticker", fake_ticker)
+
+        result = await fetch_fundamental_info("AAPL")
+        assert result["PER"] == 25.0
+        assert call_count == 2
