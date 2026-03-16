@@ -7,6 +7,9 @@ import json
 from typing import Any, Literal
 
 import app.services.brokers.upbit.client as upbit_service
+from app.services.brokers.upbit.client import (
+    parse_upbit_account_row as _parse_upbit_account_row,
+)
 from app.core.config import settings
 from app.mcp_server.tick_size import adjust_tick_size_kr, get_tick_size_kr
 from app.mcp_server.tooling.market_data_quotes import (
@@ -73,12 +76,12 @@ async def _get_holdings_for_order(
         currency = symbol.replace("KRW-", "")
         for coin in coins:
             if coin.get("currency") == currency:
-                balance = float(coin.get("balance", 0))
-                locked = float(coin.get("locked", 0))
-                avg_buy_price = float(coin.get("avg_buy_price", 0) or 0)
+                parsed = _parse_upbit_account_row(coin)
                 return {
-                    "quantity": balance + locked,
-                    "avg_price": avg_buy_price,
+                    "quantity": parsed["orderable_quantity"],
+                    "total_quantity": parsed["total_quantity"],
+                    "locked": parsed["locked"],
+                    "avg_price": parsed["avg_buy_price"],
                 }
         return None
 
@@ -509,11 +512,15 @@ async def _place_order_impl(
                 return _order_error(f"No holdings found for {symbol}")
 
             available_quantity = _to_float(holdings.get("quantity"), default=0.0)
-            order_quantity = (
-                available_quantity
-                if quantity is None
-                else min(quantity, available_quantity)
-            )
+            locked_quantity = _to_float(holdings.get("locked"), default=0.0)
+
+            if quantity is not None and quantity > available_quantity:
+                return _order_error(
+                    f"Requested sell quantity {quantity} exceeds orderable balance {available_quantity}. "
+                    f"locked={locked_quantity} (in open orders, not sellable)."
+                )
+
+            order_quantity = available_quantity if quantity is None else quantity
 
             if order_type_lower == "limit" and price is not None:
                 avg_price = _to_float(holdings.get("avg_price"), default=0.0)
