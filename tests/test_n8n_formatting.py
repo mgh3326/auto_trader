@@ -225,3 +225,91 @@ class TestBuildSummaryTitle:
         as_of = datetime.fromisoformat("2026-03-16T10:00:00+09:00")
         result = build_summary_title(total=0, buy_count=0, sell_count=0, as_of=as_of)
         assert result == "📋 미체결 리뷰 — 03/16 (0건, 매수 0 / 매도 0)"
+
+
+@pytest.mark.unit
+class TestSchemaFmtFields:
+    """Verify _fmt fields exist on the Pydantic schemas."""
+
+    def test_order_item_has_fmt_fields(self) -> None:
+        from app.schemas.n8n import N8nPendingOrderItem
+
+        item = N8nPendingOrderItem(
+            order_id="test",
+            symbol="BTC",
+            raw_symbol="KRW-BTC",
+            market="crypto",
+            side="buy",
+            status="pending",
+            order_price=100.0,
+            quantity=1.0,
+            remaining_qty=1.0,
+            created_at="2026-03-16T10:00:00+09:00",
+            age_hours=1,
+            age_days=0,
+            currency="KRW",
+            # _fmt fields default to None
+        )
+        assert item.order_price_fmt is None
+        assert item.current_price_fmt is None
+        assert item.gap_pct_fmt is None
+        assert item.amount_fmt is None
+        assert item.age_fmt is None
+        assert item.summary_line is None
+
+    def test_order_item_accepts_fmt_values(self) -> None:
+        from app.schemas.n8n import N8nPendingOrderItem
+
+        item = N8nPendingOrderItem(
+            order_id="test",
+            symbol="BTC",
+            raw_symbol="KRW-BTC",
+            market="crypto",
+            side="buy",
+            status="pending",
+            order_price=2470.0,
+            quantity=1.0,
+            remaining_qty=1.0,
+            created_at="2026-03-16T10:00:00+09:00",
+            age_hours=25,
+            age_days=1,
+            currency="KRW",
+            order_price_fmt="2,470",
+            current_price_fmt="2,166",
+            gap_pct_fmt="+14.0%",
+            amount_fmt="31.2만",
+            age_fmt="1일",
+            summary_line="BTC buy @2,470 (현재 2,166, +14.0%, 31.2만, 1일)",
+        )
+        assert item.order_price_fmt == "2,470"
+        assert item.summary_line.startswith("BTC buy")
+
+    def test_summary_has_fmt_fields(self) -> None:
+        from app.schemas.n8n import N8nPendingOrderSummary
+
+        summary = N8nPendingOrderSummary(
+            total=2,
+            buy_count=1,
+            sell_count=1,
+            total_buy_krw=478400.0,
+            total_sell_krw=34603720.0,
+        )
+        assert summary.total_buy_fmt is None
+        assert summary.total_sell_fmt is None
+        assert summary.title is None
+
+    def test_summary_accepts_fmt_values(self) -> None:
+        from app.schemas.n8n import N8nPendingOrderSummary
+
+        summary = N8nPendingOrderSummary(
+            total=13,
+            buy_count=4,
+            sell_count=9,
+            total_buy_krw=478400.0,
+            total_sell_krw=34603720.0,
+            total_buy_fmt="47.8만",
+            total_sell_fmt="3,460.4만",
+            title="📋 미체결 리뷰 — 03/16 (13건, 매수 4 / 매도 9)",
+        )
+        assert summary.total_buy_fmt == "47.8만"
+        assert summary.title.startswith("📋")
