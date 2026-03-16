@@ -9,6 +9,11 @@ from app.mcp_server.tooling.orders_history import get_order_history_impl
 from app.mcp_server.tooling.shared import resolve_market_type
 from app.services.brokers.upbit.client import fetch_multiple_current_prices_cached
 from app.services.exchange_rate_service import get_usd_krw_rate
+from app.services.intraday_order_review import (
+    check_needs_attention,
+    classify_fill_proximity,
+    format_fill_proximity,
+)
 from app.services.market_data import get_quote
 from app.services.n8n_formatting import enrich_order_fmt, enrich_summary_fmt
 
@@ -204,6 +209,82 @@ def _build_summary(orders: list[dict[str, Any]]) -> dict[str, float | int]:
     }
 
 
+async def _enrich_orders_with_market_context(
+    orders: list[dict[str, Any]],
+    market: str,
+    near_fill_pct: float = 2.0,
+) -> dict[str, Any]:
+    """Enrich orders with fill proximity and attention status using market context.
+
+    Returns:
+        Dict with enriched orders and attention counts
+    """
+    # Lazy import to avoid circular dependency
+    from app.services.n8n_market_context_service import fetch_market_context
+
+    # Fetch market context for symbols in these orders
+    symbols = [order["symbol"] for order in orders if order.get("symbol")]
+
+    indicators_map: dict[str, dict[str, Any]] = {}
+    if symbols:
+        try:
+            market_ctx = await fetch_market_context(
+                market=market,
+                symbols=symbols,
+                include_fear_greed=False,
+                include_economic_calendar=False,
+            )
+            for ctx in market_ctx.get("symbols", []):
+                indicators_map[ctx.symbol] = {
+                    "rsi_14": ctx.rsi_14,
+                    "change_24h_pct": ctx.change_24h_pct,
+                }
+        except Exception:
+            # Non-fatal: continue without market context
+            pass
+
+    enriched_orders = []
+    near_fill_count = 0
+    needs_attention_count = 0
+    attention_orders = []
+
+    for order in orders:
+        gap_pct = order.get("gap_pct")
+        symbol = order.get("symbol", "")
+
+        # Classify fill proximity
+        proximity = classify_fill_proximity(gap_pct, {"near": near_fill_pct})
+        order["fill_proximity"] = proximity
+        order["fill_proximity_fmt"] = format_fill_proximity(proximity, gap_pct)
+
+        if proximity == "near":
+            near_fill_count += 1
+
+        # Check attention needs
+        indicators = indicators_map.get(symbol, {})
+        needs_attention, attention_reason = check_needs_attention(
+            order,
+            indicators,
+            {"near_fill_pct": near_fill_pct},
+        )
+
+        order["needs_attention"] = needs_attention
+        order["attention_reason"] = attention_reason
+
+        if needs_attention:
+            needs_attention_count += 1
+            attention_orders.append(order)
+
+        enriched_orders.append(order)
+
+    return {
+        "orders": enriched_orders,
+        "near_fill_count": near_fill_count,
+        "needs_attention_count": needs_attention_count,
+        "attention_orders": attention_orders,
+    }
+
+
 async def fetch_pending_orders(
     *,
     market: Literal["crypto", "kr", "us", "all"] = "all",
@@ -211,6 +292,8 @@ async def fetch_pending_orders(
     include_current_price: bool = True,
     side: Literal["buy", "sell"] | None = None,
     as_of: datetime | None = None,
+    attention_only: bool = False,
+    near_fill_pct: float = 2.0,
 ) -> dict[str, Any]:
     requested_markets = list(_MARKETS if market == "all" else (market,))
     effective_as_of = as_of or now_kst().replace(microsecond=0)
@@ -299,7 +382,31 @@ async def fetch_pending_orders(
     for order in filtered_orders:
         enrich_order_fmt(order)
 
+    # Enrich with fill proximity and attention status if current price is included
+    if include_current_price:
+        enrichment = await _enrich_orders_with_market_context(
+            filtered_orders,
+            market,
+            near_fill_pct=near_fill_pct,
+        )
+        filtered_orders = enrichment["orders"]
+    else:
+        enrichment = {
+            "near_fill_count": 0,
+            "needs_attention_count": 0,
+            "attention_orders": [],
+        }
+
+    # Filter to attention-only if requested
+    if attention_only:
+        filtered_orders = enrichment["attention_orders"]
+
     summary = _build_summary(filtered_orders)
+    summary["near_fill_count"] = enrichment["near_fill_count"]
+    summary["needs_attention_count"] = enrichment["needs_attention_count"]
+    summary["attention_orders_only"] = (
+        enrichment["attention_orders"] if attention_only else []
+    )
     enrich_summary_fmt(summary, as_of=effective_as_of)
 
     return {
