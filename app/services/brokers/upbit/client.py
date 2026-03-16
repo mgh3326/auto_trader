@@ -176,14 +176,30 @@ async def fetch_my_coins() -> list[dict[str, Any]]:
     return await _request_with_auth("GET", f"{UPBIT_REST}/accounts")
 
 
+def parse_upbit_account_row(account: dict[str, Any]) -> dict[str, float]:
+    """Parse a single ``/v1/accounts`` row → ``balance, locked, total_quantity, orderable_quantity, avg_buy_price``."""
+    balance = float(account.get("balance", 0) or 0)
+    locked = float(account.get("locked", 0) or 0)
+    avg_buy_price = float(account.get("avg_buy_price", 0) or 0)
+    return {
+        "balance": balance,
+        "locked": locked,
+        "total_quantity": balance + locked,
+        "orderable_quantity": balance,
+        "avg_buy_price": avg_buy_price,
+    }
+
+
 async def fetch_krw_cash_summary() -> dict[str, float]:
     accounts = await fetch_my_coins()
 
     for account in accounts:
         if account.get("currency") == "KRW":
-            orderable = float(account.get("balance", 0) or 0)
-            locked = float(account.get("locked", 0) or 0)
-            return {"balance": orderable + locked, "orderable": orderable}
+            parsed = parse_upbit_account_row(account)
+            return {
+                "balance": parsed["total_quantity"],
+                "orderable": parsed["orderable_quantity"],
+            }
 
     return {"balance": 0.0, "orderable": 0.0}
 
