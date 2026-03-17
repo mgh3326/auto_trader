@@ -521,6 +521,7 @@ class OverseasOrderClient:
         tr_cont = ""
         page = 1
         max_pages = 10
+        transient_retry_count = 0
 
         logging.info(f"해외주식 체결조회 시작 - {start_date} ~ {end_date}")
 
@@ -567,6 +568,21 @@ class OverseasOrderClient:
                     await self._parent._token_manager.clear_token()
                     await self._parent._ensure_token()
                     continue
+
+                if js.get("msg_cd") in constants.RETRYABLE_MSG_CODES:
+                    transient_retry_count += 1
+                    if transient_retry_count < constants.RETRYABLE_MAX_ATTEMPTS:
+                        logging.warning(
+                            "해외주식 체결조회 transient 에러 (시도 %d/%d): %s %s",
+                            transient_retry_count,
+                            constants.RETRYABLE_MAX_ATTEMPTS,
+                            js.get("msg_cd"),
+                            js.get("msg1"),
+                        )
+                        await asyncio.sleep(
+                            constants.RETRYABLE_BASE_DELAY * transient_retry_count
+                        )
+                        continue
 
                 error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
                 logging.error(f"해외주식 체결조회 실패: {error_msg}")

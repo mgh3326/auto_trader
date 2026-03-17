@@ -285,3 +285,10 @@ def get_mock_tr_id(tr_id: str, is_mock: bool) -> str:
     if is_mock and tr_id.startswith("TTT"):
         return tr_id.replace("TTT", "VTT", 1)
     return tr_id
+
+
+# Transient (retryable) KIS API error codes
+# SYDB0050: "조회이후에 자료가 변경되었습니다.(다시 조회하세요)" — DB race condition
+RETRYABLE_MSG_CODES: frozenset[str] = frozenset({"SYDB0050"})
+RETRYABLE_MAX_ATTEMPTS: int = 3
+RETRYABLE_BASE_DELAY: float = 0.3  # seconds, applied before each retry
