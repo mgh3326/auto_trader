@@ -220,31 +220,34 @@ class TestFinnhubEconomicCalendar:
 
     @pytest.mark.asyncio
     async def test_fetch_economic_calendar_success(self) -> None:
-        """Test successful economic calendar fetch."""
+        """Test successful economic calendar fetch with real API response format."""
         from app.mcp_server.tooling.fundamentals_sources_finnhub import (
             fetch_economic_calendar_finnhub,
         )
 
-        mock_response = [
-            {
-                "time": "08:30",
-                "country": "US",
-                "event": "CPI",
-                "actual": "2.4%",
-                "previous": "2.3%",
-                "estimate": "2.3%",
-                "impact": "high",
-            },
-            {
-                "time": "14:00",
-                "country": "US",
-                "event": "FOMC Statement",
-                "actual": None,
-                "previous": None,
-                "estimate": None,
-                "impact": "high",
-            },
-        ]
+        # Use real Finnhub response shape (dict wrapper + prev field)
+        mock_response = {
+            "economicCalendar": [
+                {
+                    "time": "08:30",
+                    "country": "US",
+                    "event": "CPI",
+                    "actual": "2.4%",
+                    "prev": "2.3%",
+                    "estimate": "2.3%",
+                    "impact": "high",
+                },
+                {
+                    "time": "14:00",
+                    "country": "US",
+                    "event": "FOMC Statement",
+                    "actual": None,
+                    "prev": None,
+                    "estimate": None,
+                    "impact": "high",
+                },
+            ],
+        }
 
         with patch(
             "app.mcp_server.tooling.fundamentals_sources_finnhub._get_finnhub_client",
@@ -259,6 +262,7 @@ class TestFinnhubEconomicCalendar:
             assert len(result) == 2
             assert result[0]["event"] == "CPI"
             assert result[0]["country"] == "US"
+            assert result[0]["previous"] == "2.3%"
 
     @pytest.mark.asyncio
     async def test_fetch_economic_calendar_handles_error(self) -> None:
