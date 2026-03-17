@@ -46,8 +46,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     PUBLIC_API_PATHS: ClassVar[list[str]] = [
         "/api/v1/openclaw/callback",
         "/api/screener/callback",
-        "/api/n8n/pending-orders",
-        "/api/n8n/market-context",
+        "/api/n8n/",  # n8n 내부 전용 API (전체 prefix 허용)
     ]
     LEGACY_DEPRECATED_PREFIXES: ClassVar[list[str]] = [
         "/manual-holdings",
