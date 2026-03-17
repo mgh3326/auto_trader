@@ -17,6 +17,7 @@ from .research_backtest import (
     ResearchPromotionCandidate,
     ResearchSyncJob,
 )
+from .review import PendingSnapshot, Trade, TradeReview, TradeSnapshot
 from .symbol_trade_settings import SymbolTradeSettings
 from .trade_profile import (
     AssetProfile,
@@ -71,6 +72,10 @@ __all__ = [
     "BrokerAccount",
     "StockAlias",
     "ManualHolding",
+    "Trade",
+    "TradeSnapshot",
+    "TradeReview",
+    "PendingSnapshot",
     # "AlertRule", "AlertEvent",
     # "PricesLatest", "PricesOHLCV", "FxRate",
 ]
