@@ -363,6 +363,9 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     SESSION_BLACKLIST_FAIL_SAFE: bool = True
     SESSION_BLACKLIST_DB_FALLBACK: bool = True
+
+    # N8N API Key Authentication
+    N8N_API_KEY: str = ""
     PUBLIC_API_PATHS: list[str] = []
 
     @field_validator("SECRET_KEY")
