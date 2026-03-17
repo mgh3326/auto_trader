@@ -46,3 +46,87 @@ class TestDailyBriefFormatting:
 
     def test_fmt_pnl_none(self):
         assert fmt_pnl(None) == "-"
+
+
+@pytest.mark.unit
+class TestBuildBriefText:
+    def test_contains_header(self):
+        from app.schemas.n8n import N8nMarketOverview
+        from app.services.n8n_daily_brief_service import _build_brief_text
+
+        text = _build_brief_text(
+            date_fmt="03/17 (화)",
+            market_overview=N8nMarketOverview(
+                fear_greed=None,
+                btc_dominance=None,
+                total_market_cap_change_24h=None,
+                economic_events_today=[],
+            ),
+            pending_by_market={},
+            portfolio_by_market={},
+            yesterday_fills={"total": 0, "fills": []},
+        )
+
+        assert "📋 Daily Trading Brief — 03/17 (화)" in text
+        assert "💼 미체결 주문" in text
+        assert "📊 포트폴리오" in text
+
+    def test_includes_pending_counts(self):
+        from app.schemas.n8n import N8nMarketOverview
+        from app.services.n8n_daily_brief_service import _build_brief_text
+
+        text = _build_brief_text(
+            date_fmt="03/17 (화)",
+            market_overview=N8nMarketOverview(
+                fear_greed=None,
+                btc_dominance=None,
+                total_market_cap_change_24h=None,
+                economic_events_today=[],
+            ),
+            pending_by_market={
+                "crypto": {
+                    "total": 11,
+                    "buy_count": 4,
+                    "sell_count": 7,
+                    "near_fill_count": 2,
+                    "needs_attention_count": 5,
+                    "orders": [],
+                },
+            },
+            portfolio_by_market={},
+            yesterday_fills={"total": 0, "fills": []},
+        )
+
+        assert "[크립토] 11건 (매수 4 / 매도 7)" in text
+        assert "체결 임박 2건 ⚡" in text
+
+    def test_includes_fills(self):
+        from app.schemas.n8n import N8nMarketOverview
+        from app.services.n8n_daily_brief_service import _build_brief_text
+
+        text = _build_brief_text(
+            date_fmt="03/17 (화)",
+            market_overview=N8nMarketOverview(
+                fear_greed=None,
+                btc_dominance=None,
+                total_market_cap_change_24h=None,
+                economic_events_today=[],
+            ),
+            pending_by_market={},
+            portfolio_by_market={},
+            yesterday_fills={
+                "total": 1,
+                "fills": [
+                    {
+                        "symbol": "ETH",
+                        "side": "sell",
+                        "price_fmt": "3.35M",
+                        "amount_fmt": "402만",
+                        "time": "14:23",
+                    }
+                ],
+            },
+        )
+
+        assert "✅ 전일 체결" in text
+        assert "ETH sell" in text
