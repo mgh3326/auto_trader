@@ -844,3 +844,117 @@ async def test_get_overview_excludes_non_tradable_manual_crypto_everywhere(
         }
     ]
     assert overview["warnings"] == warnings == []
+
+
+@pytest.mark.unit
+class TestAggregatePositions:
+    """Test _aggregate_positions handles mixed-currency US positions."""
+
+    def _make_service(self) -> PortfolioOverviewService:
+        """Create service with a mock DB session."""
+        from unittest.mock import MagicMock
+
+        return PortfolioOverviewService(MagicMock())
+
+    def test_us_mixed_source_uses_live_profit_rate(self):
+        """Issue #327: Mixed KIS+manual US positions should use KIS profit_rate.
+
+        KIS returns avg_price in USD, manual holdings store avg_price in KRW.
+        Aggregation should prefer the live source's profit_rate over recalculating
+        from mixed-currency cost_basis.
+        """
+        service = self._make_service()
+        components = [
+            # KIS live: NVDA, 5 shares, $150 avg, $160 current
+            {
+                "market_type": "US",
+                "symbol": "NVDA",
+                "name": "NVIDIA",
+                "account_key": "live:kis",
+                "broker": "kis",
+                "account_name": "KIS",
+                "source": "live",
+                "quantity": 5,
+                "avg_price": 150.0,  # USD
+                "current_price": 160.0,  # USD
+                "evaluation": 800.0,  # USD
+                "profit_loss": 50.0,  # USD
+                "profit_rate": 0.0667,  # Correct from KIS API
+            },
+            # Manual (Toss): NVDA, 5 shares, ₩200,000 avg (KRW!)
+            {
+                "market_type": "US",
+                "symbol": "NVDA",
+                "name": "NVIDIA",
+                "account_key": "manual:1",
+                "broker": "toss",
+                "account_name": "Toss",
+                "source": "manual",
+                "quantity": 5,
+                "avg_price": 200_000.0,  # KRW! (currency mismatch)
+                "current_price": 160.0,  # USD (filled by _fill_missing_prices)
+                "evaluation": 800.0,  # USD (recalculated)
+                "profit_loss": -199_200.0,  # Wrong: 800 - 1_000_000
+                "profit_rate": -0.9992,  # Wrong: mixed currencies
+            },
+        ]
+
+        positions = service._aggregate_positions(components)
+        nvda = next(p for p in positions if p["symbol"] == "NVDA")
+
+        # The position profit_rate should NOT be deeply negative
+        # With the fix, it should use the live source's profit_rate as basis
+        # or at minimum not produce -99% due to currency mismatch
+        assert nvda["profit_rate"] > -0.5, (
+            f"Expected reasonable profit_rate, got {nvda['profit_rate']}"
+        )
+
+    def test_single_source_kr_unchanged(self):
+        """KR positions from single source should work as before."""
+        service = self._make_service()
+        components = [
+            {
+                "market_type": "KR",
+                "symbol": "005930",
+                "name": "삼성전자",
+                "account_key": "live:kis",
+                "broker": "kis",
+                "account_name": "KIS",
+                "source": "live",
+                "quantity": 100,
+                "avg_price": 70_000.0,
+                "current_price": 75_000.0,
+                "evaluation": 7_500_000.0,
+                "profit_loss": 500_000.0,
+                "profit_rate": 0.0714,
+            },
+        ]
+
+        positions = service._aggregate_positions(components)
+        samsung = next(p for p in positions if p["symbol"] == "005930")
+        assert abs(samsung["profit_rate"] - 0.0714) < 0.01
+
+    def test_single_source_us_unchanged(self):
+        """US positions from KIS only should work correctly."""
+        service = self._make_service()
+        components = [
+            {
+                "market_type": "US",
+                "symbol": "AAPL",
+                "name": "Apple",
+                "account_key": "live:kis",
+                "broker": "kis",
+                "account_name": "KIS",
+                "source": "live",
+                "quantity": 10,
+                "avg_price": 180.0,  # USD
+                "current_price": 190.0,  # USD
+                "evaluation": 1_900.0,  # USD
+                "profit_loss": 100.0,  # USD
+                "profit_rate": 0.0556,  # Correct
+            },
+        ]
+
+        positions = service._aggregate_positions(components)
+        aapl = next(p for p in positions if p["symbol"] == "AAPL")
+        assert abs(aapl["profit_rate"] - 0.0556) < 0.01
