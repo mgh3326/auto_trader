@@ -440,23 +440,24 @@ class TestFetchCryptoScan:
         mock_tickers: list[dict],
     ) -> None:
         """Coins with null RSI should appear at end of sorted list."""
+        import numpy as np
+
         patches = _patch_all()
+        # Use realistic price data with both ups and downs to get valid RSI
+        np.random.seed(42)
+        close_values = pd.Series(np.cumsum(np.random.randn(50)) + 100)
         ohlcv_ok = pd.DataFrame(
             {
-                "close": pd.Series([100.0 + i for i in range(50)]),
-                "open": pd.Series([99.0 + i for i in range(50)]),
-                "high": pd.Series([102.0 + i for i in range(50)]),
-                "low": pd.Series([98.0 + i for i in range(50)]),
+                "close": close_values,
+                "open": close_values - 1,
+                "high": close_values + 2,
+                "low": close_values - 2,
                 "volume": [1000] * 50,
             }
         )
         ohlcv_empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
-        call_count = 0
-
         async def alternating_ohlcv(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
             # BTC gets empty (null RSI), ETH and XRP get real data
             market = args[0] if args else kwargs.get("market", "")
             if market == "KRW-BTC":
