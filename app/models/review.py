@@ -134,9 +134,7 @@ class PendingSnapshot(Base):
             "resolved_as IN ('pending','filled','cancelled','expired')",
             name="review_pending_resolved_as",
         ),
-        Index(
-            "ix_review_pending_resolved_date", "resolved_as", "snapshot_date"
-        ),
+        Index("ix_review_pending_resolved_date", "resolved_as", "snapshot_date"),
         Index(
             "ix_review_pending_account_order_date",
             "account",
