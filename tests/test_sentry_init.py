@@ -645,3 +645,84 @@ class TestYfinanceNoiseFilter:
             "span_id": None,
         }
         assert sentry_module._before_send_log(sentry_log, {}) is not None
+
+
+@pytest.mark.unit
+class TestFastmcpToolValidationFilter:
+    """FastMCP tool validation errors are expected LLM client noise."""
+
+    def test_fastmcp_validation_error_event_dropped(self):
+        """cancel_order with wrong param name → dropped."""
+        event: Event = {
+            "logger": "fastmcp.server.server",
+            "logentry": {
+                "message": "Error validating tool 'cancel_order'",
+                "formatted": "Error validating tool 'cancel_order'",
+            },
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_fastmcp_validation_error_from_log_record_dropped(self):
+        """Validation error detected via hint log_record (mechanism=logging)."""
+        import logging
+
+        record = logging.LogRecord(
+            name="fastmcp.server.server",
+            level=logging.ERROR,
+            pathname="fastmcp/server/server.py",
+            lineno=987,
+            msg="Error validating tool '%s'",
+            args=("place_order",),
+            exc_info=None,
+        )
+        event: Event = {}
+        hint = {"log_record": record}
+        assert sentry_module._before_send(event, hint) is None
+
+    def test_fastmcp_non_validation_error_kept(self):
+        """FastMCP errors that are NOT validation → kept."""
+        event: Event = {
+            "logger": "fastmcp.server.server",
+            "logentry": {
+                "message": "Unexpected error in tool execution",
+                "formatted": "Unexpected error in tool execution",
+            },
+        }
+        assert sentry_module._before_send(event, {}) is not None
+
+    def test_non_fastmcp_logger_kept(self):
+        """Validation-like message from a different logger → kept."""
+        event: Event = {
+            "logger": "app.services",
+            "logentry": {
+                "message": "Error validating tool 'cancel_order'",
+                "formatted": "Error validating tool 'cancel_order'",
+            },
+        }
+        assert sentry_module._before_send(event, {}) is not None
+
+    def test_before_send_log_drops_fastmcp_validation(self):
+        """Sentry structured log path also filters validation noise."""
+        sentry_log: Log = {
+            "severity_text": "error",
+            "severity_number": 17,
+            "body": "Error validating tool 'get_holdings'",
+            "attributes": {"logger.name": "fastmcp.server.server"},
+            "time_unix_nano": 1,
+            "trace_id": None,
+            "span_id": None,
+        }
+        assert sentry_module._before_send_log(sentry_log, {}) is None
+
+    def test_before_send_log_keeps_fastmcp_non_validation(self):
+        """Non-validation FastMCP log → kept."""
+        sentry_log: Log = {
+            "severity_text": "error",
+            "severity_number": 17,
+            "body": "Tool execution failed with timeout",
+            "attributes": {"logger.name": "fastmcp.server.server"},
+            "time_unix_nano": 1,
+            "trace_id": None,
+            "span_id": None,
+        }
+        assert sentry_module._before_send_log(sentry_log, {}) is not None

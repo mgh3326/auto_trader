@@ -87,6 +87,14 @@ def _is_yfinance_noise_log(logger_name: str | None, message: str | None) -> bool
     return any(pattern in message for pattern in _YFINANCE_NOISE_PATTERNS)
 
 
+def _is_fastmcp_tool_validation_error(
+    logger_name: str | None, message: str | None
+) -> bool:
+    if logger_name != "fastmcp.server.server" or not message:
+        return False
+    return message.startswith("Error validating tool ")
+
+
 def _extract_log_context(payload: Event, hint: Hint) -> tuple[str | None, str | None]:
     logger_name: str | None = None
     message: str | None = None
@@ -175,6 +183,8 @@ def _before_send(event: Event, hint: Hint) -> Event | None:
         return None
     if _is_yfinance_noise_log(logger_name, message):
         return None
+    if _is_fastmcp_tool_validation_error(logger_name, message):
+        return None
     return _sanitize_in_place(event)
 
 
@@ -193,6 +203,8 @@ def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
     if _is_healthcheck_access_log(logger_name, message):
         return None
     if _is_yfinance_noise_log(logger_name, message):
+        return None
+    if _is_fastmcp_tool_validation_error(logger_name, message):
         return None
     return _sanitize_in_place(sentry_log)
 
