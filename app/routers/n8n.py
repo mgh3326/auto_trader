@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.core.timezone import now_kst
 from app.schemas.n8n import (
+    N8nDailyBriefResponse,
     N8nFilledOrdersResponse,
     N8nMarketContextResponse,
     N8nMarketContextSummary,
@@ -26,6 +27,7 @@ from app.schemas.n8n import (
     N8nTradeReviewStats,
     N8nTradeReviewStatsResponse,
 )
+from app.services.n8n_daily_brief_service import fetch_daily_brief
 from app.services.n8n_filled_orders_service import fetch_filled_orders
 from app.services.n8n_market_context_service import fetch_market_context
 from app.services.n8n_pending_orders_service import fetch_pending_orders
@@ -177,6 +179,65 @@ async def get_market_context(
         summary=result["summary"],
         errors=result["errors"],
     )
+
+
+@router.get("/daily-brief", response_model=N8nDailyBriefResponse)
+async def get_daily_brief(
+    markets: str = Query(
+        "crypto,kr,us",
+        description="Comma-separated market list: crypto,kr,us",
+    ),
+    min_amount: float = Query(
+        50_000, ge=0, description="Minimum order amount filter in KRW"
+    ),
+) -> N8nDailyBriefResponse | JSONResponse:
+    """
+    Get unified daily trading brief.
+
+    Combines pending orders, market context, portfolio summary, and yesterday's fills
+    into a single response with pre-formatted brief text for Discord delivery.
+    """
+    as_of_dt = now_kst().replace(microsecond=0)
+
+    market_list = [m.strip().lower() for m in markets.split(",") if m.strip()]
+    valid_markets = [m for m in market_list if m in ("crypto", "kr", "us")]
+    if not valid_markets:
+        valid_markets = ["crypto", "kr", "us"]
+
+    try:
+        result = await fetch_daily_brief(
+            markets=valid_markets,
+            min_amount=min_amount,
+            as_of=as_of_dt,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to build daily brief")
+        from app.schemas.n8n import (
+            N8nDailyBriefPendingOrders,
+            N8nDailyBriefPortfolio,
+            N8nMarketOverview,
+            N8nYesterdayFills,
+        )
+
+        payload = N8nDailyBriefResponse(
+            success=False,
+            as_of=as_of_dt.isoformat(),
+            date_fmt=as_of_dt.strftime("%m/%d"),
+            market_overview=N8nMarketOverview(
+                fear_greed=None,
+                btc_dominance=None,
+                total_market_cap_change_24h=None,
+                economic_events_today=[],
+            ),
+            pending_orders=N8nDailyBriefPendingOrders(),
+            portfolio_summary=N8nDailyBriefPortfolio(),
+            yesterday_fills=N8nYesterdayFills(),
+            brief_text="",
+            errors=[{"error": str(exc)}],
+        )
+        return JSONResponse(status_code=500, content=payload.model_dump())
+
+    return N8nDailyBriefResponse(**result)
 
 
 @router.get("/filled-orders", response_model=N8nFilledOrdersResponse)
