@@ -25,25 +25,24 @@ async def intraday_crypto_order_review() -> dict[str, object]:
 
     result = await fetch_pending_orders(
         market="crypto",
-        attention_only=True,
         include_current_price=True,
+        include_indicators=True,
         as_of=as_of,
     )
 
-    attention_count = result.get("summary", {}).get("needs_attention_count", 0)
-    logger.info(
-        f"Crypto intraday review complete: {attention_count} orders need attention"
-    )
+    order_count = result.get("summary", {}).get("total", 0)
+    logger.info(f"Crypto intraday review complete: {order_count} pending orders")
 
     return {
         "market": "crypto",
         "as_of": as_of.isoformat(),
-        "attention_count": attention_count,
-        "attention_orders": [
+        "order_count": order_count,
+        "orders": [
             {
                 "symbol": order.get("symbol"),
                 "side": order.get("side"),
-                "attention_reason": order.get("attention_reason"),
+                "gap_pct": order.get("gap_pct"),
+                "indicators": order.get("indicators"),
             }
             for order in result.get("orders", [])
         ],
@@ -68,18 +67,18 @@ async def intraday_kr_order_review() -> dict[str, object]:
 
     result = await fetch_pending_orders(
         market="kr",
-        attention_only=True,
         include_current_price=True,
+        include_indicators=False,
         as_of=as_of,
     )
 
-    attention_count = result.get("summary", {}).get("needs_attention_count", 0)
-    logger.info(f"KR intraday review complete: {attention_count} orders need attention")
+    order_count = result.get("summary", {}).get("total", 0)
+    logger.info(f"KR intraday review complete: {order_count} pending orders")
 
     return {
         "market": "kr",
         "as_of": as_of.isoformat(),
-        "attention_count": attention_count,
+        "order_count": order_count,
     }
 
 
@@ -101,18 +100,18 @@ async def intraday_us_order_review() -> dict[str, object]:
 
     result = await fetch_pending_orders(
         market="us",
-        attention_only=True,
         include_current_price=True,
+        include_indicators=False,
         as_of=as_of,
     )
 
-    attention_count = result.get("summary", {}).get("needs_attention_count", 0)
-    logger.info(f"US intraday review complete: {attention_count} orders need attention")
+    order_count = result.get("summary", {}).get("total", 0)
+    logger.info(f"US intraday review complete: {order_count} pending orders")
 
     return {
         "market": "us",
         "as_of": as_of.isoformat(),
-        "attention_count": attention_count,
+        "order_count": order_count,
     }
 
 

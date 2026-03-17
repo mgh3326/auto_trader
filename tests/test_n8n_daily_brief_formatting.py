@@ -89,8 +89,6 @@ class TestBuildBriefText:
                     "total": 11,
                     "buy_count": 4,
                     "sell_count": 7,
-                    "near_fill_count": 2,
-                    "needs_attention_count": 5,
                     "orders": [],
                 },
             },
@@ -99,7 +97,6 @@ class TestBuildBriefText:
         )
 
         assert "[크립토] 11건 (매수 4 / 매도 7)" in text
-        assert "체결 임박 2건 ⚡" in text
 
     def test_includes_fills(self):
         from app.schemas.n8n import N8nMarketOverview

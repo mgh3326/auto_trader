@@ -44,8 +44,7 @@ async def fetch_pending_review(
         include_current_price=True,
         side=None,
         as_of=as_of_dt,
-        attention_only=False,
-        near_fill_pct=2.0,
+        include_indicators=False,
     )
 
     enriched_orders = []

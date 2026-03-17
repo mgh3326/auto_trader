@@ -50,17 +50,9 @@ class N8nPendingOrderItem(BaseModel):
         None,
         description="One-line order summary, e.g. APT buy @2,470 (현재 2,166, +14.0%, 31.2만, 1일)",
     )
-    fill_proximity: str | None = Field(
-        None, description="Fill proximity classification: near, moderate, far, very_far"
-    )
-    fill_proximity_fmt: str | None = Field(
-        None, description="Formatted fill proximity, e.g. '체결 임박 ⚡'"
-    )
-    needs_attention: bool = Field(
-        False, description="Whether this order needs user attention"
-    )
-    attention_reason: str | None = Field(
-        None, description="Human-readable reason for attention"
+    indicators: dict[str, float | None] | None = Field(
+        None,
+        description="Technical indicators for the order's symbol (RSI, StochRSI, ADX, etc.)",
     )
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
@@ -82,10 +74,16 @@ class N8nPendingOrderItem(BaseModel):
                 "age_hours": 6,
                 "age_days": 0,
                 "currency": "KRW",
-                "fill_proximity": "near",
-                "fill_proximity_fmt": "체결 임박 ⚡",
-                "needs_attention": True,
-                "attention_reason": "체결 임박 (+0.5%)",
+                "indicators": {
+                    "rsi_14": 58.7,
+                    "rsi_7": 62.3,
+                    "stoch_rsi_k": 72.5,
+                    "stoch_rsi_d": 68.1,
+                    "adx": 28.3,
+                    "ema_20_distance_pct": 4.2,
+                    "change_24h_pct": 3.2,
+                    "volume_24h_krw": 285000000000,
+                },
             }
         }
     )
@@ -114,17 +112,6 @@ class N8nPendingOrderSummary(BaseModel):
         None,
         description="Summary title line, e.g. 📋 미체결 리뷰 — 03/16 (13건, 매수 4 / 매도 9)",
     )
-    near_fill_count: int = Field(
-        0, description="Number of orders near fill (within near_fill_pct)"
-    )
-    needs_attention_count: int = Field(
-        0, description="Number of orders needing attention"
-    )
-    attention_orders_only: list[N8nPendingOrderItem] = Field(
-        default_factory=list,
-        description="Orders that need attention (populated when attention_only=true)",
-    )
-
     model_config: ClassVar[ConfigDict] = ConfigDict(
         json_schema_extra={
             "example": {
@@ -133,9 +120,6 @@ class N8nPendingOrderSummary(BaseModel):
                 "sell_count": 1,
                 "total_buy_krw": 297000.0,
                 "total_sell_krw": 1825000.0,
-                "near_fill_count": 1,
-                "needs_attention_count": 1,
-                "attention_orders_only": [],
             }
         }
     )
@@ -180,10 +164,16 @@ class N8nPendingOrdersResponse(BaseModel):
                         "age_hours": 6,
                         "age_days": 0,
                         "currency": "KRW",
-                        "fill_proximity": "near",
-                        "fill_proximity_fmt": "체결 임박 ⚡",
-                        "needs_attention": True,
-                        "attention_reason": "체결 임박 (+0.5%)",
+                        "indicators": {
+                            "rsi_14": 58.7,
+                            "rsi_7": 62.3,
+                            "stoch_rsi_k": 72.5,
+                            "stoch_rsi_d": 68.1,
+                            "adx": 28.3,
+                            "ema_20_distance_pct": 4.2,
+                            "change_24h_pct": 3.2,
+                            "volume_24h_krw": 285000000000,
+                        },
                     }
                 ],
                 "summary": {
@@ -192,9 +182,6 @@ class N8nPendingOrdersResponse(BaseModel):
                     "sell_count": 0,
                     "total_buy_krw": 297000.0,
                     "total_sell_krw": 0.0,
-                    "near_fill_count": 1,
-                    "needs_attention_count": 1,
-                    "attention_orders_only": [],
                 },
                 "errors": [],
             }
@@ -407,8 +394,6 @@ class N8nDailyBriefPendingMarket(BaseModel):
     sell_count: int = Field(0, description="Pending sell orders")
     total_buy_fmt: str | None = Field(None, description="Formatted total buy amount")
     total_sell_fmt: str | None = Field(None, description="Formatted total sell amount")
-    near_fill_count: int = Field(0, description="Orders near fill threshold")
-    needs_attention_count: int = Field(0, description="Orders needing attention")
     orders: list[N8nPendingOrderItem] = Field(default_factory=list)
 
 
