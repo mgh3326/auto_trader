@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+_WEEKDAY_KR = ("월", "화", "수", "목", "금", "토", "일")
+
 
 def _fmt_decimal(value: float, max_decimals: int) -> str:
     """Format a number with up to max_decimals, keeping at least 1 decimal for whole numbers."""
@@ -132,11 +134,46 @@ def enrich_summary_fmt(
     )
 
 
+def fmt_date_with_weekday(dt: datetime) -> str:
+    """Format datetime as 'MM/DD (요일)' in Korean."""
+    return f"{dt.strftime('%m/%d')} ({_WEEKDAY_KR[dt.weekday()]})"
+
+
+def fmt_value(value: float | None, currency: str = "KRW") -> str:
+    """Format portfolio value. KRW: 억/만 units. USD: $-prefixed."""
+    if value is None:
+        return "-"
+    if currency == "USD":
+        if value >= 1000:
+            return f"${value:,.0f}"
+        return f"${value:,.2f}"
+    # KRW
+    if value >= 100_000_000:
+        eok = value / 100_000_000
+        return f"{eok:,.1f}억"
+    if value >= 10_000:
+        man = value / 10_000
+        return f"{man:,.0f}만"
+    return f"{value:,.0f}"
+
+
+def fmt_pnl(pct: float | None) -> str:
+    """Format P&L percentage with sign."""
+    if pct is None:
+        return "-"
+    if pct > 0:
+        return f"+{pct:.1f}%"
+    return f"{pct:.1f}%"
+
+
 __all__ = [
     "fmt_price",
     "fmt_gap",
     "fmt_amount",
     "fmt_age",
+    "fmt_date_with_weekday",
+    "fmt_value",
+    "fmt_pnl",
     "build_summary_line",
     "build_summary_title",
     "enrich_order_fmt",
