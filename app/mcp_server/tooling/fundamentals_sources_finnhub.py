@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 try:
     import finnhub
@@ -91,7 +94,19 @@ async def fetch_economic_calendar_finnhub(
 
         events = await asyncio.to_thread(fetch_sync)
 
+        # Finnhub returns {"economicCalendar": [...]} — unwrap the dict
+        if isinstance(events, dict):
+            events = events.get("economicCalendar", [])
+            logger.debug(
+                "Unwrapped Finnhub economic calendar dict, %d raw events",
+                len(events) if isinstance(events, list) else 0,
+            )
+
         if not isinstance(events, list):
+            logger.warning(
+                "Finnhub economic_calendar returned unexpected type: %s",
+                type(events).__name__,
+            )
             return None
 
         normalized_events: list[dict[str, Any]] = []
@@ -109,12 +124,13 @@ async def fetch_economic_calendar_finnhub(
                     "country": country,
                     "event": str(event.get("event", "")).strip(),
                     "actual": event.get("actual"),
-                    "previous": event.get("previous"),
+                    "previous": event.get("prev", event.get("previous")),
                     "estimate": event.get("estimate"),
                     "impact": str(event.get("impact", "")).strip().lower() or None,
                 },
             )
 
+        logger.info("Finnhub economic calendar: %d US events found", len(normalized_events))
         return normalized_events
     except Exception:
         return None

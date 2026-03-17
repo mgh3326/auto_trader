@@ -275,6 +275,67 @@ class TestFinnhubEconomicCalendar:
             result = await fetch_economic_calendar_finnhub("2026-03-16", "2026-03-16")
             assert result is None
 
+    @pytest.mark.asyncio
+    async def test_fetch_economic_calendar_unwraps_dict_response(self) -> None:
+        """Test that dict response with economicCalendar key is properly unwrapped."""
+        from app.mcp_server.tooling.fundamentals_sources_finnhub import (
+            fetch_economic_calendar_finnhub,
+        )
+
+        # Real Finnhub API response shape — dict with economicCalendar key
+        mock_api_response = {
+            "economicCalendar": [
+                {
+                    "time": "08:30:00",
+                    "country": "US",
+                    "event": "Initial Jobless Claims",
+                    "actual": 220,
+                    "prev": 215,
+                    "estimate": 218,
+                    "impact": "medium",
+                    "unit": "K",
+                },
+                {
+                    "time": "10:00:00",
+                    "country": "US",
+                    "event": "FOMC Statement",
+                    "actual": None,
+                    "prev": None,
+                    "estimate": None,
+                    "impact": "high",
+                    "unit": "",
+                },
+                {
+                    "time": "07:00:00",
+                    "country": "DE",
+                    "event": "German CPI",
+                    "actual": 2.3,
+                    "prev": 2.1,
+                    "estimate": 2.2,
+                    "impact": "high",
+                    "unit": "%",
+                },
+            ],
+        }
+
+        with patch(
+            "app.mcp_server.tooling.fundamentals_sources_finnhub._get_finnhub_client",
+        ) as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.economic_calendar.return_value = mock_api_response
+            mock_client.return_value = mock_instance
+
+            result = await fetch_economic_calendar_finnhub("2026-03-18", "2026-03-18")
+
+            assert result is not None
+            # Should have 2 US events (German event filtered out)
+            assert len(result) == 2
+            assert result[0]["event"] == "Initial Jobless Claims"
+            assert result[1]["event"] == "FOMC Statement"
+            # Verify field name normalization: prev → previous
+            assert result[0]["previous"] == 215
+            assert result[0]["estimate"] == 218
+
 
 @pytest.mark.unit
 class TestMarketContextService:
