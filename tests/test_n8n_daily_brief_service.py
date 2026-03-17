@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.core.timezone import KST
+from app.services.n8n_daily_brief_service import _build_portfolio_summary
 
 
 def _fake_pending_result(market: str, orders: list | None = None) -> dict:
@@ -163,3 +164,192 @@ class TestFetchDailyBrief:
         # Should still succeed with partial data
         assert result["success"] is True
         assert len(result["errors"]) > 0
+
+
+@pytest.mark.unit
+class TestBuildPortfolioSummary:
+    """Test _build_portfolio_summary PnL calculation."""
+
+    def _make_overview(self, positions: list[dict]) -> dict:
+        return {"positions": positions}
+
+    def test_us_pnl_uses_profit_rate_not_avg_price(self):
+        """Regression: Issue #327 - US PnL should not mix KRW/USD avg_price.
+
+        When manual holdings have avg_price in KRW and KIS has USD,
+        the aggregated avg_price is nonsensical. The fix uses per-position
+        profit_rate and evaluation to derive PnL.
+        """
+        # Simulate an aggregated US position where avg_price is a
+        # mixed KRW/USD weighted average (the broken aggregation output).
+        # KIS: 5 shares, avg $150, current $160 → profit_rate ≈ 0.0667
+        # Manual: 5 shares, avg ₩200,000 (KRW!), but after aggregation:
+        #   avg_price = (5*150 + 5*200000) / 10 = 100,075 (nonsense)
+        #   evaluation = 10 * 160 = 1,600 (USD)
+        #   profit_rate = (1600 - 1000750) / 1000750 ≈ -0.998 (WRONG from aggregation)
+        #
+        # But the individual KIS position profit_rate (0.0667) is correct.
+        # After our fix, _build_portfolio_summary should use evaluation and
+        # profit_rate from positions, not recalculate from avg_price.
+
+        overview = self._make_overview(
+            [
+                {
+                    "market_type": "US",
+                    "symbol": "NVDA",
+                    "name": "NVIDIA",
+                    "quantity": 10,
+                    "avg_price": 100_075,  # Broken mixed avg from aggregation
+                    "current_price": 160.0,
+                    "evaluation": 1_600.0,  # 10 * $160, in USD
+                    "profit_loss": 100.0,  # Correct: $1600 - $1500 = $100
+                    "profit_rate": 0.0667,  # Correct: from KIS API or proper calc
+                },
+            ]
+        )
+
+        result = _build_portfolio_summary(overview)
+        us = result.get("us")
+        assert us is not None
+
+        # PnL should be approximately +6.67%, NOT -99.8%
+        assert us["pnl_pct"] is not None
+        assert us["pnl_pct"] > 0, f"Expected positive PnL, got {us['pnl_pct']}"
+        assert abs(us["pnl_pct"] - 6.67) < 1.0
+
+    def test_kr_pnl_still_works(self):
+        """KR positions should still calculate PnL correctly."""
+        overview = self._make_overview(
+            [
+                {
+                    "market_type": "KR",
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "quantity": 100,
+                    "avg_price": 70_000.0,
+                    "current_price": 75_000.0,
+                    "evaluation": 7_500_000.0,
+                    "profit_loss": 500_000.0,
+                    "profit_rate": 0.0714,
+                },
+            ]
+        )
+
+        result = _build_portfolio_summary(overview)
+        kr = result.get("kr")
+        assert kr is not None
+        assert kr["pnl_pct"] is not None
+        assert kr["pnl_pct"] > 0
+        assert abs(kr["pnl_pct"] - 7.14) < 1.0
+
+    def test_crypto_pnl_still_works(self):
+        """Crypto positions should still calculate PnL correctly."""
+        overview = self._make_overview(
+            [
+                {
+                    "market_type": "CRYPTO",
+                    "symbol": "KRW-BTC",
+                    "name": "BTC",
+                    "quantity": 0.5,
+                    "avg_price": 100_000_000.0,
+                    "current_price": 110_000_000.0,
+                    "evaluation": 55_000_000.0,
+                    "profit_loss": 5_000_000.0,
+                    "profit_rate": 0.10,
+                },
+            ]
+        )
+
+        result = _build_portfolio_summary(overview)
+        crypto = result.get("crypto")
+        assert crypto is not None
+        assert crypto["pnl_pct"] is not None
+        assert abs(crypto["pnl_pct"] - 10.0) < 1.0
+
+    def test_position_without_profit_rate_falls_back(self):
+        """Positions missing profit_rate should fall back gracefully."""
+        overview = self._make_overview(
+            [
+                {
+                    "market_type": "US",
+                    "symbol": "AAPL",
+                    "name": "Apple",
+                    "quantity": 5,
+                    "avg_price": 180.0,
+                    "current_price": 190.0,
+                    "evaluation": 950.0,
+                    "profit_loss": None,
+                    "profit_rate": None,
+                },
+            ]
+        )
+
+        result = _build_portfolio_summary(overview)
+        us = result.get("us")
+        assert us is not None
+        # When profit_rate is None, fall back to avg_price * qty calculation
+        # $950 - $900 = $50, $50/$900 = 5.56%
+        assert us["pnl_pct"] is not None
+        assert abs(us["pnl_pct"] - 5.56) < 1.0
+
+    def test_zero_evaluation_returns_none_pnl(self):
+        """Zero evaluation should not cause division errors."""
+        overview = self._make_overview(
+            [
+                {
+                    "market_type": "US",
+                    "symbol": "XYZ",
+                    "name": "Dead Stock",
+                    "quantity": 10,
+                    "avg_price": 50.0,
+                    "current_price": 0.0,
+                    "evaluation": 0.0,
+                    "profit_loss": -500.0,
+                    "profit_rate": -1.0,
+                },
+            ]
+        )
+
+        result = _build_portfolio_summary(overview)
+        us = result.get("us")
+        assert us is not None
+        # Should handle gracefully, not crash
+        assert us["pnl_pct"] == -100.0 or us["pnl_pct"] is None
+
+    def test_multi_position_weighted_pnl(self):
+        """Multiple US positions should produce weighted PnL."""
+        overview = self._make_overview(
+            [
+                {
+                    "market_type": "US",
+                    "symbol": "NVDA",
+                    "name": "NVIDIA",
+                    "quantity": 10,
+                    "avg_price": 150.0,
+                    "current_price": 160.0,
+                    "evaluation": 1_600.0,
+                    "profit_loss": 100.0,
+                    "profit_rate": 0.0667,  # +6.67%
+                },
+                {
+                    "market_type": "US",
+                    "symbol": "AAPL",
+                    "name": "Apple",
+                    "quantity": 20,
+                    "avg_price": 180.0,
+                    "current_price": 170.0,
+                    "evaluation": 3_400.0,
+                    "profit_loss": -200.0,
+                    "profit_rate": -0.0556,  # -5.56%
+                },
+            ]
+        )
+
+        result = _build_portfolio_summary(overview)
+        us = result.get("us")
+        assert us is not None
+        # Total eval: $5,000; Total cost: $1,500 + $3,600 = $5,100; PnL: -1.96%
+        # Using profit_rate method: cost_NVDA = 1600/1.0667 ≈ 1500, cost_AAPL = 3400/0.9444 ≈ 3600
+        # Total cost ≈ 5100, PnL = (5000 - 5100)/5100 * 100 ≈ -1.96%
+        assert us["pnl_pct"] is not None
+        assert abs(us["pnl_pct"] - (-1.96)) < 0.5
