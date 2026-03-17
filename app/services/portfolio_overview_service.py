@@ -12,6 +12,7 @@ import app.services.brokers.yahoo.client as yahoo_service
 from app.core.symbol import to_db_symbol
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
+from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.upbit_symbol_universe_service import get_active_upbit_markets
 from app.services.us_symbol_universe_service import (
@@ -148,10 +149,12 @@ class PortfolioOverviewService:
                 or item["symbol"] in active_upbit_markets
             ]
 
+        usd_krw_rate = await get_usd_krw_rate()
         await self._fill_missing_prices(
             kis_client,
             components,
             warnings,
+            usd_krw=usd_krw_rate,
             active_upbit_markets=active_upbit_markets,
             enforce_upbit_universe=enforce_upbit_universe,
         )
@@ -162,7 +165,7 @@ class PortfolioOverviewService:
             market_filter=market_filter,
             selected_account_keys=selected_account_set,
         )
-        positions = self._aggregate_positions(filtered_components)
+        positions = self._aggregate_positions(filtered_components, usd_krw=usd_krw_rate)
 
         if q_filter:
             positions = [
@@ -457,6 +460,8 @@ class PortfolioOverviewService:
         kis_client: KISClient,
         components: list[dict[str, Any]],
         warnings: list[str],
+        *,
+        usd_krw: float | None = None,
         active_upbit_markets: set[str] | None = None,
         enforce_upbit_universe: bool = True,
     ) -> None:
@@ -513,7 +518,7 @@ class PortfolioOverviewService:
                 price = _to_float(frame.iloc[-1].get("close"), default=0.0)
                 if price <= 0:
                     continue
-                self._apply_price(components, _MARKET_KR, symbol, price)
+                self._apply_price(components, _MARKET_KR, symbol, price, usd_krw=usd_krw)
             except Exception as exc:
                 logger.warning("Failed to fetch KIS KR price for %s: %s", symbol, exc)
                 warnings.append(f"KIS KR price fetch failed for {symbol}: {exc}")
@@ -551,7 +556,7 @@ class PortfolioOverviewService:
                     )
 
                 for target_symbol in us_symbol_targets.get(symbol, {symbol}):
-                    self._apply_price(components, _MARKET_US, target_symbol, price)
+                    self._apply_price(components, _MARKET_US, target_symbol, price, usd_krw=usd_krw)
 
         if crypto_symbols:
             price_map = await self._fetch_upbit_prices_resilient(
@@ -564,7 +569,7 @@ class PortfolioOverviewService:
             for symbol, price in price_map.items():
                 if price is None:
                     continue
-                self._apply_price(components, _MARKET_CRYPTO, symbol, float(price))
+                self._apply_price(components, _MARKET_CRYPTO, symbol, float(price), usd_krw=usd_krw)
 
     async def _fetch_upbit_prices_resilient(
         self,
@@ -705,6 +710,8 @@ class PortfolioOverviewService:
         market_type: str,
         symbol: str,
         price: float,
+        *,
+        usd_krw: float | None = None,
     ) -> None:
         for item in components:
             if item["market_type"] != market_type or item["symbol"] != symbol:
@@ -712,19 +719,39 @@ class PortfolioOverviewService:
             if item["current_price"] is not None:
                 continue
             item["current_price"] = price
-            self._recalculate_component(item)
+            self._recalculate_component(item, usd_krw=usd_krw)
 
-    def _recalculate_component(self, component: dict[str, Any]) -> None:
+    def _recalculate_component(
+        self, component: dict[str, Any], *, usd_krw: float | None = None
+    ) -> None:
         quantity = _to_float(component.get("quantity"))
         avg_price = _to_float(component.get("avg_price"))
         current_price = component.get("current_price")
+        market_type = component.get("market_type")
 
         if current_price is None:
             return
 
         current = float(current_price)
+
+        # Handle US market currency mismatch (heuristic)
+        if market_type == _MARKET_US and avg_price > 0 and usd_krw:
+            # If avg_price is much larger than current_price, assume it's KRW.
+            # Most expensive US stock (NVR) is ~$8000, so >1000 with >100x ratio is safe.
+            if avg_price > 1000 and (avg_price / current) > 100:
+                avg_price = avg_price / usd_krw
+                component["avg_price"] = avg_price
+
+        # Handle zero avg_price (missing cost basis)
+        if avg_price <= 0 and current > 0:
+            # Treat as bought at current price to avoid abnormal profit_loss/rate.
+            # We don't overwrite the original 0 in component["avg_price"] to maintain
+            # data fidelity, but we use it for cost_basis here.
+            cost_basis = quantity * current
+        else:
+            cost_basis = quantity * avg_price
+
         evaluation = quantity * current
-        cost_basis = quantity * avg_price
         profit_loss = evaluation - cost_basis
         profit_rate = (profit_loss / cost_basis) if cost_basis > 0 else 0.0
 
@@ -796,7 +823,7 @@ class PortfolioOverviewService:
         return filtered
 
     def _aggregate_positions(
-        self, components: list[dict[str, Any]]
+        self, components: list[dict[str, Any]], *, usd_krw: float | None = None
     ) -> list[dict[str, Any]]:
         by_key: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -836,6 +863,26 @@ class PortfolioOverviewService:
             quantity = sum(_to_float(item.get("quantity")) for item in components_list)
             if quantity <= 0:
                 continue
+
+            # Normalize currency for US positions with mixed sources
+            if row["market_type"] == _MARKET_US and usd_krw:
+                normalized_components = []
+                for item in components_list:
+                    item_copy = dict(item)
+                    avg_price = _to_float(item.get("avg_price"))
+                    current_price = _to_float(item.get("current_price"))
+
+                    # Detect KRW-denominated avg_price and convert to USD
+                    # Heuristic: if avg_price > 1000 and ratio to current_price > 100, it's likely KRW
+                    if (
+                        avg_price > 1000
+                        and current_price > 0
+                        and (avg_price / current_price) > 100
+                    ):
+                        item_copy["avg_price"] = avg_price / usd_krw
+
+                    normalized_components.append(item_copy)
+                components_list = normalized_components
 
             avg_numerator = sum(
                 _to_float(item.get("quantity")) * _to_float(item.get("avg_price"))
