@@ -220,31 +220,34 @@ class TestFinnhubEconomicCalendar:
 
     @pytest.mark.asyncio
     async def test_fetch_economic_calendar_success(self) -> None:
-        """Test successful economic calendar fetch."""
+        """Test successful economic calendar fetch with real API response format."""
         from app.mcp_server.tooling.fundamentals_sources_finnhub import (
             fetch_economic_calendar_finnhub,
         )
 
-        mock_response = [
-            {
-                "time": "08:30",
-                "country": "US",
-                "event": "CPI",
-                "actual": "2.4%",
-                "previous": "2.3%",
-                "estimate": "2.3%",
-                "impact": "high",
-            },
-            {
-                "time": "14:00",
-                "country": "US",
-                "event": "FOMC Statement",
-                "actual": None,
-                "previous": None,
-                "estimate": None,
-                "impact": "high",
-            },
-        ]
+        # Use real Finnhub response shape (dict wrapper + prev field)
+        mock_response = {
+            "economicCalendar": [
+                {
+                    "time": "08:30",
+                    "country": "US",
+                    "event": "CPI",
+                    "actual": "2.4%",
+                    "prev": "2.3%",
+                    "estimate": "2.3%",
+                    "impact": "high",
+                },
+                {
+                    "time": "14:00",
+                    "country": "US",
+                    "event": "FOMC Statement",
+                    "actual": None,
+                    "prev": None,
+                    "estimate": None,
+                    "impact": "high",
+                },
+            ],
+        }
 
         with patch(
             "app.mcp_server.tooling.fundamentals_sources_finnhub._get_finnhub_client",
@@ -259,6 +262,7 @@ class TestFinnhubEconomicCalendar:
             assert len(result) == 2
             assert result[0]["event"] == "CPI"
             assert result[0]["country"] == "US"
+            assert result[0]["previous"] == "2.3%"
 
     @pytest.mark.asyncio
     async def test_fetch_economic_calendar_handles_error(self) -> None:
@@ -274,6 +278,67 @@ class TestFinnhubEconomicCalendar:
 
             result = await fetch_economic_calendar_finnhub("2026-03-16", "2026-03-16")
             assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_calendar_unwraps_dict_response(self) -> None:
+        """Test that dict response with economicCalendar key is properly unwrapped."""
+        from app.mcp_server.tooling.fundamentals_sources_finnhub import (
+            fetch_economic_calendar_finnhub,
+        )
+
+        # Real Finnhub API response shape — dict with economicCalendar key
+        mock_api_response = {
+            "economicCalendar": [
+                {
+                    "time": "08:30:00",
+                    "country": "US",
+                    "event": "Initial Jobless Claims",
+                    "actual": 220,
+                    "prev": 215,
+                    "estimate": 218,
+                    "impact": "medium",
+                    "unit": "K",
+                },
+                {
+                    "time": "10:00:00",
+                    "country": "US",
+                    "event": "FOMC Statement",
+                    "actual": None,
+                    "prev": None,
+                    "estimate": None,
+                    "impact": "high",
+                    "unit": "",
+                },
+                {
+                    "time": "07:00:00",
+                    "country": "DE",
+                    "event": "German CPI",
+                    "actual": 2.3,
+                    "prev": 2.1,
+                    "estimate": 2.2,
+                    "impact": "high",
+                    "unit": "%",
+                },
+            ],
+        }
+
+        with patch(
+            "app.mcp_server.tooling.fundamentals_sources_finnhub._get_finnhub_client",
+        ) as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.economic_calendar.return_value = mock_api_response
+            mock_client.return_value = mock_instance
+
+            result = await fetch_economic_calendar_finnhub("2026-03-18", "2026-03-18")
+
+            assert result is not None
+            # Should have 2 US events (German event filtered out)
+            assert len(result) == 2
+            assert result[0]["event"] == "Initial Jobless Claims"
+            assert result[1]["event"] == "FOMC Statement"
+            # Verify field name normalization: prev → previous
+            assert result[0]["previous"] == 215
+            assert result[0]["estimate"] == 218
 
 
 @pytest.mark.unit
@@ -367,6 +432,45 @@ class TestMarketContextService:
         assert _normalize_crypto_symbol("btc") == "KRW-BTC"
 
         assert _normalize_crypto_symbol("") == ""
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_maps_previous_correctly(
+        self,
+    ) -> None:
+        """Test that previous values from Finnhub are correctly mapped."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        # Clear cache to force a fresh fetch
+        _clear_economic_calendar_cache()
+
+        mock_finnhub_events = [
+            {
+                "time": "08:30",
+                "country": "US",
+                "event": "CPI Release",
+                "actual": None,
+                "previous": "2.4%",
+                "estimate": "2.3%",
+                "impact": "high",
+            },
+        ]
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+        ) as mock_fetch:
+            mock_fetch.return_value = mock_finnhub_events
+
+            result = await fetch_economic_events_today()
+
+            assert len(result) == 1
+            assert result[0]["event"] == "CPI Release"
+            assert result[0]["previous"] == "2.4%"
+            assert result[0]["forecast"] == "2.3%"
+            assert result[0]["importance"] == "high"
+            assert result[0]["time"] == "22:30 KST"
 
 
 @pytest.mark.unit
