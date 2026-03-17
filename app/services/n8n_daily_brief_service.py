@@ -215,10 +215,32 @@ def _build_portfolio_summary(
     result: dict[str, dict[str, Any]] = {}
     for market, market_positions in by_market.items():
         total_eval = sum(float(p.get("evaluation") or 0) for p in market_positions)
-        total_cost = sum(
-            float(p.get("avg_price") or 0) * float(p.get("quantity") or 0)
-            for p in market_positions
-        )
+
+        # Derive cost from profit_rate and evaluation to avoid currency mismatch.
+        # For US stocks, avg_price may be in KRW (manual holdings) or USD (KIS),
+        # but profit_rate and evaluation are always in the same currency context.
+        total_cost = 0.0
+        for p in market_positions:
+            eval_amt = float(p.get("evaluation") or 0)
+            rate = p.get("profit_rate")
+            if eval_amt > 0 and rate is not None:
+                denominator = 1.0 + float(rate)
+                if denominator > 0:
+                    total_cost += eval_amt / denominator
+                else:
+                    # profit_rate == -1.0 means total loss; cost = eval - profit_loss
+                    profit_loss = float(p.get("profit_loss") or 0)
+                    total_cost += eval_amt - profit_loss
+            elif eval_amt <= 0 and rate is not None and rate <= -1.0:
+                # Zero evaluation, total loss — derive cost from profit_loss
+                profit_loss = float(p.get("profit_loss") or 0)
+                total_cost += -profit_loss if profit_loss < 0 else 0
+            else:
+                # Fallback: use avg_price * quantity (safe for same-currency markets)
+                avg = float(p.get("avg_price") or 0)
+                qty = float(p.get("quantity") or 0)
+                total_cost += avg * qty
+
         pnl_pct = (
             ((total_eval - total_cost) / total_cost * 100) if total_cost > 0 else None
         )
