@@ -859,9 +859,19 @@ class TvScreenerService:
 
                 for condition in where_clauses:
                     query = query.where(condition)
+                    if query is None:
+                        raise TvScreenerError(
+                            "CryptoScreener query returned None after chaining "
+                            f".where({condition!r})"
+                        )
 
                 if sort_by:
                     query = query.sort_by(sort_by, ascending=ascending)
+                    if query is None:
+                        raise TvScreenerError(
+                            "CryptoScreener query returned None after chaining "
+                            f".sort_by({sort_by!r}, ascending={ascending})"
+                        )
 
                 if limit:
                     query = query.set_range(0, limit)
@@ -936,15 +946,35 @@ class TvScreenerService:
                 if markets:
                     screener.set_markets(*markets)
                 query = screener.select(*columns)
+                if query is None:
+                    raise TvScreenerError(
+                        "StockScreener.select() returned None. "
+                        f"Columns: {columns[:3]}... (total {len(columns)})"
+                    )
 
                 if country:
                     query = query.where(StockField.COUNTRY == country)
+                    if query is None:
+                        raise TvScreenerError(
+                            "StockScreener query returned None after chaining "
+                            f".where(COUNTRY == {country!r})"
+                        )
 
                 for condition in where_clauses:
                     query = query.where(condition)
+                    if query is None:
+                        raise TvScreenerError(
+                            "StockScreener query returned None after chaining "
+                            f".where({condition!r})"
+                        )
 
                 if sort_by:
                     query = query.sort_by(sort_by, ascending=ascending)
+                    if query is None:
+                        raise TvScreenerError(
+                            "StockScreener query returned None after chaining "
+                            f".sort_by({sort_by!r}, ascending={ascending})"
+                        )
 
                 if limit:
                     query = query.set_range(0, limit)
