@@ -873,7 +873,7 @@ class PortfolioOverviewService:
                 for item in components_list:
                     item_copy = dict(item)
                     avg_price = _to_float(item.get("avg_price"))
-                    
+
                     # Use item's current_price if available, otherwise use row's current_price
                     ref_price = _to_float(item.get("current_price")) or _to_float(current_price)
 

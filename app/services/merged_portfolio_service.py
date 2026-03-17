@@ -437,12 +437,12 @@ class MergedPortfolioService:
 
         # 3. Currency normalization for US stocks
         if market_type == MarketType.US and holdings_list:
-            # We need a reference price to detect KRW. 
+            # We need a reference price to detect KRW.
             # If KIS exists, use its current price. If not, fetch it.
             ref_price = 0.0
             if kis_holdings and kis_holdings.get("current_price"):
                 ref_price = float(kis_holdings["current_price"])
-            
+
             if ref_price == 0:
                 try:
                     if kis_client is None:
