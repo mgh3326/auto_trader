@@ -82,6 +82,7 @@ def _ensure_test_env() -> None:
     # Force disable Sentry during tests — prevent test-originated errors
     # from leaking to the real Sentry project (developer shell may have SENTRY_DSN set)
     os.environ["SENTRY_DSN"] = ""
+    os.environ["ENVIRONMENT"] = "test"
 
 
 _ensure_test_env()
