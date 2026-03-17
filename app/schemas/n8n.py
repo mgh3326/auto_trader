@@ -396,6 +396,9 @@ class N8nMarketContextResponse(BaseModel):
     )
 
 
+# -----------------------------------------------------------------------------
+# Daily Brief (merged from main)
+# -----------------------------------------------------------------------------
 class N8nDailyBriefPendingMarket(BaseModel):
     """Per-market pending order summary for the daily brief."""
 
@@ -489,3 +492,263 @@ class N8nDailyBriefResponse(BaseModel):
             }
         }
     )
+
+
+# -----------------------------------------------------------------------------
+# Filled Orders
+# -----------------------------------------------------------------------------
+class N8nFilledOrderItem(BaseModel):
+    symbol: str = Field(..., description="Normalized symbol (e.g. BTC, 005930, NVDA)")
+    raw_symbol: str = Field(..., description="Original broker symbol (e.g. KRW-BTC)")
+    instrument_type: str = Field(..., description="crypto, equity_kr, equity_us")
+    side: str = Field(..., description="buy or sell")
+    price: float = Field(..., description="Execution price")
+    quantity: float = Field(..., description="Filled quantity")
+    total_amount: float = Field(
+        ..., description="Total filled amount (price * quantity)"
+    )
+    fee: float = Field(0, description="Trading fee")
+    currency: str = Field(..., description="KRW or USD")
+    account: str = Field(
+        ..., description="Account identifier: upbit, kis, kis_overseas"
+    )
+    order_id: str = Field(..., description="Unique order identifier from broker")
+    filled_at: str = Field(..., description="Execution timestamp in KST ISO8601")
+    current_price: float | None = Field(None, description="Current market price")
+    pnl_pct: float | None = Field(None, description="Unrealized P&L percentage")
+    pnl_pct_fmt: str | None = Field(None, description="Formatted P&L, e.g. +3.27%")
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "symbol": "BTC",
+                "raw_symbol": "KRW-BTC",
+                "instrument_type": "crypto",
+                "side": "buy",
+                "price": 98000000,
+                "quantity": 0.015,
+                "total_amount": 1470000,
+                "fee": 735,
+                "currency": "KRW",
+                "account": "upbit",
+                "order_id": "abc-123-def",
+                "filled_at": "2026-03-17T14:30:00+09:00",
+                "current_price": 101200000,
+                "pnl_pct": 3.27,
+                "pnl_pct_fmt": "+3.27%",
+            }
+        }
+    )
+
+
+class N8nFilledOrdersResponse(BaseModel):
+    success: bool = Field(..., description="Whether the request completed successfully")
+    as_of: str = Field(..., description="Response timestamp in KST ISO8601")
+    total_count: int = Field(..., description="Total number of filled orders returned")
+    orders: list[N8nFilledOrderItem] = Field(
+        default_factory=list, description="Filled order items"
+    )
+    errors: list[dict[str, object]] = Field(
+        default_factory=list,
+        description="Non-fatal errors from individual market fetches",
+    )
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "as_of": "2026-03-17T20:00:00+09:00",
+                "total_count": 0,
+                "orders": [],
+                "errors": [],
+            }
+        }
+    )
+
+
+# -----------------------------------------------------------------------------
+# Trade Reviews (POST + GET stats)
+# -----------------------------------------------------------------------------
+class N8nTradeReviewIndicators(BaseModel):
+    rsi_14: float | None = Field(None, description="RSI 14-period")
+    rsi_7: float | None = Field(None, description="RSI 7-period")
+    ema_20: float | None = Field(None, description="EMA 20")
+    ema_200: float | None = Field(None, description="EMA 200")
+    macd: float | None = Field(None, description="MACD value")
+    macd_signal: float | None = Field(None, description="MACD signal line")
+    adx: float | None = Field(None, description="ADX value")
+    stoch_rsi_k: float | None = Field(None, description="Stochastic RSI K")
+    volume_ratio: float | None = Field(None, description="Volume ratio vs 20d avg")
+    fear_greed: int | None = Field(None, description="Fear & Greed Index 0-100")
+
+
+class N8nTradeReviewItem(BaseModel):
+    order_id: str = Field(..., description="Broker order ID (required, non-null)")
+    account: str = Field(..., description="Account: upbit, kis, kis_overseas")
+    symbol: str = Field(..., description="Normalized symbol")
+    instrument_type: str = Field(..., description="crypto, equity_kr, equity_us")
+    side: str = Field(..., description="buy or sell")
+    price: float = Field(..., description="Execution price")
+    quantity: float = Field(..., description="Filled quantity")
+    total_amount: float = Field(..., description="Total amount")
+    fee: float = Field(0, description="Trading fee")
+    currency: str = Field("KRW", description="KRW or USD")
+    filled_at: str = Field(..., description="Execution timestamp ISO8601")
+    price_at_review: float | None = Field(
+        None, description="Current price at review time"
+    )
+    pnl_pct: float | None = Field(None, description="P&L percentage")
+    verdict: str = Field(..., description="good, neutral, or bad")
+    comment: str | None = Field(None, description="Review commentary")
+    review_type: str = Field("daily", description="daily, weekly, monthly, manual")
+    indicators: N8nTradeReviewIndicators | None = Field(
+        None, description="Technical indicator snapshot at execution time"
+    )
+
+
+class N8nTradeReviewsRequest(BaseModel):
+    reviews: list[N8nTradeReviewItem] = Field(
+        ..., description="List of trade reviews to save", min_length=1
+    )
+
+
+class N8nTradeReviewsResponse(BaseModel):
+    success: bool = Field(...)
+    saved_count: int = Field(..., description="Number of reviews saved")
+    skipped_count: int = Field(
+        0, description="Number skipped (duplicate trade or existing review)"
+    )
+    errors: list[dict[str, object]] = Field(default_factory=list)
+
+
+class N8nRsiZoneStats(BaseModel):
+    count: int = Field(...)
+    avg_pnl: float | None = Field(None)
+    win_rate: float | None = Field(None)
+
+
+class N8nTradeReviewStats(BaseModel):
+    period: str = Field(..., description="Period label, e.g. 2026-03-10 ~ 2026-03-17")
+    total_trades: int = Field(0)
+    buy_count: int = Field(0)
+    sell_count: int = Field(0)
+    win_rate: float | None = Field(
+        None, description="Percentage of trades with pnl > 0"
+    )
+    avg_pnl_pct: float | None = Field(None)
+    best_trade: dict[str, object] | None = Field(None)
+    worst_trade: dict[str, object] | None = Field(None)
+    by_verdict: dict[str, int] = Field(default_factory=dict)
+    by_rsi_zone: dict[str, N8nRsiZoneStats] = Field(default_factory=dict)
+
+
+class N8nTradeReviewStatsResponse(BaseModel):
+    success: bool = Field(...)
+    stats: N8nTradeReviewStats = Field(...)
+    errors: list[dict[str, object]] = Field(default_factory=list)
+
+
+# -----------------------------------------------------------------------------
+# Pending Review (extended pending-orders)
+# -----------------------------------------------------------------------------
+class N8nPendingReviewItem(BaseModel):
+    """Extends pending orders with fill probability classification."""
+
+    order_id: str = Field(...)
+    symbol: str = Field(...)
+    raw_symbol: str = Field(...)
+    market: str = Field(...)
+    side: str = Field(...)
+    order_price: float = Field(...)
+    current_price: float | None = Field(None)
+    gap_pct: float | None = Field(None)
+    gap_pct_fmt: str | None = Field(None)
+    amount_krw: float | None = Field(None)
+    quantity: float = Field(...)
+    remaining_qty: float = Field(...)
+    created_at: str = Field(...)
+    age_days: int = Field(...)
+    currency: str = Field(...)
+    days_pending: int = Field(..., description="Days since order creation")
+    fill_probability: str = Field(..., description="high, medium, low, or stale")
+    suggestion: str | None = Field(None, description="Action suggestion in Korean")
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "order_id": "xyz-456",
+                "symbol": "BTC",
+                "raw_symbol": "KRW-BTC",
+                "market": "crypto",
+                "side": "buy",
+                "order_price": 96500000,
+                "current_price": 101200000,
+                "gap_pct": -4.6,
+                "gap_pct_fmt": "-4.6%",
+                "amount_krw": 965000,
+                "quantity": 0.01,
+                "remaining_qty": 0.01,
+                "created_at": "2026-03-14T10:00:00+09:00",
+                "age_days": 3,
+                "currency": "KRW",
+                "days_pending": 3,
+                "fill_probability": "medium",
+                "suggestion": "가격 조정 검토",
+            }
+        }
+    )
+
+
+class N8nPendingReviewResponse(BaseModel):
+    success: bool = Field(...)
+    as_of: str = Field(...)
+    total_count: int = Field(...)
+    orders: list[N8nPendingReviewItem] = Field(default_factory=list)
+    errors: list[dict[str, object]] = Field(default_factory=list)
+
+
+# -----------------------------------------------------------------------------
+# Pending Snapshots (POST + PATCH resolve)
+# -----------------------------------------------------------------------------
+class N8nPendingSnapshotItem(BaseModel):
+    symbol: str = Field(...)
+    instrument_type: str = Field(..., description="crypto, equity_kr, equity_us")
+    side: str = Field(...)
+    order_price: float = Field(...)
+    quantity: float = Field(...)
+    current_price: float | None = Field(None)
+    gap_pct: float | None = Field(None)
+    days_pending: int | None = Field(None)
+    account: str = Field(...)
+    order_id: str | None = Field(None)
+
+
+class N8nPendingSnapshotsRequest(BaseModel):
+    snapshots: list[N8nPendingSnapshotItem] = Field(
+        ..., min_length=1, description="Pending order snapshots to save"
+    )
+
+
+class N8nPendingSnapshotsResponse(BaseModel):
+    success: bool = Field(...)
+    saved_count: int = Field(...)
+    errors: list[dict[str, object]] = Field(default_factory=list)
+
+
+class N8nPendingResolutionItem(BaseModel):
+    order_id: str = Field(...)
+    account: str = Field(...)
+    resolved_as: str = Field(..., description="filled, cancelled, or expired")
+
+
+class N8nPendingResolveRequest(BaseModel):
+    resolutions: list[N8nPendingResolutionItem] = Field(
+        ..., min_length=1, description="Resolutions to apply"
+    )
+
+
+class N8nPendingResolveResponse(BaseModel):
+    success: bool = Field(...)
+    resolved_count: int = Field(...)
+    not_found_count: int = Field(0)
+    errors: list[dict[str, object]] = Field(default_factory=list)
