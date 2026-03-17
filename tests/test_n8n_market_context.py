@@ -433,6 +433,46 @@ class TestMarketContextService:
 
         assert _normalize_crypto_symbol("") == ""
 
+    @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_maps_previous_correctly(
+        self,
+    ) -> None:
+        """Test that previous values from Finnhub are correctly mapped."""
+        from app.services.external.economic_calendar import (
+            fetch_economic_events_today,
+        )
+
+        # Clear cache to force a fresh fetch
+        import app.services.external.economic_calendar as ecal
+        ecal._econ_calendar_cache = []
+        ecal._econ_calendar_cache_expires = None
+
+        mock_finnhub_events = [
+            {
+                "time": "08:30",
+                "country": "US",
+                "event": "CPI Release",
+                "actual": None,
+                "previous": "2.4%",
+                "estimate": "2.3%",
+                "impact": "high",
+            },
+        ]
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+        ) as mock_fetch:
+            mock_fetch.return_value = mock_finnhub_events
+
+            result = await fetch_economic_events_today()
+
+            assert len(result) == 1
+            assert result[0]["event"] == "CPI Release"
+            assert result[0]["previous"] == "2.4%"
+            assert result[0]["forecast"] == "2.3%"
+            assert result[0]["importance"] == "high"
+            assert result[0]["time"] == "22:30 KST"
+
 
 @pytest.mark.unit
 class TestFearGreedService:
