@@ -255,6 +255,7 @@ async def fetch_crypto_scan(
 
     # 2. Build rank map and determine scan universe
     rank_by_market = DailyScanner._build_rank_by_market(top_coins)
+    tradable_markets = set(rank_by_market.keys())
 
     # Top N markets
     top_n_markets: set[str] = set()
@@ -262,16 +263,23 @@ async def fetch_crypto_scan(
         if rank <= top_n:
             top_n_markets.add(market)
 
-    # Holdings markets (outside top N)
     holding_markets: set[str] = set()
+    skipped_markets: list[str] = []
     if include_holdings:
         for coin in my_coins:
             currency = str(coin.get("currency") or "").upper()
             if not currency or currency == "KRW":
                 continue
             market = f"KRW-{currency}"
-            # Add to holding_markets if valid currency (even if not in top traded)
-            holding_markets.add(market)
+            if market in tradable_markets:
+                holding_markets.add(market)
+            else:
+                skipped_markets.append(market)
+        if skipped_markets:
+            logger.info(
+                "Skipping non-tradable holding markets in crypto scan: %s",
+                ", ".join(sorted(skipped_markets)),
+            )
 
     holdings_added = len(holding_markets - top_n_markets)
     all_markets = sorted(top_n_markets | holding_markets)

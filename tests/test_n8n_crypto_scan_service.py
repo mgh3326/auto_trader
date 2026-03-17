@@ -11,11 +11,15 @@ import pytest
 
 @pytest.fixture
 def mock_top_coins() -> list[dict]:
-    """Top traded coins fixture — 3 coins sorted by trade amount."""
+    """Top traded coins fixture — 4 coins sorted by trade amount.
+
+    SOL is rank 4 so it's tradable but outside top_n=3.
+    """
     return [
         {"market": "KRW-BTC", "acc_trade_price_24h": 150_000_000_000},
         {"market": "KRW-ETH", "acc_trade_price_24h": 80_000_000_000},
         {"market": "KRW-XRP", "acc_trade_price_24h": 45_000_000_000},
+        {"market": "KRW-SOL", "acc_trade_price_24h": 20_000_000_000},
     ]
 
 
