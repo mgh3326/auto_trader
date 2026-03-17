@@ -864,20 +864,25 @@ class PortfolioOverviewService:
             if quantity <= 0:
                 continue
 
+            # Pick a reference current_price for currency detection
+            current_price = self._pick_current_price(components_list)
+
             # Normalize currency for US positions with mixed sources
             if row["market_type"] == _MARKET_US and usd_krw:
                 normalized_components = []
                 for item in components_list:
                     item_copy = dict(item)
                     avg_price = _to_float(item.get("avg_price"))
-                    current_price = _to_float(item.get("current_price"))
+                    
+                    # Use item's current_price if available, otherwise use row's current_price
+                    ref_price = _to_float(item.get("current_price")) or _to_float(current_price)
 
                     # Detect KRW-denominated avg_price and convert to USD
                     # Heuristic: if avg_price > 1000 and ratio to current_price > 100, it's likely KRW
                     if (
                         avg_price > 1000
-                        and current_price > 0
-                        and (avg_price / current_price) > 100
+                        and ref_price > 0
+                        and (avg_price / ref_price) > 100
                     ):
                         item_copy["avg_price"] = avg_price / usd_krw
 
@@ -890,7 +895,6 @@ class PortfolioOverviewService:
             )
             avg_price = avg_numerator / quantity if quantity > 0 else 0.0
 
-            current_price = self._pick_current_price(components_list)
             cost_basis = sum(
                 _to_float(item.get("quantity")) * _to_float(item.get("avg_price"))
                 for item in components_list
