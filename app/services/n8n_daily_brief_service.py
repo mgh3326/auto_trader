@@ -186,12 +186,6 @@ def _group_pending_by_market(
             "total_sell_fmt": fmt_amount(
                 sum(float(o.get("amount_krw") or 0) for o in sell_orders)
             ),
-            "near_fill_count": sum(
-                1 for o in market_orders if o.get("fill_proximity") == "near"
-            ),
-            "needs_attention_count": sum(
-                1 for o in market_orders if o.get("needs_attention")
-            ),
             "orders": market_orders,
         }
 
@@ -342,9 +336,6 @@ def _build_brief_text(
             line = f"[{label}] {total}건"
             if buy or sell:
                 line += f" (매수 {buy} / 매도 {sell})"
-            near = market_data.get("near_fill_count", 0)
-            if near > 0:
-                line += f" — 체결 임박 {near}건 ⚡"
             lines.append(line)
         else:
             lines.append(f"[{market_labels[market_key]}] 없음")

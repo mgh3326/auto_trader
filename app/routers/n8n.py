@@ -56,11 +56,8 @@ async def get_pending_orders(
         True, description="Fetch current prices and compute gap percentage"
     ),
     side: Literal["buy", "sell"] | None = Query(None, description="Order side filter"),
-    attention_only: bool = Query(
-        False, description="Return only orders that need attention"
-    ),
-    near_fill_pct: float = Query(
-        2.0, ge=0.1, le=50.0, description="Near fill threshold percentage"
+    include_indicators: bool = Query(
+        True, description="Include technical indicators per order"
     ),
 ) -> N8nPendingOrdersResponse | JSONResponse:
     as_of_dt = now_kst().replace(microsecond=0)
@@ -73,8 +70,7 @@ async def get_pending_orders(
             include_current_price=include_current_price,
             side=side,
             as_of=as_of_dt,
-            attention_only=attention_only,
-            near_fill_pct=near_fill_pct,
+            include_indicators=include_indicators,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to build n8n pending orders response")
@@ -92,9 +88,6 @@ async def get_pending_orders(
                 total_buy_fmt=None,
                 total_sell_fmt=None,
                 title=None,
-                near_fill_count=0,
-                needs_attention_count=0,
-                attention_orders_only=[],
             ),
             errors=[{"market": market, "error": str(exc)}],
         )

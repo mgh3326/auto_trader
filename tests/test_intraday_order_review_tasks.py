@@ -40,10 +40,17 @@ class TestTradingHoursCheck:
 
 class TestIntradayCryptoReview:
     @pytest.mark.asyncio
-    async def test_returns_attention_count(self):
+    async def test_returns_order_count(self):
         mock_result = {
-            "summary": {"needs_attention_count": 2},
-            "orders": [{"symbol": "BTC", "side": "buy", "attention_reason": "test"}],
+            "summary": {"total": 3},
+            "orders": [
+                {
+                    "symbol": "BTC",
+                    "side": "buy",
+                    "gap_pct": -2.1,
+                    "indicators": {"rsi_14": 55.0},
+                },
+            ],
         }
 
         with patch(
@@ -53,5 +60,6 @@ class TestIntradayCryptoReview:
             result = await intraday_crypto_order_review()
 
         assert result["market"] == "crypto"
-        assert result["attention_count"] == 2
-        assert len(result["attention_orders"]) == 1
+        assert result["order_count"] == 3
+        assert len(result["orders"]) == 1
+        assert result["orders"][0]["indicators"] == {"rsi_14": 55.0}

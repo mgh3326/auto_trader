@@ -108,6 +108,7 @@ async def _compute_symbol_indicators(symbol: str) -> dict[str, Any] | None:
         rsi_14 = rsi_14_result.get("14")
         rsi_7 = rsi_7_result.get("7")
         stoch_rsi_k = stoch_rsi_result.get("k")
+        stoch_rsi_d = stoch_rsi_result.get("d")
         adx = adx_result.get("adx")
         ema_20 = ema_result.get("20")
 
@@ -123,6 +124,7 @@ async def _compute_symbol_indicators(symbol: str) -> dict[str, Any] | None:
             "rsi_14": rsi_14,
             "rsi_7": rsi_7,
             "stoch_rsi_k": stoch_rsi_k,
+            "stoch_rsi_d": stoch_rsi_d,
             "adx": adx,
             "ema_20_distance_pct": ema_20_distance_pct,
             "trend": trend,

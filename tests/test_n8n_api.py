@@ -1039,8 +1039,7 @@ class TestN8nPendingOrdersEndpoint:
             "include_current_price": True,
             "side": None,
             "as_of": fixed_as_of,
-            "attention_only": False,
-            "near_fill_pct": 2.0,
+            "include_indicators": True,
         }
 
     def test_router_response_uses_same_generated_as_of(

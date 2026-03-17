@@ -22,9 +22,6 @@ def _fake_pending_result(market: str, orders: list | None = None) -> dict:
             "total_buy_fmt": None,
             "total_sell_fmt": None,
             "title": None,
-            "near_fill_count": 0,
-            "needs_attention_count": 0,
-            "attention_orders_only": [],
         },
         "errors": [],
     }
