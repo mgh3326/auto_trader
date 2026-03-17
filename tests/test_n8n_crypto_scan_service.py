@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -30,8 +31,6 @@ def mock_my_coins() -> list[dict]:
 @pytest.fixture
 def mock_ohlcv_df() -> pd.DataFrame:
     """OHLCV dataframe with enough rows for RSI/SMA calculation."""
-    import numpy as np
-
     np.random.seed(42)
     n = 50
     close = pd.Series(np.cumsum(np.random.randn(n)) + 100)
@@ -283,7 +282,12 @@ class TestFetchCryptoScan:
             m_my.return_value = []
             m_ohlcv.return_value = mock_ohlcv_df
             m_tickers.return_value = mock_tickers[:1]
-            m_fg.return_value = {"value": 34, "label": "Fear", "previous": 28, "trend": "improving"}
+            m_fg.return_value = {
+                "value": 34,
+                "label": "Fear",
+                "previous": 28,
+                "trend": "improving",
+            }
             m_name.return_value = "코인"
 
             from app.services.n8n_crypto_scan_service import fetch_crypto_scan
@@ -385,8 +389,6 @@ class TestFetchCryptoScan:
         patches = _patch_all()
         # Build OHLCV where last candle crosses above SMA20
         # prev_close < prev_sma20 AND curr_close > curr_sma20
-        import numpy as np
-
         n = 25
         # Price starts below SMA20 then jumps above
         close_values = [100.0] * 20 + [95.0, 94.0, 93.0, 92.0, 105.0]
@@ -440,8 +442,6 @@ class TestFetchCryptoScan:
         mock_tickers: list[dict],
     ) -> None:
         """Coins with null RSI should appear at end of sorted list."""
-        import numpy as np
-
         patches = _patch_all()
         # Use realistic price data with both ups and downs to get valid RSI
         np.random.seed(42)
