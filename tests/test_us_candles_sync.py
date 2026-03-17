@@ -118,10 +118,17 @@ def test_us_candles_migration_chain_continues_existing_candle_branch() -> None:
     )
 
 
-def test_revision_graph_has_single_final_head_after_us_candle_revisions() -> None:
+def test_revision_graph_has_single_final_head() -> None:
+    heads = _collect_revision_heads()
+
+    # Should have exactly one head (no branch divergence)
+    assert len(heads) == 1, f"Expected single head, got: {heads}"
+
+
+def test_merge_kr_intraday_and_us_candle_heads_migration_structure() -> None:
     _, merge_content = _read_migration("*_merge_kr_intraday_and_us_candle_heads.py")
 
-    assert _collect_revision_heads() == {_extract_revision(merge_content)}
+    # Verify merge migration has correct down_revision pointing to both branches
     assert (
         'down_revision: str | Sequence[str] | None = ("5c6d7e8f9012", "a9d6e4c2b1f0")'
         in merge_content

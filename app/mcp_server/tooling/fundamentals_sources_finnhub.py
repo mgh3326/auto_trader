@@ -7,14 +7,14 @@ import datetime
 import logging
 from typing import Any
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 try:
     import finnhub
 except ImportError:
     finnhub = None
-
-from app.core.config import settings
 
 
 def _get_finnhub_client() -> Any:
@@ -130,7 +130,9 @@ async def fetch_economic_calendar_finnhub(
                 },
             )
 
-        logger.info("Finnhub economic calendar: %d US events found", len(normalized_events))
+        logger.info(
+            "Finnhub economic calendar: %d US events found", len(normalized_events)
+        )
         return normalized_events
     except Exception:
         return None
