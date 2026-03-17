@@ -94,16 +94,15 @@ def test_api_path_access(client, mock_session_local):
     assert response.json() == {"data": "ok"}
 
 
-def test_n8n_pending_orders_public_access(client, mock_session_local):
+def test_n8n_pending_orders_requires_api_key(client, mock_session_local):
+    """n8n endpoints require X-N8N-API-KEY header."""
     response = client.get("/api/n8n/pending-orders")
-    assert response.status_code == 200
-    assert response.json() == {"data": "n8n-ok"}
+    assert response.status_code in (401, 403)
 
 
 def test_other_n8n_api_path_without_auth_returns_401(client, mock_session_local):
     response = client.get("/api/n8n/private", follow_redirects=False)
-    assert response.status_code == 401
-    assert response.json()["detail"] == "Authentication required for this endpoint."
+    assert response.status_code in (401, 403)
 
 
 def test_nested_api_path_without_auth_returns_401(client, mock_session_local):

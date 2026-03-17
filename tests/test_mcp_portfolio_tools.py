@@ -804,6 +804,11 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
         "fetch_all_market_codes",
         AsyncMock(return_value=["KRW-BTC"]),
     )
+    _patch_runtime_attr(
+        monkeypatch,
+        "get_active_upbit_markets",
+        AsyncMock(return_value={"KRW-BTC"}),
+    )
 
     result = await tools["get_holdings"](minimum_value=0)
 

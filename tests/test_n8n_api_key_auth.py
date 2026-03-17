@@ -92,9 +92,7 @@ class TestN8nApiKeyAuth:
         )
         assert response.status_code == 200
 
-    def test_unconfigured_key_returns_403(
-        self, client_without_key: TestClient
-    ) -> None:
+    def test_unconfigured_key_returns_403(self, client_without_key: TestClient) -> None:
         """When N8N_API_KEY is empty → 403 regardless of header."""
         response = client_without_key.get(
             "/api/n8n/daily-brief",
@@ -119,4 +117,3 @@ class TestN8nApiKeyAuth:
         """Other public API paths are not affected by n8n auth."""
         response = client_with_key.get("/api/v1/openclaw/callback")
         assert response.status_code == 200
-
