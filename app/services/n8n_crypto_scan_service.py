@@ -76,12 +76,8 @@ def _detect_sma_cross(
 
     prev_close = _to_float(close.iloc[-2])
     curr_close = _to_float(close.iloc[-1])
-    prev_sma20 = _indicator_value(
-        _calculate_sma(close.iloc[:-1], periods=[20]), "20"
-    )
-    curr_sma20 = _indicator_value(
-        _calculate_sma(close, periods=[20]), "20"
-    )
+    prev_sma20 = _indicator_value(_calculate_sma(close.iloc[:-1], periods=[20]), "20")
+    curr_sma20 = _indicator_value(_calculate_sma(close, periods=[20]), "20")
 
     if any(v is None for v in (prev_close, curr_close, prev_sma20, curr_sma20)):
         return None
@@ -259,7 +255,6 @@ async def fetch_crypto_scan(
 
     # 2. Build rank map and determine scan universe
     rank_by_market = DailyScanner._build_rank_by_market(top_coins)
-    tradable_markets = set(rank_by_market.keys())
 
     # Top N markets
     top_n_markets: set[str] = set()

@@ -797,11 +797,15 @@ class N8nCryptoScanCoin(BaseModel):
     symbol: str = Field(..., description="Upbit market code, e.g. KRW-BTC")
     currency: str = Field(..., description="Currency code, e.g. BTC")
     name: str = Field(..., description="Korean name, e.g. 비트코인")
-    rank: int | None = Field(None, description="Trade amount rank (1-based), null if holding-only")
+    rank: int | None = Field(
+        None, description="Trade amount rank (1-based), null if holding-only"
+    )
     is_holding: bool = Field(..., description="Whether user currently holds this coin")
     current_price: float | None = Field(None, description="Current trade price in KRW")
     change_rate_24h: float | None = Field(None, description="24h signed change rate")
-    trade_amount_24h: float | None = Field(None, description="24h accumulated trade amount in KRW")
+    trade_amount_24h: float | None = Field(
+        None, description="24h accumulated trade amount in KRW"
+    )
     indicators: N8nCryptoScanIndicators = Field(...)
     sma_cross: N8nSmaCross | None = Field(None)
     crash: N8nCrashData | None = Field(None)
@@ -812,10 +816,14 @@ class N8nCryptoScanSummary(BaseModel):
 
     total_scanned: int = Field(..., description="Total coins scanned")
     top_n_count: int = Field(..., description="Coins from top N by trade amount")
-    holdings_added: int = Field(..., description="Extra coins added because they are held")
+    holdings_added: int = Field(
+        ..., description="Extra coins added because they are held"
+    )
     oversold_count: int = Field(0, description="Coins with RSI < 35 (reference only)")
     overbought_count: int = Field(0, description="Coins with RSI > 70 (reference only)")
-    crash_triggered_count: int = Field(0, description="Coins that triggered crash threshold")
+    crash_triggered_count: int = Field(
+        0, description="Coins that triggered crash threshold"
+    )
     sma_golden_cross_count: int = Field(0, description="SMA20 golden cross coins")
     sma_dead_cross_count: int = Field(0, description="SMA20 dead cross coins")
 

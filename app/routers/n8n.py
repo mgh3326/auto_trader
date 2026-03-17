@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.core.timezone import now_kst
 from app.schemas.n8n import (
+    N8nBtcContext,
+    N8nCryptoScanParams,
+    N8nCryptoScanResponse,
+    N8nCryptoScanSummary,
     N8nDailyBriefResponse,
     N8nFilledOrdersResponse,
     N8nMarketContextResponse,
@@ -27,6 +31,7 @@ from app.schemas.n8n import (
     N8nTradeReviewStats,
     N8nTradeReviewStatsResponse,
 )
+from app.services.n8n_crypto_scan_service import fetch_crypto_scan
 from app.services.n8n_daily_brief_service import fetch_daily_brief
 from app.services.n8n_filled_orders_service import fetch_filled_orders
 from app.services.n8n_market_context_service import fetch_market_context
@@ -390,4 +395,64 @@ async def patch_pending_resolve(
         resolved_count=result["resolved_count"],
         not_found_count=result["not_found_count"],
         errors=result["errors"],
+    )
+
+
+@router.get("/crypto-scan", response_model=N8nCryptoScanResponse)
+async def get_crypto_scan(
+    top_n: int = Query(30, ge=1, le=100, description="Top N by 24h trade amount"),
+    include_holdings: bool = Query(
+        True, description="Include holding coins outside top N"
+    ),
+    include_crash: bool = Query(True, description="Include crash detection data"),
+    include_sma_cross: bool = Query(True, description="Include SMA20 cross detection"),
+    include_fear_greed: bool = Query(True, description="Include Fear & Greed Index"),
+    ohlcv_days: int = Query(50, ge=20, le=200, description="OHLCV lookback days"),
+) -> N8nCryptoScanResponse | JSONResponse:
+    as_of = now_kst().replace(microsecond=0).isoformat()
+    scan_params = N8nCryptoScanParams(
+        top_n=top_n,
+        include_holdings=include_holdings,
+        include_crash=include_crash,
+        include_sma_cross=include_sma_cross,
+        include_fear_greed=include_fear_greed,
+        ohlcv_days=ohlcv_days,
+    )
+
+    try:
+        result = await fetch_crypto_scan(
+            top_n=top_n,
+            include_holdings=include_holdings,
+            include_crash=include_crash,
+            include_sma_cross=include_sma_cross,
+            include_fear_greed=include_fear_greed,
+            ohlcv_days=ohlcv_days,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to build n8n crypto scan response")
+        payload = N8nCryptoScanResponse(
+            success=False,
+            as_of=as_of,
+            scan_params=scan_params,
+            btc_context=N8nBtcContext(),
+            fear_greed=None,
+            coins=[],
+            summary=N8nCryptoScanSummary(
+                total_scanned=0,
+                top_n_count=0,
+                holdings_added=0,
+            ),
+            errors=[{"error": str(exc)}],
+        )
+        return JSONResponse(status_code=500, content=payload.model_dump())
+
+    return N8nCryptoScanResponse(
+        success=result.get("success", True),
+        as_of=as_of,
+        scan_params=scan_params,
+        btc_context=N8nBtcContext(**(result.get("btc_context") or {})),
+        fear_greed=result.get("fear_greed"),
+        coins=result.get("coins", []),
+        summary=N8nCryptoScanSummary(**(result.get("summary", {}))),
+        errors=result.get("errors", []),
     )
