@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.core.timezone import now_kst
+from app.core.timezone import KST, now_kst
 
 
 def _make_crypto_order(
@@ -391,6 +391,50 @@ class TestN8nPendingOrdersService:
 
         created = result["orders"][0]["created_at"]
         assert created == "2026-03-15T14:30:00+09:00"
+
+    @pytest.mark.asyncio
+    async def test_created_at_hhmmss_only_uses_fallback_date(self) -> None:
+        from app.services.n8n_pending_orders_service import fetch_pending_orders
+
+        as_of = datetime(2026, 3, 17, 15, 0, 0, tzinfo=KST)
+        with patch(
+            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            new_callable=AsyncMock,
+            return_value=_impl_result(
+                orders=[_make_kr_order(ordered_at="135334")],
+                market="kr",
+            ),
+        ):
+            result = await fetch_pending_orders(
+                market="kr",
+                include_current_price=False,
+                as_of=as_of,
+            )
+
+        created = result["orders"][0]["created_at"]
+        assert created == "2026-03-17T13:53:34+09:00"
+
+    @pytest.mark.asyncio
+    async def test_created_at_hhmmss_with_leading_space(self) -> None:
+        from app.services.n8n_pending_orders_service import fetch_pending_orders
+
+        as_of = datetime(2026, 3, 17, 15, 0, 0, tzinfo=KST)
+        with patch(
+            "app.services.n8n_pending_orders_service.get_order_history_impl",
+            new_callable=AsyncMock,
+            return_value=_impl_result(
+                orders=[_make_kr_order(ordered_at=" 135334")],
+                market="kr",
+            ),
+        ):
+            result = await fetch_pending_orders(
+                market="kr",
+                include_current_price=False,
+                as_of=as_of,
+            )
+
+        created = result["orders"][0]["created_at"]
+        assert created == "2026-03-17T13:53:34+09:00"
 
     @pytest.mark.asyncio
     async def test_orders_sorted_by_created_at_ascending(self) -> None:

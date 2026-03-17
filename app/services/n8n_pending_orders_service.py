@@ -58,6 +58,13 @@ def _parse_created_at(value: str, market: str, fallback: datetime) -> datetime:
         except ValueError:
             continue
 
+    # KIS sometimes returns time-only HHMMSS (e.g. "135334") — combine with fallback date
+    if text.isdigit() and len(text) == 6:
+        date_prefix = fallback.astimezone(KST).strftime("%Y%m%d")
+        return datetime.strptime(date_prefix + text, "%Y%m%d%H%M%S").replace(
+            tzinfo=KST, microsecond=0
+        )
+
     normalized = text.replace("Z", "+00:00")
     dt = datetime.fromisoformat(normalized)
     if dt.tzinfo is None:
