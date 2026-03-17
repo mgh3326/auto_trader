@@ -398,6 +398,7 @@ class N8nMarketContextResponse(BaseModel):
 
 class N8nDailyBriefPendingMarket(BaseModel):
     """Per-market pending order summary for the daily brief."""
+
     total: int = Field(0, description="Total pending orders in this market")
     buy_count: int = Field(0, description="Pending buy orders")
     sell_count: int = Field(0, description="Pending sell orders")
@@ -410,6 +411,7 @@ class N8nDailyBriefPendingMarket(BaseModel):
 
 class N8nDailyBriefPendingOrders(BaseModel):
     """Aggregated pending orders across all markets."""
+
     crypto: N8nDailyBriefPendingMarket | None = Field(None)
     kr: N8nDailyBriefPendingMarket | None = Field(None)
     us: N8nDailyBriefPendingMarket | None = Field(None)
@@ -417,8 +419,11 @@ class N8nDailyBriefPendingOrders(BaseModel):
 
 class N8nPortfolioMarketSummary(BaseModel):
     """Per-market portfolio summary."""
+
     total_value_krw: float | None = Field(None, description="Total value in KRW")
-    total_value_usd: float | None = Field(None, description="Total value in USD (US only)")
+    total_value_usd: float | None = Field(
+        None, description="Total value in USD (US only)"
+    )
     total_value_fmt: str | None = Field(None, description="Formatted total value")
     pnl_pct: float | None = Field(None, description="Overall P&L percentage")
     pnl_fmt: str | None = Field(None, description="Formatted P&L")
@@ -429,6 +434,7 @@ class N8nPortfolioMarketSummary(BaseModel):
 
 class N8nDailyBriefPortfolio(BaseModel):
     """Portfolio summary across all markets."""
+
     crypto: N8nPortfolioMarketSummary | None = Field(None)
     kr: N8nPortfolioMarketSummary | None = Field(None)
     us: N8nPortfolioMarketSummary | None = Field(None)
@@ -436,6 +442,7 @@ class N8nDailyBriefPortfolio(BaseModel):
 
 class N8nFillItem(BaseModel):
     """Single filled order for the daily brief."""
+
     symbol: str = Field(..., description="Symbol")
     market: str = Field(..., description="Market: crypto, kr, us")
     side: str = Field(..., description="buy or sell")
@@ -446,12 +453,14 @@ class N8nFillItem(BaseModel):
 
 class N8nYesterdayFills(BaseModel):
     """Yesterday's filled orders summary."""
+
     total: int = Field(0, description="Total fills")
     fills: list[N8nFillItem] = Field(default_factory=list)
 
 
 class N8nDailyBriefResponse(BaseModel):
     """Daily trading brief response."""
+
     success: bool = Field(..., description="Whether request completed successfully")
     as_of: str = Field(..., description="Response timestamp in KST ISO8601")
     date_fmt: str = Field(..., description="Date formatted as MM/DD (요일)")

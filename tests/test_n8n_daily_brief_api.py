@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
-from app.core.timezone import KST
 
 
 def _make_brief_result() -> dict:
@@ -36,6 +33,7 @@ class TestDailyBriefEndpoint:
     def _get_client(self) -> TestClient:
         app = FastAPI()
         from app.routers.n8n import router
+
         app.include_router(router)
         return TestClient(app)
 

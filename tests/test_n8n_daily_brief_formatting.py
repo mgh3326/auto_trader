@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from app.services.n8n_formatting import (
-    fmt_amount,
     fmt_date_with_weekday,
     fmt_pnl,
     fmt_value,
@@ -14,6 +13,7 @@ from app.services.n8n_formatting import (
 class TestDailyBriefFormatting:
     def test_fmt_date_with_weekday(self):
         from datetime import datetime
+
         from app.core.timezone import KST
 
         dt = datetime(2026, 3, 17, 8, 30, tzinfo=KST)
@@ -21,6 +21,7 @@ class TestDailyBriefFormatting:
 
     def test_fmt_date_with_weekday_sunday(self):
         from datetime import datetime
+
         from app.core.timezone import KST
 
         dt = datetime(2026, 3, 15, 8, 30, tzinfo=KST)

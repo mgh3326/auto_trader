@@ -8,15 +8,12 @@ from fastapi.responses import JSONResponse
 
 from app.core.timezone import now_kst
 from app.schemas.n8n import (
-    N8nDailyBriefPendingOrders,
-    N8nDailyBriefPortfolio,
     N8nDailyBriefResponse,
     N8nMarketContextResponse,
     N8nMarketContextSummary,
     N8nMarketOverview,
     N8nPendingOrdersResponse,
     N8nPendingOrderSummary,
-    N8nYesterdayFills,
 )
 from app.services.n8n_daily_brief_service import fetch_daily_brief
 from app.services.n8n_market_context_service import fetch_market_context

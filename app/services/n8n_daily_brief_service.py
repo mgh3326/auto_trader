@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from app.core.db import AsyncSessionLocal
@@ -17,7 +17,6 @@ from app.schemas.n8n import N8nMarketOverview
 from app.services.n8n_formatting import (
     fmt_amount,
     fmt_date_with_weekday,
-    fmt_gap,
     fmt_pnl,
     fmt_price,
     fmt_value,
@@ -100,8 +99,7 @@ async def _fetch_yesterday_fills(
                     limit=20,
                 )
                 return [
-                    {**order, "_market": market}
-                    for order in result.get("orders", [])
+                    {**order, "_market": market} for order in result.get("orders", [])
                 ]
             except Exception as exc:
                 logger.debug("Failed to fetch fills for %s/%s: %s", market, symbol, exc)
@@ -130,7 +128,7 @@ async def _fetch_yesterday_fills(
         if market == "crypto":
             for prefix in ("KRW-", "USDT-"):
                 if symbol.upper().startswith(prefix):
-                    symbol = symbol[len(prefix):]
+                    symbol = symbol[len(prefix) :]
                     break
 
         price = fill.get("filled_avg_price") or fill.get("ordered_price") or 0
@@ -146,14 +144,16 @@ async def _fetch_yesterday_fills(
             except (ValueError, TypeError):
                 time_str = ""
 
-        normalized_fills.append({
-            "symbol": symbol,
-            "market": market,
-            "side": fill.get("side", ""),
-            "price_fmt": fmt_price(float(price), currency),
-            "amount_fmt": fmt_amount(amount if currency == "KRW" else None),
-            "time": time_str,
-        })
+        normalized_fills.append(
+            {
+                "symbol": symbol,
+                "market": market,
+                "side": fill.get("side", ""),
+                "price_fmt": fmt_price(float(price), currency),
+                "amount_fmt": fmt_amount(amount if currency == "KRW" else None),
+                "time": time_str,
+            }
+        )
 
     return {
         "total": len(normalized_fills),
@@ -219,7 +219,9 @@ def _build_portfolio_summary(
             float(p.get("avg_price") or 0) * float(p.get("quantity") or 0)
             for p in market_positions
         )
-        pnl_pct = ((total_eval - total_cost) / total_cost * 100) if total_cost > 0 else None
+        pnl_pct = (
+            ((total_eval - total_cost) / total_cost * 100) if total_cost > 0 else None
+        )
 
         # Top gainers/losers by profit_rate
         sorted_positions = sorted(
@@ -298,9 +300,11 @@ def _build_brief_text(
         fg_value = fg.value if hasattr(fg, "value") else fg.get("value")
         fg_label = fg.label if hasattr(fg, "label") else fg.get("label")
         fg_trend = fg.trend if hasattr(fg, "trend") else fg.get("trend")
-        trend_kr = {"improving": "개선 중", "stable": "유지", "deteriorating": "악화 중"}.get(
-            str(fg_trend or ""), str(fg_trend or "")
-        )
+        trend_kr = {
+            "improving": "개선 중",
+            "stable": "유지",
+            "deteriorating": "악화 중",
+        }.get(str(fg_trend or ""), str(fg_trend or ""))
         lines.append(f"Fear & Greed: {fg_value} ({fg_label}, {trend_kr})")
     if btc_dom is not None:
         lines.append(f"BTC 도미넌스: {btc_dom}%")
@@ -314,8 +318,14 @@ def _build_brief_text(
         lines.append("📅 오늘 경제 이벤트")
         for event in econ_events:
             time_str = event.time if hasattr(event, "time") else event.get("time", "")
-            event_name = event.event if hasattr(event, "event") else event.get("event", "")
-            importance = event.importance if hasattr(event, "importance") else event.get("importance", "")
+            event_name = (
+                event.event if hasattr(event, "event") else event.get("event", "")
+            )
+            importance = (
+                event.importance
+                if hasattr(event, "importance")
+                else event.get("importance", "")
+            )
             lines.append(f"• {time_str} {event_name} ({importance})")
         lines.append("")
 
@@ -491,12 +501,10 @@ async def fetch_daily_brief(
         "date_fmt": date_fmt,
         "market_overview": market_overview,
         "pending_orders": {
-            market: pending_by_market.get(market)
-            for market in effective_markets
+            market: pending_by_market.get(market) for market in effective_markets
         },
         "portfolio_summary": {
-            market: portfolio_by_market.get(market)
-            for market in effective_markets
+            market: portfolio_by_market.get(market) for market in effective_markets
         },
         "yesterday_fills": fills_result,
         "brief_text": brief_text,
