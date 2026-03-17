@@ -166,3 +166,10 @@ async def fetch_economic_events_today() -> list[dict[str, Any]]:
             _econ_calendar_cache = []
             _econ_calendar_cache_expires = now_kst() + timedelta(minutes=15)
         return []
+
+
+def _clear_economic_calendar_cache() -> None:
+    """Clear economic calendar cache (for testing/debugging)."""
+    global _econ_calendar_cache, _econ_calendar_cache_expires
+    _econ_calendar_cache = []
+    _econ_calendar_cache_expires = None

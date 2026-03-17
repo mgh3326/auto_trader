@@ -197,3 +197,121 @@ async def test_query_stock_screener_raises_when_import_unavailable(
 
     with pytest.raises(TvScreenerError, match="not installed"):
         await service.query_stock_screener(columns=[])
+
+
+class _NoneReturningQuery(FakeQuery):
+    def __init__(
+        self,
+        result: pd.DataFrame,
+        *,
+        none_on_where: bool = False,
+        none_on_sort_by: bool = False,
+    ) -> None:
+        super().__init__(result)
+        self._none_on_where = none_on_where
+        self._none_on_sort_by = none_on_sort_by
+
+    def where(self, condition: object) -> FakeQuery | None:  # type: ignore[override]
+        self.where_calls.append(condition)
+        return None if self._none_on_where else self
+
+    def sort_by(self, field: object, *, ascending: bool) -> FakeQuery | None:  # type: ignore[override]
+        self.sort_by_calls.append((field, ascending))
+        return None if self._none_on_sort_by else self
+
+
+def _make_none_crypto_module(
+    *, none_on_where: bool = False, none_on_sort_by: bool = False
+) -> SimpleNamespace:
+    query = _NoneReturningQuery(
+        pd.DataFrame(),
+        none_on_where=none_on_where,
+        none_on_sort_by=none_on_sort_by,
+    )
+    screener = FakeCryptoScreener(pd.DataFrame())
+    screener.query = query
+    return SimpleNamespace(CryptoScreener=lambda: screener)
+
+
+def _make_none_stock_module(
+    *, none_on_where: bool = False, none_on_sort_by: bool = False
+) -> SimpleNamespace:
+    query = _NoneReturningQuery(
+        pd.DataFrame(),
+        none_on_where=none_on_where,
+        none_on_sort_by=none_on_sort_by,
+    )
+    screener = FakeStockScreener(pd.DataFrame())
+    screener.query = query
+    return SimpleNamespace(
+        StockScreener=lambda: screener,
+        StockField=SimpleNamespace(COUNTRY=FakeField("COUNTRY")),
+    )
+
+
+@pytest.mark.asyncio
+async def test_crypto_screener_raises_when_where_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = TvScreenerService()
+    module = _make_none_crypto_module(none_on_where=True)
+    monkeypatch.setattr(
+        "app.services.tvscreener_service._import_tvscreener", lambda: module
+    )
+
+    with pytest.raises(TvScreenerError, match="returned None after chaining .where"):
+        await service.query_crypto_screener(
+            columns=["name"],
+            where_clause="exchange == UPBIT",
+        )
+
+
+@pytest.mark.asyncio
+async def test_crypto_screener_raises_when_sort_by_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = TvScreenerService()
+    module = _make_none_crypto_module(none_on_sort_by=True)
+    monkeypatch.setattr(
+        "app.services.tvscreener_service._import_tvscreener", lambda: module
+    )
+
+    with pytest.raises(TvScreenerError, match="returned None after chaining .sort_by"):
+        await service.query_crypto_screener(
+            columns=["name"],
+            sort_by="rsi",
+        )
+
+
+@pytest.mark.asyncio
+async def test_stock_screener_raises_when_where_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = TvScreenerService()
+    module = _make_none_stock_module(none_on_where=True)
+    monkeypatch.setattr(
+        "app.services.tvscreener_service._import_tvscreener", lambda: module
+    )
+
+    with pytest.raises(TvScreenerError, match="returned None after chaining .where"):
+        await service.query_stock_screener(
+            columns=["name"],
+            country="South Korea",
+        )
+
+
+@pytest.mark.asyncio
+async def test_stock_screener_raises_when_sort_by_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = TvScreenerService()
+    module = _make_none_stock_module(none_on_sort_by=True)
+    monkeypatch.setattr(
+        "app.services.tvscreener_service._import_tvscreener", lambda: module
+    )
+
+    with pytest.raises(TvScreenerError, match="returned None after chaining .sort_by"):
+        await service.query_stock_screener(
+            columns=["name"],
+            sort_by="rsi",
+        )
