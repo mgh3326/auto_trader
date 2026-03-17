@@ -439,13 +439,12 @@ class TestMarketContextService:
     ) -> None:
         """Test that previous values from Finnhub are correctly mapped."""
         from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
             fetch_economic_events_today,
         )
 
         # Clear cache to force a fresh fetch
-        import app.services.external.economic_calendar as ecal
-        ecal._econ_calendar_cache = []
-        ecal._econ_calendar_cache_expires = None
+        _clear_economic_calendar_cache()
 
         mock_finnhub_events = [
             {
