@@ -1,5 +1,6 @@
 """Authentication middleware for protecting web routes."""
 
+import hmac
 from contextlib import AbstractAsyncContextManager
 from typing import ClassVar, cast
 
@@ -46,8 +47,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
     PUBLIC_API_PATHS: ClassVar[list[str]] = [
         "/api/v1/openclaw/callback",
         "/api/screener/callback",
-        "/api/n8n/pending-orders",
-        "/api/n8n/market-context",
     ]
     LEGACY_DEPRECATED_PREFIXES: ClassVar[list[str]] = [
         "/manual-holdings",
@@ -107,6 +106,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Legacy paths must always pass through to deprecated router handlers.
         if self._is_legacy_deprecated_path(path):
+            return await call_next(request)
+
+        # n8n API: dedicated API key authentication
+        if path.startswith("/api/n8n/"):
+            if not settings.N8N_API_KEY:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "N8N_API_KEY not configured"},
+                )
+            api_key = request.headers.get("X-N8N-API-KEY", "")
+            if not hmac.compare_digest(api_key, settings.N8N_API_KEY):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid N8N API key"},
+                )
             return await call_next(request)
 
         # Allow public paths

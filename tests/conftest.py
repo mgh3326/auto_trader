@@ -70,6 +70,7 @@ def _ensure_test_env() -> None:
         "ENVIRONMENT": "test",
         "SECRET_KEY": "Test_Secret_Key_12345_Test_Secret_Key_12345",  # Valid complex key for tests
         "MCP_AUTH_TOKEN": "",  # Empty to disable auth for tests
+        "N8N_API_KEY": "",  # Empty = n8n auth disabled in tests by default
     }
 
     for key, value in default_env_values.items():
