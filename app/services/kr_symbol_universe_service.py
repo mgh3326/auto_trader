@@ -359,6 +359,32 @@ async def get_kr_symbol_by_name(
         return await _resolve_active_symbol_by_name(session, name)
 
 
+async def _check_nxt_eligible(db: AsyncSession, symbol: str) -> bool:
+    stmt = select(KRSymbolUniverse.nxt_eligible).where(
+        KRSymbolUniverse.symbol == symbol,
+        KRSymbolUniverse.is_active.is_(True),
+    )
+    result = await db.execute(stmt)
+    value = result.scalar_one_or_none()
+    return bool(value)
+
+
+async def is_nxt_eligible(
+    symbol: str,
+    db: AsyncSession | None = None,
+) -> bool:
+    """Return True if *symbol* is eligible for NXT (Smart Order Routing).
+
+    Falls back to False (standard KRX routing) when the symbol is not
+    found, inactive, or the universe table is empty.
+    """
+    if db is not None:
+        return await _check_nxt_eligible(db, symbol)
+
+    async with AsyncSessionLocal() as session:
+        return await _check_nxt_eligible(session, symbol)
+
+
 async def _search_kr_symbols_impl(
     db: AsyncSession,
     query: str,
@@ -446,6 +472,7 @@ __all__ = [
     "KRSymbolNameAmbiguousError",
     "build_kr_symbol_universe_snapshot",
     "get_kr_symbol_by_name",
+    "is_nxt_eligible",
     "search_kr_symbols",
     "sync_kr_symbol_universe",
 ]

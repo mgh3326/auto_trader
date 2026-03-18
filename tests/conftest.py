@@ -213,6 +213,20 @@ def mock_redis_service():
 
 
 @pytest.fixture(autouse=True)
+def _mock_nxt_eligible(monkeypatch):
+    """Default NXT eligible to True for tests that expect 'SOR' (legacy compatibility).
+
+    Existing tests (like TestKISFailureLogging) were written assuming 'SOR' is always used.
+    By defaulting to True, we maintain compatibility with those tests while allowing
+    new tests to explicitly override this if needed.
+    """
+    monkeypatch.setattr(
+        "app.services.brokers.kis.domestic_orders.is_nxt_eligible",
+        AsyncMock(return_value=True),
+    )
+
+
+@pytest.fixture(autouse=True)
 def mock_auth_middleware_db():
     """Mock AsyncSessionLocal in AuthMiddleware to prevent DB connection attempts."""
     with patch("app.middleware.auth.AsyncSessionLocal") as mock:
