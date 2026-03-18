@@ -253,7 +253,7 @@ class TestFinnhubEconomicCalendar:
             "app.mcp_server.tooling.fundamentals_sources_finnhub._get_finnhub_client",
         ) as mock_client:
             mock_instance = MagicMock()
-            mock_instance.economic_calendar.return_value = mock_response
+            mock_instance.calendar_economic.return_value = mock_response
             mock_client.return_value = mock_instance
 
             result = await fetch_economic_calendar_finnhub("2026-03-16", "2026-03-16")
@@ -326,7 +326,7 @@ class TestFinnhubEconomicCalendar:
             "app.mcp_server.tooling.fundamentals_sources_finnhub._get_finnhub_client",
         ) as mock_client:
             mock_instance = MagicMock()
-            mock_instance.economic_calendar.return_value = mock_api_response
+            mock_instance.calendar_economic.return_value = mock_api_response
             mock_client.return_value = mock_instance
 
             result = await fetch_economic_calendar_finnhub("2026-03-18", "2026-03-18")
@@ -671,7 +671,9 @@ class TestEconomicCalendarLive:
         # First Monday of March 2026 — ISM Manufacturing PMI is typically released
         result = await fetch_economic_calendar_finnhub("2026-03-02", "2026-03-06")
 
-        assert result is not None, "Finnhub returned None — API key or connectivity issue"
+        assert result is not None, (
+            "Finnhub returned None — API key or connectivity issue"
+        )
         assert len(result) > 0, (
             "Finnhub returned 0 US events for first week of March — "
             "this week always has ISM PMI, likely an API or filter issue"
@@ -712,7 +714,9 @@ class TestEconomicCalendarDiagnostics:
     """Tests for economic calendar diagnostic improvements."""
 
     @pytest.mark.asyncio
-    async def test_fetch_logs_warning_when_finnhub_returns_none(self, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_fetch_logs_warning_when_finnhub_returns_none(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Verify that a warning is logged when Finnhub returns None."""
         from app.services.external.economic_calendar import (
             _clear_economic_calendar_cache,
@@ -793,7 +797,9 @@ class TestEconomicCalendarDateBoundary:
         mock_now = datetime(2026, 3, 19, 7, 0, tzinfo=ZoneInfo("Asia/Seoul"))
 
         with (
-            patch("app.services.external.economic_calendar.now_kst", return_value=mock_now),
+            patch(
+                "app.services.external.economic_calendar.now_kst", return_value=mock_now
+            ),
             patch(
                 "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
                 new_callable=AsyncMock,
@@ -809,7 +815,7 @@ class TestEconomicCalendarDateBoundary:
                 }
             ]
 
-            result = await fetch_economic_events_today()
+            await fetch_economic_events_today()
 
             # Verify the Finnhub call used KST date
             call_args = mock_fetch.call_args

@@ -1072,7 +1072,9 @@ async def test_run_strategy_scan_returns_message_and_details(scanner_env, monkey
 
 
 @pytest.mark.asyncio
-async def test_run_crash_detection_returns_message_and_details(scanner_env, monkeypatch):
+async def test_run_crash_detection_returns_message_and_details(
+    scanner_env, monkeypatch
+):
     """run_crash_detection should return message and structured details."""
     scanner, openclaw, fake_redis, ds_mod = scanner_env
 

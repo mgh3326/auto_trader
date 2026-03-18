@@ -13,6 +13,7 @@ def client(monkeypatch):
     """Build test client with auth middleware bypassed."""
     # Monkeypatch settings before importing/creating app
     import app.middleware.auth
+
     monkeypatch.setattr(app.middleware.auth.settings, "N8N_API_KEY", "test-key")
     monkeypatch.setattr(app.middleware.auth.settings, "DOCS_ENABLED", False)
     monkeypatch.setattr(app.middleware.auth.settings, "PUBLIC_API_PATHS", [])
@@ -38,9 +39,7 @@ class TestStrategyScanEndpoint:
                 "btc_context": "📌 BTC 컨텍스트: RSI14 63.5",
             },
         }
-        with patch(
-            "app.routers.n8n_scan.DailyScanner"
-        ) as MockScanner:
+        with patch("app.routers.n8n_scan.DailyScanner") as MockScanner:
             instance = MockScanner.return_value
             instance.run_strategy_scan = AsyncMock(return_value=mock_result)
             instance.close = AsyncMock()
@@ -66,9 +65,7 @@ class TestStrategyScanEndpoint:
                 "btc_context": "📌 BTC 컨텍스트: RSI14 63.5",
             },
         }
-        with patch(
-            "app.routers.n8n_scan.DailyScanner"
-        ) as MockScanner:
+        with patch("app.routers.n8n_scan.DailyScanner") as MockScanner:
             instance = MockScanner.return_value
             instance.run_strategy_scan = AsyncMock(return_value=mock_result)
             instance.close = AsyncMock()
@@ -80,9 +77,7 @@ class TestStrategyScanEndpoint:
         assert body["alerts_sent"] == 0
 
     def test_strategy_scan_exception_returns_500(self, client):
-        with patch(
-            "app.routers.n8n_scan.DailyScanner"
-        ) as MockScanner:
+        with patch("app.routers.n8n_scan.DailyScanner") as MockScanner:
             instance = MockScanner.return_value
             instance.run_strategy_scan = AsyncMock(
                 side_effect=RuntimeError("upstream failure")
@@ -107,9 +102,7 @@ class TestCrashScanEndpoint:
                 "crash_signals": ["TEST 24h +11.00% — 급등 감지"],
             },
         }
-        with patch(
-            "app.routers.n8n_scan.DailyScanner"
-        ) as MockScanner:
+        with patch("app.routers.n8n_scan.DailyScanner") as MockScanner:
             instance = MockScanner.return_value
             instance.run_crash_detection = AsyncMock(return_value=mock_result)
             instance.close = AsyncMock()
@@ -129,9 +122,7 @@ class TestCrashScanEndpoint:
             "message": "",
             "details": {"crash_signals": []},
         }
-        with patch(
-            "app.routers.n8n_scan.DailyScanner"
-        ) as MockScanner:
+        with patch("app.routers.n8n_scan.DailyScanner") as MockScanner:
             instance = MockScanner.return_value
             instance.run_crash_detection = AsyncMock(return_value=mock_result)
             instance.close = AsyncMock()
@@ -143,9 +134,7 @@ class TestCrashScanEndpoint:
         assert body["alerts_sent"] == 0
 
     def test_crash_scan_exception_returns_500(self, client):
-        with patch(
-            "app.routers.n8n_scan.DailyScanner"
-        ) as MockScanner:
+        with patch("app.routers.n8n_scan.DailyScanner") as MockScanner:
             instance = MockScanner.return_value
             instance.run_crash_detection = AsyncMock(
                 side_effect=RuntimeError("upstream failure")

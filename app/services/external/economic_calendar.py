@@ -119,7 +119,10 @@ async def fetch_economic_events_today() -> list[dict[str, Any]]:
 
     async with _cache_lock:
         if _econ_calendar_cache_expires and now_kst() < _econ_calendar_cache_expires:
-            logger.debug("Returning cached economic calendar (%d events)", len(_econ_calendar_cache))
+            logger.debug(
+                "Returning cached economic calendar (%d events)",
+                len(_econ_calendar_cache),
+            )
             return _econ_calendar_cache.copy()
 
     try:
