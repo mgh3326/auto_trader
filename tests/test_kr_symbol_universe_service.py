@@ -1,5 +1,6 @@
 import pytest
 
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_get_kr_names_by_symbols_returns_name_map(mocker):

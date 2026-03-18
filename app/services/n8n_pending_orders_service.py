@@ -328,7 +328,9 @@ async def fetch_pending_orders(
             errors.append({"market": "kr", "error": f"name lookup failed: {exc}"})
 
     for order in normalized_orders:
-        order["name"] = kr_name_map.get(order["symbol"]) if order["market"] == "kr" else None
+        order["name"] = (
+            kr_name_map.get(order["symbol"]) if order["market"] == "kr" else None
+        )
 
     if include_current_price:
         (
