@@ -702,10 +702,9 @@ async def test_run_strategy_scan_sends_single_batched_alert(
     first_await = send_mock.await_args_list[0]
     assert first_await is not None
     batched_message = first_await.args[0]
-    assert result == {
-        "alerts_sent": 1,
-        "details": [batched_message],
-    }
+    assert result["alerts_sent"] == 1
+    assert result["message"] == batched_message
+    assert isinstance(result["details"], dict)
     assert "크립토 스캔 (09:30)" in batched_message
     assert "매수 신호" in batched_message
     assert "매도 신호" in batched_message
@@ -755,7 +754,9 @@ async def test_run_strategy_scan_does_not_send_when_no_alerts(
 
     result = await scanner.run_strategy_scan()
 
-    assert result == {"alerts_sent": 0, "details": []}
+    assert result["alerts_sent"] == 0
+    assert result["message"] == ""
+    assert isinstance(result["details"], dict)
     send_mock.assert_not_awaited()
 
 
@@ -804,7 +805,9 @@ async def test_run_strategy_scan_returns_zero_when_batched_send_fails(
 
     result = await scanner.run_strategy_scan()
 
-    assert result == {"alerts_sent": 0, "details": []}
+    assert result["alerts_sent"] == 0
+    assert result["message"] == ""
+    assert isinstance(result["details"], dict)
     send_mock.assert_awaited_once()
     record_mock.assert_not_awaited()
 
@@ -882,10 +885,9 @@ async def test_run_strategy_scan_records_deduped_cooldowns_on_batch_success(
     first_await = send_mock.await_args_list[0]
     assert first_await is not None
     batched_message = first_await.args[0]
-    assert result == {
-        "alerts_sent": 1,
-        "details": [batched_message],
-    }
+    assert result["alerts_sent"] == 1
+    assert result["message"] == batched_message
+    assert isinstance(result["details"], dict)
     assert "overbought message" in batched_message
     assert "oversold message" in batched_message
     assert record_mock.await_args_list == [
@@ -1023,3 +1025,43 @@ async def test_alert_mode_none_skips_send(scanner_env):
 
     assert result == "none"
     assert len(openclaw.messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_run_strategy_scan_returns_message_and_details(scanner_env, monkeypatch):
+    """run_strategy_scan should return message and structured details."""
+    scanner, openclaw, fake_redis, ds_mod = scanner_env
+
+    # Provide one oversold signal
+    from unittest.mock import AsyncMock
+
+    oversold_df = _make_ohlcv([50.0] * 20 + [20.0])  # RSI will be low
+    monkeypatch.setattr(ds_mod, "fetch_ohlcv", AsyncMock(return_value=oversold_df))
+    monkeypatch.setattr(
+        ds_mod,
+        "fetch_top_traded_coins",
+        AsyncMock(return_value=[{"market": "KRW-TEST"}]),
+    )
+    monkeypatch.setattr(ds_mod, "fetch_my_coins", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        ds_mod,
+        "fetch_multiple_tickers",
+        AsyncMock(return_value=[{"signed_change_rate": -0.01}]),
+    )
+    monkeypatch.setattr(
+        ds_mod,
+        "get_fear_greed_index_impl",
+        AsyncMock(return_value={"success": False}),
+    )
+
+    result = await scanner.run_strategy_scan()
+
+    assert "message" in result
+    assert "details" in result
+    assert isinstance(result["details"], dict)
+    if result["alerts_sent"] > 0:
+        assert result["message"]  # non-empty string
+        assert "buy_signals" in result["details"]
+        assert "sell_signals" in result["details"]
+        assert "sentiment_signals" in result["details"]
+        assert "btc_context" in result["details"]

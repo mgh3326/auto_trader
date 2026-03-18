@@ -691,8 +691,15 @@ class DailyScanner:
             elif "데드크로스" in sma_alert:
                 sell_signals.append(sma_alert)
 
+        details = {
+            "buy_signals": buy_signals,
+            "sell_signals": sell_signals,
+            "sentiment_signals": fng_alerts,
+            "btc_context": btc_ctx,
+        }
+
         if not buy_signals and not sell_signals and not fng_alerts:
-            return {"alerts_sent": 0, "details": []}
+            return {"alerts_sent": 0, "message": "", "details": details}
 
         batched_message = self._build_strategy_scan_batch_message(
             btc_ctx=btc_ctx,
@@ -702,12 +709,12 @@ class DailyScanner:
         )
         request_id = await self._send_alert(batched_message)
         if not request_id:
-            return {"alerts_sent": 0, "details": []}
+            return {"alerts_sent": 0, "message": "", "details": details}
 
         for symbol, alert_type in self._dedupe_pending_cooldowns(pending_cooldowns):
             await self._record_alert(symbol, alert_type)
 
-        return {"alerts_sent": 1, "details": [batched_message]}
+        return {"alerts_sent": 1, "message": batched_message, "details": details}
 
     async def run_crash_detection(self) -> dict:
         if not settings.DAILY_SCAN_ENABLED:
