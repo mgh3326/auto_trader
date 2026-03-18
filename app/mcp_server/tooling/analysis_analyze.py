@@ -390,7 +390,13 @@ async def analyze_stock_impl(
     if not symbol:
         raise ValueError("symbol is required")
 
-    market_type, normalized_symbol = _resolve_market_type(symbol, market)
+    try:
+        market_type, normalized_symbol = _resolve_market_type(symbol, market)
+    except ValueError:
+        raise ValueError(
+            f"Unsupported symbol format: '{symbol}'. "
+            "Use ticker codes (e.g., AAPL, 005930, KRW-BTC)."
+        )
     analysis = _build_analysis_payload(normalized_symbol, market_type)
     loop = asyncio.get_running_loop()
 
