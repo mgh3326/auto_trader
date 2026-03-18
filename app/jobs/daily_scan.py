@@ -725,20 +725,23 @@ class DailyScanner:
             send_immediately=False,
             pending_cooldowns=pending_cooldowns,
         )
+
+        details = {"crash_signals": alerts}
+
         if not alerts:
-            return {"alerts_sent": 0, "details": []}
+            return {"alerts_sent": 0, "message": "", "details": details}
 
         batched_message = self._build_crash_detection_batch_message(
             crash_signals=alerts
         )
         request_id = await self._send_alert(batched_message)
         if not request_id:
-            return {"alerts_sent": 0, "details": []}
+            return {"alerts_sent": 0, "message": "", "details": details}
 
         for symbol, alert_type in self._dedupe_pending_cooldowns(pending_cooldowns):
             await self._record_alert(symbol, alert_type)
 
-        return {"alerts_sent": 1, "details": [batched_message]}
+        return {"alerts_sent": 1, "message": batched_message, "details": details}
 
     async def close(self):
         if self._redis is not None:
