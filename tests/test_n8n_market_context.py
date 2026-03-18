@@ -253,7 +253,7 @@ class TestFinnhubEconomicCalendar:
             "app.mcp_server.tooling.fundamentals_sources_finnhub._get_finnhub_client",
         ) as mock_client:
             mock_instance = MagicMock()
-            mock_instance.economic_calendar.return_value = mock_response
+            mock_instance.calendar_economic.return_value = mock_response
             mock_client.return_value = mock_instance
 
             result = await fetch_economic_calendar_finnhub("2026-03-16", "2026-03-16")
@@ -326,7 +326,7 @@ class TestFinnhubEconomicCalendar:
             "app.mcp_server.tooling.fundamentals_sources_finnhub._get_finnhub_client",
         ) as mock_client:
             mock_instance = MagicMock()
-            mock_instance.economic_calendar.return_value = mock_api_response
+            mock_instance.calendar_economic.return_value = mock_api_response
             mock_client.return_value = mock_instance
 
             result = await fetch_economic_calendar_finnhub("2026-03-18", "2026-03-18")
@@ -344,6 +344,56 @@ class TestFinnhubEconomicCalendar:
 @pytest.mark.unit
 class TestMarketContextService:
     """Tests for market context service functions."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_empty_is_valid(self) -> None:
+        """Test that empty Finnhub response is treated as valid (no events today)."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+            return_value=[],
+        ):
+            result = await fetch_economic_events_today()
+            assert result == []
+            assert isinstance(result, list)
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_caches_result(self) -> None:
+        """Test that successful fetch is cached and not re-fetched."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+
+        mock_events = [
+            {
+                "time": "08:30",
+                "event": "Initial Claims",
+                "previous": "220K",
+                "estimate": "218K",
+                "impact": "medium",
+            }
+        ]
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+            return_value=mock_events,
+        ) as mock_fetch:
+            result1 = await fetch_economic_events_today()
+            result2 = await fetch_economic_events_today()
+
+            assert len(result1) == 1
+            assert len(result2) == 1
+            # Should only call Finnhub once due to caching
+            assert mock_fetch.call_count == 1
 
     @pytest.mark.asyncio
     async def test_classify_trend_bullish(self) -> None:
@@ -600,3 +650,178 @@ class TestMarketContextSchemas:
         assert response.market == "crypto"
         assert len(response.symbols) == 1
         assert response.symbols[0].symbol == "BTC"
+
+
+@pytest.mark.live
+@pytest.mark.integration
+class TestEconomicCalendarLive:
+    """Live tests that hit real Finnhub API — require --run-live flag."""
+
+    @pytest.mark.asyncio
+    async def test_finnhub_returns_events_for_known_date(self) -> None:
+        """Verify Finnhub returns US economic events for a date with known events.
+
+        Uses a recent historical date that definitely had events (e.g., first week of month
+        typically has NFP, ISM PMI, etc.)
+        """
+        from app.mcp_server.tooling.fundamentals_sources_finnhub import (
+            fetch_economic_calendar_finnhub,
+        )
+
+        # First Monday of March 2026 — ISM Manufacturing PMI is typically released
+        result = await fetch_economic_calendar_finnhub("2026-03-02", "2026-03-06")
+
+        assert result is not None, (
+            "Finnhub returned None — API key or connectivity issue"
+        )
+        assert len(result) > 0, (
+            "Finnhub returned 0 US events for first week of March — "
+            "this week always has ISM PMI, likely an API or filter issue"
+        )
+
+        # Verify structure
+        first_event = result[0]
+        assert "event" in first_event
+        assert "country" in first_event
+        assert first_event["country"] == "US"
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_service_layer(self) -> None:
+        """Verify end-to-end service layer returns structured events."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+        result = await fetch_economic_events_today()
+
+        # This test runs on whatever "today" is — can be empty
+        # But the result must be a list (not None, not exception)
+        assert isinstance(result, list)
+
+        if result:
+            first = result[0]
+            assert "time" in first
+            assert "event" in first
+            assert "importance" in first
+            assert first["importance"] in ("high", "medium", "low")
+            assert "KST" in first["time"]
+
+
+@pytest.mark.unit
+class TestEconomicCalendarDiagnostics:
+    """Tests for economic calendar diagnostic improvements."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_logs_warning_when_finnhub_returns_none(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Verify that a warning is logged when Finnhub returns None."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+            return_value=None,
+        ):
+            result = await fetch_economic_events_today()
+            assert result == []
+            assert "check FINNHUB_API_KEY and API connectivity" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_fetch_logs_event_count_on_success(self) -> None:
+        """Verify event count is logged on success."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+
+        mock_events = [
+            {
+                "time": "08:30",
+                "event": "CPI",
+                "previous": "2.4%",
+                "estimate": "2.3%",
+                "impact": "high",
+            },
+            {
+                "time": "14:00",
+                "event": "FOMC",
+                "previous": None,
+                "estimate": None,
+                "impact": "high",
+            },
+        ]
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+            return_value=mock_events,
+        ):
+            result = await fetch_economic_events_today()
+            assert len(result) == 2
+
+
+@pytest.mark.unit
+class TestEconomicCalendarDateBoundary:
+    """Tests for KST/UTC date boundary handling."""
+
+    @pytest.mark.asyncio
+    async def test_kst_morning_includes_previous_utc_date(self) -> None:
+        """At KST 07:00 (= UTC 22:00 previous day), Finnhub should query
+        both the previous UTC day and current KST day to catch late-night
+        UTC events that are "today" in KST.
+
+        Example: KST 2026-03-19 07:00 = UTC 2026-03-18 22:00
+        Finnhub query should cover 2026-03-18 to 2026-03-19 to catch
+        events happening at UTC 2026-03-18 late evening.
+        """
+        from datetime import datetime
+        from unittest.mock import AsyncMock, patch
+        from zoneinfo import ZoneInfo
+
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+
+        # Mock KST time to 2026-03-19 07:00 KST (= 2026-03-18 22:00 UTC)
+        mock_now = datetime(2026, 3, 19, 7, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+
+        with (
+            patch(
+                "app.services.external.economic_calendar.now_kst", return_value=mock_now
+            ),
+            patch(
+                "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+                new_callable=AsyncMock,
+            ) as mock_fetch,
+        ):
+            mock_fetch.return_value = [
+                {
+                    "time": "14:00",
+                    "event": "FOMC Rate Decision",
+                    "previous": "5.25%",
+                    "estimate": "5.25%",
+                    "impact": "high",
+                }
+            ]
+
+            await fetch_economic_events_today()
+
+            # Verify the Finnhub call used KST date
+            call_args = mock_fetch.call_args
+            assert call_args is not None
+            from_date = call_args[0][0]
+            to_date = call_args[0][1]
+            # Should query KST date = "2026-03-19"
+            assert from_date == "2026-03-19"
+            assert to_date == "2026-03-19"

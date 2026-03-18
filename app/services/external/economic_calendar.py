@@ -119,20 +119,34 @@ async def fetch_economic_events_today() -> list[dict[str, Any]]:
 
     async with _cache_lock:
         if _econ_calendar_cache_expires and now_kst() < _econ_calendar_cache_expires:
-            logger.debug("Returning cached economic calendar")
+            logger.debug(
+                "Returning cached economic calendar (%d events)",
+                len(_econ_calendar_cache),
+            )
             return _econ_calendar_cache.copy()
 
     try:
         today = now_kst().strftime("%Y-%m-%d")
+        logger.info("Fetching economic calendar for date=%s (KST)", today)
 
         events = await fetch_economic_calendar_finnhub(today, today)
 
         if events is None:
-            logger.warning("Failed to fetch economic calendar from Finnhub")
+            logger.warning(
+                "Finnhub economic calendar returned None for date=%s — "
+                "check FINNHUB_API_KEY and API connectivity",
+                today,
+            )
             async with _cache_lock:
                 _econ_calendar_cache = []
                 _econ_calendar_cache_expires = now_kst() + timedelta(minutes=15)
             return []
+
+        if not events:
+            logger.info(
+                "Finnhub returned 0 events for date=%s — no US events scheduled",
+                today,
+            )
 
         transformed_events: list[dict[str, Any]] = []
         for event in events:
