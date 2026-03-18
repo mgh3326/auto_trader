@@ -712,3 +712,60 @@ class TestEconomicCalendarDiagnostics:
         ):
             result = await fetch_economic_events_today()
             assert len(result) == 2
+
+
+@pytest.mark.unit
+class TestEconomicCalendarDateBoundary:
+    """Tests for KST/UTC date boundary handling."""
+
+    @pytest.mark.asyncio
+    async def test_kst_morning_includes_previous_utc_date(self) -> None:
+        """At KST 07:00 (= UTC 22:00 previous day), Finnhub should query
+        both the previous UTC day and current KST day to catch late-night
+        UTC events that are "today" in KST.
+
+        Example: KST 2026-03-19 07:00 = UTC 2026-03-18 22:00
+        Finnhub query should cover 2026-03-18 to 2026-03-19 to catch
+        events happening at UTC 2026-03-18 late evening.
+        """
+        from datetime import datetime
+        from unittest.mock import AsyncMock, patch
+        from zoneinfo import ZoneInfo
+
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+
+        # Mock KST time to 2026-03-19 07:00 KST (= 2026-03-18 22:00 UTC)
+        mock_now = datetime(2026, 3, 19, 7, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+
+        with (
+            patch("app.services.external.economic_calendar.now_kst", return_value=mock_now),
+            patch(
+                "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+                new_callable=AsyncMock,
+            ) as mock_fetch,
+        ):
+            mock_fetch.return_value = [
+                {
+                    "time": "14:00",
+                    "event": "FOMC Rate Decision",
+                    "previous": "5.25%",
+                    "estimate": "5.25%",
+                    "impact": "high",
+                }
+            ]
+
+            result = await fetch_economic_events_today()
+
+            # Verify the Finnhub call used KST date
+            call_args = mock_fetch.call_args
+            assert call_args is not None
+            from_date = call_args[0][0]
+            to_date = call_args[0][1]
+            # Should query KST date = "2026-03-19"
+            assert from_date == "2026-03-19"
+            assert to_date == "2026-03-19"
