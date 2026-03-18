@@ -600,3 +600,58 @@ class TestMarketContextSchemas:
         assert response.market == "crypto"
         assert len(response.symbols) == 1
         assert response.symbols[0].symbol == "BTC"
+
+
+@pytest.mark.live
+@pytest.mark.integration
+class TestEconomicCalendarLive:
+    """Live tests that hit real Finnhub API — require --run-live flag."""
+
+    @pytest.mark.asyncio
+    async def test_finnhub_returns_events_for_known_date(self) -> None:
+        """Verify Finnhub returns US economic events for a date with known events.
+
+        Uses a recent historical date that definitely had events (e.g., first week of month
+        typically has NFP, ISM PMI, etc.)
+        """
+        from app.mcp_server.tooling.fundamentals_sources_finnhub import (
+            fetch_economic_calendar_finnhub,
+        )
+
+        # First Monday of March 2026 — ISM Manufacturing PMI is typically released
+        result = await fetch_economic_calendar_finnhub("2026-03-02", "2026-03-06")
+
+        assert result is not None, "Finnhub returned None — API key or connectivity issue"
+        assert len(result) > 0, (
+            "Finnhub returned 0 US events for first week of March — "
+            "this week always has ISM PMI, likely an API or filter issue"
+        )
+
+        # Verify structure
+        first_event = result[0]
+        assert "event" in first_event
+        assert "country" in first_event
+        assert first_event["country"] == "US"
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_service_layer(self) -> None:
+        """Verify end-to-end service layer returns structured events."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+        result = await fetch_economic_events_today()
+
+        # This test runs on whatever "today" is — can be empty
+        # But the result must be a list (not None, not exception)
+        assert isinstance(result, list)
+
+        if result:
+            first = result[0]
+            assert "time" in first
+            assert "event" in first
+            assert "importance" in first
+            assert first["importance"] in ("high", "medium", "low")
+            assert "KST" in first["time"]

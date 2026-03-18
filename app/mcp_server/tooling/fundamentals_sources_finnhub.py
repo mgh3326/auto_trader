@@ -90,7 +90,7 @@ async def fetch_economic_calendar_finnhub(
         client = _get_finnhub_client()
 
         def fetch_sync() -> list[dict[str, Any]]:
-            return client.economic_calendar(_from=from_date, to=to_date)
+            return client.calendar_economic(_from=from_date, to=to_date)
 
         events = await asyncio.to_thread(fetch_sync)
 
