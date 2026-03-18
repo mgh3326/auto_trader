@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import re
 from typing import Any
 
 import pandas as pd
@@ -46,6 +47,10 @@ DEFAULT_MINIMUM_VALUES: dict[str, float] = {
 # ---------------------------------------------------------------------------
 
 
+# US equity symbol pattern: 1-20 alphanumeric chars, optional dots for share classes (BRK.B)
+_US_EQUITY_PATTERN = re.compile(r"^[A-Z][A-Z0-9.]{0,19}$")
+
+
 def is_korean_equity_code(symbol: str) -> bool:
     s = symbol.strip().upper()
     return len(s) == 6 and s.isalnum()
@@ -58,7 +63,11 @@ def is_crypto_market(symbol: str) -> bool:
 
 def is_us_equity_symbol(symbol: str) -> bool:
     s = symbol.strip().upper()
-    return (not is_crypto_market(s)) and any(c.isalpha() for c in s)
+    if not s:
+        return False
+    if is_crypto_market(s):
+        return False
+    return bool(_US_EQUITY_PATTERN.match(s))
 
 
 # ---------------------------------------------------------------------------

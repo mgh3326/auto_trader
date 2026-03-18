@@ -4095,3 +4095,64 @@ class TestComputeRsiWeights:
         # All weights equal
         expected_weight = 1.0 / 3
         assert all(abs(w - expected_weight) < 0.001 for w in result)
+
+
+# ---------------------------------------------------------------------------
+# AUTO_TRADER-3S: Invalid Symbol Input Validation Fix Tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsUsEquitySymbol:
+    """is_us_equity_symbol rejects obviously invalid inputs."""
+
+    @pytest.mark.parametrize(
+        "symbol",
+        [
+            "--symbol",
+            "-AAPL",
+            "!!abc",
+            "@test",
+            "",
+            "   ",
+            "a" * 21,  # too long
+        ],
+    )
+    def test_rejects_invalid_symbols(self, symbol: str) -> None:
+        from app.mcp_server.tooling.shared import is_us_equity_symbol
+
+        assert is_us_equity_symbol(symbol) is False
+
+    @pytest.mark.parametrize(
+        "symbol",
+        [
+            "AAPL",
+            "MSFT",
+            "BRK.B",
+            "NVDA",
+            "A",
+            "META",
+        ],
+    )
+    def test_accepts_valid_us_symbols(self, symbol: str) -> None:
+        from app.mcp_server.tooling.shared import is_us_equity_symbol
+
+        assert is_us_equity_symbol(symbol) is True
+
+
+class TestAnalyzeStockInvalidInput:
+    """analyze_stock rejects invalid symbol inputs gracefully."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_cli_flag_symbol(self, monkeypatch) -> None:
+        """Symbols like '--symbol' should raise ValueError, not reach yfinance."""
+        from app.mcp_server.tooling.analysis_analyze import analyze_stock_impl
+
+        with pytest.raises(ValueError, match="(?i)invalid.*symbol|unsupported.*symbol"):
+            await analyze_stock_impl(symbol="--symbol", market="KRW-BTC")
+
+    @pytest.mark.asyncio
+    async def test_rejects_empty_symbol(self, monkeypatch) -> None:
+        from app.mcp_server.tooling.analysis_analyze import analyze_stock_impl
+
+        with pytest.raises(ValueError, match="symbol is required"):
+            await analyze_stock_impl(symbol="", market=None)
