@@ -1,6 +1,7 @@
 import pytest
-from app.services.portfolio_overview_service import PortfolioOverviewService, _MARKET_US
+
 from app.services.merged_portfolio_service import MergedPortfolioService
+from app.services.portfolio_overview_service import _MARKET_US, PortfolioOverviewService
 
 
 class TestUSPortfolioCurrencyConversion:
@@ -46,26 +47,26 @@ class TestUSPortfolioCurrencyConversion:
         """Test that KRW avg_prices are converted to USD when aggregating."""
         service = PortfolioOverviewService(db=None)
         usd_krw = 1300.0
-        
+
         positions = service._aggregate_positions(
             mock_components_mixed_currency, usd_krw=usd_krw
         )
-        
+
         assert len(positions) == 1
         position = positions[0]
-        
+
         # Total quantity should be 15 (10 + 5)
         assert position["quantity"] == 15.0
-        
+
         # avg_price should be weighted average in USD
         # (10 * 150 + 5 * 150) / 15 = 150 (after KRW conversion: 195000/1300 = 150)
         assert abs(position["avg_price"] - 150.0) < 0.01
-        
+
         # Cost basis should be reasonable (2250 USD, not ~977K)
         expected_cost_basis = 15.0 * 150.0
         actual_cost_basis = position["quantity"] * position["avg_price"]
         assert abs(actual_cost_basis - expected_cost_basis) < 0.01
-        
+
         # PnL should be positive (bought at 150, now at 200)
         assert position["profit_rate"] > 0
         assert abs(position["profit_rate"] - 0.333) < 0.01  # ~33.3% gain
@@ -73,12 +74,12 @@ class TestUSPortfolioCurrencyConversion:
     def test_aggregate_positions_without_conversion_gives_wrong_result(self, mock_components_mixed_currency):
         """Verify that without conversion, PnL calculation is broken."""
         service = PortfolioOverviewService(db=None)
-        
+
         # Without usd_krw rate, no conversion happens
         positions = service._aggregate_positions(
             mock_components_mixed_currency, usd_krw=None
         )
-        
+
         position = positions[0]
         # avg_price would be way too high due to KRW values
         # This would cause negative PnL like the reported bug
@@ -90,10 +91,14 @@ class TestMergedPortfolioCurrencyConversion:
 
     def test_finalize_holdings_converts_krw_avg_price(self):
         """Test _finalize_holdings converts KRW avg_price to USD."""
-        from app.services.merged_portfolio_service import MergedHolding, HoldingInfo, MarketType
-        
+        from app.services.merged_portfolio_service import (
+            HoldingInfo,
+            MarketType,
+            MergedHolding,
+        )
+
         service = MergedPortfolioService(db=None)
-        
+
         holding = MergedHolding(
             ticker="AAPL",
             name="Apple Inc",
@@ -104,18 +109,18 @@ class TestMergedPortfolioCurrencyConversion:
             HoldingInfo(broker="kis", quantity=10, avg_price=150.0),  # USD
             HoldingInfo(broker="toss", quantity=5, avg_price=195000.0),  # KRW
         ]
-        
+
         merged = {"AAPL": holding}
         usd_krw = 1300.0
-        
+
         service._finalize_holdings(merged, usd_krw=usd_krw)
-        
+
         # Toss avg_price should be converted from KRW to USD
         assert abs(holding.toss_avg_price - 150.0) < 0.01  # 195000/1300
-        
+
         # Combined avg should be weighted average in USD
         assert abs(holding.combined_avg_price - 150.0) < 0.01
-        
+
         # PnL should be calculated correctly
         expected_profit_rate = (200.0 - 150.0) / 150.0  # ~33.3%
         assert abs(holding.profit_rate - expected_profit_rate) < 0.01
