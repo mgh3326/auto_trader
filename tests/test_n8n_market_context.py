@@ -655,3 +655,60 @@ class TestEconomicCalendarLive:
             assert "importance" in first
             assert first["importance"] in ("high", "medium", "low")
             assert "KST" in first["time"]
+
+
+@pytest.mark.unit
+class TestEconomicCalendarDiagnostics:
+    """Tests for economic calendar diagnostic improvements."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_logs_warning_when_finnhub_returns_none(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Verify that a warning is logged when Finnhub returns None."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+            return_value=None,
+        ):
+            result = await fetch_economic_events_today()
+            assert result == []
+            assert "check FINNHUB_API_KEY and API connectivity" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_fetch_logs_event_count_on_success(self) -> None:
+        """Verify event count is logged on success."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+
+        mock_events = [
+            {
+                "time": "08:30",
+                "event": "CPI",
+                "previous": "2.4%",
+                "estimate": "2.3%",
+                "impact": "high",
+            },
+            {
+                "time": "14:00",
+                "event": "FOMC",
+                "previous": None,
+                "estimate": None,
+                "impact": "high",
+            },
+        ]
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+            return_value=mock_events,
+        ):
+            result = await fetch_economic_events_today()
+            assert len(result) == 2
