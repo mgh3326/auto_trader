@@ -302,9 +302,17 @@ class MergedPortfolioService:
     ) -> None:
         for holding in merged.values():
             # For US stocks, detect if any manual broker has avg_price in KRW and convert to USD
-            if holding.market_type == MarketType.US and holding.current_price > 0 and usd_krw:
+            if (
+                holding.market_type == MarketType.US
+                and holding.current_price > 0
+                and usd_krw
+            ):
                 for h in holding.holdings:
-                    if h.broker != "kis" and h.avg_price > 1000 and (h.avg_price / holding.current_price) > 100:
+                    if (
+                        h.broker != "kis"
+                        and h.avg_price > 1000
+                        and (h.avg_price / holding.current_price) > 100
+                    ):
                         h.avg_price = h.avg_price / usd_krw
                         # Also update specific broker fields for display
                         if h.broker == "toss":
@@ -456,7 +464,11 @@ class MergedPortfolioService:
             if ref_price > 0:
                 usd_krw = await get_usd_krw_rate()
                 for h in holdings_list:
-                    if h.broker != "kis" and h.avg_price > 1000 and (h.avg_price / ref_price) > 100:
+                    if (
+                        h.broker != "kis"
+                        and h.avg_price > 1000
+                        and (h.avg_price / ref_price) > 100
+                    ):
                         h.avg_price = h.avg_price / usd_krw
                         if h.broker == "toss":
                             ref.toss_avg = h.avg_price

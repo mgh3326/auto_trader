@@ -518,7 +518,9 @@ class PortfolioOverviewService:
                 price = _to_float(frame.iloc[-1].get("close"), default=0.0)
                 if price <= 0:
                     continue
-                self._apply_price(components, _MARKET_KR, symbol, price, usd_krw=usd_krw)
+                self._apply_price(
+                    components, _MARKET_KR, symbol, price, usd_krw=usd_krw
+                )
             except Exception as exc:
                 logger.warning("Failed to fetch KIS KR price for %s: %s", symbol, exc)
                 warnings.append(f"KIS KR price fetch failed for {symbol}: {exc}")
@@ -556,7 +558,9 @@ class PortfolioOverviewService:
                     )
 
                 for target_symbol in us_symbol_targets.get(symbol, {symbol}):
-                    self._apply_price(components, _MARKET_US, target_symbol, price, usd_krw=usd_krw)
+                    self._apply_price(
+                        components, _MARKET_US, target_symbol, price, usd_krw=usd_krw
+                    )
 
         if crypto_symbols:
             price_map = await self._fetch_upbit_prices_resilient(
@@ -569,7 +573,9 @@ class PortfolioOverviewService:
             for symbol, price in price_map.items():
                 if price is None:
                     continue
-                self._apply_price(components, _MARKET_CRYPTO, symbol, float(price), usd_krw=usd_krw)
+                self._apply_price(
+                    components, _MARKET_CRYPTO, symbol, float(price), usd_krw=usd_krw
+                )
 
     async def _fetch_upbit_prices_resilient(
         self,
@@ -875,7 +881,9 @@ class PortfolioOverviewService:
                     avg_price = _to_float(item.get("avg_price"))
 
                     # Use item's current_price if available, otherwise use row's current_price
-                    ref_price = _to_float(item.get("current_price")) or _to_float(current_price)
+                    ref_price = _to_float(item.get("current_price")) or _to_float(
+                        current_price
+                    )
 
                     # Detect KRW-denominated avg_price and convert to USD
                     # Heuristic: if avg_price > 1000 and ratio to current_price > 100, it's likely KRW
