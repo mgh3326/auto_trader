@@ -9,6 +9,7 @@ from app.mcp_server.tooling.orders_history import get_order_history_impl
 from app.mcp_server.tooling.shared import resolve_market_type
 from app.services.brokers.upbit.client import fetch_multiple_current_prices_cached
 from app.services.exchange_rate_service import get_usd_krw_rate
+from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
 from app.services.market_data import get_quote
 from app.services.n8n_formatting import enrich_order_fmt, enrich_summary_fmt
 
@@ -164,6 +165,7 @@ def _normalize_order(
     return {
         "order_id": str(order.get("order_id") or ""),
         "symbol": symbol,
+        "name": None,
         "raw_symbol": raw_symbol,
         "market": market,
         "side": str(order.get("side") or ""),
@@ -311,6 +313,22 @@ async def fetch_pending_orders(
         _normalize_order(order, as_of=effective_as_of, usd_krw_rate=usd_krw_rate)
         for order in source_orders
     ]
+
+    # --- KR name enrichment ---
+    kr_symbols = [
+        order["symbol"]
+        for order in normalized_orders
+        if order["market"] == "kr" and order["symbol"]
+    ]
+    kr_name_map: dict[str, str] = {}
+    if kr_symbols:
+        try:
+            kr_name_map = await get_kr_names_by_symbols(kr_symbols)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"market": "kr", "error": f"name lookup failed: {exc}"})
+
+    for order in normalized_orders:
+        order["name"] = kr_name_map.get(order["symbol"]) if order["market"] == "kr" else None
 
     if include_current_price:
         (

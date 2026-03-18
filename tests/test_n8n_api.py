@@ -943,6 +943,95 @@ class TestN8nPendingOrdersService:
         assert order["gap_pct_fmt"] == "-"
         assert order["summary_line"] is not None
 
+    @pytest.mark.asyncio
+    async def test_fetch_pending_orders_kr_name_enrichment(self) -> None:
+        """KR 미체결 주문에 종목명이 enrichment된다."""
+        from app.services.n8n_pending_orders_service import fetch_pending_orders
+
+        with (
+            patch(
+                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                new_callable=AsyncMock,
+                return_value={
+                    "orders": [
+                        {
+                            "order_id": "KR001",
+                            "symbol": "064350",
+                            "side": "buy",
+                            "status": "pending",
+                            "ordered_price": 188000,
+                            "ordered_qty": 1,
+                            "remaining_qty": 1,
+                            "ordered_at": "20260318 100000",
+                            "currency": "KRW",
+                        },
+                    ],
+                    "errors": [],
+                },
+            ),
+            patch(
+                "app.services.n8n_pending_orders_service.get_kr_names_by_symbols",
+                new_callable=AsyncMock,
+                return_value={"064350": "현대로템"},
+            ),
+            patch(
+                "app.services.n8n_pending_orders_service.get_quote",
+                new_callable=AsyncMock,
+                side_effect=Exception("skip"),
+            ),
+        ):
+            result = await fetch_pending_orders(
+                market="kr",
+                include_current_price=False,
+                include_indicators=False,
+            )
+
+        order = result["orders"][0]
+        assert order["name"] == "현대로템"
+        assert "현대로템(064350)" in order["summary_line"]
+
+    @pytest.mark.asyncio
+    async def test_fetch_pending_orders_kr_name_lookup_failure_graceful(self) -> None:
+        """종목명 조회 실패 시 name=None, summary_line은 symbol만 표시."""
+        from app.services.n8n_pending_orders_service import fetch_pending_orders
+
+        with (
+            patch(
+                "app.services.n8n_pending_orders_service.get_order_history_impl",
+                new_callable=AsyncMock,
+                return_value={
+                    "orders": [
+                        {
+                            "order_id": "KR001",
+                            "symbol": "064350",
+                            "side": "buy",
+                            "status": "pending",
+                            "ordered_price": 188000,
+                            "ordered_qty": 1,
+                            "remaining_qty": 1,
+                            "ordered_at": "20260318 100000",
+                            "currency": "KRW",
+                        },
+                    ],
+                    "errors": [],
+                },
+            ),
+            patch(
+                "app.services.n8n_pending_orders_service.get_kr_names_by_symbols",
+                new_callable=AsyncMock,
+                side_effect=Exception("DB down"),
+            ),
+        ):
+            result = await fetch_pending_orders(
+                market="kr",
+                include_current_price=False,
+                include_indicators=False,
+            )
+
+        order = result["orders"][0]
+        assert order["name"] is None
+        assert order["summary_line"].startswith("064350")
+
 
 class TestN8nPendingOrdersEndpoint:
     @pytest.fixture
