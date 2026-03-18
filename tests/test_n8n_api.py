@@ -764,6 +764,11 @@ class TestN8nPendingOrdersService:
                 return_value=_impl_result(orders=[_make_kr_order()], market="kr"),
             ),
             patch(
+                "app.services.n8n_pending_orders_service.get_kr_names_by_symbols",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
                 "app.services.n8n_pending_orders_service.get_quote",
                 new_callable=AsyncMock,
                 side_effect=Exception("KIS API timeout"),
