@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.manual_holdings import MarketType
 from app.services.brokers.kis.client import KISClient
+from app.services.exchange_rate_service import get_usd_krw_rate
 from app.services.manual_holdings_service import ManualHoldingsService
 
 logger = logging.getLogger(__name__)
@@ -296,8 +297,29 @@ class MergedPortfolioService:
             except Exception as exc:
                 logger.warning("Failed to fetch price for %s: %s", ticker, exc)
 
-    def _finalize_holdings(self, merged: dict[str, MergedHolding]) -> None:
+    def _finalize_holdings(
+        self, merged: dict[str, MergedHolding], *, usd_krw: float | None = None
+    ) -> None:
         for holding in merged.values():
+            # For US stocks, detect if any manual broker has avg_price in KRW and convert to USD
+            if (
+                holding.market_type == MarketType.US
+                and holding.current_price > 0
+                and usd_krw
+            ):
+                for h in holding.holdings:
+                    if (
+                        h.broker != "kis"
+                        and h.avg_price > 1000
+                        and (h.avg_price / holding.current_price) > 100
+                    ):
+                        h.avg_price = h.avg_price / usd_krw
+                        # Also update specific broker fields for display
+                        if h.broker == "toss":
+                            holding.toss_avg_price = h.avg_price
+                        else:
+                            holding.other_avg_price = h.avg_price
+
             holding.total_quantity = sum(
                 int(item.quantity) for item in holding.holdings
             )
@@ -311,6 +333,11 @@ class MergedPortfolioService:
                 holding.profit_rate = (
                     holding.current_price - holding.combined_avg_price
                 ) / holding.combined_avg_price
+            elif holding.current_price > 0:
+                # Handle zero/missing avg_price: treat as bought at current price
+                holding.evaluation = holding.current_price * holding.total_quantity
+                holding.profit_loss = 0.0
+                holding.profit_rate = 0.0
 
     async def _attach_analysis_and_settings(
         self, merged: dict[str, MergedHolding]
@@ -366,7 +393,8 @@ class MergedPortfolioService:
             )
         await self._fetch_missing_prices(merged, market_type, kis_client)
 
-        self._finalize_holdings(merged)
+        usd_krw_rate = await get_usd_krw_rate()
+        self._finalize_holdings(merged, usd_krw=usd_krw_rate)
         await self._attach_analysis_and_settings(merged)
 
         return list(merged.values())
@@ -377,6 +405,7 @@ class MergedPortfolioService:
         ticker: str,
         market_type: MarketType,
         kis_holdings: dict[str, Any] | None = None,
+        kis_client: KISClient | None = None,
     ) -> ReferencePrices:
         """특정 종목의 참조 평단가 정보 조회"""
         ref = ReferencePrices()
@@ -414,7 +443,37 @@ class MergedPortfolioService:
                 HoldingInfo(broker=broker_type, quantity=qty, avg_price=avg)
             )
 
-        # 3. 통합 평단가 계산
+        # 3. Currency normalization for US stocks
+        if market_type == MarketType.US and holdings_list:
+            # We need a reference price to detect KRW.
+            # If KIS exists, use its current price. If not, fetch it.
+            ref_price = 0.0
+            if kis_holdings and kis_holdings.get("current_price"):
+                ref_price = float(kis_holdings["current_price"])
+
+            if ref_price == 0:
+                try:
+                    if kis_client is None:
+                        kis_client = KISClient()
+                    df = await kis_client.inquire_overseas_price(ticker)
+                    if not df.empty:
+                        ref_price = float(df.iloc[0]["close"])
+                except Exception:
+                    pass
+
+            if ref_price > 0:
+                usd_krw = await get_usd_krw_rate()
+                for h in holdings_list:
+                    if (
+                        h.broker != "kis"
+                        and h.avg_price > 1000
+                        and (h.avg_price / ref_price) > 100
+                    ):
+                        h.avg_price = h.avg_price / usd_krw
+                        if h.broker == "toss":
+                            ref.toss_avg = h.avg_price
+
+        # 4. 통합 평단가 계산
         if holdings_list:
             ref.combined_avg = self.calculate_combined_avg(holdings_list)
             ref.total_quantity = sum(int(h.quantity) for h in holdings_list)
