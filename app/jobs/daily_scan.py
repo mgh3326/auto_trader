@@ -38,9 +38,9 @@ class DailyScanner:
     ):
         self._redis: redis.Redis | None = None
         self._openclaw = OpenClawClient()
-        self._alert_mode: Literal[
-            "both", "telegram_only", "openclaw_only", "none"
-        ] = alert_mode
+        self._alert_mode: Literal["both", "telegram_only", "openclaw_only", "none"] = (
+            alert_mode
+        )
 
     async def _get_redis(self) -> redis.Redis:
         if self._redis is None:
