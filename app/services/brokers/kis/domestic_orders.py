@@ -282,7 +282,7 @@ class DomesticOrderClient:
         ord_dvsn = "01" if price == 0 else "00"
 
         nxt = await is_nxt_eligible(stock_code)
-        excg_id_dvsn_cd = "SOR" if nxt else ""
+        excg_id_dvsn_cd = "SOR" if nxt else "KRX"
 
         body = {
             "CANO": cano,
@@ -445,7 +445,7 @@ class DomesticOrderClient:
             )
 
         nxt = await is_nxt_eligible(stock_code)
-        excg_id_dvsn_cd = "SOR" if nxt else ""
+        excg_id_dvsn_cd = "SOR" if nxt else "KRX"
 
         body = {
             "CANO": cano,
@@ -740,7 +740,7 @@ class DomesticOrderClient:
             )
 
         nxt = await is_nxt_eligible(stock_code)
-        excg_id_dvsn_cd = "SOR" if nxt else ""
+        excg_id_dvsn_cd = "SOR" if nxt else "KRX"
 
         body = {
             "CANO": cano,
