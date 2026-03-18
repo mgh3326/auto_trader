@@ -6,6 +6,8 @@ import inspect
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
+from app.services.kr_symbol_universe_service import is_nxt_eligible
+
 from . import constants
 from .base import _log_kis_api_failure
 
@@ -279,6 +281,9 @@ class DomesticOrderClient:
         # 주문 구분: 00(지정가), 01(시장가)
         ord_dvsn = "01" if price == 0 else "00"
 
+        nxt = await is_nxt_eligible(stock_code)
+        excg_id_dvsn_cd = "SOR" if nxt else ""
+
         body = {
             "CANO": cano,
             "ACNT_PRDT_CD": acnt_prdt_cd,
@@ -286,7 +291,7 @@ class DomesticOrderClient:
             "ORD_DVSN": ord_dvsn,  # 주문구분 (00:지정가, 01:시장가)
             "ORD_QTY": str(quantity),  # 주문수량
             "ORD_UNPR": str(price),  # 주문단가 (시장가일 경우 0)
-            "EXCG_ID_DVSN_CD": "SOR",
+            "EXCG_ID_DVSN_CD": excg_id_dvsn_cd,
         }
 
         logging.info(
@@ -439,6 +444,9 @@ class DomesticOrderClient:
                 is_mock=is_mock,
             )
 
+        nxt = await is_nxt_eligible(stock_code)
+        excg_id_dvsn_cd = "SOR" if nxt else ""
+
         body = {
             "CANO": cano,
             "ACNT_PRDT_CD": acnt_prdt_cd,
@@ -449,7 +457,7 @@ class DomesticOrderClient:
             "ORD_QTY": str(quantity),  # 주문수량
             "ORD_UNPR": str(price),  # 주문단가
             "QTY_ALL_ORD_YN": "N",  # 잔량전부주문여부 (Y:전부취소, N:일부취소)
-            "EXCG_ID_DVSN_CD": "SOR",
+            "EXCG_ID_DVSN_CD": excg_id_dvsn_cd,
         }
 
         logging.info(
@@ -731,6 +739,9 @@ class DomesticOrderClient:
                 is_mock=is_mock,
             )
 
+        nxt = await is_nxt_eligible(stock_code)
+        excg_id_dvsn_cd = "SOR" if nxt else ""
+
         body = {
             "CANO": cano,
             "ACNT_PRDT_CD": acnt_prdt_cd,
@@ -741,7 +752,7 @@ class DomesticOrderClient:
             "ORD_QTY": str(quantity),
             "ORD_UNPR": str(new_price),
             "QTY_ALL_ORD_YN": "Y",
-            "EXCG_ID_DVSN_CD": "SOR",
+            "EXCG_ID_DVSN_CD": excg_id_dvsn_cd,
         }
 
         logging.info(

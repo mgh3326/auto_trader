@@ -537,3 +537,38 @@ async def test_script_main_returns_nonzero_on_exception(monkeypatch):
 
     assert code == 1
     capture_mock.assert_called_once()
+
+
+@pytest.mark.unit
+class TestIsNxtEligible:
+    """Verify is_nxt_eligible returns correct NXT eligibility for symbols."""
+
+    @pytest.mark.asyncio
+    async def test_nxt_eligible_symbol_returns_true(self):
+        """NXT 대상 종목(예: 005930)은 True 반환."""
+        from app.services.kr_symbol_universe_service import is_nxt_eligible
+
+        db = _LookupSession([_LookupResult(scalar=True)])
+
+        result = await is_nxt_eligible("005930", db=db)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_non_nxt_eligible_symbol_returns_false(self):
+        """NXT 비대상 종목(예: 034220)은 False 반환."""
+        from app.services.kr_symbol_universe_service import is_nxt_eligible
+
+        db = _LookupSession([_LookupResult(scalar=False)])
+
+        result = await is_nxt_eligible("034220", db=db)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_symbol_returns_false(self):
+        """DB에 없는 종목은 안전 폴백으로 False 반환."""
+        from app.services.kr_symbol_universe_service import is_nxt_eligible
+
+        db = _LookupSession([_LookupResult(scalar=None)])
+
+        result = await is_nxt_eligible("999999", db=db)
+        assert result is False
