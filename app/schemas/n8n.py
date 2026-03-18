@@ -839,3 +839,43 @@ class N8nCryptoScanResponse(BaseModel):
     coins: list[N8nCryptoScanCoin] = Field(default_factory=list)
     summary: N8nCryptoScanSummary = Field(...)
     errors: list[dict[str, object]] = Field(default_factory=list)
+
+
+# -----------------------------------------------------------------------------
+# Trade Reviews (GET list)
+# -----------------------------------------------------------------------------
+class N8nTradeReviewListItem(BaseModel):
+    """Single trade review entry for list response."""
+
+    order_id: str = Field(..., description="Broker order ID")
+    symbol: str = Field(..., description="Normalized symbol (BTC, 005930, NVDA)")
+    market: str = Field(..., description="Market: crypto, kr, us")
+    side: str = Field(..., description="buy or sell")
+    price: float = Field(..., description="Execution price")
+    quantity: float = Field(..., description="Filled quantity")
+    total_amount: float = Field(..., description="Total amount (price * quantity)")
+    fee: float = Field(0, description="Trading fee")
+    currency: str = Field("KRW", description="KRW or USD")
+    filled_at: str = Field(..., description="Trade date in ISO8601")
+    # review
+    verdict: str = Field(..., description="good, neutral, or bad")
+    pnl_pct: float | None = Field(None, description="P&L percentage at review")
+    comment: str | None = Field(None, description="Review commentary")
+    review_type: str = Field("daily", description="daily, weekly, monthly, manual")
+    review_date: str = Field(..., description="Review date in ISO8601")
+    # snapshot
+    indicators: N8nTradeReviewIndicators | None = Field(
+        None, description="Technical indicator snapshot at execution time"
+    )
+
+
+class N8nTradeReviewListResponse(BaseModel):
+    """Response for GET /api/n8n/trade-reviews."""
+
+    success: bool = Field(...)
+    period: str = Field(..., description="Period label, e.g. '2026-03-11 ~ 2026-03-18'")
+    total_count: int = Field(..., description="Number of reviews returned")
+    reviews: list[N8nTradeReviewListItem] = Field(
+        default_factory=list, description="Trade review items"
+    )
+    errors: list[dict[str, object]] = Field(default_factory=list)
