@@ -1011,3 +1011,15 @@ async def test_run_crash_detection_returns_zero_when_batched_send_fails(
     assert result == {"alerts_sent": 0, "details": []}
     send_mock.assert_awaited_once()
     record_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_alert_mode_none_skips_send(scanner_env):
+    """alert_mode='none' should skip sending but return truthy value."""
+    scanner, openclaw, _, _ = scanner_env
+    scanner._alert_mode = "none"
+
+    result = await scanner._send_alert("test message")
+
+    assert result == "none"
+    assert len(openclaw.messages) == 0

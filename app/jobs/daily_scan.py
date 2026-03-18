@@ -34,11 +34,13 @@ class DailyScanner:
     def __init__(
         self,
         *,
-        alert_mode: Literal["both", "telegram_only", "openclaw_only"] = "both",
+        alert_mode: Literal["both", "telegram_only", "openclaw_only", "none"] = "both",
     ):
         self._redis: redis.Redis | None = None
         self._openclaw = OpenClawClient()
-        self._alert_mode: Literal["both", "telegram_only", "openclaw_only"] = alert_mode
+        self._alert_mode: Literal[
+            "both", "telegram_only", "openclaw_only", "none"
+        ] = alert_mode
 
     async def _get_redis(self) -> redis.Redis:
         if self._redis is None:
@@ -610,6 +612,9 @@ class DailyScanner:
         return alerts
 
     async def _send_alert(self, message: str) -> str | None:
+        if self._alert_mode == "none":
+            return "none"
+
         if self._alert_mode == "telegram_only":
             telegram_sent = await self._send_telegram_alert(message)
             return "telegram" if telegram_sent else None
