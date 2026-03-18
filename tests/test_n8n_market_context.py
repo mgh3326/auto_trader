@@ -346,6 +346,56 @@ class TestMarketContextService:
     """Tests for market context service functions."""
 
     @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_empty_is_valid(self) -> None:
+        """Test that empty Finnhub response is treated as valid (no events today)."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+            return_value=[],
+        ):
+            result = await fetch_economic_events_today()
+            assert result == []
+            assert isinstance(result, list)
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_caches_result(self) -> None:
+        """Test that successful fetch is cached and not re-fetched."""
+        from app.services.external.economic_calendar import (
+            _clear_economic_calendar_cache,
+            fetch_economic_events_today,
+        )
+
+        _clear_economic_calendar_cache()
+
+        mock_events = [
+            {
+                "time": "08:30",
+                "event": "Initial Claims",
+                "previous": "220K",
+                "estimate": "218K",
+                "impact": "medium",
+            }
+        ]
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_economic_calendar_finnhub",
+            return_value=mock_events,
+        ) as mock_fetch:
+            result1 = await fetch_economic_events_today()
+            result2 = await fetch_economic_events_today()
+
+            assert len(result1) == 1
+            assert len(result2) == 1
+            # Should only call Finnhub once due to caching
+            assert mock_fetch.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_classify_trend_bullish(self) -> None:
         """Test bullish trend classification."""
         from app.services.n8n_market_context_service import _classify_trend
