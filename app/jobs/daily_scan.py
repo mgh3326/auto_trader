@@ -34,11 +34,13 @@ class DailyScanner:
     def __init__(
         self,
         *,
-        alert_mode: Literal["both", "telegram_only", "openclaw_only"] = "both",
+        alert_mode: Literal["both", "telegram_only", "openclaw_only", "none"] = "both",
     ):
         self._redis: redis.Redis | None = None
         self._openclaw = OpenClawClient()
-        self._alert_mode: Literal["both", "telegram_only", "openclaw_only"] = alert_mode
+        self._alert_mode: Literal["both", "telegram_only", "openclaw_only", "none"] = (
+            alert_mode
+        )
 
     async def _get_redis(self) -> redis.Redis:
         if self._redis is None:
@@ -610,6 +612,9 @@ class DailyScanner:
         return alerts
 
     async def _send_alert(self, message: str) -> str | None:
+        if self._alert_mode == "none":
+            return "none"
+
         if self._alert_mode == "telegram_only":
             telegram_sent = await self._send_telegram_alert(message)
             return "telegram" if telegram_sent else None
@@ -686,8 +691,15 @@ class DailyScanner:
             elif "데드크로스" in sma_alert:
                 sell_signals.append(sma_alert)
 
+        details = {
+            "buy_signals": buy_signals,
+            "sell_signals": sell_signals,
+            "sentiment_signals": fng_alerts,
+            "btc_context": btc_ctx,
+        }
+
         if not buy_signals and not sell_signals and not fng_alerts:
-            return {"alerts_sent": 0, "details": []}
+            return {"alerts_sent": 0, "message": "", "details": details}
 
         batched_message = self._build_strategy_scan_batch_message(
             btc_ctx=btc_ctx,
@@ -697,12 +709,12 @@ class DailyScanner:
         )
         request_id = await self._send_alert(batched_message)
         if not request_id:
-            return {"alerts_sent": 0, "details": []}
+            return {"alerts_sent": 0, "message": "", "details": details}
 
         for symbol, alert_type in self._dedupe_pending_cooldowns(pending_cooldowns):
             await self._record_alert(symbol, alert_type)
 
-        return {"alerts_sent": 1, "details": [batched_message]}
+        return {"alerts_sent": 1, "message": batched_message, "details": details}
 
     async def run_crash_detection(self) -> dict:
         if not settings.DAILY_SCAN_ENABLED:
@@ -713,20 +725,23 @@ class DailyScanner:
             send_immediately=False,
             pending_cooldowns=pending_cooldowns,
         )
+
+        details = {"crash_signals": alerts}
+
         if not alerts:
-            return {"alerts_sent": 0, "details": []}
+            return {"alerts_sent": 0, "message": "", "details": details}
 
         batched_message = self._build_crash_detection_batch_message(
             crash_signals=alerts
         )
         request_id = await self._send_alert(batched_message)
         if not request_id:
-            return {"alerts_sent": 0, "details": []}
+            return {"alerts_sent": 0, "message": "", "details": details}
 
         for symbol, alert_type in self._dedupe_pending_cooldowns(pending_cooldowns):
             await self._record_alert(symbol, alert_type)
 
-        return {"alerts_sent": 1, "details": [batched_message]}
+        return {"alerts_sent": 1, "message": batched_message, "details": details}
 
     async def close(self):
         if self._redis is not None:

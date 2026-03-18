@@ -25,6 +25,7 @@ from app.routers import (
     health,
     kospi200,
     n8n,
+    n8n_scan,
     news_analysis,
     openclaw_callback,
     orderbook,
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(analysis_json.router)
     app.include_router(news_analysis.router)
     app.include_router(n8n.router)
+    app.include_router(n8n_scan.router)
     app.include_router(openclaw_callback.router)
     app.include_router(stock_latest.router)
     app.include_router(symbol_settings.router)
