@@ -35,9 +35,23 @@ OPENCLAW_FILL_MARKET_LABELS = {
 }
 OPENCLAW_FILL_AGENT_INSTRUCTIONS = (
     "반드시 `get_holdings`와 `analyze_stock`를 실행하세요.\n"
-    "최종 판단은 `buy`, `hold`, `sell` 중 정확히 하나만 선택하세요.\n"
-    "Discord 댓글 첫 줄은 반드시 `판단: buy`, `판단: hold`, `판단: sell` 중 하나로 시작하고, "
-    "그 다음 줄부터 현재 보유 상태, 이번 체결의 의미, 핵심 근거를 한국어로 간결하게 정리하세요."
+    "이 메시지는 이미 체결 완료된 주문의 사후 평가입니다. 매매 결정이 아닙니다.\n\n"
+    "평가 기준:\n"
+    "- 체결가 vs 현재가/최근 변동폭 비교\n"
+    "- RSI, EMA 등 기술 지표 기준 타이밍 적절성\n"
+    "- 보유 비중 변화와 포트폴리오 영향\n\n"
+    "출력 형식:\n"
+    "첫 줄: 한 줄 감성 피드백 (이모지 포함, 예시 참고)\n"
+    "둘째 줄부터: 현재 보유 상태, 이번 체결의 의미, 핵심 근거를 한국어로 간결하게 정리\n\n"
+    "매수 체결 피드백 예시:\n"
+    "- 좋은 가격에 잡았네요 👏 (과매도 구간 매수, 최근 저점 근처)\n"
+    "- 적정 가격 매수 📊 (지표상 중립 구간)\n"
+    "- 조금 높게 잡은 느낌이에요 🤔 (단기 과열 구간, RSI 70+)\n\n"
+    "매도 체결 피드백 예시:\n"
+    "- 고점 근처에서 잘 빠졌네요 🎯 (RSI 고점, 저항선 근처)\n"
+    "- 무난한 타이밍이에요 📊 (추세 중립)\n"
+    "- 더 기다려도 됐을 수도 있어요 💭 (상승 모멘텀 남아있음)\n\n"
+    "주의: '판단: buy/hold/sell' 형식 절대 사용 금지. 자연스러운 한국어 평가로 작성하세요."
 )
 
 FillNotificationDeliveryStatus = Literal["success", "skipped", "failed"]
@@ -110,7 +124,7 @@ def _build_fill_agent_message(
 ) -> str:
     order = coerce_fill_order(normalized_order)
     return (
-        "다음 체결 내역을 분석하고 Discord 판단 스레드에 전달할 메시지를 작성하세요.\n\n"
+        "다음 체결 내역을 평가하고 Discord 스레드에 전달할 피드백을 작성하세요.\n\n"
         f"종목: {order.symbol}\n"
         f"구분: {_format_fill_side_text(order.side, order.fill_status)}\n"
         f"수량: {_format_fill_value(order.filled_qty)}\n"

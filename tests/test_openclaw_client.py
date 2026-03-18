@@ -359,14 +359,13 @@ async def test_send_fill_notification_posts_tradealert_payload_to_market_thread(
     assert f"마켓: {expected_market_label}" in called_json["message"]
     assert "get_holdings" in called_json["message"]
     assert "analyze_stock" in called_json["message"]
-    assert "판단: buy" in called_json["message"]
-    assert "판단: hold" in called_json["message"]
-    assert "판단: sell" in called_json["message"]
-    assert (
-        "Discord 댓글 첫 줄은 반드시 `판단: buy`, `판단: hold`, `판단: sell` 중 하나로 시작하고, "
-        "그 다음 줄부터 현재 보유 상태, 이번 체결의 의미, 핵심 근거를 한국어로 간결하게 정리하세요."
-        in called_json["message"]
-    )
+    assert "`판단: buy`" not in called_json["message"]
+    assert "`판단: hold`" not in called_json["message"]
+    assert "`판단: sell`" not in called_json["message"]
+    assert "이미 체결 완료된 주문의 사후 평가입니다" in called_json["message"]
+    assert "'판단: buy/hold/sell' 형식 절대 사용 금지" in called_json["message"]
+    assert "한 줄 감성 피드백" in called_json["message"]
+    assert "체결 내역을 평가하고" in called_json["message"]
     mock_notifier.notify_openclaw_message.assert_awaited_once_with(
         plain_fill_message,
         correlation_id=f"corr-fill-{order.market_type}",
