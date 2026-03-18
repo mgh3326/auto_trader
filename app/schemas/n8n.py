@@ -10,6 +10,10 @@ class N8nPendingOrderItem(BaseModel):
     symbol: str = Field(
         ..., description="Normalized symbol with any crypto prefix removed"
     )
+    name: str | None = Field(
+        None,
+        description="Human-readable name (e.g. 현대로템 for KR, None for crypto)",
+    )
     raw_symbol: str = Field(..., description="Original symbol returned by the broker")
     market: str = Field(..., description="Market code: crypto, kr, or us")
     side: str = Field(..., description="Order side: buy or sell")
@@ -60,6 +64,7 @@ class N8nPendingOrderItem(BaseModel):
             "example": {
                 "order_id": "1234567890",
                 "symbol": "BTC",
+                "name": None,
                 "raw_symbol": "KRW-BTC",
                 "market": "crypto",
                 "side": "buy",
@@ -150,6 +155,7 @@ class N8nPendingOrdersResponse(BaseModel):
                     {
                         "order_id": "1234567890",
                         "symbol": "BTC",
+                        "name": None,
                         "raw_symbol": "KRW-BTC",
                         "market": "crypto",
                         "side": "buy",
@@ -641,6 +647,7 @@ class N8nPendingReviewItem(BaseModel):
 
     order_id: str = Field(...)
     symbol: str = Field(...)
+    name: str | None = Field(None)
     raw_symbol: str = Field(...)
     market: str = Field(...)
     side: str = Field(...)
@@ -663,6 +670,7 @@ class N8nPendingReviewItem(BaseModel):
             "example": {
                 "order_id": "xyz-456",
                 "symbol": "BTC",
+                "name": None,
                 "raw_symbol": "KRW-BTC",
                 "market": "crypto",
                 "side": "buy",

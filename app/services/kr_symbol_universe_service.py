@@ -464,6 +464,37 @@ async def sync_kr_symbol_universe(db: AsyncSession | None = None) -> dict[str, i
     return result
 
 
+async def _get_kr_names_impl(
+    db: AsyncSession,
+    symbols: list[str],
+) -> dict[str, str]:
+    if not symbols:
+        return {}
+    unique = sorted(set(symbols))
+    stmt = select(KRSymbolUniverse.symbol, KRSymbolUniverse.name).where(
+        KRSymbolUniverse.symbol.in_(unique),
+        KRSymbolUniverse.is_active.is_(True),
+    )
+    rows = (await db.execute(stmt)).all()
+    return {row.symbol: row.name.strip() for row in rows}
+
+
+async def get_kr_names_by_symbols(
+    symbols: list[str],
+    db: AsyncSession | None = None,
+) -> dict[str, str]:
+    """Return {symbol: name} for the given KR symbol codes.
+
+    Missing or inactive symbols are silently omitted from the result.
+    """
+    if not symbols:
+        return {}
+    if db is not None:
+        return await _get_kr_names_impl(db, symbols)
+    async with AsyncSessionLocal() as session:
+        return await _get_kr_names_impl(session, symbols)
+
+
 __all__ = [
     "KRSymbolUniverseLookupError",
     "KRSymbolUniverseEmptyError",
@@ -471,6 +502,7 @@ __all__ = [
     "KRSymbolInactiveError",
     "KRSymbolNameAmbiguousError",
     "build_kr_symbol_universe_snapshot",
+    "get_kr_names_by_symbols",
     "get_kr_symbol_by_name",
     "is_nxt_eligible",
     "search_kr_symbols",

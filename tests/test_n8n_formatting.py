@@ -157,6 +157,43 @@ class TestFmtAge:
 class TestBuildSummaryLine:
     """One-line order summary string."""
 
+    def test_build_summary_line_with_name(self) -> None:
+        from app.services.n8n_formatting import build_summary_line
+
+        order = {
+            "symbol": "064350",
+            "name": "현대로템",
+            "side": "buy",
+            "order_price": 188000,
+            "current_price": 175000,
+            "gap_pct": -6.9,
+            "amount_krw": 188000,
+            "age_hours": 48,
+            "currency": "KRW",
+        }
+        result = build_summary_line(order)
+        assert result.startswith("현대로템(064350)")
+        assert "buy" in result
+        assert "@18.8만" in result
+
+    def test_build_summary_line_without_name(self) -> None:
+        """name이 None이면 기존처럼 symbol만 표시."""
+        from app.services.n8n_formatting import build_summary_line
+
+        order = {
+            "symbol": "BTC",
+            "name": None,
+            "side": "buy",
+            "order_price": 148500000,
+            "current_price": 149200000,
+            "gap_pct": 0.47,
+            "amount_krw": 297000,
+            "age_hours": 6,
+            "currency": "KRW",
+        }
+        result = build_summary_line(order)
+        assert result.startswith("BTC buy")
+
     def test_full_order(self) -> None:
         from app.services.n8n_formatting import build_summary_line
 

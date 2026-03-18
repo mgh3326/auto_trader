@@ -76,10 +76,12 @@ def fmt_age(age_hours: int) -> str:
 def build_summary_line(order: dict[str, Any]) -> str:
     """Build a one-line order summary.
 
-    Format: "APT buy @2,470 (현재 2,166, -12.3%, 31.2만, 1일)"
+    Format with name: "현대로템(064350) buy @18.8만 (현재 17.5만, -6.9%, 18.8만, 2일)"
+    Format without name: "BTC buy @1.49억 (현재 1.49억, +0.5%, 29.7만, 6시간)"
     """
     currency = str(order.get("currency") or "KRW")
     symbol = str(order.get("symbol") or "")
+    name = order.get("name")
     side = str(order.get("side") or "")
     price_str = fmt_price(order.get("order_price"), currency)
     current_str = fmt_price(order.get("current_price"), currency)
@@ -87,7 +89,9 @@ def build_summary_line(order: dict[str, Any]) -> str:
     amount_str = fmt_amount(order.get("amount_krw"))
     age_str = fmt_age(int(order.get("age_hours") or 0))
 
-    return f"{symbol} {side} @{price_str} (현재 {current_str}, {gap_str}, {amount_str}, {age_str})"
+    display_symbol = f"{name}({symbol})" if name else symbol
+
+    return f"{display_symbol} {side} @{price_str} (현재 {current_str}, {gap_str}, {amount_str}, {age_str})"
 
 
 def build_summary_title(
