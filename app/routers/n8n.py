@@ -26,6 +26,7 @@ from app.schemas.n8n import (
     N8nPendingReviewResponse,
     N8nPendingSnapshotsRequest,
     N8nPendingSnapshotsResponse,
+    N8nTradeReviewListResponse,
     N8nTradeReviewsRequest,
     N8nTradeReviewsResponse,
     N8nTradeReviewStats,
@@ -43,6 +44,7 @@ from app.services.n8n_pending_snapshot_service import (
 )
 from app.services.n8n_trade_review_service import (
     get_trade_review_stats,
+    get_trade_reviews,
     save_trade_reviews,
 )
 
@@ -289,6 +291,40 @@ async def post_trade_reviews(
         success=True,
         saved_count=result["saved_count"],
         skipped_count=result["skipped_count"],
+        errors=result["errors"],
+    )
+
+
+@router.get("/trade-reviews", response_model=N8nTradeReviewListResponse)
+async def get_trade_reviews_endpoint(
+    period: str = Query("7d", description="Duration format: 7d, 30d, 90d"),
+    market: str | None = Query(None, description="Filter by market: crypto, kr, us"),
+    symbol: str | None = Query(None, description="Filter by symbol (e.g. BTC, 005930)"),
+    limit: int = Query(100, ge=1, le=500, description="Maximum results to return"),
+    db: AsyncSession = Depends(get_db),
+) -> N8nTradeReviewListResponse | JSONResponse:
+    try:
+        result = await get_trade_reviews(
+            db, period=period, market=market, symbol=symbol, limit=limit
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to get trade reviews")
+        return JSONResponse(
+            status_code=500,
+            content=N8nTradeReviewListResponse(
+                success=False,
+                period="error",
+                total_count=0,
+                reviews=[],
+                errors=[{"error": str(exc)}],
+            ).model_dump(),
+        )
+
+    return N8nTradeReviewListResponse(
+        success=True,
+        period=result["period"],
+        total_count=result["total_count"],
+        reviews=result["reviews"],
         errors=result["errors"],
     )
 

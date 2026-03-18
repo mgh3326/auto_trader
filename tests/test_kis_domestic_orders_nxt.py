@@ -72,8 +72,11 @@ class TestCancelKoreaOrderNxtRouting:
 
         with patch(_NXT_ELIGIBLE_PATH, AsyncMock(return_value=True)):
             await instance.cancel_korea_order(
-                order_number="00001", stock_code="005930",
-                quantity=10, price=70000, order_type="buy",
+                order_number="00001",
+                stock_code="005930",
+                quantity=10,
+                price=70000,
+                order_type="buy",
                 krx_fwdg_ord_orgno="00091",
             )
 
@@ -89,8 +92,11 @@ class TestCancelKoreaOrderNxtRouting:
 
         with patch(_NXT_ELIGIBLE_PATH, AsyncMock(return_value=False)):
             await instance.cancel_korea_order(
-                order_number="00001", stock_code="034220",
-                quantity=10, price=5000, order_type="sell",
+                order_number="00001",
+                stock_code="034220",
+                quantity=10,
+                price=5000,
+                order_type="sell",
                 krx_fwdg_ord_orgno="00091",
             )
 
@@ -111,8 +117,10 @@ class TestModifyKoreaOrderNxtRouting:
 
         with patch(_NXT_ELIGIBLE_PATH, AsyncMock(return_value=True)):
             await instance.modify_korea_order(
-                order_number="00001", stock_code="005930",
-                quantity=10, new_price=71000,
+                order_number="00001",
+                stock_code="005930",
+                quantity=10,
+                new_price=71000,
                 krx_fwdg_ord_orgno="00091",
             )
 
@@ -128,8 +136,10 @@ class TestModifyKoreaOrderNxtRouting:
 
         with patch(_NXT_ELIGIBLE_PATH, AsyncMock(return_value=False)):
             await instance.modify_korea_order(
-                order_number="00001", stock_code="034220",
-                quantity=10, new_price=5500,
+                order_number="00001",
+                stock_code="034220",
+                quantity=10,
+                new_price=5500,
                 krx_fwdg_ord_orgno="00091",
             )
 

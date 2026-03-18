@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -22,6 +23,21 @@ _INSTRUMENT_MAP = {
     "kr": "equity_kr",
     "us": "equity_us",
 }
+
+# Instrument type reverse mapping for response
+_REVERSE_INSTRUMENT_MAP = {
+    "crypto": "crypto",
+    "equity_kr": "kr",
+    "equity_us": "us",
+}
+
+
+def parse_period(period: str) -> timedelta:
+    """Parse duration string like '7d', '30d' into timedelta. Defaults to 7d."""
+    match = re.match(r"^(\d+)d$", period.strip())
+    if match:
+        return timedelta(days=int(match.group(1)))
+    return timedelta(days=7)
 
 
 async def save_trade_reviews(
@@ -280,4 +296,110 @@ async def get_trade_review_stats(
         "worst_trade": {"symbol": worst["symbol"], "pnl_pct": worst.get("pnl_pct")},
         "by_verdict": by_verdict,
         "by_rsi_zone": by_rsi_zone,
+    }
+
+
+async def get_trade_reviews(
+    session: AsyncSession,
+    period: str = "7d",
+    market: str | None = None,
+    symbol: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Query saved trade reviews with optional filters."""
+    delta = parse_period(period)
+    now = now_kst()
+    start = now - delta
+
+    period_label = f"{start.strftime('%Y-%m-%d')} ~ {now.strftime('%Y-%m-%d')}"
+
+    # Build filters
+    filters = [Trade.trade_date >= start, Trade.trade_date <= now]
+
+    if market:
+        itype = _INSTRUMENT_MAP.get(market, market)
+        filters.append(Trade.instrument_type == itype)
+
+    if symbol:
+        filters.append(Trade.symbol == symbol.upper())
+
+    # Query: Trade JOIN TradeReview LEFT JOIN TradeSnapshot
+    stmt = (
+        select(Trade, TradeReview, TradeSnapshot)
+        .join(TradeReview, Trade.id == TradeReview.trade_id)
+        .outerjoin(TradeSnapshot, Trade.id == TradeSnapshot.trade_id)
+        .where(*filters)
+        .order_by(Trade.trade_date.desc())
+        .limit(limit)
+    )
+
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    reviews = []
+    for trade, review, snapshot in rows:
+        market_code = _REVERSE_INSTRUMENT_MAP.get(
+            trade.instrument_type.value
+            if hasattr(trade.instrument_type, "value")
+            else str(trade.instrument_type),
+            "crypto",
+        )
+
+        indicators = None
+        if snapshot:
+            indicators = {
+                "rsi_14": float(snapshot.rsi_14)
+                if snapshot.rsi_14 is not None
+                else None,
+                "rsi_7": float(snapshot.rsi_7) if snapshot.rsi_7 is not None else None,
+                "ema_20": float(snapshot.ema_20)
+                if snapshot.ema_20 is not None
+                else None,
+                "ema_200": float(snapshot.ema_200)
+                if snapshot.ema_200 is not None
+                else None,
+                "macd": float(snapshot.macd) if snapshot.macd is not None else None,
+                "macd_signal": float(snapshot.macd_signal)
+                if snapshot.macd_signal is not None
+                else None,
+                "adx": float(snapshot.adx) if snapshot.adx is not None else None,
+                "stoch_rsi_k": float(snapshot.stoch_rsi_k)
+                if snapshot.stoch_rsi_k is not None
+                else None,
+                "volume_ratio": float(snapshot.volume_ratio)
+                if snapshot.volume_ratio is not None
+                else None,
+                "fear_greed": int(snapshot.fear_greed)
+                if snapshot.fear_greed is not None
+                else None,
+            }
+
+        reviews.append(
+            {
+                "order_id": trade.order_id or "",
+                "symbol": trade.symbol,
+                "market": market_code,
+                "side": trade.side,
+                "price": float(trade.price),
+                "quantity": float(trade.quantity),
+                "total_amount": float(trade.total_amount),
+                "fee": float(trade.fee),
+                "currency": trade.currency,
+                "filled_at": trade.trade_date.isoformat(),
+                "verdict": review.verdict,
+                "pnl_pct": float(review.pnl_pct)
+                if review.pnl_pct is not None
+                else None,
+                "comment": review.comment,
+                "review_type": review.review_type,
+                "review_date": review.review_date.isoformat(),
+                "indicators": indicators,
+            }
+        )
+
+    return {
+        "period": period_label,
+        "total_count": len(reviews),
+        "reviews": reviews,
+        "errors": [],
     }
