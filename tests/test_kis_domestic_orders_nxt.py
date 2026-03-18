@@ -48,7 +48,7 @@ class TestOrderKoreaStockNxtRouting:
         assert body["EXCG_ID_DVSN_CD"] == "SOR"
 
     @pytest.mark.asyncio
-    async def test_non_nxt_uses_empty_string(self):
+    async def test_non_nxt_uses_krx(self):
         instance, parent = _make_client()
         parent._request_with_rate_limit = AsyncMock(return_value=_success_response())
 
@@ -58,7 +58,7 @@ class TestOrderKoreaStockNxtRouting:
         body = parent._request_with_rate_limit.call_args.kwargs.get(
             "json_body"
         ) or parent._request_with_rate_limit.call_args[1].get("json_body")
-        assert body["EXCG_ID_DVSN_CD"] == ""
+        assert body["EXCG_ID_DVSN_CD"] == "KRX"
 
 
 @pytest.mark.unit
@@ -86,7 +86,7 @@ class TestCancelKoreaOrderNxtRouting:
         assert body["EXCG_ID_DVSN_CD"] == "SOR"
 
     @pytest.mark.asyncio
-    async def test_non_nxt_uses_empty_string(self):
+    async def test_non_nxt_uses_krx(self):
         instance, parent = _make_client()
         parent._request_with_rate_limit = AsyncMock(return_value=_success_response())
 
@@ -103,7 +103,7 @@ class TestCancelKoreaOrderNxtRouting:
         body = parent._request_with_rate_limit.call_args.kwargs.get(
             "json_body"
         ) or parent._request_with_rate_limit.call_args[1].get("json_body")
-        assert body["EXCG_ID_DVSN_CD"] == ""
+        assert body["EXCG_ID_DVSN_CD"] == "KRX"
 
 
 @pytest.mark.unit
@@ -130,7 +130,7 @@ class TestModifyKoreaOrderNxtRouting:
         assert body["EXCG_ID_DVSN_CD"] == "SOR"
 
     @pytest.mark.asyncio
-    async def test_non_nxt_uses_empty_string(self):
+    async def test_non_nxt_uses_krx(self):
         instance, parent = _make_client()
         parent._request_with_rate_limit = AsyncMock(return_value=_success_response())
 
@@ -146,4 +146,4 @@ class TestModifyKoreaOrderNxtRouting:
         body = parent._request_with_rate_limit.call_args.kwargs.get(
             "json_body"
         ) or parent._request_with_rate_limit.call_args[1].get("json_body")
-        assert body["EXCG_ID_DVSN_CD"] == ""
+        assert body["EXCG_ID_DVSN_CD"] == "KRX"
