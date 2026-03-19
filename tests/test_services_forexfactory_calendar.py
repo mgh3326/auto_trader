@@ -68,7 +68,7 @@ async def test_fetch_forexfactory_events_today_converts_blank_values_to_none() -
     <title>Empty Values Event</title>
     <country>USD</country>
     <date>03-19-2026</date>
-    <time>10:00am</time>
+    <time>8:00am</time>
     <impact>Medium</impact>
     <forecast></forecast>
     <previous></previous>

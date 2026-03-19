@@ -18,7 +18,7 @@ FOREXFACTORY_NEXTWEEK_URL = "https://nfs.faireconomy.media/ff_calendar_nextweek.
 async def fetch_forexfactory_events_today() -> list[dict[str, Any]]:
     """
     Fetch today's economic events from ForexFactory.
-    
+
     Returns:
         List of normalized events filtered for today in KST.
     """
@@ -40,24 +40,24 @@ async def fetch_forexfactory_events_today() -> list[dict[str, Any]]:
                 events.extend(next_events)
 
         # Filter for today
-        today_events = [e for e in events if e["_date"] == today_date]
-        
-        # Remove internal _date field before returning
+        today_events = [e for e in events if e.get("_kst_date") == today_date]
+
+        # Remove internal _kst_date field before returning
         for e in today_events:
-            e.pop("_date", None)
-            
+            e.pop("_kst_date", None)
+
         return today_events
 
     except Exception as exc:
         logger.warning("Failed to fetch ForexFactory events: %s", exc)
-        return []
+        raise
 
 
 def _parse_forexfactory_date(date_str: str) -> date | None:
     """Parse date string from ForexFactory XML (e.g., '03-19-2026' or 'Mar 19, 2026')."""
     if not date_str:
         return None
-    
+
     # Try different formats
     formats = ["%m-%d-%Y", "%b %d, %Y"]
     for fmt in formats:
@@ -65,7 +65,7 @@ def _parse_forexfactory_date(date_str: str) -> date | None:
             return datetime.strptime(date_str, fmt).date()
         except ValueError:
             continue
-    
+
     logger.warning("Unknown date format from ForexFactory: %s", date_str)
     return None
 
@@ -78,29 +78,27 @@ def _normalize_value(value: str | None) -> str | None:
     return stripped if stripped else None
 
 
-def _convert_et_time_to_kst(time_str: str) -> str:
-    """
-    Convert ET time string (e.g., '8:30am', '12:00pm') to KST 'HH:MM KST' 
-    using a fixed +14h rule.
-    """
+def _convert_et_event_to_kst(
+    event_date: date,
+    time_str: str,
+) -> tuple[date, str]:
     if not time_str:
-        return "00:00 KST"
-    
+        return event_date, "00:00 KST"
+
     time_lower = time_str.lower().strip()
     if time_lower in ("", "tentative", "all day"):
-        return "00:00 KST"
+        return event_date, "00:00 KST"
 
     try:
-        # Expected format: '8:30am' or '12:00pm'
-        # datetime.strptime %I:%M%p handles this
         et_time = datetime.strptime(time_lower, "%I:%M%p")
-        
-        # Fixed +14h rule
-        kst_hour = (et_time.hour + 14) % 24
-        return f"{kst_hour:02d}:{et_time.minute:02d} KST"
+        total_minutes = et_time.hour * 60 + et_time.minute + (14 * 60)
+        day_offset, minute_of_day = divmod(total_minutes, 24 * 60)
+        kst_hour, minute = divmod(minute_of_day, 60)
+        kst_date = event_date + timedelta(days=day_offset)
+        return kst_date, f"{kst_hour:02d}:{minute:02d} KST"
     except ValueError:
         logger.debug("Could not parse time string: %s", time_str)
-        return "00:00 KST"
+        return event_date, "00:00 KST"
 
 
 def _parse_weekly_events(xml_text: str) -> list[dict[str, Any]]:
@@ -122,17 +120,19 @@ def _parse_weekly_events(xml_text: str) -> list[dict[str, Any]]:
             if not event_date:
                 continue
 
+            kst_date, kst_time = _convert_et_event_to_kst(event_date, time_str)
+
             events.append({
-                "time": _convert_et_time_to_kst(time_str),
+                "time": kst_time,
                 "event": title,
                 "country": country,
                 "impact": impact.strip().lower(),
                 "forecast": _normalize_value(forecast),
                 "previous": _normalize_value(previous),
                 "actual": _normalize_value(actual),
-                "_date": event_date,  # Internal field for filtering
+                "_kst_date": kst_date,  # Internal field for filtering
             })
     except Exception as exc:
         logger.warning("Error parsing ForexFactory XML: %s", exc)
-        
+
     return events
