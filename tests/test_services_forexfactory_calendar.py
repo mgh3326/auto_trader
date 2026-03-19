@@ -14,9 +14,12 @@ from app.services.external.forexfactory_calendar import (
 # Mock KST timezone as in app.core.timezone
 KST = timezone(timedelta(hours=9))
 
+
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_fetch_forexfactory_events_today_filters_today_and_normalizes_fields() -> None:
+async def test_fetch_forexfactory_events_today_filters_today_and_normalizes_fields() -> (
+    None
+):
     # Set "today" to March 19, 2026 (Thursday)
     today = datetime(2026, 3, 19, 12, 0, tzinfo=KST)
 
@@ -44,7 +47,9 @@ async def test_fetch_forexfactory_events_today_filters_today_and_normalizes_fiel
   </event>
 </weeklyevents>
 """
-    with patch("app.services.external.forexfactory_calendar.now_kst", return_value=today):
+    with patch(
+        "app.services.external.forexfactory_calendar.now_kst", return_value=today
+    ):
         with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = MagicMock(status_code=200, text=xml_content)
 
@@ -59,6 +64,7 @@ async def test_fetch_forexfactory_events_today_filters_today_and_normalizes_fiel
             assert event["forecast"] == "0.3%"
             assert event["previous"] == "0.4%"
             assert event["actual"] is None
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -78,7 +84,9 @@ async def test_fetch_forexfactory_events_today_converts_blank_values_to_none() -
   </event>
 </weeklyevents>
 """
-    with patch("app.services.external.forexfactory_calendar.now_kst", return_value=today):
+    with patch(
+        "app.services.external.forexfactory_calendar.now_kst", return_value=today
+    ):
         with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = MagicMock(status_code=200, text=xml_content)
 
@@ -89,9 +97,12 @@ async def test_fetch_forexfactory_events_today_converts_blank_values_to_none() -
             assert events[0]["previous"] is None
             assert events[0]["actual"] is None
 
+
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_fetch_forexfactory_events_today_excludes_events_that_roll_over_to_next_kst_day() -> None:
+async def test_fetch_forexfactory_events_today_excludes_events_that_roll_over_to_next_kst_day() -> (
+    None
+):
     today = datetime(2026, 3, 19, 12, 0, tzinfo=KST)
     xml_content = """
 <weeklyevents>
@@ -104,7 +115,9 @@ async def test_fetch_forexfactory_events_today_excludes_events_that_roll_over_to
   </event>
 </weeklyevents>
 """
-    with patch("app.services.external.forexfactory_calendar.now_kst", return_value=today):
+    with patch(
+        "app.services.external.forexfactory_calendar.now_kst", return_value=today
+    ):
         with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             response = MagicMock()
             response.text = xml_content
@@ -115,9 +128,12 @@ async def test_fetch_forexfactory_events_today_excludes_events_that_roll_over_to
 
             assert events == []
 
+
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_fetch_forexfactory_events_today_includes_previous_et_day_events_that_roll_into_today_kst() -> None:
+async def test_fetch_forexfactory_events_today_includes_previous_et_day_events_that_roll_into_today_kst() -> (
+    None
+):
     today = datetime(2026, 3, 19, 7, 0, tzinfo=KST)
     xml_content = """
 <weeklyevents>
@@ -130,7 +146,9 @@ async def test_fetch_forexfactory_events_today_includes_previous_et_day_events_t
   </event>
 </weeklyevents>
 """
-    with patch("app.services.external.forexfactory_calendar.now_kst", return_value=today):
+    with patch(
+        "app.services.external.forexfactory_calendar.now_kst", return_value=today
+    ):
         with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             response = MagicMock()
             response.text = xml_content
@@ -148,8 +166,14 @@ async def test_fetch_forexfactory_events_today_includes_previous_et_day_events_t
 @pytest.mark.asyncio
 async def test_fetch_forexfactory_events_today_raises_on_http_failure() -> None:
     today = datetime(2026, 3, 19, 12, 0, tzinfo=KST)
-    with patch("app.services.external.forexfactory_calendar.now_kst", return_value=today):
-        with patch("httpx.AsyncClient.get", new_callable=AsyncMock, side_effect=httpx.HTTPError("boom")):
+    with patch(
+        "app.services.external.forexfactory_calendar.now_kst", return_value=today
+    ):
+        with patch(
+            "httpx.AsyncClient.get",
+            new_callable=AsyncMock,
+            side_effect=httpx.HTTPError("boom"),
+        ):
             with pytest.raises(httpx.HTTPError):
                 await fetch_forexfactory_events_today()
 
@@ -159,7 +183,9 @@ async def test_fetch_forexfactory_events_today_raises_on_http_failure() -> None:
 async def test_fetch_forexfactory_events_today_raises_on_malformed_xml() -> None:
     today = datetime(2026, 3, 19, 12, 0, tzinfo=KST)
     bad_xml = "<weeklyevents><event><title>broken"
-    with patch("app.services.external.forexfactory_calendar.now_kst", return_value=today):
+    with patch(
+        "app.services.external.forexfactory_calendar.now_kst", return_value=today
+    ):
         with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             response = MagicMock()
             response.text = bad_xml
@@ -169,9 +195,12 @@ async def test_fetch_forexfactory_events_today_raises_on_malformed_xml() -> None
             with pytest.raises(ET.ParseError):
                 await fetch_forexfactory_events_today()
 
+
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_fetch_forexfactory_events_today_handles_tentative_all_day_as_midnight() -> None:
+async def test_fetch_forexfactory_events_today_handles_tentative_all_day_as_midnight() -> (
+    None
+):
     today = datetime(2026, 3, 19, 12, 0, tzinfo=KST)
     xml_content = """
 <weeklyevents>
@@ -191,7 +220,9 @@ async def test_fetch_forexfactory_events_today_handles_tentative_all_day_as_midn
   </event>
 </weeklyevents>
 """
-    with patch("app.services.external.forexfactory_calendar.now_kst", return_value=today):
+    with patch(
+        "app.services.external.forexfactory_calendar.now_kst", return_value=today
+    ):
         with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = MagicMock(status_code=200, text=xml_content)
 
@@ -199,6 +230,7 @@ async def test_fetch_forexfactory_events_today_handles_tentative_all_day_as_midn
 
             for event in events:
                 assert event["time"] == "00:00 KST"
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -228,8 +260,11 @@ async def test_fetch_forexfactory_events_today_fetches_nextweek_on_friday() -> N
   </event>
 </weeklyevents>
 """
-    with patch("app.services.external.forexfactory_calendar.now_kst", return_value=today):
+    with patch(
+        "app.services.external.forexfactory_calendar.now_kst", return_value=today
+    ):
         with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+
             def side_effect(url, **kwargs):
                 if url == FOREXFACTORY_THISWEEK_URL:
                     return MagicMock(status_code=200, text=this_week_xml)

@@ -126,15 +126,17 @@ def _parse_weekly_events(xml_text: str) -> list[dict[str, Any]]:
 
         kst_date, kst_time = _convert_et_event_to_kst(event_date, time_str)
 
-        events.append({
-            "time": kst_time,
-            "event": title,
-            "country": country,
-            "impact": impact.strip().lower(),
-            "forecast": _normalize_value(forecast),
-            "previous": _normalize_value(previous),
-            "actual": _normalize_value(actual),
-            "_kst_date": kst_date,  # Internal field for filtering
-        })
+        events.append(
+            {
+                "time": kst_time,
+                "event": title,
+                "country": country,
+                "impact": impact.strip().lower(),
+                "forecast": _normalize_value(forecast),
+                "previous": _normalize_value(previous),
+                "actual": _normalize_value(actual),
+                "_kst_date": kst_date,  # Internal field for filtering
+            }
+        )
 
     return events

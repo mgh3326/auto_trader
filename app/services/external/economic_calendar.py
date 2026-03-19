@@ -66,7 +66,9 @@ async def fetch_economic_events_today() -> list[dict[str, Any]]:
             _econ_calendar_cache = transformed_events.copy()
             _econ_calendar_cache_expires = now_kst() + timedelta(hours=1)
 
-        logger.info("Fetched %d economic events from ForexFactory", len(transformed_events))
+        logger.info(
+            "Fetched %d economic events from ForexFactory", len(transformed_events)
+        )
         return transformed_events
 
     except Exception as exc:

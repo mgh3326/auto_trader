@@ -219,7 +219,9 @@ class TestMarketContextService:
     """Tests for market context service functions."""
 
     @pytest.mark.asyncio
-    async def test_fetch_economic_events_today_uses_fifteen_minute_cache_on_provider_failure(self) -> None:
+    async def test_fetch_economic_events_today_uses_fifteen_minute_cache_on_provider_failure(
+        self,
+    ) -> None:
         from datetime import timedelta
 
         from app.core.timezone import now_kst
@@ -239,7 +241,9 @@ class TestMarketContextService:
         assert timedelta(minutes=14) <= ttl <= timedelta(minutes=16)
 
     @pytest.mark.asyncio
-    async def test_fetch_economic_events_today_uses_fifteen_minute_cache_on_malformed_xml(self) -> None:
+    async def test_fetch_economic_events_today_uses_fifteen_minute_cache_on_malformed_xml(
+        self,
+    ) -> None:
         from datetime import timedelta
 
         from app.core.timezone import now_kst
@@ -264,7 +268,9 @@ class TestMarketContextService:
         assert timedelta(minutes=14) <= ttl <= timedelta(minutes=16)
 
     @pytest.mark.asyncio
-    async def test_fetch_economic_events_today_uses_one_hour_cache_for_valid_empty_result(self) -> None:
+    async def test_fetch_economic_events_today_uses_one_hour_cache_for_valid_empty_result(
+        self,
+    ) -> None:
         from datetime import timedelta
 
         from app.core.timezone import now_kst
@@ -429,6 +435,7 @@ class TestMarketContextService:
         assert _normalize_crypto_symbol("btc") == "KRW-BTC"
 
         assert _normalize_crypto_symbol("") == ""
+
 
 @pytest.mark.unit
 class TestFearGreedService:
