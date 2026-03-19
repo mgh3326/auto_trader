@@ -500,7 +500,10 @@ async def get_crypto_scan(
 @router.get("/kr-morning-report", response_model=N8nKrMorningReportResponse)
 async def get_kr_morning_report(
     include_screen: bool = Query(True),
-    screen_strategy: str | None = Query(None, description="Optional screener strategy override. Null defaults to oversold-style RSI scan."),
+    screen_strategy: str | None = Query(
+        None,
+        description="Optional screener strategy override. Null defaults to oversold-style RSI scan.",
+    ),
     include_pending: bool = Query(True),
     top_n: int = Query(20, ge=1, le=50),
 ) -> N8nKrMorningReportResponse | JSONResponse:

@@ -39,34 +39,48 @@ async def test_fetch_kr_morning_report_groups_kis_and_toss_kr_holdings():
                 "market_type": "KR",
                 "symbol": "005930",
                 "name": "삼성전자",
-                "quantity": 10,
-                "avg_price": 70000,
-                "current_price": 68000,
-                "evaluation": 680000,
-                "profit_rate": -0.0286,
-                "broker": "kis",
+                "components": [
+                    {
+                        "quantity": 10,
+                        "avg_price": 70000,
+                        "current_price": 68000,
+                        "evaluation": 680000,
+                        "profit_rate": -0.0286,
+                        "broker": "kis",
+                        "account_key": "live:kis",
+                    }
+                ],
             },
             {
                 "market_type": "KR",
                 "symbol": "000660",
                 "name": "SK하이닉스",
-                "quantity": 3,
-                "avg_price": 200000,
-                "current_price": 210000,
-                "evaluation": 630000,
-                "profit_rate": 0.05,
-                "broker": "toss",
+                "components": [
+                    {
+                        "quantity": 3,
+                        "avg_price": 200000,
+                        "current_price": 210000,
+                        "evaluation": 630000,
+                        "profit_rate": 0.05,
+                        "broker": "toss",
+                        "account_key": "manual:1",
+                    }
+                ],
             },
             {
                 "market_type": "US",
                 "symbol": "AAPL",
                 "name": "Apple",
-                "quantity": 1,
-                "avg_price": 200,
-                "current_price": 205,
-                "evaluation": 205,
-                "profit_rate": 0.025,
-                "broker": "kis",
+                "components": [
+                    {
+                        "quantity": 1,
+                        "avg_price": 200,
+                        "current_price": 205,
+                        "evaluation": 205,
+                        "profit_rate": 0.025,
+                        "broker": "kis",
+                    }
+                ],
             },
         ]
     }
@@ -422,7 +436,9 @@ async def test_fetch_kr_morning_report_surfaces_partial_failures_in_errors():
             return_value=45000.0,
         ),
     ):
-        result = await fetch_kr_morning_report(include_screen=False, include_pending=False)
+        result = await fetch_kr_morning_report(
+            include_screen=False, include_pending=False
+        )
 
     assert result["errors"]
     assert any(err["source"] == "portfolio" for err in result["errors"])

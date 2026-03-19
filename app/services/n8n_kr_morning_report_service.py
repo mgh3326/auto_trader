@@ -185,7 +185,9 @@ def _build_holdings(portfolio_raw: dict[str, Any]) -> dict[str, Any]:
                 "name": pos["name"],
                 "quantity": qty,
                 "avg_price": float(component.get("avg_price") or 0),
-                "current_price": float(component.get("current_price") or 0) or float(pos.get("current_price") or 0) or None,
+                "current_price": float(component.get("current_price") or 0)
+                or float(pos.get("current_price") or 0)
+                or None,
                 "eval_krw": float(component.get("evaluation") or 0) or None,
                 "pnl_pct": round(float(component["profit_rate"]) * 100, 1)
                 if component.get("profit_rate") is not None
