@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.services.external.forexfactory_calendar import (
@@ -141,7 +142,6 @@ async def test_fetch_forexfactory_events_today_includes_previous_et_day_events_t
             assert events[0]["event"] == "Late ET Event"
             assert events[0]["time"] == "12:30 KST"
 
-import httpx
 
 @pytest.mark.unit
 @pytest.mark.asyncio

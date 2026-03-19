@@ -219,6 +219,46 @@ class TestMarketContextService:
     """Tests for market context service functions."""
 
     @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_uses_fifteen_minute_cache_on_provider_failure(self) -> None:
+        from datetime import timedelta
+
+        from app.core.timezone import now_kst
+        from app.services.external import economic_calendar
+
+        economic_calendar._clear_economic_calendar_cache()
+        before = now_kst()
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_forexfactory_events_today",
+            side_effect=Exception("Provider failure"),
+        ):
+            result = await economic_calendar.fetch_economic_events_today()
+
+        assert result == []
+        ttl = economic_calendar._econ_calendar_cache_expires - before
+        assert timedelta(minutes=14) <= ttl <= timedelta(minutes=16)
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_uses_one_hour_cache_for_valid_empty_result(self) -> None:
+        from datetime import timedelta
+
+        from app.core.timezone import now_kst
+        from app.services.external import economic_calendar
+
+        economic_calendar._clear_economic_calendar_cache()
+        before = now_kst()
+
+        with patch(
+            "app.services.external.economic_calendar.fetch_forexfactory_events_today",
+            return_value=[],
+        ):
+            result = await economic_calendar.fetch_economic_events_today()
+
+        assert result == []
+        ttl = economic_calendar._econ_calendar_cache_expires - before
+        assert timedelta(minutes=59) <= ttl <= timedelta(minutes=61)
+
+    @pytest.mark.asyncio
     async def test_fetch_economic_events_today_empty_is_valid(self) -> None:
         """Test that empty provider response is treated as valid (no events today)."""
         from app.services.external.economic_calendar import (
@@ -306,7 +346,7 @@ class TestMarketContextService:
             return_value=mock_events,
         ):
             result = await fetch_economic_events_today()
-            
+
             assert len(result) == 2
             assert result[0]["importance"] == "high"
             assert result[1]["importance"] == "low"
@@ -502,7 +542,9 @@ class TestEconomicCalendarLive:
     @pytest.mark.asyncio
     async def test_forexfactory_returns_events_today(self) -> None:
         """Verify ForexFactory provider returns structured events for today."""
-        from app.services.external.forexfactory_calendar import fetch_forexfactory_events_today
+        from app.services.external.forexfactory_calendar import (
+            fetch_forexfactory_events_today,
+        )
 
         result = await fetch_forexfactory_events_today()
 
