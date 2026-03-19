@@ -44,6 +44,7 @@ dependencies = [
     "tenacity>=9.0.0,<10.0.0",
     "tvscreener>=0.2.0",
     "opendartreader>=0.2.3",
+    "starlette-csrf>=3.0.0",
 ]
 
 [dependency-groups]

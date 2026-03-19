@@ -5,6 +5,7 @@ import secrets
 from typing import cast
 
 from starlette.datastructures import MutableHeaders
+from starlette.formparsers import MultiPartParser
 from starlette.requests import Request
 from starlette.types import Message, Receive, Scope, Send
 from starlette_csrf import CSRFMiddleware
@@ -101,7 +102,12 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
                 yield body
                 yield b""
 
-            parser = FormParser(request.headers, body_stream())
+            parser_cls = (
+                MultiPartParser
+                if "multipart/form-data" in content_type
+                else FormParser
+            )
+            parser = parser_cls(request.headers, body_stream())
             form = await parser.parse()
             token = form.get(self.cookie_name)
             return token if isinstance(token, str) else None

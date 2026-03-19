@@ -1,7 +1,11 @@
 import re
 from unittest.mock import MagicMock
 
+import pytest
+from starlette.requests import Request
+
 from app.auth.security import get_password_hash
+from app.middleware.csrf import TemplateFormCSRFMiddleware
 from app.models.trading import User
 
 
@@ -119,3 +123,28 @@ def test_auth_api_post_is_exempt_from_csrf(auth_test_client):
     response = auth_test_client.post("/auth/login", data={})
 
     assert response.status_code != 403
+
+
+@pytest.mark.asyncio
+async def test_csrf_middleware_reads_multipart_form_token():
+    body = (
+        b"------csrf\r\n"
+        b'Content-Disposition: form-data; name="csrftoken"\r\n\r\n'
+        b"TOKEN\r\n"
+        b"------csrf--\r\n"
+    )
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/web-auth/login",
+        "headers": [
+            (b"content-type", b"multipart/form-data; boundary=----csrf"),
+        ],
+        "_csrf_body": body,
+    }
+    request = Request(scope)
+    middleware = TemplateFormCSRFMiddleware(lambda *args, **kwargs: None, secret="test")
+
+    token = await middleware._get_submitted_csrf_token(request)
+
+    assert token == "TOKEN"
