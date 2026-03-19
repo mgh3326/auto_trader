@@ -1,4 +1,10 @@
+import pytest
+from datetime import datetime
+from unittest.mock import AsyncMock, patch
+
+from app.core.timezone import KST
 from app.schemas.n8n import N8nKrMorningReportResponse
+from app.services.n8n_kr_morning_report_service import fetch_kr_morning_report, _build_brief_text
 
 
 def test_kr_morning_report_schema_accepts_manual_toss_cash():
@@ -18,13 +24,6 @@ def test_kr_morning_report_schema_accepts_manual_toss_cash():
 
     assert payload.cash_balance.toss_krw is None
     assert payload.cash_balance.toss_krw_fmt == "수동 관리"
-
-
-import pytest
-from datetime import datetime
-from unittest.mock import AsyncMock, patch
-
-from app.core.timezone import KST
 
 
 @pytest.mark.asyncio
@@ -90,8 +89,6 @@ async def test_fetch_kr_morning_report_groups_kis_and_toss_kr_holdings():
             return_value={"total_scanned": 0, "top_n": 20, "strategy": None, "results": [], "summary": {}},
         ),
     ):
-        from app.services.n8n_kr_morning_report_service import fetch_kr_morning_report
-
         result = await fetch_kr_morning_report(as_of=as_of)
 
     assert result["holdings"]["kis"]["total_count"] == 1
@@ -143,9 +140,66 @@ async def test_fetch_kr_morning_report_returns_zeroed_holdings_when_no_kr_positi
             return_value={"total_scanned": 0, "top_n": 20, "strategy": None, "results": [], "summary": {}},
         ),
     ):
-        from app.services.n8n_kr_morning_report_service import fetch_kr_morning_report
-
         result = await fetch_kr_morning_report(as_of=as_of)
 
     assert result["holdings"]["combined"]["total_count"] == 0
     assert result["holdings"]["combined"]["total_eval_fmt"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_morning_report_skips_screening_when_disabled():
+    with (
+        patch("app.services.n8n_kr_morning_report_service._get_portfolio_overview", new_callable=AsyncMock, return_value={"positions": []}),
+        patch("app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance", new_callable=AsyncMock, return_value=45000.0),
+        patch("app.services.n8n_kr_morning_report_service.fetch_pending_orders", new_callable=AsyncMock, return_value={"total": 0, "buy_count": 0, "sell_count": 0, "orders": []}),
+        patch("app.services.n8n_kr_morning_report_service._fetch_screening", new_callable=AsyncMock) as screen_mock,
+    ):
+        result = await fetch_kr_morning_report(include_screen=False)
+
+    screen_mock.assert_not_called()
+    assert result["screening"]["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_morning_report_sorts_screening_by_lowest_rsi_and_trims_top_n():
+    raw_results = {
+        "results": [
+            {"symbol": "A", "name": "A", "current_price": 1000, "rsi": 40},
+            {"symbol": "B", "name": "B", "current_price": 1000, "rsi": 22},
+            {"symbol": "C", "name": "C", "current_price": 1000, "rsi": 31},
+        ],
+        "total_count": 100
+    }
+    with (
+        patch("app.services.n8n_kr_morning_report_service._get_portfolio_overview", new_callable=AsyncMock, return_value={"positions": []}),
+        patch("app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance", new_callable=AsyncMock, return_value=45000.0),
+        patch("app.services.n8n_kr_morning_report_service.fetch_pending_orders", new_callable=AsyncMock, return_value={"total": 0, "buy_count": 0, "sell_count": 0, "orders": []}),
+        patch("app.services.n8n_kr_morning_report_service.screen_stocks_impl", new_callable=AsyncMock, return_value=raw_results),
+    ):
+        result = await fetch_kr_morning_report(top_n=2)
+        
+    assert [row["symbol"] for row in result["screening"]["results"]] == ["B", "C"]
+    assert len(result["screening"]["results"]) == 2
+
+
+def test_build_brief_text_formats_manual_toss_cash_label():
+    text = _build_brief_text(
+        date_fmt="03/19 (목)",
+        holdings={
+            "kis": {"total_eval_fmt": "100만", "total_pnl_fmt": "+1.0%", "total_count": 1},
+            "toss": {"total_eval_fmt": "50만", "total_pnl_fmt": "-2.0%", "total_count": 2},
+            "combined": {"total_eval_fmt": "150만", "total_pnl_fmt": "+0.5%"},
+        },
+        cash_balance={
+            "kis_krw_fmt": "4.5만",
+            "toss_krw_fmt": "수동 관리",
+            "total_krw_fmt": "4.5만",
+        },
+        screening={"results": []},
+        pending_orders={"total": 0},
+        include_screen=True,
+        include_pending=True,
+    )
+
+    assert "토스: 수동 관리" in text
+    assert text.startswith("📊 KR 모닝 리포트 — 03/19 (목)")
