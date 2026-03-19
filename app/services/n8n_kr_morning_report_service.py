@@ -151,32 +151,38 @@ def _build_holdings(portfolio_raw: dict[str, Any]) -> dict[str, Any]:
     toss_positions = []
 
     for pos in kr_positions:
-        broker = str(pos.get("broker") or "").lower()
-        account_key = str(pos.get("account_key") or "").lower()
+        components = pos.get("components") or []
+        for component in components:
+            qty = float(component.get("quantity") or 0)
+            if qty <= 0:
+                continue
 
-        normalized = {
-            "symbol": pos["symbol"],
-            "name": pos["name"],
-            "quantity": float(pos.get("quantity") or 0),
-            "avg_price": float(pos.get("avg_price") or 0),
-            "current_price": float(pos.get("current_price") or 0) or None,
-            "eval_krw": float(pos.get("evaluation") or 0) or None,
-            "pnl_pct": round(float(pos["profit_rate"]) * 100, 1)
-            if pos.get("profit_rate") is not None
-            else None,
-            "pnl_fmt": fmt_pnl(
-                float(pos["profit_rate"]) * 100
-                if pos.get("profit_rate") is not None
-                else None
-            ),
-            "eval_fmt": fmt_amount(float(pos.get("evaluation") or 0)),
-            "account": pos.get("account_name") or broker,
-        }
+            broker = str(component.get("broker") or "").lower()
+            account_key = str(component.get("account_key") or "").lower()
 
-        if broker == "kis" or "kis" in account_key:
-            kis_positions.append(normalized)
-        elif broker == "toss":
-            toss_positions.append(normalized)
+            normalized = {
+                "symbol": pos["symbol"],
+                "name": pos["name"],
+                "quantity": qty,
+                "avg_price": float(component.get("avg_price") or 0),
+                "current_price": float(component.get("current_price") or 0) or float(pos.get("current_price") or 0) or None,
+                "eval_krw": float(component.get("evaluation") or 0) or None,
+                "pnl_pct": round(float(component["profit_rate"]) * 100, 1)
+                if component.get("profit_rate") is not None
+                else None,
+                "pnl_fmt": fmt_pnl(
+                    float(component["profit_rate"]) * 100
+                    if component.get("profit_rate") is not None
+                    else None
+                ),
+                "eval_fmt": fmt_amount(float(component.get("evaluation") or 0)),
+                "account": component.get("account_name") or broker,
+            }
+
+            if broker == "kis" or "kis" in account_key:
+                kis_positions.append(normalized)
+            elif broker == "toss":
+                toss_positions.append(normalized)
 
     def summarize(positions_list):
         total_eval = sum(p["eval_krw"] or 0 for p in positions_list)
@@ -184,7 +190,7 @@ def _build_holdings(portfolio_raw: dict[str, Any]) -> dict[str, Any]:
         total_cost = sum((p["avg_price"] * p["quantity"]) for p in positions_list)
         total_pnl_pct = None
         if total_cost > 0:
-            total_pnl_pct = ((total_eval / total_cost) - 1) * 100
+            total_pnl_pct = ((total_eval - total_cost) / total_cost) * 100
 
         return {
             "total_count": len(positions_list),
@@ -250,13 +256,14 @@ def _normalize_screening(
 
 
 def _build_pending_summary(raw: dict[str, Any]) -> dict[str, Any]:
+    summary = raw.get("summary") or {}
     return {
-        "total": raw.get("total", 0),
-        "buy_count": raw.get("buy_count", 0),
-        "sell_count": raw.get("sell_count", 0),
-        "total_buy_fmt": raw.get("total_buy_fmt", "0"),
-        "total_sell_fmt": raw.get("total_sell_fmt", "0"),
-        "orders": raw.get("orders", [])[:10],
+        "total": int(summary.get("total") or 0),
+        "buy_count": int(summary.get("buy_count") or 0),
+        "sell_count": int(summary.get("sell_count") or 0),
+        "total_buy_fmt": summary.get("total_buy_fmt", "0"),
+        "total_sell_fmt": summary.get("total_sell_fmt", "0"),
+        "orders": list(raw.get("orders") or [])[:10],
     }
 
 
