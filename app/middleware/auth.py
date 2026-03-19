@@ -7,14 +7,14 @@ from typing import ClassVar, cast
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.auth.web_router import get_current_user_from_session
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 
 
-class AuthMiddleware(BaseHTTPMiddleware):
+class AuthMiddleware:
     """
     Middleware to protect web routes requiring authentication.
 
@@ -55,9 +55,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         "/upbit-trading",
     ]
 
-    def __init__(self, app):
+    def __init__(self, app: ASGIApp):
         """Initialize middleware with dynamic public paths."""
-        super().__init__(app)
+        self.app = app
         # Build public paths list based on DOCS_ENABLED setting
         self.public_paths = self.BASE_PUBLIC_PATHS.copy()
         if settings.DOCS_ENABLED:
@@ -66,6 +66,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.public_api_paths = self.PUBLIC_API_PATHS.copy()
         if settings.PUBLIC_API_PATHS:
             self.public_api_paths.extend(settings.PUBLIC_API_PATHS)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """ASGI middleware call handler."""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+        path = request.url.path
+        is_api_request = self._is_api_request_path(path)
+
+        # Handle authentication logic and determine if we should short-circuit
+        response = await self._maybe_authenticate(request, scope, is_api_request)
+        if response is not None:
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
     def _is_public_path(self, path: str) -> bool:
         """Check if path is in public (non-authenticated) list."""
@@ -99,14 +117,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         """Treat both '/api/*' and '*/api/*' paths as API requests."""
         return path.startswith("/api/") or "/api/" in path or path.endswith("/api")
 
-    async def dispatch(self, request: Request, call_next):
-        """Check authentication for protected routes."""
+    async def _maybe_authenticate(
+        self, request: Request, scope: Scope, is_api_request: bool
+    ) -> JSONResponse | RedirectResponse | None:
+        """
+        Check authentication and return a response if access is denied.
+        Returns None if request should continue to the downstream app.
+        """
         path = request.url.path
-        is_api_request = self._is_api_request_path(path)
 
         # Legacy paths must always pass through to deprecated router handlers.
         if self._is_legacy_deprecated_path(path):
-            return await call_next(request)
+            return None
 
         # n8n API: dedicated API key authentication
         if path.startswith("/api/n8n/"):
@@ -121,15 +143,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     status_code=401,
                     content={"detail": "Invalid N8N API key"},
                 )
-            return await call_next(request)
+            return None
 
         # Allow public paths
         if self._is_public_path(path):
-            return await call_next(request)
+            return None
 
         # Allow explicitly public API paths without extra DB work
         if is_api_request and self._is_public_api_path(path):
-            return await call_next(request)
+            return None
 
         # Handle API endpoints with explicit public allowlist
         if is_api_request:
@@ -141,12 +163,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     content={"detail": "Authentication required for this endpoint."},
                 )
 
-            request.state.user = user
-            return await call_next(request)
+            # Store user in scope state for downstream handlers
+            scope.setdefault("state", {})
+            scope["state"]["user"] = user
+            return None
 
         # For HTML pages, check if user is authenticated
-        # This is a simple heuristic: if it's a GET request
-        # and might return HTML
         if request.method == "GET":
             user = await self._load_user(request)
 
@@ -159,7 +181,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     status_code=303,
                 )
 
-            # Store user in request state for use in route handlers
-            request.state.user = user
+            # Store user in scope state for downstream handlers
+            scope.setdefault("state", {})
+            scope["state"]["user"] = user
 
-        return await call_next(request)
+        return None
