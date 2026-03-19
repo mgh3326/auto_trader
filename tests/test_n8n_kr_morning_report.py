@@ -478,6 +478,59 @@ async def test_fetch_kr_morning_report_default_screening_uses_oversold_semantics
 
 
 @pytest.mark.asyncio
+async def test_fetch_kr_morning_report_explicit_oversold_matches_default_semantics():
+    with (
+        patch(
+            "app.services.n8n_kr_morning_report_service._get_portfolio_overview",
+            new_callable=AsyncMock,
+            return_value={"positions": []},
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance",
+            new_callable=AsyncMock,
+            return_value=0.0,
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service.screen_stocks_impl",
+            new_callable=AsyncMock,
+            return_value={"results": [], "total_count": 0},
+        ) as screen_mock,
+    ):
+        await fetch_kr_morning_report(screen_strategy="oversold", include_pending=False)
+
+    kwargs = screen_mock.await_args.kwargs
+    assert kwargs["sort_by"] == "rsi"
+    assert kwargs["sort_order"] == "asc"
+    assert kwargs["max_rsi"] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_morning_report_non_oversold_strategy_still_passes_through():
+    with (
+        patch(
+            "app.services.n8n_kr_morning_report_service._get_portfolio_overview",
+            new_callable=AsyncMock,
+            return_value={"positions": []},
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance",
+            new_callable=AsyncMock,
+            return_value=0.0,
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service.screen_stocks_impl",
+            new_callable=AsyncMock,
+            return_value={"results": [], "total_count": 0},
+        ) as screen_mock,
+    ):
+        await fetch_kr_morning_report(screen_strategy="momentum", include_pending=False)
+
+    kwargs = screen_mock.await_args.kwargs
+    assert kwargs["strategy"] == "momentum"
+    assert "sort_by" not in kwargs or kwargs["sort_by"] != "rsi"
+
+
+@pytest.mark.asyncio
 async def test_fetch_kr_morning_report_promotes_portfolio_warnings_to_errors():
     overview = {
         "positions": [],
@@ -534,3 +587,29 @@ async def test_fetch_kr_morning_report_promotes_pending_errors_to_top_level_erro
 
     assert result["success"] is False
     assert any(err["source"] == "pending_orders" for err in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_morning_report_promotes_screening_error_payload_to_top_level_errors():
+    with (
+        patch(
+            "app.services.n8n_kr_morning_report_service._get_portfolio_overview",
+            new_callable=AsyncMock,
+            return_value={"positions": []},
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance",
+            new_callable=AsyncMock,
+            return_value=45000.0,
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service.screen_stocks_impl",
+            new_callable=AsyncMock,
+            return_value={"error": "upstream failed", "source": "kis"},
+        ),
+    ):
+        result = await fetch_kr_morning_report(include_pending=False)
+
+    assert result["success"] is False
+    assert any(err["source"] == "screening" for err in result["errors"])
+    assert any("upstream failed" in err["error"] for err in result["errors"])
