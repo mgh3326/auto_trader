@@ -475,3 +475,62 @@ async def test_fetch_kr_morning_report_default_screening_uses_oversold_semantics
     assert kwargs["sort_by"] == "rsi"
     assert kwargs["sort_order"] == "asc"
     assert kwargs["max_rsi"] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_morning_report_promotes_portfolio_warnings_to_errors():
+    overview = {
+        "positions": [],
+        "warnings": ["KIS KR holdings fetch failed: timeout"],
+    }
+
+    with (
+        patch(
+            "app.services.n8n_kr_morning_report_service._get_portfolio_overview",
+            new_callable=AsyncMock,
+            return_value=overview,
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance",
+            new_callable=AsyncMock,
+            return_value=45000.0,
+        ),
+    ):
+        result = await fetch_kr_morning_report(include_screen=False, include_pending=False)
+
+    assert result["success"] is False
+    assert any(err["source"] == "portfolio" for err in result["errors"])
+    assert any("timeout" in err["error"] for err in result["errors"])
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_morning_report_promotes_pending_errors_to_top_level_errors():
+    pending_payload = {
+        "success": True,
+        "market": "kr",
+        "orders": [],
+        "summary": {"total": 0, "buy_count": 0, "sell_count": 0},
+        "errors": [{"market": "kr", "error": "quote lookup failed"}],
+    }
+
+    with (
+        patch(
+            "app.services.n8n_kr_morning_report_service._get_portfolio_overview",
+            new_callable=AsyncMock,
+            return_value={"positions": []},
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance",
+            new_callable=AsyncMock,
+            return_value=45000.0,
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service.fetch_pending_orders",
+            new_callable=AsyncMock,
+            return_value=pending_payload,
+        ),
+    ):
+        result = await fetch_kr_morning_report(include_screen=False, include_pending=True)
+
+    assert result["success"] is False
+    assert any(err["source"] == "pending_orders" for err in result["errors"])

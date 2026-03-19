@@ -1376,3 +1376,26 @@ class TestN8nKrMorningReportEndpoint:
         assert response.status_code == 200
         assert response.json()["success"] is False
         assert response.json()["errors"][0]["source"] == "portfolio"
+
+    def test_get_kr_morning_report_returns_degraded_service_payload_with_errors(self, client: TestClient):
+        payload = {
+            "success": False,
+            "as_of": "2026-03-19T08:50:00+09:00",
+            "date_fmt": "03/19 (목)",
+            "holdings": {"kis": {}, "toss": {}, "combined": {}},
+            "cash_balance": {},
+            "screening": {"results": [], "summary": {}},
+            "pending_orders": {"total": 0, "orders": []},
+            "brief_text": "",
+            "errors": [{"source": "pending_orders", "error": "quote lookup failed"}],
+        }
+
+        with patch(
+            "app.routers.n8n.fetch_kr_morning_report",
+            new_callable=AsyncMock,
+            return_value=payload,
+        ):
+            response = client.get("/api/n8n/kr-morning-report")
+
+        assert response.status_code == 200
+        assert response.json()["errors"][0]["source"] == "pending_orders"
