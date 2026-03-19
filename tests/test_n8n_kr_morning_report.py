@@ -1,10 +1,14 @@
-import pytest
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from app.core.timezone import KST
 from app.schemas.n8n import N8nKrMorningReportResponse
-from app.services.n8n_kr_morning_report_service import fetch_kr_morning_report, _build_brief_text
+from app.services.n8n_kr_morning_report_service import (
+    _build_brief_text,
+    fetch_kr_morning_report,
+)
 
 
 def test_kr_morning_report_schema_accepts_manual_toss_cash():
@@ -86,7 +90,13 @@ async def test_fetch_kr_morning_report_groups_kis_and_toss_kr_holdings():
         patch(
             "app.services.n8n_kr_morning_report_service._fetch_screening",
             new_callable=AsyncMock,
-            return_value={"total_scanned": 0, "top_n": 20, "strategy": None, "results": [], "summary": {}},
+            return_value={
+                "total_scanned": 0,
+                "top_n": 20,
+                "strategy": None,
+                "results": [],
+                "summary": {},
+            },
         ),
     ):
         result = await fetch_kr_morning_report(as_of=as_of)
@@ -137,7 +147,13 @@ async def test_fetch_kr_morning_report_returns_zeroed_holdings_when_no_kr_positi
         patch(
             "app.services.n8n_kr_morning_report_service._fetch_screening",
             new_callable=AsyncMock,
-            return_value={"total_scanned": 0, "top_n": 20, "strategy": None, "results": [], "summary": {}},
+            return_value={
+                "total_scanned": 0,
+                "top_n": 20,
+                "strategy": None,
+                "results": [],
+                "summary": {},
+            },
         ),
     ):
         result = await fetch_kr_morning_report(as_of=as_of)
@@ -149,10 +165,25 @@ async def test_fetch_kr_morning_report_returns_zeroed_holdings_when_no_kr_positi
 @pytest.mark.asyncio
 async def test_fetch_kr_morning_report_skips_screening_when_disabled():
     with (
-        patch("app.services.n8n_kr_morning_report_service._get_portfolio_overview", new_callable=AsyncMock, return_value={"positions": []}),
-        patch("app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance", new_callable=AsyncMock, return_value=45000.0),
-        patch("app.services.n8n_kr_morning_report_service.fetch_pending_orders", new_callable=AsyncMock, return_value={"total": 0, "buy_count": 0, "sell_count": 0, "orders": []}),
-        patch("app.services.n8n_kr_morning_report_service._fetch_screening", new_callable=AsyncMock) as screen_mock,
+        patch(
+            "app.services.n8n_kr_morning_report_service._get_portfolio_overview",
+            new_callable=AsyncMock,
+            return_value={"positions": []},
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance",
+            new_callable=AsyncMock,
+            return_value=45000.0,
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service.fetch_pending_orders",
+            new_callable=AsyncMock,
+            return_value={"total": 0, "buy_count": 0, "sell_count": 0, "orders": []},
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service._fetch_screening",
+            new_callable=AsyncMock,
+        ) as screen_mock,
     ):
         result = await fetch_kr_morning_report(include_screen=False)
 
@@ -168,16 +199,32 @@ async def test_fetch_kr_morning_report_sorts_screening_by_lowest_rsi_and_trims_t
             {"symbol": "B", "name": "B", "current_price": 1000, "rsi": 22},
             {"symbol": "C", "name": "C", "current_price": 1000, "rsi": 31},
         ],
-        "total_count": 100
+        "total_count": 100,
     }
     with (
-        patch("app.services.n8n_kr_morning_report_service._get_portfolio_overview", new_callable=AsyncMock, return_value={"positions": []}),
-        patch("app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance", new_callable=AsyncMock, return_value=45000.0),
-        patch("app.services.n8n_kr_morning_report_service.fetch_pending_orders", new_callable=AsyncMock, return_value={"total": 0, "buy_count": 0, "sell_count": 0, "orders": []}),
-        patch("app.services.n8n_kr_morning_report_service.screen_stocks_impl", new_callable=AsyncMock, return_value=raw_results),
+        patch(
+            "app.services.n8n_kr_morning_report_service._get_portfolio_overview",
+            new_callable=AsyncMock,
+            return_value={"positions": []},
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance",
+            new_callable=AsyncMock,
+            return_value=45000.0,
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service.fetch_pending_orders",
+            new_callable=AsyncMock,
+            return_value={"total": 0, "buy_count": 0, "sell_count": 0, "orders": []},
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service.screen_stocks_impl",
+            new_callable=AsyncMock,
+            return_value=raw_results,
+        ),
     ):
         result = await fetch_kr_morning_report(top_n=2)
-        
+
     assert [row["symbol"] for row in result["screening"]["results"]] == ["B", "C"]
     assert len(result["screening"]["results"]) == 2
 
@@ -186,8 +233,16 @@ def test_build_brief_text_formats_manual_toss_cash_label():
     text = _build_brief_text(
         date_fmt="03/19 (목)",
         holdings={
-            "kis": {"total_eval_fmt": "100만", "total_pnl_fmt": "+1.0%", "total_count": 1},
-            "toss": {"total_eval_fmt": "50만", "total_pnl_fmt": "-2.0%", "total_count": 2},
+            "kis": {
+                "total_eval_fmt": "100만",
+                "total_pnl_fmt": "+1.0%",
+                "total_count": 1,
+            },
+            "toss": {
+                "total_eval_fmt": "50만",
+                "total_pnl_fmt": "-2.0%",
+                "total_count": 2,
+            },
             "combined": {"total_eval_fmt": "150만", "total_pnl_fmt": "+0.5%"},
         },
         cash_balance={

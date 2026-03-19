@@ -1293,8 +1293,19 @@ class TestN8nKrMorningReportEndpoint:
                 "total_krw": 45000,
                 "total_krw_fmt": "4.5만",
             },
-            "screening": {"total_scanned": 0, "top_n": 20, "strategy": None, "results": [], "summary": {}},
-            "pending_orders": {"total": 0, "buy_count": 0, "sell_count": 0, "orders": []},
+            "screening": {
+                "total_scanned": 0,
+                "top_n": 20,
+                "strategy": None,
+                "results": [],
+                "summary": {},
+            },
+            "pending_orders": {
+                "total": 0,
+                "buy_count": 0,
+                "sell_count": 0,
+                "orders": [],
+            },
             "brief_text": "ok",
             "errors": [],
         }
@@ -1309,7 +1320,9 @@ class TestN8nKrMorningReportEndpoint:
         assert response.status_code == 200
         assert response.json()["cash_balance"]["toss_krw_fmt"] == "수동 관리"
 
-    def test_get_kr_morning_report_returns_500_on_service_error(self, client: TestClient):
+    def test_get_kr_morning_report_returns_500_on_service_error(
+        self, client: TestClient
+    ):
         with patch(
             "app.routers.n8n.fetch_kr_morning_report",
             new_callable=AsyncMock,
