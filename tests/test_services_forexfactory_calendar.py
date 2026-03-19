@@ -1,3 +1,4 @@
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -150,6 +151,22 @@ async def test_fetch_forexfactory_events_today_raises_on_http_failure() -> None:
     with patch("app.services.external.forexfactory_calendar.now_kst", return_value=today):
         with patch("httpx.AsyncClient.get", new_callable=AsyncMock, side_effect=httpx.HTTPError("boom")):
             with pytest.raises(httpx.HTTPError):
+                await fetch_forexfactory_events_today()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_forexfactory_events_today_raises_on_malformed_xml() -> None:
+    today = datetime(2026, 3, 19, 12, 0, tzinfo=KST)
+    bad_xml = "<weeklyevents><event><title>broken"
+    with patch("app.services.external.forexfactory_calendar.now_kst", return_value=today):
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+            response = MagicMock()
+            response.text = bad_xml
+            response.raise_for_status.return_value = None
+            mock_get.return_value = response
+
+            with pytest.raises(ET.ParseError):
                 await fetch_forexfactory_events_today()
 
 @pytest.mark.unit

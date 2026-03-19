@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -231,6 +231,31 @@ class TestMarketContextService:
         with patch(
             "app.services.external.economic_calendar.fetch_forexfactory_events_today",
             side_effect=Exception("Provider failure"),
+        ):
+            result = await economic_calendar.fetch_economic_events_today()
+
+        assert result == []
+        ttl = economic_calendar._econ_calendar_cache_expires - before
+        assert timedelta(minutes=14) <= ttl <= timedelta(minutes=16)
+
+    @pytest.mark.asyncio
+    async def test_fetch_economic_events_today_uses_fifteen_minute_cache_on_malformed_xml(self) -> None:
+        from datetime import timedelta
+
+        from app.core.timezone import now_kst
+        from app.services.external import economic_calendar
+
+        economic_calendar._clear_economic_calendar_cache()
+        before = now_kst()
+
+        response = MagicMock()
+        response.text = "<weeklyevents><event><title>broken"
+        response.raise_for_status.return_value = None
+
+        with patch(
+            "httpx.AsyncClient.get",
+            new_callable=AsyncMock,
+            return_value=response,
         ):
             result = await economic_calendar.fetch_economic_events_today()
 

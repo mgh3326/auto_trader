@@ -106,33 +106,35 @@ def _parse_weekly_events(xml_text: str) -> list[dict[str, Any]]:
     events = []
     try:
         root = ET.fromstring(xml_text)
-        for event_elem in root.findall("event"):
-            title = event_elem.findtext("title", "")
-            country = event_elem.findtext("country", "")
-            date_str = event_elem.findtext("date", "")
-            time_str = event_elem.findtext("time", "")
-            impact = event_elem.findtext("impact", "")
-            forecast = event_elem.findtext("forecast", "")
-            previous = event_elem.findtext("previous", "")
-            actual = event_elem.findtext("actual", "")
-
-            event_date = _parse_forexfactory_date(date_str)
-            if not event_date:
-                continue
-
-            kst_date, kst_time = _convert_et_event_to_kst(event_date, time_str)
-
-            events.append({
-                "time": kst_time,
-                "event": title,
-                "country": country,
-                "impact": impact.strip().lower(),
-                "forecast": _normalize_value(forecast),
-                "previous": _normalize_value(previous),
-                "actual": _normalize_value(actual),
-                "_kst_date": kst_date,  # Internal field for filtering
-            })
-    except Exception as exc:
+    except ET.ParseError as exc:
         logger.warning("Error parsing ForexFactory XML: %s", exc)
+        raise
+
+    for event_elem in root.findall("event"):
+        title = event_elem.findtext("title", "")
+        country = event_elem.findtext("country", "")
+        date_str = event_elem.findtext("date", "")
+        time_str = event_elem.findtext("time", "")
+        impact = event_elem.findtext("impact", "")
+        forecast = event_elem.findtext("forecast", "")
+        previous = event_elem.findtext("previous", "")
+        actual = event_elem.findtext("actual", "")
+
+        event_date = _parse_forexfactory_date(date_str)
+        if not event_date:
+            continue
+
+        kst_date, kst_time = _convert_et_event_to_kst(event_date, time_str)
+
+        events.append({
+            "time": kst_time,
+            "event": title,
+            "country": country,
+            "impact": impact.strip().lower(),
+            "forecast": _normalize_value(forecast),
+            "previous": _normalize_value(previous),
+            "actual": _normalize_value(actual),
+            "_kst_date": kst_date,  # Internal field for filtering
+        })
 
     return events
