@@ -1268,3 +1268,54 @@ class TestN8nPendingOrdersEndpoint:
         assert order["order_price"] == 70000.0
         assert order["gap_pct"] == 1.43
         assert data["summary"]["total_buy_krw"] == 700000.0
+
+
+class TestN8nKrMorningReportEndpoint:
+    @pytest.fixture
+    def client(self) -> TestClient:
+        from app.routers.n8n import router
+
+        app = FastAPI()
+        app.include_router(router)
+        return TestClient(app)
+
+    def test_get_kr_morning_report_success(self, client: TestClient):
+        payload = {
+            "success": True,
+            "as_of": "2026-03-19T08:50:00+09:00",
+            "date_fmt": "03/19 (목)",
+            "holdings": {"kis": {}, "toss": {}, "combined": {}},
+            "cash_balance": {
+                "kis_krw": 45000,
+                "kis_krw_fmt": "4.5만",
+                "toss_krw": None,
+                "toss_krw_fmt": "수동 관리",
+                "total_krw": 45000,
+                "total_krw_fmt": "4.5만",
+            },
+            "screening": {"total_scanned": 0, "top_n": 20, "strategy": None, "results": [], "summary": {}},
+            "pending_orders": {"total": 0, "buy_count": 0, "sell_count": 0, "orders": []},
+            "brief_text": "ok",
+            "errors": [],
+        }
+
+        with patch(
+            "app.routers.n8n.fetch_kr_morning_report",
+            new_callable=AsyncMock,
+            return_value=payload,
+        ):
+            response = client.get("/api/n8n/kr-morning-report")
+
+        assert response.status_code == 200
+        assert response.json()["cash_balance"]["toss_krw_fmt"] == "수동 관리"
+
+    def test_get_kr_morning_report_returns_500_on_service_error(self, client: TestClient):
+        with patch(
+            "app.routers.n8n.fetch_kr_morning_report",
+            new_callable=AsyncMock,
+            side_effect=Exception("boom"),
+        ):
+            response = client.get("/api/n8n/kr-morning-report")
+
+        assert response.status_code == 500
+        assert response.json()["success"] is False
