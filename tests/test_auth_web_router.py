@@ -7,6 +7,14 @@ from app.auth.web_router import MAX_SESSIONS_PER_USER
 from app.models.trading import User, UserRole
 
 
+def _get_csrf_token(client):
+    """Helper to get CSRF token from login page."""
+    response = client.get("/web-auth/login")
+    import re
+    match = re.search(r'name="csrftoken" value="([^"]+)"', response.text)
+    return match.group(1) if match else None
+
+
 def test_login_page_render(auth_test_client):
     response = auth_test_client.get("/web-auth/login")
     if response.status_code != 200:
@@ -40,9 +48,16 @@ def test_web_login_success(auth_test_client, auth_mock_session):
     mock_result.scalar_one_or_none.return_value = user
     auth_mock_session.execute.return_value = mock_result
 
+    # Get CSRF token first
+    token = _get_csrf_token(auth_test_client)
+
     response = auth_test_client.post(
         "/web-auth/login",
-        data={"username": "testuser", "password": "password123"},
+        data={
+            "username": "testuser",
+            "password": "password123",
+            "csrftoken": token,
+        },
         follow_redirects=False,
     )
     assert response.status_code == 303
@@ -64,8 +79,16 @@ def test_web_login_failure(auth_test_client, auth_mock_session):
     mock_result.scalar_one_or_none.return_value = user
     auth_mock_session.execute.return_value = mock_result
 
+    # Get CSRF token first
+    token = _get_csrf_token(auth_test_client)
+
     response = auth_test_client.post(
-        "/web-auth/login", data={"username": "testuser", "password": "wrongpassword"}
+        "/web-auth/login",
+        data={
+            "username": "testuser",
+            "password": "wrongpassword",
+            "csrftoken": token,
+        },
     )
     if response.status_code != 400:
         print(f"Response: {response.text}")
@@ -102,9 +125,14 @@ def test_web_logout(auth_test_client, auth_mock_session, mock_auth_middleware_db
         mock_redis.side_effect = Exception("Redis connection failed")
 
         # Login first
+        token = _get_csrf_token(auth_test_client)
         auth_test_client.post(
             "/web-auth/login",
-            data={"username": "testuser", "password": "password123"},
+            data={
+                "username": "testuser",
+                "password": "password123",
+                "csrftoken": token,
+            },
             follow_redirects=False,
         )
 
@@ -177,9 +205,14 @@ class TestMultipleSessionLogin:
             "app.auth.web_router.redis.from_url", return_value=mock_redis_client
         ):
             # 첫 번째 로그인
+            token = _get_csrf_token(auth_test_client)
             response1 = auth_test_client.post(
                 "/web-auth/login",
-                data={"username": "testuser", "password": "password123"},
+                data={
+                    "username": "testuser",
+                    "password": "password123",
+                    "csrftoken": token,
+                },
                 follow_redirects=False,
             )
             assert response1.status_code == 303
@@ -202,9 +235,14 @@ class TestMultipleSessionLogin:
             patch("redis.asyncio.from_url", return_value=mock_redis_client),
         ):
             # 로그인
+            token = _get_csrf_token(auth_test_client)
             login_response = auth_test_client.post(
                 "/web-auth/login",
-                data={"username": "testuser", "password": "password123"},
+                data={
+                    "username": "testuser",
+                    "password": "password123",
+                    "csrftoken": token,
+                },
                 follow_redirects=False,
             )
             session_cookie = login_response.cookies.get("session")
@@ -235,9 +273,14 @@ class TestMultipleSessionLogin:
 
         with patch("app.auth.web_router.redis.from_url", return_value=mock_redis):
             # 새 로그인 시도
+            token = _get_csrf_token(auth_test_client)
             response = auth_test_client.post(
                 "/web-auth/login",
-                data={"username": "testuser", "password": "password123"},
+                data={
+                    "username": "testuser",
+                    "password": "password123",
+                    "csrftoken": token,
+                },
                 follow_redirects=False,
             )
             assert response.status_code == 303
@@ -269,9 +312,14 @@ class TestMultipleSessionLogin:
             mock_blacklist.return_value.is_blacklisted = AsyncMock(return_value=False)
 
             # 로그인
+            token = _get_csrf_token(auth_test_client)
             login_response = auth_test_client.post(
                 "/web-auth/login",
-                data={"username": "testuser", "password": "password123"},
+                data={
+                    "username": "testuser",
+                    "password": "password123",
+                    "csrftoken": token,
+                },
                 follow_redirects=False,
             )
             session_cookie = login_response.cookies.get("session")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import http.cookies
 import secrets
-from typing import Optional, cast
+from typing import cast
 
 from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
@@ -28,26 +28,26 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
         else:
             # Generate a new token if not present
             csrf_token = cast(str, self.serializer.dumps(secrets.token_urlsafe(128)))
-        
+
         state["csrftoken"] = csrf_token
 
         # 2. To support reading the form body, we need to wrap the receive channel
         # because starlette-csrf's __call__ creates a Request without receive,
         # and we need to consume the body to check for the csrf token.
-        
+
         # We only do this for non-safe methods that might have a form body
         if request.method not in self.safe_methods and not self._url_is_exempt(request.url):
             body = b""
             more_body = True
             messages = []
-            
+
             # Read the entire body
             while more_body:
                 message = await receive()
                 messages.append(message)
                 body += message.get("body", b"")
                 more_body = message.get("more_body", False)
-            
+
             # Create a new receive channel that replays the messages
             async def replaying_receive() -> Message:
                 if messages:
@@ -80,7 +80,7 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
 
         await send(message)
 
-    async def _get_submitted_csrf_token(self, request: Request) -> Optional[str]:
+    async def _get_submitted_csrf_token(self, request: Request) -> str | None:
         header_token = request.headers.get(self.header_name)
         if header_token:
             return header_token
@@ -94,13 +94,13 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
             body = request.scope.get("_csrf_body", b"")
             if not body:
                 return None
-            
+
             from starlette.formparsers import FormParser
-            
+
             async def body_stream():
                 yield body
                 yield b""
-                
+
             parser = FormParser(request.headers, body_stream())
             form = await parser.parse()
             token = form.get(self.cookie_name)
