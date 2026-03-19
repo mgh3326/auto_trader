@@ -121,6 +121,10 @@
         {% endif %}
 
         <form method="POST" action="/web-auth/login">
+            <input type="hidden" name="csrftoken" value="{{ request.state.csrftoken }}">
+            {% if next %}
+            <input type="hidden" name="next" value="{{ next }}">
+            {% endif %}
             <div class="form-group">
                 <label for="username">사용자명</label>
                 <input

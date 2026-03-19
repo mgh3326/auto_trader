@@ -95,13 +95,11 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
             if not body:
                 return None
             
-            # We need to parse the form data. 
-            # We can use Starlette's FormParser or just create a dummy request with the body.
             from starlette.formparsers import FormParser
             
-            # Re-construct the stream from the captured body
             async def body_stream():
                 yield body
+                yield b""
                 
             parser = FormParser(request.headers, body_stream())
             form = await parser.parse()
