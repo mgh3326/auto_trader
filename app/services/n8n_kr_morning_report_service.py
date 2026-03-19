@@ -25,8 +25,11 @@ def _extend_errors_from_payload(
     source: str,
     warnings: list[str] | None = None,
     errors: list[dict[str, Any]] | None = None,
+    error: str | None = None,
 ) -> None:
     """Copy upstream warnings/errors into top-level errors collector."""
+    if error:
+        collector.append({"source": source, "error": str(error)})
     for warning in warnings or []:
         collector.append({"source": source, "error": str(warning)})
     for error in errors or []:
@@ -110,6 +113,16 @@ async def fetch_kr_morning_report(
     if screen_task:
         try:
             screening_data = await screen_task
+            _extend_errors_from_payload(
+                errors,
+                source="screening",
+                error=screening_data.pop("_error", None)
+                if isinstance(screening_data, dict)
+                else None,
+                errors=screening_data.pop("_errors", None)
+                if isinstance(screening_data, dict)
+                else None,
+            )
         except Exception as exc:
             logger.error("Failed to fetch screening: %s", exc)
             errors.append({"source": "screening", "error": str(exc)})
@@ -180,7 +193,8 @@ async def _fetch_kis_cash_balance() -> float:
 
 
 async def _fetch_screening(screen_strategy: str | None, top_n: int) -> dict[str, Any]:
-    if screen_strategy is None:
+    normalized_strategy = screen_strategy.strip().lower() if screen_strategy else None
+    if normalized_strategy in (None, "oversold"):
         raw = await screen_stocks_impl(
             market="kr",
             strategy=None,
@@ -193,11 +207,18 @@ async def _fetch_screening(screen_strategy: str | None, top_n: int) -> dict[str,
     else:
         raw = await screen_stocks_impl(
             market="kr",
-            strategy=screen_strategy,
+            strategy=normalized_strategy,
             limit=max(top_n, 30),
         )
-        strategy_label = screen_strategy
-    return _normalize_screening(raw, top_n, strategy_label)
+        strategy_label = normalized_strategy
+
+    normalized = _normalize_screening(raw, top_n, strategy_label)
+    if isinstance(raw, dict):
+        if raw.get("error"):
+            normalized["_error"] = str(raw["error"])
+        if raw.get("errors"):
+            normalized["_errors"] = list(raw["errors"])
+    return normalized
 
 
 def _build_holdings(portfolio_raw: dict[str, Any]) -> dict[str, Any]:
