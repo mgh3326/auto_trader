@@ -726,3 +726,102 @@ class TestFastmcpToolValidationFilter:
             "span_id": None,
         }
         assert sentry_module._before_send_log(sentry_log, {}) is not None
+
+
+@pytest.mark.unit
+class TestGetOrderHistorySentryNoiseFilter:
+    """get_order_history symbol requirement noise should be dropped in Sentry."""
+
+    def test_fastmcp_get_order_history_symbol_requirement_log_dropped(self):
+        """AUTO_TRADER-41: log path noise dropped."""
+        event: Event = {
+            "logger": "fastmcp.server.server",
+            "logentry": {
+                "message": (
+                    "Error calling tool 'get_order_history': symbol is required when "
+                    "status='filled'. Use status='pending' for symbol-free queries, "
+                    "or provide a symbol (e.g. symbol='KRW-BTC')."
+                ),
+                "formatted": (
+                    "Error calling tool 'get_order_history': symbol is required when "
+                    "status='filled'. Use status='pending' for symbol-free queries, "
+                    "or provide a symbol (e.g. symbol='KRW-BTC')."
+                ),
+            },
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_fastmcp_get_order_history_symbol_requirement_toolerror_dropped(self):
+        """AUTO_TRADER-40: ToolError exception path noise dropped."""
+        event: Event = {
+            "exception": {
+                "values": [
+                    {
+                        "type": "ToolError",
+                        "value": (
+                            "Error calling tool 'get_order_history': symbol is required "
+                            "when status='filled'. Use status='pending' for symbol-free "
+                            "queries, or provide a symbol (e.g. symbol='KRW-BTC')."
+                        ),
+                    }
+                ]
+            }
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_fastmcp_get_order_history_symbol_requirement_valueerror_dropped(self):
+        """ValueError path (direct implementation throw) also dropped."""
+        event: Event = {
+            "contexts": {
+                "mcp_tool_call": {
+                    "tool_name": "get_order_history",
+                    "arguments": {"status": "filled", "market": "crypto", "limit": 3},
+                }
+            },
+            "exception": {
+                "values": [
+                    {
+                        "type": "ValueError",
+                        "value": (
+                            "symbol is required when status='filled'. "
+                            "Use status='pending' for symbol-free queries, "
+                            "or provide a symbol (e.g. symbol='KRW-BTC')."
+                        ),
+                    }
+                ]
+            },
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_fastmcp_real_runtime_error_kept(self):
+        """Real runtime errors in get_order_history are still kept."""
+        event: Event = {
+            "exception": {
+                "values": [
+                    {
+                        "type": "ToolError",
+                        "value": "Error calling tool 'get_order_history': upstream timeout",
+                    }
+                ]
+            }
+        }
+        assert sentry_module._before_send(event, {}) is not None
+
+    def test_non_mcp_symbol_requirement_valueerror_kept(self):
+        """Non-MCP exceptions with the same message fragment must not be dropped."""
+        event: Event = {
+            "exception": {
+                "values": [
+                    {
+                        "type": "ValueError",
+                        "value": (
+                            "symbol is required when status='filled'. "
+                            "Use status='pending' for symbol-free queries, "
+                            "or provide a symbol (e.g. symbol='KRW-BTC')."
+                        ),
+                    }
+                ]
+            }
+        }
+
+        assert sentry_module._before_send(event, {}) is not None

@@ -64,6 +64,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `get_investment_opinions(symbol, limit=10, market=None)`
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50)`
+  - `status="pending"` 만 symbol 없이 호출 가능
+  - `status in {"all", "filled", "cancelled"}` 는 symbol 필요
+  - filled/cancelled 조회는 시장별 historical endpoint 제약 때문에 symbol fan-out을 자동 수행하지 않음
 - `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None)`
 - `modify_order(order_id, symbol, new_price=None, new_quantity=None)`
 - `cancel_order(order_id)`

@@ -26,7 +26,8 @@ def register_order_tools(mcp: FastMCP) -> None:
         name="get_order_history",
         description=(
             "Get order history for a symbol. Supports Upbit (crypto) and KIS "
-            "(KR/US equities). Returns normalized order information."
+            "(KR/US equities). Pending orders can be queried without a symbol, "
+            "but filled/cancelled/all queries require symbol."
         ),
     )
     async def get_order_history(

@@ -95,6 +95,56 @@ def _is_fastmcp_tool_validation_error(
     return message.startswith("Error validating tool ")
 
 
+def _is_expected_mcp_argument_noise(
+    logger_name: str | None,
+    message: str | None,
+    event: Event | None = None,
+) -> bool:
+    expected_snippet = "symbol is required when status="
+    is_get_order_history_call = False
+
+    if logger_name == "fastmcp.server.server" and message:
+        if (
+            message.startswith("Error calling tool 'get_order_history'")
+            and expected_snippet in message
+        ):
+            return True
+
+    if not event:
+        return False
+
+    tags = event.get("tags", {})
+    if isinstance(tags, dict) and tags.get("mcp.tool.name") == "get_order_history":
+        is_get_order_history_call = True
+
+    contexts = event.get("contexts", {})
+    if isinstance(contexts, dict):
+        mcp_tool_call = contexts.get("mcp_tool_call", {})
+        if (
+            isinstance(mcp_tool_call, dict)
+            and mcp_tool_call.get("tool_name") == "get_order_history"
+        ):
+            is_get_order_history_call = True
+
+    values = event.get("exception", {}).get("values", [])
+    if isinstance(values, list):
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            exc_type = value.get("type")
+            exc_value = value.get("value")
+            if not (
+                exc_type in {"ToolError", "ValueError"} and isinstance(exc_value, str)
+            ):
+                continue
+            if "get_order_history" in exc_value:
+                is_get_order_history_call = True
+            if is_get_order_history_call and expected_snippet in exc_value:
+                return True
+
+    return False
+
+
 def _extract_log_context(payload: Event, hint: Hint) -> tuple[str | None, str | None]:
     logger_name: str | None = None
     message: str | None = None
@@ -185,6 +235,8 @@ def _before_send(event: Event, hint: Hint) -> Event | None:
         return None
     if _is_fastmcp_tool_validation_error(logger_name, message):
         return None
+    if _is_expected_mcp_argument_noise(logger_name, message, event):
+        return None
     return _sanitize_in_place(event)
 
 
@@ -205,6 +257,8 @@ def _before_send_log(sentry_log: Log, hint: Hint) -> Log | None:
     if _is_yfinance_noise_log(logger_name, message):
         return None
     if _is_fastmcp_tool_validation_error(logger_name, message):
+        return None
+    if _is_expected_mcp_argument_noise(logger_name, message):
         return None
     return _sanitize_in_place(sentry_log)
 

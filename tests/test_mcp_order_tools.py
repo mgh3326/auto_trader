@@ -16,11 +16,12 @@ def _patch_kis_client(monkeypatch: pytest.MonkeyPatch, client_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_order_history_validation_error():
+@pytest.mark.parametrize("status", ["all", "filled", "cancelled"])
+async def test_get_order_history_requires_symbol_for_non_pending_status(status):
     tools = build_tools()
-    # status != pending and no symbol => error (even if order_id is present)
-    with pytest.raises(ValueError, match="symbol is required"):
-        await tools["get_order_history"](status="filled", order_id="some-id")
+
+    with pytest.raises(ValueError, match="symbol is required when status="):
+        await tools["get_order_history"](status=status, order_id="some-id")
 
 
 @pytest.mark.asyncio
