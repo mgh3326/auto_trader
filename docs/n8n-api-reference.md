@@ -18,6 +18,7 @@ All endpoints require an API key passed in the `X-N8N-API-Key` header.
 | **Market Data** | GET | `/api/n8n/pending-orders` | List current pending orders across markets |
 | | GET | `/api/n8n/market-context` | Technical indicators for specific symbols |
 | | GET | `/api/n8n/daily-brief` | Unified report for daily Discord updates |
+| | GET | `/api/n8n/kr-morning-report` | KR-only morning report for Discord |
 | | GET | `/api/n8n/filled-orders` | List recently filled orders |
 | **Crypto Scan** | GET | `/api/n8n/crypto-scan` | Advanced coin scanner (RSI, SMA, Crash) |
 | | GET | `/api/n8n/scan/strategy` | Run strategy-based signal detection |
@@ -72,6 +73,24 @@ Unified endpoint providing pending orders, portfolio summary, and yesterday's fi
 **Example:**
 ```bash
 curl -H "X-N8N-API-Key: secret" "http://localhost:8000/api/n8n/daily-brief"
+```
+
+### GET `/api/n8n/kr-morning-report`
+Specialized KR-only pre-market report combining holdings (KIS/Toss), cash, screener, and pending orders for Discord.
+
+**Query Parameters:**
+- `include_screen`: (optional) Boolean, include RSI-based screening (default: true)
+- `screen_strategy`: (optional) Strategy name for screening (default: `oversold`)
+- `include_pending`: (optional) Boolean, include KR pending orders summary (default: true)
+- `top_n`: (optional) Number of screening results to include, max 50 (default: 20)
+
+**Notes:**
+- `cash_balance.toss_krw` is `null` in the current version and `toss_krw_fmt` is `"수동 관리"`.
+- Screening results are sorted by RSI ascending (most oversold first).
+
+**Example:**
+```bash
+curl -H "X-N8N-API-Key: secret" "http://localhost:8000/api/n8n/kr-morning-report?top_n=10"
 ```
 
 ### GET `/api/n8n/filled-orders`
