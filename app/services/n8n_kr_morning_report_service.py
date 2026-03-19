@@ -19,6 +19,21 @@ from app.services.n8n_pending_orders_service import fetch_pending_orders
 logger = logging.getLogger(__name__)
 
 
+def _extend_errors_from_payload(
+    collector: list[dict[str, str]],
+    *,
+    source: str,
+    warnings: list[str] | None = None,
+    errors: list[dict[str, Any]] | None = None,
+) -> None:
+    """Copy upstream warnings/errors into top-level errors collector."""
+    for warning in warnings or []:
+        collector.append({"source": source, "error": str(warning)})
+    for error in errors or []:
+        message = error.get("error") if isinstance(error, dict) else error
+        collector.append({"source": source, "error": str(message)})
+
+
 async def fetch_kr_morning_report(
     include_screen: bool = True,
     screen_strategy: str | None = None,
@@ -67,6 +82,13 @@ async def fetch_kr_morning_report(
     # Process holdings
     holdings = _build_holdings(portfolio_raw)
 
+    # Promote upstream portfolio warnings to errors
+    _extend_errors_from_payload(
+        errors,
+        source="portfolio",
+        warnings=portfolio_raw.get("warnings") if isinstance(portfolio_raw, dict) else None,
+    )
+
     # Process cash balance
     cash_balance = {
         "kis_krw": kis_cash,
@@ -97,6 +119,11 @@ async def fetch_kr_morning_report(
     if pending_task:
         try:
             pending_raw = await pending_task
+            _extend_errors_from_payload(
+                errors,
+                source="pending_orders",
+                errors=pending_raw.get("errors") if isinstance(pending_raw, dict) else None,
+            )
             pending_data = _build_pending_summary(pending_raw)
         except Exception as exc:
             logger.error("Failed to fetch pending orders: %s", exc)
@@ -112,6 +139,16 @@ async def fetch_kr_morning_report(
         include_screen=include_screen,
         include_pending=include_pending,
     )
+
+    # Deduplicate errors while preserving order
+    seen: set[tuple[str, str]] = set()
+    deduped_errors = []
+    for item in errors:
+        key = (item["source"], item["error"])
+        if key not in seen:
+            seen.add(key)
+            deduped_errors.append(item)
+    errors = deduped_errors
 
     success = len(errors) == 0
 
