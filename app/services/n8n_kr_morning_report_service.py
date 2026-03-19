@@ -143,12 +143,24 @@ async def _fetch_kis_cash_balance() -> float:
 
 
 async def _fetch_screening(screen_strategy: str | None, top_n: int) -> dict[str, Any]:
-    raw = await screen_stocks_impl(
-        market="kr",
-        strategy=screen_strategy,
-        limit=max(top_n, 30),
-    )
-    return _normalize_screening(raw, top_n, screen_strategy)
+    if screen_strategy is None:
+        raw = await screen_stocks_impl(
+            market="kr",
+            strategy=None,
+            max_rsi=30.0,
+            sort_by="rsi",
+            sort_order="asc",
+            limit=max(top_n, 30),
+        )
+        strategy_label = "oversold"
+    else:
+        raw = await screen_stocks_impl(
+            market="kr",
+            strategy=screen_strategy,
+            limit=max(top_n, 30),
+        )
+        strategy_label = screen_strategy
+    return _normalize_screening(raw, top_n, strategy_label)
 
 
 def _build_holdings(portfolio_raw: dict[str, Any]) -> dict[str, Any]:

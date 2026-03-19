@@ -427,3 +427,35 @@ async def test_fetch_kr_morning_report_surfaces_partial_failures_in_errors():
     assert result["errors"]
     assert any(err["source"] == "portfolio" for err in result["errors"])
     assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_morning_report_default_screening_uses_oversold_semantics():
+    with (
+        patch(
+            "app.services.n8n_kr_morning_report_service._get_portfolio_overview",
+            new_callable=AsyncMock,
+            return_value={"positions": []},
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance",
+            new_callable=AsyncMock,
+            return_value=0.0,
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service.fetch_pending_orders",
+            new_callable=AsyncMock,
+            return_value={"summary": {"total": 0}, "orders": []},
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service.screen_stocks_impl",
+            new_callable=AsyncMock,
+            return_value={"results": [], "total_count": 0},
+        ) as screen_mock,
+    ):
+        await fetch_kr_morning_report()
+
+    kwargs = screen_mock.await_args.kwargs
+    assert kwargs["sort_by"] == "rsi"
+    assert kwargs["sort_order"] == "asc"
+    assert kwargs["max_rsi"] == 30.0
