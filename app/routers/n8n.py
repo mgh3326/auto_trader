@@ -16,6 +16,7 @@ from app.schemas.n8n import (
     N8nCryptoScanSummary,
     N8nDailyBriefResponse,
     N8nFilledOrdersResponse,
+    N8nKrMorningReportResponse,
     N8nMarketContextResponse,
     N8nMarketContextSummary,
     N8nMarketOverview,
@@ -35,6 +36,8 @@ from app.schemas.n8n import (
 from app.services.n8n_crypto_scan_service import fetch_crypto_scan
 from app.services.n8n_daily_brief_service import fetch_daily_brief
 from app.services.n8n_filled_orders_service import fetch_filled_orders
+from app.services.n8n_formatting import fmt_date_with_weekday
+from app.services.n8n_kr_morning_report_service import fetch_kr_morning_report
 from app.services.n8n_market_context_service import fetch_market_context
 from app.services.n8n_pending_orders_service import fetch_pending_orders
 from app.services.n8n_pending_review_service import fetch_pending_review
@@ -492,3 +495,36 @@ async def get_crypto_scan(
         summary=N8nCryptoScanSummary(**(result.get("summary", {}))),
         errors=result.get("errors", []),
     )
+
+
+@router.get("/kr-morning-report", response_model=N8nKrMorningReportResponse)
+async def get_kr_morning_report(
+    include_screen: bool = Query(True),
+    screen_strategy: str | None = Query(
+        None,
+        description="Optional screener strategy override. Null defaults to oversold-style RSI scan.",
+    ),
+    include_pending: bool = Query(True),
+    top_n: int = Query(20, ge=1, le=50),
+) -> N8nKrMorningReportResponse | JSONResponse:
+    as_of_dt = now_kst().replace(microsecond=0)
+    try:
+        result = await fetch_kr_morning_report(
+            include_screen=include_screen,
+            screen_strategy=screen_strategy,
+            include_pending=include_pending,
+            top_n=top_n,
+            as_of=as_of_dt,
+        )
+    except Exception as exc:
+        logger.exception("Failed to build KR morning report")
+        payload = N8nKrMorningReportResponse(
+            success=False,
+            as_of=as_of_dt.isoformat(),
+            date_fmt=fmt_date_with_weekday(as_of_dt),
+            brief_text="",
+            errors=[{"error": str(exc)}],
+        )
+        return JSONResponse(status_code=500, content=payload.model_dump())
+
+    return N8nKrMorningReportResponse(**result)
