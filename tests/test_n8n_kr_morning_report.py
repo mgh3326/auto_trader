@@ -549,7 +549,9 @@ async def test_fetch_kr_morning_report_promotes_portfolio_warnings_to_errors():
             return_value=45000.0,
         ),
     ):
-        result = await fetch_kr_morning_report(include_screen=False, include_pending=False)
+        result = await fetch_kr_morning_report(
+            include_screen=False, include_pending=False
+        )
 
     assert result["success"] is False
     assert any(err["source"] == "portfolio" for err in result["errors"])
@@ -583,7 +585,9 @@ async def test_fetch_kr_morning_report_promotes_pending_errors_to_top_level_erro
             return_value=pending_payload,
         ),
     ):
-        result = await fetch_kr_morning_report(include_screen=False, include_pending=True)
+        result = await fetch_kr_morning_report(
+            include_screen=False, include_pending=True
+        )
 
     assert result["success"] is False
     assert any(err["source"] == "pending_orders" for err in result["errors"])

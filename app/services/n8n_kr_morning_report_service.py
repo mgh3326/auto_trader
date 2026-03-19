@@ -89,7 +89,9 @@ async def fetch_kr_morning_report(
     _extend_errors_from_payload(
         errors,
         source="portfolio",
-        warnings=portfolio_raw.get("warnings") if isinstance(portfolio_raw, dict) else None,
+        warnings=portfolio_raw.get("warnings")
+        if isinstance(portfolio_raw, dict)
+        else None,
     )
 
     # Process cash balance
@@ -135,7 +137,9 @@ async def fetch_kr_morning_report(
             _extend_errors_from_payload(
                 errors,
                 source="pending_orders",
-                errors=pending_raw.get("errors") if isinstance(pending_raw, dict) else None,
+                errors=pending_raw.get("errors")
+                if isinstance(pending_raw, dict)
+                else None,
             )
             pending_data = _build_pending_summary(pending_raw)
         except Exception as exc:

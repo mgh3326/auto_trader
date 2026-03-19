@@ -1377,7 +1377,9 @@ class TestN8nKrMorningReportEndpoint:
         assert response.json()["success"] is False
         assert response.json()["errors"][0]["source"] == "portfolio"
 
-    def test_get_kr_morning_report_returns_degraded_service_payload_with_errors(self, client: TestClient):
+    def test_get_kr_morning_report_returns_degraded_service_payload_with_errors(
+        self, client: TestClient
+    ):
         payload = {
             "success": False,
             "as_of": "2026-03-19T08:50:00+09:00",
