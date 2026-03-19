@@ -71,73 +71,6 @@ async def _fetch_news_finnhub(symbol: str, market: str, limit: int) -> dict[str,
     }
 
 
-async def fetch_economic_calendar_finnhub(
-    from_date: str,
-    to_date: str,
-) -> list[dict[str, Any]] | None:
-    """
-    Fetch economic calendar events from Finnhub.
-
-    Args:
-        from_date: Start date in YYYY-MM-DD format.
-        to_date: End date in YYYY-MM-DD format.
-
-    Returns:
-        List of event dicts with keys: time, country, event, actual, previous,
-        estimate, impact; or None if fetch fails.
-    """
-    try:
-        client = _get_finnhub_client()
-
-        def fetch_sync() -> list[dict[str, Any]]:
-            return client.calendar_economic(_from=from_date, to=to_date)
-
-        events = await asyncio.to_thread(fetch_sync)
-
-        # Finnhub returns {"economicCalendar": [...]} — unwrap the dict
-        if isinstance(events, dict):
-            events = events.get("economicCalendar", [])
-            logger.debug(
-                "Unwrapped Finnhub economic calendar dict, %d raw events",
-                len(events) if isinstance(events, list) else 0,
-            )
-
-        if not isinstance(events, list):
-            logger.warning(
-                "Finnhub economic_calendar returned unexpected type: %s",
-                type(events).__name__,
-            )
-            return None
-
-        normalized_events: list[dict[str, Any]] = []
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-
-            country = str(event.get("country", "")).strip().upper()
-            if country != "US":
-                continue
-
-            normalized_events.append(
-                {
-                    "time": str(event.get("time", "")).strip(),
-                    "country": country,
-                    "event": str(event.get("event", "")).strip(),
-                    "actual": event.get("actual"),
-                    "previous": event.get("prev", event.get("previous")),
-                    "estimate": event.get("estimate"),
-                    "impact": str(event.get("impact", "")).strip().lower() or None,
-                },
-            )
-
-        logger.info(
-            "Finnhub economic calendar: %d US events found", len(normalized_events)
-        )
-        return normalized_events
-    except Exception:
-        return None
-
-
 async def _fetch_company_profile_finnhub(symbol: str) -> dict[str, Any]:
     client = _get_finnhub_client()
 
@@ -339,7 +272,6 @@ async def _fetch_earnings_calendar_finnhub(
 
 
 __all__ = [
-    "fetch_economic_calendar_finnhub",
     "_fetch_company_profile_finnhub",
     "_fetch_earnings_calendar_finnhub",
     "_fetch_financials_finnhub",
