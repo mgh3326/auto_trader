@@ -1,4 +1,5 @@
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,7 @@ from app.auth.web_router import router as web_auth_router
 from app.core.config import settings
 from app.core.taskiq_broker import broker
 from app.middleware.auth import AuthMiddleware
+from app.middleware.csrf import TemplateFormCSRFMiddleware
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.routers import (
@@ -163,6 +165,30 @@ def create_app() -> FastAPI:
 
     # Add middlewares (order matters: last added = first executed)
     app.add_middleware(AuthMiddleware)
+    app.add_middleware(
+        TemplateFormCSRFMiddleware,
+        secret=settings.SECRET_KEY,
+        exempt_urls=[
+            re.compile(r"^/api/"),
+            re.compile(r"^/auth/"),
+            re.compile(r"^/admin/"),
+            re.compile(r"^/n8n/"),
+            re.compile(r"^/openclaw/"),
+            re.compile(r"^/ws/"),
+            re.compile(r"^/kis/"),
+            re.compile(r"^/upbit/"),
+            re.compile(r"^/screener/"),
+            re.compile(r"^/analysis/"),
+            re.compile(r"^/portfolio/"),
+            re.compile(r"^/news/"),
+            re.compile(r"^/stock/"),
+            re.compile(r"^/symbol/"),
+            re.compile(r"^/orderbook/"),
+            re.compile(r"^/trading/"),
+            re.compile(r"^/kospi200/"),
+            re.compile(r"^/manual-holdings/"),
+        ],
+    )
 
     taskiq_fastapi.init(broker, "app.main:api")
 
