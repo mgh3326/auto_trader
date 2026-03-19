@@ -170,3 +170,33 @@ def test_legacy_deprecated_api_path_bypasses_auth_401(client, mock_session_local
     assert response.status_code == 410
     payload = response.json()
     assert payload["replacement_url"] == "/portfolio/"
+
+
+def test_protected_route_redirects_cleanly_with_sentry_fastapi_enabled(monkeypatch):
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+
+    test_app = FastAPI()
+    test_app.add_middleware(AuthMiddleware)
+
+    @test_app.get("/test-protected", response_class=HTMLResponse)
+    async def protected_route(request: Request):
+        return "Protected Content"
+
+    @test_app.get("/web-auth/login", response_class=HTMLResponse)
+    async def login_page():
+        return "Login Page"
+
+    monkeypatch.setattr(
+        AuthMiddleware,
+        "_load_user",
+        staticmethod(AsyncMock(return_value=None)),
+    )
+
+    sentry_sdk.init(dsn=None, integrations=[FastApiIntegration()])
+    client = TestClient(test_app)
+
+    response = client.get("/test-protected", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/web-auth/login")
