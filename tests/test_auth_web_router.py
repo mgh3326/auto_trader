@@ -11,6 +11,7 @@ def _get_csrf_token(client):
     """Helper to get CSRF token from login page."""
     response = client.get("/web-auth/login")
     import re
+
     match = re.search(r'name="csrftoken" value="([^"]+)"', response.text)
     return match.group(1) if match else None
 

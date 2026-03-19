@@ -37,7 +37,9 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
         # and we need to consume the body to check for the csrf token.
 
         # We only do this for non-safe methods that might have a form body
-        if request.method not in self.safe_methods and not self._url_is_exempt(request.url):
+        if request.method not in self.safe_methods and not self._url_is_exempt(
+            request.url
+        ):
             body = b""
             more_body = True
             messages = []
@@ -67,7 +69,11 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
         csrf_cookie = request.cookies.get(self.cookie_name)
         csrf_token = scope.get("state", {}).get("csrftoken")
 
-        if csrf_cookie is None and csrf_token and message["type"] == "http.response.start":
+        if (
+            csrf_cookie is None
+            and csrf_token
+            and message["type"] == "http.response.start"
+        ):
             headers = MutableHeaders(scope=message)
             cookie: http.cookies.BaseCookie = http.cookies.SimpleCookie()
             cookie[self.cookie_name] = csrf_token
@@ -103,9 +109,7 @@ class TemplateFormCSRFMiddleware(CSRFMiddleware):
                 yield b""
 
             parser_cls = (
-                MultiPartParser
-                if "multipart/form-data" in content_type
-                else FormParser
+                MultiPartParser if "multipart/form-data" in content_type else FormParser
             )
             parser = parser_cls(request.headers, body_stream())
             form = await parser.parse()
