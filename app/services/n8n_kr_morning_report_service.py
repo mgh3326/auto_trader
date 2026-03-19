@@ -55,10 +55,14 @@ async def fetch_kr_morning_report(
     )
     kis_cash = results[1] if not isinstance(results[1], Exception) else 0.0
 
+    errors: list[dict[str, str]] = []
+
     if isinstance(results[0], Exception):
         logger.error("Failed to fetch portfolio overview: %s", results[0])
+        errors.append({"source": "portfolio", "error": str(results[0])})
     if isinstance(results[1], Exception):
         logger.error("Failed to fetch KIS cash balance: %s", results[1])
+        errors.append({"source": "cash", "error": str(results[1])})
 
     # Process holdings
     holdings = _build_holdings(portfolio_raw)
@@ -86,6 +90,7 @@ async def fetch_kr_morning_report(
             screening_data = await screen_task
         except Exception as exc:
             logger.error("Failed to fetch screening: %s", exc)
+            errors.append({"source": "screening", "error": str(exc)})
 
     # Process pending orders
     pending_data = {"total": 0, "buy_count": 0, "sell_count": 0, "orders": []}
@@ -95,6 +100,7 @@ async def fetch_kr_morning_report(
             pending_data = _build_pending_summary(pending_raw)
         except Exception as exc:
             logger.error("Failed to fetch pending orders: %s", exc)
+            errors.append({"source": "pending_orders", "error": str(exc)})
 
     # Build brief text
     brief_text = _build_brief_text(
@@ -107,8 +113,10 @@ async def fetch_kr_morning_report(
         include_pending=include_pending,
     )
 
+    success = len(errors) == 0
+
     return {
-        "success": True,
+        "success": success,
         "as_of": as_of_dt.isoformat(),
         "date_fmt": fmt_date_with_weekday(as_of_dt),
         "holdings": holdings,
@@ -116,7 +124,7 @@ async def fetch_kr_morning_report(
         "screening": screening_data,
         "pending_orders": pending_data,
         "brief_text": brief_text,
-        "errors": [],
+        "errors": errors,
     }
 
 

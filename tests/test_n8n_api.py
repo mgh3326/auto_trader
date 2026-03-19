@@ -1320,9 +1320,7 @@ class TestN8nKrMorningReportEndpoint:
         assert response.status_code == 200
         assert response.json()["cash_balance"]["toss_krw_fmt"] == "수동 관리"
 
-    def test_get_kr_morning_report_returns_500_on_service_error(
-        self, client: TestClient
-    ):
+    def test_get_kr_morning_report_returns_500_on_service_error(self, client: TestClient):
         with patch(
             "app.routers.n8n.fetch_kr_morning_report",
             new_callable=AsyncMock,
@@ -1332,3 +1330,34 @@ class TestN8nKrMorningReportEndpoint:
 
         assert response.status_code == 500
         assert response.json()["success"] is False
+
+    def test_get_kr_morning_report_returns_service_errors_without_500(self, client: TestClient):
+        payload = {
+            "success": False,
+            "as_of": "2026-03-19T08:50:00+09:00",
+            "date_fmt": "03/19 (목)",
+            "holdings": {"kis": {}, "toss": {}, "combined": {}},
+            "cash_balance": {
+                "kis_krw": 0,
+                "kis_krw_fmt": "0",
+                "toss_krw": None,
+                "toss_krw_fmt": "수동 관리",
+                "total_krw": 0,
+                "total_krw_fmt": "0"
+            },
+            "screening": {"total_scanned": 0, "top_n": 0, "strategy": None, "results": [], "summary": {}},
+            "pending_orders": {"total": 0, "buy_count": 0, "sell_count": 0, "orders": []},
+            "brief_text": "",
+            "errors": [{"source": "portfolio", "error": "portfolio down"}],
+        }
+
+        with patch(
+            "app.routers.n8n.fetch_kr_morning_report",
+            new_callable=AsyncMock,
+            return_value=payload,
+        ):
+            response = client.get("/api/n8n/kr-morning-report")
+
+        assert response.status_code == 200
+        assert response.json()["success"] is False
+        assert response.json()["errors"][0]["source"] == "portfolio"

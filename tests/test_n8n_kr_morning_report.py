@@ -406,3 +406,24 @@ async def test_fetch_kr_morning_report_reads_pending_totals_from_summary():
 
     assert result["pending_orders"]["total"] == 1
     assert result["pending_orders"]["sell_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_morning_report_surfaces_partial_failures_in_errors():
+    with (
+        patch(
+            "app.services.n8n_kr_morning_report_service._get_portfolio_overview",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("portfolio down"),
+        ),
+        patch(
+            "app.services.n8n_kr_morning_report_service._fetch_kis_cash_balance",
+            new_callable=AsyncMock,
+            return_value=45000.0,
+        ),
+    ):
+        result = await fetch_kr_morning_report(include_screen=False, include_pending=False)
+
+    assert result["errors"]
+    assert any(err["source"] == "portfolio" for err in result["errors"])
+    assert result["success"] is False
