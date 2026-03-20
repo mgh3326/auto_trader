@@ -6,6 +6,7 @@ from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling.shared import (
+    logger,
     normalize_account_filter as _normalize_account_filter,
 )
 from app.mcp_server.tooling.shared import (
@@ -15,6 +16,40 @@ from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )
+
+
+async def _get_kis_domestic_pending_buy_amount(kis: KISClient) -> float:
+    total = 0.0
+    open_orders = await kis.inquire_korea_orders()
+    for order in open_orders:
+        if str(order.get("sll_buy_dvsn_cd", "")).strip() != "02":
+            continue
+        price = to_float(order.get("ord_unpr"), default=0.0)
+        qty = to_float(
+            order.get("nccs_qty") or order.get("ord_qty"),
+            default=0.0,
+        )
+        total += price * qty
+    return total
+
+
+async def _get_kis_overseas_pending_buy_amount_usd(kis: KISClient) -> float:
+    total = 0.0
+    for exchange in ("NASD", "NYSE", "AMEX"):
+        try:
+            open_orders = await kis.inquire_overseas_orders(exchange)
+            for order in open_orders:
+                if str(order.get("sll_buy_dvsn_cd", "")).strip() != "02":
+                    continue
+                price = to_float(order.get("ft_ord_unpr3"), default=0.0)
+                qty = to_float(
+                    order.get("nccs_qty") or order.get("ft_ord_qty"),
+                    default=0.0,
+                )
+                total += price * qty
+        except Exception:
+            continue
+    return total
 
 
 def is_us_nation_name(value: Any) -> bool:
@@ -98,7 +133,18 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
                     margin_data
                 )
                 dncl_amt = float(domestic_cash.get("balance", 0) or 0)
-                orderable = float(domestic_cash.get("orderable", 0) or 0)
+                raw_orderable = float(domestic_cash.get("orderable", 0) or 0)
+                orderable = raw_orderable
+
+                try:
+                    pending_buy_amount = await _get_kis_domestic_pending_buy_amount(kis)
+                    orderable = max(0.0, raw_orderable - pending_buy_amount)
+                except Exception as exc:
+                    logger.warning(
+                        "KR pending order deduction failed, using raw orderable: %s",
+                        exc,
+                    )
+
                 accounts.append(
                     {
                         "account": "kis_domestic",
@@ -132,7 +178,16 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
                     or usd_margin.get("frcr_dncl_amt_2"),
                     default=0.0,
                 )
-                orderable = extract_usd_orderable_from_row(usd_margin)
+                raw_orderable = extract_usd_orderable_from_row(usd_margin)
+                orderable = raw_orderable
+
+                try:
+                    pending_usd = await _get_kis_overseas_pending_buy_amount_usd(kis)
+                    orderable = max(0.0, raw_orderable - pending_usd)
+                except Exception as exc:
+                    logger.warning(
+                        "USD pending order deduction failed, using raw orderable: %s", exc
+                    )
 
                 accounts.append(
                     {
