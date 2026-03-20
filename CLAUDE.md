@@ -449,8 +449,8 @@ uv run alembic history
 
 프로젝트 루트의 다음 문서들을 참고하세요:
 
-- `JSON_ANALYSIS_README.md` - JSON 분석 시스템 상세 가이드
-- `ANALYSIS_REFACTOR_README.md` - 분석 시스템 아키텍처 및 Redis 모델 제한
+- `docs/archive/JSON_ANALYSIS_README.md` - JSON 분석 시스템 상세 가이드
+- `docs/archive/ANALYSIS_REFACTOR_README.md` - 분석 시스템 아키텍처 및 Redis 모델 제한
 - `STOCK_INFO_GUIDE.md` - 데이터베이스 정규화 구조 및 SQL 쿼리 패턴
 - `UPBIT_WEBSOCKET_README.md` - Upbit WebSocket 실시간 시세
 - `DEPLOYMENT.md` - 배포 가이드
