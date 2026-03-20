@@ -34,6 +34,49 @@ from app.services.kis_websocket import (
 )
 
 
+def _build_official_h0gscni0_message(
+    *,
+    side: str = "02",
+    rctf_cls: str = "0",
+    ord_tmd: str = "153045",
+    symbol: str = "AAPL",
+    filled_qty: str = "10",
+    filled_price: str = "248.50",
+    order_qty: str = "0000000010",
+    cntg_yn: str = "2",
+    rfus_yn: str = "0",
+    acpt_yn: str = "1",
+    reject_reason: str = "",
+    trailing_field: str = "NASDAQ",
+) -> str:
+    """
+    Build an official H0GSCNI0 message using the documented field order.
+
+    Field order per KIS H0GSCNI0 spec:
+    0: CANO (account number)
+    1: ACNT_PRDT_CD (product code)
+    2: ODNO (order number)
+    3: ORGN_ODNO (original order number)
+    4: SLL_BUY_DVSN_CD (side: 01=sell, 02=buy)
+    5: RCTF_CLS (receipt class)
+    6: ORD_TMD (order time HHMMSS)
+    7: OVRS_PDNO (overseas product number/symbol)
+    8: FT_CCLD_QTY (filled quantity)
+    9: FT_CCLD_UNPR3 (filled price)
+    10: FT_ORD_QTY (order quantity)
+    11: CCLD_YN (contract/execution YN: 2=filled)
+    12: RFUS_YN (refuse YN: 0=accepted, 1=rejected)
+    13: ACPT_YN (accept YN: 0=normal, 1=normal, 3=cancel)
+    14: RJCT_RSON (reject reason)
+    15+: trailing fields (exchange, etc.)
+    """
+    payload = (
+        f"12345678^01^ORD000001^0000000000^{side}^{rctf_cls}^{ord_tmd}^{symbol}^"
+        f"{filled_qty}^{filled_price}^{order_qty}^{cntg_yn}^{rfus_yn}^{acpt_yn}^{reject_reason}^{trailing_field}"
+    )
+    return f"0|H0GSCNI0|1|{payload}"
+
+
 def _build_overseas_message(
     *,
     order_qty: str = "0000000010",
@@ -44,19 +87,26 @@ def _build_overseas_message(
     rfus_yn: str = "0",
     cntg_yn: str = "2",
 ) -> str:
-    payload = (
-        f"mgh3326^6762259301^0030145286^PROD^02^{rctf_cls}^RESERVED^"
-        f"AMZN^{filled_qty}^{filled_price}^093001^{rfus_yn}^{cntg_yn}^{acpt_yn}^RESERVED^{order_qty}"
+    """DEPRECATED: Use _build_official_h0gscni0_message instead."""
+    return _build_official_h0gscni0_message(
+        filled_qty=filled_qty,
+        filled_price=filled_price,
+        order_qty=order_qty,
+        rctf_cls=rctf_cls,
+        acpt_yn=acpt_yn,
+        rfus_yn=rfus_yn,
+        cntg_yn=cntg_yn,
     )
-    return f"0|H0GSCNI0|1|{payload}"
 
 
 def _build_synthetic_overseas_bac_message(*, symbol: str = "BAC") -> str:
-    payload = (
-        "mgh3326^1234567890^0030145286^PROD^02^0^RESERVED^"
-        f"{symbol}^23^47.90^093001^0^2^00^ENV^0000000023"
+    """Build BAC message using official H0GSCNI0 field order."""
+    return _build_official_h0gscni0_message(
+        symbol=symbol,
+        filled_qty="23",
+        filled_price="47.90",
+        order_qty="0000000023",
     )
-    return f"0|H0GSCNI0|1|{payload}"
 
 
 @pytest.mark.unit
@@ -1088,6 +1138,83 @@ class TestKISWebSocketClient:
         assert client.execution_events_received == 1
         assert client.last_message_at == event["received_at"]
         assert client.last_execution_at == event["received_at"]
+
+    @pytest.mark.asyncio
+    async def test_parse_message_extracts_overseas_fill_fields_by_official_index(
+        self, execution_callback
+    ) -> None:
+        """Test that official H0GSCNI0 field order is correctly parsed."""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+
+        result = client._parse_message(
+            _build_official_h0gscni0_message(
+                symbol="AAPL",
+                filled_qty="10",
+                filled_price="248.50",
+                order_qty="0000000010",
+                cntg_yn="2",
+                rfus_yn="0",
+                acpt_yn="1",
+                ord_tmd="153045",
+            )
+        )
+
+        assert result is not None
+        assert result["tr_code"] == OVERSEAS_EXECUTION_TR_REAL
+        assert result["market"] == "us"
+        assert result["symbol"] == "AAPL"
+        assert result["filled_qty"] == 10.0
+        assert result["filled_price"] == 248.50
+        assert result["order_qty"] == 10.0
+        assert result["fill_yn"] == "2"
+        assert result["cntg_yn"] == "2"
+        assert result["rfus_yn"] == "0"
+        assert result["acpt_yn"] == "1"
+        assert result["execution_status"] == "filled"
+        assert "T15:30:45" in result["filled_at"]
+
+    @pytest.mark.asyncio
+    async def test_listen_invokes_callback_for_official_overseas_fill(
+        self, execution_callback, caplog
+    ) -> None:
+        """Test that listen() correctly invokes callback for official H0GSCNI0 fill."""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        client.websocket = AsyncMock()
+        client.websocket.__aiter__.return_value = [
+            _build_official_h0gscni0_message(
+                symbol="NVDA",
+                filled_qty="3",
+                filled_price="875.00",
+                order_qty="0000000003",
+                cntg_yn="2",
+            )
+        ]
+
+        with caplog.at_level("INFO"):
+            await client.listen()
+
+        execution_callback.assert_awaited_once()
+        event = execution_callback.await_args.args[0]
+        assert event["symbol"] == "NVDA"
+        assert event["execution_status"] == "filled"
+        assert client.execution_events_received == 1
+
+    def test_is_execution_event_rejects_official_overseas_order_notice_payload(
+        self, execution_callback
+    ) -> None:
+        """Test that order notice payloads (cntg_yn=1) are correctly rejected."""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        result = client._parse_message(
+            _build_official_h0gscni0_message(
+                cntg_yn="1",
+                filled_qty="0",
+                filled_price="0",
+            )
+        )
+
+        assert result is not None
+        assert result["execution_status"] == "order_notice"
+        assert client._is_execution_event(result) is False
         assert "KIS execution received" in caplog.text
         assert f"correlation_id={event['correlation_id']}" in caplog.text
         assert "symbol=012450" in caplog.text
@@ -1631,7 +1758,7 @@ def _build_synthetic_h0gscni0_message(
     filled_price: str = "248.50",
     order_qty: str = "0000000010",
     rctf_cls: str = "0",
-    acpt_yn: str = "00",
+    acpt_yn: str = "1",
     rfus_yn: str = "0",
     cntg_yn: str = "2",
     side: str = "02",
@@ -1639,14 +1766,23 @@ def _build_synthetic_h0gscni0_message(
     """
     Build a synthetic H0GSCNI0 message for parser contract testing.
 
-    SYNTHETIC ONLY - Not based on actual decrypted evidence.
-    Payload structure follows KIS API documentation conventions.
+    Uses the official KIS H0GSCNI0 field order:
+    0: CANO, 1: ACNT_PRDT_CD, 2: ODNO, 3: ORGN_ODNO,
+    4: SLL_BUY_DVSN_CD, 5: RCTF_CLS, 6: ORD_TMD, 7: OVRS_PDNO,
+    8: FT_CCLD_QTY, 9: FT_CCLD_UNPR3, 10: FT_ORD_QTY,
+    11: CCLD_YN, 12: RFUS_YN, 13: ACPT_YN, 14: RJCT_RSON, 15+: trailing
     """
-    payload = (
-        f"ACCT0001^ORDER00001^TRX0000001^PROD^{side}^{rctf_cls}^RESERVED^"
-        f"{symbol}^{filled_qty}^{filled_price}^153045^{rfus_yn}^{cntg_yn}^{acpt_yn}^NASDAQ^{order_qty}"
+    return _build_official_h0gscni0_message(
+        symbol=symbol,
+        filled_qty=filled_qty,
+        filled_price=filled_price,
+        order_qty=order_qty,
+        rctf_cls=rctf_cls,
+        acpt_yn=acpt_yn,
+        rfus_yn=rfus_yn,
+        cntg_yn=cntg_yn,
+        side=side,
     )
-    return f"0|H0GSCNI0|1|{payload}"
 
 
 @pytest.mark.unit
@@ -1780,27 +1916,31 @@ class TestH0GSCNI0SyntheticContract:
         """
         Test that H0GSCNI0 fields are extracted from documented slot positions.
 
-        Uses unique values at each position to verify slot mapping.
+        Uses unique values at each position to verify slot mapping per KIS spec:
+        0: CANO, 1: ACNT_PRDT_CD, 2: ODNO, 3: ORGN_ODNO,
+        4: SLL_BUY_DVSN_CD, 5: RCTF_CLS, 6: ORD_TMD, 7: OVRS_PDNO,
+        8: FT_CCLD_QTY, 9: FT_CCLD_UNPR3, 10: FT_ORD_QTY,
+        11: CCLD_YN, 12: RFUS_YN, 13: ACPT_YN, 14: RJCT_RSON, 15+: trailing
         """
         client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=True)
 
         payload = (
-            "ACCT0001^"  # 0: account
-            "ORDER00001^"  # 1: order_id
-            "TRX0000001^"  # 2: tr_code placeholder
-            "PROD^"  # 3: reserved
-            "02^"  # 4: side (bid)
-            "9^"  # 5: rctf_cls (unique value)
-            "RESERVED^"  # 6: reserved
-            "META^"  # 7: symbol (unique)
-            "42^"  # 8: filled_qty (unique)
-            "999.99^"  # 9: filled_price (unique)
-            "093001^"  # 10: filled_at
-            "8^"  # 11: rfus_yn (unique)
-            "7^"  # 12: cntg_yn (unique)
-            "77^"  # 13: acpt_yn (unique)
-            "NYSE^"  # 14: exchange
-            "0000000042"  # 15: order_qty (unique)
+            "12345678^"      # 0: CANO
+            "01^"            # 1: ACNT_PRDT_CD
+            "OD2026032001^"  # 2: ODNO
+            "0000000000^"    # 3: ORGN_ODNO
+            "02^"            # 4: SLL_BUY_DVSN_CD (side)
+            "9^"             # 5: RCTF_CLS (unique value)
+            "153045^"        # 6: ORD_TMD (filled_at)
+            "META^"          # 7: OVRS_PDNO (symbol, unique)
+            "42^"            # 8: FT_CCLD_QTY (filled_qty, unique)
+            "999.99^"        # 9: FT_CCLD_UNPR3 (filled_price, unique)
+            "0000000042^"    # 10: FT_ORD_QTY (order_qty, unique)
+            "7^"             # 11: CCLD_YN (cntg_yn, unique)
+            "8^"             # 12: RFUS_YN (unique)
+            "77^"            # 13: ACPT_YN (unique)
+            "REASON^"        # 14: RJCT_RSON
+            "NYSE"           # 15: trailing field (exchange)
         )
         message = f"0|H0GSCNI0|1|{payload}"
 
@@ -1811,8 +1951,11 @@ class TestH0GSCNI0SyntheticContract:
         assert result["filled_qty"] == 42.0
         assert result["filled_price"] == 999.99
         assert result["rctf_cls"] == "9"
+        assert result["filled_at"] is not None
+        assert "T15:30:45" in result["filled_at"]
         assert result["acpt_yn"] == "77"
         assert result["rfus_yn"] == "8"
         assert result["cntg_yn"] == "7"
+        assert result["fill_yn"] == "7"
         assert result["order_qty"] == 42.0
         assert result["currency"] == "USD"
