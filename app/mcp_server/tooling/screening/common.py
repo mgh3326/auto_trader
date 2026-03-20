@@ -675,6 +675,30 @@ def _empty_rsi_enrichment_diagnostics() -> dict[str, Any]:
     }
 
 
+def _finalize_rsi_enrichment_diagnostics(
+    diagnostics: dict[str, Any],
+    statuses: list[str],
+    errors: list[str | None],
+) -> dict[str, Any]:
+    diagnostics["succeeded"] = sum(1 for status in statuses if status == "success")
+    diagnostics["failed"] = sum(1 for status in statuses if status == "error")
+    diagnostics["rate_limited"] = sum(
+        1 for status in statuses if status == "rate_limited"
+    )
+    diagnostics["timeout"] = sum(1 for status in statuses if status == "timeout")
+
+    samples: list[str] = []
+    for error in errors:
+        if not error:
+            continue
+        samples.append(str(error)[:100])
+        if len(samples) >= 3:
+            break
+
+    diagnostics["error_samples"] = samples
+    return diagnostics
+
+
 def _build_screen_response(
     results: list[dict[str, Any]],
     total_count: int,
