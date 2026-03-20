@@ -509,9 +509,7 @@ async def get_tier_rule_params(
             stmt = (
                 select(TierRuleParam)
                 .where(*conditions)
-                .order_by(
-                    TierRuleParam.tier.asc(), TierRuleParam.param_type.asc()
-                )
+                .order_by(TierRuleParam.tier.asc(), TierRuleParam.param_type.asc())
             )
             result = await db.execute(stmt)
             rows: list[TierRuleParam] = list(result.scalars().all())
@@ -597,6 +595,7 @@ async def set_tier_rule_params(
                         )
                     )
                     action = "created"
+                    saved_row = row
                 else:
                     old_value = existing.params
                     existing.params = params
@@ -617,11 +616,12 @@ async def set_tier_rule_params(
                         )
                     )
                     action = "updated"
+                    saved_row = existing
 
             return {
                 "success": True,
                 "action": action,
-                "data": _serialize_rule(row if existing is None else existing),
+                "data": _serialize_rule(saved_row),
             }
     except ValueError as exc:
         return {"success": False, "error": str(exc)}
@@ -722,6 +722,7 @@ async def set_market_filter(
                         )
                     )
                     action = "created"
+                    saved_row = row
                 else:
                     old_value = {"params": existing.params, "enabled": existing.enabled}
                     existing.params = params
@@ -742,11 +743,12 @@ async def set_market_filter(
                         )
                     )
                     action = "updated"
+                    saved_row = existing
 
             return {
                 "success": True,
                 "action": action,
-                "data": _serialize_filter(row if existing is None else existing),
+                "data": _serialize_filter(saved_row),
             }
     except ValueError as exc:
         return {"success": False, "error": str(exc)}

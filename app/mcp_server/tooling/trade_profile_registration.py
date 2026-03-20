@@ -66,8 +66,7 @@ def register_trade_profile_tools(mcp: FastMCP) -> None:
     _ = mcp.tool(
         name="get_market_filters",
         description=(
-            "Get market filters. "
-            "Filter by instrument_type and enabled_only flag."
+            "Get market filters. Filter by instrument_type and enabled_only flag."
         ),
     )(get_market_filters)
     _ = mcp.tool(
@@ -79,10 +78,7 @@ def register_trade_profile_tools(mcp: FastMCP) -> None:
     )(set_market_filter)
     _ = mcp.tool(
         name="delete_asset_profile",
-        description=(
-            "Delete an asset profile by symbol. "
-            "Logs to profile_change_log."
-        ),
+        description=("Delete an asset profile by symbol. Logs to profile_change_log."),
     )(delete_asset_profile)
 
 
