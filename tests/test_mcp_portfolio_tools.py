@@ -321,6 +321,85 @@ async def test_get_cash_balance_kis_domestic_skips_zero_priority_orderables(
 
 
 @pytest.mark.asyncio
+async def test_get_cash_balance_kis_domestic_deducts_pending_buy_orders(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "4300000.0",
+                "stck_cash_objt_amt": "4300000.0",
+                "stck_cash_ord_psbl_amt": "4300000.0",
+            }
+
+        async def inquire_korea_orders(self):
+            return [
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "250000", "nccs_qty": "1"},
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "800000", "nccs_qty": "1"},
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "2270000", "nccs_qty": "1"},
+                {"sll_buy_dvsn_cd": "01", "ord_unpr": "999999", "nccs_qty": "9"},
+            ]
+
+        async def inquire_overseas_margin(self):
+            return []
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_domestic")
+
+    assert result["accounts"][0]["balance"] == 4300000.0
+    assert result["accounts"][0]["orderable"] == 980000.0
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_domestic_pending_lookup_failure_keeps_raw_orderable(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "4300000.0",
+                "stck_cash_objt_amt": "4300000.0",
+                "stck_cash_ord_psbl_amt": "4300000.0",
+            }
+
+        async def inquire_korea_orders(self):
+            raise RuntimeError("order inquiry failed")
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_domestic")
+
+    assert result["accounts"][0]["orderable"] == 4300000.0
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_domestic_clamps_orderable_at_zero(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "1000000.0",
+                "stck_cash_objt_amt": "1000000.0",
+                "stck_cash_ord_psbl_amt": "1000000.0",
+            }
+
+        async def inquire_korea_orders(self):
+            return [
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "600000", "nccs_qty": "2"},
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_domestic")
+
+    assert result["accounts"][0]["orderable"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_get_cash_balance_non_strict_skips_domestic_on_integrated_margin_error(
     monkeypatch,
 ):
@@ -520,6 +599,79 @@ async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
     assert len(result["accounts"]) == 1
     assert result["accounts"][0]["balance"] == 3500.0
     assert result["accounts"][0]["orderable"] == 3200.0
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_overseas_avoids_duplicate_deduction_from_us_exchanges(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "1000.0",
+                    "frcr_gnrl_ord_psbl_amt": "1000.0",
+                }
+            ]
+
+        async def inquire_overseas_orders(self, exchange_code):
+            payload = {
+                "NASD": [
+                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "2"},
+                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "50.0", "nccs_qty": "2"},
+                    {"sll_buy_dvsn_cd": "01", "ft_ord_unpr3": "999.0", "nccs_qty": "9"},
+                ],
+                # KIS NASD query is documented as a US-wide lookup, so these rows
+                # represent duplicates that must not be counted again.
+                "NYSE": [
+                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "2"},
+                ],
+                "AMEX": [
+                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "50.0", "nccs_qty": "2"},
+                ],
+            }
+            return payload[exchange_code]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_overseas")
+
+    assert result["accounts"][0]["balance"] == 1000.0
+    assert result["accounts"][0]["orderable"] == 700.0
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_overseas_pending_lookup_failure_keeps_raw_orderable(
+    monkeypatch,
+    caplog,
+):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "1000.0",
+                    "frcr_gnrl_ord_psbl_amt": "1000.0",
+                }
+            ]
+
+        async def inquire_overseas_orders(self, exchange_code):
+            raise RuntimeError("NASD failed")
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    with caplog.at_level("WARNING"):
+        result = await tools["get_cash_balance"](account="kis_overseas")
+
+    assert result["accounts"][0]["orderable"] == 1000.0
+    assert "USD pending order deduction failed" in caplog.text
 
 
 # ---------------------------------------------------------------------------
