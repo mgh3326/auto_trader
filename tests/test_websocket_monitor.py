@@ -115,7 +115,7 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value="req-789")
+        send_mock = AsyncMock(return_value=_success_result("req-789"))
         monitor.openclaw_client.send_fill_notification = send_mock
 
         await monitor._on_kis_execution(
@@ -324,55 +324,74 @@ class TestUnifiedWebSocketMonitor:
         monitor.openclaw_client.send_fill_notification.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_send_fill_notification_skips_upbit_below_minimum(
-        self, mock_settings: None, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        from websocket_monitor import MIN_FILL_NOTIFY_AMOUNT, UnifiedWebSocketMonitor
-
-        monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value=_success_result())
-        monitor.openclaw_client.send_fill_notification = send_mock
-
-        caplog.set_level("DEBUG")
-
-        await monitor._send_fill_notification(
-            FillOrder(
-                symbol="KRW-BTC",
-                side="bid",
-                filled_price=49_999,
-                filled_qty=1,
-                filled_amount=MIN_FILL_NOTIFY_AMOUNT - 1,
-                filled_at="2024-01-01T00:00:00Z",
-                account="upbit",
-            )
-        )
-
-        send_mock.assert_not_awaited()
-        assert "Fill below minimum notify amount" in caplog.text
-
-    @pytest.mark.asyncio
-    async def test_send_fill_notification_does_not_filter_kis_low_amount(
+    async def test_send_fill_notification_always_routes_to_client(
         self, mock_settings: None
     ) -> None:
+        """모니터는 모든 fill을 client로 라우팅 (필터링은 client에서 수행)."""
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
         send_mock = AsyncMock(return_value=_success_result())
         monitor.openclaw_client.send_fill_notification = send_mock
 
+        # Low amount order (previously filtered for upbit only)
         await monitor._send_fill_notification(
             FillOrder(
-                symbol="AAPL",
+                symbol="KRW-BTC",
                 side="bid",
-                filled_price=35,
+                filled_price=10_000,
                 filled_qty=1,
-                filled_amount=35,
+                filled_amount=10_000,
                 filled_at="2024-01-01T00:00:00Z",
-                account="kis",
+                account="upbit",
             )
         )
 
         send_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_fill_notification_counts_success_for_stats(
+        self, mock_settings: None
+    ) -> None:
+        """fills_forwarded는 result.status == 'success'일 때만 증가."""
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor()
+
+        # Success case
+        monitor.openclaw_client.send_fill_notification = AsyncMock(
+            return_value=_success_result("req-1")
+        )
+        await monitor._send_fill_notification(
+            FillOrder(
+                symbol="KRW-BTC",
+                side="bid",
+                filled_price=50_000_000,
+                filled_qty=0.1,
+                filled_amount=5_000_000,
+                filled_at="2024-01-01T00:00:00Z",
+                account="upbit",
+            )
+        )
+        assert monitor.fills_forwarded == 1
+
+        # Skipped case
+        monitor.openclaw_client.send_fill_notification = AsyncMock(
+            return_value=_skipped_result("below_minimum")
+        )
+        await monitor._send_fill_notification(
+            FillOrder(
+                symbol="KRW-ETH",
+                side="bid",
+                filled_price=3_000_000,
+                filled_qty=0.01,
+                filled_amount=30_000,
+                filled_at="2024-01-01T00:00:00Z",
+                account="upbit",
+            )
+        )
+        # Should not increment
+        assert monitor.fills_forwarded == 1
 
     @pytest.mark.asyncio
     async def test_send_fill_notification_continues_on_failure(
@@ -425,8 +444,8 @@ class TestUnifiedWebSocketMonitor:
         assert monitor.last_openclaw_success_at is not None
         success_timestamp = monitor.last_openclaw_success_at
         assert "correlation_id=corr-success" in caplog.text
-        assert "OpenClaw send start" in caplog.text
-        assert "OpenClaw send result" in caplog.text
+        assert "Fill notification send start" in caplog.text
+        assert "Fill notification send result" in caplog.text
         assert "result=success" in caplog.text
         assert "Notification pipeline result" not in caplog.text
 
@@ -436,7 +455,7 @@ class TestUnifiedWebSocketMonitor:
         )
         await monitor._send_fill_notification(order, correlation_id="corr-failed")
         assert "correlation_id=corr-failed" in caplog.text
-        assert "OpenClaw send result" in caplog.text
+        assert "Fill notification send result" in caplog.text
         assert "result=failed" in caplog.text
         assert "reason=request_failed" in caplog.text
         assert monitor.fills_forwarded == 1
@@ -444,7 +463,7 @@ class TestUnifiedWebSocketMonitor:
 
         caplog.clear()
         monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value=_success_result("req-skip")
+            return_value=_skipped_result("below_minimum")
         )
         monitor.mode = "upbit"
         await monitor._send_fill_notification(
@@ -460,8 +479,9 @@ class TestUnifiedWebSocketMonitor:
             correlation_id="corr-skipped",
         )
         assert "correlation_id=corr-skipped" in caplog.text
-        assert "OpenClaw send result" in caplog.text
+        assert "Fill notification send result" in caplog.text
         assert "result=skipped" in caplog.text
+        # fills_forwarded should NOT increment when skipped
         assert monitor.fills_forwarded == 1
         assert monitor.last_openclaw_success_at == success_timestamp
 

@@ -1,7 +1,7 @@
 import json
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 import httpx
@@ -13,8 +13,10 @@ from tenacity import (
 )
 
 from app.core.config import settings
+from app.core.kr_symbols import KR_SYMBOLS
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.services.fill_notification import (
+    FillOrder,
     FillOrderLike,
     coerce_fill_order,
     format_fill_message,
@@ -24,35 +26,9 @@ logger = logging.getLogger(__name__)
 
 OPENCLAW_RETRY_STOP = stop_after_attempt(4)
 OPENCLAW_RETRY_WAIT = wait_exponential(multiplier=1, min=1, max=4)
-OPENCLAW_FILL_AGENT_NAME = "TradeAlert"
-OPENCLAW_FILL_AGENT_CHANNEL = "discord"
-OPENCLAW_FILL_AGENT_MODEL = "gpt"
-OPENCLAW_FILL_AGENT_TIMEOUT_SECONDS = 60
-OPENCLAW_FILL_MARKET_LABELS = {
-    "kr": "equity_kr",
-    "us": "equity_us",
-    "crypto": "crypto",
-}
-OPENCLAW_FILL_AGENT_INSTRUCTIONS = (
-    "반드시 `get_holdings`와 `analyze_stock`를 실행하세요.\n"
-    "이 메시지는 이미 체결 완료된 주문의 사후 평가입니다. 매매 결정이 아닙니다.\n\n"
-    "평가 기준:\n"
-    "- 체결가 vs 현재가/최근 변동폭 비교\n"
-    "- RSI, EMA 등 기술 지표 기준 타이밍 적절성\n"
-    "- 보유 비중 변화와 포트폴리오 영향\n\n"
-    "출력 형식:\n"
-    "첫 줄: 한 줄 감성 피드백 (이모지 포함, 예시 참고)\n"
-    "둘째 줄부터: 현재 보유 상태, 이번 체결의 의미, 핵심 근거를 한국어로 간결하게 정리\n\n"
-    "매수 체결 피드백 예시:\n"
-    "- 좋은 가격에 잡았네요 👏 (과매도 구간 매수, 최근 저점 근처)\n"
-    "- 적정 가격 매수 📊 (지표상 중립 구간)\n"
-    "- 조금 높게 잡은 느낌이에요 🤔 (단기 과열 구간, RSI 70+)\n\n"
-    "매도 체결 피드백 예시:\n"
-    "- 고점 근처에서 잘 빠졌네요 🎯 (RSI 고점, 저항선 근처)\n"
-    "- 무난한 타이밍이에요 📊 (추세 중립)\n"
-    "- 더 기다려도 됐을 수도 있어요 💭 (상승 모멘텀 남아있음)\n\n"
-    "주의: '판단: buy/hold/sell' 형식 절대 사용 금지. 자연스러운 한국어 평가로 작성하세요."
-)
+
+# Module-level cache for KR_SYMBOLS reverse mapping
+_KR_SYMBOLS_REVERSE: dict[str, str] | None = None
 
 FillNotificationDeliveryStatus = Literal["success", "skipped", "failed"]
 
@@ -78,64 +54,55 @@ def _build_openclaw_retrying() -> AsyncRetrying:
     )
 
 
-def _normalize_optional_text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped or None
+def _get_kr_symbol_reverse() -> dict[str, str]:
+    """Get cached reverse mapping of KR_SYMBOLS (code -> name)."""
+    global _KR_SYMBOLS_REVERSE
+    if _KR_SYMBOLS_REVERSE is None:
+        _KR_SYMBOLS_REVERSE = {v: k for k, v in KR_SYMBOLS.items()}
+    return _KR_SYMBOLS_REVERSE
 
 
-def _format_fill_side_text(side: str, fill_status: str | None) -> str:
-    side_text = {
-        "bid": "매수",
-        "ask": "매도",
-    }.get(side, "미확인")
-    fill_label = "부분체결" if fill_status == "partial" else "체결"
-    return f"{side_text} {fill_label}"
+def _resolve_fill_display_name(order: FillOrder) -> str:
+    """Resolve display name based on market type and symbol.
+
+    - KR: KR_SYMBOLS 역매핑으로 조회, 미존재 시 심볼 코드 그대로
+    - US: 심볼 그대로
+    - Crypto: KRW-BTC -> BTC, USDT-BTC -> BTC
+    """
+    if order.market_type == "kr":
+        reverse_map = _get_kr_symbol_reverse()
+        return reverse_map.get(order.symbol, order.symbol)
+
+    if order.market_type == "us":
+        return order.symbol
+
+    if order.market_type == "crypto":
+        # KRW-BTC -> BTC, USDT-BTC -> BTC
+        if "-" in order.symbol:
+            return order.symbol.split("-")[-1]
+        return order.symbol
+
+    return order.symbol
 
 
-def _format_fill_value(value: float) -> str:
-    rounded = round(value)
-    if abs(value - rounded) < 1e-12:
-        return f"{int(rounded):,}"
-    return f"{value:,.12f}".rstrip("0").rstrip(".")
-
-
-def _resolve_fill_agent_market(market_type: str | None) -> str | None:
-    if market_type is None:
-        return None
-    return OPENCLAW_FILL_MARKET_LABELS.get(market_type)
-
-
-def _resolve_fill_analysis_thread_id(market_type: str | None) -> str | None:
-    if market_type == "kr":
-        return _normalize_optional_text(settings.OPENCLAW_THREAD_KR)
-    if market_type == "us":
-        return _normalize_optional_text(settings.OPENCLAW_THREAD_US)
-    if market_type == "crypto":
-        return _normalize_optional_text(settings.OPENCLAW_THREAD_CRYPTO)
-    return None
-
-
-def _build_fill_agent_message(
-    normalized_order: FillOrderLike,
-    *,
-    agent_market: str,
-) -> str:
-    order = coerce_fill_order(normalized_order)
-    return (
-        "다음 체결 내역을 평가하고 Discord 스레드에 전달할 피드백을 작성하세요.\n\n"
-        f"종목: {order.symbol}\n"
-        f"구분: {_format_fill_side_text(order.side, order.fill_status)}\n"
-        f"수량: {_format_fill_value(order.filled_qty)}\n"
-        f"체결가: {_format_fill_value(order.filled_price)}\n"
-        f"금액: {_format_fill_value(order.filled_amount)}\n"
-        f"시간: {order.filled_at}\n"
-        f"계좌: {order.account}\n"
-        f"마켓: {agent_market}\n\n"
-        "출력 규칙:\n"
-        f"{OPENCLAW_FILL_AGENT_INSTRUCTIONS}"
-    )
+def _build_n8n_fill_payload(
+    order: FillOrder, *, correlation_id: str | None = None
+) -> dict[str, Any]:
+    """Build n8n webhook payload for fill notification."""
+    return {
+        "symbol": order.symbol,
+        "display_name": _resolve_fill_display_name(order),
+        "side": order.side,
+        "filled_price": order.filled_price,
+        "filled_qty": order.filled_qty,
+        "filled_amount": order.filled_amount,
+        "filled_at": order.filled_at,
+        "account": order.account,
+        "market_type": order.market_type,
+        "fill_status": order.fill_status or "filled",
+        "currency": order.currency or ("KRW" if order.market_type == "kr" else "USD"),
+        "correlation_id": correlation_id,
+    }
 
 
 class OpenClawClient:
@@ -255,9 +222,9 @@ class OpenClawClient:
         self, order: FillOrderLike, *, correlation_id: str | None = None
     ) -> FillNotificationDeliveryResult:
         """
-        체결 알림을 OpenClaw Gateway로 전송
+        체결 알림을 N8N webhook으로 전송
 
-        Fire-and-forget 텍스트 알림으로 전송하며, 최대 4회 시도합니다
+        Fire-and-forget JSON payload로 전송하며, 최대 4회 시도합니다
         (초기 1회 + 재시도 3회, 1s -> 2s -> 4s 백오프).
         모든 재시도 실패 시 failed 결과를 반환하고 예외를 삼킵니다.
 
@@ -270,91 +237,66 @@ class OpenClawClient:
         normalized_order = coerce_fill_order(order)
         request_id = str(uuid4())
         headers = {"Content-Type": "application/json"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
 
         result = FillNotificationDeliveryResult(
             status="failed",
             reason="request_failed",
         )
         discord_fill_message = format_fill_message(normalized_order)
-        try:
-            agent_market = _resolve_fill_agent_market(normalized_order.market_type)
-            analysis_thread_id = _resolve_fill_analysis_thread_id(
-                normalized_order.market_type
-            )
 
-            if not settings.OPENCLAW_ENABLED:
+        try:
+            # Skip if n8n webhook not configured
+            n8n_webhook_url = settings.N8N_FILL_WEBHOOK_URL.strip()
+            if not n8n_webhook_url:
                 logger.debug(
-                    "OpenClaw fill agent skipped: correlation_id=%s symbol=%s account=%s reason=openclaw_disabled",
+                    "N8N fill notification skipped: correlation_id=%s symbol=%s account=%s reason=n8n_webhook_not_configured",
                     correlation_id,
                     normalized_order.symbol,
                     normalized_order.account,
                 )
                 result = FillNotificationDeliveryResult(
                     status="skipped",
-                    reason="openclaw_disabled",
+                    reason="n8n_webhook_not_configured",
                 )
-            elif agent_market is None:
+            # Skip if below minimum amount (50,000)
+            elif normalized_order.filled_amount < 50_000:
                 logger.debug(
-                    "OpenClaw fill agent skipped: correlation_id=%s symbol=%s account=%s reason=unsupported_market market_type=%s",
+                    "N8N fill notification skipped: correlation_id=%s symbol=%s account=%s reason=below_minimum_notify_amount amount=%s",
                     correlation_id,
                     normalized_order.symbol,
                     normalized_order.account,
-                    normalized_order.market_type,
+                    normalized_order.filled_amount,
                 )
                 result = FillNotificationDeliveryResult(
                     status="skipped",
-                    reason="unsupported_market",
-                )
-            elif analysis_thread_id is None:
-                logger.debug(
-                    "OpenClaw fill agent skipped: correlation_id=%s symbol=%s account=%s reason=missing_analysis_thread market_type=%s",
-                    correlation_id,
-                    normalized_order.symbol,
-                    normalized_order.account,
-                    normalized_order.market_type,
-                )
-                result = FillNotificationDeliveryResult(
-                    status="skipped",
-                    reason="missing_analysis_thread",
+                    reason="below_minimum_notify_amount",
                 )
             else:
-                payload = {
-                    "message": _build_fill_agent_message(
-                        normalized_order,
-                        agent_market=agent_market,
-                    ),
-                    "name": OPENCLAW_FILL_AGENT_NAME,
-                    "deliver": True,
-                    "channel": OPENCLAW_FILL_AGENT_CHANNEL,
-                    "to": analysis_thread_id,
-                    "model": OPENCLAW_FILL_AGENT_MODEL,
-                    "timeoutSeconds": OPENCLAW_FILL_AGENT_TIMEOUT_SECONDS,
-                }
+                payload = _build_n8n_fill_payload(
+                    normalized_order, correlation_id=correlation_id
+                )
                 async for attempt in _build_openclaw_retrying():
                     attempt_number = attempt.retry_state.attempt_number
                     with attempt:
                         logger.info(
-                            "OpenClaw fill notification send start: correlation_id=%s request_id=%s symbol=%s account=%s attempt=%s thread_id=%s",
+                            "N8N fill notification send start: correlation_id=%s request_id=%s symbol=%s account=%s attempt=%s",
                             correlation_id,
                             request_id,
                             normalized_order.symbol,
                             normalized_order.account,
                             attempt_number,
-                            analysis_thread_id,
                         )
                         try:
                             async with httpx.AsyncClient(timeout=10) as cli:
                                 res = await cli.post(
-                                    self._webhook_url,
+                                    n8n_webhook_url,
                                     json=payload,
                                     headers=headers,
                                 )
                                 _ = res.raise_for_status()
                         except Exception as exc:
                             logger.warning(
-                                "OpenClaw fill notification attempt failed: correlation_id=%s request_id=%s symbol=%s account=%s attempt=%s error=%s",
+                                "N8N fill notification attempt failed: correlation_id=%s request_id=%s symbol=%s account=%s attempt=%s error=%s",
                                 correlation_id,
                                 request_id,
                                 normalized_order.symbol,
@@ -364,7 +306,7 @@ class OpenClawClient:
                             )
                             raise
                         logger.info(
-                            "OpenClaw fill notification sent: correlation_id=%s request_id=%s symbol=%s account=%s attempt=%s status=%s",
+                            "N8N fill notification sent: correlation_id=%s request_id=%s symbol=%s account=%s attempt=%s status=%s",
                             correlation_id,
                             request_id,
                             normalized_order.symbol,
@@ -380,7 +322,7 @@ class OpenClawClient:
 
         except RetryError as e:
             logger.error(
-                "OpenClaw fill notification failed after retries: correlation_id=%s request_id=%s symbol=%s account=%s error=%s",
+                "N8N fill notification failed after retries: correlation_id=%s request_id=%s symbol=%s account=%s error=%s",
                 correlation_id,
                 request_id,
                 normalized_order.symbol,
@@ -393,7 +335,7 @@ class OpenClawClient:
             )
         except Exception as e:
             logger.error(
-                "OpenClaw fill notification error: correlation_id=%s request_id=%s symbol=%s account=%s error=%s",
+                "N8N fill notification error: correlation_id=%s request_id=%s symbol=%s account=%s error=%s",
                 correlation_id,
                 request_id,
                 normalized_order.symbol,

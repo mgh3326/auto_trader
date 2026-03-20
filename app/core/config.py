@@ -337,9 +337,9 @@ class Settings(BaseSettings):
     OPENCLAW_CALLBACK_URL: str = "http://localhost:8000/api/v1/openclaw/callback"
     OPENCLAW_SCREENER_CALLBACK_URL: str = "http://localhost:8000/api/screener/callback"
     OPENCLAW_ENABLED: bool = False
-    OPENCLAW_THREAD_KR: str | None = None
-    OPENCLAW_THREAD_US: str | None = None
-    OPENCLAW_THREAD_CRYPTO: str | None = None
+
+    # N8N Fill Notification webhook (replaces OPENCLAW_THREAD_* for fills)
+    N8N_FILL_WEBHOOK_URL: str = ""
 
     DAILY_SCAN_ENABLED: bool = False
     DAILY_SCAN_CRASH_THRESHOLD: float = 0.05
