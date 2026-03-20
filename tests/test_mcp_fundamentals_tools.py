@@ -253,6 +253,39 @@ class TestAnalyzeStock:
         assert rec is not None
         assert rec["rsi14"] == 0.0
 
+    def test_apply_common_results_normalizes_indicator_wrapper(self):
+        """Test that _apply_common_results flattens provider-style indicator payload."""
+        analysis = {}
+        task_results = {
+            "indicators": {
+                "symbol": "AAPL",
+                "price": 150.0,
+                "instrument_type": "equity_us",
+                "source": "yahoo",
+                "indicators": {"rsi": {"14": 45.8}},
+            }
+        }
+
+        analysis_analyze._apply_common_results(analysis, task_results, None)
+
+        # Should be normalized to flat indicator map
+        assert analysis["indicators"] == {"rsi": {"14": 45.8}}
+
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ({"rsi": {"14": 45.8}}, 45.8),
+            ({"indicators": {"rsi": {"14": 45.8}}}, 45.8),
+            ({"rsi": {"14": 0.0}}, 0.0),
+            ({"rsi": 50.0}, 50.0),
+            ({}, None),
+            (None, None),
+        ],
+    )
+    def test_extract_rsi14_handles_payload_shapes(self, payload, expected):
+        """Test _extract_rsi14 handles various indicator payload shapes."""
+        assert shared._extract_rsi14(payload) == expected
+
     async def test_analyze_stock_us_includes_recommendation_rsi14(self, monkeypatch):
         """Test that rsi14 is surfaced in recommendation payload for US market."""
         tools = build_tools()
@@ -272,7 +305,16 @@ class TestAnalyzeStock:
         async def mock_get_indicators(
             symbol, indicators, market=None, preloaded_df=None
         ):
-            return {"indicators": {"rsi": {"14": 45.8}, "bollinger": {"lower": 145.0}}}
+            return {
+                "symbol": symbol,
+                "price": 150.0,
+                "instrument_type": "equity_us",
+                "source": "yahoo",
+                "indicators": {
+                    "rsi": {"14": 45.8},
+                    "bollinger": {"lower": 145.0},
+                },
+            }
 
         async def mock_get_support_resistance(symbol, market=None, preloaded_df=None):
             return {"supports": [{"price": 140.0}], "resistances": [{"price": 160.0}]}
@@ -291,7 +333,11 @@ class TestAnalyzeStock:
 
         result = await tools["analyze_stock"]("AAPL", market="us")
 
+        # Verify indicators shape is normalized (flat indicator map)
+        assert result["indicators"]["rsi"]["14"] == 45.8
+        # Verify recommendation.rsi14 tracks the indicator value
         assert result["recommendation"]["rsi14"] == 45.8
+        assert result["recommendation"]["rsi14"] == result["indicators"]["rsi"]["14"]
 
     async def test_recommendation_not_included_crypto(self, monkeypatch):
         tools = build_tools()
