@@ -738,7 +738,98 @@ async def set_market_filter(
         return {"success": False, "error": f"set_market_filter failed: {exc}"}
 
 
+async def delete_asset_profile(
+    symbol: str,
+    market_type: str | None = None,
+    reason: str | None = None,
+    updated_by: str = "mcp",
+) -> dict[str, object]:
+    """Delete an asset profile by symbol."""
+    try:
+        symbol_input = symbol.strip()
+        if not symbol_input:
+            raise ValueError("symbol is required")
+
+        explicit_instrument_type = _parse_market_type(market_type)
+        existing: AssetProfile | None = None
+        instrument_type: InstrumentType
+        normalized_symbol: str
+
+        async with _session_factory()() as db:
+            async with db.begin():
+                if explicit_instrument_type is not None:
+                    instrument_type = explicit_instrument_type
+                    normalized_symbol = _normalize_symbol_for_instrument(
+                        symbol_input, instrument_type
+                    )
+                    existing_stmt = select(AssetProfile).where(
+                        AssetProfile.user_id == MCP_USER_ID,
+                        AssetProfile.symbol == normalized_symbol,
+                        AssetProfile.instrument_type == instrument_type,
+                    )
+                    existing_result = await db.execute(existing_stmt)
+                    existing = existing_result.scalar_one_or_none()
+                else:
+                    candidate_pairs: list[tuple[InstrumentType, str]] = []
+                    if symbol_input.isdigit() and len(symbol_input) <= 6:
+                        candidate_pairs.append(
+                            (InstrumentType.equity_kr, symbol_input.zfill(6))
+                        )
+                    upper_symbol = symbol_input.upper()
+                    if upper_symbol.startswith("KRW-"):
+                        candidate_pairs.append((InstrumentType.crypto, upper_symbol))
+                    if not candidate_pairs:
+                        candidate_pairs.append((InstrumentType.equity_us, upper_symbol))
+
+                    predicates = [
+                        and_(
+                            AssetProfile.instrument_type == candidate_type,
+                            AssetProfile.symbol == candidate_symbol,
+                        )
+                        for candidate_type, candidate_symbol in candidate_pairs
+                    ]
+                    existing_stmt = select(AssetProfile).where(
+                        AssetProfile.user_id == MCP_USER_ID,
+                        or_(*predicates),
+                    )
+                    existing_result = await db.execute(existing_stmt)
+                    existing = existing_result.scalar_one_or_none()
+
+                    if existing is not None:
+                        instrument_type = existing.instrument_type
+                        normalized_symbol = existing.symbol
+
+                if existing is None:
+                    return {"success": False, "error": "not found"}
+
+                old_snapshot = _snapshot_for_change_log(existing)
+                db.add(
+                    ProfileChangeLog(
+                        user_id=MCP_USER_ID,
+                        change_type="asset_profile",
+                        target=f"asset:{existing.instrument_type.value}:{existing.symbol}",
+                        old_value=old_snapshot,
+                        new_value={"deleted": True},
+                        reason=reason,
+                        changed_by=updated_by,
+                    )
+                )
+                await db.delete(existing)
+
+            return {
+                "success": True,
+                "action": "deleted",
+                "symbol": existing.symbol,
+                "instrument_type": existing.instrument_type.value,
+            }
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    except Exception as exc:
+        return {"success": False, "error": f"delete_asset_profile failed: {exc}"}
+
+
 __all__ = [
+    "delete_asset_profile",
     "get_asset_profile",
     "set_asset_profile",
     "get_tier_rule_params",

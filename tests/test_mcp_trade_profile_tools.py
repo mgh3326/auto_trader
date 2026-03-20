@@ -8,6 +8,7 @@ import pytest
 
 from app.mcp_server.tooling.trade_profile_tools import (
     _apply_profile_rules,
+    delete_asset_profile,
     get_asset_profile,
     get_market_filters,
     get_tier_rule_params,
@@ -618,3 +619,26 @@ async def test_set_market_filter_creates_new() -> None:
     assert len(change_logs) == 1
     assert change_logs[0].change_type == "market_filter"
     assert change_logs[0].target == "filter:crypto:kill_switch"
+
+
+@pytest.mark.asyncio
+async def test_delete_asset_profile_not_found() -> None:
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(
+        return_value=SimpleNamespace(scalar_one_or_none=lambda: None)
+    )
+    tx_cm = AsyncMock()
+    tx_cm.__aenter__.return_value = None
+    tx_cm.__aexit__.return_value = None
+    mock_session.begin = MagicMock(return_value=tx_cm)
+    mock_session.delete = AsyncMock()
+
+    session_factory = MagicMock(return_value=_build_session_cm(mock_session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=session_factory,
+    ):
+        result = await delete_asset_profile(symbol="AAPL", market_type="us")
+
+    assert result == {"success": False, "error": "not found"}
+    mock_session.delete.assert_not_called()
