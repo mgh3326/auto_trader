@@ -728,7 +728,8 @@ async def test_modify_order_us_fails_when_order_not_on_any_exchange(monkeypatch)
     assert result["success"] is False
     assert result["status"] == "failed"
     assert result["error"].startswith("Order not found in open orders (checked: ")
-    assert fake_kis.inquired_exchanges == ["NASD"]
+    # Now checks all default exchanges when not found
+    assert fake_kis.inquired_exchanges == ["NASD", "NYSE", "AMEX"]
 
 
 @pytest.mark.asyncio
@@ -935,7 +936,7 @@ async def test_cancel_order_us_uses_remaining_qty_then_fallback_qty(monkeypatch)
     assert result_remaining["success"] is True
     assert result_fallback["success"] is True
     assert result_missing["success"] is False
-    assert "Unable to resolve cancel quantity" in result_missing["error"]
+    assert "Unable to resolve remaining quantity" in result_missing["error"]
     assert fake_kis.cancel_quantities == [4, 11]
 
 
