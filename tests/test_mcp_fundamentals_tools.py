@@ -339,6 +339,59 @@ class TestAnalyzeStock:
         assert result["recommendation"]["rsi14"] == 45.8
         assert result["recommendation"]["rsi14"] == result["indicators"]["rsi"]["14"]
 
+    @pytest.mark.parametrize("symbol", ["AAPL", "MSFT"])
+    async def test_analyze_stock_us_recommendation_rsi14_tracks_indicator_value(
+        self, monkeypatch, symbol
+    ):
+        """Test that recommendation.rsi14 tracks indicators.rsi.14 for multiple symbols."""
+        tools = build_tools()
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            return pd.DataFrame(
+                {
+                    "date": ["2024-01-01"],
+                    "open": [150.0],
+                    "high": [155.0],
+                    "low": [148.0],
+                    "close": [150.0],
+                    "volume": [1000000],
+                }
+            )
+
+        async def mock_get_indicators(
+            sym, indicators, market=None, preloaded_df=None
+        ):
+            return {
+                "symbol": sym,
+                "price": 150.0,
+                "instrument_type": "equity_us",
+                "source": "yahoo",
+                "indicators": {
+                    "rsi": {"14": 45.8},
+                    "bollinger": {"lower": 145.0},
+                },
+            }
+
+        async def mock_get_support_resistance(sym, market=None, preloaded_df=None):
+            return {"supports": [{"price": 140.0}], "resistances": [{"price": 160.0}]}
+
+        async def mock_get_quote(sym, market_type):
+            return {"symbol": sym, "price": 150.0, "instrument_type": "equity_us"}
+
+        _patch_runtime_attr(
+            monkeypatch, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+        _patch_runtime_attr(monkeypatch, "_get_indicators_impl", mock_get_indicators)
+        _patch_runtime_attr(
+            monkeypatch, "_get_support_resistance_impl", mock_get_support_resistance
+        )
+        _patch_runtime_attr(monkeypatch, "_get_quote_impl", mock_get_quote)
+
+        result = await tools["analyze_stock"](symbol, market="us")
+
+        # Verify recommendation.rsi14 equals indicators.rsi.14
+        assert result["recommendation"]["rsi14"] == result["indicators"]["rsi"]["14"]
+
     async def test_recommendation_not_included_crypto(self, monkeypatch):
         tools = build_tools()
 
@@ -3798,12 +3851,13 @@ async def test_analyze_stock_crypto_uses_extended_default_indicators(monkeypatch
             "has_preloaded_df": True,
         }
     ]
-    assert result["indicators"]["indicators"]["adx"] == {
+    # After normalization, indicators are flat (no nested "indicators" wrapper)
+    assert result["indicators"]["adx"] == {
         "adx": 27.4,
         "plus_di": 31.2,
         "minus_di": 18.7,
     }
-    assert result["indicators"]["indicators"]["stoch_rsi"] == {"k": 61.5, "d": 55.1}
+    assert result["indicators"]["stoch_rsi"] == {"k": 61.5, "d": 55.1}
     assert result["errors"] == []
     assert "recommendation" not in result
 
@@ -3902,12 +3956,13 @@ async def test_analyze_portfolio_crypto_reuses_analyze_stock_default_indicators(
         "failed": 0,
         "errors": [],
     }
-    assert result["results"]["KRW-BTC"]["indicators"]["indicators"]["adx"] == {
+    # After normalization, indicators are flat (no nested "indicators" wrapper)
+    assert result["results"]["KRW-BTC"]["indicators"]["adx"] == {
         "adx": 27.4,
         "plus_di": 31.2,
         "minus_di": 18.7,
     }
-    assert result["results"]["KRW-BTC"]["indicators"]["indicators"]["stoch_rsi"] == {
+    assert result["results"]["KRW-BTC"]["indicators"]["stoch_rsi"] == {
         "k": 61.5,
         "d": 55.1,
     }
