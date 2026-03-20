@@ -253,7 +253,7 @@ class TestAnalyzeStock:
         assert rec is not None
         assert rec["rsi14"] == 0.0
 
-    def test_apply_common_results_normalizes_indicator_wrapper(self):
+    async def test_apply_common_results_normalizes_indicator_wrapper(self):
         """Test that _apply_common_results flattens provider-style indicator payload."""
         analysis = {}
         task_results = {
@@ -282,7 +282,7 @@ class TestAnalyzeStock:
             (None, None),
         ],
     )
-    def test_extract_rsi14_handles_payload_shapes(self, payload, expected):
+    async def test_extract_rsi14_handles_payload_shapes(self, payload, expected):
         """Test _extract_rsi14 handles various indicator payload shapes."""
         assert shared._extract_rsi14(payload) == expected
 
