@@ -642,10 +642,10 @@ Broker-specific contract:
   - `formatted`: formatted total KRW string (e.g. `"700,000 KRW"`)
 - **KIS domestic (`account="kis_domestic"`)**
   - `balance`: `stck_cash_objt_amt` (`intgr-margin`)
-  - `orderable`: first usable positive domestic integrated-margin orderable in this priority: `stck_cash100_max_ord_psbl_amt` -> `stck_itgr_cash100_ord_psbl_amt` -> `stck_cash_ord_psbl_amt` -> `stck_cash_objt_amt`; if all candidates are zero/missing, `0.0` is returned
+  - `orderable`: domestic integrated-margin orderable minus pending KR buy-order notional; if pending-order lookup fails, raw KIS orderable is returned; result is clamped at `0.0`
 - **KIS overseas (`account="kis_overseas"`)**
   - `balance`: USD cash balance (`frcr_dncl_amt1` fallback `frcr_dncl_amt_2`)
-  - `orderable`: USD orderable cash (`frcr_gnrl_ord_psbl_amt`)
+  - `orderable`: USD orderable cash minus pending US buy-order notional; if pending-order lookup fails, raw KIS orderable is returned; result is clamped at `0.0`
 
 Response shape:
 - `accounts`: per-account cash entries
