@@ -358,9 +358,7 @@ class TestAnalyzeStock:
                 }
             )
 
-        async def mock_get_indicators(
-            sym, indicators, market=None, preloaded_df=None
-        ):
+        async def mock_get_indicators(sym, indicators, market=None, preloaded_df=None):
             return {
                 "symbol": sym,
                 "price": 150.0,

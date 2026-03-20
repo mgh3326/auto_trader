@@ -301,7 +301,11 @@ async def test_send_fill_notification_skips_below_minimum_for_all_markets(
     )
     monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
 
-    symbol = "005930" if market_type == "kr" else ("AAPL" if market_type == "us" else "KRW-BTC")
+    symbol = (
+        "005930"
+        if market_type == "kr"
+        else ("AAPL" if market_type == "us" else "KRW-BTC")
+    )
     order = _build_fill_order(
         symbol=symbol,
         market_type=market_type,
@@ -561,6 +565,7 @@ async def test_request_analysis_supports_screener_callback_schema(
 
 # Obsolete: OpenClaw thread-based tests removed
 # New n8n-based fill notification tests are above
+
 
 # Keep old tests for reference but skip them
 @pytest.mark.skip(reason="Obsolete: OpenClaw thread-based fill notification removed")

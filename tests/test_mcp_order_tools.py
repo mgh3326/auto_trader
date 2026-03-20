@@ -1169,9 +1169,7 @@ async def test_cancel_order_us_apbk0656_error_includes_exchange(monkeypatch):
         AsyncMock(return_value="NYSE"),
     )
 
-    result = await tools["cancel_order"](
-        order_id="US-ERR-1", symbol="CRM", market="us"
-    )
+    result = await tools["cancel_order"](order_id="US-ERR-1", symbol="CRM", market="us")
 
     assert result["success"] is False
     assert "APBK0656" in result["error"]

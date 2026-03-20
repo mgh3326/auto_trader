@@ -154,11 +154,13 @@ def _normalize_kr_intraday_payload_frame(df: pd.DataFrame) -> pd.DataFrame:
 
     frame = df.copy()
     frame["datetime"] = frame["datetime"].map(
-        lambda value: value
-        if pd.isna(value)
-        else pd.Timestamp(value).tz_convert("Asia/Seoul").tz_localize(None)
-        if pd.Timestamp(value).tzinfo is not None
-        else pd.Timestamp(value)
+        lambda value: (
+            value
+            if pd.isna(value)
+            else pd.Timestamp(value).tz_convert("Asia/Seoul").tz_localize(None)
+            if pd.Timestamp(value).tzinfo is not None
+            else pd.Timestamp(value)
+        )
     )
     return frame
 

@@ -502,7 +502,10 @@ async def cancel_order_impl(
 
                 # If not in open orders, try recent history
                 if target_order is None and symbol:
-                    target_order, target_exchange = await _find_us_order_in_recent_history(
+                    (
+                        target_order,
+                        target_exchange,
+                    ) = await _find_us_order_in_recent_history(
                         kis, order_id, symbol, exchange_candidates
                     )
 

@@ -220,9 +220,11 @@ def _to_kst_naive(value: datetime.datetime) -> datetime.datetime:
 
 def _to_kst_naive_series(values: pd.Series) -> pd.Series:
     return values.map(
-        lambda value: pd.NaT
-        if pd.isna(value)
-        else pd.Timestamp(_to_kst_naive(pd.Timestamp(value).to_pydatetime()))
+        lambda value: (
+            pd.NaT
+            if pd.isna(value)
+            else pd.Timestamp(_to_kst_naive(pd.Timestamp(value).to_pydatetime()))
+        )
     )
 
 

@@ -184,7 +184,8 @@ async def get_cash_balance_impl(account: str | None = None) -> dict[str, Any]:
                     orderable = max(0.0, raw_orderable - pending_usd)
                 except Exception as exc:
                     logger.warning(
-                        "USD pending order deduction failed, using raw orderable: %s", exc
+                        "USD pending order deduction failed, using raw orderable: %s",
+                        exc,
                     )
 
                 accounts.append(

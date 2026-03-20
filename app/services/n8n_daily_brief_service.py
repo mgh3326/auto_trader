@@ -457,14 +457,15 @@ async def fetch_daily_brief(
 
     # Derive shared symbol context for Stage 2
     symbols_by_market = _collect_symbols_by_market(pending_result, portfolio_result)
-    
+
     # Preserve exact market prefixes for downstream context fetches.
     crypto_symbols = sorted(symbols_by_market.get("crypto", set()))
 
     # Stage 2: Parallel fetch remaining data using shared symbols
     context_task = fetch_market_context(
         market="crypto",
-        symbols=crypto_symbols or ["BTC"],  # Default to BTC for general context if empty
+        symbols=crypto_symbols
+        or ["BTC"],  # Default to BTC for general context if empty
         include_fear_greed=True,
         include_economic_calendar=True,
         as_of=effective_as_of,

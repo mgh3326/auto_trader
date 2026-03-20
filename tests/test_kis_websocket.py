@@ -1971,22 +1971,22 @@ class TestH0GSCNI0SyntheticContract:
         client = KISExecutionWebSocket(on_execution=AsyncMock(), mock_mode=True)
 
         payload = (
-            "12345678^"      # 0: CANO
-            "01^"            # 1: ACNT_PRDT_CD
+            "12345678^"  # 0: CANO
+            "01^"  # 1: ACNT_PRDT_CD
             "OD2026032001^"  # 2: ODNO
-            "0000000000^"    # 3: ORGN_ODNO
-            "02^"            # 4: SLL_BUY_DVSN_CD (side)
-            "9^"             # 5: RCTF_CLS (unique value)
-            "153045^"        # 6: ORD_TMD (filled_at)
-            "META^"          # 7: OVRS_PDNO (symbol, unique)
-            "42^"            # 8: FT_CCLD_QTY (filled_qty, unique)
-            "999.99^"        # 9: FT_CCLD_UNPR3 (filled_price, unique)
-            "0000000042^"    # 10: FT_ORD_QTY (order_qty, unique)
-            "7^"             # 11: CCLD_YN (cntg_yn, unique)
-            "8^"             # 12: RFUS_YN (unique)
-            "77^"            # 13: ACPT_YN (unique)
-            "REASON^"        # 14: RJCT_RSON
-            "NYSE"           # 15: trailing field (exchange)
+            "0000000000^"  # 3: ORGN_ODNO
+            "02^"  # 4: SLL_BUY_DVSN_CD (side)
+            "9^"  # 5: RCTF_CLS (unique value)
+            "153045^"  # 6: ORD_TMD (filled_at)
+            "META^"  # 7: OVRS_PDNO (symbol, unique)
+            "42^"  # 8: FT_CCLD_QTY (filled_qty, unique)
+            "999.99^"  # 9: FT_CCLD_UNPR3 (filled_price, unique)
+            "0000000042^"  # 10: FT_ORD_QTY (order_qty, unique)
+            "7^"  # 11: CCLD_YN (cntg_yn, unique)
+            "8^"  # 12: RFUS_YN (unique)
+            "77^"  # 13: ACPT_YN (unique)
+            "REASON^"  # 14: RJCT_RSON
+            "NYSE"  # 15: trailing field (exchange)
         )
         message = f"0|H0GSCNI0|1|{payload}"
 
