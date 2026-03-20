@@ -326,8 +326,19 @@ def _apply_common_results(
         analysis["quote"] = quote
     for key in ("indicators", "support_resistance"):
         value = task_results.get(key)
-        if value:
-            analysis[key] = value
+        if not value:
+            continue
+        # Normalize indicators payload: unwrap provider-style payload
+        # Provider returns: {"symbol": ..., "price": ..., "indicators": {...}}
+        # We want: {"rsi": {...}, ...} (flat indicator map)
+        if key == "indicators" and isinstance(value, dict):
+            # Skip error payloads
+            if "error" in value:
+                continue
+            inner = value.get("indicators")
+            if isinstance(inner, dict):
+                value = inner
+        analysis[key] = value
 
 
 def _apply_kr_results(analysis: dict[str, Any], task_results: dict[str, Any]) -> None:
