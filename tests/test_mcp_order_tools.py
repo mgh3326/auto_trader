@@ -1280,8 +1280,9 @@ async def test_cancel_order_kis_overseas_fails_when_order_not_found(monkeypatch)
     )
 
     assert result["success"] is False
-    assert "checked: NASD" in result["error"]
-    assert mock_kis.inquiry_calls == ["NASD"]
+    # Now checks all default exchanges when order not found in any
+    assert "NASD" in result["error"]
+    assert mock_kis.inquiry_calls == ["NASD", "NYSE", "AMEX"]
 
 
 @pytest.mark.asyncio

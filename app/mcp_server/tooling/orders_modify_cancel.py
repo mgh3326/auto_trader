@@ -18,6 +18,7 @@ from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
 from app.services.brokers.kis.client import KISClient
+from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_code
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
@@ -173,10 +174,39 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_DEFAULT_US_CANCEL_EXCHANGES = ["NASD", "NYSE", "AMEX"]
+
+
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    """Remove duplicates while preserving order."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
 async def _build_us_exchange_candidates(symbol: str | None) -> list[str]:
+    """Build a list of exchange candidates for US cancel lookups.
+
+    Prioritizes DB lookup result if symbol is provided, then adds
+    default exchanges as fallbacks. Results are deduplicated.
+    """
+    candidates: list[str] = []
     if symbol:
-        return [await get_us_exchange_by_symbol(symbol)]
-    return ["NASD", "NYSE", "AMEX"]
+        try:
+            db_exchange = await get_us_exchange_by_symbol(symbol)
+            candidates.append(_normalize_kis_exchange_code(db_exchange))
+        except Exception as exc:
+            logger.warning(
+                "US exchange lookup failed for cancel: symbol=%s error=%s",
+                symbol,
+                exc,
+            )
+    candidates.extend(_DEFAULT_US_CANCEL_EXCHANGES)
+    return _dedupe_preserve_order(candidates)
 
 
 async def _find_us_open_order_by_id(
@@ -184,6 +214,13 @@ async def _find_us_open_order_by_id(
     order_id: str,
     symbol: str | None,
 ) -> tuple[dict[str, Any] | None, str | None, list[str]]:
+    """Find an open order by ID across candidate exchanges.
+
+    Returns:
+        Tuple of (order_dict, order_exchange, exchange_candidates).
+        order_exchange is extracted from the order payload (ovrs_excg_cd)
+        and normalized, falling back to the queried exchange if not present.
+    """
     exchange_candidates = await _build_us_exchange_candidates(symbol)
     for exchange in exchange_candidates:
         try:
@@ -200,7 +237,11 @@ async def _find_us_open_order_by_id(
 
         for order in open_orders:
             if _extract_kis_order_number(order) == order_id:
-                return order, exchange, exchange_candidates
+                # Prefer order payload's exchange over queried exchange
+                order_exchange = str(
+                    order.get("ovrs_excg_cd") or order.get("OVRS_EXCG_CD") or exchange
+                ).strip()
+                return order, order_exchange, exchange_candidates
 
     return None, None, exchange_candidates
 
@@ -448,7 +489,10 @@ async def cancel_order_impl(
                         "market": _normalize_market_type_to_external(market_type),
                     }
 
-                exchange_code = target_exchange or exchange_candidates[0]
+                # Normalize exchange from order payload or fallback to candidate
+                exchange_code = _normalize_kis_exchange_code(
+                    target_exchange or exchange_candidates[0]
+                )
                 logger.info(
                     "US cancel resolved: order_id=%s symbol=%s checked_exchanges=%s selected_exchange=%s resolved_quantity=%s",
                     order_id,
