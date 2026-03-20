@@ -138,15 +138,15 @@ _US_SYMBOL_RESERVED_TOKENS = {
 OVERSEAS_FILL_FIELDS = {
     "side": 4,
     "rctf_cls": 5,
+    "filled_at": 6,
     "symbol": 7,
     "filled_qty": 8,
     "filled_price": 9,
-    "filled_at": 10,
-    "rfus_yn": 11,
-    "cntg_yn": 12,
-    "fill_yn": 12,
+    "order_qty": 10,
+    "cntg_yn": 11,
+    "fill_yn": 11,
+    "rfus_yn": 12,
     "acpt_yn": 13,
-    "order_qty": 15,
 }
 
 OVERSEAS_SIDE_MAP = {
@@ -817,8 +817,13 @@ class KISExecutionWebSocket:
             payload_fields = self._split_payload(payload_source)
 
         if payload_fields:
+            parsed["raw_fields_count"] = len(payload_fields)
             parsed.update(
-                self._parse_execution_payload(payload_fields, parsed["market"])
+                self._parse_execution_payload(
+                    payload_fields,
+                    parsed["market"],
+                    parsed["tr_code"],
+                )
             )
 
         if not parsed.get("symbol"):
@@ -936,7 +941,10 @@ class KISExecutionWebSocket:
         return [part for part in payload.split("|") if part]
 
     def _parse_execution_payload(
-        self, payload_fields: list[str], market: str
+        self,
+        payload_fields: list[str],
+        market: str,
+        tr_code: str,
     ) -> dict[str, Any]:
         raw_fields = [field.strip() for field in payload_fields]
         compact_fields = [field for field in raw_fields if field]
@@ -947,6 +955,13 @@ class KISExecutionWebSocket:
             parsed_overseas = self._parse_overseas_execution(raw_fields)
             if parsed_overseas is not None:
                 return parsed_overseas
+            logger.error(
+                "Overseas execution payload parse FAILED (returned None): "
+                "tr_code=%s field_count=%d raw_fields=%r",
+                tr_code,
+                len(raw_fields),
+                raw_fields[:16],
+            )
 
         if market == "kr":
             parsed_domestic = self._parse_domestic_execution(raw_fields)
