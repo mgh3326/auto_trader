@@ -14,7 +14,6 @@ from app.mcp_server.tooling.screening.common import (
     _to_optional_int,
 )
 from app.mcp_server.tooling.screening.enrichment import (
-    _apply_equity_enrichment_defaults,
     _compute_target_upside_pct,
 )
 from app.services.tvscreener_service import (

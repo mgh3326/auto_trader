@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from app.mcp_server.tooling import analysis_screen_core, portfolio_holdings
+from app.mcp_server.tooling import portfolio_holdings
 from app.mcp_server.tooling.screening import kr as screening_kr
 
 
@@ -34,9 +34,7 @@ def _mock_kr_sources(
     monkeypatch.setattr(
         screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
     )
-    monkeypatch.setattr(
-        screening_kr, "fetch_etf_all_cached", mock_fetch_etf_all_cached
-    )
+    monkeypatch.setattr(screening_kr, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
     monkeypatch.setattr(
         screening_kr,
         "fetch_valuation_all_cached",

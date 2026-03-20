@@ -30,9 +30,6 @@ from app.mcp_server.tooling import (
     analysis_analyze,
     analysis_screen_core,
     analysis_screening,
-)
-from app.mcp_server.tooling.screening import enrichment as screening_enrichment
-from app.mcp_server.tooling import (
     analysis_tool_handlers,
     fundamentals_sources_coingecko,
     fundamentals_sources_indices,
@@ -40,6 +37,7 @@ from app.mcp_server.tooling import (
     market_data_indicators,
     shared,
 )
+from app.mcp_server.tooling.screening import enrichment as screening_enrichment
 from app.services import market_data as market_data_service
 from app.services import naver_finance
 from tests._mcp_tooling_support import (
