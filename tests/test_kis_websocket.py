@@ -605,7 +605,18 @@ class TestKISWebSocketClient:
     ):
         client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
 
-        message = _build_overseas_message(rfus_yn="N")
+        # Use official H0GSCNI0 helper with explicit values for backward-compatible test
+        message = _build_official_h0gscni0_message(
+            symbol="AMZN",
+            filled_qty="3",
+            filled_price="201.5",
+            order_qty="0000000010",
+            cntg_yn="2",
+            rfus_yn="0",
+            rctf_cls="0",
+            acpt_yn="1",
+            ord_tmd="093001",
+        )
         result = client._parse_message(message)
 
         assert result is not None
@@ -613,14 +624,14 @@ class TestKISWebSocketClient:
         assert result["market"] == "us"
         assert result["symbol"] == "AMZN"
         assert result["side"] == "bid"
-        assert result["filled_qty"] == 3
+        assert result["filled_qty"] == 3.0
         assert result["filled_price"] == 201.5
         assert result["filled_amount"] == 604.5
         assert result["rctf_cls"] == "0"
-        assert result["rfus_yn"] == "N"
+        assert result["rfus_yn"] == "0"
         assert result["cntg_yn"] == "2"
-        assert result["acpt_yn"] == "00"
-        assert result["order_qty"] == 10
+        assert result["acpt_yn"] == "1"
+        assert result["order_qty"] == 10.0
         assert result["execution_status"] == "partial"
         assert "T09:30:01" in result["filled_at"]
 
@@ -1408,6 +1419,7 @@ class TestKISWebSocketClient:
             "filled_price": 201.5,
             "symbol": "AMZN",
             "correlation_id": "corr-reject-1",
+            "raw_fields_count": 16,
         }
 
         with caplog.at_level("ERROR"):
@@ -1415,8 +1427,9 @@ class TestKISWebSocketClient:
 
         assert result is False
         assert "overseas execution event rejected" in caplog.text.lower()
-        assert "correlation_id=corr-reject-1" in caplog.text
+        assert "tr_code=H0GSCNI0" in caplog.text
         assert "filled_qty=10" in caplog.text
+        assert "raw_fields_count=16" in caplog.text
 
     def test_is_execution_event_logs_drop_reason_for_domestic_missing_fill_yn(
         self, execution_callback, caplog
