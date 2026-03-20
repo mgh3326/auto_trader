@@ -13,6 +13,13 @@ if TYPE_CHECKING:
     from .protocols import KISClientProtocol
 
 
+# Stub for Task 1 - will be fully implemented in Task 2
+def _normalize_kis_exchange_code(code: str) -> str:
+    """Normalize exchange code to KIS format. Stub for testing."""
+    upper = str(code or "").strip().upper()
+    return upper
+
+
 class OverseasOrderClient:
     """Client for KIS overseas stock order operations.
 
