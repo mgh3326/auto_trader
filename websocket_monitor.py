@@ -288,49 +288,6 @@ class UnifiedWebSocketMonitor:
                 e,
                 exc_info=True,
             )
-            result = await self.openclaw_client.send_fill_notification(
-                order, correlation_id=correlation_id
-            )
-            if result.status == "success":
-                self.fills_forwarded += 1
-                self.last_openclaw_success_at = datetime.now(UTC).isoformat()
-                logger.info(
-                    "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
-                    "result=success request_id=%s",
-                    correlation_id,
-                    order.symbol,
-                    order.account,
-                    result.request_id,
-                )
-            elif result.status == "skipped":
-                logger.info(
-                    "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
-                    "result=skipped reason=%s",
-                    correlation_id,
-                    order.symbol,
-                    order.account,
-                    result.reason,
-                )
-            else:
-                logger.warning(
-                    "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
-                    "result=failed reason=%s request_id=%s",
-                    correlation_id,
-                    order.symbol,
-                    order.account,
-                    result.reason,
-                    result.request_id or "<none>",
-                )
-        except Exception as e:
-            logger.error(
-                "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
-                "result=failed error=%s",
-                correlation_id,
-                order.symbol,
-                order.account,
-                e,
-                exc_info=True,
-            )
 
     async def _start_upbit_supervisor(self) -> None:
         """

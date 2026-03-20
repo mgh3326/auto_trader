@@ -21,20 +21,6 @@ from app.services.openclaw_client import (
 )
 
 
-# Module-level reverse mapping cache for KR_SYMBOLS
-_KR_SYMBOLS_REVERSE: dict[str, str] | None = None
-
-
-def _get_kr_symbol_reverse() -> dict[str, str]:
-    """Get cached reverse mapping of KR_SYMBOLS (code -> name)."""
-    global _KR_SYMBOLS_REVERSE
-    if _KR_SYMBOLS_REVERSE is None:
-        from app.core.kr_symbols import KR_SYMBOLS
-
-        _KR_SYMBOLS_REVERSE = {v: k for k, v in KR_SYMBOLS.items()}
-    return _KR_SYMBOLS_REVERSE
-
-
 def test_build_openclaw_message_includes_callback_and_schema() -> None:
     message = _build_openclaw_message(
         request_id="rid-123",
@@ -108,6 +94,7 @@ def _build_fill_order(
     filled_qty: float = 0.1,
     filled_amount: float = 5_000_000,
     filled_at: str = "2024-01-01T00:00:00Z",
+    order_price: float | None = None,
     order_id: str | None = "order-123",
     fill_status: str | None = None,
 ) -> FillOrder:
@@ -119,6 +106,7 @@ def _build_fill_order(
         filled_amount=filled_amount,
         filled_at=filled_at,
         account=account,
+        order_price=order_price,
         order_id=order_id,
         fill_status=fill_status,
         market_type=market_type,
@@ -191,6 +179,7 @@ async def test_send_fill_notification_posts_fill_payload_to_n8n(
         filled_qty=1,
         filled_amount=1_095_000,
         filled_at="2026-03-20T11:17:00+09:00",
+        order_price=1_094_000,
     )
 
     mock_cli = AsyncMock()
@@ -228,6 +217,7 @@ async def test_send_fill_notification_posts_fill_payload_to_n8n(
     assert called_json["filled_qty"] == 1
     assert called_json["filled_amount"] == 1_095_000
     assert called_json["account"] == "kis"
+    assert called_json["order_price"] == 1_094_000
     assert called_json["correlation_id"] == "corr-123"
     assert "filled_at" in called_json
 
@@ -330,6 +320,7 @@ async def test_send_fill_notification_skips_below_minimum_for_all_markets(
 
     assert result.status == "skipped"
     assert result.reason == "below_minimum_notify_amount"
+    mock_notifier.notify_openclaw_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

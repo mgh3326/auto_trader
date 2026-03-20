@@ -418,6 +418,32 @@ class TestUnifiedWebSocketMonitor:
         send_mock.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_send_fill_notification_does_not_retry_client_on_exception(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor()
+        send_mock = AsyncMock(side_effect=Exception("boom"))
+        monitor.openclaw_client.send_fill_notification = send_mock
+
+        await monitor._send_fill_notification(
+            FillOrder(
+                symbol="KRW-BTC",
+                side="bid",
+                filled_price=50_000_000,
+                filled_qty=0.1,
+                filled_amount=5_000_000,
+                filled_at="2024-01-01T00:00:00Z",
+                account="upbit",
+            )
+        )
+
+        send_mock.assert_awaited_once()
+        assert monitor.fills_forwarded == 0
+        assert monitor.last_openclaw_success_at is None
+
+    @pytest.mark.asyncio
     async def test_send_fill_notification_logs_openclaw_result_states(
         self, mock_settings: None, caplog: pytest.LogCaptureFixture
     ) -> None:

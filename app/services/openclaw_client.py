@@ -99,6 +99,7 @@ def _build_n8n_fill_payload(
         "filled_at": order.filled_at,
         "account": order.account,
         "market_type": order.market_type,
+        "order_price": order.order_price,
         "fill_status": order.fill_status or "filled",
         "currency": order.currency or ("KRW" if order.market_type == "kr" else "USD"),
         "correlation_id": correlation_id,
@@ -347,12 +348,13 @@ class OpenClawClient:
                 reason="request_failed",
             )
         finally:
-            await self._forward_to_telegram(
-                discord_fill_message,
-                alert_type="fill",
-                correlation_id=correlation_id,
-                market_type=normalized_order.market_type,
-            )
+            if result.reason != "below_minimum_notify_amount":
+                await self._forward_to_telegram(
+                    discord_fill_message,
+                    alert_type="fill",
+                    correlation_id=correlation_id,
+                    market_type=normalized_order.market_type,
+                )
 
         return result
 
