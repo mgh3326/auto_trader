@@ -642,3 +642,19 @@ async def test_delete_asset_profile_not_found() -> None:
 
     assert result == {"success": False, "error": "not found"}
     mock_session.delete.assert_not_called()
+
+
+def test_trade_profile_tool_names_exports_all_handlers() -> None:
+    from app.mcp_server.tooling.trade_profile_registration import (
+        TRADE_PROFILE_TOOL_NAMES,
+    )
+
+    assert TRADE_PROFILE_TOOL_NAMES == {
+        "get_asset_profile",
+        "set_asset_profile",
+        "get_tier_rule_params",
+        "set_tier_rule_params",
+        "get_market_filters",
+        "set_market_filter",
+        "delete_asset_profile",
+    }
