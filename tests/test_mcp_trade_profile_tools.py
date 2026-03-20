@@ -10,6 +10,7 @@ from app.mcp_server.tooling.trade_profile_tools import (
     _apply_profile_rules,
     get_asset_profile,
     set_asset_profile,
+    set_tier_rule_params,
 )
 from app.models.trading import InstrumentType
 
@@ -371,3 +372,46 @@ async def test_set_asset_profile_update_logs_change_type_asset_profile() -> None
     change_logs = [o for o in added if hasattr(o, "change_type")]
     assert len(change_logs) == 1
     assert change_logs[0].change_type == "asset_profile"
+
+
+@pytest.mark.asyncio
+async def test_set_tier_rule_params_invalid_tier() -> None:
+    result = await set_tier_rule_params(
+        instrument_type="us",
+        tier=0,
+        profile="balanced",
+        param_type="buy",
+        params={"size": 0.2},
+    )
+
+    assert result == {"success": False, "error": "tier must be 1-4"}
+
+
+@pytest.mark.asyncio
+async def test_set_tier_rule_params_invalid_profile() -> None:
+    result = await set_tier_rule_params(
+        instrument_type="us",
+        tier=2,
+        profile="unknown",
+        param_type="buy",
+        params={"size": 0.2},
+    )
+
+    assert result["success"] is False
+    assert "Invalid profile" in str(result["error"])
+
+
+@pytest.mark.asyncio
+async def test_set_tier_rule_params_invalid_param_type() -> None:
+    result = await set_tier_rule_params(
+        instrument_type="us",
+        tier=2,
+        profile="balanced",
+        param_type="invalid",
+        params={"size": 0.2},
+    )
+
+    assert result == {
+        "success": False,
+        "error": "param_type must be one of: buy, sell, stop, rebalance, common",
+    }

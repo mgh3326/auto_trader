@@ -9,7 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.db import AsyncSessionLocal
 from app.core.kr_symbols import normalize_kr_symbol
 from app.mcp_server.tooling.shared import MCP_USER_ID, normalize_market
-from app.models.trade_profile import AssetProfile, ProfileChangeLog, TierRuleParam
+from app.models.trade_profile import (
+    AssetProfile,
+    MarketFilter,
+    ProfileChangeLog,
+    TierRuleParam,
+)
 from app.models.trading import InstrumentType
 
 
@@ -65,6 +70,39 @@ def _normalize_sell_mode(value: str | None) -> str | None:
         return None
     normalized = value.strip().lower()
     return normalized or None
+
+
+_VALID_PARAM_TYPES = frozenset({"buy", "sell", "stop", "rebalance", "common"})
+
+
+def _validate_param_type(param_type: str | None) -> None:
+    if param_type is None:
+        return
+    normalized = param_type.strip().lower()
+    if normalized and normalized not in _VALID_PARAM_TYPES:
+        raise ValueError(
+            "param_type must be one of: buy, sell, stop, rebalance, common"
+        )
+
+
+def _normalize_param_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _serialize_filter(model: MarketFilter) -> dict[str, object]:
+    return {
+        "id": model.id,
+        "instrument_type": model.instrument_type.value,
+        "filter_name": model.filter_name,
+        "params": model.params,
+        "enabled": model.enabled,
+        "updated_by": model.updated_by,
+        "created_at": model.created_at.isoformat(),
+        "updated_at": model.updated_at.isoformat(),
+    }
 
 
 def _normalize_symbol_for_instrument(
@@ -430,4 +468,39 @@ async def set_asset_profile(
         return {"success": False, "error": f"set_asset_profile failed: {exc}"}
 
 
-__all__ = ["get_asset_profile", "set_asset_profile"]
+async def set_tier_rule_params(
+    instrument_type: str,
+    tier: int,
+    profile: str,
+    param_type: str,
+    params: dict[str, object],
+    updated_by: str = "mcp",
+) -> dict[str, object]:
+    """Set tier rule params (stub for validation tests)."""
+    try:
+        parsed_instrument_type = _parse_market_type(instrument_type)
+        if parsed_instrument_type is None:
+            raise ValueError("instrument_type is required")
+
+        _validate_tier(tier)
+        if tier is None or not (1 <= tier <= 4):
+            raise ValueError("tier must be 1-4")
+
+        _validate_profile(profile)
+        normalized_profile = _normalize_profile(profile)
+        if normalized_profile is None:
+            raise ValueError(f"Invalid profile: {profile!r}")
+
+        _validate_param_type(param_type)
+        normalized_param_type = _normalize_param_type(param_type)
+        if normalized_param_type is None:
+            raise ValueError(
+                "param_type must be one of: buy, sell, stop, rebalance, common"
+            )
+
+        return {"success": True, "action": "created"}
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+
+
+__all__ = ["get_asset_profile", "set_asset_profile", "set_tier_rule_params"]
