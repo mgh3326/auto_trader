@@ -170,11 +170,11 @@ async def test_enrich_crypto_indicators_uses_upbit_bulk_query(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -224,11 +224,11 @@ async def test_enrich_crypto_indicators_applies_partial_matches_only(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -251,11 +251,11 @@ async def test_enrich_crypto_indicators_handles_empty_results(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -276,11 +276,11 @@ async def test_enrich_crypto_indicators_handles_rate_limit(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -300,11 +300,11 @@ async def test_enrich_crypto_indicators_handles_timeout(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -340,28 +340,28 @@ async def test_screen_crypto_via_tvscreener_uses_upbit_value_traded_contract(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
             return_value=service,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.upbit_service.fetch_multiple_tickers",
+            "app.mcp_server.tooling.screening.crypto.upbit_service.fetch_multiple_tickers",
             new=fetch_multiple_tickers,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.get_upbit_market_display_names",
+            "app.mcp_server.tooling.screening.crypto.get_upbit_market_display_names",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.get_upbit_warning_markets",
+            "app.mcp_server.tooling.screening.crypto.get_upbit_warning_markets",
             new=AsyncMock(return_value=set()),
         ),
         patch.object(
             __import__(
-                "app.mcp_server.tooling.analysis_screen_core",
+                "app.mcp_server.tooling.screening.crypto",
                 fromlist=["_CRYPTO_MARKET_CAP_CACHE"],
             )._CRYPTO_MARKET_CAP_CACHE,
             "get",
@@ -439,28 +439,28 @@ async def test_screen_crypto_via_tvscreener_prefers_value_traded_over_usd_volume
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
             return_value=service,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.upbit_service.fetch_multiple_tickers",
+            "app.mcp_server.tooling.screening.crypto.upbit_service.fetch_multiple_tickers",
             new=fetch_multiple_tickers,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.get_upbit_market_display_names",
+            "app.mcp_server.tooling.screening.crypto.get_upbit_market_display_names",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.get_upbit_warning_markets",
+            "app.mcp_server.tooling.screening.crypto.get_upbit_warning_markets",
             new=AsyncMock(return_value=set()),
         ),
         patch.object(
             __import__(
-                "app.mcp_server.tooling.analysis_screen_core",
+                "app.mcp_server.tooling.screening.crypto",
                 fromlist=["_CRYPTO_MARKET_CAP_CACHE"],
             )._CRYPTO_MARKET_CAP_CACHE,
             "get",
@@ -512,28 +512,28 @@ async def test_screen_crypto_via_tvscreener_sorts_by_market_cap_field(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
             return_value=service,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.upbit_service.fetch_multiple_tickers",
+            "app.mcp_server.tooling.screening.crypto.upbit_service.fetch_multiple_tickers",
             new=fetch_multiple_tickers,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.get_upbit_market_display_names",
+            "app.mcp_server.tooling.screening.crypto.get_upbit_market_display_names",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.get_upbit_warning_markets",
+            "app.mcp_server.tooling.screening.crypto.get_upbit_warning_markets",
             new=AsyncMock(return_value=set()),
         ),
         patch.object(
             __import__(
-                "app.mcp_server.tooling.analysis_screen_core",
+                "app.mcp_server.tooling.screening.crypto",
                 fromlist=["_CRYPTO_MARKET_CAP_CACHE"],
             )._CRYPTO_MARKET_CAP_CACHE,
             "get",
@@ -598,20 +598,20 @@ async def test_screen_crypto_via_tvscreener_coerces_rsi_desc_before_query(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.crypto.TvScreenerService",
             return_value=service,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.upbit_service.fetch_multiple_tickers",
+            "app.mcp_server.tooling.screening.crypto.upbit_service.fetch_multiple_tickers",
             new=fetch_multiple_tickers,
         ),
         patch.object(
             __import__(
-                "app.mcp_server.tooling.analysis_screen_core",
+                "app.mcp_server.tooling.screening.crypto",
                 fromlist=["_CRYPTO_MARKET_CAP_CACHE"],
             )._CRYPTO_MARKET_CAP_CACHE,
             "get",
@@ -703,11 +703,11 @@ async def test_enrich_crypto_indicators_manual_fallback_uses_upbit_keys(
 ) -> None:
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.crypto._import_tvscreener",
             side_effect=ImportError,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.compute_crypto_realtime_rsi_map",
+            "app.mcp_server.tooling.screening.crypto.compute_crypto_realtime_rsi_map",
             new=AsyncMock(
                 return_value={"KRW-BTC": 41.2, "KRW-ETH": 37.4, "KRW-XRP": 55.1}
             ),

@@ -30,6 +30,9 @@ from app.mcp_server.tooling import (
     analysis_analyze,
     analysis_screen_core,
     analysis_screening,
+)
+from app.mcp_server.tooling.screening import enrichment as screening_enrichment
+from app.mcp_server.tooling import (
     analysis_tool_handlers,
     fundamentals_sources_coingecko,
     fundamentals_sources_indices,
@@ -3257,13 +3260,13 @@ class TestScreenEnrichmentHelpers:
             }
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_enrichment,
             "_fetch_screen_enrichment_kr",
             mock_kr,
             raising=False,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_enrichment,
             "_fetch_screen_enrichment_us",
             mock_us,
             raising=False,

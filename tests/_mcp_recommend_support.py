@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 
 from app.mcp_server.tooling import analysis_screen_core, portfolio_holdings
+from app.mcp_server.tooling.screening import kr as screening_kr
 
 
 def _mock_kr_sources(
@@ -31,13 +32,13 @@ def _mock_kr_sources(
         return await asyncio.sleep(0, result=valuations or {})
 
     monkeypatch.setattr(
-        analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+        screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
     )
     monkeypatch.setattr(
-        analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+        screening_kr, "fetch_etf_all_cached", mock_fetch_etf_all_cached
     )
     monkeypatch.setattr(
-        analysis_screen_core,
+        screening_kr,
         "fetch_valuation_all_cached",
         mock_fetch_valuation_all_cached,
     )

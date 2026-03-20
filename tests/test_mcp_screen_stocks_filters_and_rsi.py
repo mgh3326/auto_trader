@@ -7,6 +7,8 @@ import pytest
 import app.services.brokers.upbit.client as upbit_service
 from app.core.async_rate_limiter import RateLimitExceededError
 from app.mcp_server.tooling import analysis_screen_core
+from app.mcp_server.tooling.screening import crypto as screening_crypto
+from app.mcp_server.tooling.screening import kr as screening_kr
 from app.services import naver_finance
 from tests._mcp_tooling_support import build_tools
 
@@ -43,17 +45,17 @@ class TestScreenStocksRsiLogging:
             return {"14": 42.0}
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
-        monkeypatch.setattr(analysis_screen_core, "_calculate_rsi", mock_calculate_rsi)
+        monkeypatch.setattr(screening_kr, "_calculate_rsi", mock_calculate_rsi)
 
         result = await analysis_screen_core._screen_kr(
             market="kospi",
@@ -92,7 +94,7 @@ class TestScreenStocksRsiLogging:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "compute_crypto_realtime_rsi_map",
             realtime_rsi_mock,
         )
@@ -140,15 +142,15 @@ class TestScreenStocksRsiLogging:
             raise RuntimeError("boom-kr")
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
         caplog.set_level(logging.ERROR)
@@ -206,15 +208,15 @@ class TestScreenStocksRsiLogging:
             return pd.DataFrame({"date": pd.to_datetime(["2026-03-07"]), "open": [1.0]})
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
         result = await analysis_screen_core._screen_kr(
@@ -272,7 +274,7 @@ class TestScreenStocksRsiLogging:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_enrich_crypto_indicators",
             mock_enrich_crypto_indicators,
         )
@@ -321,15 +323,15 @@ class TestScreenStocksRsiLogging:
             raise RateLimitExceededError("KIS rate limit retries exhausted")
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
         result = await analysis_screen_core._screen_kr(
@@ -380,7 +382,7 @@ class TestScreenStocksRsiLogging:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_enrich_crypto_indicators",
             mock_enrich_crypto_indicators,
         )
@@ -427,7 +429,7 @@ class TestScreenStocksRsiLogging:
         monkeypatch.setattr(
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
-        monkeypatch.setattr(analysis_screen_core.asyncio, "gather", mock_gather)
+        monkeypatch.setattr(screening_crypto.asyncio, "gather", mock_gather)
 
         caplog.set_level(logging.WARNING)
         tools = build_tools()
@@ -458,7 +460,7 @@ class TestScreenStocksFilters:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -542,7 +544,7 @@ class TestScreenStocksFilters:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         naver_finance_called = False
@@ -582,7 +584,7 @@ class TestScreenStocksSorting:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -663,7 +665,7 @@ class TestScreenStocksLimit:
             return mock_krx_stocks * 5
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -697,7 +699,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -729,7 +731,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -761,7 +763,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -791,7 +793,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -833,7 +835,7 @@ class TestScreenStocksDividendYieldNormalization:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -862,7 +864,7 @@ class TestScreenStocksPhase2Spec:
             return mock_krx_etfs
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            screening_kr, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -897,7 +899,7 @@ class TestScreenStocksPhase2Spec:
             return mock_krx_etfs
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            screening_kr, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -952,7 +954,7 @@ class TestScreenStocksPhase2Spec:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
 
@@ -1039,7 +1041,7 @@ class TestScreenStocksPhase2Spec:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
 
@@ -1088,7 +1090,7 @@ class TestScreenStocksPhase2Spec:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -1118,7 +1120,7 @@ class TestScreenStocksPhase2Spec:
             return []
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()

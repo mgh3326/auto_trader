@@ -7,7 +7,7 @@ import pytest
 import sentry_sdk
 
 import app.services.brokers.upbit.client as upbit_service
-from app.mcp_server.tooling import analysis_screen_core
+from app.mcp_server.tooling.screening import crypto as screening_crypto
 from tests._mcp_tooling_support import build_tools
 
 pytest_plugins = ("tests._mcp_tooling_support",)
@@ -82,12 +82,12 @@ class TestScreenStocksCrypto:
             )
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -97,22 +97,22 @@ class TestScreenStocksCrypto:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_market_display_names",
             AsyncMock(
                 return_value={
@@ -259,12 +259,12 @@ class TestScreenStocksCrypto:
         mock_session.close = AsyncMock()
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -274,22 +274,22 @@ class TestScreenStocksCrypto:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_market_display_names",
             AsyncMock(
                 return_value={
@@ -310,7 +310,7 @@ class TestScreenStocksCrypto:
             raising=False,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "AsyncSessionLocal",
             lambda: mock_session,
         )
@@ -412,12 +412,12 @@ class TestScreenStocksCrypto:
         mock_session.close = AsyncMock()
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -427,22 +427,22 @@ class TestScreenStocksCrypto:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_market_display_names",
             AsyncMock(
                 return_value={
@@ -463,7 +463,7 @@ class TestScreenStocksCrypto:
             raising=False,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "AsyncSessionLocal",
             lambda: mock_session,
         )
@@ -550,12 +550,12 @@ class TestScreenStocksCrypto:
         mock_session.close = AsyncMock()
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -565,22 +565,22 @@ class TestScreenStocksCrypto:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_market_display_names",
             AsyncMock(
                 return_value={
@@ -593,7 +593,7 @@ class TestScreenStocksCrypto:
             raising=False,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "AsyncSessionLocal",
             lambda: mock_session,
         )
@@ -725,12 +725,12 @@ class TestScreenStocksCrypto:
 
         monkeypatch.setattr(sentry_sdk, "start_span", fake_start_span)
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -740,22 +740,22 @@ class TestScreenStocksCrypto:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_market_display_names",
             AsyncMock(
                 return_value={
@@ -768,7 +768,7 @@ class TestScreenStocksCrypto:
             raising=False,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "AsyncSessionLocal",
             lambda: mock_session,
         )
@@ -883,12 +883,12 @@ class TestScreenStocksCrypto:
         mock_session.close = AsyncMock()
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -898,28 +898,28 @@ class TestScreenStocksCrypto:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_market_display_names",
             mock_get_upbit_market_display_names,
             raising=False,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "AsyncSessionLocal",
             lambda: mock_session,
         )
@@ -996,12 +996,12 @@ class TestScreenStocksCrypto:
             }
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -1013,23 +1013,23 @@ class TestScreenStocksCrypto:
             ),
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_market_display_names",
             AsyncMock(return_value={}),
             raising=False,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
@@ -1048,7 +1048,7 @@ class TestScreenStocksCrypto:
         )
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_screen_crypto_via_tvscreener",
             AsyncMock(side_effect=RuntimeError("boom")),
         )
@@ -1070,7 +1070,7 @@ class TestScreenStocksCrypto:
             ),
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_enrich_crypto_indicators",
             AsyncMock(
                 return_value={
@@ -1297,7 +1297,7 @@ class TestScreenStocksCrypto:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_enrich_crypto_indicators",
             enrich_mock,
         )
@@ -1349,7 +1349,7 @@ class TestScreenStocksCrypto:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_enrich_crypto_indicators",
             enrich_mock,
         )
@@ -1415,12 +1415,12 @@ class TestScreenStocksCrypto:
             }
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -1430,12 +1430,12 @@ class TestScreenStocksCrypto:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
@@ -1503,12 +1503,12 @@ class TestScreenStocksCrypto:
             }
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -1518,12 +1518,12 @@ class TestScreenStocksCrypto:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
@@ -1580,7 +1580,7 @@ class TestScreenStocksCrypto:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             warning_markets_mock,
         )
@@ -1779,7 +1779,7 @@ class TestScreenStocksCrypto:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
@@ -1865,23 +1865,23 @@ class TestScreenStocksCrypto:
             )
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
         monkeypatch.setattr(upbit_service, "_request_json", fake_request_json)
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             AsyncMock(
                 return_value={
@@ -1947,7 +1947,7 @@ class TestScreenStocksCrypto:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )

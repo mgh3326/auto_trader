@@ -128,19 +128,19 @@ async def test_screen_kr_uses_market_korea_and_public_symbol_name_mapping(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.kr._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.kr.TvScreenerService",
             return_value=service,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.fetch_stock_all_cached",
+            "app.mcp_server.tooling.screening.kr.fetch_stock_all_cached",
             side_effect=mock_fetch_stock_all_cached,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.fetch_valuation_all_cached",
+            "app.mcp_server.tooling.screening.kr.fetch_valuation_all_cached",
             AsyncMock(return_value={}),
         ),
     ):
@@ -164,11 +164,11 @@ async def test_screen_us_uses_market_america_and_country_filter(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.us._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.us.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -191,11 +191,11 @@ async def test_screen_us_passes_combined_filters_without_bitwise_and(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.us._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.us.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -250,11 +250,11 @@ async def test_screen_us_queries_and_maps_optional_analyst_fields(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.us._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.us.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -330,19 +330,19 @@ async def test_screen_kr_joins_requested_submarket_and_valuation_data(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.kr._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.kr.TvScreenerService",
             return_value=service,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.fetch_stock_all_cached",
+            "app.mcp_server.tooling.screening.kr.fetch_stock_all_cached",
             side_effect=mock_fetch_stock_all_cached,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.fetch_valuation_all_cached",
+            "app.mcp_server.tooling.screening.kr.fetch_valuation_all_cached",
             side_effect=mock_fetch_valuation_all_cached,
         ),
     ):
@@ -380,11 +380,11 @@ async def test_screen_us_honors_sort_order(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.us._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.us.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -422,11 +422,11 @@ async def test_screen_us_adds_valuation_filters_and_applies_missing_value_backst
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.us._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.us.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -477,11 +477,11 @@ async def test_screen_us_drops_rows_without_usable_price(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.us._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.us.TvScreenerService",
             return_value=service,
         ),
     ):
@@ -517,19 +517,19 @@ async def test_screen_kr_falls_back_to_name_when_description_missing(
 
     with (
         patch(
-            "app.mcp_server.tooling.analysis_screen_core._import_tvscreener",
+            "app.mcp_server.tooling.screening.kr._import_tvscreener",
             return_value=fake_tvscreener_module,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService",
+            "app.mcp_server.tooling.screening.kr.TvScreenerService",
             return_value=service,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.fetch_stock_all_cached",
+            "app.mcp_server.tooling.screening.kr.fetch_stock_all_cached",
             side_effect=mock_fetch_stock_all_cached,
         ),
         patch(
-            "app.mcp_server.tooling.analysis_screen_core.fetch_valuation_all_cached",
+            "app.mcp_server.tooling.screening.kr.fetch_valuation_all_cached",
             AsyncMock(return_value={}),
         ),
     ):
