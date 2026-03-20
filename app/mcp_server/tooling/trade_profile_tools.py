@@ -468,6 +468,52 @@ async def set_asset_profile(
         return {"success": False, "error": f"set_asset_profile failed: {exc}"}
 
 
+async def get_tier_rule_params(
+    instrument_type: str | None = None,
+    tier: int | None = None,
+    profile: str | None = None,
+    param_type: str | None = None,
+) -> dict[str, object]:
+    """Get tier rule params with optional filtering."""
+    try:
+        parsed_instrument_type = _parse_market_type(instrument_type)
+        _validate_tier(tier)
+        _validate_profile(profile)
+        _validate_param_type(param_type)
+
+        normalized_profile = _normalize_profile(profile)
+        normalized_param_type = _normalize_param_type(param_type)
+
+        async with _session_factory()() as db:
+            conditions = [TierRuleParam.user_id == MCP_USER_ID]
+
+            if parsed_instrument_type is not None:
+                conditions.append(
+                    TierRuleParam.instrument_type == parsed_instrument_type
+                )
+            if tier is not None:
+                conditions.append(TierRuleParam.tier == tier)
+            if normalized_profile is not None:
+                conditions.append(TierRuleParam.profile == normalized_profile)
+            if normalized_param_type is not None:
+                conditions.append(TierRuleParam.param_type == normalized_param_type)
+
+            stmt = (
+                select(TierRuleParam)
+                .where(*conditions)
+                .order_by(
+                    TierRuleParam.tier.asc(), TierRuleParam.param_type.asc()
+                )
+            )
+            result = await db.execute(stmt)
+            rows: list[TierRuleParam] = list(result.scalars().all())
+            data: list[dict[str, object]] = [_serialize_rule(row) for row in rows]
+
+            return {"success": True, "data": data, "count": len(data)}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 async def set_tier_rule_params(
     instrument_type: str,
     tier: int,
@@ -476,7 +522,7 @@ async def set_tier_rule_params(
     params: dict[str, object],
     updated_by: str = "mcp",
 ) -> dict[str, object]:
-    """Set tier rule params (stub for validation tests)."""
+    """Set tier rule params with upsert semantics and versioning."""
     try:
         parsed_instrument_type = _parse_market_type(instrument_type)
         if parsed_instrument_type is None:
@@ -498,9 +544,77 @@ async def set_tier_rule_params(
                 "param_type must be one of: buy, sell, stop, rebalance, common"
             )
 
-        return {"success": True, "action": "created"}
+        async with _session_factory()() as db:
+            async with db.begin():
+                existing_stmt = select(TierRuleParam).where(
+                    TierRuleParam.user_id == MCP_USER_ID,
+                    TierRuleParam.instrument_type == parsed_instrument_type,
+                    TierRuleParam.tier == tier,
+                    TierRuleParam.profile == normalized_profile,
+                    TierRuleParam.param_type == normalized_param_type,
+                )
+                existing_result = await db.execute(existing_stmt)
+                existing = existing_result.scalar_one_or_none()
+
+                target = f"rule:{parsed_instrument_type.value}:tier{tier}:{normalized_profile}:{normalized_param_type}"
+
+                if existing is None:
+                    row = TierRuleParam(
+                        user_id=MCP_USER_ID,
+                        instrument_type=parsed_instrument_type,
+                        tier=tier,
+                        profile=normalized_profile,
+                        param_type=normalized_param_type,
+                        params=params,
+                        version=1,
+                        updated_by=updated_by,
+                    )
+                    db.add(row)
+                    await db.flush()
+                    await db.refresh(row)
+
+                    db.add(
+                        ProfileChangeLog(
+                            user_id=MCP_USER_ID,
+                            change_type="tier_rule_param",
+                            target=target,
+                            old_value=None,
+                            new_value=params,
+                            reason=None,
+                            changed_by=updated_by,
+                        )
+                    )
+                    action = "created"
+                else:
+                    old_value = existing.params
+                    existing.params = params
+                    existing.version += 1
+                    existing.updated_by = updated_by
+                    await db.flush()
+                    await db.refresh(existing)
+
+                    db.add(
+                        ProfileChangeLog(
+                            user_id=MCP_USER_ID,
+                            change_type="tier_rule_param",
+                            target=target,
+                            old_value=old_value,
+                            new_value=params,
+                            reason=None,
+                            changed_by=updated_by,
+                        )
+                    )
+                    action = "updated"
+
+            return {
+                "success": True,
+                "action": action,
+                "data": _serialize_rule(row if existing is None else existing),
+            }
     except ValueError as exc:
         return {"success": False, "error": str(exc)}
+    except Exception as exc:
+        return {"success": False, "error": f"set_tier_rule_params failed: {exc}"}
 
 
-__all__ = ["get_asset_profile", "set_asset_profile", "set_tier_rule_params"]
+__all__ = ["get_asset_profile", "set_asset_profile", "get_tier_rule_params", "set_tier_rule_params"]
