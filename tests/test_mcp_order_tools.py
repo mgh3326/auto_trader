@@ -849,6 +849,10 @@ async def test_cancel_order_us_returns_error_when_order_not_found_across_exchang
             self.checked_exchanges.append(exchange_code)
             return []
 
+        async def inquire_daily_order_overseas(self, **kwargs):
+            # History also doesn't have the order
+            return []
+
         async def cancel_overseas_order(self, *args, **kwargs):
             raise AssertionError("cancel_overseas_order should not be called")
 
@@ -865,12 +869,12 @@ async def test_cancel_order_us_returns_error_when_order_not_found_across_exchang
     )
 
     assert result["success"] is False
-    assert "Order not found in open orders" in result["error"]
-    assert "checked:" in result["error"]
+    assert "Order not found in open orders or recent history" in result["error"]
+    assert "checked exchanges:" in result["error"]
+    # Now checks all candidates when not found
     assert "NASD" in result["error"]
-    assert "NYSE" not in result["error"]
-    assert "AMEX" not in result["error"]
-    assert fake_kis.checked_exchanges == ["NASD"]
+    assert "NYSE" in result["error"]
+    assert "AMEX" in result["error"]
 
 
 @pytest.mark.asyncio
