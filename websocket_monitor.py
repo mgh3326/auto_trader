@@ -31,7 +31,6 @@ from app.services.upbit_websocket import UpbitMyOrderWebSocket
 
 logger = logging.getLogger(__name__)
 VALID_MONITOR_MODES = {"upbit", "kis", "both"}
-MIN_FILL_NOTIFY_AMOUNT = 50_000
 
 # Default heartbeat configuration
 DEFAULT_HEARTBEAT_PATH = "/tmp/websocket_monitor_heartbeat.json"
@@ -238,26 +237,8 @@ class UnifiedWebSocketMonitor:
         self, order: FillOrder, *, correlation_id: str | None = None
     ) -> None:
         """OpenClaw로 체결 알림 전송 (fire-and-forget)"""
-        if order.account == "upbit" and order.filled_amount < MIN_FILL_NOTIFY_AMOUNT:
-            logger.debug(
-                "Fill below minimum notify amount (%s < %s), skipping: %s",
-                f"{order.filled_amount:,.0f}",
-                f"{MIN_FILL_NOTIFY_AMOUNT:,.0f}",
-                order.symbol,
-            )
-            logger.info(
-                "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
-                "result=skipped reason=below_minimum_notify_amount filled_amount=%s minimum_amount=%s",
-                correlation_id,
-                order.symbol,
-                order.account,
-                f"{order.filled_amount:,.0f}",
-                f"{MIN_FILL_NOTIFY_AMOUNT:,.0f}",
-            )
-            return
-
         logger.info(
-            "OpenClaw send start: correlation_id=%s symbol=%s account=%s filled_amount=%s",
+            "Fill notification send start: correlation_id=%s symbol=%s account=%s filled_amount=%s",
             correlation_id,
             order.symbol,
             order.account,
@@ -271,7 +252,7 @@ class UnifiedWebSocketMonitor:
                 self.fills_forwarded += 1
                 self.last_openclaw_success_at = datetime.now(UTC).isoformat()
                 logger.info(
-                    "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
+                    "Fill notification send result: correlation_id=%s symbol=%s account=%s "
                     "result=success request_id=%s",
                     correlation_id,
                     order.symbol,
@@ -280,7 +261,7 @@ class UnifiedWebSocketMonitor:
                 )
             elif result.status == "skipped":
                 logger.info(
-                    "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
+                    "Fill notification send result: correlation_id=%s symbol=%s account=%s "
                     "result=skipped reason=%s",
                     correlation_id,
                     order.symbol,
@@ -289,7 +270,7 @@ class UnifiedWebSocketMonitor:
                 )
             else:
                 logger.warning(
-                    "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
+                    "Fill notification send result: correlation_id=%s symbol=%s account=%s "
                     "result=failed reason=%s request_id=%s",
                     correlation_id,
                     order.symbol,
@@ -299,7 +280,7 @@ class UnifiedWebSocketMonitor:
                 )
         except Exception as e:
             logger.error(
-                "OpenClaw send result: correlation_id=%s symbol=%s account=%s "
+                "Fill notification send result: correlation_id=%s symbol=%s account=%s "
                 "result=failed error=%s",
                 correlation_id,
                 order.symbol,
