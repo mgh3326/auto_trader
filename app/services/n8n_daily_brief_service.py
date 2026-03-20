@@ -40,50 +40,51 @@ async def _get_portfolio_overview(
         return await service.get_overview(user_id=1)
 
 
+def _collect_symbols_by_market(
+    pending_result: dict[str, Any],
+    portfolio_result: dict[str, Any],
+) -> dict[str, set[str]]:
+    """Derive a shared symbol map from pending orders and portfolio positions."""
+    symbols_by_market: dict[str, set[str]] = {}
+
+    # Collect from pending orders
+    for order in pending_result.get("orders", []):
+        market = str(order.get("market") or "").strip()
+        raw_symbol = str(order.get("raw_symbol") or order.get("symbol") or "").strip()
+        if market and raw_symbol:
+            symbols_by_market.setdefault(market, set()).add(raw_symbol)
+
+    # Collect from portfolio positions
+    market_map = {"CRYPTO": "crypto", "KR": "kr", "US": "us"}
+    for position in portfolio_result.get("positions", []):
+        market = market_map.get(str(position.get("market_type") or "").upper())
+        symbol = str(position.get("symbol") or "").strip()
+        if not market or not symbol:
+            continue
+
+        # Normalize crypto symbols for history queries if needed
+        if market == "crypto" and "-" not in symbol:
+            symbol = f"KRW-{symbol.upper()}"
+
+        symbols_by_market.setdefault(market, set()).add(symbol)
+
+    return symbols_by_market
+
+
 async def _fetch_yesterday_fills(
+    *,
     markets: list[str],
+    symbols_by_market: dict[str, set[str]],
 ) -> dict[str, Any]:
     """Fetch yesterday's filled orders across requested markets.
 
-    Since get_order_history_impl requires a symbol for non-pending queries,
-    we collect known symbols from holdings and query per-symbol with days=1.
-    Falls back gracefully on failure.
+    Uses provided symbols_by_market to avoid redundant fetches of
+    pending orders or portfolio data.
     """
     from app.mcp_server.tooling.orders_history import get_order_history_impl
 
     fills: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
-
-    # Collect symbols from pending orders (which doesn't require symbol)
-    try:
-        pending_result = await fetch_pending_orders(
-            market="all",
-            min_amount=0,
-            include_current_price=False,
-            side=None,
-        )
-        symbols_by_market: dict[str, set[str]] = {}
-        for order in pending_result.get("orders", []):
-            market = order.get("market", "")
-            raw_symbol = order.get("raw_symbol", "")
-            if market and raw_symbol:
-                symbols_by_market.setdefault(market, set()).add(raw_symbol)
-    except Exception as exc:
-        logger.warning("Failed to collect symbols for fills: %s", exc)
-        symbols_by_market = {}
-
-    # Also get symbols from portfolio
-    try:
-        portfolio = await _get_portfolio_overview(markets)
-        for pos in portfolio.get("positions", []):
-            market_type = str(pos.get("market_type", "")).upper()
-            symbol = pos.get("symbol", "")
-            market_map = {"KR": "kr", "US": "us", "CRYPTO": "crypto"}
-            market = market_map.get(market_type, "")
-            if market and symbol:
-                symbols_by_market.setdefault(market, set()).add(symbol)
-    except Exception as exc:
-        logger.warning("Failed to collect portfolio symbols for fills: %s", exc)
 
     # Query filled orders per-symbol
     semaphore = asyncio.Semaphore(5)
@@ -412,11 +413,9 @@ async def fetch_daily_brief(
 ) -> dict[str, Any]:
     """Fetch the unified daily trading brief.
 
-    Orchestrates parallel fetches of:
-    - Pending orders (per-market)
-    - Market context (fear/greed, BTC dominance, economic calendar)
-    - Portfolio overview
-    - Yesterday's fills
+    Orchestrates parallel fetches in two stages:
+    Stage 1: Gather pending orders and portfolio summary.
+    Stage 2: Use derived symbol context to fetch market indicators and filled orders.
 
     Returns dict matching N8nDailyBriefResponse schema.
     """
@@ -426,56 +425,80 @@ async def fetch_daily_brief(
 
     date_fmt = fmt_date_with_weekday(effective_as_of)
 
-    # Parallel fetch all data sources
+    # Stage 1: Gather shared inputs once
     pending_task = fetch_pending_orders(
         market="all",
         min_amount=min_amount,
         include_current_price=True,
+        include_indicators=False,  # Optimization: shared context avoids redundant fetches
         side=None,
         as_of=effective_as_of,
     )
+    portfolio_task = _get_portfolio_overview(effective_markets)
+
+    results_s1 = await asyncio.gather(
+        pending_task,
+        portfolio_task,
+        return_exceptions=True,
+    )
+
+    # Unpack Stage 1 results with fallbacks
+    pending_result: dict[str, Any] = {}
+    if isinstance(results_s1[0], dict):
+        pending_result = results_s1[0]
+    elif isinstance(results_s1[0], Exception):
+        errors.append({"source": "pending_orders", "error": str(results_s1[0])})
+
+    portfolio_result: dict[str, Any] = {}
+    if isinstance(results_s1[1], dict):
+        portfolio_result = results_s1[1]
+    elif isinstance(results_s1[1], Exception):
+        errors.append({"source": "portfolio", "error": str(results_s1[1])})
+
+    # Derive shared symbol context for Stage 2
+    symbols_by_market = _collect_symbols_by_market(pending_result, portfolio_result)
+    
+    # Format crypto symbols for market context (usually without prefix)
+    crypto_symbols_raw = symbols_by_market.get("crypto", set())
+    crypto_symbols = []
+    for s in crypto_symbols_raw:
+        if "-" in s:
+            crypto_symbols.append(s.split("-")[-1])
+        else:
+            crypto_symbols.append(s)
+    crypto_symbols = sorted(list(set(crypto_symbols)))
+
+    # Stage 2: Parallel fetch remaining data using shared symbols
     context_task = fetch_market_context(
         market="crypto",
-        symbols=None,
+        symbols=crypto_symbols or ["BTC"],  # Default to BTC for general context if empty
         include_fear_greed=True,
         include_economic_calendar=True,
         as_of=effective_as_of,
     )
-    portfolio_task = _get_portfolio_overview(effective_markets)
-    fills_task = _fetch_yesterday_fills(effective_markets)
+    fills_task = _fetch_yesterday_fills(
+        markets=effective_markets,
+        symbols_by_market=symbols_by_market,
+    )
 
-    results = await asyncio.gather(
-        pending_task,
+    results_s2 = await asyncio.gather(
         context_task,
-        portfolio_task,
         fills_task,
         return_exceptions=True,
     )
 
-    # Unpack results with fallbacks
-    pending_result: dict[str, Any] = {}
-    if isinstance(results[0], dict):
-        pending_result = results[0]
-    elif isinstance(results[0], Exception):
-        errors.append({"source": "pending_orders", "error": str(results[0])})
-
+    # Unpack Stage 2 results with fallbacks
     context_result: dict[str, Any] = {}
-    if isinstance(results[1], dict):
-        context_result = results[1]
-    elif isinstance(results[1], Exception):
-        errors.append({"source": "market_context", "error": str(results[1])})
-
-    portfolio_result: dict[str, Any] = {}
-    if isinstance(results[2], dict):
-        portfolio_result = results[2]
-    elif isinstance(results[2], Exception):
-        errors.append({"source": "portfolio", "error": str(results[2])})
+    if isinstance(results_s2[0], dict):
+        context_result = results_s2[0]
+    elif isinstance(results_s2[0], Exception):
+        errors.append({"source": "market_context", "error": str(results_s2[0])})
 
     fills_result: dict[str, Any] = {"total": 0, "fills": []}
-    if isinstance(results[3], dict):
-        fills_result = results[3]
-    elif isinstance(results[3], Exception):
-        errors.append({"source": "fills", "error": str(results[3])})
+    if isinstance(results_s2[1], dict):
+        fills_result = results_s2[1]
+    elif isinstance(results_s2[1], Exception):
+        errors.append({"source": "fills", "error": str(results_s2[1])})
 
     # Build per-market breakdowns
     pending_by_market = _group_pending_by_market(pending_result)

@@ -162,6 +162,102 @@ class TestFetchDailyBrief:
         assert result["success"] is True
         assert len(result["errors"]) > 0
 
+    @pytest.mark.asyncio
+    async def test_daily_brief_passes_explicit_crypto_symbols_to_market_context(self):
+        pending = _fake_pending_result(
+            "all",
+            orders=[
+                {"market": "crypto", "symbol": "BTC", "raw_symbol": "KRW-BTC"},
+                {"market": "kr", "symbol": "005930", "raw_symbol": "005930"},
+            ],
+        )
+        portfolio = {
+            "success": True,
+            "positions": [
+                {"market_type": "CRYPTO", "symbol": "KRW-ETH", "name": "ETH"},
+            ],
+            "warnings": [],
+        }
+
+        with (
+            patch(
+                "app.services.n8n_daily_brief_service.fetch_pending_orders",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ) as mock_pending,
+            patch(
+                "app.services.n8n_daily_brief_service._get_portfolio_overview",
+                new_callable=AsyncMock,
+                return_value=portfolio,
+            ),
+            patch(
+                "app.services.n8n_daily_brief_service.fetch_market_context",
+                new_callable=AsyncMock,
+                return_value=_fake_market_context(),
+            ) as mock_context,
+            patch(
+                "app.services.n8n_daily_brief_service._fetch_yesterday_fills",
+                new_callable=AsyncMock,
+                return_value={"total": 0, "fills": []},
+            ),
+        ):
+            from app.services.n8n_daily_brief_service import fetch_daily_brief
+
+            await fetch_daily_brief(markets=["crypto", "kr"])
+
+        assert mock_pending.await_count == 1
+        assert mock_pending.await_args.kwargs["include_indicators"] is False
+        assert sorted(mock_context.await_args.kwargs["symbols"]) == ["BTC", "ETH"]
+
+    @pytest.mark.asyncio
+    async def test_daily_brief_passes_shared_symbols_to_yesterday_fills(self):
+        pending = _fake_pending_result(
+            "all",
+            orders=[
+                {"market": "crypto", "symbol": "BTC", "raw_symbol": "KRW-BTC"},
+                {"market": "us", "symbol": "NVDA", "raw_symbol": "NVDA"},
+            ],
+        )
+        portfolio = {
+            "success": True,
+            "positions": [
+                {"market_type": "KR", "symbol": "005930", "name": "Samsung"},
+            ],
+            "warnings": [],
+        }
+
+        with (
+            patch(
+                "app.services.n8n_daily_brief_service.fetch_pending_orders",
+                new_callable=AsyncMock,
+                return_value=pending,
+            ),
+            patch(
+                "app.services.n8n_daily_brief_service._get_portfolio_overview",
+                new_callable=AsyncMock,
+                return_value=portfolio,
+            ),
+            patch(
+                "app.services.n8n_daily_brief_service.fetch_market_context",
+                new_callable=AsyncMock,
+                return_value=_fake_market_context(),
+            ),
+            patch(
+                "app.services.n8n_daily_brief_service._fetch_yesterday_fills",
+                new_callable=AsyncMock,
+                return_value={"total": 0, "fills": []},
+            ) as mock_fills,
+        ):
+            from app.services.n8n_daily_brief_service import fetch_daily_brief
+
+            await fetch_daily_brief(markets=["crypto", "kr", "us"])
+
+        assert mock_fills.await_args.kwargs["symbols_by_market"] == {
+            "crypto": {"KRW-BTC"},
+            "kr": {"005930"},
+            "us": {"NVDA"},
+        }
+
 
 @pytest.mark.unit
 class TestBuildPortfolioSummary:
