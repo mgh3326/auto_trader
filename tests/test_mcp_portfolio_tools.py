@@ -321,6 +321,85 @@ async def test_get_cash_balance_kis_domestic_skips_zero_priority_orderables(
 
 
 @pytest.mark.asyncio
+async def test_get_cash_balance_kis_domestic_deducts_pending_buy_orders(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "4300000.0",
+                "stck_cash_objt_amt": "4300000.0",
+                "stck_cash_ord_psbl_amt": "4300000.0",
+            }
+
+        async def inquire_korea_orders(self):
+            return [
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "250000", "nccs_qty": "1"},
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "800000", "nccs_qty": "1"},
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "2270000", "nccs_qty": "1"},
+                {"sll_buy_dvsn_cd": "01", "ord_unpr": "999999", "nccs_qty": "9"},
+            ]
+
+        async def inquire_overseas_margin(self):
+            return []
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_domestic")
+
+    assert result["accounts"][0]["balance"] == 4300000.0
+    assert result["accounts"][0]["orderable"] == 980000.0
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_domestic_pending_lookup_failure_keeps_raw_orderable(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "4300000.0",
+                "stck_cash_objt_amt": "4300000.0",
+                "stck_cash_ord_psbl_amt": "4300000.0",
+            }
+
+        async def inquire_korea_orders(self):
+            raise RuntimeError("order inquiry failed")
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_domestic")
+
+    assert result["accounts"][0]["orderable"] == 4300000.0
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_domestic_clamps_orderable_at_zero(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_integrated_margin(self):
+            return {
+                "dnca_tot_amt": "1000000.0",
+                "stck_cash_objt_amt": "1000000.0",
+                "stck_cash_ord_psbl_amt": "1000000.0",
+            }
+
+        async def inquire_korea_orders(self):
+            return [
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "600000", "nccs_qty": "2"},
+            ]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_domestic")
+
+    assert result["accounts"][0]["orderable"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_get_cash_balance_non_strict_skips_domestic_on_integrated_margin_error(
     monkeypatch,
 ):
