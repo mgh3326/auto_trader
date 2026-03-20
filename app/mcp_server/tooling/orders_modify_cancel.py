@@ -6,6 +6,7 @@ import hashlib
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
+from app.core.symbol import to_db_symbol
 from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.mcp_server.tooling.order_execution import (
     _normalize_market_type_to_external,
@@ -291,7 +292,7 @@ async def _find_us_order_in_recent_history(
             if _extract_kis_order_number(order) == order_id:
                 # Verify symbol matches to avoid false positives
                 order_symbol = _get_kis_field(order, "pdno", "PDNO", default="")
-                if order_symbol != symbol:
+                if to_db_symbol(str(order_symbol)) != to_db_symbol(symbol):
                     continue
                 # Prefer order payload's exchange
                 order_exchange = str(

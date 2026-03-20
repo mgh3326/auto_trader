@@ -1076,6 +1076,69 @@ async def test_cancel_order_us_falls_back_to_history_lookup_when_open_order_miss
 
 
 @pytest.mark.asyncio
+async def test_cancel_order_us_history_lookup_matches_db_symbol_format(monkeypatch):
+    """History lookup should match DB symbols like BRK.B against KIS payload BRK/B."""
+    tools = build_tools()
+
+    class FakeKIS:
+        def __init__(self) -> None:
+            self.checked_exchanges: list[str] = []
+            self.history_calls: list[str] = []
+            self.cancel_call: dict[str, object] | None = None
+
+        async def inquire_overseas_orders(self, exchange_code: str):
+            self.checked_exchanges.append(exchange_code)
+            return []
+
+        async def inquire_daily_order_overseas(self, **kwargs):
+            exchange_code = kwargs.get("exchange_code", "UNKNOWN")
+            self.history_calls.append(exchange_code)
+            if exchange_code == "NYSE":
+                return [
+                    {
+                        "odno": "US-BRK-1",
+                        "pdno": "BRK/B",
+                        "ovrs_excg_cd": "NYSE",
+                        "ft_ord_qty": "2",
+                        "ft_ccld_qty": "1",
+                    }
+                ]
+            return []
+
+        async def cancel_overseas_order(
+            self, order_number, symbol, exchange_code, quantity
+        ):
+            self.cancel_call = {
+                "order_number": order_number,
+                "symbol": symbol,
+                "exchange_code": exchange_code,
+                "quantity": quantity,
+            }
+            return {"odno": order_number, "ord_tmd": "2024-01-01 10:00:00"}
+
+    fake_kis = FakeKIS()
+    _patch_kis_client(monkeypatch, lambda: fake_kis)
+    monkeypatch.setattr(
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NYSE"),
+    )
+
+    result = await tools["cancel_order"](
+        order_id="US-BRK-1", symbol="BRK.B", market="us"
+    )
+
+    assert result["success"] is True
+    assert result["symbol"] == "BRK.B"
+    assert "NYSE" in fake_kis.checked_exchanges
+    assert "NYSE" in fake_kis.history_calls
+    assert fake_kis.cancel_call is not None
+    assert fake_kis.cancel_call["symbol"] == "BRK.B"
+    assert fake_kis.cancel_call["exchange_code"] == "NYSE"
+    assert fake_kis.cancel_call["quantity"] == 1
+
+
+@pytest.mark.asyncio
 async def test_cancel_order_us_apbk0656_error_includes_exchange(monkeypatch):
     """Test that APBK0656 error includes exchange context."""
     tools = build_tools()
