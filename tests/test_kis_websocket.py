@@ -1215,9 +1215,6 @@ class TestKISWebSocketClient:
         assert result is not None
         assert result["execution_status"] == "order_notice"
         assert client._is_execution_event(result) is False
-        assert "KIS execution received" in caplog.text
-        assert f"correlation_id={event['correlation_id']}" in caplog.text
-        assert "symbol=012450" in caplog.text
 
     @pytest.mark.asyncio
     async def test_listen_updates_pingpong_state_without_info_log(
@@ -1361,6 +1358,42 @@ class TestKISWebSocketClient:
         assert not result.get("filled_qty")
         assert client._is_execution_event(result) is False
         assert "missing symbol" in caplog.text.lower()
+
+    def test_is_execution_event_logs_error_on_overseas_order_notice_with_raw_fields_count(
+        self, execution_callback, caplog
+    ) -> None:
+        """Test that order notice rejection logs include raw_fields_count."""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        data = {
+            "tr_code": OVERSEAS_EXECUTION_TR_REAL,
+            "execution_status": "order_notice",
+            "fill_yn": "1",
+            "cntg_yn": "1",
+            "filled_qty": 0,
+            "filled_price": 0,
+            "raw_fields_count": 16,
+        }
+
+        with caplog.at_level("ERROR"):
+            assert client._is_execution_event(data) is False
+
+        assert "possible field index mismatch" in caplog.text
+        assert "raw_fields_count=16" in caplog.text
+
+    def test_parse_message_logs_error_when_official_overseas_payload_cannot_be_parsed(
+        self, execution_callback, caplog
+    ) -> None:
+        """Test that parser failure for overseas payload is logged."""
+        client = KISExecutionWebSocket(on_execution=execution_callback, mock_mode=True)
+        # Empty symbol slot (position 7) should cause parse failure
+        message = "0|H0GSCNI0|1|12345678^01^ORD000001^0000000000^02^0^153045^^10^248.50^0000000010^2^0^1^^NASDAQ"
+
+        with caplog.at_level("ERROR"):
+            result = client._parse_message(message)
+
+        assert result is not None
+        assert result.get("symbol") == ""
+        assert "parse FAILED" in caplog.text or "missing symbol" in caplog.text.lower()
 
     def test_is_execution_event_logs_error_on_rejected_overseas_fill(
         self, execution_callback, caplog

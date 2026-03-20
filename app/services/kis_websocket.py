@@ -674,21 +674,36 @@ class KISExecutionWebSocket:
         if tr_code in OVERSEAS_EXECUTION_TR_CODES:
             status = str(data.get("execution_status", "")).strip().lower()
             if status:
-                return status in {"filled", "partial"}
+                is_executable = status in {"filled", "partial"}
+                if not is_executable:
+                    logger.error(
+                        "Overseas execution event REJECTED (possible field index mismatch): "
+                        "tr_code=%s fill_yn=%r cntg_yn_raw=%r filled_qty=%s filled_price=%s "
+                        "execution_status=%s raw_fields_count=%d",
+                        tr_code,
+                        data.get("fill_yn"),
+                        data.get("cntg_yn"),
+                        data.get("filled_qty"),
+                        data.get("filled_price"),
+                        data.get("execution_status"),
+                        int(data.get("raw_fields_count", 0)),
+                    )
+                return is_executable
             is_filled = str(data.get("fill_yn", "")).strip() == "2"
             has_qty = self._to_float(data.get("filled_qty")) > 0
             has_price = self._to_float(data.get("filled_price")) > 0
             if not (is_filled and has_qty and has_price):
                 logger.error(
-                    "Overseas execution event rejected: correlation_id=%s tr_code=%s symbol=%s "
-                    "fill_yn=%s filled_qty=%s filled_price=%s execution_status=%s",
-                    data.get("correlation_id"),
+                    "Overseas execution event REJECTED (possible field index mismatch): "
+                    "tr_code=%s fill_yn=%r cntg_yn_raw=%r filled_qty=%s filled_price=%s "
+                    "execution_status=%s raw_fields_count=%d",
                     tr_code,
-                    data.get("symbol"),
                     data.get("fill_yn"),
+                    data.get("cntg_yn"),
                     data.get("filled_qty"),
                     data.get("filled_price"),
                     data.get("execution_status"),
+                    int(data.get("raw_fields_count", 0)),
                 )
             return is_filled and has_qty and has_price
         if tr_code in DOMESTIC_EXECUTION_TR_CODES:
