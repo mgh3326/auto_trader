@@ -601,6 +601,69 @@ async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
     assert result["accounts"][0]["orderable"] == 3200.0
 
 
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_overseas_deducts_pending_buy_orders(monkeypatch):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "1000.0",
+                    "frcr_gnrl_ord_psbl_amt": "1000.0",
+                }
+            ]
+
+        async def inquire_overseas_orders(self, exchange_code):
+            payload = {
+                "NASD": [
+                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "2"},
+                    {"sll_buy_dvsn_cd": "01", "ft_ord_unpr3": "999.0", "nccs_qty": "9"},
+                ],
+                "NYSE": [
+                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "50.0", "nccs_qty": "2"},
+                ],
+                "AMEX": [],
+            }
+            return payload[exchange_code]
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_overseas")
+
+    assert result["accounts"][0]["balance"] == 1000.0
+    assert result["accounts"][0]["orderable"] == 700.0
+
+
+@pytest.mark.asyncio
+async def test_get_cash_balance_kis_overseas_pending_lookup_failure_keeps_raw_orderable(
+    monkeypatch,
+):
+    tools = build_tools()
+
+    class MockKISClient:
+        async def inquire_overseas_margin(self):
+            return [
+                {
+                    "natn_name": "미국",
+                    "crcy_cd": "USD",
+                    "frcr_dncl_amt1": "1000.0",
+                    "frcr_gnrl_ord_psbl_amt": "1000.0",
+                }
+            ]
+
+        async def inquire_overseas_orders(self, exchange_code):
+            raise RuntimeError(f"{exchange_code} failed")
+
+    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
+
+    result = await tools["get_cash_balance"](account="kis_overseas")
+
+    assert result["accounts"][0]["orderable"] == 1000.0
+
+
 # ---------------------------------------------------------------------------
 # TestSimulateAvgCost
 # ---------------------------------------------------------------------------
