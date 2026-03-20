@@ -69,7 +69,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - filled/cancelled 조회는 시장별 historical endpoint 제약 때문에 symbol fan-out을 자동 수행하지 않음
 - `place_order(symbol, side, order_type="limit", quantity=None, price=None, amount=None)`
 - `modify_order(order_id, symbol, new_price=None, new_quantity=None)`
-- `cancel_order(order_id)`
+- `cancel_order(order_id, symbol=None, market=None)`
+  - US equities: resolves exchange from symbol DB, open orders, and recent history before cancel
+  - When symbol is omitted, KR/US auto-lookup is best effort and may fail if the order cannot be reconstructed
 - `manage_watch_alerts(action, market=None, symbol=None, metric=None, operator=None, threshold=None)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
 - `recommend_stocks(...)` - Recommend stocks based on budget and strategy.

@@ -83,9 +83,8 @@ def register_order_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         name="cancel_order",
         description=(
-            "Cancel a pending order. "
-            "Supports Upbit (crypto) and KIS (KR/US equities). "
-            "For KIS orders, automatically retrieves order details if not provided."
+            "Cancel a pending order. Supports Upbit (crypto) and KIS (KR/US equities). "
+            "For KIS US orders, resolves exchange/order details from symbol lookup and order history when possible."
         ),
     )
     async def cancel_order(
