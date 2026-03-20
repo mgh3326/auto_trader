@@ -148,6 +148,21 @@ def _normalize_ohlcv_rows(
     return _normalize_rows(frame)
 
 
+def _normalize_kr_intraday_payload_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "datetime" not in df.columns:
+        return df
+
+    frame = df.copy()
+    frame["datetime"] = frame["datetime"].map(
+        lambda value: value
+        if pd.isna(value)
+        else pd.Timestamp(value).tz_convert("Asia/Seoul").tz_localize(None)
+        if pd.Timestamp(value).tzinfo is not None
+        else pd.Timestamp(value)
+    )
+    return frame
+
+
 def _build_ohlcv_payload(
     *,
     symbol: str,
@@ -159,6 +174,10 @@ def _build_ohlcv_payload(
     include_indicators: bool,
     message: str | None = None,
 ) -> dict[str, Any]:
+    normalized_df = df
+    if instrument_type == "equity_kr" and period in KR_INTRADAY_OHLCV_PERIODS:
+        normalized_df = _normalize_kr_intraday_payload_frame(df)
+
     payload: dict[str, Any] = {
         "symbol": symbol,
         "instrument_type": instrument_type,
@@ -166,7 +185,7 @@ def _build_ohlcv_payload(
         "period": period,
         "count": count,
         "rows": _normalize_ohlcv_rows(
-            df,
+            normalized_df,
             period=period,
             include_indicators=include_indicators,
         ),

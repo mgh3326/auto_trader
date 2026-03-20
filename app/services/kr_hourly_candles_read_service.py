@@ -218,6 +218,14 @@ def _to_kst_naive(value: datetime.datetime) -> datetime.datetime:
     return _ensure_kst_aware(value).replace(tzinfo=None)
 
 
+def _to_kst_naive_series(values: pd.Series) -> pd.Series:
+    return values.map(
+        lambda value: pd.NaT
+        if pd.isna(value)
+        else pd.Timestamp(_to_kst_naive(pd.Timestamp(value).to_pydatetime()))
+    )
+
+
 def _to_float(value: object) -> float:
     if value is None:
         return 0.0
@@ -611,9 +619,13 @@ def _merge_overlay_into_intraday_frame(
             bucket_minutes=bucket_minutes,
         )
 
-    touched = set(pd.to_datetime(merged_overlay["datetime"]).tolist())
+    merged_overlay = merged_overlay.copy()
+    merged_overlay["datetime"] = _to_kst_naive_series(merged_overlay["datetime"])
+    touched = set(merged_overlay["datetime"].tolist())
     if not out.empty:
-        out = out[~pd.to_datetime(out["datetime"]).isin(touched)]
+        out = out.copy()
+        out["datetime"] = _to_kst_naive_series(out["datetime"])
+        out = out.loc[~out["datetime"].isin(touched)]
     return pd.concat([out, merged_overlay], ignore_index=True)
 
 
@@ -1473,11 +1485,13 @@ def _history_rows_to_frame(
     if not frame_rows:
         return _empty_intraday_frame()
 
-    return (
+    out = (
         pd.DataFrame(frame_rows, columns=_INTRADAY_FRAME_COLUMNS)
         .sort_values("datetime")
         .reset_index(drop=True)
     )
+    out["datetime"] = _to_kst_naive_series(out["datetime"])
+    return out
 
 
 async def _load_recent_overlay_frame(
@@ -1615,6 +1629,7 @@ async def read_kr_intraday_candles(
         return _empty_intraday_frame()
 
     out = out.sort_values("datetime").reset_index(drop=True)
+    out["datetime"] = _to_kst_naive_series(out["datetime"])
     return out.tail(capped_count).reset_index(drop=True)
 
 

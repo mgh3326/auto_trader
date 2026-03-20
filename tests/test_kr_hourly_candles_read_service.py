@@ -2266,6 +2266,71 @@ async def test_read_kr_intraday_candles_1m_mixed_history_and_aware_fallback_keep
     assert out.iloc[2]["venues"] == ["NTX"]
 
 
+def test_merge_overlay_into_intraday_frame_mixed_timezones_keeps_naive_kst():
+    from app.services import kr_hourly_candles_read_service as svc
+
+    out = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:00:00+09:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, 0, 0),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 10.0,
+                "value": 1000.0,
+                "session": "PRE_MARKET",
+                "venues": ["KRX"],
+            }
+        ]
+    )
+    overlay_frame = pd.DataFrame(
+        [
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:00:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, 0, 0),
+                "open": 101.0,
+                "high": 102.0,
+                "low": 100.0,
+                "close": 101.5,
+                "volume": 20.0,
+                "value": 2000.0,
+                "session": "PRE_MARKET",
+                "venues": ["NTX"],
+            },
+            {
+                "datetime": pd.Timestamp("2026-03-10 08:01:00"),
+                "date": datetime.date(2026, 3, 10),
+                "time": datetime.time(8, 1, 0),
+                "open": 101.5,
+                "high": 102.5,
+                "low": 101.0,
+                "close": 102.0,
+                "volume": 30.0,
+                "value": 3000.0,
+                "session": "PRE_MARKET",
+                "venues": ["NTX"],
+            },
+        ]
+    )
+
+    merged = svc._merge_overlay_into_intraday_frame(
+        out=out,
+        overlay_frame=overlay_frame,
+        bucket_minutes=1,
+    )
+
+    assert list(merged["datetime"]) == [
+        datetime.datetime(2026, 3, 10, 8, 0, 0),
+        datetime.datetime(2026, 3, 10, 8, 1, 0),
+    ]
+    assert all(value.tzinfo is None for value in merged["datetime"])
+    assert merged.iloc[0]["venues"] == ["NTX"]
+
+
 @pytest.mark.asyncio
 async def test_read_kr_intraday_candles_5m_mixed_history_and_aware_fallback_keeps_naive_kst(
     monkeypatch,
