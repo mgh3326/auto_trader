@@ -430,7 +430,7 @@ async def fetch_daily_brief(
         market="all",
         min_amount=min_amount,
         include_current_price=True,
-        include_indicators=False,  # Optimization: shared context avoids redundant fetches
+        include_indicators=True,
         side=None,
         as_of=effective_as_of,
     )
@@ -458,15 +458,8 @@ async def fetch_daily_brief(
     # Derive shared symbol context for Stage 2
     symbols_by_market = _collect_symbols_by_market(pending_result, portfolio_result)
     
-    # Format crypto symbols for market context (usually without prefix)
-    crypto_symbols_raw = symbols_by_market.get("crypto", set())
-    crypto_symbols = []
-    for s in crypto_symbols_raw:
-        if "-" in s:
-            crypto_symbols.append(s.split("-")[-1])
-        else:
-            crypto_symbols.append(s)
-    crypto_symbols = sorted(list(set(crypto_symbols)))
+    # Preserve exact market prefixes for downstream context fetches.
+    crypto_symbols = sorted(symbols_by_market.get("crypto", set()))
 
     # Stage 2: Parallel fetch remaining data using shared symbols
     context_task = fetch_market_context(

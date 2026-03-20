@@ -163,11 +163,16 @@ class TestFetchDailyBrief:
         assert len(result["errors"]) > 0
 
     @pytest.mark.asyncio
-    async def test_daily_brief_passes_explicit_crypto_symbols_to_market_context(self):
+    async def test_daily_brief_preserves_indicators_and_prefixed_crypto_symbols(self):
         pending = _fake_pending_result(
             "all",
             orders=[
-                {"market": "crypto", "symbol": "BTC", "raw_symbol": "KRW-BTC"},
+                {
+                    "market": "crypto",
+                    "symbol": "BTC",
+                    "raw_symbol": "USDT-BTC",
+                    "indicators": {"rsi_14": 55.1},
+                },
                 {"market": "kr", "symbol": "005930", "raw_symbol": "005930"},
             ],
         )
@@ -206,8 +211,11 @@ class TestFetchDailyBrief:
             await fetch_daily_brief(markets=["crypto", "kr"])
 
         assert mock_pending.await_count == 1
-        assert mock_pending.await_args.kwargs["include_indicators"] is False
-        assert sorted(mock_context.await_args.kwargs["symbols"]) == ["BTC", "ETH"]
+        assert mock_pending.await_args.kwargs["include_indicators"] is True
+        assert sorted(mock_context.await_args.kwargs["symbols"]) == [
+            "KRW-ETH",
+            "USDT-BTC",
+        ]
 
     @pytest.mark.asyncio
     async def test_daily_brief_passes_shared_symbols_to_yesterday_fills(self):
