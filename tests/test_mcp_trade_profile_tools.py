@@ -8,8 +8,13 @@ import pytest
 
 from app.mcp_server.tooling.trade_profile_tools import (
     _apply_profile_rules,
+    delete_asset_profile,
     get_asset_profile,
+    get_market_filters,
+    get_tier_rule_params,
     set_asset_profile,
+    set_market_filter,
+    set_tier_rule_params,
 )
 from app.models.trading import InstrumentType
 
@@ -257,6 +262,44 @@ def _fake_asset_profile(**overrides: object) -> MagicMock:
     return MagicMock(**defaults)
 
 
+def _fake_tier_rule_param(**overrides: object) -> MagicMock:
+    """Build a MagicMock that quacks like a TierRuleParam row."""
+    now = datetime.now(tz=UTC)
+    defaults: dict[str, object] = {
+        "id": 1,
+        "user_id": 1,
+        "instrument_type": InstrumentType.equity_us,
+        "tier": 2,
+        "profile": "balanced",
+        "param_type": "buy",
+        "params": {"size": 0.2},
+        "version": 1,
+        "updated_by": "mcp",
+        "created_at": now,
+        "updated_at": now,
+    }
+    defaults.update(overrides)
+    return MagicMock(**defaults)
+
+
+def _fake_market_filter(**overrides: object) -> MagicMock:
+    """Build a MagicMock that quacks like a MarketFilter row."""
+    now = datetime.now(tz=UTC)
+    defaults: dict[str, object] = {
+        "id": 1,
+        "user_id": 1,
+        "instrument_type": InstrumentType.crypto,
+        "filter_name": "kill_switch",
+        "params": {"enabled": True},
+        "enabled": True,
+        "updated_by": "mcp",
+        "created_at": now,
+        "updated_at": now,
+    }
+    defaults.update(overrides)
+    return MagicMock(**defaults)
+
+
 def _build_create_session() -> tuple[MagicMock, list[object]]:
     """Session mock for the *create* path (no existing row)."""
     added: list[object] = []
@@ -330,6 +373,86 @@ def _build_update_session() -> tuple[MagicMock, list[object]]:
     return session, added
 
 
+def _build_tier_rule_create_session() -> tuple[MagicMock, list[object]]:
+    """Session mock for the *create* path for TierRuleParam (no existing row)."""
+    added: list[object] = []
+    session = MagicMock()
+    session.execute = AsyncMock(
+        return_value=SimpleNamespace(scalar_one_or_none=lambda: None)
+    )
+
+    fake_row = _fake_tier_rule_param()
+
+    async def _fake_flush() -> None:
+        pass
+
+    async def _fake_refresh(_obj: object) -> None:
+        for attr in (
+            "id",
+            "user_id",
+            "instrument_type",
+            "tier",
+            "profile",
+            "param_type",
+            "params",
+            "version",
+            "updated_by",
+            "created_at",
+            "updated_at",
+        ):
+            setattr(_obj, attr, getattr(fake_row, attr))
+
+    session.flush = AsyncMock(side_effect=_fake_flush)
+    session.refresh = AsyncMock(side_effect=_fake_refresh)
+    session.add = MagicMock(side_effect=lambda obj: added.append(obj))
+
+    tx_cm = AsyncMock()
+    tx_cm.__aenter__.return_value = None
+    tx_cm.__aexit__.return_value = None
+    session.begin = MagicMock(return_value=tx_cm)
+
+    return session, added
+
+
+def _build_market_filter_create_session() -> tuple[MagicMock, list[object]]:
+    """Session mock for the *create* path for MarketFilter (no existing row)."""
+    added: list[object] = []
+    session = MagicMock()
+    session.execute = AsyncMock(
+        return_value=SimpleNamespace(scalar_one_or_none=lambda: None)
+    )
+
+    fake_row = _fake_market_filter()
+
+    async def _fake_flush() -> None:
+        pass
+
+    async def _fake_refresh(_obj: object) -> None:
+        for attr in (
+            "id",
+            "user_id",
+            "instrument_type",
+            "filter_name",
+            "params",
+            "enabled",
+            "updated_by",
+            "created_at",
+            "updated_at",
+        ):
+            setattr(_obj, attr, getattr(fake_row, attr))
+
+    session.flush = AsyncMock(side_effect=_fake_flush)
+    session.refresh = AsyncMock(side_effect=_fake_refresh)
+    session.add = MagicMock(side_effect=lambda obj: added.append(obj))
+
+    tx_cm = AsyncMock()
+    tx_cm.__aenter__.return_value = None
+    tx_cm.__aexit__.return_value = None
+    session.begin = MagicMock(return_value=tx_cm)
+
+    return session, added
+
+
 @pytest.mark.asyncio
 async def test_set_asset_profile_create_logs_change_type_asset_profile() -> None:
     session, added = _build_create_session()
@@ -371,3 +494,171 @@ async def test_set_asset_profile_update_logs_change_type_asset_profile() -> None
     change_logs = [o for o in added if hasattr(o, "change_type")]
     assert len(change_logs) == 1
     assert change_logs[0].change_type == "asset_profile"
+
+
+@pytest.mark.asyncio
+async def test_set_tier_rule_params_invalid_tier() -> None:
+    result = await set_tier_rule_params(
+        instrument_type="us",
+        tier=0,
+        profile="balanced",
+        param_type="buy",
+        params={"size": 0.2},
+    )
+
+    assert result == {"success": False, "error": "tier must be 1-4"}
+
+
+@pytest.mark.asyncio
+async def test_set_tier_rule_params_invalid_profile() -> None:
+    result = await set_tier_rule_params(
+        instrument_type="us",
+        tier=2,
+        profile="unknown",
+        param_type="buy",
+        params={"size": 0.2},
+    )
+
+    assert result["success"] is False
+    assert "Invalid profile" in str(result["error"])
+
+
+@pytest.mark.asyncio
+async def test_set_tier_rule_params_invalid_param_type() -> None:
+    result = await set_tier_rule_params(
+        instrument_type="us",
+        tier=2,
+        profile="balanced",
+        param_type="invalid",
+        params={"size": 0.2},
+    )
+
+    assert result == {
+        "success": False,
+        "error": "param_type must be one of: buy, sell, stop, rebalance, common",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_tier_rule_params_returns_empty() -> None:
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_session.execute.return_value = mock_result
+
+    session_factory = MagicMock(return_value=_build_session_cm(mock_session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=session_factory,
+    ):
+        result = await get_tier_rule_params()
+
+    assert result == {"success": True, "data": [], "count": 0}
+
+
+@pytest.mark.asyncio
+async def test_set_tier_rule_params_creates_new() -> None:
+    session, added = _build_tier_rule_create_session()
+    factory = MagicMock(return_value=_build_session_cm(session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=factory,
+    ):
+        result = await set_tier_rule_params(
+            instrument_type="us",
+            tier=2,
+            profile="balanced",
+            param_type="buy",
+            params={"size": 0.2},
+            reason="seed rule",
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    assert result["data"]["version"] == 1
+    change_logs = [o for o in added if hasattr(o, "change_type")]
+    assert len(change_logs) == 1
+    assert change_logs[0].change_type == "tier_rule_param"
+    assert change_logs[0].target == "rule:us:tier2:balanced:buy"
+    assert change_logs[0].reason == "seed rule"
+
+
+@pytest.mark.asyncio
+async def test_get_market_filters_returns_empty() -> None:
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_session.execute.return_value = mock_result
+
+    session_factory = MagicMock(return_value=_build_session_cm(mock_session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=session_factory,
+    ):
+        result = await get_market_filters()
+
+    assert result == {"success": True, "data": [], "count": 0}
+
+
+@pytest.mark.asyncio
+async def test_set_market_filter_creates_new() -> None:
+    session, added = _build_market_filter_create_session()
+    factory = MagicMock(return_value=_build_session_cm(session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=factory,
+    ):
+        result = await set_market_filter(
+            instrument_type="crypto",
+            filter_name="kill_switch",
+            params={"enabled": True},
+            reason="bootstrap",
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    assert result["data"]["filter_name"] == "kill_switch"
+    change_logs = [o for o in added if hasattr(o, "change_type")]
+    assert len(change_logs) == 1
+    assert change_logs[0].change_type == "market_filter"
+    assert change_logs[0].target == "filter:crypto:kill_switch"
+    assert change_logs[0].reason == "bootstrap"
+
+
+@pytest.mark.asyncio
+async def test_delete_asset_profile_not_found() -> None:
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(
+        return_value=SimpleNamespace(scalar_one_or_none=lambda: None)
+    )
+    tx_cm = AsyncMock()
+    tx_cm.__aenter__.return_value = None
+    tx_cm.__aexit__.return_value = None
+    mock_session.begin = MagicMock(return_value=tx_cm)
+    mock_session.delete = AsyncMock()
+
+    session_factory = MagicMock(return_value=_build_session_cm(mock_session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=session_factory,
+    ):
+        result = await delete_asset_profile(symbol="AAPL", market_type="us")
+
+    assert result == {"success": False, "error": "not found"}
+    mock_session.delete.assert_not_called()
+
+
+def test_trade_profile_tool_names_exports_all_handlers() -> None:
+    from app.mcp_server.tooling.trade_profile_registration import (
+        TRADE_PROFILE_TOOL_NAMES,
+    )
+
+    assert TRADE_PROFILE_TOOL_NAMES == {
+        "get_asset_profile",
+        "set_asset_profile",
+        "get_tier_rule_params",
+        "set_tier_rule_params",
+        "get_market_filters",
+        "set_market_filter",
+        "delete_asset_profile",
+    }

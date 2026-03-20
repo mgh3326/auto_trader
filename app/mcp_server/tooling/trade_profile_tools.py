@@ -8,8 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.kr_symbols import normalize_kr_symbol
-from app.mcp_server.tooling.shared import MCP_USER_ID, normalize_market
-from app.models.trade_profile import AssetProfile, ProfileChangeLog, TierRuleParam
+from app.mcp_server.tooling.shared import (
+    INSTRUMENT_TO_MARKET,
+    MCP_USER_ID,
+    normalize_market,
+)
+from app.models.trade_profile import (
+    AssetProfile,
+    MarketFilter,
+    ProfileChangeLog,
+    TierRuleParam,
+)
 from app.models.trading import InstrumentType
 
 
@@ -65,6 +74,43 @@ def _normalize_sell_mode(value: str | None) -> str | None:
         return None
     normalized = value.strip().lower()
     return normalized or None
+
+
+_VALID_PARAM_TYPES = frozenset({"buy", "sell", "stop", "rebalance", "common"})
+
+
+def _validate_param_type(param_type: str | None) -> None:
+    if param_type is None:
+        return
+    normalized = param_type.strip().lower()
+    if normalized and normalized not in _VALID_PARAM_TYPES:
+        raise ValueError(
+            "param_type must be one of: buy, sell, stop, rebalance, common"
+        )
+
+
+def _normalize_param_type(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _serialize_filter(model: MarketFilter) -> dict[str, object]:
+    return {
+        "id": model.id,
+        "instrument_type": model.instrument_type.value,
+        "filter_name": model.filter_name,
+        "params": model.params,
+        "enabled": model.enabled,
+        "updated_by": model.updated_by,
+        "created_at": model.created_at.isoformat(),
+        "updated_at": model.updated_at.isoformat(),
+    }
+
+
+def _market_label_for_instrument(instrument_type: InstrumentType) -> str:
+    return cast(str, INSTRUMENT_TO_MARKET[instrument_type.value])
 
 
 def _normalize_symbol_for_instrument(
@@ -430,4 +476,380 @@ async def set_asset_profile(
         return {"success": False, "error": f"set_asset_profile failed: {exc}"}
 
 
-__all__ = ["get_asset_profile", "set_asset_profile"]
+async def get_tier_rule_params(
+    instrument_type: str | None = None,
+    tier: int | None = None,
+    profile: str | None = None,
+    param_type: str | None = None,
+) -> dict[str, object]:
+    """Get tier rule params with optional filtering."""
+    try:
+        parsed_instrument_type = _parse_market_type(instrument_type)
+        _validate_tier(tier)
+        _validate_profile(profile)
+        _validate_param_type(param_type)
+
+        normalized_profile = _normalize_profile(profile)
+        normalized_param_type = _normalize_param_type(param_type)
+
+        async with _session_factory()() as db:
+            conditions = [TierRuleParam.user_id == MCP_USER_ID]
+
+            if parsed_instrument_type is not None:
+                conditions.append(
+                    TierRuleParam.instrument_type == parsed_instrument_type
+                )
+            if tier is not None:
+                conditions.append(TierRuleParam.tier == tier)
+            if normalized_profile is not None:
+                conditions.append(TierRuleParam.profile == normalized_profile)
+            if normalized_param_type is not None:
+                conditions.append(TierRuleParam.param_type == normalized_param_type)
+
+            stmt = (
+                select(TierRuleParam)
+                .where(*conditions)
+                .order_by(
+                    TierRuleParam.tier.asc(), TierRuleParam.param_type.asc()
+                )
+            )
+            result = await db.execute(stmt)
+            rows: list[TierRuleParam] = list(result.scalars().all())
+            data: list[dict[str, object]] = [_serialize_rule(row) for row in rows]
+
+            return {"success": True, "data": data, "count": len(data)}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+async def set_tier_rule_params(
+    instrument_type: str,
+    tier: int,
+    profile: str,
+    param_type: str,
+    params: dict[str, object],
+    reason: str | None = None,
+    updated_by: str = "mcp",
+) -> dict[str, object]:
+    """Set tier rule params with upsert semantics and versioning."""
+    try:
+        parsed_instrument_type = _parse_market_type(instrument_type)
+        if parsed_instrument_type is None:
+            raise ValueError("instrument_type is required")
+
+        _validate_tier(tier)
+        if tier is None or not (1 <= tier <= 4):
+            raise ValueError("tier must be 1-4")
+
+        _validate_profile(profile)
+        normalized_profile = _normalize_profile(profile)
+        if normalized_profile is None:
+            raise ValueError(f"Invalid profile: {profile!r}")
+
+        _validate_param_type(param_type)
+        normalized_param_type = _normalize_param_type(param_type)
+        if normalized_param_type is None:
+            raise ValueError(
+                "param_type must be one of: buy, sell, stop, rebalance, common"
+            )
+
+        async with _session_factory()() as db:
+            async with db.begin():
+                existing_stmt = select(TierRuleParam).where(
+                    TierRuleParam.user_id == MCP_USER_ID,
+                    TierRuleParam.instrument_type == parsed_instrument_type,
+                    TierRuleParam.tier == tier,
+                    TierRuleParam.profile == normalized_profile,
+                    TierRuleParam.param_type == normalized_param_type,
+                )
+                existing_result = await db.execute(existing_stmt)
+                existing = existing_result.scalar_one_or_none()
+
+                target = (
+                    f"rule:{_market_label_for_instrument(parsed_instrument_type)}:"
+                    f"tier{tier}:{normalized_profile}:{normalized_param_type}"
+                )
+
+                if existing is None:
+                    row = TierRuleParam(
+                        user_id=MCP_USER_ID,
+                        instrument_type=parsed_instrument_type,
+                        tier=tier,
+                        profile=normalized_profile,
+                        param_type=normalized_param_type,
+                        params=params,
+                        version=1,
+                        updated_by=updated_by,
+                    )
+                    db.add(row)
+                    await db.flush()
+                    await db.refresh(row)
+
+                    db.add(
+                        ProfileChangeLog(
+                            user_id=MCP_USER_ID,
+                            change_type="tier_rule_param",
+                            target=target,
+                            old_value=None,
+                            new_value=params,
+                            reason=reason,
+                            changed_by=updated_by,
+                        )
+                    )
+                    action = "created"
+                else:
+                    old_value = existing.params
+                    existing.params = params
+                    existing.version += 1
+                    existing.updated_by = updated_by
+                    await db.flush()
+                    await db.refresh(existing)
+
+                    db.add(
+                        ProfileChangeLog(
+                            user_id=MCP_USER_ID,
+                            change_type="tier_rule_param",
+                            target=target,
+                            old_value=old_value,
+                            new_value=params,
+                            reason=reason,
+                            changed_by=updated_by,
+                        )
+                    )
+                    action = "updated"
+
+            return {
+                "success": True,
+                "action": action,
+                "data": _serialize_rule(row if existing is None else existing),
+            }
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    except Exception as exc:
+        return {"success": False, "error": f"set_tier_rule_params failed: {exc}"}
+
+
+async def get_market_filters(
+    instrument_type: str | None = None,
+    enabled_only: bool = False,
+) -> dict[str, object]:
+    """Get market filters with optional filtering."""
+    try:
+        parsed_instrument_type = _parse_market_type(instrument_type)
+
+        async with _session_factory()() as db:
+            conditions = [MarketFilter.user_id == MCP_USER_ID]
+
+            if parsed_instrument_type is not None:
+                conditions.append(
+                    MarketFilter.instrument_type == parsed_instrument_type
+                )
+            if enabled_only:
+                conditions.append(MarketFilter.enabled.is_(True))
+
+            stmt = (
+                select(MarketFilter)
+                .where(*conditions)
+                .order_by(
+                    MarketFilter.instrument_type.asc(),
+                    MarketFilter.filter_name.asc(),
+                )
+            )
+            result = await db.execute(stmt)
+            rows: list[MarketFilter] = list(result.scalars().all())
+            data: list[dict[str, object]] = [_serialize_filter(row) for row in rows]
+
+            return {"success": True, "data": data, "count": len(data)}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+async def set_market_filter(
+    instrument_type: str,
+    filter_name: str,
+    params: dict[str, object],
+    enabled: bool = True,
+    reason: str | None = None,
+    updated_by: str = "mcp",
+) -> dict[str, object]:
+    """Set market filter with upsert semantics."""
+    try:
+        parsed_instrument_type = _parse_market_type(instrument_type)
+        if parsed_instrument_type is None:
+            raise ValueError("instrument_type is required")
+
+        normalized_filter_name = filter_name.strip().lower()
+        if not normalized_filter_name:
+            raise ValueError("filter_name is required")
+
+        async with _session_factory()() as db:
+            async with db.begin():
+                existing_stmt = select(MarketFilter).where(
+                    MarketFilter.user_id == MCP_USER_ID,
+                    MarketFilter.instrument_type == parsed_instrument_type,
+                    MarketFilter.filter_name == normalized_filter_name,
+                )
+                existing_result = await db.execute(existing_stmt)
+                existing = existing_result.scalar_one_or_none()
+
+                target = (
+                    f"filter:{_market_label_for_instrument(parsed_instrument_type)}:"
+                    f"{normalized_filter_name}"
+                )
+
+                if existing is None:
+                    row = MarketFilter(
+                        user_id=MCP_USER_ID,
+                        instrument_type=parsed_instrument_type,
+                        filter_name=normalized_filter_name,
+                        params=params,
+                        enabled=enabled,
+                        updated_by=updated_by,
+                    )
+                    db.add(row)
+                    await db.flush()
+                    await db.refresh(row)
+
+                    db.add(
+                        ProfileChangeLog(
+                            user_id=MCP_USER_ID,
+                            change_type="market_filter",
+                            target=target,
+                            old_value=None,
+                            new_value={"params": params, "enabled": enabled},
+                            reason=reason,
+                            changed_by=updated_by,
+                        )
+                    )
+                    action = "created"
+                else:
+                    old_value = {"params": existing.params, "enabled": existing.enabled}
+                    existing.params = params
+                    existing.enabled = enabled
+                    existing.updated_by = updated_by
+                    await db.flush()
+                    await db.refresh(existing)
+
+                    db.add(
+                        ProfileChangeLog(
+                            user_id=MCP_USER_ID,
+                            change_type="market_filter",
+                            target=target,
+                            old_value=old_value,
+                            new_value={"params": params, "enabled": enabled},
+                            reason=reason,
+                            changed_by=updated_by,
+                        )
+                    )
+                    action = "updated"
+
+            return {
+                "success": True,
+                "action": action,
+                "data": _serialize_filter(row if existing is None else existing),
+            }
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    except Exception as exc:
+        return {"success": False, "error": f"set_market_filter failed: {exc}"}
+
+
+async def delete_asset_profile(
+    symbol: str,
+    market_type: str | None = None,
+    reason: str | None = None,
+    updated_by: str = "mcp",
+) -> dict[str, object]:
+    """Delete an asset profile by symbol."""
+    try:
+        symbol_input = symbol.strip()
+        if not symbol_input:
+            raise ValueError("symbol is required")
+
+        explicit_instrument_type = _parse_market_type(market_type)
+        existing: AssetProfile | None = None
+        instrument_type: InstrumentType
+        normalized_symbol: str
+
+        async with _session_factory()() as db:
+            async with db.begin():
+                if explicit_instrument_type is not None:
+                    instrument_type = explicit_instrument_type
+                    normalized_symbol = _normalize_symbol_for_instrument(
+                        symbol_input, instrument_type
+                    )
+                    existing_stmt = select(AssetProfile).where(
+                        AssetProfile.user_id == MCP_USER_ID,
+                        AssetProfile.symbol == normalized_symbol,
+                        AssetProfile.instrument_type == instrument_type,
+                    )
+                    existing_result = await db.execute(existing_stmt)
+                    existing = existing_result.scalar_one_or_none()
+                else:
+                    candidate_pairs: list[tuple[InstrumentType, str]] = []
+                    if symbol_input.isdigit() and len(symbol_input) <= 6:
+                        candidate_pairs.append(
+                            (InstrumentType.equity_kr, symbol_input.zfill(6))
+                        )
+                    upper_symbol = symbol_input.upper()
+                    if upper_symbol.startswith("KRW-"):
+                        candidate_pairs.append((InstrumentType.crypto, upper_symbol))
+                    if not candidate_pairs:
+                        candidate_pairs.append((InstrumentType.equity_us, upper_symbol))
+
+                    predicates = [
+                        and_(
+                            AssetProfile.instrument_type == candidate_type,
+                            AssetProfile.symbol == candidate_symbol,
+                        )
+                        for candidate_type, candidate_symbol in candidate_pairs
+                    ]
+                    existing_stmt = select(AssetProfile).where(
+                        AssetProfile.user_id == MCP_USER_ID,
+                        or_(*predicates),
+                    )
+                    existing_result = await db.execute(existing_stmt)
+                    existing = existing_result.scalar_one_or_none()
+
+                    if existing is not None:
+                        instrument_type = existing.instrument_type
+                        normalized_symbol = existing.symbol
+
+                if existing is None:
+                    return {"success": False, "error": "not found"}
+
+                old_snapshot = _snapshot_for_change_log(existing)
+                db.add(
+                    ProfileChangeLog(
+                        user_id=MCP_USER_ID,
+                        change_type="asset_profile",
+                        target=f"asset:{existing.instrument_type.value}:{existing.symbol}",
+                        old_value=old_snapshot,
+                        new_value={"deleted": True},
+                        reason=reason,
+                        changed_by=updated_by,
+                    )
+                )
+                await db.delete(existing)
+
+            return {
+                "success": True,
+                "action": "deleted",
+                "symbol": existing.symbol,
+                "instrument_type": existing.instrument_type.value,
+            }
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    except Exception as exc:
+        return {"success": False, "error": f"delete_asset_profile failed: {exc}"}
+
+
+__all__ = [
+    "delete_asset_profile",
+    "get_asset_profile",
+    "set_asset_profile",
+    "get_tier_rule_params",
+    "set_tier_rule_params",
+    "get_market_filters",
+    "set_market_filter",
+]
