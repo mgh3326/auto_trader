@@ -299,6 +299,9 @@ async def set_asset_profile(
         if not symbol_input:
             raise ValueError("symbol is required")
 
+        if tags is not None and not isinstance(tags, list):
+            tags = None
+
         _validate_tier(tier)
         _validate_profile(profile)
         requested_profile = _normalize_profile(profile)

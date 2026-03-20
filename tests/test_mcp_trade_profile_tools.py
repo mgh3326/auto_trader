@@ -648,6 +648,86 @@ async def test_delete_asset_profile_not_found() -> None:
     mock_session.delete.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_set_asset_profile_tags_null_string_normalized_to_none() -> None:
+    """tags='null' (string) should be normalized to None, not cause a constraint violation."""
+    session, added = _build_create_session()
+    factory = MagicMock(return_value=_build_session_cm(session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=factory,
+    ):
+        result = await set_asset_profile(
+            symbol="012450",
+            market_type="kr",
+            tier=1,
+            profile="aggressive",
+            sector="defense",
+            tags="null",  # type: ignore[arg-type]  # MCP framework may pass string
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    # The AssetProfile added to session should have tags=None, not 'null'
+    asset_profiles = [o for o in added if not hasattr(o, "change_type")]
+    assert len(asset_profiles) == 1
+    assert asset_profiles[0].tags is None
+
+
+@pytest.mark.asyncio
+async def test_set_asset_profile_tags_valid_list_preserved() -> None:
+    """A valid tags list should be passed through unchanged."""
+    session, added = _build_create_session()
+
+    # Capture the tags value assigned before refresh overwrites it
+    captured_tags: list[object] = []
+    original_refresh = session.refresh.side_effect
+
+    async def _capture_then_refresh(obj: object) -> None:
+        captured_tags.append(getattr(obj, "tags", None))
+        await original_refresh(obj)
+
+    session.refresh = AsyncMock(side_effect=_capture_then_refresh)
+
+    factory = MagicMock(return_value=_build_session_cm(session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=factory,
+    ):
+        result = await set_asset_profile(
+            symbol="AAPL",
+            market_type="us",
+            tier=2,
+            profile="balanced",
+            tags=["growth", "tech"],
+        )
+
+    assert result["success"] is True
+    assert captured_tags == [["growth", "tech"]]
+
+
+@pytest.mark.asyncio
+async def test_set_asset_profile_tags_none_stays_none() -> None:
+    """tags=None should remain None (SQL NULL)."""
+    session, added = _build_create_session()
+    factory = MagicMock(return_value=_build_session_cm(session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=factory,
+    ):
+        result = await set_asset_profile(
+            symbol="AAPL",
+            market_type="us",
+            tier=2,
+            profile="balanced",
+        )
+
+    assert result["success"] is True
+    asset_profiles = [o for o in added if not hasattr(o, "change_type")]
+    assert len(asset_profiles) == 1
+    assert asset_profiles[0].tags is None
+
+
 def test_trade_profile_tool_names_exports_all_handlers() -> None:
     from app.mcp_server.tooling.trade_profile_registration import (
         TRADE_PROFILE_TOOL_NAMES,
