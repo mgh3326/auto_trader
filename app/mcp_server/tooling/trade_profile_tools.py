@@ -617,4 +617,132 @@ async def set_tier_rule_params(
         return {"success": False, "error": f"set_tier_rule_params failed: {exc}"}
 
 
-__all__ = ["get_asset_profile", "set_asset_profile", "get_tier_rule_params", "set_tier_rule_params"]
+async def get_market_filters(
+    instrument_type: str | None = None,
+    enabled_only: bool = False,
+) -> dict[str, object]:
+    """Get market filters with optional filtering."""
+    try:
+        parsed_instrument_type = _parse_market_type(instrument_type)
+
+        async with _session_factory()() as db:
+            conditions = [MarketFilter.user_id == MCP_USER_ID]
+
+            if parsed_instrument_type is not None:
+                conditions.append(
+                    MarketFilter.instrument_type == parsed_instrument_type
+                )
+            if enabled_only:
+                conditions.append(MarketFilter.enabled.is_(True))
+
+            stmt = (
+                select(MarketFilter)
+                .where(*conditions)
+                .order_by(
+                    MarketFilter.instrument_type.asc(),
+                    MarketFilter.filter_name.asc(),
+                )
+            )
+            result = await db.execute(stmt)
+            rows: list[MarketFilter] = list(result.scalars().all())
+            data: list[dict[str, object]] = [_serialize_filter(row) for row in rows]
+
+            return {"success": True, "data": data, "count": len(data)}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+async def set_market_filter(
+    instrument_type: str,
+    filter_name: str,
+    params: dict[str, object],
+    enabled: bool = True,
+    updated_by: str = "mcp",
+) -> dict[str, object]:
+    """Set market filter with upsert semantics."""
+    try:
+        parsed_instrument_type = _parse_market_type(instrument_type)
+        if parsed_instrument_type is None:
+            raise ValueError("instrument_type is required")
+
+        normalized_filter_name = filter_name.strip().lower()
+        if not normalized_filter_name:
+            raise ValueError("filter_name is required")
+
+        async with _session_factory()() as db:
+            async with db.begin():
+                existing_stmt = select(MarketFilter).where(
+                    MarketFilter.user_id == MCP_USER_ID,
+                    MarketFilter.instrument_type == parsed_instrument_type,
+                    MarketFilter.filter_name == normalized_filter_name,
+                )
+                existing_result = await db.execute(existing_stmt)
+                existing = existing_result.scalar_one_or_none()
+
+                target = f"filter:{parsed_instrument_type.value}:{normalized_filter_name}"
+
+                if existing is None:
+                    row = MarketFilter(
+                        user_id=MCP_USER_ID,
+                        instrument_type=parsed_instrument_type,
+                        filter_name=normalized_filter_name,
+                        params=params,
+                        enabled=enabled,
+                        updated_by=updated_by,
+                    )
+                    db.add(row)
+                    await db.flush()
+                    await db.refresh(row)
+
+                    db.add(
+                        ProfileChangeLog(
+                            user_id=MCP_USER_ID,
+                            change_type="market_filter",
+                            target=target,
+                            old_value=None,
+                            new_value={"params": params, "enabled": enabled},
+                            reason=None,
+                            changed_by=updated_by,
+                        )
+                    )
+                    action = "created"
+                else:
+                    old_value = {"params": existing.params, "enabled": existing.enabled}
+                    existing.params = params
+                    existing.enabled = enabled
+                    existing.updated_by = updated_by
+                    await db.flush()
+                    await db.refresh(existing)
+
+                    db.add(
+                        ProfileChangeLog(
+                            user_id=MCP_USER_ID,
+                            change_type="market_filter",
+                            target=target,
+                            old_value=old_value,
+                            new_value={"params": params, "enabled": enabled},
+                            reason=None,
+                            changed_by=updated_by,
+                        )
+                    )
+                    action = "updated"
+
+            return {
+                "success": True,
+                "action": action,
+                "data": _serialize_filter(row if existing is None else existing),
+            }
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    except Exception as exc:
+        return {"success": False, "error": f"set_market_filter failed: {exc}"}
+
+
+__all__ = [
+    "get_asset_profile",
+    "set_asset_profile",
+    "get_tier_rule_params",
+    "set_tier_rule_params",
+    "get_market_filters",
+    "set_market_filter",
+]

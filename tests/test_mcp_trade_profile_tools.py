@@ -9,8 +9,10 @@ import pytest
 from app.mcp_server.tooling.trade_profile_tools import (
     _apply_profile_rules,
     get_asset_profile,
+    get_market_filters,
     get_tier_rule_params,
     set_asset_profile,
+    set_market_filter,
     set_tier_rule_params,
 )
 from app.models.trading import InstrumentType
@@ -279,6 +281,24 @@ def _fake_tier_rule_param(**overrides: object) -> MagicMock:
     return MagicMock(**defaults)
 
 
+def _fake_market_filter(**overrides: object) -> MagicMock:
+    """Build a MagicMock that quacks like a MarketFilter row."""
+    now = datetime.now(tz=UTC)
+    defaults: dict[str, object] = {
+        "id": 1,
+        "user_id": 1,
+        "instrument_type": InstrumentType.crypto,
+        "filter_name": "kill_switch",
+        "params": {"enabled": True},
+        "enabled": True,
+        "updated_by": "mcp",
+        "created_at": now,
+        "updated_at": now,
+    }
+    defaults.update(overrides)
+    return MagicMock(**defaults)
+
+
 def _build_create_session() -> tuple[MagicMock, list[object]]:
     """Session mock for the *create* path (no existing row)."""
     added: list[object] = []
@@ -375,6 +395,45 @@ def _build_tier_rule_create_session() -> tuple[MagicMock, list[object]]:
             "param_type",
             "params",
             "version",
+            "updated_by",
+            "created_at",
+            "updated_at",
+        ):
+            setattr(_obj, attr, getattr(fake_row, attr))
+
+    session.flush = AsyncMock(side_effect=_fake_flush)
+    session.refresh = AsyncMock(side_effect=_fake_refresh)
+    session.add = MagicMock(side_effect=lambda obj: added.append(obj))
+
+    tx_cm = AsyncMock()
+    tx_cm.__aenter__.return_value = None
+    tx_cm.__aexit__.return_value = None
+    session.begin = MagicMock(return_value=tx_cm)
+
+    return session, added
+
+
+def _build_market_filter_create_session() -> tuple[MagicMock, list[object]]:
+    """Session mock for the *create* path for MarketFilter (no existing row)."""
+    added: list[object] = []
+    session = MagicMock()
+    session.execute = AsyncMock(
+        return_value=SimpleNamespace(scalar_one_or_none=lambda: None)
+    )
+
+    fake_row = _fake_market_filter()
+
+    async def _fake_flush() -> None:
+        pass
+
+    async def _fake_refresh(_obj: object) -> None:
+        for attr in (
+            "id",
+            "user_id",
+            "instrument_type",
+            "filter_name",
+            "params",
+            "enabled",
             "updated_by",
             "created_at",
             "updated_at",
@@ -519,3 +578,43 @@ async def test_set_tier_rule_params_creates_new() -> None:
     assert len(change_logs) == 1
     assert change_logs[0].change_type == "tier_rule_param"
     assert change_logs[0].target == "rule:equity_us:tier2:balanced:buy"
+
+
+@pytest.mark.asyncio
+async def test_get_market_filters_returns_empty() -> None:
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_session.execute.return_value = mock_result
+
+    session_factory = MagicMock(return_value=_build_session_cm(mock_session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=session_factory,
+    ):
+        result = await get_market_filters()
+
+    assert result == {"success": True, "data": [], "count": 0}
+
+
+@pytest.mark.asyncio
+async def test_set_market_filter_creates_new() -> None:
+    session, added = _build_market_filter_create_session()
+    factory = MagicMock(return_value=_build_session_cm(session))
+    with patch(
+        "app.mcp_server.tooling.trade_profile_tools._session_factory",
+        return_value=factory,
+    ):
+        result = await set_market_filter(
+            instrument_type="crypto",
+            filter_name="kill_switch",
+            params={"enabled": True},
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    assert result["data"]["filter_name"] == "kill_switch"
+    change_logs = [o for o in added if hasattr(o, "change_type")]
+    assert len(change_logs) == 1
+    assert change_logs[0].change_type == "market_filter"
+    assert change_logs[0].target == "filter:crypto:kill_switch"
