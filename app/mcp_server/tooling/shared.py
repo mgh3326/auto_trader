@@ -567,11 +567,13 @@ def _extract_rsi14(indicators: dict[str, Any] | None) -> float | None:
 
     Returns None only when RSI value is actually absent.
     """
-    if not indicators:
+    if not indicators or not isinstance(indicators, dict):
         return None
 
     # Handle {"indicators": {...}} wrapper
     indicators_dict = indicators.get("indicators", indicators)
+    if not isinstance(indicators_dict, dict):
+        return None
 
     rsi_data = indicators_dict.get("rsi")
     if rsi_data is None:
@@ -582,8 +584,8 @@ def _extract_rsi14(indicators: dict[str, Any] | None) -> float | None:
         rsi = rsi_data.get("14")
         if rsi is None:
             rsi = rsi_data.get(14)
-        return rsi
-    elif isinstance(rsi_data, (int, float)):
+        return float(rsi) if rsi is not None else None
+    if isinstance(rsi_data, (int, float)):
         return float(rsi_data)
 
     return None
