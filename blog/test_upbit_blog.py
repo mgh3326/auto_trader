@@ -5,11 +5,11 @@ DB 연결 없이 프롬프트 생성과 AI 분석 실행
 """
 
 import asyncio
+
 from google import genai
 
-from app.services import upbit
-from data.coins_info import upbit_pairs
 from app.analysis.analyzer import DataProcessor
+import app.services.brokers.upbit.client as upbit
 
 
 def add_indicators(df):
@@ -53,7 +53,7 @@ def build_prompt(df, ticker: str, coin_name: str, fundamental_info: dict = None)
     # 1. 기술적 지표 계산
     df = add_indicators(df).sort_values("date").reset_index(drop=True)
 
-    latest = df.iloc[-1]     # 오늘
+    latest = df.iloc[-1]  # 오늘
     yesterday = df.iloc[-2]  # 어제
 
     # 2. 전일 대비 계산
@@ -116,9 +116,6 @@ def build_prompt(df, ticker: str, coin_name: str, fundamental_info: dict = None)
 
 
 async def main():
-    # Upbit 상수 초기화
-    await upbit_pairs.prime_upbit_constants()
-
     # 비트코인 데이터 수집
     coin_name = "비트코인"
     ticker = "KRW-BTC"
@@ -138,7 +135,7 @@ async def main():
     print(f"  - 병합 완료: {len(df_merged)}개 데이터")
 
     # 3. 프롬프트 생성
-    print(f"\n2단계: AI 분석용 프롬프트 생성 중...")
+    print("\n2단계: AI 분석용 프롬프트 생성 중...")
     prompt = build_prompt(df_merged, ticker, coin_name, fundamental_info)
 
     print("\n생성된 프롬프트:")
@@ -151,10 +148,7 @@ async def main():
 
     # GOOGLE_API_KEY 환경 변수에서 자동으로 가져옴
     client = genai.Client()
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
 
     print("\nGemini AI 분석 결과:")
     print("=" * 80)

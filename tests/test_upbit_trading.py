@@ -1,7 +1,10 @@
 """
 Tests covering the Upbit trading router endpoints.
 """
+
 from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -10,9 +13,6 @@ import pytest
 async def test_get_my_coins_success(monkeypatch):
     """보유 코인 조회가 정상 구조로 응답하는지 확인."""
     from app.routers import upbit_trading
-
-    async def fake_prime():
-        return None
 
     sample_coins = [
         {
@@ -45,36 +45,37 @@ async def test_get_my_coins_success(monkeypatch):
             self.closed = True
 
     async def fake_fetch_prices(markets):
-        return {market: 60000000 for market in markets}
+        return dict.fromkeys(markets, 60000000)
 
     class DummyAnalysisService:
         def __init__(self, db):
             self.db = db
 
         async def get_latest_analysis_results_for_coins(self, markets):
-            return {market: None for market in markets}
+            return dict.fromkeys(markets)
+
+    class DummySettingsService:
+        def __init__(self, db):
+            self.db = db
+
+        async def get_by_symbol(self, symbol):
+            return None  # No settings configured
 
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.prime_upbit_constants",
-        fake_prime,
-    )
-    monkeypatch.setattr(
-        "app.services.upbit.fetch_my_coins",
+        "app.services.brokers.upbit.client.fetch_my_coins",
         fake_fetch_my_coins,
     )
     monkeypatch.setattr(
-        "app.services.upbit.fetch_multiple_current_prices",
+        "app.services.brokers.upbit.client.fetch_multiple_current_prices",
         fake_fetch_prices,
     )
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.KRW_TRADABLE_COINS",
-        {"BTC"},
-        raising=False,
+        upbit_trading, "get_upbit_market_by_coin", AsyncMock(return_value="KRW-BTC")
     )
     monkeypatch.setattr(
-        "data.coins_info.upbit_pairs.COIN_TO_NAME_KR",
-        {"BTC": "비트코인"},
-        raising=False,
+        upbit_trading,
+        "get_upbit_korean_name_by_coin",
+        AsyncMock(return_value="비트코인"),
     )
     monkeypatch.setattr(
         upbit_trading,
@@ -86,8 +87,13 @@ async def test_get_my_coins_success(monkeypatch):
         "StockAnalysisService",
         DummyAnalysisService,
     )
+    monkeypatch.setattr(
+        upbit_trading,
+        "SymbolTradeSettingsService",
+        DummySettingsService,
+    )
 
-    response = await upbit_trading.get_my_coins(db=object())
+    response = await upbit_trading.get_my_coins(db=cast(Any, object()))
 
     assert response["success"] is True
     assert response["tradable_coins_count"] == 1
@@ -97,27 +103,18 @@ async def test_get_my_coins_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_buy_orders_triggers_celery(monkeypatch):
-    """매수 작업이 Celery 태스크를 enqueue 하는지 확인."""
+async def test_execute_buy_orders_calls_task(monkeypatch):
     from app.routers import upbit_trading
 
-    class DummyResult:
-        def __init__(self):
-            self.id = "task-123"
+    dummy_result = {"executed": 1, "skipped": 0}
 
-    class DummyCelery:
-        def __init__(self):
-            self.called_with = None
-
-        def send_task(self, name, args=None):
-            self.called_with = (name, args)
-            return DummyResult()
-
-    dummy_celery = DummyCelery()
+    async def mock_execute():
+        return dummy_result
 
     monkeypatch.setattr(
-        "app.core.celery_app.celery_app",
-        dummy_celery,
+        upbit_trading,
+        "execute_buy_orders_task",
+        mock_execute,
     )
     monkeypatch.setattr(
         upbit_trading,
@@ -128,5 +125,5 @@ async def test_execute_buy_orders_triggers_celery(monkeypatch):
     response = await upbit_trading.execute_buy_orders()
 
     assert response["success"] is True
-    assert response["task_id"] == "task-123"
-    assert dummy_celery.called_with[0] == "upbit.execute_buy_orders"
+    assert response["executed"] == 1
+    assert response["skipped"] == 0

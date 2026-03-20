@@ -39,7 +39,7 @@ Production 환경에서 안전한 데이터베이스 마이그레이션을 위�
 
 # 또는 마이그레이션만 별도 실행
 ./scripts/migration-check.sh
-docker-compose -f docker-compose.prod.yml --profile migration up migration
+docker compose -f docker-compose.prod.yml --profile migration up migration
 ```
 
 **사용 시기:**
@@ -131,7 +131,7 @@ git pull origin production
 ./scripts/deploy.sh --backup
 
 # 3. 마이그레이션만 별도 실행
-docker-compose -f docker-compose.prod.yml --profile migration up migration
+docker compose -f docker-compose.prod.yml --profile migration up migration
 
 # 4. 검증 후 애플리케이션 배포
 ./scripts/deploy.sh --skip-migrate --health-check

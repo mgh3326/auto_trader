@@ -1,0 +1,41 @@
+# Raspberry Pi edge proxy compose (legacy filename kept for compatibility)
+#
+# NOTE:
+# - OTEL/Grafana/Signoz monitoring stack has been removed.
+# - This file now runs only Caddy reverse proxy for HTTPS termination.
+#
+# Usage:
+#   docker compose -f docker-compose.monitoring-rpi.yml up -d caddy
+
+name: caddy-edge
+
+services:
+  caddy:
+    image: ghcr.io/${GITHUB_REPOSITORY}-caddy:latest
+    container_name: caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - ACME_EMAIL=${ACME_EMAIL}
+      - DOMAIN_NAME=${DOMAIN_NAME}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/data/logs
+      - ./static:/srv:ro
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  caddy_data:
+  caddy_config:
+  caddy_logs:

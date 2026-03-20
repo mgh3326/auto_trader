@@ -1,11 +1,11 @@
-# syntax=docker/dockerfile:1.19
+# syntax=docker/dockerfile:1.21
 
 # ==============================================================================
 # STAGE 1: 'builder' - 의존성 설치를 전담하는 스테이지
 # 이 스테이지는 각 아키텍처(amd64, arm64)에 맞게 의존성을 설치하는 역할만 합니다.
 # ==============================================================================
 # Build dependencies for the TARGET platform (not the build host)
-FROM --platform=$TARGETPLATFORM python:3.12-slim AS builder
+FROM --platform=$TARGETPLATFORM python:3.13-slim AS builder
 
 # UV 설치
 RUN pip install --upgrade pip && pip install uv
@@ -24,17 +24,21 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # STAGE 2: 'final' - 최종 실행 이미지를 만드는 스테이지
 # 가볍고 깨끗한 상태에서 시작합니다.
 # ==============================================================================
-FROM python:3.12-slim AS final
+FROM python:3.13-slim AS final
+
+ARG VCS_REF=""
+ARG GITHUB_SHA=unknown
 
 # 환경 변수 설정
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    GITHUB_SHA=$GITHUB_SHA
 
 # 필수 OS 패키지 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -50,7 +54,8 @@ COPY --from=builder /app/.venv /app/.venv
 COPY . .
 
 # tmp 디렉토리 생성 및 권한 설정
-RUN mkdir -p /app/tmp && \
+RUN printf '%s' "$VCS_REF" > /app/.build-vcs-ref && \
+    mkdir -p /app/tmp && \
     chown -R appuser:appuser /app/tmp && \
     chmod 755 /app/tmp
 
@@ -68,7 +73,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 # 헬스체크 (curl 사용으로 Python subprocess 오버헤드 제거)
 HEALTHCHECK --interval=30s --timeout=3s --retries=5 \
-  CMD curl -f http://localhost:8000/healthz || exit 1
+    CMD curl -f http://localhost:8000/healthz || exit 1
 
 EXPOSE 8000
 

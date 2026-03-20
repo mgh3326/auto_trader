@@ -6,37 +6,34 @@ services:
     env_file:
       - .env.prod
     network_mode: host
-    volumes:
-      - ./tmp:/app/tmp
-      - ./logs:/app/logs
     command: >
       sh -c "
         echo '🔍 Checking database connection...' &&
-        python -c 'import asyncio; import asyncpg; import os; asyncio.run(asyncpg.connect(os.environ[\"DATABASE_URL\"]))' &&
+        python -c 'import asyncio; import asyncpg; import os; dsn = os.environ[\"DATABASE_URL\"].replace(\"postgresql+asyncpg\", \"postgresql\"); asyncio.run(asyncpg.connect(dsn))' &&
         echo '✅ Database connection successful' &&
         echo '📊 Current migration status:' &&
         alembic current &&
         echo '🔄 Running migrations...' &&
         alembic upgrade head &&
+        echo '🔁 Syncing kr_symbol_universe...' &&
+        python scripts/sync_kr_symbol_universe.py &&
+        echo '✅ kr_symbol_universe sync completed' &&
         echo '✅ Migrations completed successfully'
       "
     profiles:
-      - migration  # --profile migration으로만 실행
+      - migration # --profile migration으로만 실행
 
   api:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
     container_name: auto_trader_api_prod
-    ports: 
+    ports:
       - "${API_PORT:-8000}:8000"
     env_file:
       - .env.prod
-    volumes:
-      - ./tmp:/app/tmp
-      - ./logs:/app/logs
     restart: unless-stopped
-    network_mode: host  # Host 네트워크 사용으로 localhost DB/Redis 접근
+    network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); print('ok')"]
+      test: [ "CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8000)); print('ok')" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -44,53 +41,141 @@ services:
     deploy:
       resources:
         limits:
+          memory: 2G
+          cpus: '1.5'
+        reservations:
           memory: 1G
           cpus: '0.5'
-        reservations:
-          memory: 512M
-          cpus: '0.25'
 
   worker:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
     container_name: auto_trader_worker_prod
     env_file:
       - .env.prod
-    volumes:
-      - ./tmp:/app/tmp
-      - ./logs:/app/logs
     restart: unless-stopped
-    network_mode: host  # Host 네트워크 사용으로 localhost DB/Redis 접근
+    network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
     command: >
-      bash -lc "python -m celery -A app.core.celery_app.celery_app worker --loglevel=INFO -c 1 --max-tasks-per-child=100"
+      /app/.venv/bin/taskiq worker app.core.taskiq_broker:broker app.tasks
     deploy:
       resources:
         limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
           memory: 512M
           cpus: '0.25'
-        reservations:
-          memory: 256M
-          cpus: '0.1'
 
-  websocket:
+  scheduler:
     image: ghcr.io/${GITHUB_REPOSITORY}:production
-    container_name: auto_trader_ws_prod
-    command: ["python", "upbit_websocket_monitor.py"]
+    container_name: auto_trader_scheduler_prod
     env_file:
       - .env.prod
     volumes:
       - ./tmp:/app/tmp
       - ./logs:/app/logs
-    depends_on:
-      - api
     restart: unless-stopped
-    network_mode: host  # Host 네트워크 사용으로 localhost DB/Redis 접근
+    network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
+    command: >
+      /app/.venv/bin/taskiq scheduler app.core.scheduler:sched app.tasks
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+
+  mcp:
+    image: ghcr.io/${GITHUB_REPOSITORY}:production
+    container_name: auto_trader_mcp_prod
+    env_file:
+      - .env.prod
+    environment:
+      MCP_TYPE: ${MCP_TYPE:-streamable-http}
+      MCP_HOST: ${MCP_HOST:-0.0.0.0}
+      MCP_PORT: ${MCP_PORT:-8765}
+      MCP_PATH: ${MCP_PATH:-/mcp}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    # network_mode: host 사용 시 ports 매핑은 적용되지 않습니다.
+    restart: unless-stopped
+    network_mode: host
+    command: ["python", "-m", "app.mcp_server.main"]
     deploy:
       resources:
         limits:
           memory: 512M
-          cpus: '0.25'
+          cpus: '0.5'
         reservations:
           memory: 256M
           cpus: '0.1'
 
+  upbit_websocket:
+    image: ghcr.io/${GITHUB_REPOSITORY}:production
+    container_name: auto_trader_upbit_ws_prod
+    command: [ "python", "websocket_monitor.py", "--mode", "upbit" ]
+    env_file:
+      - .env.prod
+    environment:
+      WS_MONITOR_HEARTBEAT_PATH: /shared/heartbeat/upbit.json
+      WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS: ${WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS:-5}
+      WS_MONITOR_RECONNECT_DELAY_SECONDS: ${WS_MONITOR_RECONNECT_DELAY_SECONDS:-5}
+      WS_MONITOR_EXPECT_MODE: upbit
+    volumes:
+      - ws-heartbeat:/shared/heartbeat
+    depends_on:
+      - api
+    restart: unless-stopped
+    network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
+    healthcheck:
+      test: [ "CMD", "python", "scripts/websocket_healthcheck.py" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.125'
+  kis_websocket:
+    image: ghcr.io/${GITHUB_REPOSITORY}:production
+    container_name: auto_trader_kis_ws_prod
+    command: [ "python", "websocket_monitor.py", "--mode", "kis" ]
+    env_file:
+      - .env.prod
+    environment:
+      WS_MONITOR_HEARTBEAT_PATH: /shared/heartbeat/kis.json
+      WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS: ${WS_MONITOR_HEARTBEAT_INTERVAL_SECONDS:-5}
+      WS_MONITOR_RECONNECT_DELAY_SECONDS: ${WS_MONITOR_RECONNECT_DELAY_SECONDS:-5}
+      WS_MONITOR_EXPECT_MODE: kis
+    volumes:
+      - ws-heartbeat:/shared/heartbeat
+    depends_on:
+      - api
+    restart: unless-stopped
+    network_mode: host # Host 네트워크 사용으로 localhost DB/Redis 접근
+    healthcheck:
+      test: [ "CMD", "python", "scripts/websocket_healthcheck.py" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.125'
+
+volumes:
+  ws-heartbeat:
+    name: auto_trader_ws_heartbeat
+
+# n8n은 docker-compose.n8n.yml에서 별도 관리 (caddy와 동일 패턴)
 # 네이티브 PostgreSQL과 Redis 사용으로 볼륨/네트워크 불필요

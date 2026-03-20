@@ -6,47 +6,63 @@ authors = [
     { name = "robin", email = "robin@watcha.com" }
 ]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
-    "fastapi>=0.121.0,<0.122.0",
-    "uvicorn>=0.38.0,<0.39.0",
+    "fastapi>=0.131.0,<1.0.0",
+    "uvicorn>=0.41.0,<0.42.0",
     "pydantic-settings>=2.10.1,<3.0.0",
-    "pytz>=2025.2,<2026.0",
-    "apscheduler>=3.11.0,<4.0.0",
-    "pandas>=2.3.0,<3.0.0",
+    "pandas>=3.0.0,<3.1.0",
     "httpx>=0.28.1,<0.29.0",
     "ta>=0.11.0,<0.12.0",
-    "yfinance>=0.2.65,<0.3.0",
-    "dart-fss>=0.4.13,<0.5.0",
-    "pydantic>=2.11.7,<3.0.0",
+    "yfinance>=1.2.0,<1.3.0",
+    "exchange-calendars>=4.7,<5.0",
+    "pydantic>=2.12.0,<3.0.0",
     "jinja2>=3.1.6,<4.0.0",
-    "sqlalchemy[asyncio]>=2.0.43,<3.0.0",
-    "alembic>=1.16.4,<2.0.0",
-    "asyncpg>=0.30.0,<0.31.0",
-    "redis>=5.0.0,<6.0.0",
+    "sqlalchemy[asyncio]>=2.0.45,<3.0.0",
+    "alembic>=1.17.0,<2.0.0",
+    "asyncpg>=0.31.0,<0.32.0",
+    "redis>=7.2.0,<8.0.0",
     "google-genai>=1.30.0,<2.0.0",
     "pyjwt>=2.8.0,<3.0.0",
+    "passlib[bcrypt]>=1.7.4,<2.0.0",
+    "bcrypt>=4.3.0,<5.0.0",
+    "python-multipart>=0.0.6,<0.1.0",
     "websockets>=15,<15.1",
-    "celery[redis]>=5.4.0,<6.0.0",
-    "flower>=2.0.1",
+    "taskiq>=0.11.18,<1.0.0",
+    "taskiq-redis>=1.0.0,<2.0.0",
+    "taskiq-fastapi>=0.3.4,<1.0.0",
+    "email-validator>=2.0.0,<3.0.0",
+    "itsdangerous>=2.0.0,<3.0.0",
+    "pandas-stubs==3.0.0.260204",
+    "slowapi>=0.1.9",
+    "fastmcp>=3.0.1,<4.0.0",
+    "finnhub-python>=2.4.21,<3.0.0",
+    "beautifulsoup4>=4.12.0,<5.0.0",
+    "lxml>=6.0.2,<7.0.0",
+    "setuptools>=70.0.0",
+    "sentry-sdk[fastapi]>=2.18.0,<3.0.0",
+    "tenacity>=9.0.0,<10.0.0",
+    "tvscreener>=0.2.0",
+    "opendartreader>=0.2.3",
+    "starlette-csrf>=3.0.0",
 ]
 
 [dependency-groups]
 test = [
-    "pytest>=8.4.2,<8.5.0",
-    "pytest-asyncio>=1.2.0,<1.3.0",
+    "pytest>=9.0.1,<9.1.0",
+    "pytest-asyncio>=1.3.0,<1.4.0",
     "pytest-cov>=7.0.0,<7.1.0",
     "pytest-mock>=3.11.0,<4.0.0",
+    "pytest-xdist>=3.8.0,<4.0.0",
     "fakeredis>=2.0.0,<3.0.0",
     "aiosqlite>=0.19.0,<1.0.0",
 ]
 dev = [
-    "black>=25.9.0,<25.10.0",
-    "flake8>=7.3.0,<7.4.0",
-    "isort>=7.0.0,<7.1.0",
-    "mypy>=1.5.0,<2.0.0",
     "bandit>=1.7.0,<2.0.0",
-    "safety>=3.6.2,<3.7.0",
+    "safety>=3.7.0,<3.8.0",
+    "playwright>=1.56.0",
+    "ruff>=0.14.10",
+    "ty>=0.0.18,<0.1.0",
 ]
 
 [tool.pytest.ini_options]
@@ -57,15 +73,16 @@ python_functions = ["test_*"]
 addopts = [
     "--strict-markers",
     "--strict-config",
-    "--cov=app",
-    "--cov-report=term-missing",
-    "--cov-report=html",
-    "--cov-report=xml"
 ]
+
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests"
+    "unit: marks tests as unit tests",
+    "live: marks tests as live API tests (require --run-live to execute)",
+]
+filterwarnings = [
+    "ignore::pydantic.warnings.PydanticDeprecatedSince212:google.genai.types"
 ]
 
 [tool.coverage.run]
@@ -95,12 +112,75 @@ exclude_lines = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.uv]
+constraint-dependencies = [
+    "protobuf<7",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
-[tool.isort]
-profile = "black"
-line_length = 88
-
-[tool.black]
+[tool.ruff]
+target-version = "py313"
 line-length = 88
+exclude = [
+    ".venv",
+    "alembic/versions",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E203",   # Whitespace before ':' (black compatible)
+    "E501",   # Line too long (formatter handles this)
+    "B008",   # FastAPI Depends() in default arguments
+    "E712",   # SQLAlchemy == True comparison
+    "B904",   # raise ... from err (FastAPI HTTPException pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/conftest.py" = ["E402"]  # Delayed import after env setup
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ty.environment]
+python-version = "3.13"
+extra-paths = ["app/stubs"]
+
+[tool.ty.src]
+include = ["app"]
+
+[tool.ty.rules]
+all = "warn"
+"unresolved-attribute" = "ignore"
+"invalid-argument-type" = "ignore"
+"unresolved-import" = "ignore"
+"invalid-assignment" = "ignore"
+"invalid-await" = "ignore"
+"no-matching-overload" = "ignore"
+"unknown-argument" = "ignore"
+"invalid-parameter-default" = "ignore"
+"call-non-callable" = "ignore"
+"possibly-missing-attribute" = "ignore"
+"missing-argument" = "ignore"
+"unsupported-operator" = "ignore"
+"not-iterable" = "ignore"
+"redundant-cast" = "ignore"
+"not-subscriptable" = "ignore"
+"division-by-zero" = "ignore"

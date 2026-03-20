@@ -204,6 +204,7 @@ celerybeat.pid
 # Environments
 .env
 .env.test
+.env.mcp
 .venv
 env/
 venv/
@@ -244,3 +245,20 @@ cython_debug/
 
 /tmp/
 .DS_Store
+/.claude/worktrees/elated-diffie/
+.worktrees/
+
+# Auto Claude data directory
+.auto-claude/
+
+# Auto Claude generated files
+.auto-claude-security.json
+.auto-claude-status
+.claude_settings.json
+.security-key
+logs/security/
+.worktrees/
+
+# n8n
+n8n/data/*
+!n8n/data/.gitkeep

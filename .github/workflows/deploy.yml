@@ -70,6 +70,9 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            GITHUB_SHA=${{ github.sha }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -101,3 +104,25 @@ jobs:
           else
             echo "- **Image pushed**: ❌" >> $GITHUB_STEP_SUMMARY
           fi
+
+  notify:
+    if: failure()
+    needs: [build-and-push]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord failure notification
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -s -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"❌ Deploy 실패\",
+                \"description\": \"**Branch:** \`${{ github.ref_name }}\`\n**Commit:** \`${GITHUB_SHA::7}\`\n**Author:** ${{ github.actor }}\n**Image:** GHCR push failed\",
+                \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+                \"color\": 16711680,
+                \"footer\": {\"text\": \"${{ github.repository }}\"},
+                \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+              }]
+            }" \
+            "$DISCORD_WEBHOOK"

@@ -1,14 +1,13 @@
-import pytz
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from taskiq import TaskiqScheduler
+from taskiq.schedule_sources import LabelScheduleSource
 
-from app.core.config import settings
-from app.jobs.screener import screen_once_async
+from app.core.taskiq_broker import broker
 
-sched = AsyncIOScheduler(timezone=pytz.timezone("Asia/Seoul"))
+sched = TaskiqScheduler(
+    broker=broker,
+    sources=[LabelScheduleSource(broker)],
+)
 
 
-def start_scheduler():
-    # “0 * * * *” → cron 표현 → 파싱
-    minute, hour, *_ = settings.cron.split()
-    sched.add_job(screen_once_async, "cron", minute=minute, hour=hour)
-    sched.start()
+def start_scheduler() -> TaskiqScheduler:
+    return sched

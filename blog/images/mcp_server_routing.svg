@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1200" height="700" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#333333" />
+        </marker>
+    </defs>
+
+    <!-- 배경 -->
+    <rect width="1200" height="700" fill="#ffffff"/>
+
+    <!-- 제목 -->
+    <text x="600" y="40" font-family="Arial, sans-serif" font-size="26" font-weight="bold" fill="#1a1a2e" text-anchor="middle">
+        지능형 심볼 라우팅 시스템
+    </text>
+    <text x="600" y="65" font-family="Arial, sans-serif" font-size="14" fill="#888888" text-anchor="middle">
+        심볼 포맷에 따라 자동으로 시장과 데이터 소스를 결정
+    </text>
+
+    <!-- 입력 심볼 -->
+    <rect x="430" y="90" width="340" height="55" fill="#5436DA" stroke="#3d2a9e" stroke-width="2" rx="8"/>
+    <text x="600" y="118" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#ffffff" text-anchor="middle">get_quote(symbol, market?)</text>
+    <text x="600" y="137" font-family="Arial, sans-serif" font-size="12" fill="#c4b8ff" text-anchor="middle">Claude가 호출하는 MCP 도구</text>
+
+    <!-- 화살표: 입력 -> 라우터 -->
+    <line x1="600" y1="145" x2="600" y2="180" stroke="#333333" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+    <!-- 라우터 박스 -->
+    <rect x="350" y="185" width="500" height="60" fill="#ECEFF1" stroke="#546E7A" stroke-width="2" rx="8"/>
+    <text x="600" y="213" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#37474F" text-anchor="middle">_resolve_market_type(symbol, market)</text>
+    <text x="600" y="235" font-family="Arial, sans-serif" font-size="12" fill="#78909C" text-anchor="middle">market 명시 → 검증 | market 생략 → 자동 감지</text>
+
+    <!-- 3개 분기 화살표 -->
+    <line x1="450" y1="245" x2="200" y2="310" stroke="#1976D2" stroke-width="2" marker-end="url(#arrowhead)"/>
+    <line x1="600" y1="245" x2="600" y2="310" stroke="#388E3C" stroke-width="2" marker-end="url(#arrowhead)"/>
+    <line x1="750" y1="245" x2="1000" y2="310" stroke="#F57C00" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+    <!-- 한국주식 감지 -->
+    <rect x="60" y="315" width="280" height="130" fill="#E3F2FD" stroke="#1976D2" stroke-width="2" rx="8"/>
+    <text x="200" y="345" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#1565C0" text-anchor="middle">equity_kr (한국 주식)</text>
+    <rect x="80" y="360" width="240" height="28" fill="#BBDEFB" rx="4"/>
+    <text x="200" y="379" font-family="monospace" font-size="13" fill="#1565C0" text-anchor="middle">6자리 영숫자 → 감지</text>
+    <text x="200" y="410" font-family="monospace" font-size="12" fill="#666666" text-anchor="middle">005930 → 삼성전자</text>
+    <text x="200" y="430" font-family="monospace" font-size="12" fill="#666666" text-anchor="middle">0123G0 → ETF/ETN</text>
+
+    <!-- 미국주식 감지 -->
+    <rect x="460" y="315" width="280" height="130" fill="#E8F5E9" stroke="#388E3C" stroke-width="2" rx="8"/>
+    <text x="600" y="345" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#2E7D32" text-anchor="middle">equity_us (미국 주식)</text>
+    <rect x="480" y="360" width="240" height="28" fill="#C8E6C9" rx="4"/>
+    <text x="600" y="379" font-family="monospace" font-size="13" fill="#2E7D32" text-anchor="middle">영문 포함 → 감지</text>
+    <text x="600" y="410" font-family="monospace" font-size="12" fill="#666666" text-anchor="middle">AAPL → Apple</text>
+    <text x="600" y="430" font-family="monospace" font-size="12" fill="#666666" text-anchor="middle">BRK.B → Berkshire B</text>
+
+    <!-- 암호화폐 감지 -->
+    <rect x="860" y="315" width="280" height="130" fill="#FFF3E0" stroke="#F57C00" stroke-width="2" rx="8"/>
+    <text x="1000" y="345" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#EF6C00" text-anchor="middle">crypto (암호화폐)</text>
+    <rect x="880" y="360" width="240" height="28" fill="#FFE0B2" rx="4"/>
+    <text x="1000" y="379" font-family="monospace" font-size="13" fill="#EF6C00" text-anchor="middle">KRW-/USDT- 접두사</text>
+    <text x="1000" y="410" font-family="monospace" font-size="12" fill="#666666" text-anchor="middle">KRW-BTC → Bitcoin</text>
+    <text x="1000" y="430" font-family="monospace" font-size="12" fill="#666666" text-anchor="middle">USDT-ETH → Ethereum</text>
+
+    <!-- 화살표: 감지 결과 -> 데이터 소스 -->
+    <line x1="200" y1="445" x2="200" y2="500" stroke="#1976D2" stroke-width="2" marker-end="url(#arrowhead)"/>
+    <line x1="600" y1="445" x2="600" y2="500" stroke="#388E3C" stroke-width="2" marker-end="url(#arrowhead)"/>
+    <line x1="1000" y1="445" x2="1000" y2="500" stroke="#F57C00" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+    <!-- 데이터 소스 결과 -->
+    <rect x="80" y="505" width="240" height="90" fill="#FF6B00" stroke="#E65100" stroke-width="2" rx="8"/>
+    <text x="200" y="535" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">KIS API</text>
+    <text x="200" y="555" font-family="Arial, sans-serif" font-size="12" fill="#FFE0B2" text-anchor="middle">한국투자증권</text>
+    <text x="200" y="575" font-family="Arial, sans-serif" font-size="11" fill="#FFCC80" text-anchor="middle">+ Naver Finance (펀더멘털)</text>
+
+    <rect x="440" y="505" width="320" height="90" fill="#6001D2" stroke="#4B01A5" stroke-width="2" rx="8"/>
+    <text x="600" y="535" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">Yahoo Finance + Finnhub</text>
+    <text x="600" y="555" font-family="Arial, sans-serif" font-size="12" fill="#D1B3FF" text-anchor="middle">yfinance (시세/재무)</text>
+    <text x="600" y="575" font-family="Arial, sans-serif" font-size="11" fill="#B894FF" text-anchor="middle">Finnhub (뉴스/내부자거래/실적)</text>
+
+    <rect x="860" y="505" width="280" height="90" fill="#093687" stroke="#062563" stroke-width="2" rx="8"/>
+    <text x="1000" y="535" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#ffffff" text-anchor="middle">Upbit API</text>
+    <text x="1000" y="555" font-family="Arial, sans-serif" font-size="12" fill="#B3C7E6" text-anchor="middle">업비트 (시세/주문)</text>
+    <text x="1000" y="575" font-family="Arial, sans-serif" font-size="11" fill="#8BA6CC" text-anchor="middle">+ Binance/CoinGecko (분석)</text>
+
+    <!-- market 별칭 표 -->
+    <rect x="100" y="620" width="1000" height="55" fill="#F5F5F5" stroke="#E0E0E0" stroke-width="1" rx="6"/>
+    <text x="120" y="645" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333">market 별칭:</text>
+    <text x="230" y="645" font-family="monospace" font-size="11" fill="#1565C0">kr, krx, kospi, kosdaq → equity_kr</text>
+    <text x="555" y="645" font-family="monospace" font-size="11" fill="#2E7D32">us, nasdaq, nyse, yahoo → equity_us</text>
+    <text x="870" y="645" font-family="monospace" font-size="11" fill="#EF6C00">crypto, upbit, krw → crypto</text>
+    <text x="600" y="665" font-family="Arial, sans-serif" font-size="11" fill="#999999" text-anchor="middle">market 파라미터를 명시하면 심볼 형식을 해당 시장 규칙으로 검증</text>
+</svg>

@@ -37,11 +37,16 @@ while IFS= read -r line; do
     # KEY=value 형태의 라인 파싱
     if [[ "$line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)= ]]; then
         key="${BASH_REMATCH[1]}"
+        value="${line#*=}"
         
         # 테스트용 값 설정
         case "$key" in
             "DATABASE_URL")
                 echo "DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/test_db" >> "$OUTPUT_TARGET"
+                ;;
+            "SECRET_KEY")
+                # 테스트 환경에서도 Settings 보안 검증을 통과하는 강한 키를 사용한다.
+                echo "SECRET_KEY=CiTest_StrongKey_20260216_Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9" >> "$OUTPUT_TARGET"
                 ;;
             "REDIS_URL")
                 echo "REDIS_URL=redis://localhost:6379/0" >> "$OUTPUT_TARGET"
@@ -54,6 +59,9 @@ while IFS= read -r line; do
                 ;;
             "TELEGRAM_TOKEN")
                 echo "TELEGRAM_TOKEN=DUMMY_TELEGRAM_TOKEN" >> "$OUTPUT_TARGET"
+                ;;
+            "TELEGRAM_CHAT_IDS")
+                echo "TELEGRAM_CHAT_IDS=123456789,987654321" >> "$OUTPUT_TARGET"
                 ;;
             "TELEGRAM_CHAT_IDS_STR")
                 echo "TELEGRAM_CHAT_IDS_STR=123456789,987654321" >> "$OUTPUT_TARGET"
@@ -97,9 +105,12 @@ while IFS= read -r line; do
             "REDIS_SOCKET_CONNECT_TIMEOUT")
                 echo "REDIS_SOCKET_CONNECT_TIMEOUT=5" >> "$OUTPUT_TARGET"
                 ;;
+            "SENTRY_DSN")
+                echo "SENTRY_DSN=" >> "$OUTPUT_TARGET"
+                ;;
             *)
-                # 기타 변수들은 기본값이나 테스트용 값으로 설정
-                echo "${key}=test_value" >> "$OUTPUT_TARGET"
+                # 기타 변수들은 env.example에 정의된 값을 사용
+                echo "${key}=${value}" >> "$OUTPUT_TARGET"
                 ;;
         esac
     fi
@@ -114,4 +125,3 @@ else
     echo "테스트용 환경 변수가 .env.test 파일에 저장되었습니다."
     echo "생성된 파일을 확인하려면: cat .env.test"
 fi
-

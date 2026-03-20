@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>통합 포트폴리오</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <style>
+        :root {
+            --bg-page: #f5f3ef;
+            --bg-dark: #1a1a1a;
+            --accent: #c05a3c;
+            --success: #4a7c59;
+            --error: #b54a4a;
+            --border-light: #d1ccc4;
+            --text-primary: #242220;
+            --text-secondary: #4f4a44;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg-page);
+            color: var(--text-primary);
+            font-family: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
+        }
+
+        .shell {
+            max-width: 1240px;
+            margin: 1.6rem auto;
+            border: 1px solid var(--border-light);
+            background: #fff;
+            border-radius: 1rem;
+            box-shadow: 0 18px 40px rgba(24, 19, 16, 0.08);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(120deg, var(--bg-dark) 0%, #2f2b28 50%, #45352e 100%);
+            color: #f3ede5;
+            padding: 1.2rem 1.4rem;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 1.3rem;
+            letter-spacing: 0.02em;
+        }
+
+        .header p {
+            margin: 0.35rem 0 0;
+            color: #d9cec1;
+            font-size: 0.9rem;
+        }
+
+        .page-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+            gap: 1rem;
+            padding: 1rem;
+        }
+
+        .stack {
+            display: grid;
+            gap: 0.9rem;
+            align-content: start;
+        }
+
+        .panel {
+            border: 1px solid var(--border-light);
+            border-radius: 0.75rem;
+            background: #fcfbf8;
+            padding: 0.9rem;
+        }
+
+        .panel h2 {
+            font-size: 1rem;
+            margin: 0;
+            color: var(--text-primary);
+        }
+
+        .subtle {
+            color: var(--text-secondary);
+            font-size: 0.84rem;
+        }
+
+        .controls-grid {
+            display: grid;
+            gap: 0.6rem;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            margin-top: 0.7rem;
+        }
+
+        label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            display: block;
+            margin-bottom: 0.2rem;
+        }
+
+        input,
+        select {
+            width: 100%;
+            border: 1px solid var(--border-light);
+            border-radius: 0.5rem;
+            background: #fff;
+            color: var(--text-primary);
+            padding: 0.5rem 0.55rem;
+            font-size: 0.85rem;
+        }
+
+        .account-list {
+            margin-top: 0.8rem;
+            border: 1px solid var(--border-light);
+            border-radius: 0.65rem;
+            background: #fff;
+            max-height: 190px;
+            overflow: auto;
+            padding: 0.5rem;
+        }
+
+        .account-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.6rem;
+            padding: 0.35rem 0.2rem;
+            border-bottom: 1px dashed #ece7df;
+            font-size: 0.82rem;
+        }
+
+        .account-item:last-child {
+            border-bottom: 0;
+        }
+
+        .btn-primary-soft,
+        .btn-outline-soft {
+            border-radius: 0.6rem;
+            font-size: 0.82rem;
+            padding: 0.45rem 0.72rem;
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: all 0.18s ease;
+        }
+
+        .btn-primary-soft {
+            color: #fff;
+            background: var(--accent);
+            border-color: #9f462d;
+        }
+
+        .btn-primary-soft:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 18px rgba(192, 90, 60, 0.25);
+        }
+
+        .btn-outline-soft {
+            color: var(--text-secondary);
+            background: #fff;
+            border-color: var(--border-light);
+        }
+
+        .results-table-wrap {
+            overflow: auto;
+            border: 1px solid var(--border-light);
+            border-radius: 0.65rem;
+            background: #fff;
+            margin-top: 0.8rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.84rem;
+            min-width: 820px;
+        }
+
+        th,
+        td {
+            padding: 0.52rem 0.5rem;
+            border-bottom: 1px solid #ece7df;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        th:first-child,
+        td:first-child,
+        th:nth-child(2),
+        td:nth-child(2) {
+            text-align: left;
+        }
+
+        th {
+            font-size: 0.74rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: var(--text-secondary);
+            background: #f8f4ee;
+            position: sticky;
+            top: 0;
+        }
+
+        .results-cards {
+            display: none;
+            gap: 0.65rem;
+            margin-top: 0.75rem;
+        }
+
+        .result-card {
+            border: 1px solid var(--border-light);
+            border-radius: 0.7rem;
+            background: #fff;
+            padding: 0.75rem;
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.45rem 0.75rem;
+            margin-top: 0.5rem;
+            font-size: 0.8rem;
+        }
+
+        .metric-grid dt {
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        .metric-grid dd {
+            margin: 0;
+            font-weight: 600;
+            text-align: right;
+        }
+
+        .badge-market {
+            border-radius: 999px;
+            font-size: 0.72rem;
+            padding: 0.12rem 0.5rem;
+            color: #fff;
+        }
+
+        .badge-kr {
+            background: #225f9c;
+        }
+
+        .badge-us {
+            background: #2f7a4f;
+        }
+
+        .badge-crypto {
+            background: #80592f;
+        }
+
+        .profit-positive {
+            color: #9a1c1c;
+            font-weight: 600;
+        }
+
+        .profit-negative {
+            color: #0f4c9c;
+            font-weight: 600;
+        }
+
+        .summary-list {
+            display: grid;
+            gap: 0.45rem;
+            margin-top: 0.6rem;
+            font-size: 0.84rem;
+        }
+
+        .summary-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px dashed #ece7df;
+            padding-bottom: 0.3rem;
+        }
+
+        .summary-row:last-child {
+            border-bottom: 0;
+        }
+
+        .warning-list {
+            margin: 0.55rem 0 0;
+            padding: 0;
+            list-style: none;
+            display: grid;
+            gap: 0.4rem;
+        }
+
+        .warning-list li {
+            border: 1px solid rgba(181, 74, 74, 0.25);
+            color: var(--error);
+            background: rgba(181, 74, 74, 0.08);
+            border-radius: 0.5rem;
+            padding: 0.45rem 0.6rem;
+            font-size: 0.79rem;
+        }
+
+        .empty-note {
+            border: 1px dashed #d8d0c6;
+            border-radius: 0.65rem;
+            color: var(--text-secondary);
+            background: #fff;
+            text-align: center;
+            padding: 1rem 0.75rem;
+            font-size: 0.84rem;
+        }
+
+        @media (max-width: 1100px) {
+            .page-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 760px) {
+            .shell {
+                margin: 0;
+                border-radius: 0;
+                min-height: 100vh;
+            }
+
+            .controls-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .results-table-wrap {
+                display: none;
+            }
+
+            .results-cards {
+                display: grid;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    {% include 'nav.html' %}
+    <main class="shell" id="portfolio-main-page">
+        <header class="header">
+            <h1>Unified Portfolio Dashboard</h1>
+            <p>KR / US / CRYPTO 통합 보유현황을 계좌별 토글로 조회합니다.</p>
+        </header>
+
+        <section class="page-grid">
+            <section>
+                <article class="panel" id="portfolio-filters-panel">
+                    <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                        <h2><i class="bi bi-funnel"></i> 필터</h2>
+                        <div class="d-flex gap-2 align-items-center">
+                            <span class="subtle" id="last-updated">last updated: -</span>
+                            <button id="refresh-button" type="button" class="btn-primary-soft">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh
+                            </button>
+                        </div>
+                    </div>
+
+                    <form id="filters-form">
+                        <div class="controls-grid">
+                            <div>
+                                <label for="market-select">시장</label>
+                                <select id="market-select" name="market">
+                                    <option value="ALL" selected>ALL</option>
+                                    <option value="KR">KR</option>
+                                    <option value="US">US</option>
+                                    <option value="CRYPTO">CRYPTO</option>
+                                </select>
+                            </div>
+                            <div style="grid-column: span 2;">
+                                <label for="query-input">종목 검색 (심볼/이름)</label>
+                                <input id="query-input" name="q" type="text" placeholder="예: AAPL, 삼성전자, KRW-BTC">
+                            </div>
+                        </div>
+
+                        <div class="d-flex justify-content-between align-items-center mt-3">
+                            <div class="subtle">브로커 + 계좌명 멀티 토글</div>
+                            <button id="clear-accounts-button" type="button" class="btn-outline-soft">계좌 선택 해제</button>
+                        </div>
+                        <div id="account-facets" class="account-list"></div>
+                    </form>
+                </article>
+
+                <article class="panel mt-3" id="portfolio-results-panel">
+                    <div class="d-flex justify-content-between align-items-center gap-2">
+                        <h2><i class="bi bi-table"></i> 보유 종목</h2>
+                        <span class="subtle" id="result-count">0 rows</span>
+                    </div>
+
+                    <div class="results-table-wrap">
+                        <table id="portfolio-table">
+                            <thead>
+                                <tr>
+                                    <th>시장</th>
+                                    <th>심볼/이름</th>
+                                    <th>수량</th>
+                                    <th>평균단가</th>
+                                    <th>현재가</th>
+                                    <th>평가금액</th>
+                                    <th>손익/수익률</th>
+                                </tr>
+                            </thead>
+                            <tbody id="portfolio-table-body"></tbody>
+                        </table>
+                    </div>
+
+                    <div id="portfolio-cards" class="results-cards"></div>
+                </article>
+            </section>
+
+            <section class="stack">
+                <article class="panel" id="portfolio-summary-panel">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h2><i class="bi bi-bar-chart"></i> 요약</h2>
+                        <span class="subtle" id="summary-market">ALL</span>
+                    </div>
+                    <div class="summary-list">
+                        <div class="summary-row"><span>총 포지션</span><strong id="summary-total">0</strong></div>
+                        <div class="summary-row"><span>KR</span><strong id="summary-kr">0</strong></div>
+                        <div class="summary-row"><span>US</span><strong id="summary-us">0</strong></div>
+                        <div class="summary-row"><span>CRYPTO</span><strong id="summary-crypto">0</strong></div>
+                    </div>
+                </article>
+
+                <article class="panel" id="portfolio-status-panel">
+                    <h2><i class="bi bi-info-circle"></i> 상태</h2>
+                    <div class="subtle mt-2" id="status-message">초기 조회를 준비 중입니다.</div>
+                    <ul id="warnings-list" class="warning-list"></ul>
+                </article>
+            </section>
+        </section>
+    </main>
+
+    <script>
+        const state = {
+            overview: null,
+            selectedAccounts: new Set(),
+        };
+
+        const marketSelect = document.getElementById("market-select");
+        const queryInput = document.getElementById("query-input");
+        const refreshButton = document.getElementById("refresh-button");
+        const clearAccountsButton = document.getElementById("clear-accounts-button");
+        const resultCount = document.getElementById("result-count");
+        const tableBody = document.getElementById("portfolio-table-body");
+        const cards = document.getElementById("portfolio-cards");
+        const accountFacets = document.getElementById("account-facets");
+        const warningsList = document.getElementById("warnings-list");
+        const statusMessage = document.getElementById("status-message");
+        const lastUpdated = document.getElementById("last-updated");
+
+        function escapeHtml(value) {
+            const text = String(value ?? "");
+            return text
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#39;");
+        }
+
+        function formatNumber(value, digits = 2) {
+            if (value === null || value === undefined || Number.isNaN(Number(value))) {
+                return "-";
+            }
+            return Number(value).toLocaleString("ko-KR", {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: digits,
+            });
+        }
+
+        function formatProfit(profitLoss, profitRate) {
+            if (profitLoss === null || profitLoss === undefined) {
+                return "-";
+            }
+            const rate = profitRate === null || profitRate === undefined
+                ? "-"
+                : `${(Number(profitRate) * 100).toFixed(2)}%`;
+            return `${formatNumber(profitLoss)} / ${rate}`;
+        }
+
+        function marketBadgeClass(marketType) {
+            if (marketType === "KR") return "badge-market badge-kr";
+            if (marketType === "US") return "badge-market badge-us";
+            return "badge-market badge-crypto";
+        }
+
+        function profitClass(value) {
+            if (value === null || value === undefined) {
+                return "";
+            }
+            return Number(value) >= 0 ? "profit-positive" : "profit-negative";
+        }
+
+        function buildQueryParams() {
+            const params = new URLSearchParams();
+            const market = marketSelect.value;
+            if (market) {
+                params.append("market", market);
+            }
+
+            const query = queryInput.value.trim();
+            if (query) {
+                params.append("q", query);
+            }
+
+            for (const accountKey of state.selectedAccounts) {
+                params.append("account_keys", accountKey);
+            }
+
+            return params;
+        }
+
+        function renderAccountFacets(accounts) {
+            if (!accounts || accounts.length === 0) {
+                accountFacets.innerHTML = '<div class="subtle">표시 가능한 계좌가 없습니다.</div>';
+                return;
+            }
+
+            const valid = new Set(accounts.map((item) => item.account_key));
+            state.selectedAccounts = new Set([...state.selectedAccounts].filter((item) => valid.has(item)));
+
+            accountFacets.innerHTML = accounts.map((item) => {
+                const accountKey = String(item.account_key || "");
+                const inputId = `account-${encodeURIComponent(accountKey)}`;
+                const checked = state.selectedAccounts.has(item.account_key) ? "checked" : "";
+                const broker = escapeHtml(item.broker);
+                const accountName = escapeHtml(item.account_name);
+                const marketTypes = Array.isArray(item.market_types)
+                    ? item.market_types.map((value) => escapeHtml(value)).join(", ")
+                    : "";
+                return `
+                    <label class="account-item" for="${inputId}">
+                        <span>
+                            <strong>${broker}</strong> · ${accountName}
+                            <span class="subtle">(${marketTypes})</span>
+                        </span>
+                        <input type="checkbox" id="${inputId}" data-account-key="${escapeHtml(accountKey)}" ${checked}>
+                    </label>
+                `;
+            }).join("");
+
+            accountFacets.querySelectorAll("input[type='checkbox'][data-account-key]").forEach((checkbox) => {
+                checkbox.addEventListener("change", (event) => {
+                    const accountKey = event.target.getAttribute("data-account-key");
+                    if (!accountKey) return;
+                    if (event.target.checked) {
+                        state.selectedAccounts.add(accountKey);
+                    } else {
+                        state.selectedAccounts.delete(accountKey);
+                    }
+                    fetchOverview();
+                });
+            });
+        }
+
+        function renderSummary(summary, filters) {
+            document.getElementById("summary-market").textContent = filters.market || "ALL";
+            document.getElementById("summary-total").textContent = formatNumber(summary.total_positions, 0);
+            document.getElementById("summary-kr").textContent = formatNumber(summary.by_market.KR, 0);
+            document.getElementById("summary-us").textContent = formatNumber(summary.by_market.US, 0);
+            document.getElementById("summary-crypto").textContent = formatNumber(summary.by_market.CRYPTO, 0);
+        }
+
+        function renderWarnings(warnings) {
+            warningsList.innerHTML = "";
+            const visibleWarnings = Array.isArray(warnings)
+                ? warnings.filter((warning) => !/symbol\s+not\s+tradable/i.test(String(warning || "")))
+                : [];
+
+            if (visibleWarnings.length === 0) {
+                statusMessage.textContent = "정상적으로 조회되었습니다.";
+                return;
+            }
+
+            statusMessage.textContent = `일부 소스 조회 경고: ${visibleWarnings.length}건`;
+            const grouped = visibleWarnings.reduce((acc, warning) => {
+                const text = String(warning || "");
+                const delimiterIndex = text.indexOf(":");
+                const key = (delimiterIndex > 0 ? text.slice(0, delimiterIndex) : text).trim() || "기타";
+                acc[key] = (acc[key] || 0) + 1;
+                return acc;
+            }, {});
+
+            const summaryText = Object.entries(grouped)
+                .map(([cause, count]) => `${escapeHtml(cause)} ${count}건`)
+                .join(", ");
+            const detailLimit = 5;
+            const detailWarnings = visibleWarnings.slice(0, detailLimit);
+            const omittedCount = visibleWarnings.length - detailWarnings.length;
+
+            const entries = [
+                `<li><strong>원인 요약:</strong> ${summaryText}</li>`,
+                ...detailWarnings.map((warning) => `<li>${escapeHtml(warning)}</li>`),
+            ];
+            if (omittedCount > 0) {
+                entries.push(`<li>외 ${omittedCount}건 생략</li>`);
+            }
+
+            warningsList.innerHTML = entries.join("");
+        }
+
+        function renderPositions(positions) {
+            resultCount.textContent = `${positions.length} rows`;
+
+            if (!positions.length) {
+                tableBody.innerHTML = '<tr><td colspan="7"><div class="empty-note">조건에 맞는 보유 종목이 없습니다.</div></td></tr>';
+                cards.innerHTML = '<div class="empty-note">조건에 맞는 보유 종목이 없습니다.</div>';
+                return;
+            }
+
+            tableBody.innerHTML = positions.map((item) => {
+                const pClass = profitClass(item.profit_loss);
+                const symbol = escapeHtml(item.symbol);
+                const name = escapeHtml(item.name);
+                const marketType = escapeHtml(item.market_type);
+                return `
+                    <tr>
+                        <td><span class="${marketBadgeClass(item.market_type)}">${marketType}</span></td>
+                        <td><strong>${symbol}</strong><br><span class="subtle">${name}</span></td>
+                        <td>${formatNumber(item.quantity, 8)}</td>
+                        <td>${formatNumber(item.avg_price)}</td>
+                        <td>${item.current_price === null ? "-" : formatNumber(item.current_price)}</td>
+                        <td>${formatNumber(item.evaluation)}</td>
+                        <td class="${pClass}">${formatProfit(item.profit_loss, item.profit_rate)}</td>
+                    </tr>
+                `;
+            }).join("");
+
+            cards.innerHTML = positions.map((item) => {
+                const pClass = profitClass(item.profit_loss);
+                const symbol = escapeHtml(item.symbol);
+                const name = escapeHtml(item.name);
+                const marketType = escapeHtml(item.market_type);
+                return `
+                    <article class="result-card">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <strong>${symbol}</strong>
+                            <span class="${marketBadgeClass(item.market_type)}">${marketType}</span>
+                        </div>
+                        <div class="subtle">${name}</div>
+                        <dl class="metric-grid">
+                            <dt>수량</dt><dd>${formatNumber(item.quantity, 8)}</dd>
+                            <dt>평균단가</dt><dd>${formatNumber(item.avg_price)}</dd>
+                            <dt>현재가</dt><dd>${item.current_price === null ? "-" : formatNumber(item.current_price)}</dd>
+                            <dt>평가금액</dt><dd>${formatNumber(item.evaluation)}</dd>
+                            <dt>손익/수익률</dt><dd class="${pClass}">${formatProfit(item.profit_loss, item.profit_rate)}</dd>
+                        </dl>
+                    </article>
+                `;
+            }).join("");
+        }
+
+        async function fetchOverview() {
+            const params = buildQueryParams();
+            const url = `/portfolio/api/overview?${params.toString()}`;
+            statusMessage.textContent = "데이터를 조회하는 중입니다...";
+
+            try {
+                const response = await fetch(url, { headers: { "Accept": "application/json" } });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const payload = await response.json();
+                state.overview = payload;
+
+                renderAccountFacets(payload.facets.accounts || []);
+                renderSummary(payload.summary, payload.filters);
+                renderWarnings(payload.warnings || []);
+                renderPositions(payload.positions || []);
+
+                if (payload.as_of) {
+                    lastUpdated.textContent = `last updated: ${new Date(payload.as_of).toLocaleString("ko-KR")}`;
+                }
+            } catch (error) {
+                statusMessage.textContent = `조회 실패: ${error}`;
+                warningsList.innerHTML = `<li>overview API 호출에 실패했습니다: ${escapeHtml(error)}</li>`;
+                tableBody.innerHTML = '<tr><td colspan="7"><div class="empty-note">데이터를 불러오지 못했습니다.</div></td></tr>';
+                cards.innerHTML = '<div class="empty-note">데이터를 불러오지 못했습니다.</div>';
+            }
+        }
+
+        refreshButton.addEventListener("click", fetchOverview);
+        marketSelect.addEventListener("change", fetchOverview);
+        queryInput.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") {
+                return;
+            }
+            event.preventDefault();
+            fetchOverview();
+        });
+        clearAccountsButton.addEventListener("click", () => {
+            state.selectedAccounts.clear();
+            fetchOverview();
+        });
+
+        window.addEventListener("DOMContentLoaded", fetchOverview, { once: true });
+    </script>
+</body>
+
+</html>

@@ -1,7 +1,7 @@
 # 분석 시스템 리팩토링 가이드
 
 ## 개요
-기존의 `debug_upbit.py`, `debug_yahoo.py`, `debug_kis.py` 파일에서 중복되던 프롬프트 생성, Gemini 실행, DB 저장 로직을 공통 모듈로 분리하여 재사용 가능한 구조로 개선했습니다.
+기존 서비스별 중복 분석 코드를 정리하고, 프롬프트 생성/Gemini 실행/DB 저장 로직을 공통 모듈로 분리해 재사용 가능한 구조로 개선했습니다.
 
 ## 새로운 구조
 
@@ -46,16 +46,24 @@ await analyzer.analyze_stocks(["삼성전자", "SK하이닉스"])
 
 #### 통합 분석
 ```python
-# 모든 서비스를 한 번에 실행
-python debug_unified.py
+from app.analysis.service_analyzers import UpbitAnalyzer, YahooAnalyzer, KISAnalyzer
+
+upbit = UpbitAnalyzer()
+yahoo = YahooAnalyzer()
+kis = KISAnalyzer()
+
+await upbit.analyze_coins(["비트코인"])
+await yahoo.analyze_stocks(["TSLA"])
+await kis.analyze_stocks(["삼성전자"])
 ```
 
-### 3. 새로운 Debug 파일들
+### 3. 권장 실행 경로
 
-- `debug_upbit_new.py`: 리팩토링된 Upbit 분석기
-- `debug_yahoo_new.py`: 리팩토링된 Yahoo 분석기  
-- `debug_kis_new.py`: 리팩토링된 KIS 분석기
-- `debug_unified.py`: 모든 서비스 통합 실행
+- `uv run uvicorn app.main:api --reload`: API/대시보드 실행
+- `python websocket_monitor.py --mode both`: 통합 WebSocket 모니터링
+- `python kis_websocket_monitor.py`: KIS WebSocket 모니터링
+- `python upbit_websocket_monitor.py`: Upbit WebSocket 모니터링
+- `make test` 또는 `uv run pytest tests/ -v`: 정식 테스트 경로
 
 ### 4. 장점
 
@@ -99,8 +107,10 @@ app/core/
 ├── model_rate_limiter.py    # Redis 기반 모델 제한 관리자
 └── ...
 
-debug_*.py                   # 새로운 debug 파일들
-debug_model_status.py        # 모델 상태 확인 및 관리 도구
+manage_users.py              # 운영 사용자 관리 엔트리포인트
+websocket_monitor.py         # 통합 WebSocket 모니터 엔트리포인트
+kis_websocket_monitor.py     # KIS 전용 WebSocket 모니터 엔트리포인트
+upbit_websocket_monitor.py   # Upbit 전용 WebSocket 모니터 엔트리포인트
 ```
 
 ## Redis 기반 모델 제한 시스템
@@ -114,7 +124,7 @@ Google Gemini API에서 429 에러(할당량 초과)가 발생하면, `retry_del
 2. **자동 모델 제한**: `retry_delay` 정보를 Redis에 저장하여 정확한 제한 시간 적용
 3. **스마트 재시도**: 제한된 API 키의 모델은 자동으로 건너뛰고 다음 모델 시도
 4. **실시간 상태 확인**: Redis를 통해 모델별, API 키별 제한 상태 실시간 모니터링
-5. **수동 제한 해제**: 필요시 특정 모델의 특정 API 키 또는 전체 제한을 수동으로 해제
+5. **자동 해제 중심 운영**: 제한은 TTL 만료로 자동 해제되며, 필요 시 Redis 키/TTL 점검
 6. **보안 강화**: API 키를 마스킹하여 Redis에 저장
 
 ### 사용법
@@ -164,31 +174,31 @@ REDIS_URL=redis://:your_password@your-elasticache-endpoint.cache.amazonaws.com:6
 **1. 서비스 시작**
 ```bash
 # 모든 서비스 시작 (PostgreSQL, Redis, Adminer)
-docker-compose up -d
+docker compose up -d
 
 # 특정 서비스만 시작
-docker-compose up -d redis
+docker compose up -d redis
 ```
 
 **2. 서비스 상태 확인**
 ```bash
 # 모든 서비스 상태 확인
-docker-compose ps
+docker compose ps
 
 # Redis 로그 확인
-docker-compose logs redis
+docker compose logs redis
 
 # Redis 상태 확인
-docker-compose exec redis redis-cli -a redis_password ping
+docker compose exec redis redis-cli -a redis_password ping
 ```
 
 **3. 서비스 중지**
 ```bash
 # 모든 서비스 중지
-docker-compose down
+docker compose down
 
 # 볼륨까지 삭제 (데이터 손실 주의!)
-docker-compose down -v
+docker compose down -v
 ```
 
 **4. 환경 변수 설정**
@@ -200,21 +210,22 @@ REDIS_URL=redis://auto_trader_redis:6379/0
 **5. Redis 연결 테스트**
 ```bash
 # Redis 컨테이너에 접속하여 연결 테스트
-docker-compose exec auto_trader_redis redis-cli ping
+docker compose exec auto_trader_redis redis-cli ping
 # 응답: PONG
 ```
 
-#### 모델 상태 확인
+#### 모델 제한 상태 확인
 ```bash
-python debug_model_status.py
+docker compose exec redis redis-cli ping
+docker compose exec redis redis-cli --scan --pattern "model_rate_limit:*"
+docker compose exec redis redis-cli ttl "model_rate_limit:<model>:<masked_api_key>"
 ```
 
 **주요 기능:**
 - 모델별, API 키별 제한 상태 확인
 - 전체 제한 상태 요약
-- 특정 API 키의 제한 해제
-- 모델별 모든 API 키 제한 해제
-- 모든 제한 일괄 해제
+- TTL 기반 자동 해제 동작 확인
+- Redis 키 존재 여부 및 만료 시간 점검
 
 #### 코드에서 사용
 ```python

@@ -19,8 +19,8 @@
 
 ### 요구사항
 
-- Python 3.11+
-- Poetry
+- Python 3.13+
+- UV (패키지 관리)
 - PostgreSQL
 - Redis
 
@@ -60,8 +60,113 @@ uv run alembic upgrade head
 
 5. 애플리케이션 실행
 ```bash
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:api --reload
 ```
+
+## Research Runbook
+
+- Freqtrade research pipeline runbook: `docs/runbooks/freqtrade-research-pipeline.md`
+- Summary ingestion command:
+
+```bash
+uv run python scripts/ingest_freqtrade_report.py --input /absolute/path/to/summary.json --runner mac
+```
+
+### MCP 서버 실행
+
+### Tools
+- `search_symbol(query, limit=20)`
+- `get_quote(symbol, market=None)`
+- `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None)`
+- `get_position(symbol, market=None)`
+- `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None)`
+- `get_volume_profile(symbol, market=None, period=60, bins=20)`
+- `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters.
+
+### `screen_stocks` 스펙
+
+Parameters:
+- `market`: Market to screen ("kr", "us", "crypto") (default: "kr")
+- `asset_type`: Asset type ("stock", "etf", "etn") - only applicable to KR
+- `category`: Category filter (ETF categories for KR, sector for US)
+- `sector`: Sector filter for KR/US stocks (default: None). Not supported for crypto or KR ETF/ETN requests
+- `sort_by`: Sort criteria ("volume", "trade_amount", "market_cap", "change_rate", "dividend_yield") (default: crypto="trade_amount", KR/US="volume")
+- `sort_order`: Sort order ("asc" or "desc") (default: "desc")
+- `min_market_cap`: Minimum market cap filter (억원 for KR, USD for US; not supported for crypto, warning returned)
+- `max_per`: Maximum P/E ratio filter (not applicable to crypto)
+- `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
+- `min_dividend`: Alias for `min_dividend_yield`. Accepts same format. If both specified, they must be equal
+- `min_analyst_buy`: Minimum analyst buy count filter (default: None). Only supported for KR/US stocks (not ETF/ETN)
+- `max_rsi`: Maximum RSI filter (0-100, filters out overbought)
+- `limit`: Maximum number of results to return (1-50, capped at 50)
+- `sort_by`: Sort criteria ("volume", "trade_amount", "market_cap", "change_rate", "dividend_yield") (default: crypto="trade_amount", KR/US="volume")
+- `sort_order`: Sort order ("asc" or "desc") (default: "desc")
+- `min_market_cap`: Minimum market cap filter (억원 for KR, USD for US; not supported for crypto, warning returned)
+- `max_per`: Maximum P/E ratio filter (not applicable to crypto)
+- `min_dividend_yield`: Minimum dividend yield filter (accepts both decimal, e.g., 0.03, and percentage, e.g., 3.0; values > 1 are treated as percentages) (not applicable to crypto)
+- `max_rsi`: Maximum RSI filter (0-100, filters out overbought)
+- `limit`: Maximum number of results to return (1-50, capped at 50)
+
+Response format:
+```json
+{
+  "results": [...],
+  "total_count": N,  // Total stocks that passed all filters (before sort/limit). If data source provides total, uses that; otherwise uses fetched candidates count.
+  "returned_count": M,  // Actual number of results returned (after limit)
+  "filters_applied": {...},
+  "market": "kr|us|crypto",
+  "timestamp": "ISO timestamp"
+}
+```
+MCP 서버는 시장/보유종목 조회 및 주문 처리 도구를 제공합니다.
+- **조회 도구**: 실시간 시세, 차트(OHLCV), 보조지표, 보유종목/잔고 조회
+- **주문 도구**: 주문 이력 조회(`get_order_history`), 신규 주문(`place_order`), 정정/취소(`modify_order`, `cancel_order`)
+
+Market-specific behavior:
+- **KR market**: Uses KRX API for stocks/ETFs + Naver Finance for valuation metrics.
+  - KRX data cached with 300s TTL (Redis) + in-memory fallback
+  - Trading date auto-fallback (up to 10 days back)
+  - Category filter auto-limits to ETFs if `asset_type=None`
+  - ETN (`asset_type="etn"`) not supported - returns error
+
+- **US market**: Uses tvscreener first for stock requests, then falls back to yfinance when TradingView fields are unavailable or the request needs an unsupported sort.
+  - US `category`/`sector` filters stay on the tvscreener path when TradingView sector metadata is available
+  - Public enrichment fields (`sector`, `analyst_buy`, `analyst_hold`, `analyst_sell`, `avg_target`, `upside_pct`) are filled directly from tvscreener when possible; missing values use lightweight Finnhub/yfinance fallback
+  - Legacy yfinance filters: `min_market_cap` → `intradaymarketcap`, `max_per` → `peratio_lasttwelvemonths`, `min_dividend_yield` → `forward_dividend_yield`
+  - Legacy yfinance sort maps: `volume` → `dayvolume`, `market_cap` → `intradaymarketcap`, `change_rate` → `percentchange`
+
+- **Crypto market**: Uses Upbit top traded coins.
+  - Default sort is `trade_amount` and maps to `acc_trade_price_24h` (24h traded value in KRW)
+  - `sort_by="volume"` is not supported for crypto and returns an error (use `trade_amount`)
+  - Crypto response payload uses `trade_amount_24h` and does not include `volume`
+  - `max_per`, `min_dividend_yield`, `sort_by="dividend_yield"` not supported - returns error
+  - `sector` and `min_analyst_buy` filters are not supported for crypto - returns error
+  - RSI calculated using OHLCV data (subset due to API limits: min(len(candidates), limit*3, 150))
+
+Filter compatibility and error semantics:
+- `sector` filter: Supported for KR/US stocks only. Returns error for crypto or KR ETF/ETN requests
+- `min_analyst_buy` filter: Supported for KR/US stocks only (not ETF/ETN). Returns error for crypto or non-stock asset types
+- `min_dividend` / `min_dividend_yield`: These are aliases. Accepts decimal (0.03) or percentage (3.0) formats. If both are specified with different values, returns error. Not supported for crypto
+  - RSI calculated using OHLCV data (subset due to API limits: min(len(candidates), limit*3, 150))
+
+Advanced filters (PER/dividend/RSI) apply to subset:
+- **Note**: `min_market_cap` is NOT an advanced filter - it uses data already available from KRX/yfinance, so it doesn't trigger external API calls
+- Advanced filters (PER, dividend yield, RSI) require external data fetch for KR market
+- Limit: `min(len(candidates), limit*3, 150)`
+- Parallel fetch with `asyncio.Semaphore(10)`
+- Timeout: 30 seconds
+- Individual failures don't stop overall operation
+
+### 암호화폐 분석 (업비트)
+
+#### 설치 방법
+1. 저장소 클론
+```bash
+git clone <repository-url>
+cd auto_trader
+```
+
+자세한 내용은 `app/mcp_server/README.md`를 참고하세요.
 
 ## 사용법
 
@@ -117,38 +222,21 @@ uv sync --all-groups
 
 ### 테스트 실행
 
-모든 테스트 실행:
-```bash
-make test
-# 또는
-uv run pytest tests/ -v
-```
+- Fast gate (`live` 제외): `make test` 또는 `uv run pytest tests/ -v -m "not live"`
+- 단위 테스트만: `make test-unit` 또는 `uv run pytest tests/ -v -m "not integration and not live"`
+- 통합 테스트만 (`live` 제외): `make test-integration` 또는 `uv run pytest tests/ -v -m "integration and not live"`
+- 옛 `tests/test_services.py` 범위 검증: `make test-services-split`
+- Live API 테스트: `make test-live` 또는 `uv run pytest tests/ -v -m "integration and live" --run-live --no-cov`
+- 커버리지 리포트: `make test-cov` 또는 `uv run pytest tests/ -v -m "not live" --cov=app --cov-report=html --cov-report=term-missing`
+- CI fast gate 재현: `CI=true uv run pytest tests/ -m "not live" -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --cov-fail-under=30`
 
-단위 테스트만 실행:
-```bash
-make test-unit
-# 또는
-uv run pytest tests/ -v -m "not integration"
-```
-
-통합 테스트만 실행:
-```bash
-make test-integration
-# 또는
-uv run pytest tests/ -v -m "integration"
-```
-
-커버리지 리포트와 함께 테스트 실행:
-```bash
-make test-cov
-# 또는
-uv run pytest tests/ -v --cov=app --cov-report=html
-```
+`live` 테스트는 `integration`의 strict subset입니다. 기본 로컬 fast gate는 항상 직렬 `-m "not live"`를 사용하고, GitHub Actions fast gate만 `-n auto --dist=loadfile`로 병렬 실행합니다. `@pytest.mark.live` 테스트는 `--run-live`를 명시적으로 전달해야 실행됩니다.
 
 ### 테스트 마커
 
 - `@pytest.mark.unit`: 단위 테스트
 - `@pytest.mark.integration`: 통합 테스트
+- `@pytest.mark.live`: 외부 API 호출 테스트 (`integration`의 strict subset, `--run-live` 필요)
 - `@pytest.mark.slow`: 느린 테스트 (선택적 실행)
 
 ### 코드 품질
@@ -176,7 +264,9 @@ make security
 make help          # 사용 가능한 명령어 목록
 make install       # 프로덕션 의존성 설치
 make install-dev   # 개발 의존성 설치
-make test          # 모든 테스트 실행
+make test          # live 제외 fast gate 테스트 실행
+make test-services-split # 옛 test_services.py 범위 검증
+make test-live     # live 통합 테스트 실행 (--run-live)
 make test-cov      # 커버리지와 함께 테스트 실행
 make lint          # 코드 품질 검사
 make format        # 코드 포맷팅
@@ -194,18 +284,44 @@ tests/
 ├── test_config.py        # 설정 모듈 테스트
 ├── test_routers.py       # API 라우터 테스트
 ├── test_analysis.py      # 분석 모듈 테스트
-├── test_services.py      # 서비스 모듈 테스트
+├── test_services_*.py    # 서비스 모듈 테스트 (도메인별 분리)
 └── test_integration.py   # 통합 테스트
 ```
+
+`tests/test_services_*.py`는 삭제된 `tests/test_services.py`의 정확한 별칭이 아닙니다. 이 패턴은 `tests/test_services_krx.py`도 포함하므로, 예전 단일 파일 범위와 동일한 검증이 필요하면 `make test-services-split`를 사용하세요.
 
 ## CI/CD
 
 GitHub Actions를 통해 자동으로 다음을 실행합니다:
 
-- **테스트**: Python 3.11, 3.12에서 테스트 실행
-- **린팅**: flake8, black, isort, mypy 검사
+- **린팅**: Ruff 린터 + 포맷터, ty 타입 체커
+- **테스트**: Python 3.13에서 fast gate를 병렬 실행하고 후속 TaskIQ smoke tests를 수행 (lint 통과 후)
 - **보안**: bandit, safety 검사
 - **커버리지**: 테스트 커버리지 리포트 생성
+
+## 모니터링 안내
+
+OTEL/Grafana 전용 스택은 제거되었습니다.
+현재 표준 모니터링은 Sentry입니다.
+
+### Sentry 환경 변수
+
+```bash
+SENTRY_DSN=
+SENTRY_ENVIRONMENT=
+SENTRY_TRACES_SAMPLE_RATE=1.0
+SENTRY_PROFILES_SAMPLE_RATE=1.0
+SENTRY_SEND_DEFAULT_PII=true
+SENTRY_ENABLE_LOG_EVENTS=true
+```
+
+### 운영 정책
+
+- `SENTRY_DSN`이 있으면 환경과 무관하게 활성화
+- release는 Docker 스크립트/예제로 주입한 컨테이너 빌드 SHA를 우선 사용하고, 비컨테이너 로컬 실행은 현재 git HEAD에서 자동 해상도
+- 단일 프로젝트에서 `service` 태그로 프로세스 분리
+- `logger.error` 이벤트 수집 활성화
+- 민감 필드(`authorization`, `cookie`, `token`, `secret`, `password`)는 마스킹
 
 ## 라이센스
 

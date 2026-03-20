@@ -1,0 +1,960 @@
+"""Tests for crypto composite score calculation."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock
+
+import pandas as pd
+import pytest
+
+import app.services.brokers.upbit.client as upbit_service
+from app.mcp_server.tooling import analysis_screen_core
+from app.mcp_server.tooling.analysis_crypto_score import (
+    BEARISH_NORMAL,
+    BEARISH_STRONG,
+    BULLISH,
+    FLAT,
+    HAMMER,
+    _calculate_adx_di,
+    calculate_20d_avg_volume,
+    calculate_candle_coefficient,
+    calculate_crypto_composite_score,
+    calculate_crypto_metrics_from_ohlcv,
+    calculate_rsi_score,
+    calculate_trend_score,
+    calculate_volume_score,
+    extract_candle_values,
+)
+from app.mcp_server.tooling.market_data_indicators import _calculate_adx
+from app.mcp_server.tooling.registry import register_all_tools
+
+
+class DummyMCP:
+    def __init__(self) -> None:
+        self.tools: dict[str, Any] = {}
+
+    def tool(self, name: str, description: str):
+        def decorator(func):
+            self.tools[name] = func
+            return func
+
+        return decorator
+
+
+def build_tools() -> dict[str, Any]:
+    mcp = DummyMCP()
+    register_all_tools(cast(Any, mcp))
+    return mcp.tools
+
+
+class _TvCondition:
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        return isinstance(other, _TvCondition) and self.label == other.label
+
+    def __and__(self, other: object) -> object:
+        raise AssertionError("crypto filters must not be combined with '&'")
+
+
+class _TvField:
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        return cast(bool, cast(object, _TvCondition(f"{self.label}=={other}")))
+
+
+@pytest.fixture
+def fake_crypto_tvscreener_module() -> SimpleNamespace:
+    return SimpleNamespace(
+        CryptoField=SimpleNamespace(
+            NAME=_TvField("name"),
+            DESCRIPTION=_TvField("description"),
+            PRICE=_TvField("price"),
+            CHANGE_PERCENT=_TvField("change_percent"),
+            RELATIVE_STRENGTH_INDEX_14=_TvField("rsi14"),
+            AVERAGE_DIRECTIONAL_INDEX_14=_TvField("adx14"),
+            VOLUME_24H_IN_USD=_TvField("volume24h"),
+            VALUE_TRADED=_TvField("value_traded"),
+            MARKET_CAP=_TvField("market_cap"),
+            EXCHANGE=_TvField("exchange"),
+        )
+    )
+
+
+@pytest.fixture(autouse=True)
+def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
+    async def mock_get_upbit_warning_markets(
+        db=None,
+        quote_currency: str | None = None,
+        fiat: str | None = None,
+    ):
+        _ = (quote_currency, fiat, db)
+        return set()
+
+    async def mock_market_cap_cache_get():
+        return {
+            "data": {},
+            "cached": True,
+            "age_seconds": 0.0,
+            "stale": False,
+            "error": None,
+        }
+
+    async def mock_fetch_ohlcv_for_indicators(
+        symbol: str, market_type: str, count: int
+    ):
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        analysis_screen_core,
+        "get_upbit_warning_markets",
+        mock_get_upbit_warning_markets,
+    )
+    monkeypatch.setattr(
+        analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+        "get",
+        mock_market_cap_cache_get,
+    )
+    monkeypatch.setattr(
+        analysis_screen_core,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv_for_indicators,
+    )
+
+
+class TestCandleCoefficient:
+    def test_bullish_candle(self):
+        coef, ctype = calculate_candle_coefficient(
+            open_price=100.0, high=110.0, low=95.0, close=108.0
+        )
+        assert coef == 1.0
+        assert ctype == BULLISH
+
+    def test_bearish_strong_candle(self):
+        coef, ctype = calculate_candle_coefficient(
+            open_price=110.0, high=112.0, low=90.0, close=92.0
+        )
+        assert coef == 0.0
+        assert ctype == BEARISH_STRONG
+
+    def test_bullish_with_long_lower_shadow_prioritizes_bullish(self):
+        open_price = 100.0
+        close = 101.0
+        low = 80.0
+        high = 105.0
+        body = abs(close - open_price)
+        lower_shadow = min(open_price, close) - low
+        assert lower_shadow > body * 2
+        coef, ctype = calculate_candle_coefficient(
+            open_price=open_price, high=high, low=low, close=close
+        )
+        assert coef == 1.0
+        assert ctype == BULLISH
+
+    def test_hammer_candle(self):
+        coef, ctype = calculate_candle_coefficient(
+            open_price=101.0, high=105.0, low=80.0, close=100.0
+        )
+        assert coef == 0.8
+        assert ctype == HAMMER
+
+    def test_bearish_normal_candle(self):
+        coef, ctype = calculate_candle_coefficient(
+            open_price=100.0, high=105.0, low=90.0, close=95.0
+        )
+        assert coef == 0.5
+        assert ctype == BEARISH_NORMAL
+
+    def test_flat_candle_zero_range(self):
+        coef, ctype = calculate_candle_coefficient(
+            open_price=100.0, high=100.0, low=100.0, close=100.0
+        )
+        assert coef == 0.5
+        assert ctype == FLAT
+
+    def test_none_values_return_flat(self):
+        coef, ctype = calculate_candle_coefficient(None, 100.0, 90.0, 95.0)
+        assert coef == 0.5
+        assert ctype == FLAT
+
+        coef, ctype = calculate_candle_coefficient(100.0, None, 90.0, 95.0)
+        assert coef == 0.5
+        assert ctype == FLAT
+
+
+class TestVolumeScore:
+    def test_normal_ratio(self):
+        score = calculate_volume_score(2000.0, 1000.0)
+        assert score == pytest.approx(66.6, rel=0.01)
+
+    def test_high_ratio_capped_at_100(self):
+        score = calculate_volume_score(10000.0, 1000.0)
+        assert score == 100.0
+
+    def test_none_today_volume(self):
+        score = calculate_volume_score(None, 1000.0)
+        assert score == 0.0
+
+    def test_none_avg_volume(self):
+        score = calculate_volume_score(1000.0, None)
+        assert score == 0.0
+
+    def test_zero_avg_volume(self):
+        score = calculate_volume_score(1000.0, 0.0)
+        assert score == 0.0
+
+
+class TestTrendScore:
+    def test_uptrend_plus_di_greater(self):
+        score = calculate_trend_score(adx=25.0, plus_di=30.0, minus_di=20.0)
+        assert score == 90.0
+
+    def test_weak_trend_adx_below_35(self):
+        score = calculate_trend_score(adx=25.0, plus_di=20.0, minus_di=30.0)
+        assert score == 60.0
+
+    def test_moderate_trend_adx_35_to_50(self):
+        score = calculate_trend_score(adx=40.0, plus_di=20.0, minus_di=30.0)
+        assert score == 30.0
+
+    def test_strong_trend_adx_above_50(self):
+        score = calculate_trend_score(adx=55.0, plus_di=20.0, minus_di=30.0)
+        assert score == 10.0
+
+    def test_none_adx_returns_conservative(self):
+        score = calculate_trend_score(adx=None, plus_di=20.0, minus_di=30.0)
+        assert score == 30.0
+
+    def test_none_di_with_low_adx(self):
+        score = calculate_trend_score(adx=25.0, plus_di=None, minus_di=None)
+        assert score == 60.0
+
+
+class TestRsiScore:
+    def test_low_rsi_oversold(self):
+        score = calculate_rsi_score(20.0)
+        assert score == 80.0
+
+    def test_high_rsi_overbought(self):
+        score = calculate_rsi_score(80.0)
+        assert score == 20.0
+
+    def test_neutral_rsi(self):
+        score = calculate_rsi_score(50.0)
+        assert score == 50.0
+
+    def test_none_rsi_returns_neutral(self):
+        score = calculate_rsi_score(None)
+        assert score == 50.0
+
+
+class TestCompositeScore:
+    def test_full_score_calculation(self):
+        score = calculate_crypto_composite_score(
+            rsi=30.0,
+            volume_24h=2000.0,
+            avg_volume_20d=1000.0,
+            candle_coef=1.0,
+            adx=30.0,
+            plus_di=35.0,
+            minus_di=20.0,
+        )
+        assert 0.0 <= score <= 100.0
+
+    def test_score_clamped_at_100(self):
+        score = calculate_crypto_composite_score(
+            rsi=0.0,
+            volume_24h=10000.0,
+            avg_volume_20d=1000.0,
+            candle_coef=1.0,
+            adx=30.0,
+            plus_di=35.0,
+            minus_di=20.0,
+        )
+        assert score <= 100.0
+
+    def test_score_clamped_at_0(self):
+        score = calculate_crypto_composite_score(
+            rsi=100.0,
+            volume_24h=0.0,
+            avg_volume_20d=1000.0,
+            candle_coef=0.0,
+            adx=60.0,
+            plus_di=20.0,
+            minus_di=30.0,
+        )
+        assert score >= 0.0
+
+    def test_missing_rsi_uses_default(self):
+        score = calculate_crypto_composite_score(
+            rsi=None,
+            volume_24h=1000.0,
+            avg_volume_20d=1000.0,
+            candle_coef=0.5,
+            adx=30.0,
+            plus_di=20.0,
+            minus_di=30.0,
+        )
+        assert score > 0.0
+
+    def test_missing_volume_uses_zero(self):
+        score = calculate_crypto_composite_score(
+            rsi=50.0,
+            volume_24h=None,
+            avg_volume_20d=1000.0,
+            candle_coef=0.5,
+            adx=30.0,
+            plus_di=30.0,
+            minus_di=20.0,
+        )
+        assert score > 0.0
+
+    def test_missing_adx_uses_conservative(self):
+        score = calculate_crypto_composite_score(
+            rsi=50.0,
+            volume_24h=1000.0,
+            avg_volume_20d=1000.0,
+            candle_coef=0.5,
+            adx=None,
+            plus_di=None,
+            minus_di=None,
+        )
+        assert score > 0.0
+
+
+class TestCalculate20dAvgVolume:
+    def test_calculates_average(self):
+        df = pd.DataFrame({"volume": [100.0] * 20})
+        avg = calculate_20d_avg_volume(df)
+        assert avg == 100.0
+
+    def test_uses_last_20_days(self):
+        df = pd.DataFrame({"volume": [50.0] * 10 + [100.0] * 20})
+        avg = calculate_20d_avg_volume(df)
+        assert avg == 100.0
+
+    def test_returns_none_for_empty_df(self):
+        df = pd.DataFrame()
+        avg = calculate_20d_avg_volume(df)
+        assert avg is None
+
+    def test_returns_none_for_missing_column(self):
+        df = pd.DataFrame({"close": [100.0] * 20})
+        avg = calculate_20d_avg_volume(df)
+        assert avg is None
+
+
+class TestExtractCandleValues:
+    def test_extracts_values(self):
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 105.0, 110.0],
+                "high": [105.0, 110.0, 115.0],
+                "low": [95.0, 100.0, 105.0],
+                "close": [103.0, 108.0, 113.0],
+            }
+        )
+        o, h, lo, c = extract_candle_values(df, -2)
+        assert o == 105.0
+        assert h == 110.0
+        assert lo == 100.0
+        assert c == 108.0
+
+    def test_fallback_to_last_candle(self):
+        df = pd.DataFrame(
+            {
+                "open": [100.0],
+                "high": [105.0],
+                "low": [95.0],
+                "close": [103.0],
+            }
+        )
+        o, h, lo, c = extract_candle_values(df, -1)
+        assert o == 100.0
+        assert h == 105.0
+
+    def test_returns_none_for_missing_columns(self):
+        df = pd.DataFrame({"close": [100.0] * 5})
+        o, h, lo, c = extract_candle_values(df, -1)
+        assert o is None
+
+    def test_returns_none_for_empty_df(self):
+        df = pd.DataFrame()
+        o, h, lo, c = extract_candle_values(df, -1)
+        assert all(v is None for v in (o, h, lo, c))
+
+
+class TestAdxDiSharedUtilReuse:
+    def test_calculates_adx_di(self):
+        n = 30
+        df = pd.DataFrame(
+            {
+                "high": [100.0 + i * 0.5 for i in range(n)],
+                "low": [98.0 + i * 0.5 for i in range(n)],
+                "close": [99.0 + i * 0.5 for i in range(n)],
+            }
+        )
+        result = _calculate_adx_di(df)
+        assert "adx" in result
+        assert "plus_di" in result
+        assert "minus_di" in result
+
+    def test_returns_none_for_insufficient_data(self):
+        df = pd.DataFrame(
+            {
+                "high": [100.0, 101.0],
+                "low": [98.0, 99.0],
+                "close": [99.0, 100.0],
+            }
+        )
+        result = _calculate_adx_di(df)
+        assert result["adx"] is None
+
+    def test_matches_shared_adx_implementation(self):
+        n = 50
+        df = pd.DataFrame(
+            {
+                "high": [100.0 + i * 0.8 for i in range(n)],
+                "low": [98.0 + i * 0.75 for i in range(n)],
+                "close": [99.0 + i * 0.78 for i in range(n)],
+            }
+        )
+        wrapped = _calculate_adx_di(df)
+        shared = _calculate_adx(
+            df["high"].astype(float),
+            df["low"].astype(float),
+            df["close"].astype(float),
+        )
+        assert wrapped == shared
+
+
+class TestCalculateCryptoMetricsFromOhlcv:
+    def test_returns_all_metrics(self):
+        n = 50
+        df = pd.DataFrame(
+            {
+                "open": [100.0 + i for i in range(n)],
+                "high": [105.0 + i for i in range(n)],
+                "low": [95.0 + i for i in range(n)],
+                "close": [100.0 + i for i in range(n)],
+                "volume": [1000.0 + i * 10 for i in range(n)],
+            }
+        )
+        metrics = calculate_crypto_metrics_from_ohlcv(df)
+        assert "rsi" in metrics
+        assert "score" in metrics
+        assert "volume_24h" in metrics
+        assert "volume_ratio" in metrics
+        assert "candle_type" in metrics
+        assert "adx" in metrics
+        assert metrics["volume_24h"] == 1000.0 + (n - 1) * 10
+
+    def test_handles_empty_df(self):
+        df = pd.DataFrame()
+        metrics = calculate_crypto_metrics_from_ohlcv(df)
+        assert metrics["rsi"] is None
+        assert metrics["score"] is not None
+        assert metrics["score"] >= 0.0
+
+
+class TestScreenStocksCryptoScore:
+    @pytest.fixture
+    def mock_upbit_coins(self):
+        return [
+            {
+                "market": "KRW-BTC",
+                "korean_name": "비트코인",
+                "trade_price": 100_000_000,
+                "signed_change_rate": 0.01,
+                "acc_trade_price_24h": 1_000_000_000_000,
+                "acc_trade_volume_24h": 10_000,
+            },
+            {
+                "market": "KRW-ETH",
+                "korean_name": "이더리움",
+                "trade_price": 5_000_000,
+                "signed_change_rate": 0.02,
+                "acc_trade_price_24h": 800_000_000_000,
+                "acc_trade_volume_24h": 20_000,
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_crypto_screen_removes_score_field(
+        self, mock_upbit_coins, monkeypatch
+    ):
+        async def mock_fetch_top_traded_coins(fiat):
+            return mock_upbit_coins
+
+        import pandas as pd
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            return pd.DataFrame(
+                {
+                    "open": [100.0] * 50,
+                    "high": [105.0] * 50,
+                    "low": [95.0] * 50,
+                    "close": [100.0 + i * 0.1 for i in range(50)],
+                    "volume": [1000.0] * 50,
+                }
+            )
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="rsi",
+            sort_order="asc",
+            limit=5,
+        )
+
+        assert result["returned_count"] > 0
+        for item in result["results"]:
+            assert "score" not in item
+            assert "rsi_bucket" in item
+
+
+class TestRsiSortingNoneValues:
+    @pytest.mark.asyncio
+    async def test_rsi_none_sorts_to_end_asc(self, monkeypatch):
+        from app.mcp_server.tooling import analysis_screen_core
+
+        async def mock_fetch_top_traded_coins(fiat):
+            return [
+                {"market": "KRW-A", "trade_price": 100, "acc_trade_price_24h": 1000},
+                {"market": "KRW-B", "trade_price": 100, "acc_trade_price_24h": 1000},
+                {"market": "KRW-C", "trade_price": 100, "acc_trade_price_24h": 1000},
+            ]
+
+        import pandas as pd
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            if symbol == "KRW-A":
+                return pd.DataFrame({"close": [100.0 + i for i in range(50)]})
+            elif symbol == "KRW-B":
+                return pd.DataFrame({"close": [100.0 - i * 0.5 for i in range(50)]})
+            else:
+                return pd.DataFrame()
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="rsi",
+            sort_order="asc",
+            limit=5,
+        )
+
+        rsi_values = [r.get("rsi") for r in result["results"]]
+        none_indices = [i for i, v in enumerate(rsi_values) if v is None]
+        if none_indices:
+            assert none_indices[-1] == len(rsi_values) - 1
+
+
+class TestCryptoScreenStocksTvScreenerContract:
+    @pytest.mark.asyncio
+    async def test_screen_stocks_keeps_composite_fields_on_tvscreener_success(
+        self, fake_crypto_tvscreener_module, monkeypatch
+    ):
+        tv_service = AsyncMock()
+        tv_service.query_crypto_screener.return_value = pd.DataFrame(
+            {
+                "symbol": ["UPBIT:BTCKRW"],
+                "name": ["BTCKRW"],
+                "description": ["Bitcoin"],
+                "price": [150_000_000.0],
+                "change_percent": [1.0],
+                "relative_strength_index_14": [42.0],
+                "average_directional_index_14": [24.0],
+                "value_traded": [900_000_000_000.0],
+                "market_cap": [2_500_000_000_000_000.0],
+                "exchange": ["UPBIT"],
+            }
+        )
+
+        async def mock_fetch_multiple_tickers(
+            market_codes: list[str],
+        ) -> list[dict[str, object]]:
+            assert market_codes == ["KRW-BTC"]
+            return [{"market": "KRW-BTC", "acc_trade_volume_24h": 10_000.0}]
+
+        async def mock_fetch_ohlcv(symbol: str, market_type: str, count: int):
+            assert symbol == "KRW-BTC"
+            assert market_type == "crypto"
+            assert count == 50
+            return pd.DataFrame(
+                {
+                    "open": [100.0 + i for i in range(50)],
+                    "high": [110.0 + i for i in range(50)],
+                    "low": [90.0 + i for i in range(50)],
+                    "close": [101.0 + i for i in range(50)],
+                    "volume": [1_000.0] * 49 + [1_500.0],
+                }
+            )
+
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            lambda: fake_crypto_tvscreener_module,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "TvScreenerService",
+            lambda timeout=30.0: tv_service,
+        )
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_multiple_tickers",
+            mock_fetch_multiple_tickers,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            "get",
+            AsyncMock(
+                return_value={
+                    "data": {},
+                    "cached": True,
+                    "age_seconds": 0.0,
+                    "stale": False,
+                    "error": None,
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "get_upbit_market_display_names",
+            AsyncMock(
+                return_value={
+                    "KRW-BTC": {
+                        "korean_name": "비트코인",
+                        "english_name": "Bitcoin",
+                    }
+                }
+            ),
+            raising=False,
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="rsi",
+            sort_order="asc",
+            limit=5,
+        )
+
+        item = result["results"][0]
+        assert item["name"] == "비트코인"
+        assert item["trade_amount_24h"] == 900_000_000_000.0
+        assert item["volume_24h"] == 10_000.0
+        assert "rsi_bucket" in item
+        assert "volume_ratio" in item
+        assert "candle_type" in item
+        assert "plus_di" in item
+        assert "minus_di" in item
+        assert "score" not in item
+
+    @pytest.mark.asyncio
+    async def test_rsi_none_sorts_to_end_desc(self, monkeypatch):
+        from app.mcp_server.tooling import analysis_screen_core
+
+        async def mock_fetch_top_traded_coins(fiat):
+            return [
+                {"market": "KRW-A", "trade_price": 100, "acc_trade_price_24h": 1000},
+                {"market": "KRW-B", "trade_price": 100, "acc_trade_price_24h": 1000},
+                {"market": "KRW-C", "trade_price": 100, "acc_trade_price_24h": 1000},
+            ]
+
+        import pandas as pd
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            if symbol == "KRW-A":
+                return pd.DataFrame({"close": [100.0 + i for i in range(50)]})
+            elif symbol == "KRW-B":
+                return pd.DataFrame({"close": [100.0 - i * 0.5 for i in range(50)]})
+            else:
+                return pd.DataFrame()
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+
+        tools = build_tools()
+        result = await tools["screen_stocks"](
+            market="crypto",
+            asset_type=None,
+            category=None,
+            min_market_cap=None,
+            max_per=None,
+            min_dividend_yield=None,
+            max_rsi=None,
+            sort_by="rsi",
+            sort_order="desc",
+            limit=5,
+        )
+
+        rsi_values = [r.get("rsi") for r in result["results"]]
+        none_indices = [i for i, v in enumerate(rsi_values) if v is None]
+        if none_indices:
+            assert none_indices[-1] == len(rsi_values) - 1
+
+
+class TestRecommendStocksCryptoScore:
+    @pytest.fixture
+    def mock_upbit_coins(self):
+        return [
+            {
+                "market": "KRW-BTC",
+                "korean_name": "비트코인",
+                "trade_price": 100_000_000,
+                "signed_change_rate": 0.01,
+                "acc_trade_price_24h": 1_000_000_000_000,
+                "acc_trade_volume_24h": 10_000,
+            },
+            {
+                "market": "KRW-ETH",
+                "korean_name": "이더리움",
+                "trade_price": 5_000_000,
+                "signed_change_rate": 0.02,
+                "acc_trade_price_24h": 800_000_000_000,
+                "acc_trade_volume_24h": 20_000,
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_crypto_recommend_omits_score_field(
+        self, mock_upbit_coins, monkeypatch
+    ):
+        from app.mcp_server.tooling import (
+            analysis_screen_core,
+            market_data_indicators,
+            portfolio_holdings,
+        )
+
+        async def mock_fetch_top_traded_coins(fiat="KRW"):
+            return mock_upbit_coins
+
+        import pandas as pd
+
+        async def mock_fetch_ohlcv(symbol, market_type, count):
+            return pd.DataFrame(
+                {
+                    "open": [100.0] * 50,
+                    "high": [105.0] * 50,
+                    "low": [95.0] * 50,
+                    "close": [100.0 + i * 0.1 for i in range(50)],
+                    "volume": [1000.0] * 50,
+                }
+            )
+
+        async def mock_collect_portfolio_positions(*args, **kwargs):
+            return [], [], None, None
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+        monkeypatch.setattr(
+            market_data_indicators, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+        )
+        monkeypatch.setattr(
+            portfolio_holdings,
+            "_collect_portfolio_positions",
+            mock_collect_portfolio_positions,
+        )
+
+        tools = build_tools()
+        result = await tools["recommend_stocks"](
+            budget=10_000_000,
+            market="crypto",
+            strategy="balanced",
+            max_positions=2,
+        )
+
+        assert result["recommendations"]
+        for rec in result["recommendations"]:
+            assert "score" not in rec
+            assert isinstance(rec["quantity"], float)
+            assert rec["quantity"] > 0
+
+    @pytest.mark.asyncio
+    async def test_crypto_recommend_ohlcv_calls_limited_to_30(
+        self, mock_upbit_coins, monkeypatch
+    ):
+        from app.mcp_server.tooling import (
+            analysis_screen_core,
+            market_data_indicators,
+            portfolio_holdings,
+        )
+
+        async def mock_fetch_top_traded_coins(fiat="KRW"):
+            return mock_upbit_coins
+
+        ohlcv_call_count = 0
+
+        import pandas as pd
+
+        async def mock_fetch_ohlcv_counting(symbol, market_type, count):
+            nonlocal ohlcv_call_count
+            ohlcv_call_count += 1
+            return pd.DataFrame(
+                {
+                    "open": [100.0] * 50,
+                    "high": [105.0] * 50,
+                    "low": [95.0] * 50,
+                    "close": [100.0 + i * 0.1 for i in range(50)],
+                    "volume": [1000.0] * 50,
+                }
+            )
+
+        async def mock_collect_portfolio_positions(*args, **kwargs):
+            return [], [], None, None
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv_counting,
+        )
+        monkeypatch.setattr(
+            market_data_indicators,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv_counting,
+        )
+        monkeypatch.setattr(
+            portfolio_holdings,
+            "_collect_portfolio_positions",
+            mock_collect_portfolio_positions,
+        )
+
+        tools = build_tools()
+        await tools["recommend_stocks"](
+            budget=10_000_000,
+            market="crypto",
+            strategy="balanced",
+            max_positions=2,
+        )
+
+        assert ohlcv_call_count <= 30
+
+
+class TestCryptoEnrichmentGracefulDegradation:
+    @pytest.mark.asyncio
+    async def test_timeout_returns_partial_results_with_warning_message(
+        self, monkeypatch
+    ):
+        from app.mcp_server.tooling import (
+            analysis_screen_core,
+            market_data_indicators,
+            portfolio_holdings,
+        )
+
+        async def mock_fetch_top_traded_coins(fiat="KRW"):
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "trade_price": 100_000_000,
+                    "acc_trade_price_24h": 1_000_000_000_000,
+                },
+            ]
+
+        import asyncio
+
+        def mock_import_tvscreener():
+            raise ImportError("force manual RSI fallback")
+
+        async def mock_fetch_ohlcv_slow(symbol, market_type, count):
+            await asyncio.sleep(0.05)
+            return pd.DataFrame()
+
+        async def mock_collect_portfolio_positions(*args, **kwargs):
+            return [], [], None, None
+
+        monkeypatch.setattr(
+            upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
+        )
+        monkeypatch.setattr(
+            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv_slow
+        )
+        monkeypatch.setattr(
+            market_data_indicators,
+            "_fetch_ohlcv_for_indicators",
+            mock_fetch_ohlcv_slow,
+        )
+        monkeypatch.setattr(
+            portfolio_holdings,
+            "_collect_portfolio_positions",
+            mock_collect_portfolio_positions,
+        )
+        monkeypatch.setattr(
+            analysis_screen_core,
+            "_import_tvscreener",
+            mock_import_tvscreener,
+        )
+        monkeypatch.setitem(
+            analysis_screen_core.DEFAULT_TIMEOUTS,
+            "crypto_enrichment",
+            0.01,
+        )
+
+        tools = build_tools()
+        result = await tools["recommend_stocks"](
+            budget=10_000_000,
+            market="crypto",
+            strategy="balanced",
+            max_positions=1,
+        )
+
+        assert "error" not in result
+        assert isinstance(result["warnings"], list)
+        # Timeout path must degrade gracefully with explicit partial-results messaging.
+        assert any(
+            "timed out" in warning.lower() and "partial results" in warning.lower()
+            for warning in result["warnings"]
+        )

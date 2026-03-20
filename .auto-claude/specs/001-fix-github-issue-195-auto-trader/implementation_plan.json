@@ -1,0 +1,287 @@
+{
+  "feature": "Fix KRX API 400 Bad Request - Add Session-Based Authentication",
+  "workflow_type": "feature",
+  "workflow_rationale": "While triggered by a bug (KRX API now returns 400), the fix requires building an entirely new authentication subsystem (KRXSessionManager class, login flow, credential config) that did not exist before. This is new feature code, not a simple bug fix.",
+  "phases": [
+    {
+      "id": "phase-1-config",
+      "name": "Configuration & Environment Variables",
+      "type": "implementation",
+      "description": "Add KRX credential settings to config and document new env vars in env.example",
+      "depends_on": [],
+      "parallel_safe": true,
+      "subtasks": [
+        {
+          "id": "subtask-1-1",
+          "description": "Add krx_member_id and krx_password optional fields to Settings class in app/core/config.py. Follow the existing pattern for optional credentials (str | None = None). Add KRX_MEMBER_ID and KRX_PASSWORD documentation to env.example with a new section header.",
+          "service": "main",
+          "files_to_modify": [
+            "app/core/config.py",
+            "env.example"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/core/config.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "cd /Users/robin/PycharmProjects/auto_trader && uv run python -c \"from app.core.config import settings; print('krx_member_id:', settings.krx_member_id); print('krx_password:', type(settings.krx_password))\"",
+            "expected": "krx_member_id: None"
+          },
+          "status": "completed",
+          "notes": "Added krx_member_id and krx_password (str | None = None) to Settings class and KRX section to env.example. Verified settings load correctly.",
+          "updated_at": "2026-03-05T06:17:17.077219+00:00"
+        }
+      ]
+    },
+    {
+      "id": "phase-2-session-manager",
+      "name": "KRX Session Manager Implementation",
+      "type": "implementation",
+      "description": "Build the KRXSessionManager class with login flow, session persistence, re-auth on expiry, rate limit handling, and graceful fallback. Refactor _fetch_krx_data and _fetch_max_working_date to use the session manager.",
+      "depends_on": [
+        "phase-1-config"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-2-1",
+          "description": "Create KRXSessionManager class in app/services/krx.py with the following capabilities:\n\n1. __init__: Initialize with _client (httpx.AsyncClient | None), _authenticated (bool), _login_lock (asyncio.Lock)\n2. _ensure_session(): Lazy-create httpx.AsyncClient(timeout=30, follow_redirects=True). If credentials exist and not authenticated, call _login().\n3. _login(): GET https://data.krx.co.kr/ for cookies -> POST login endpoint (MDCCOMS001D1.cmd) with mbrId/pw. Handle CD001 (success) and CD011 (duplicate login -> retry with skipDup). On failure, log error and set _auth_failed=True (fallback to unauthenticated).\n4. fetch_data(): Replace current _fetch_krx_data logic. POST to KRX_API_URL using persistent session. On 400 + 'LOGOUT' body, re-authenticate once and retry. On 403, implement exponential backoff (3 retries, base 5s).\n5. fetch_resource(): Replace _fetch_max_working_date HTTP logic.\n6. close(): Properly close httpx.AsyncClient.\n\nCreate module-level singleton: _krx_session = KRXSessionManager()\n\nRefactor _fetch_krx_data to delegate to _krx_session.fetch_data().\nRefactor _fetch_max_working_date to delegate to _krx_session.fetch_resource().\n\nIMPORTANT: Do NOT change the caching layer (_get_cached_data/_set_cached_data). Do NOT change the public API of fetch_stock_all, fetch_etf_all, fetch_valuation_all.\n\nThe session manager must handle:\n- No credentials: log warning, attempt unauthenticated requests\n- Invalid credentials: log error, fall back to unauthenticated\n- Session expiry (400/LOGOUT): auto re-auth + retry once\n- Rate limit (403): exponential backoff\n- Concurrent login prevention: asyncio.Lock\n\nFollow patterns from app/services/redis_token_manager.py for class structure.",
+          "service": "main",
+          "files_to_modify": [
+            "app/services/krx.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/services/redis_token_manager.py",
+            "app/services/krx.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "cd /Users/robin/PycharmProjects/auto_trader && uv run python -c \"from app.services.krx import KRXSessionManager, _krx_session; print('KRXSessionManager imported OK'); print('Singleton exists:', _krx_session is not None)\"",
+            "expected": "KRXSessionManager imported OK"
+          },
+          "status": "completed",
+          "notes": "Created KRXSessionManager with login flow, session expiry handling, 403 backoff, and module-level singleton. Refactored _fetch_krx_data and _fetch_max_working_date to delegate.",
+          "updated_at": "2026-03-05T06:30:00.000000+00:00"
+        },
+        {
+          "id": "subtask-2-2",
+          "description": "Add KRX session cleanup to app/main.py shutdown lifecycle. In the cleanup_monitoring() function, import and call _krx_session.close() to properly close the httpx.AsyncClient on app shutdown. Follow the existing pattern of trade_notifier.shutdown() in cleanup_monitoring().",
+          "service": "main",
+          "files_to_modify": [
+            "app/main.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "app/main.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "cd /Users/robin/PycharmProjects/auto_trader && uv run python -c \"import ast; tree = ast.parse(open('app/main.py').read()); found = any('krx' in ast.dump(node).lower() for node in ast.walk(tree)); print('KRX cleanup hook found:', found)\"",
+            "expected": "KRX cleanup hook found: True"
+          },
+          "status": "completed",
+          "notes": "Added KRX session cleanup to cleanup_monitoring() following trade_notifier pattern.",
+          "updated_at": "2026-03-05T06:45:00.000000+00:00"
+        }
+      ]
+    },
+    {
+      "id": "phase-3-tests",
+      "name": "Unit Tests for Session Manager",
+      "type": "implementation",
+      "description": "Add comprehensive unit tests for KRXSessionManager covering auth flow, session reuse, re-auth on expiry, graceful fallback, and concurrent login prevention. Verify all existing tests still pass.",
+      "depends_on": [
+        "phase-2-session-manager"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-3-1",
+          "description": "Add new test class TestKRXSessionManager to tests/test_services_krx.py with the following tests:\n\n1. test_session_manager_login_success: Mock httpx responses for GET / and POST login. Verify _authenticated is True after login, CD001 success code handled.\n2. test_session_manager_login_duplicate_cd011: Mock CD011 response, verify retry with skipDup flag.\n3. test_session_manager_login_failure: Mock failed login, verify falls back to unauthenticated mode with warning logged.\n4. test_session_manager_reauth_on_logout: Mock 400 response with 'LOGOUT' body, verify automatic re-auth and retry.\n5. test_session_manager_no_credentials_fallback: When settings have no KRX credentials, verify requests are made unauthenticated.\n6. test_session_reuse_across_calls: Verify multiple fetch_data calls reuse the same httpx.AsyncClient instance.\n7. test_concurrent_login_lock: Verify asyncio.Lock prevents concurrent login race conditions (use asyncio.gather with multiple login attempts).\n8. test_fetch_krx_data_uses_session: Verify _fetch_krx_data delegates to session manager.\n9. test_session_close: Verify close() properly closes the httpx.AsyncClient.\n\nUse monkeypatch to mock httpx responses and settings. Follow existing test patterns in test_services_krx.py.",
+          "service": "main",
+          "files_to_modify": [
+            "tests/test_services_krx.py"
+          ],
+          "files_to_create": [],
+          "patterns_from": [
+            "tests/test_services_krx.py"
+          ],
+          "verification": {
+            "type": "command",
+            "command": "cd /Users/robin/PycharmProjects/auto_trader && uv run pytest tests/test_services_krx.py -v --tb=short 2>&1 | tail -30",
+            "expected": "passed"
+          },
+          "status": "completed",
+          "notes": "Added 9 tests in TestKRXSessionManager class covering login, re-auth, fallback, session reuse, concurrency lock, delegation, and close. All pass.",
+          "updated_at": "2026-03-05T00:00:00Z"
+        },
+        {
+          "id": "subtask-3-2",
+          "description": "Run the full existing test suite to verify no regressions:\n1. Run all KRX tests: tests/test_services_krx.py\n2. Run screen_stocks tests: tests/test_mcp_screen_stocks.py\n3. Run linting: make lint\n\nFix any test failures caused by the refactoring (existing tests that mock _fetch_krx_data should still work since the function signature is unchanged, just the implementation delegates to session manager).",
+          "service": "main",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "cd /Users/robin/PycharmProjects/auto_trader && uv run pytest tests/test_services_krx.py tests/test_mcp_screen_stocks.py -v --tb=short 2>&1 | tail -30",
+            "expected": "passed"
+          },
+          "status": "completed",
+          "notes": "All 103 tests passed. Linting clean. No regressions from refactoring.",
+          "updated_at": "2026-03-05T07:00:00.000000+00:00"
+        }
+      ]
+    },
+    {
+      "id": "phase-4-quality",
+      "name": "Code Quality & Final Verification",
+      "type": "integration",
+      "description": "Run linting, type checking, and verify the complete solution works end-to-end.",
+      "depends_on": [
+        "phase-3-tests"
+      ],
+      "parallel_safe": false,
+      "subtasks": [
+        {
+          "id": "subtask-4-1",
+          "description": "Run code quality checks and fix any issues:\n1. make lint (Ruff + ty)\n2. make format (Ruff formatting)\n3. Verify all modified files have proper type hints, docstrings, and follow project conventions.\n4. Verify credentials are never logged in plaintext (password should be masked in log messages).\n5. Ensure the public API surface is unchanged (fetch_stock_all, fetch_etf_all, fetch_valuation_all signatures preserved).",
+          "service": "main",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "cd /Users/robin/PycharmProjects/auto_trader && uv run ruff check app/services/krx.py app/core/config.py && echo 'Lint OK'",
+            "expected": "Lint OK"
+          },
+          "status": "pending"
+        },
+        {
+          "id": "subtask-4-2",
+          "description": "Run the broader test suite to confirm no regressions across the entire project. Run make test-unit to execute all unit tests. Fix any failures found.",
+          "service": "main",
+          "files_to_modify": [],
+          "files_to_create": [],
+          "patterns_from": [],
+          "verification": {
+            "type": "command",
+            "command": "cd /Users/robin/PycharmProjects/auto_trader && uv run pytest tests/test_services_krx.py tests/test_mcp_screen_stocks.py -v --tb=short 2>&1 | tail -5",
+            "expected": "passed"
+          },
+          "status": "pending"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_phases": 4,
+    "total_subtasks": 6,
+    "services_involved": [
+      "main"
+    ],
+    "estimated_complexity": "standard",
+    "parallelism": {
+      "max_parallel_phases": 1,
+      "parallel_groups": [],
+      "recommended_workers": 1,
+      "speedup_estimate": "N/A - sequential dependency chain"
+    },
+    "startup_command": "source auto-claude/.venv/bin/activate && python auto-claude/run.py --spec 001 --parallel 1"
+  },
+  "verification_strategy": {
+    "risk_level": "medium",
+    "skip_validation": false,
+    "test_creation_phase": "phase-3-tests",
+    "test_types_required": [
+      "unit"
+    ],
+    "security_scanning_required": false,
+    "staging_deployment_required": false,
+    "acceptance_criteria": [
+      "All existing KRX tests pass unchanged (TestKRXCaching, TestKRXETFCaching, TestKRXChangeRate, TestKRXValuation, etc.)",
+      "All existing screen_stocks tests pass (test_mcp_screen_stocks.py)",
+      "New KRXSessionManager tests pass (auth flow, session reuse, re-auth, fallback)",
+      "Application starts without KRX credentials (graceful fallback, no crash)",
+      "Configuration loads with and without KRX_MEMBER_ID / KRX_PASSWORD",
+      "No credentials logged in plaintext",
+      "make lint passes",
+      "Public API unchanged: fetch_stock_all, fetch_etf_all, fetch_valuation_all signatures preserved"
+    ],
+    "verification_steps": [
+      {
+        "name": "KRX Service Unit Tests",
+        "command": "uv run pytest tests/test_services_krx.py -v --tb=short",
+        "expected_outcome": "All tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Screen Stocks Tests",
+        "command": "uv run pytest tests/test_mcp_screen_stocks.py -v --tb=short",
+        "expected_outcome": "All tests pass",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      },
+      {
+        "name": "Ruff Lint Check",
+        "command": "uv run ruff check app/services/krx.py app/core/config.py",
+        "expected_outcome": "No lint errors",
+        "type": "test",
+        "required": true,
+        "blocking": true
+      }
+    ],
+    "reasoning": "Medium risk change - modifies the HTTP transport layer of the KRX service which serves multiple code paths (stock/ETF/valuation screening). The caching layer is preserved, and public API is unchanged, but incorrect session management could break all KR market screening."
+  },
+  "qa_acceptance": {
+    "unit_tests": {
+      "required": true,
+      "commands": [
+        "uv run pytest tests/test_services_krx.py -v --tb=short",
+        "uv run pytest tests/test_mcp_screen_stocks.py -v --tb=short"
+      ],
+      "minimum_coverage": null
+    },
+    "integration_tests": {
+      "required": false,
+      "commands": [],
+      "services_to_test": [],
+      "notes": "Integration tests require real KRX credentials and network access - manual verification recommended"
+    },
+    "e2e_tests": {
+      "required": false,
+      "commands": [],
+      "flows": [
+        "screen_stocks market=kr via MCP (manual with credentials)"
+      ]
+    },
+    "browser_verification": {
+      "required": false,
+      "pages": []
+    },
+    "database_verification": {
+      "required": false,
+      "checks": [
+        "No migration needed - config-only change"
+      ]
+    }
+  },
+  "qa_signoff": null,
+  "status": "in_progress",
+  "planStatus": "in_progress",
+  "xstateState": "coding",
+  "executionPhase": "coding",
+  "updated_at": "2026-03-05T06:23:55.372Z",
+  "lastEvent": {
+    "eventId": "9afb68fd-80d0-4464-8e0c-462795f7a003",
+    "sequence": 0,
+    "type": "PLANNING_COMPLETE",
+    "timestamp": "2026-03-05T06:15:50.441611+00:00"
+  },
+  "last_updated": "2026-03-05T06:17:17.077229+00:00"
+}

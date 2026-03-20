@@ -72,7 +72,7 @@ analyzer = UpbitAnalyzer()
 await analyzer.analyze_coins_json(["비트코인", "이더리움", "리플"])
 ```
 
-**실행 파일**: `debug_upbit_json.py`
+**권장 경로**: `UpbitAnalyzer.analyze_coins_json()`를 애플리케이션 코드/태스크에서 호출
 
 ### 2. Yahoo Finance (미국 주식)
 ```python
@@ -84,7 +84,7 @@ analyzer = YahooAnalyzer()
 await analyzer.analyze_stocks_json(["AAPL", "MSFT", "GOOGL"])
 ```
 
-**실행 파일**: `debug_yahoo_json.py`
+**권장 경로**: `YahooAnalyzer.analyze_stocks_json()`를 애플리케이션 코드/태스크에서 호출
 
 ### 3. KIS (국내 주식)
 ```python
@@ -96,7 +96,7 @@ analyzer = KISAnalyzer()
 await analyzer.analyze_stocks_json(["삼성전자", "SK하이닉스", "NAVER"])
 ```
 
-**실행 파일**: `debug_kis_json.py`
+**권장 경로**: `KISAnalyzer.analyze_stocks_json()`를 애플리케이션 코드/태스크에서 호출
 
 ## 데이터베이스 구조
 
@@ -284,25 +284,19 @@ except Exception as e:
 
 ## 실행 예시
 
-### 1. Upbit 암호화폐 분석
+### 1. API 서버 실행
 ```bash
-python debug_upbit_json.py
+uv run uvicorn app.main:api --reload
 ```
 
-### 2. Yahoo Finance 미국 주식 분석
+### 2. 웹 대시보드 접속
 ```bash
-python debug_yahoo_json.py
-```
-
-### 3. KIS 국내 주식 분석
-```bash
-python debug_kis_json.py
-```
-
-### 4. 웹 대시보드 접속
-```bash
-# 서버 실행 후
 open http://localhost:8000/analysis-json/
+```
+
+### 3. 테스트로 JSON 분석 경로 검증
+```bash
+uv run pytest tests/ -v -k "analysis_json or stock_analysis"
 ```
 
 ## 마이그레이션

@@ -1,0 +1,188 @@
+"""Authentication middleware for protecting web routes."""
+
+import hmac
+from contextlib import AbstractAsyncContextManager
+from typing import ClassVar, cast
+
+from fastapi import Request
+from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from app.auth.web_router import get_current_user_from_session
+from app.core.config import settings
+from app.core.db import AsyncSessionLocal
+
+
+class AuthMiddleware:
+    """
+    Middleware to protect web routes requiring authentication.
+
+    Public routes (no authentication required):
+    - /web-auth/* (login, register, logout)
+    - /auth/* (API authentication endpoints)
+    - /health
+    - /docs, /redoc, /openapi.json (only if DOCS_ENABLED=True)
+
+    All other routes require authentication unless explicitly whitelisted.
+    """
+
+    # Base public paths (always accessible)
+    BASE_PUBLIC_PATHS: ClassVar[list[str]] = [
+        "/web-auth/login",
+        "/web-auth/register",
+        "/web-auth/logout",
+        "/auth/",
+        "/health",
+    ]
+
+    # Documentation paths (conditionally accessible)
+    DOCS_PATHS: ClassVar[list[str]] = [
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    ]
+
+    # Public API paths (explicit whitelist)
+    PUBLIC_API_PATHS: ClassVar[list[str]] = [
+        "/api/v1/openclaw/callback",
+        "/api/screener/callback",
+    ]
+    LEGACY_DEPRECATED_PREFIXES: ClassVar[list[str]] = [
+        "/manual-holdings",
+        "/kis-domestic-trading",
+        "/kis-overseas-trading",
+        "/upbit-trading",
+    ]
+
+    def __init__(self, app: ASGIApp):
+        """Initialize middleware with dynamic public paths."""
+        self.app = app
+        # Build public paths list based on DOCS_ENABLED setting
+        self.public_paths = self.BASE_PUBLIC_PATHS.copy()
+        if settings.DOCS_ENABLED:
+            self.public_paths.extend(self.DOCS_PATHS)
+        # Build API public paths list from settings override
+        self.public_api_paths = self.PUBLIC_API_PATHS.copy()
+        if settings.PUBLIC_API_PATHS:
+            self.public_api_paths.extend(settings.PUBLIC_API_PATHS)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """ASGI middleware call handler."""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope, receive=receive)
+        path = request.url.path
+        is_api_request = self._is_api_request_path(path)
+
+        # Handle authentication logic and determine if we should short-circuit
+        response = await self._maybe_authenticate(request, scope, is_api_request)
+        if response is not None:
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+    def _is_public_path(self, path: str) -> bool:
+        """Check if path is in public (non-authenticated) list."""
+        return any(path.startswith(public_path) for public_path in self.public_paths)
+
+    def _is_public_api_path(self, path: str) -> bool:
+        """Check if API path is explicitly public."""
+        return any(
+            path.startswith(public_api_path)
+            for public_api_path in self.public_api_paths
+        )
+
+    def _is_legacy_deprecated_path(self, path: str) -> bool:
+        """Check if path is under deprecated legacy prefixes."""
+        return any(
+            path.startswith(legacy_prefix)
+            for legacy_prefix in self.LEGACY_DEPRECATED_PREFIXES
+        )
+
+    @staticmethod
+    async def _load_user(request: Request):
+        session_manager = cast(
+            AbstractAsyncContextManager[AsyncSession],
+            cast(object, AsyncSessionLocal()),
+        )
+        async with session_manager as db:
+            return await get_current_user_from_session(request, db)
+
+    @staticmethod
+    def _is_api_request_path(path: str) -> bool:
+        """Treat both '/api/*' and '*/api/*' paths as API requests."""
+        return path.startswith("/api/") or "/api/" in path or path.endswith("/api")
+
+    async def _maybe_authenticate(
+        self, request: Request, scope: Scope, is_api_request: bool
+    ) -> JSONResponse | RedirectResponse | None:
+        """
+        Check authentication and return a response if access is denied.
+        Returns None if request should continue to the downstream app.
+        """
+        path = request.url.path
+
+        # Legacy paths must always pass through to deprecated router handlers.
+        if self._is_legacy_deprecated_path(path):
+            return None
+
+        # n8n API: dedicated API key authentication
+        if path.startswith("/api/n8n/"):
+            if not settings.N8N_API_KEY:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "N8N_API_KEY not configured"},
+                )
+            api_key = request.headers.get("X-N8N-API-KEY", "")
+            if not hmac.compare_digest(api_key, settings.N8N_API_KEY):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid N8N API key"},
+                )
+            return None
+
+        # Allow public paths
+        if self._is_public_path(path):
+            return None
+
+        # Allow explicitly public API paths without extra DB work
+        if is_api_request and self._is_public_api_path(path):
+            return None
+
+        # Handle API endpoints with explicit public allowlist
+        if is_api_request:
+            user = await self._load_user(request)
+
+            if not user:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Authentication required for this endpoint."},
+                )
+
+            # Store user in scope state for downstream handlers
+            scope.setdefault("state", {})
+            scope["state"]["user"] = user
+            return None
+
+        # For HTML pages, check if user is authenticated
+        if request.method == "GET":
+            user = await self._load_user(request)
+
+            # If not authenticated, redirect to login
+            if not user:
+                # Save the original URL to redirect back after login
+                next_url = str(request.url)
+                return RedirectResponse(
+                    url=f"/web-auth/login?next={next_url}",
+                    status_code=303,
+                )
+
+            # Store user in scope state for downstream handlers
+            scope.setdefault("state", {})
+            scope["state"]["user"] = user
+
+        return None

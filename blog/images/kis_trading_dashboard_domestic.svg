@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1400" height="800" xmlns="http://www.w3.org/2000/svg">
+    <!-- 브라우저 프레임 -->
+    <rect width="1400" height="800" fill="#f5f5f5"/>
+    <rect x="0" y="0" width="1400" height="60" fill="#2c2c2c"/>
+
+    <!-- 브라우저 버튼 -->
+    <circle cx="25" cy="30" r="8" fill="#ff5f56"/>
+    <circle cx="50" cy="30" r="8" fill="#ffbd2e"/>
+    <circle cx="75" cy="30" r="8" fill="#27ca40"/>
+
+    <!-- URL 바 -->
+    <rect x="120" y="15" width="700" height="30" rx="15" fill="#444444"/>
+    <text x="140" y="37" font-family="Arial, sans-serif" font-size="14" fill="#ffffff">https://your-domain.com/kis-domestic-trading/</text>
+
+    <!-- 콘텐츠 영역 -->
+    <rect x="20" y="80" width="1360" height="700" fill="#f8f9fa"/>
+
+    <!-- 네비게이션 -->
+    <rect x="20" y="80" width="1360" height="50" fill="#1a1a2e"/>
+    <text x="50" y="112" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#ffffff">Auto Trader</text>
+    <text x="300" y="112" font-family="Arial, sans-serif" font-size="14" fill="#a0a0a0">암호화폐</text>
+    <text x="420" y="112" font-family="Arial, sans-serif" font-size="14" fill="#ffffff" font-weight="bold">국내주식</text>
+    <text x="540" y="112" font-family="Arial, sans-serif" font-size="14" fill="#a0a0a0">해외주식</text>
+
+    <!-- 제목 -->
+    <text x="50" y="180" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="#1a1a2e">📈 KIS 국내주식 자동 매매</text>
+
+    <!-- 요약 카드 -->
+    <rect x="40" y="200" width="1320" height="100" fill="#ffffff" stroke="#e0e0e0" stroke-width="1" rx="8"/>
+
+    <text x="160" y="235" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">예수금</text>
+    <text x="160" y="270" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#1a1a2e" text-anchor="middle">5,234,500원</text>
+
+    <text x="500" y="235" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">보유 종목 수</text>
+    <text x="500" y="270" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#1a1a2e" text-anchor="middle">8개</text>
+
+    <text x="840" y="235" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">총 평가 금액</text>
+    <text x="840" y="270" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#1a1a2e" text-anchor="middle">12,456,000원</text>
+
+    <text x="1180" y="235" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">총 수익률</text>
+    <text x="1180" y="270" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#d60000" text-anchor="middle">+5.23%</text>
+
+    <!-- 자동 매매 제어 카드 -->
+    <rect x="40" y="320" width="1320" height="130" fill="#ffffff" stroke="#e0e0e0" stroke-width="1" rx="8"/>
+    <text x="60" y="355" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333">🤖 자동 매매 제어</text>
+
+    <!-- 버튼들 -->
+    <rect x="60" y="375" width="280" height="55" fill="#2196F3" rx="5"/>
+    <text x="200" y="410" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">🔍 전체 종목 AI 분석</text>
+
+    <rect x="360" y="375" width="280" height="55" fill="#4CAF50" rx="5"/>
+    <text x="500" y="410" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">🛒 자동 매수 주문</text>
+
+    <rect x="660" y="375" width="280" height="55" fill="#F44336" rx="5"/>
+    <text x="800" y="410" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">💰 자동 매도 주문</text>
+
+    <rect x="960" y="375" width="380" height="55" fill="#FF9800" rx="5"/>
+    <text x="1150" y="410" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#ffffff" text-anchor="middle">⚡ 종목별 분석→매수→매도</text>
+
+    <!-- 보유 종목 테이블 헤더 -->
+    <rect x="40" y="470" width="1320" height="290" fill="#ffffff" stroke="#e0e0e0" stroke-width="1" rx="8"/>
+    <text x="60" y="505" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#333333">📋 보유 종목</text>
+
+    <!-- 테이블 헤더 -->
+    <rect x="60" y="520" width="1280" height="35" fill="#f0f0f0"/>
+    <text x="130" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">종목명</text>
+    <text x="270" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">수량</text>
+    <text x="380" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">현재가</text>
+    <text x="500" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">평균매수가</text>
+    <text x="620" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">수익률</text>
+    <text x="750" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">AI 분석</text>
+    <text x="890" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">설정</text>
+    <text x="1100" y="545" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#333333" text-anchor="middle">개별 액션</text>
+
+    <!-- 종목 행 1 -->
+    <line x1="60" y1="555" x2="1340" y2="555" stroke="#e0e0e0"/>
+    <text x="130" y="585" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">삼성전자</text>
+    <text x="270" y="585" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">50</text>
+    <text x="380" y="585" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">71,500</text>
+    <text x="500" y="585" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">68,200</text>
+    <text x="620" y="585" font-family="Arial, sans-serif" font-size="13" fill="#d60000" text-anchor="middle">+4.84%</text>
+    <rect x="710" y="570" width="80" height="25" fill="#E8F5E9" rx="3"/>
+    <text x="750" y="588" font-family="Arial, sans-serif" font-size="11" fill="#2E7D32" text-anchor="middle">BUY 75%</text>
+    <rect x="850" y="570" width="80" height="25" fill="#4CAF50" rx="3"/>
+    <text x="890" y="588" font-family="Arial, sans-serif" font-size="11" fill="#ffffff" text-anchor="middle">5주 / 2개</text>
+    <rect x="980" y="567" width="60" height="28" fill="#2196F3" rx="3"/>
+    <rect x="1050" y="567" width="60" height="28" fill="#4CAF50" rx="3"/>
+    <rect x="1120" y="567" width="60" height="28" fill="#F44336" rx="3"/>
+    <text x="1010" y="586" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">분석</text>
+    <text x="1080" y="586" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">매수</text>
+    <text x="1150" y="586" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">매도</text>
+
+    <!-- 종목 행 2 -->
+    <line x1="60" y1="600" x2="1340" y2="600" stroke="#e0e0e0"/>
+    <text x="130" y="630" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">SK하이닉스</text>
+    <text x="270" y="630" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">20</text>
+    <text x="380" y="630" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">178,000</text>
+    <text x="500" y="630" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">185,500</text>
+    <text x="620" y="630" font-family="Arial, sans-serif" font-size="13" fill="#0051c7" text-anchor="middle">-4.04%</text>
+    <rect x="710" y="615" width="80" height="25" fill="#FFF3E0" rx="3"/>
+    <text x="750" y="633" font-family="Arial, sans-serif" font-size="11" fill="#EF6C00" text-anchor="middle">HOLD 60%</text>
+    <rect x="850" y="615" width="80" height="25" fill="#4CAF50" rx="3"/>
+    <text x="890" y="633" font-family="Arial, sans-serif" font-size="11" fill="#ffffff" text-anchor="middle">2주 / 4개</text>
+    <rect x="980" y="612" width="60" height="28" fill="#2196F3" rx="3"/>
+    <rect x="1050" y="612" width="60" height="28" fill="#4CAF50" rx="3"/>
+    <rect x="1120" y="612" width="60" height="28" fill="#F44336" rx="3"/>
+    <text x="1010" y="631" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">분석</text>
+    <text x="1080" y="631" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">매수</text>
+    <text x="1150" y="631" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">매도</text>
+
+    <!-- 종목 행 3 -->
+    <line x1="60" y1="645" x2="1340" y2="645" stroke="#e0e0e0"/>
+    <text x="130" y="675" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">NAVER</text>
+    <text x="270" y="675" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">10</text>
+    <text x="380" y="675" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">215,000</text>
+    <text x="500" y="675" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">198,000</text>
+    <text x="620" y="675" font-family="Arial, sans-serif" font-size="13" fill="#d60000" text-anchor="middle">+8.59%</text>
+    <rect x="710" y="660" width="80" height="25" fill="#FFEBEE" rx="3"/>
+    <text x="750" y="678" font-family="Arial, sans-serif" font-size="11" fill="#C62828" text-anchor="middle">SELL 80%</text>
+    <rect x="850" y="660" width="80" height="25" fill="#9E9E9E" rx="3"/>
+    <text x="890" y="678" font-family="Arial, sans-serif" font-size="11" fill="#ffffff" text-anchor="middle">미설정</text>
+    <rect x="980" y="657" width="60" height="28" fill="#2196F3" rx="3"/>
+    <rect x="1050" y="657" width="60" height="28" fill="#BDBDBD" rx="3"/>
+    <rect x="1120" y="657" width="60" height="28" fill="#F44336" rx="3"/>
+    <text x="1010" y="676" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">분석</text>
+    <text x="1080" y="676" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">매수</text>
+    <text x="1150" y="676" font-family="Arial, sans-serif" font-size="10" fill="#ffffff" text-anchor="middle">매도</text>
+
+    <!-- 더보기 표시 -->
+    <text x="700" y="730" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">... 5개 종목 더 있음</text>
+</svg>

@@ -121,6 +121,33 @@ run_migration() {
         echo "  📈 Upgrading to latest version..."
         $ALEMBIC_CMD upgrade head
     fi
+
+    echo "  🔁 Syncing kr_symbol_universe..."
+    if ! $PYTHON_CMD scripts/sync_kr_symbol_universe.py; then
+        echo -e "${RED}❌ kr_symbol_universe sync failed${NC}"
+        echo "Run manually: uv run python scripts/sync_kr_symbol_universe.py"
+        exit 1
+    fi
+
+    echo "  ✅ kr_symbol_universe sync completed"
+
+    echo "  🔁 Syncing us_symbol_universe..."
+    if ! $PYTHON_CMD scripts/sync_us_symbol_universe.py; then
+        echo -e "${RED}❌ us_symbol_universe sync failed${NC}"
+        echo "Run manually: uv run python scripts/sync_us_symbol_universe.py"
+        exit 1
+    fi
+
+    echo "  ✅ us_symbol_universe sync completed"
+
+    echo "  🔁 Syncing upbit_symbol_universe..."
+    if ! $PYTHON_CMD scripts/sync_upbit_symbol_universe.py; then
+        echo -e "${RED}❌ upbit_symbol_universe sync failed${NC}"
+        echo "Run manually: uv run python scripts/sync_upbit_symbol_universe.py"
+        exit 1
+    fi
+
+    echo "  ✅ upbit_symbol_universe sync completed"
     
     echo -e "${GREEN}✅ Migration completed successfully${NC}"
 }
@@ -189,4 +216,3 @@ main() {
 
 # 스크립트 실행
 main "$@"
-

@@ -1,4 +1,4 @@
-.PHONY: help install install-dev test test-unit test-integration test-cov lint format clean
+.PHONY: help install install-dev test test-unit test-integration test-services-split test-cov test-fast test-watch lint format typecheck security clean dev taskiq-worker taskiq-scheduler docker-build docker-run docker-test sync-kr-symbol-universe sync-upbit-symbol-universe sync-us-symbol-universe sync-kr-candles-backfill sync-kr-candles-incremental
 
 help: ## Show this help message
 	@echo "Available commands:"
@@ -10,33 +10,48 @@ install: ## Install production dependencies
 install-dev: ## Install development dependencies
 	uv sync --all-groups
 
-test: ## Run all tests
-	uv run pytest tests/ -v
+test: ## Run all tests (excludes live)
+	uv run pytest tests/ -v -m "not live"
 
-test-unit: ## Run unit tests only
-	uv run pytest tests/ -v -m "not integration"
+test-unit: ## Run unit tests only (excludes integration and live)
+	uv run pytest tests/ -v -m "not integration and not live"
 
-test-integration: ## Run integration tests only
-	uv run pytest tests/ -v -m "integration"
+test-integration: ## Run integration tests only (excludes live)
+	uv run pytest tests/ -v -m "integration and not live"
 
-test-cov: ## Run tests with coverage report
-	uv run pytest tests/ -v --cov=app --cov-report=html --cov-report=term-missing
+test-services-split: ## Run split service tests for former test_services.py scope
+	uv run pytest --no-cov -q \
+		tests/test_services_upbit.py \
+		tests/test_services_kis_client.py \
+		tests/test_services_kis_market_data.py \
+		tests/test_services_kis_logging.py \
+		tests/test_services_stock_info.py \
+		tests/test_services_gemini.py \
+		tests/test_services_dart.py \
+		tests/test_services_yahoo.py
 
-test-fast: ## Run tests without coverage (faster)
-	uv run pytest tests/ -v --no-cov
+test-cov: ## Run tests with coverage report (excludes live)
+	uv run pytest tests/ -v -m "not live" --cov=app --cov-report=html --cov-report=term-missing
 
-test-watch: ## Run tests in watch mode
-	uv run pytest tests/ -v -f
+test-fast: ## Run tests without coverage (faster, excludes live)
+	uv run pytest tests/ -v -m "not live" --no-cov
 
-lint: ## Run linting checks
-	uv run flake8 app/ tests/ --max-line-length=88 --extend-ignore=E203,W503
-	uv run black --check app/ tests/
-	uv run isort --check-only app/ tests/
-	uv run mypy app/ --ignore-missing-imports
+test-watch: ## Run tests in watch mode (excludes live)
+	uv run pytest tests/ -v -m "not live" -f
 
-format: ## Format code
-	uv run black app/ tests/
-	uv run isort app/ tests/
+test-live: ## Run live API tests only (requires external network)
+	uv run pytest tests/ -v -m "integration and live" --run-live --no-cov
+lint: ## Run linting checks (Ruff + ty)
+	uv run ruff check app/ tests/
+	uv run ruff format --check app/ tests/
+	uv run ty check app/ --error-on-warning
+
+format: ## Format code with Ruff
+	uv run ruff format app/ tests/
+	uv run ruff check --fix app/ tests/
+
+typecheck: ## Run ty type checking
+	uv run ty check app/ --error-on-warning
 
 security: ## Run security checks
 	uv run bandit -r app/
@@ -50,22 +65,38 @@ clean: ## Clean up generated files
 	find . -type f -name ".coverage" -delete
 	find . -type d -name "htmlcov" -exec rm -rf {} +
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
-	find . -type d -name ".mypy_cache" -exec rm -rf {} +
+	find . -type d -name ".ruff_cache" -exec rm -rf {} +
 
 dev: ## Start development server
-	uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+	uv run uvicorn app.main:api --reload --host 0.0.0.0 --port 8000
 
-celery-worker: ## Start Celery worker
-	uv run celery -A app.core.celery_app worker --loglevel=info
+taskiq-worker: ## Start TaskIQ worker
+	uv run taskiq worker app.core.taskiq_broker:broker app.tasks
 
-celery-flower: ## Start Celery Flower (monitoring UI)
-	uv run celery -A app.core.celery_app flower --port=5555
+taskiq-scheduler: ## Start TaskIQ scheduler
+	uv run taskiq scheduler app.core.scheduler:sched app.tasks
+
+sync-kr-symbol-universe: ## Sync KR symbol universe for KR 1h routing
+	uv run python scripts/sync_kr_symbol_universe.py
+
+sync-upbit-symbol-universe: ## Sync Upbit symbol universe for crypto symbol resolution
+	uv run python scripts/sync_upbit_symbol_universe.py
+
+sync-us-symbol-universe: ## Sync US symbol universe for US symbol/exchange resolution
+	uv run python scripts/sync_us_symbol_universe.py
+
+sync-kr-candles-backfill: ## Backfill KR candles for recent sessions
+	uv run python scripts/sync_kr_candles.py --mode backfill --sessions 10
+
+sync-kr-candles-incremental: ## Incremental KR candles sync (venue-gated)
+	uv run python scripts/sync_kr_candles.py --mode incremental
 
 docker-build: ## Build Docker image
-	docker build -t auto-trader .
+	vcs_ref="$$(git rev-parse HEAD)"; \
+	docker build --build-arg VCS_REF="$$vcs_ref" -f Dockerfile.api -t auto_trader-api:local .
 
-docker-run: ## Run Docker container
-	docker run -p 8000:8000 auto-trader
+docker-run: docker-build ## Run Docker container
+	docker run --rm --env-file .env -p 8000:8000 auto_trader-api:local
 
-docker-test: ## Run tests in Docker
-	docker run --rm auto-trader uv run pytest tests/ -v
+docker-test: docker-build ## Run tests in Docker
+	docker run --rm auto_trader-api:local uv run pytest tests/ -v

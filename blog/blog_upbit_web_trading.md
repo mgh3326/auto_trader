@@ -10,7 +10,8 @@
 > - [3편: Upbit으로 비트코인 24시간 분석하기](https://mgh3326.tistory.com/229)
 > - [4편: AI 분석 결과 DB에 저장하기](https://mgh3326.tistory.com/230)
 > - **5편: Upbit 웹 트레이딩 대시보드 구축하기** ← 현재 글
-> - 6편: 라즈베리파이 홈서버에 Docker 배포하기 (예정)
+> - 6편: 실전 운영을 위한 모니터링 시스템 구축 (예정)
+> - 7편: 라즈베리파이 홈서버에 Docker 배포하기 (예정)
 
 ## 들어가며
 
@@ -20,17 +21,17 @@
 
 ```bash
 # 1. 분석 실행
-$ python debug_upbit_json.py
+$ python <ad-hoc-analysis-command>
 ⏳ 비트코인 분석 중... (30초 소요)
 ✅ 분석 완료
 
 # 2. 매수 실행
-$ python debug_upbit_buy_post_orders.py
+$ python <ad-hoc-buy-command>
 ⏳ 매수 주문 처리 중...
 ✅ 주문 완료
 
 # 3. 매도 실행
-$ python debug_upbit_post_orders.py
+$ python <ad-hoc-sell-command>
 ⏳ 매도 주문 처리 중...
 ✅ 주문 완료
 ```
@@ -634,13 +635,13 @@ document.getElementById('coins-list').addEventListener('click', (e) => {
 ```python
 # tests/test_celery_tasks.py
 import pytest
-from app.tasks.analyze import run_per_coin_automation
+from app.jobs.analyze import run_per_coin_automation
 
 @pytest.mark.asyncio
 async def test_per_coin_automation_empty_coins():
     """보유 코인이 없을 때 처리 확인"""
     # Mock: 빈 코인 목록 반환
-    with patch('app.services.upbit.fetch_my_coins', return_value=[]):
+    with patch('app.services.brokers.upbit.client.fetch_my_coins', return_value=[]):
         result = run_per_coin_automation()
 
         assert result['status'] == 'completed'
@@ -655,7 +656,7 @@ async def test_per_coin_automation_with_coins():
         {"currency": "ETH", "balance": "1.0"}
     ]
 
-    with patch('app.services.upbit.fetch_my_coins', return_value=mock_coins):
+    with patch('app.services.brokers.upbit.client.fetch_my_coins', return_value=mock_coins):
         result = run_per_coin_automation()
 
         assert result['status'] == 'completed'
@@ -951,9 +952,15 @@ async def run_backtest(start_date: str, end_date: str):
 
 ### 다음 단계
 
-[다음 글](예정)에서는 이 전체 시스템을 **라즈베리파이 홈서버**에 Docker Compose로 배포하는 과정을 다룰 예정입니다.
+실전 배포 전에 **모니터링 시스템**을 먼저 구축하는 것이 중요합니다!
 
-**예정된 내용:**
+[다음 글 - 6편: 실전 운영을 위한 모니터링 시스템 구축](예정)에서는:
+- OpenTelemetry + SigNoz로 분산 추적 및 메트릭 수집
+- Telegram 실시간 에러 알림 (Redis 중복 제거)
+- 커스텀 비즈니스 메트릭 구현
+- 문제 발견 시간: 6시간 → 1초로 단축!
+
+**그 다음 7편**에서는 라즈베리파이 홈서버에 Docker 배포를 다룰 예정입니다:
 - 라즈베리파이 초기 설정 (Ubuntu Server)
 - Docker & Docker Compose 설치
 - nginx 리버스 프록시 설정

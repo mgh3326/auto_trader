@@ -1,0 +1,21 @@
+from app.tasks import (
+    daily_scan_tasks,
+    intraday_order_review_tasks,
+    kr_candles_tasks,
+    kr_symbol_universe_tasks,
+    upbit_symbol_universe_tasks,
+    us_candles_tasks,
+    us_symbol_universe_tasks,
+    watch_scan_tasks,
+)
+
+TASKIQ_TASK_MODULES = (
+    daily_scan_tasks,
+    intraday_order_review_tasks,
+    watch_scan_tasks,
+    kr_candles_tasks,
+    kr_symbol_universe_tasks,
+    upbit_symbol_universe_tasks,
+    us_candles_tasks,
+    us_symbol_universe_tasks,
+)
