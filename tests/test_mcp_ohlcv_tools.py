@@ -793,6 +793,45 @@ async def test_get_ohlcv_kr_intraday_include_indicators_preserves_fields(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_get_ohlcv_kr_intraday_tz_aware_datetime_serializes_as_naive_kst(
+    monkeypatch,
+):
+    tools = build_tools()
+    aware_dt = pd.Timestamp("2026-03-10 08:00:00+09:00")
+    df = pd.DataFrame(
+        [
+            {
+                "datetime": aware_dt,
+                "date": aware_dt.date(),
+                "time": aware_dt.time(),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1000.0,
+                "value": 100500.0,
+                "session": "PRE_MARKET",
+                "venues": ["NTX"],
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        market_data_quotes,
+        "read_kr_intraday_candles",
+        AsyncMock(return_value=df),
+    )
+
+    result = await tools["get_ohlcv"]("005930", market="kr", count=1, period="1m")
+
+    row = result["rows"][0]
+    assert row["datetime"] == "2026-03-10T08:00:00"
+    assert row["date"] == "2026-03-10"
+    assert row["time"] == "08:00:00"
+    assert row["session"] == "PRE_MARKET"
+    assert row["venues"] == ["NTX"]
+
+
+@pytest.mark.asyncio
 async def test_get_ohlcv_kr_1h_does_not_use_kis_ohlcv_cache(monkeypatch):
     tools = build_tools()
     df = pd.DataFrame(
