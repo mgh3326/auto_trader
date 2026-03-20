@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.kr_symbols import normalize_kr_symbol
-from app.mcp_server.tooling.shared import MCP_USER_ID, normalize_market
+from app.mcp_server.tooling.shared import (
+    INSTRUMENT_TO_MARKET,
+    MCP_USER_ID,
+    normalize_market,
+)
 from app.models.trade_profile import (
     AssetProfile,
     MarketFilter,
@@ -103,6 +107,10 @@ def _serialize_filter(model: MarketFilter) -> dict[str, object]:
         "created_at": model.created_at.isoformat(),
         "updated_at": model.updated_at.isoformat(),
     }
+
+
+def _market_label_for_instrument(instrument_type: InstrumentType) -> str:
+    return cast(str, INSTRUMENT_TO_MARKET[instrument_type.value])
 
 
 def _normalize_symbol_for_instrument(
@@ -520,6 +528,7 @@ async def set_tier_rule_params(
     profile: str,
     param_type: str,
     params: dict[str, object],
+    reason: str | None = None,
     updated_by: str = "mcp",
 ) -> dict[str, object]:
     """Set tier rule params with upsert semantics and versioning."""
@@ -556,7 +565,10 @@ async def set_tier_rule_params(
                 existing_result = await db.execute(existing_stmt)
                 existing = existing_result.scalar_one_or_none()
 
-                target = f"rule:{parsed_instrument_type.value}:tier{tier}:{normalized_profile}:{normalized_param_type}"
+                target = (
+                    f"rule:{_market_label_for_instrument(parsed_instrument_type)}:"
+                    f"tier{tier}:{normalized_profile}:{normalized_param_type}"
+                )
 
                 if existing is None:
                     row = TierRuleParam(
@@ -580,7 +592,7 @@ async def set_tier_rule_params(
                             target=target,
                             old_value=None,
                             new_value=params,
-                            reason=None,
+                            reason=reason,
                             changed_by=updated_by,
                         )
                     )
@@ -600,7 +612,7 @@ async def set_tier_rule_params(
                             target=target,
                             old_value=old_value,
                             new_value=params,
-                            reason=None,
+                            reason=reason,
                             changed_by=updated_by,
                         )
                     )
@@ -657,6 +669,7 @@ async def set_market_filter(
     filter_name: str,
     params: dict[str, object],
     enabled: bool = True,
+    reason: str | None = None,
     updated_by: str = "mcp",
 ) -> dict[str, object]:
     """Set market filter with upsert semantics."""
@@ -679,7 +692,10 @@ async def set_market_filter(
                 existing_result = await db.execute(existing_stmt)
                 existing = existing_result.scalar_one_or_none()
 
-                target = f"filter:{parsed_instrument_type.value}:{normalized_filter_name}"
+                target = (
+                    f"filter:{_market_label_for_instrument(parsed_instrument_type)}:"
+                    f"{normalized_filter_name}"
+                )
 
                 if existing is None:
                     row = MarketFilter(
@@ -701,7 +717,7 @@ async def set_market_filter(
                             target=target,
                             old_value=None,
                             new_value={"params": params, "enabled": enabled},
-                            reason=None,
+                            reason=reason,
                             changed_by=updated_by,
                         )
                     )
@@ -721,7 +737,7 @@ async def set_market_filter(
                             target=target,
                             old_value=old_value,
                             new_value={"params": params, "enabled": enabled},
-                            reason=None,
+                            reason=reason,
                             changed_by=updated_by,
                         )
                     )

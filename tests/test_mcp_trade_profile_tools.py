@@ -570,6 +570,7 @@ async def test_set_tier_rule_params_creates_new() -> None:
             profile="balanced",
             param_type="buy",
             params={"size": 0.2},
+            reason="seed rule",
         )
 
     assert result["success"] is True
@@ -578,7 +579,8 @@ async def test_set_tier_rule_params_creates_new() -> None:
     change_logs = [o for o in added if hasattr(o, "change_type")]
     assert len(change_logs) == 1
     assert change_logs[0].change_type == "tier_rule_param"
-    assert change_logs[0].target == "rule:equity_us:tier2:balanced:buy"
+    assert change_logs[0].target == "rule:us:tier2:balanced:buy"
+    assert change_logs[0].reason == "seed rule"
 
 
 @pytest.mark.asyncio
@@ -610,6 +612,7 @@ async def test_set_market_filter_creates_new() -> None:
             instrument_type="crypto",
             filter_name="kill_switch",
             params={"enabled": True},
+            reason="bootstrap",
         )
 
     assert result["success"] is True
@@ -619,6 +622,7 @@ async def test_set_market_filter_creates_new() -> None:
     assert len(change_logs) == 1
     assert change_logs[0].change_type == "market_filter"
     assert change_logs[0].target == "filter:crypto:kill_switch"
+    assert change_logs[0].reason == "bootstrap"
 
 
 @pytest.mark.asyncio
