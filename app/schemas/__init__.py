@@ -24,7 +24,7 @@ from .manual_holdings import (
     StockAliasResponse,
     StockAliasSearchResult,
 )
-from .n8n import (
+from .n8n.pending_orders import (
     N8nPendingOrderItem,
     N8nPendingOrdersResponse,
     N8nPendingOrderSummary,
