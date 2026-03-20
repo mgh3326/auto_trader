@@ -6,6 +6,7 @@ import pytest
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import order_execution, orders_history, orders_modify_cancel
+from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_code
 from tests._mcp_tooling_support import build_tools
 
 
@@ -727,7 +728,8 @@ async def test_modify_order_us_fails_when_order_not_on_any_exchange(monkeypatch)
     assert result["success"] is False
     assert result["status"] == "failed"
     assert result["error"].startswith("Order not found in open orders (checked: ")
-    assert fake_kis.inquired_exchanges == ["NASD"]
+    # Now checks all default exchanges when not found
+    assert fake_kis.inquired_exchanges == ["NASD", "NYSE", "AMEX"]
 
 
 @pytest.mark.asyncio
@@ -848,6 +850,10 @@ async def test_cancel_order_us_returns_error_when_order_not_found_across_exchang
             self.checked_exchanges.append(exchange_code)
             return []
 
+        async def inquire_daily_order_overseas(self, **kwargs):
+            # History also doesn't have the order
+            return []
+
         async def cancel_overseas_order(self, *args, **kwargs):
             raise AssertionError("cancel_overseas_order should not be called")
 
@@ -864,12 +870,12 @@ async def test_cancel_order_us_returns_error_when_order_not_found_across_exchang
     )
 
     assert result["success"] is False
-    assert "Order not found in open orders" in result["error"]
-    assert "checked:" in result["error"]
+    assert "Order not found in open orders or recent history" in result["error"]
+    assert "checked exchanges:" in result["error"]
+    # Now checks all candidates when not found
     assert "NASD" in result["error"]
-    assert "NYSE" not in result["error"]
-    assert "AMEX" not in result["error"]
-    assert fake_kis.checked_exchanges == ["NASD"]
+    assert "NYSE" in result["error"]
+    assert "AMEX" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -930,8 +936,246 @@ async def test_cancel_order_us_uses_remaining_qty_then_fallback_qty(monkeypatch)
     assert result_remaining["success"] is True
     assert result_fallback["success"] is True
     assert result_missing["success"] is False
-    assert "Unable to resolve cancel quantity" in result_missing["error"]
+    assert "Unable to resolve remaining quantity" in result_missing["error"]
     assert fake_kis.cancel_quantities == [4, 11]
+
+
+def test_normalize_kis_exchange_code_aliases():
+    """Test that exchange aliases are properly normalized to KIS codes."""
+    assert _normalize_kis_exchange_code("NASDAQ") == "NASD"
+    assert _normalize_kis_exchange_code("NASDAQ_GS") == "NASD"
+    assert _normalize_kis_exchange_code("NYQ") == "NYSE"
+    assert _normalize_kis_exchange_code("NYSEMKT") == "AMEX"
+    assert _normalize_kis_exchange_code("nysemkt") == "AMEX"
+    assert _normalize_kis_exchange_code("NASD") == "NASD"
+    assert _normalize_kis_exchange_code("NYSE") == "NYSE"
+    assert _normalize_kis_exchange_code("AMEX") == "AMEX"
+
+    # Invalid code should raise
+    with pytest.raises(ValueError, match="Unsupported KIS exchange_code"):
+        _normalize_kis_exchange_code("INVALID")
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_us_prefers_order_exchange_over_lookup_exchange(monkeypatch):
+    """Test that order payload exchange is preferred over DB lookup exchange."""
+    tools = build_tools()
+
+    class FakeKIS:
+        def __init__(self) -> None:
+            self.checked_exchanges: list[str] = []
+            self.cancel_call: dict[str, object] | None = None
+
+        async def inquire_overseas_orders(self, exchange_code: str):
+            self.checked_exchanges.append(exchange_code)
+            if exchange_code == "NYSE":
+                return [
+                    {
+                        "odno": "US-CAN-1",
+                        "pdno": "CRM",
+                        "ovrs_excg_cd": "NASDAQ",
+                        "nccs_qty": "5",
+                        "ft_ord_qty": "9",
+                    }
+                ]
+            return []
+
+        async def cancel_overseas_order(
+            self, order_number, symbol, exchange_code, quantity
+        ):
+            self.cancel_call = {
+                "order_number": order_number,
+                "symbol": symbol,
+                "exchange_code": exchange_code,
+                "quantity": quantity,
+            }
+            return {"odno": order_number, "ord_tmd": "2024-01-01 10:00:00"}
+
+    fake_kis = FakeKIS()
+    _patch_kis_client(monkeypatch, lambda: fake_kis)
+    monkeypatch.setattr(
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NYSE"),
+    )
+
+    result = await tools["cancel_order"](order_id="US-CAN-1", symbol="CRM", market="us")
+
+    assert result["success"] is True
+    assert result["symbol"] == "CRM"
+    assert fake_kis.checked_exchanges == ["NYSE"]
+    assert fake_kis.cancel_call is not None
+    # Key assertion: should use NASD (normalized from NASDAQ in payload), not NYSE
+    assert fake_kis.cancel_call["exchange_code"] == "NASD"
+    assert fake_kis.cancel_call["quantity"] == 5
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_us_falls_back_to_history_lookup_when_open_order_missing(
+    monkeypatch,
+):
+    """Test that history lookup is used when order is not in open orders."""
+    tools = build_tools()
+
+    class FakeKIS:
+        def __init__(self) -> None:
+            self.checked_exchanges: list[str] = []
+            self.history_calls: list[str] = []
+            self.cancel_call: dict[str, object] | None = None
+
+        async def inquire_overseas_orders(self, exchange_code: str):
+            self.checked_exchanges.append(exchange_code)
+            return []
+
+        async def inquire_daily_order_overseas(self, **kwargs):
+            exchange_code = kwargs.get("exchange_code", "UNKNOWN")
+            self.history_calls.append(exchange_code)
+            if exchange_code == "NYSE":
+                return [
+                    {
+                        "odno": "US-MISSING",
+                        "pdno": "CRM",
+                        "ovrs_excg_cd": "NYSE",
+                        "ft_ord_qty": "4",
+                        "ft_ccld_qty": "1",
+                    }
+                ]
+            return []
+
+        async def cancel_overseas_order(
+            self, order_number, symbol, exchange_code, quantity
+        ):
+            self.cancel_call = {
+                "order_number": order_number,
+                "symbol": symbol,
+                "exchange_code": exchange_code,
+                "quantity": quantity,
+            }
+            return {"odno": order_number, "ord_tmd": "2024-01-01 10:00:00"}
+
+    fake_kis = FakeKIS()
+    _patch_kis_client(monkeypatch, lambda: fake_kis)
+    monkeypatch.setattr(
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NYSE"),
+    )
+
+    result = await tools["cancel_order"](
+        order_id="US-MISSING", symbol="CRM", market="us"
+    )
+
+    assert result["success"] is True
+    assert result["symbol"] == "CRM"
+    # Should check open orders first, then history
+    assert "NYSE" in fake_kis.checked_exchanges
+    assert "NYSE" in fake_kis.history_calls
+    assert fake_kis.cancel_call is not None
+    assert fake_kis.cancel_call["exchange_code"] == "NYSE"
+    assert fake_kis.cancel_call["quantity"] == 3  # 4 - 1 = 3 remaining
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_us_history_lookup_matches_db_symbol_format(monkeypatch):
+    """History lookup should match DB symbols like BRK.B against KIS payload BRK/B."""
+    tools = build_tools()
+
+    class FakeKIS:
+        def __init__(self) -> None:
+            self.checked_exchanges: list[str] = []
+            self.history_calls: list[str] = []
+            self.cancel_call: dict[str, object] | None = None
+
+        async def inquire_overseas_orders(self, exchange_code: str):
+            self.checked_exchanges.append(exchange_code)
+            return []
+
+        async def inquire_daily_order_overseas(self, **kwargs):
+            exchange_code = kwargs.get("exchange_code", "UNKNOWN")
+            self.history_calls.append(exchange_code)
+            if exchange_code == "NYSE":
+                return [
+                    {
+                        "odno": "US-BRK-1",
+                        "pdno": "BRK/B",
+                        "ovrs_excg_cd": "NYSE",
+                        "ft_ord_qty": "2",
+                        "ft_ccld_qty": "1",
+                    }
+                ]
+            return []
+
+        async def cancel_overseas_order(
+            self, order_number, symbol, exchange_code, quantity
+        ):
+            self.cancel_call = {
+                "order_number": order_number,
+                "symbol": symbol,
+                "exchange_code": exchange_code,
+                "quantity": quantity,
+            }
+            return {"odno": order_number, "ord_tmd": "2024-01-01 10:00:00"}
+
+    fake_kis = FakeKIS()
+    _patch_kis_client(monkeypatch, lambda: fake_kis)
+    monkeypatch.setattr(
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NYSE"),
+    )
+
+    result = await tools["cancel_order"](
+        order_id="US-BRK-1", symbol="BRK.B", market="us"
+    )
+
+    assert result["success"] is True
+    assert result["symbol"] == "BRK.B"
+    assert "NYSE" in fake_kis.checked_exchanges
+    assert "NYSE" in fake_kis.history_calls
+    assert fake_kis.cancel_call is not None
+    assert fake_kis.cancel_call["symbol"] == "BRK.B"
+    assert fake_kis.cancel_call["exchange_code"] == "NYSE"
+    assert fake_kis.cancel_call["quantity"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_us_apbk0656_error_includes_exchange(monkeypatch):
+    """Test that APBK0656 error includes exchange context."""
+    tools = build_tools()
+
+    class FakeKIS:
+        async def inquire_overseas_orders(self, exchange_code: str):
+            return [
+                {
+                    "odno": "US-ERR-1",
+                    "pdno": "CRM",
+                    "ovrs_excg_cd": "NYSE",
+                    "nccs_qty": "1",
+                    "ft_ord_qty": "1",
+                }
+            ]
+
+        async def cancel_overseas_order(self, *args, **kwargs):
+            raise RuntimeError(
+                "KIS cancel order failed: APBK0656 해당종목정보가 없습니다 "
+                "(order_id=US-ERR-1, symbol=CRM, exchange=NYSE)"
+            )
+
+    fake_kis = FakeKIS()
+    _patch_kis_client(monkeypatch, lambda: fake_kis)
+    monkeypatch.setattr(
+        orders_modify_cancel,
+        "get_us_exchange_by_symbol",
+        AsyncMock(return_value="NYSE"),
+    )
+
+    result = await tools["cancel_order"](
+        order_id="US-ERR-1", symbol="CRM", market="us"
+    )
+
+    assert result["success"] is False
+    assert "APBK0656" in result["error"]
+    assert "exchange=" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -1104,8 +1348,9 @@ async def test_cancel_order_kis_overseas_fails_when_order_not_found(monkeypatch)
     )
 
     assert result["success"] is False
-    assert "checked: NASD" in result["error"]
-    assert mock_kis.inquiry_calls == ["NASD"]
+    # Now checks all default exchanges when order not found in any
+    assert "NASD" in result["error"]
+    assert mock_kis.inquiry_calls == ["NASD", "NYSE", "AMEX"]
 
 
 @pytest.mark.asyncio

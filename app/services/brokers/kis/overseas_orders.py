@@ -13,6 +13,48 @@ if TYPE_CHECKING:
     from .protocols import KISClientProtocol
 
 
+_VALID_KIS_EXCHANGE_CODES = {
+    "NASD",
+    "NYSE",
+    "AMEX",
+    "SEHK",
+    "SHAA",
+    "SZAA",
+    "TKSE",
+    "HASE",
+    "VNSE",
+}
+
+_EXCHANGE_ALIAS_MAP = {
+    "NASDAQ": "NASD",
+    "NASDAQ_GS": "NASD",
+    "NYQ": "NYSE",
+    "NYSEMKT": "AMEX",
+}
+
+
+def _normalize_kis_exchange_code(code: str) -> str:
+    """Normalize exchange code to KIS format.
+
+    Maps common aliases (NASDAQ -> NASD, NYQ -> NYSE, etc.) to canonical
+    KIS exchange codes and validates against supported exchanges.
+
+    Args:
+        code: Exchange code to normalize (e.g., "NASDAQ", "NYSE", "NASD")
+
+    Returns:
+        Normalized KIS exchange code (e.g., "NASD", "NYSE", "AMEX")
+
+    Raises:
+        ValueError: If the exchange code is not supported
+    """
+    upper = str(code or "").strip().upper()
+    normalized = _EXCHANGE_ALIAS_MAP.get(upper, upper)
+    if normalized not in _VALID_KIS_EXCHANGE_CODES:
+        raise ValueError(f"Unsupported KIS exchange_code: {code!r}")
+    return normalized
+
+
 class OverseasOrderClient:
     """Client for KIS overseas stock order operations.
 
@@ -391,6 +433,9 @@ class OverseasOrderClient:
         cano = account_no[:8]
         acnt_prdt_cd = account_no[8:10]
 
+        # Normalize exchange code to KIS format
+        normalized_exchange_code = _normalize_kis_exchange_code(exchange_code)
+
         tr_id = (
             constants.OVERSEAS_ORDER_CANCEL_TR_MOCK
             if is_mock
@@ -405,7 +450,7 @@ class OverseasOrderClient:
         body = {
             "CANO": cano,
             "ACNT_PRDT_CD": acnt_prdt_cd,
-            "OVRS_EXCG_CD": exchange_code,  # 해외거래소코드
+            "OVRS_EXCG_CD": normalized_exchange_code,  # 해외거래소코드
             "PDNO": to_kis_symbol(symbol),  # 상품번호(종목코드) (DB형식 . -> KIS형식 /)
             "ORGN_ODNO": order_number,  # 원주문번호
             "RVSE_CNCL_DVSN_CD": "02",  # 정정취소구분코드 (01:정정, 02:취소)
@@ -415,7 +460,10 @@ class OverseasOrderClient:
             "ORD_SVR_DVSN_CD": "0",  # 주문서버구분코드
         }
 
-        logging.info(f"해외주식 주문 취소 - symbol: {symbol}, 주문번호: {order_number}")
+        logging.info(
+            f"해외주식 주문 취소 - symbol: {symbol}, "
+            f"주문번호: {order_number}, 거래소: {normalized_exchange_code}"
+        )
 
         js = await self._parent._request_with_rate_limit(
             "POST",
@@ -435,7 +483,11 @@ class OverseasOrderClient:
                     order_number, symbol, exchange_code, quantity, is_mock
                 )
 
-            error_msg = f"{js.get('msg_cd')} {js.get('msg1')}"
+            error_msg = (
+                f"KIS cancel order failed: {js.get('msg_cd')} {js.get('msg1')} "
+                f"(order_id={order_number}, symbol={symbol}, "
+                f"exchange={normalized_exchange_code})"
+            )
             logging.error(f"주문 취소 실패: {error_msg}")
             raise RuntimeError(error_msg)
 

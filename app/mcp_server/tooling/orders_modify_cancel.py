@@ -6,6 +6,7 @@ import hashlib
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
+from app.core.symbol import to_db_symbol
 from app.mcp_server.tick_size import adjust_tick_size_kr
 from app.mcp_server.tooling.order_execution import (
     _normalize_market_type_to_external,
@@ -18,6 +19,7 @@ from app.mcp_server.tooling.shared import (
     resolve_market_type as _resolve_market_type,
 )
 from app.services.brokers.kis.client import KISClient
+from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_code
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
 
@@ -173,10 +175,39 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_DEFAULT_US_CANCEL_EXCHANGES = ["NASD", "NYSE", "AMEX"]
+
+
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    """Remove duplicates while preserving order."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
 async def _build_us_exchange_candidates(symbol: str | None) -> list[str]:
+    """Build a list of exchange candidates for US cancel lookups.
+
+    Prioritizes DB lookup result if symbol is provided, then adds
+    default exchanges as fallbacks. Results are deduplicated.
+    """
+    candidates: list[str] = []
     if symbol:
-        return [await get_us_exchange_by_symbol(symbol)]
-    return ["NASD", "NYSE", "AMEX"]
+        try:
+            db_exchange = await get_us_exchange_by_symbol(symbol)
+            candidates.append(_normalize_kis_exchange_code(db_exchange))
+        except Exception as exc:
+            logger.warning(
+                "US exchange lookup failed for cancel: symbol=%s error=%s",
+                symbol,
+                exc,
+            )
+    candidates.extend(_DEFAULT_US_CANCEL_EXCHANGES)
+    return _dedupe_preserve_order(candidates)
 
 
 async def _find_us_open_order_by_id(
@@ -184,6 +215,13 @@ async def _find_us_open_order_by_id(
     order_id: str,
     symbol: str | None,
 ) -> tuple[dict[str, Any] | None, str | None, list[str]]:
+    """Find an open order by ID across candidate exchanges.
+
+    Returns:
+        Tuple of (order_dict, order_exchange, exchange_candidates).
+        order_exchange is extracted from the order payload (ovrs_excg_cd)
+        and normalized, falling back to the queried exchange if not present.
+    """
     exchange_candidates = await _build_us_exchange_candidates(symbol)
     for exchange in exchange_candidates:
         try:
@@ -200,9 +238,69 @@ async def _find_us_open_order_by_id(
 
         for order in open_orders:
             if _extract_kis_order_number(order) == order_id:
-                return order, exchange, exchange_candidates
+                # Prefer order payload's exchange over queried exchange
+                order_exchange = str(
+                    order.get("ovrs_excg_cd") or order.get("OVRS_EXCG_CD") or exchange
+                ).strip()
+                return order, order_exchange, exchange_candidates
 
     return None, None, exchange_candidates
+
+
+async def _find_us_order_in_recent_history(
+    kis: KISClient,
+    order_id: str,
+    symbol: str,
+    exchange_candidates: list[str],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Find an order in recent daily order history when not in open orders.
+
+    Searches a narrow recent window (last 7 days) across exchange candidates.
+    Post-filters by order_id and symbol since the KIS API's order_number
+    parameter is not supported for overseas orders.
+
+    Returns:
+        Tuple of (order_dict, order_exchange) or (None, None) if not found.
+    """
+    from datetime import datetime, timedelta
+
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=7)
+
+    start_str = start_date.strftime("%Y%m%d")
+    end_str = end_date.strftime("%Y%m%d")
+
+    for exchange in exchange_candidates:
+        try:
+            history = await kis.inquire_daily_order_overseas(
+                start_date=start_str,
+                end_date=end_str,
+                symbol="%",  # Get all and filter client-side
+                exchange_code=exchange,
+            )
+        except Exception as exc:
+            logger.warning(
+                "US history lookup failed: order_id=%s symbol=%s exchange=%s error=%s",
+                order_id,
+                symbol,
+                exchange,
+                exc,
+            )
+            continue
+
+        for order in history:
+            if _extract_kis_order_number(order) == order_id:
+                # Verify symbol matches to avoid false positives
+                order_symbol = _get_kis_field(order, "pdno", "PDNO", default="")
+                if to_db_symbol(str(order_symbol)) != to_db_symbol(symbol):
+                    continue
+                # Prefer order payload's exchange
+                order_exchange = str(
+                    order.get("ovrs_excg_cd") or order.get("OVRS_EXCG_CD") or exchange
+                ).strip()
+                return order, order_exchange
+
+    return None, None
 
 
 def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
@@ -402,11 +500,20 @@ async def cancel_order_impl(
                     ", ".join(exchange_candidates),
                 )
 
+                # If not in open orders, try recent history
+                if target_order is None and symbol:
+                    target_order, target_exchange = await _find_us_order_in_recent_history(
+                        kis, order_id, symbol, exchange_candidates
+                    )
+
                 if target_order is None:
                     return {
                         "success": False,
                         "order_id": order_id,
-                        "error": f"Order not found in open orders (checked: {','.join(exchange_candidates)})",
+                        "error": (
+                            "Order not found in open orders or recent history "
+                            f"(checked exchanges: {','.join(exchange_candidates)})"
+                        ),
                         "market": _normalize_market_type_to_external(market_type),
                     }
 
@@ -421,24 +528,48 @@ async def cancel_order_impl(
                         "market": _normalize_market_type_to_external(market_type),
                     }
 
+                # Try to get remaining quantity from open order fields first
                 remaining_quantity = int(
                     float(
                         _get_kis_field(target_order, "nccs_qty", "NCCS_QTY", default=0)
                         or 0
                     )
                 )
-                fallback_quantity = int(
-                    float(
-                        _get_kis_field(
-                            target_order, "ft_ord_qty", "FT_ORD_QTY", default=0
-                        )
-                        or 0
-                    )
-                )
 
-                quantity = (
-                    remaining_quantity if remaining_quantity > 0 else fallback_quantity
-                )
+                # If remaining_quantity is available (>0), use it directly
+                if remaining_quantity > 0:
+                    quantity = remaining_quantity
+                else:
+                    # Calculate remaining from ordered - filled (for history or open orders without nccs_qty)
+                    ordered = int(
+                        float(
+                            _get_kis_field(
+                                target_order, "ft_ord_qty", "FT_ORD_QTY", default=0
+                            )
+                            or 0
+                        )
+                    )
+                    filled = int(
+                        float(
+                            _get_kis_field(
+                                target_order, "ft_ccld_qty", "FT_CCLD_QTY", default=0
+                            )
+                            or 0
+                        )
+                    )
+                    quantity = max(ordered - filled, 0)
+
+                    # KIS cancel requires a concrete order quantity in current client usage.
+                    # Fail closed if neither open orders nor recent history can reconstruct it.
+                    if quantity <= 0:
+                        return {
+                            "success": False,
+                            "order_id": order_id,
+                            "symbol": symbol,
+                            "error": "Unable to resolve remaining quantity from open orders or recent history",
+                            "market": _normalize_market_type_to_external(market_type),
+                        }
+
                 if quantity <= 0:
                     return {
                         "success": False,
@@ -448,7 +579,10 @@ async def cancel_order_impl(
                         "market": _normalize_market_type_to_external(market_type),
                     }
 
-                exchange_code = target_exchange or exchange_candidates[0]
+                # Normalize exchange from order payload or fallback to candidate
+                exchange_code = _normalize_kis_exchange_code(
+                    target_exchange or exchange_candidates[0]
+                )
                 logger.info(
                     "US cancel resolved: order_id=%s symbol=%s checked_exchanges=%s selected_exchange=%s resolved_quantity=%s",
                     order_id,
