@@ -105,6 +105,62 @@ jobs:
             echo "- **Image pushed**: ❌" >> $GITHUB_STEP_SUMMARY
           fi
 
+  deploy:
+    needs: build-and-push
+    if: needs.build-and-push.result == 'success'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Deploy via SSH
+        timeout-minutes: 10
+        run: |
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            ${{ secrets.DEPLOY_SSH_HOST }} \
+            "cd /home/mgh3326/auto_trader && ./scripts/deploy.sh" 2>&1 | tee /tmp/deploy-output.txt
+
+      - name: Discord notification (success)
+        if: success()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_DEPLOY_WEBHOOK_URL }}
+        run: |
+          curl -s -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"✅ Auto Trader 배포 완료\",
+                \"description\": \"**Branch:** \`${{ github.ref_name }}\`\n**Commit:** [\`${GITHUB_SHA::7}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})\n**Author:** ${{ github.actor }}\n**Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\",
+                \"color\": 5763719,
+                \"footer\": {\"text\": \"auto_trader production\"},
+                \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+              }]
+            }" \
+            "$DISCORD_WEBHOOK"
+
+      - name: Discord notification (failure)
+        if: failure()
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_DEPLOY_WEBHOOK_URL }}
+        run: |
+          DEPLOY_LOG=$(tail -15 /tmp/deploy-output.txt 2>/dev/null | head -c 1000 || echo "No log available")
+
+          curl -s -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"❌ Auto Trader 배포 실패\",
+                \"description\": \"**Branch:** \`${{ github.ref_name }}\`\n**Commit:** [\`${GITHUB_SHA::7}\`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})\n**Author:** ${{ github.actor }}\n**Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n\n**Log:**\n\`\`\`\n${DEPLOY_LOG}\n\`\`\`\",
+                \"color\": 15548997,
+                \"footer\": {\"text\": \"auto_trader production\"},
+                \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+              }]
+            }" \
+            "$DISCORD_WEBHOOK"
+
   notify:
     if: failure()
     needs: [build-and-push]
