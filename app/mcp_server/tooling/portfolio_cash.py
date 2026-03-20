@@ -35,20 +35,18 @@ async def _get_kis_domestic_pending_buy_amount(kis: KISClient) -> float:
 
 async def _get_kis_overseas_pending_buy_amount_usd(kis: KISClient) -> float:
     total = 0.0
-    for exchange in ("NASD", "NYSE", "AMEX"):
-        try:
-            open_orders = await kis.inquire_overseas_orders(exchange)
-            for order in open_orders:
-                if str(order.get("sll_buy_dvsn_cd", "")).strip() != "02":
-                    continue
-                price = to_float(order.get("ft_ord_unpr3"), default=0.0)
-                qty = to_float(
-                    order.get("nccs_qty") or order.get("ft_ord_qty"),
-                    default=0.0,
-                )
-                total += price * qty
-        except Exception:
+    # KIS documents NASD as a US-wide open-order lookup. Querying NYSE/AMEX as
+    # well can double-count the same locked cash when orders are mirrored there.
+    open_orders = await kis.inquire_overseas_orders("NASD")
+    for order in open_orders:
+        if str(order.get("sll_buy_dvsn_cd", "")).strip() != "02":
             continue
+        price = to_float(order.get("ft_ord_unpr3"), default=0.0)
+        qty = to_float(
+            order.get("nccs_qty") or order.get("ft_ord_qty"),
+            default=0.0,
+        )
+        total += price * qty
     return total
 
 

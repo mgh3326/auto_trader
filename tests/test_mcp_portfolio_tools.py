@@ -602,7 +602,9 @@ async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_cash_balance_kis_overseas_deducts_pending_buy_orders(monkeypatch):
+async def test_get_cash_balance_kis_overseas_avoids_duplicate_deduction_from_us_exchanges(
+    monkeypatch,
+):
     tools = build_tools()
 
     class MockKISClient:
@@ -620,12 +622,17 @@ async def test_get_cash_balance_kis_overseas_deducts_pending_buy_orders(monkeypa
             payload = {
                 "NASD": [
                     {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "2"},
+                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "50.0", "nccs_qty": "2"},
                     {"sll_buy_dvsn_cd": "01", "ft_ord_unpr3": "999.0", "nccs_qty": "9"},
                 ],
+                # KIS NASD query is documented as a US-wide lookup, so these rows
+                # represent duplicates that must not be counted again.
                 "NYSE": [
+                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "2"},
+                ],
+                "AMEX": [
                     {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "50.0", "nccs_qty": "2"},
                 ],
-                "AMEX": [],
             }
             return payload[exchange_code]
 
@@ -640,6 +647,7 @@ async def test_get_cash_balance_kis_overseas_deducts_pending_buy_orders(monkeypa
 @pytest.mark.asyncio
 async def test_get_cash_balance_kis_overseas_pending_lookup_failure_keeps_raw_orderable(
     monkeypatch,
+    caplog,
 ):
     tools = build_tools()
 
@@ -655,13 +663,15 @@ async def test_get_cash_balance_kis_overseas_pending_lookup_failure_keeps_raw_or
             ]
 
         async def inquire_overseas_orders(self, exchange_code):
-            raise RuntimeError(f"{exchange_code} failed")
+            raise RuntimeError("NASD failed")
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
-    result = await tools["get_cash_balance"](account="kis_overseas")
+    with caplog.at_level("WARNING"):
+        result = await tools["get_cash_balance"](account="kis_overseas")
 
     assert result["accounts"][0]["orderable"] == 1000.0
+    assert "USD pending order deduction failed" in caplog.text
 
 
 # ---------------------------------------------------------------------------
