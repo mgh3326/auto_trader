@@ -430,3 +430,72 @@ class TestFetchFilledOrdersWithIndicators:
             await fetch_filled_orders(days=1, include_indicators=True)
 
         mock_enrich.assert_called_once()
+
+
+@pytest.mark.unit
+class TestFilledOrdersRouter:
+    def _get_client(self):
+        """Create TestClient with just n8n router (bypasses auth middleware)."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.routers.n8n import router
+
+        app = FastAPI()
+        app.include_router(router)
+        return TestClient(app)
+
+    def test_include_indicators_query_param_defaults_to_false(self):
+        """GET /api/n8n/filled-orders without include_indicators returns no indicators."""
+        mock_result = {
+            "orders": [
+                {
+                    "symbol": "BTC",
+                    "raw_symbol": "KRW-BTC",
+                    "instrument_type": "crypto",
+                    "side": "buy",
+                    "price": 100_000_000,
+                    "quantity": 0.01,
+                    "total_amount": 1_000_000,
+                    "fee": 500,
+                    "currency": "KRW",
+                    "account": "upbit",
+                    "order_id": "test-123",
+                    "filled_at": "2026-03-22T10:00:00+09:00",
+                    "current_price": 101_000_000,
+                    "pnl_pct": 1.0,
+                    "pnl_pct_fmt": "+1.00%",
+                },
+            ],
+            "errors": [],
+        }
+
+        with patch(
+            "app.routers.n8n.fetch_filled_orders",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_fetch:
+            client = self._get_client()
+            resp = client.get("/api/n8n/filled-orders?days=1")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        # Verify include_indicators=False was passed
+        mock_fetch.assert_called_once()
+        call_kwargs = mock_fetch.call_args.kwargs
+        assert call_kwargs.get("include_indicators") is False
+
+    def test_include_indicators_true_param_passed_to_service(self):
+        mock_result = {"orders": [], "errors": []}
+
+        with patch(
+            "app.routers.n8n.fetch_filled_orders",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_fetch:
+            client = self._get_client()
+            resp = client.get("/api/n8n/filled-orders?include_indicators=true")
+
+        assert resp.status_code == 200
+        call_kwargs = mock_fetch.call_args.kwargs
+        assert call_kwargs.get("include_indicators") is True
