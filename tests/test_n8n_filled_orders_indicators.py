@@ -135,3 +135,169 @@ class TestComputeReviewIndicators:
 
         assert result is not None
         assert result["volume_ratio"] is None
+
+
+@pytest.mark.unit
+class TestEnrichWithIndicators:
+    @pytest.mark.asyncio
+    async def test_enriches_crypto_orders_with_indicators_and_fear_greed(self):
+        from app.services.n8n_filled_orders_indicators import (
+            _enrich_with_indicators,
+        )
+
+        orders = [
+            {"symbol": "BTC", "raw_symbol": "KRW-BTC", "instrument_type": "crypto"},
+            {"symbol": "ETH", "raw_symbol": "KRW-ETH", "instrument_type": "crypto"},
+        ]
+
+        mock_indicators = {
+            "rsi_14": 42.0,
+            "rsi_7": 38.0,
+            "ema_20": 106_000_000.0,
+            "ema_200": 98_000_000.0,
+            "macd": -1_200_000.0,
+            "macd_signal": -800_000.0,
+            "adx": 28.0,
+            "stoch_rsi_k": 22.0,
+            "volume_ratio": 1.3,
+        }
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                new_callable=AsyncMock,
+                return_value=mock_indicators,
+            ),
+            patch(
+                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                new_callable=AsyncMock,
+                return_value={"value": 25, "label": "Extreme Fear"},
+            ),
+        ):
+            result = await _enrich_with_indicators(orders)
+
+        assert result[0]["indicators"]["rsi_14"] == 42.0
+        assert result[0]["indicators"]["fear_greed"] == 25
+        assert result[1]["indicators"]["fear_greed"] == 25
+
+    @pytest.mark.asyncio
+    async def test_same_symbol_fetched_only_once(self):
+        from app.services.n8n_filled_orders_indicators import (
+            _enrich_with_indicators,
+        )
+
+        orders = [
+            {"symbol": "BTC", "raw_symbol": "KRW-BTC", "instrument_type": "crypto"},
+            {"symbol": "BTC", "raw_symbol": "KRW-BTC", "instrument_type": "crypto"},
+        ]
+
+        mock_compute = AsyncMock(return_value={"rsi_14": 50.0})
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                mock_compute,
+            ),
+            patch(
+                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            await _enrich_with_indicators(orders)
+
+        # Should be called once for BTC, not twice
+        assert mock_compute.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_equity_orders_skip_fear_greed(self):
+        from app.services.n8n_filled_orders_indicators import (
+            _enrich_with_indicators,
+        )
+
+        orders = [
+            {"symbol": "005930", "raw_symbol": "005930",
+             "instrument_type": "equity_kr"},
+        ]
+
+        mock_indicators = {"rsi_14": 55.0, "ema_20": 80_000.0}
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                new_callable=AsyncMock,
+                return_value=mock_indicators,
+            ),
+            patch(
+                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                new_callable=AsyncMock,
+            ) as mock_fg,
+        ):
+            result = await _enrich_with_indicators(orders)
+
+        # Fear & Greed should not be fetched for equity
+        assert result[0]["indicators"].get("fear_greed") is None
+
+    @pytest.mark.asyncio
+    async def test_indicator_failure_yields_none(self):
+        from app.services.n8n_filled_orders_indicators import (
+            _enrich_with_indicators,
+        )
+
+        orders = [
+            {"symbol": "BTC", "raw_symbol": "KRW-BTC", "instrument_type": "crypto"},
+        ]
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await _enrich_with_indicators(orders)
+
+        assert result[0]["indicators"] is None
+
+    @pytest.mark.asyncio
+    async def test_mixed_markets(self):
+        from app.services.n8n_filled_orders_indicators import (
+            _enrich_with_indicators,
+        )
+
+        orders = [
+            {"symbol": "BTC", "raw_symbol": "KRW-BTC",
+             "instrument_type": "crypto"},
+            {"symbol": "005930", "raw_symbol": "005930",
+             "instrument_type": "equity_kr"},
+            {"symbol": "NVDA", "raw_symbol": "NVDA",
+             "instrument_type": "equity_us"},
+        ]
+
+        mock_indicators = {"rsi_14": 50.0, "ema_20": 100.0}
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_indicators._compute_review_indicators",
+                new_callable=AsyncMock,
+                return_value=mock_indicators,
+            ),
+            patch(
+                "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
+                new_callable=AsyncMock,
+                return_value={"value": 40},
+            ),
+        ):
+            result = await _enrich_with_indicators(orders)
+
+        # All 3 orders should have indicators
+        assert all(o.get("indicators") is not None for o in result)
+        # Only crypto gets fear_greed
+        assert result[0]["indicators"]["fear_greed"] == 40
+        assert result[1]["indicators"].get("fear_greed") is None
+        assert result[2]["indicators"].get("fear_greed") is None

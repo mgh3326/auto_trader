@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -15,6 +16,7 @@ from app.mcp_server.tooling.market_data_indicators import (
     _calculate_stoch_rsi,
     _fetch_ohlcv_for_indicators,
 )
+from app.services.external.fear_greed import fetch_fear_greed
 
 logger = logging.getLogger(__name__)
 
@@ -80,3 +82,65 @@ def _calc_volume_ratio(volume: pd.Series) -> float | None:
     if pd.isna(latest):
         return None
     return round(float(latest / avg_20), 2)
+
+
+_INDICATOR_CONCURRENCY = 5
+
+
+async def _enrich_with_indicators(
+    orders: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Enrich filled orders with technical indicators per unique symbol.
+
+    - Deduplicates symbols (same symbol fetched once).
+    - Fetches Fear & Greed Index once (crypto orders only).
+    - Concurrency-limited to _INDICATOR_CONCURRENCY parallel fetches.
+    - Best-effort: failures yield indicators=None for that order.
+    """
+    if not orders:
+        return orders
+
+    # Deduplicate: (symbol, instrument_type) -> indicators
+    unique_symbols: dict[tuple[str, str], None] = {}
+    for order in orders:
+        key = (order["symbol"], order["instrument_type"])
+        unique_symbols[key] = None
+
+    sem = asyncio.Semaphore(_INDICATOR_CONCURRENCY)
+    indicators_map: dict[str, dict[str, Any] | None] = {}
+
+    async def _fetch_one(symbol: str, instrument_type: str) -> None:
+        async with sem:
+            result = await _compute_review_indicators(symbol, instrument_type)
+            indicators_map[symbol] = result
+
+    await asyncio.gather(
+        *[_fetch_one(sym, itype) for sym, itype in unique_symbols],
+        return_exceptions=True,
+    )
+
+    # Fetch Fear & Greed once if any crypto orders exist
+    has_crypto = any(o["instrument_type"] == "crypto" for o in orders)
+    fear_greed_value: int | None = None
+    if has_crypto:
+        try:
+            fg_data = await fetch_fear_greed()
+            if fg_data and isinstance(fg_data, dict):
+                raw = fg_data.get("value")
+                fear_greed_value = int(raw) if raw is not None else None
+        except Exception as exc:
+            logger.warning("Fear & Greed fetch failed: %s", exc)
+
+    # Map indicators to orders
+    for order in orders:
+        base = indicators_map.get(order["symbol"])
+        if base is None:
+            order["indicators"] = None
+            continue
+
+        enriched = dict(base)
+        if order["instrument_type"] == "crypto" and fear_greed_value is not None:
+            enriched["fear_greed"] = fear_greed_value
+        order["indicators"] = enriched
+
+    return orders
