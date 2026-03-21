@@ -10,7 +10,6 @@ import pandas as pd
 import pytest
 
 import app.services.brokers.upbit.client as upbit_service
-from app.mcp_server.tooling import analysis_screen_core
 from app.mcp_server.tooling.analysis_crypto_score import (
     BEARISH_NORMAL,
     BEARISH_STRONG,
@@ -29,6 +28,10 @@ from app.mcp_server.tooling.analysis_crypto_score import (
 )
 from app.mcp_server.tooling.market_data_indicators import _calculate_adx
 from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling.screening import common as screening_common
+from app.mcp_server.tooling.screening import crypto as screening_crypto
+from app.mcp_server.tooling.screening import kr as screening_kr
+from app.mcp_server.tooling.screening import us as screening_us
 
 
 class DummyMCP:
@@ -111,17 +114,27 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(
-        analysis_screen_core,
+        screening_crypto,
         "get_upbit_warning_markets",
         mock_get_upbit_warning_markets,
     )
     monkeypatch.setattr(
-        analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+        screening_crypto._CRYPTO_MARKET_CAP_CACHE,
         "get",
         mock_market_cap_cache_get,
     )
     monkeypatch.setattr(
-        analysis_screen_core,
+        screening_crypto,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv_for_indicators,
+    )
+    monkeypatch.setattr(
+        screening_kr,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv_for_indicators,
+    )
+    monkeypatch.setattr(
+        screening_us,
         "_fetch_ohlcv_for_indicators",
         mock_fetch_ohlcv_for_indicators,
     )
@@ -508,7 +521,7 @@ class TestScreenStocksCryptoScore:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_crypto, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
         tools = build_tools()
@@ -534,8 +547,6 @@ class TestScreenStocksCryptoScore:
 class TestRsiSortingNoneValues:
     @pytest.mark.asyncio
     async def test_rsi_none_sorts_to_end_asc(self, monkeypatch):
-        from app.mcp_server.tooling import analysis_screen_core
-
         async def mock_fetch_top_traded_coins(fiat):
             return [
                 {"market": "KRW-A", "trade_price": 100, "acc_trade_price_24h": 1000},
@@ -557,7 +568,7 @@ class TestRsiSortingNoneValues:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_crypto, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
         tools = build_tools()
@@ -622,12 +633,12 @@ class TestCryptoScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -637,7 +648,7 @@ class TestCryptoScreenStocksTvScreenerContract:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             AsyncMock(
                 return_value={
@@ -650,12 +661,12 @@ class TestCryptoScreenStocksTvScreenerContract:
             ),
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_market_display_names",
             AsyncMock(
                 return_value={
@@ -695,8 +706,6 @@ class TestCryptoScreenStocksTvScreenerContract:
 
     @pytest.mark.asyncio
     async def test_rsi_none_sorts_to_end_desc(self, monkeypatch):
-        from app.mcp_server.tooling import analysis_screen_core
-
         async def mock_fetch_top_traded_coins(fiat):
             return [
                 {"market": "KRW-A", "trade_price": 100, "acc_trade_price_24h": 1000},
@@ -718,7 +727,7 @@ class TestCryptoScreenStocksTvScreenerContract:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_crypto, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
         tools = build_tools()
@@ -768,7 +777,6 @@ class TestRecommendStocksCryptoScore:
         self, mock_upbit_coins, monkeypatch
     ):
         from app.mcp_server.tooling import (
-            analysis_screen_core,
             market_data_indicators,
             portfolio_holdings,
         )
@@ -796,7 +804,7 @@ class TestRecommendStocksCryptoScore:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_crypto, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
         monkeypatch.setattr(
             market_data_indicators, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
@@ -826,7 +834,6 @@ class TestRecommendStocksCryptoScore:
         self, mock_upbit_coins, monkeypatch
     ):
         from app.mcp_server.tooling import (
-            analysis_screen_core,
             market_data_indicators,
             portfolio_holdings,
         )
@@ -858,7 +865,7 @@ class TestRecommendStocksCryptoScore:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv_counting,
         )
@@ -890,7 +897,6 @@ class TestCryptoEnrichmentGracefulDegradation:
         self, monkeypatch
     ):
         from app.mcp_server.tooling import (
-            analysis_screen_core,
             market_data_indicators,
             portfolio_holdings,
         )
@@ -920,7 +926,7 @@ class TestCryptoEnrichmentGracefulDegradation:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv_slow
+            screening_crypto, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv_slow
         )
         monkeypatch.setattr(
             market_data_indicators,
@@ -933,12 +939,12 @@ class TestCryptoEnrichmentGracefulDegradation:
             mock_collect_portfolio_positions,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             mock_import_tvscreener,
         )
         monkeypatch.setitem(
-            analysis_screen_core.DEFAULT_TIMEOUTS,
+            screening_common.DEFAULT_TIMEOUTS,
             "crypto_enrichment",
             0.01,
         )

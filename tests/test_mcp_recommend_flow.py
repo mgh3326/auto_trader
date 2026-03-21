@@ -8,11 +8,13 @@ import pytest
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling import (
     analysis_recommend,
-    analysis_screen_core,
     analysis_screening,
     analysis_tool_handlers,
     portfolio_holdings,
 )
+from app.mcp_server.tooling.screening import crypto as screening_crypto
+from app.mcp_server.tooling.screening import kr as screening_kr
+from app.mcp_server.tooling.screening import us as screening_us
 from tests._mcp_recommend_support import _mock_empty_holdings, _mock_kr_sources
 from tests._mcp_tooling_support import build_tools
 
@@ -728,7 +730,7 @@ class TestRecommendStocksIntegration:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
@@ -1220,7 +1222,7 @@ class TestRecommendStocksIntegration:
             raise RuntimeError()
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_stock_all_cached",
             mock_fetch_stock_all_cached,
         )
@@ -1444,7 +1446,7 @@ class TestScreenCryptoBehavior:
             mock_fetch_top_traded_coins,
         )
 
-        result = await analysis_screen_core._screen_crypto(
+        result = await screening_crypto._screen_crypto(
             market="crypto",
             asset_type=None,
             category=None,
@@ -1498,7 +1500,7 @@ class TestScreenCryptoBehavior:
             mock_fetch_top_traded_coins,
         )
 
-        result = await analysis_screen_core._screen_crypto(
+        result = await screening_crypto._screen_crypto(
             market="crypto",
             asset_type=None,
             category=None,
@@ -1547,9 +1549,9 @@ class TestScreenUsBehavior:
                 "total": 2,
             }
 
-        monkeypatch.setattr(analysis_screen_core.yf, "screen", mock_screen)
+        monkeypatch.setattr(screening_us.yf, "screen", mock_screen)
 
-        result = await analysis_screen_core._screen_us(
+        result = await screening_us._screen_us(
             market="us",
             asset_type=None,
             category=None,

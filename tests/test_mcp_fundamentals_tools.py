@@ -37,6 +37,7 @@ from app.mcp_server.tooling import (
     market_data_indicators,
     shared,
 )
+from app.mcp_server.tooling.screening import enrichment as screening_enrichment
 from app.services import market_data as market_data_service
 from app.services import naver_finance
 from tests._mcp_tooling_support import (
@@ -3257,13 +3258,13 @@ class TestScreenEnrichmentHelpers:
             }
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_enrichment,
             "_fetch_screen_enrichment_kr",
             mock_kr,
             raising=False,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_enrichment,
             "_fetch_screen_enrichment_us",
             mock_us,
             raising=False,

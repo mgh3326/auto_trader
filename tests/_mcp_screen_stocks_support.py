@@ -18,6 +18,10 @@ from app.mcp_server.tooling import (
     fundamentals_sources_naver,
 )
 from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling.screening import crypto as screening_crypto
+from app.mcp_server.tooling.screening import enrichment as screening_enrichment
+from app.mcp_server.tooling.screening import kr as screening_kr
+from app.mcp_server.tooling.screening import us as screening_us
 from app.services import naver_finance
 from tests._mcp_tooling_support import _patch_runtime_attr
 
@@ -242,7 +246,7 @@ class TestScreenStocksKRRegression:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
 
@@ -275,7 +279,7 @@ class TestScreenStocksKRRegression:
             return []
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -323,10 +327,10 @@ class TestScreenStocksKRRegression:
             return []
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            screening_kr, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -361,10 +365,10 @@ class TestScreenStocksKRRegression:
             return mock_valuation_data
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
         )
@@ -406,10 +410,10 @@ class TestScreenStocksKRRegression:
             raise RuntimeError("KRX valuation temporary failure")
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
         )
@@ -487,7 +491,7 @@ class TestScreenStocksKR:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -521,7 +525,7 @@ class TestScreenStocksKR:
             return mock_krx_etfs
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            screening_kr, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -551,7 +555,7 @@ class TestScreenStocksKR:
             return mock_krx_etfs
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            screening_kr, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -668,7 +672,7 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
 
@@ -754,7 +758,7 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
 
@@ -823,11 +827,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
+            "app.mcp_server.tooling.screening.kr._screen_kr",
             fail_legacy_kr,
         )
 
@@ -885,11 +889,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            "app.mcp_server.tooling.screening.us._screen_us",
             fail_legacy_us,
         )
 
@@ -979,15 +983,15 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            "app.mcp_server.tooling.screening.us._screen_us",
             fail_legacy_us,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._fetch_screen_enrichment_us",
+            "app.mcp_server.tooling.screening.enrichment._fetch_screen_enrichment_us",
             fail_enrichment,
         )
 
@@ -1035,7 +1039,7 @@ class TestScreenStocksTvScreenerContract:
             }
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_enrichment,
             "_fetch_screen_enrichment_us",
             fetch_enrichment,
         )
@@ -1097,7 +1101,7 @@ class TestScreenStocksTvScreenerContract:
             }
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_enrichment,
             "_fetch_screen_enrichment_us",
             fetch_enrichment,
         )
@@ -1177,13 +1181,13 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_us,
             "_screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
-        monkeypatch.setattr(analysis_screen_core, "_screen_us", fail_legacy_us)
+        monkeypatch.setattr(screening_us, "_screen_us", fail_legacy_us)
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_enrichment,
             "_fetch_screen_enrichment_us",
             fail_enrichment,
         )
@@ -1256,13 +1260,13 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_us,
             "_screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
-        monkeypatch.setattr(analysis_screen_core, "_screen_us", fail_legacy_us)
+        monkeypatch.setattr(screening_us, "_screen_us", fail_legacy_us)
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_enrichment,
             "_fetch_screen_enrichment_us",
             fail_enrichment,
         )
@@ -1323,11 +1327,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
+            "app.mcp_server.tooling.screening.kr._screen_kr",
             fail_legacy_kr,
         )
 
@@ -1387,11 +1391,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            "app.mcp_server.tooling.screening.us._screen_us",
             fail_legacy_us,
         )
 
@@ -1461,11 +1465,11 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            "app.mcp_server.tooling.screening.us._screen_us",
             mock_screen_us,
         )
 
@@ -1514,7 +1518,7 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
 
@@ -1549,7 +1553,7 @@ class TestScreenStocksTvScreenerContract:
 
         monkeypatch.setattr(yf, "screen", mock_yfinance_screen)
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             fail_if_called,
         )
 
@@ -1597,11 +1601,11 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             fail_if_called,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
+            "app.mcp_server.tooling.screening.kr._screen_kr",
             mock_screen_kr,
         )
 
@@ -1672,17 +1676,27 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(
-        analysis_screen_core,
+        screening_crypto,
         "get_upbit_warning_markets",
         mock_get_upbit_warning_markets,
     )
     monkeypatch.setattr(
-        analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+        screening_crypto._CRYPTO_MARKET_CAP_CACHE,
         "get",
         mock_market_cap_cache_get,
     )
     monkeypatch.setattr(
-        analysis_screen_core,
+        screening_kr,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv_for_indicators,
+    )
+    monkeypatch.setattr(
+        screening_us,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv_for_indicators,
+    )
+    monkeypatch.setattr(
+        screening_crypto,
         "_fetch_ohlcv_for_indicators",
         mock_fetch_ohlcv_for_indicators,
     )
@@ -1762,12 +1776,12 @@ class TestScreenStocksCrypto:
             )
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -1777,22 +1791,22 @@ class TestScreenStocksCrypto:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_fetch_ohlcv_for_indicators",
             mock_fetch_ohlcv,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_market_display_names",
             AsyncMock(
                 return_value={
@@ -2068,13 +2082,13 @@ class TestScreenStocksFundamentalsExpansion:
             }
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_us,
             "_screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
-        monkeypatch.setattr(analysis_screen_core, "_screen_us", fail_legacy_us)
+        monkeypatch.setattr(screening_us, "_screen_us", fail_legacy_us)
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_enrichment,
             "_fetch_screen_enrichment_us",
             mock_fetch_screen_enrichment_us,
         )
@@ -2192,13 +2206,13 @@ class TestScreenStocksFundamentalsExpansion:
             return enrichment_map[symbol]
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "_screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
-        monkeypatch.setattr(analysis_screen_core, "_screen_kr", fail_legacy_kr)
+        monkeypatch.setattr(screening_kr, "_screen_kr", fail_legacy_kr)
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_enrichment,
             "_fetch_screen_enrichment_kr",
             mock_fetch_screen_enrichment_kr,
         )
@@ -2287,11 +2301,11 @@ class TestScreenStocksFundamentalsExpansion:
             }
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "_screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
-        monkeypatch.setattr(analysis_screen_core, "_screen_kr", fail_legacy_kr)
+        monkeypatch.setattr(screening_kr, "_screen_kr", fail_legacy_kr)
         monkeypatch.setattr(
             fundamentals_sources_naver,
             "_fetch_company_profile_finnhub",
@@ -2358,11 +2372,11 @@ class TestScreenStocksFundamentalsExpansion:
             raise RuntimeError(f"opinions unavailable for {symbol}")
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "_screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
-        monkeypatch.setattr(analysis_screen_core, "_screen_kr", fail_legacy_kr)
+        monkeypatch.setattr(screening_kr, "_screen_kr", fail_legacy_kr)
         monkeypatch.setattr(
             fundamentals_sources_naver,
             "_fetch_company_profile_finnhub",
@@ -2503,7 +2517,7 @@ class TestScreenStocksFundamentalsExpansion:
     async def test_kr_sort_by_rsi_succeeds(self, mock_krx_stocks, monkeypatch):
         """Test KR market allows sort_by='rsi' (tvscreener provides RSI)."""
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_stock_all_cached",
             AsyncMock(return_value=mock_krx_stocks),
         )
@@ -2534,17 +2548,17 @@ class TestScreenStocksFundamentalsExpansion:
             }
 
         monkeypatch.setattr(
-            analysis_screen_core, "_screen_kr_via_tvscreener", mock_tvscreener_kr
+            screening_kr, "_screen_kr_via_tvscreener", mock_tvscreener_kr
         )
 
         # Mock capability check to allow tvscreener path
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "_can_use_tvscreener_stock_path",
             lambda **kwargs: True,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "_get_tvscreener_stock_capability_snapshot",
             AsyncMock(return_value=object()),
         )
@@ -2586,15 +2600,15 @@ class TestScreenStocksFundamentalsExpansion:
             }
 
         monkeypatch.setattr(
-            analysis_screen_core, "_screen_us_via_tvscreener", mock_tvscreener_us
+            screening_us, "_screen_us_via_tvscreener", mock_tvscreener_us
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_us,
             "_can_use_tvscreener_stock_path",
             lambda **kwargs: True,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_us,
             "_get_tvscreener_stock_capability_snapshot",
             AsyncMock(return_value=object()),
         )
@@ -2616,7 +2630,7 @@ class TestScreenStocksFundamentalsExpansion:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -2661,7 +2675,7 @@ class TestScreenStocksFundamentalsExpansion:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_enrich_crypto_indicators",
             enrich_mock,
         )
@@ -2713,7 +2727,7 @@ class TestScreenStocksFundamentalsExpansion:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_enrich_crypto_indicators",
             enrich_mock,
         )
@@ -2779,12 +2793,12 @@ class TestScreenStocksFundamentalsExpansion:
             }
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -2794,12 +2808,12 @@ class TestScreenStocksFundamentalsExpansion:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
@@ -2872,12 +2886,12 @@ class TestScreenStocksFundamentalsExpansion:
             }
 
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_import_tvscreener",
             lambda: fake_crypto_tvscreener_module,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "TvScreenerService",
             lambda timeout=30.0: tv_service,
         )
@@ -2887,12 +2901,12 @@ class TestScreenStocksFundamentalsExpansion:
             mock_fetch_multiple_tickers,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             mock_warning_markets,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
@@ -2949,7 +2963,7 @@ class TestScreenStocksFundamentalsExpansion:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "get_upbit_warning_markets",
             warning_markets_mock,
         )
@@ -3151,7 +3165,7 @@ class TestScreenStocksFundamentalsExpansion:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
@@ -3209,7 +3223,7 @@ class TestScreenStocksFundamentalsExpansion:
             mock_fetch_top_traded_coins,
         )
         monkeypatch.setattr(
-            analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+            screening_crypto._CRYPTO_MARKET_CAP_CACHE,
             "get",
             mock_market_cap_cache_get,
         )
@@ -3268,17 +3282,17 @@ class TestScreenStocksRsiLogging:
             return {"14": 42.0}
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
-        monkeypatch.setattr(analysis_screen_core, "_calculate_rsi", mock_calculate_rsi)
+        monkeypatch.setattr(screening_kr, "_calculate_rsi", mock_calculate_rsi)
 
         result = await analysis_screen_core._screen_kr(
             market="kospi",
@@ -3317,7 +3331,7 @@ class TestScreenStocksRsiLogging:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "compute_crypto_realtime_rsi_map",
             realtime_rsi_mock,
         )
@@ -3367,15 +3381,15 @@ class TestScreenStocksRsiLogging:
             raise RuntimeError("boom-kr")
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
         caplog.set_level(logging.ERROR)
@@ -3438,15 +3452,15 @@ class TestScreenStocksRsiLogging:
             )
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
         result = await analysis_screen_core._screen_kr(
@@ -3506,7 +3520,7 @@ class TestScreenStocksRsiLogging:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_enrich_crypto_indicators",
             mock_enrich_crypto_indicators,
         )
@@ -3557,15 +3571,15 @@ class TestScreenStocksRsiLogging:
             raise RateLimitExceededError("KIS rate limit retries exhausted")
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_kr,
             "fetch_valuation_all_cached",
             mock_fetch_valuation_all_cached,
         )
         monkeypatch.setattr(
-            analysis_screen_core, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
+            screening_kr, "_fetch_ohlcv_for_indicators", mock_fetch_ohlcv
         )
 
         result = await analysis_screen_core._screen_kr(
@@ -3618,7 +3632,7 @@ class TestScreenStocksRsiLogging:
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
         monkeypatch.setattr(
-            analysis_screen_core,
+            screening_crypto,
             "_enrich_crypto_indicators",
             mock_enrich_crypto_indicators,
         )
@@ -3665,7 +3679,7 @@ class TestScreenStocksRsiLogging:
         monkeypatch.setattr(
             upbit_service, "fetch_top_traded_coins", mock_fetch_top_traded_coins
         )
-        monkeypatch.setattr(analysis_screen_core.asyncio, "gather", mock_gather)
+        monkeypatch.setattr(screening_crypto.asyncio, "gather", mock_gather)
 
         caplog.set_level(logging.WARNING)
         tools = build_tools()
@@ -3700,7 +3714,7 @@ class TestScreenStocksFilters:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -3793,7 +3807,7 @@ class TestScreenStocksFilters:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         # Track whether Naver Finance valuation queries are called (they shouldn't be)
@@ -3843,7 +3857,7 @@ class TestScreenStocksSorting:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -3932,7 +3946,7 @@ class TestScreenStocksLimit:
             return mock_krx_stocks * 5
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -3971,7 +3985,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -4006,7 +4020,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -4041,7 +4055,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -4074,7 +4088,7 @@ class TestScreenStocksDividendYieldNormalization:
             return stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -4120,7 +4134,7 @@ class TestScreenStocksDividendYieldNormalization:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -4154,7 +4168,7 @@ class TestScreenStocksPhase2Spec:
             return mock_krx_etfs
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            screening_kr, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -4194,7 +4208,7 @@ class TestScreenStocksPhase2Spec:
             return mock_krx_etfs
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_etf_all_cached", mock_fetch_etf_all_cached
+            screening_kr, "fetch_etf_all_cached", mock_fetch_etf_all_cached
         )
 
         tools = build_tools()
@@ -4253,7 +4267,7 @@ class TestScreenStocksPhase2Spec:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
 
@@ -4348,7 +4362,7 @@ class TestScreenStocksPhase2Spec:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
 
@@ -4402,7 +4416,7 @@ class TestScreenStocksPhase2Spec:
             return mock_krx_stocks
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()
@@ -4436,7 +4450,7 @@ class TestScreenStocksPhase2Spec:
             return []
 
         monkeypatch.setattr(
-            analysis_screen_core, "fetch_stock_all_cached", mock_fetch_stock_all_cached
+            screening_kr, "fetch_stock_all_cached", mock_fetch_stock_all_cached
         )
 
         tools = build_tools()

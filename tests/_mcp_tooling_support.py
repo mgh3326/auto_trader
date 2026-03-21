@@ -43,6 +43,9 @@ from app.mcp_server.tooling import (
     portfolio_holdings,
 )
 from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling.screening import crypto as screening_crypto
+from app.mcp_server.tooling.screening import kr as screening_kr
+from app.mcp_server.tooling.screening import us as screening_us
 
 
 class DummyMCP:
@@ -154,6 +157,9 @@ _PATCH_MODULES = (
     orders_modify_cancel,
     portfolio_cash,
     portfolio_holdings,
+    screening_kr,
+    screening_us,
+    screening_crypto,
 )
 
 
@@ -330,17 +336,27 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(
-        analysis_screen_core,
+        screening_crypto,
         "get_upbit_warning_markets",
         mock_get_upbit_warning_markets,
     )
     monkeypatch.setattr(
-        analysis_screen_core._CRYPTO_MARKET_CAP_CACHE,
+        screening_crypto._CRYPTO_MARKET_CAP_CACHE,
         "get",
         mock_market_cap_cache_get,
     )
     monkeypatch.setattr(
-        analysis_screen_core,
+        screening_crypto,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv_for_indicators,
+    )
+    monkeypatch.setattr(
+        screening_kr,
+        "_fetch_ohlcv_for_indicators",
+        mock_fetch_ohlcv_for_indicators,
+    )
+    monkeypatch.setattr(
+        screening_us,
         "_fetch_ohlcv_for_indicators",
         mock_fetch_ohlcv_for_indicators,
     )

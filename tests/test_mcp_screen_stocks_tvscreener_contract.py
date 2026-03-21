@@ -41,7 +41,7 @@ def _install_stock_capabilities(
         return _stock_capability_snapshot(normalized_market, **statuses)
 
     monkeypatch.setattr(
-        "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+        "app.services.tvscreener_service.TvScreenerService.get_stock_capabilities",
         mock_get_stock_capabilities,
         raising=False,
     )
@@ -91,7 +91,7 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
         _install_stock_capabilities(monkeypatch)
@@ -178,7 +178,7 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         _install_stock_capabilities(monkeypatch)
@@ -248,11 +248,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
+            "app.mcp_server.tooling.screening.kr._screen_kr",
             fail_legacy_kr,
         )
         _install_stock_capabilities(monkeypatch)
@@ -311,11 +311,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            "app.mcp_server.tooling.screening.us._screen_us",
             fail_legacy_us,
         )
         _install_stock_capabilities(monkeypatch)
@@ -375,11 +375,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
+            "app.mcp_server.tooling.screening.kr._screen_kr",
             fail_legacy_kr,
         )
         _install_stock_capabilities(monkeypatch)
@@ -440,11 +440,11 @@ class TestScreenStocksTvScreenerContract:
             )
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            "app.mcp_server.tooling.screening.us._screen_us",
             fail_legacy_us,
         )
         _install_stock_capabilities(monkeypatch)
@@ -515,11 +515,11 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            "app.mcp_server.tooling.screening.us._screen_us",
             mock_screen_us,
         )
         _install_stock_capabilities(monkeypatch)
@@ -569,7 +569,7 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
         _install_stock_capabilities(monkeypatch)
@@ -632,16 +632,16 @@ class TestScreenStocksTvScreenerContract:
             raise AssertionError("legacy US path should not run when sector is usable")
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+            "app.services.tvscreener_service.TvScreenerService.get_stock_capabilities",
             mock_get_stock_capabilities,
             raising=False,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             mock_screen_us_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            "app.mcp_server.tooling.screening.us._screen_us",
             fail_legacy_us,
         )
 
@@ -710,16 +710,16 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+            "app.services.tvscreener_service.TvScreenerService.get_stock_capabilities",
             mock_get_stock_capabilities,
             raising=False,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             fail_tvscreener_us,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            "app.mcp_server.tooling.screening.us._screen_us",
             mock_screen_us,
         )
 
@@ -788,16 +788,16 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+            "app.services.tvscreener_service.TvScreenerService.get_stock_capabilities",
             mock_get_stock_capabilities,
             raising=False,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us_via_tvscreener",
+            "app.mcp_server.tooling.screening.us._screen_us_via_tvscreener",
             fail_tvscreener_us,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_us",
+            "app.mcp_server.tooling.screening.us._screen_us",
             mock_screen_us,
         )
 
@@ -845,11 +845,11 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             fail_if_called,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
+            "app.mcp_server.tooling.screening.kr._screen_kr",
             mock_screen_kr,
         )
 
@@ -910,16 +910,16 @@ class TestScreenStocksTvScreenerContract:
             raise AssertionError("legacy KR path should not run when capabilities pass")
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+            "app.services.tvscreener_service.TvScreenerService.get_stock_capabilities",
             mock_get_stock_capabilities,
             raising=False,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             mock_screen_kr_via_tvscreener,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
+            "app.mcp_server.tooling.screening.kr._screen_kr",
             fail_legacy_kr,
         )
 
@@ -986,16 +986,16 @@ class TestScreenStocksTvScreenerContract:
             }
 
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core.TvScreenerService.get_stock_capabilities",
+            "app.services.tvscreener_service.TvScreenerService.get_stock_capabilities",
             mock_get_stock_capabilities,
             raising=False,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr_via_tvscreener",
+            "app.mcp_server.tooling.screening.kr._screen_kr_via_tvscreener",
             fail_tvscreener_kr,
         )
         monkeypatch.setattr(
-            "app.mcp_server.tooling.analysis_screen_core._screen_kr",
+            "app.mcp_server.tooling.screening.kr._screen_kr",
             mock_screen_kr,
         )
 
