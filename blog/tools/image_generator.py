@@ -85,7 +85,7 @@ class BlogImageGenerator(ABC):
         converter = SVGConverter(self.images_dir)
 
         files = []
-        for name, width, height, _ in self.get_images():
+        for name, width, _height, _ in self.get_images():
             svg_name = f"{self.prefix}_{name}.svg"
             png_name = f"{self.prefix}_{name}.png"
             files.append((svg_name, png_name, width))
@@ -103,10 +103,8 @@ class BlogImageGenerator(ABC):
         Args:
             convert_png: PNG 변환 여부 (기본값: True)
         """
-        # SVG 생성
-        svg_paths = self.generate_svgs()
+        self.generate_svgs()
 
-        # PNG 변환
         if convert_png:
             asyncio.run(self.convert_to_png())
 
@@ -123,93 +121,6 @@ class BlogImageGenerator(ABC):
             else:
                 print(f"  • {svg_name} ({width}x{height})")
 
-    # ========== SVG 헬퍼 메서드 ==========
 
-    @staticmethod
-    def svg_header(width: int, height: int, defs: str = "") -> str:
-        """SVG 헤더 생성"""
-        return f'''<?xml version="1.0" encoding="UTF-8"?>
-<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
-            <polygon points="0 0, 10 3.5, 0 7" fill="#666666" />
-        </marker>
-        {defs}
-    </defs>
-'''
-
-    @staticmethod
-    def svg_footer() -> str:
-        """SVG 푸터"""
-        return "</svg>"
-
-    @staticmethod
-    def gradient_defs(gradient_id: str, colors: list[tuple[int, str]]) -> str:
-        """그라데이션 정의 생성"""
-        stops = "\n".join(
-            f'<stop offset="{offset}%" style="stop-color:{color};stop-opacity:1" />'
-            for offset, color in colors
-        )
-        return f'''
-        <linearGradient id="{gradient_id}" x1="0%" y1="0%" x2="100%" y2="100%">
-            {stops}
-        </linearGradient>'''
-
-    @staticmethod
-    def rect(
-        x: int,
-        y: int,
-        width: int,
-        height: int,
-        fill: str = "#ffffff",
-        stroke: str = "#333333",
-        stroke_width: int = 2,
-        rx: int = 8,
-    ) -> str:
-        """사각형 생성"""
-        return f'<rect x="{x}" y="{y}" width="{width}" height="{height}" fill="{fill}" stroke="{stroke}" stroke-width="{stroke_width}" rx="{rx}"/>'
-
-    @staticmethod
-    def text(
-        x: int,
-        y: int,
-        content: str,
-        font_size: int = 14,
-        fill: str = "#333333",
-        anchor: str = "start",
-        weight: str = "normal",
-        font_family: str = "Arial, sans-serif",
-    ) -> str:
-        """텍스트 생성"""
-        return f'<text x="{x}" y="{y}" font-family="{font_family}" font-size="{font_size}" font-weight="{weight}" fill="{fill}" text-anchor="{anchor}">{content}</text>'
-
-    @staticmethod
-    def line(
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        stroke: str = "#666666",
-        stroke_width: int = 2,
-        arrow: bool = False,
-    ) -> str:
-        """선 생성"""
-        marker = ' marker-end="url(#arrowhead)"' if arrow else ""
-        return f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{stroke}" stroke-width="{stroke_width}"{marker}/>'
-
-    @staticmethod
-    def circle(
-        cx: int,
-        cy: int,
-        r: int,
-        fill: str = "#ffffff",
-        stroke: str = "#333333",
-        stroke_width: int = 2,
-    ) -> str:
-        """원 생성"""
-        return f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="{fill}" stroke="{stroke}" stroke-width="{stroke_width}"/>'
-
-
-# ========== 썸네일 템플릿 (moved to components/thumbnail.py) ==========
 # Re-export for backward compatibility — existing scripts import from here
 from blog.tools.components.thumbnail import ThumbnailTemplate  # noqa: F401, E402
