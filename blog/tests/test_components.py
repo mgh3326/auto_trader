@@ -173,3 +173,77 @@ class TestThumbnailTemplate:
         )
         assert "📈" in svg
         assert "Stock" in svg
+
+
+class TestInfoCard:
+    """Tests for InfoCard component."""
+
+    def test_create_basic_card(self) -> None:
+        from blog.tools.components.card import InfoCard
+
+        svg = InfoCard.create(
+            x=0, y=0, width=300, height=160,
+            title="PER", value="30.38",
+            color="#4CAF50",
+        )
+        assert "<rect" in svg
+        assert "30.38" in svg
+        assert "PER" in svg
+
+    def test_card_with_description(self) -> None:
+        from blog.tools.components.card import InfoCard
+
+        svg = InfoCard.create(
+            x=100, y=200, width=280, height=180,
+            title="RSI", value="57.16",
+            description="중립 구간",
+            color="#2196F3",
+        )
+        assert "57.16" in svg
+        assert "중립 구간" in svg
+        assert "RSI" in svg
+
+    def test_card_highlight_mode(self) -> None:
+        from blog.tools.components.card import InfoCard
+
+        svg_normal = InfoCard.create(
+            x=0, y=0, width=300, height=160,
+            title="Test", value="100",
+        )
+        svg_highlight = InfoCard.create(
+            x=0, y=0, width=300, height=160,
+            title="Test", value="100",
+            highlight=True,
+        )
+        # Highlighted card should have a thicker stroke or different style
+        assert svg_normal != svg_highlight
+
+    def test_card_position_offset(self) -> None:
+        from blog.tools.components.card import InfoCard
+
+        svg = InfoCard.create(x=500, y=300, width=200, height=150, title="T", value="V")
+        # The outermost rect should be positioned at (500, 300)
+        assert 'x="500"' in svg
+        assert 'y="300"' in svg
+
+    def test_card_escapes_xml(self) -> None:
+        from blog.tools.components.card import InfoCard
+
+        svg = InfoCard.create(
+            x=0, y=0, width=300, height=160,
+            title="A & B", value="<100>",
+        )
+        assert "&amp;" in svg
+        assert "&lt;100&gt;" in svg
+
+    def test_card_sub_items(self) -> None:
+        """InfoCard with multiple sub-items (e.g., indicator details)."""
+        from blog.tools.components.card import InfoCard
+
+        svg = InfoCard.create(
+            x=0, y=0, width=300, height=200,
+            title="MACD", value="-527",
+            sub_items=[("Signal", "매도 신호"), ("Histogram", "음수")],
+        )
+        assert "Signal" in svg
+        assert "매도 신호" in svg
