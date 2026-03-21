@@ -247,3 +247,72 @@ class TestInfoCard:
         )
         assert "Signal" in svg
         assert "매도 신호" in svg
+
+
+class TestBarChart:
+    """Tests for BarChart component."""
+
+    def test_vertical_bar_chart(self) -> None:
+        from blog.tools.components.bar_chart import BarChart
+
+        svg = BarChart.create(
+            x=60, y=100, width=600, height=300,
+            data=[
+                ("2021", 51_633, "#4CAF50"),
+                ("2022", 43_376, "#4CAF50"),
+                ("2023", 6_567, "#e74c3c"),
+            ],
+            direction="vertical",
+        )
+        assert "<rect" in svg
+        assert "2021" in svg
+        assert "2023" in svg
+
+    def test_horizontal_bar_chart(self) -> None:
+        from blog.tools.components.bar_chart import BarChart
+
+        svg = BarChart.create(
+            x=60, y=100, width=500, height=200,
+            data=[
+                ("외국인", -15234, "#e74c3c"),
+                ("기관", 8721, "#4CAF50"),
+                ("개인", 6513, "#2196F3"),
+            ],
+            direction="horizontal",
+        )
+        assert "외국인" in svg
+        assert "기관" in svg
+
+    def test_bar_chart_with_labels(self) -> None:
+        from blog.tools.components.bar_chart import BarChart
+
+        svg = BarChart.create(
+            x=0, y=0, width=400, height=200,
+            data=[("A", 100, "#ccc"), ("B", 200, "#ddd")],
+            direction="vertical",
+            show_labels=True,
+        )
+        assert "A" in svg
+        assert "B" in svg
+
+    def test_bar_chart_with_title(self) -> None:
+        from blog.tools.components.bar_chart import BarChart
+
+        svg = BarChart.create(
+            x=0, y=0, width=400, height=200,
+            data=[("X", 50, "#aaa")],
+            direction="vertical",
+            chart_title="매출 추이",
+        )
+        assert "매출 추이" in svg
+
+    def test_bar_chart_empty_data(self) -> None:
+        from blog.tools.components.bar_chart import BarChart
+
+        svg = BarChart.create(
+            x=0, y=0, width=400, height=200,
+            data=[],
+            direction="vertical",
+        )
+        # Should return valid SVG fragment (just the axes/frame, no bars)
+        assert isinstance(svg, str)
