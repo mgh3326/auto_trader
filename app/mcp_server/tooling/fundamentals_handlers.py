@@ -669,8 +669,9 @@ def _register_fundamentals_tools_impl(mcp: FastMCP) -> None:
     @mcp.tool(
         name="get_short_interest",
         description=(
-            "Get short selling data for a Korean stock. Returns daily short selling "
-            "volume, amount, and ratio. Korean stocks only."
+            "Get short selling data for a Korean stock. Accepts only 6-digit "
+            "Korean equity codes like '005930'. US tickers and crypto symbols "
+            "are not supported."
         ),
     )
     async def get_short_interest(

@@ -62,6 +62,10 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR intraday response rows add `session` and `venues` fields
 - `get_indicators(symbol, indicators, market=None)`
 - `get_investment_opinions(symbol, limit=10, market=None)`
+- `get_short_interest(symbol, days=20)`
+  - 6자리 KR 종목코드만 지원 (예: `005930`)
+  - US ticker (`AAPL`, `SMCI`) 와 crypto symbol (`KRW-BTC`) 은 지원하지 않음
+  - `days` 는 1~60 범위로 cap 됨
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50)`
   - `status="pending"` 만 symbol 없이 호출 가능
