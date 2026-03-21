@@ -316,3 +316,125 @@ class TestBarChart:
         )
         # Should return valid SVG fragment (just the axes/frame, no bars)
         assert isinstance(svg, str)
+
+
+class TestComparisonTable:
+    """Tests for ComparisonTable component."""
+
+    def test_basic_table(self) -> None:
+        from blog.tools.components.table import ComparisonTable
+
+        svg = ComparisonTable.create(
+            x=60, y=100, width=800, height=300,
+            headers=["기업", "시총", "PER", "PBR"],
+            rows=[
+                ["삼성전자", "350조", "30.38", "1.82"],
+                ["SK하이닉스", "140조", "25.12", "2.10"],
+            ],
+        )
+        assert "기업" in svg
+        assert "삼성전자" in svg
+        assert "SK하이닉스" in svg
+        assert "<line" in svg  # Row separators
+
+    def test_table_with_highlight_row(self) -> None:
+        from blog.tools.components.table import ComparisonTable
+
+        svg = ComparisonTable.create(
+            x=0, y=0, width=600, height=200,
+            headers=["Name", "Value"],
+            rows=[["A", "1"], ["B", "2"]],
+            highlight_row=0,
+        )
+        # First data row should have a highlight background
+        assert svg.count("<rect") >= 2  # At least header bg + highlight bg
+
+    def test_table_with_title(self) -> None:
+        from blog.tools.components.table import ComparisonTable
+
+        svg = ComparisonTable.create(
+            x=0, y=0, width=600, height=200,
+            headers=["H1", "H2"],
+            rows=[["a", "b"]],
+            table_title="비교 테이블",
+        )
+        assert "비교 테이블" in svg
+
+
+class TestEventTimeline:
+    """Tests for EventTimeline component."""
+
+    def test_basic_timeline(self) -> None:
+        from blog.tools.components.timeline import EventTimeline
+
+        svg = EventTimeline.create(
+            x=60, y=100, width=800, height=200,
+            events=[
+                ("2024.01", "52주 신고가", "73,400", "#4CAF50", "above"),
+                ("2024.06", "실적 쇼크", "-35%", "#e74c3c", "below"),
+                ("2024.11", "반등 시작", "53,800", "#2196F3", "above"),
+            ],
+        )
+        assert "52주 신고가" in svg
+        assert "실적 쇼크" in svg
+        assert "<line" in svg  # Timeline axis
+        assert "<circle" in svg  # Event markers
+
+
+class TestFlowDiagram:
+    """Tests for FlowDiagram component."""
+
+    def test_basic_flow(self) -> None:
+        from blog.tools.components.flow_diagram import FlowDiagram
+
+        svg = FlowDiagram.create(
+            nodes=[
+                (100, 100, 200, 80, "FastAPI", "#2196F3"),
+                (400, 100, 200, 80, "Celery", "#FF9800"),
+                (700, 100, 200, 80, "Redis", "#F44336"),
+            ],
+            edges=[
+                (0, 1, "task.delay()"),
+                (1, 2, "broker"),
+            ],
+        )
+        assert "FastAPI" in svg
+        assert "Celery" in svg
+        assert "task.delay()" in svg
+        assert "arrowhead" in svg or "marker-end" in svg
+
+    def test_flow_empty_edges(self) -> None:
+        from blog.tools.components.flow_diagram import FlowDiagram
+
+        svg = FlowDiagram.create(
+            nodes=[(0, 0, 100, 50, "Solo", "#ccc")],
+            edges=[],
+        )
+        assert "Solo" in svg
+
+
+class TestCodeBlock:
+    """Tests for CodeBlock component."""
+
+    def test_basic_code_block(self) -> None:
+        from blog.tools.components.code_block import CodeBlock
+
+        svg = CodeBlock.create(
+            x=60, y=100, width=600, height=200,
+            code='def hello():\n    return "world"',
+            language="python",
+        )
+        assert "def hello():" in svg
+        assert 'return "world"' in svg or "return &quot;world&quot;" in svg
+        # Should have a dark background
+        assert "#" in svg
+
+    def test_code_block_escapes_special_chars(self) -> None:
+        from blog.tools.components.code_block import CodeBlock
+
+        svg = CodeBlock.create(
+            x=0, y=0, width=400, height=100,
+            code='if a < b && c > d:',
+        )
+        assert "&lt;" in svg
+        assert "&amp;" in svg
