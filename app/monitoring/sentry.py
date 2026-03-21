@@ -95,37 +95,58 @@ def _is_fastmcp_tool_validation_error(
     return message.startswith("Error validating tool ")
 
 
+# Rules for expected MCP argument noise (client misuse, not server failures)
+_EXPECTED_MCP_ARGUMENT_NOISE_RULES = (
+    {
+        "tool_name": "get_order_history",
+        "message_snippet": "symbol is required when status=",
+        "log_prefix": "Error calling tool 'get_order_history'",
+    },
+    {
+        "tool_name": "get_short_interest",
+        "message_snippet": "Short selling data is only available for Korean stocks",
+        "log_prefix": "Error calling tool 'get_short_interest'",
+    },
+)
+
+
 def _is_expected_mcp_argument_noise(
     logger_name: str | None,
     message: str | None,
     event: Event | None = None,
 ) -> bool:
-    expected_snippet = "symbol is required when status="
-    is_get_order_history_call = False
-
+    # Check log path first (fastmcp.server.server logger)
     if logger_name == "fastmcp.server.server" and message:
-        if (
-            message.startswith("Error calling tool 'get_order_history'")
-            and expected_snippet in message
-        ):
-            return True
+        for rule in _EXPECTED_MCP_ARGUMENT_NOISE_RULES:
+            if (
+                message.startswith(rule["log_prefix"])
+                and rule["message_snippet"] in message
+            ):
+                return True
 
     if not event:
         return False
 
-    tags = event.get("tags", {})
-    if isinstance(tags, dict) and tags.get("mcp.tool.name") == "get_order_history":
-        is_get_order_history_call = True
+    # Collect all possible tool name indicators from the event
+    tool_names: set[str] = set()
 
+    # From tags
+    tags = event.get("tags", {})
+    if isinstance(tags, dict):
+        tag_tool_name = tags.get("mcp.tool.name")
+        if isinstance(tag_tool_name, str):
+            tool_names.add(tag_tool_name)
+
+    # From contexts
     contexts = event.get("contexts", {})
     if isinstance(contexts, dict):
         mcp_tool_call = contexts.get("mcp_tool_call", {})
-        if (
-            isinstance(mcp_tool_call, dict)
-            and mcp_tool_call.get("tool_name") == "get_order_history"
-        ):
-            is_get_order_history_call = True
+        if isinstance(mcp_tool_call, dict):
+            ctx_tool_name = mcp_tool_call.get("tool_name")
+            if isinstance(ctx_tool_name, str):
+                tool_names.add(ctx_tool_name)
 
+    # From exception values
     values = event.get("exception", {}).get("values", [])
     if isinstance(values, list):
         for value in values:
@@ -137,10 +158,23 @@ def _is_expected_mcp_argument_noise(
                 exc_type in {"ToolError", "ValueError"} and isinstance(exc_value, str)
             ):
                 continue
-            if "get_order_history" in exc_value:
-                is_get_order_history_call = True
-            if is_get_order_history_call and expected_snippet in exc_value:
-                return True
+            # Extract tool name from exception value (e.g., "Error calling tool 'X': ...")
+            for rule in _EXPECTED_MCP_ARGUMENT_NOISE_RULES:
+                if rule["log_prefix"] in exc_value:
+                    tool_names.add(rule["tool_name"])
+
+    # Check if any matched tool has the expected message snippet
+    for rule in _EXPECTED_MCP_ARGUMENT_NOISE_RULES:
+        if rule["tool_name"] not in tool_names:
+            continue
+        # Check exception values for message snippet
+        if isinstance(values, list):
+            for value in values:
+                if not isinstance(value, dict):
+                    continue
+                exc_value = value.get("value")
+                if isinstance(exc_value, str) and rule["message_snippet"] in exc_value:
+                    return True
 
     return False
 
