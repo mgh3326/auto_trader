@@ -8,16 +8,19 @@ Python 3.14 업그레이드 블로그 이미지 생성기
 
 import sys
 from pathlib import Path
+from typing import override
 
 # 모듈 경로 추가
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from blog.tools.image_generator import BlogImageGenerator, ThumbnailTemplate
+from blog.tools.components.thumbnail import ThumbnailTemplate
+from blog.tools.image_generator import BlogImageGenerator
 
 
 class Python314Images(BlogImageGenerator):
     """Python 3.14 업그레이드 블로그 이미지 생성기"""
 
+    @override
     def get_images(self):
         return [
             ("thumbnail", 1200, 630, self.create_thumbnail),
@@ -44,153 +47,361 @@ class Python314Images(BlogImageGenerator):
 
     def create_version_timeline(self) -> str:
         """Python 버전 타임라인 (1200x450)"""
-        return """<?xml version="1.0" encoding="UTF-8"?>
-<svg width="1200" height="450" xmlns="http://www.w3.org/2000/svg">
-    <!-- 배경 -->
-    <rect width="1200" height="450" fill="#ffffff"/>
+        from blog.tools.components.base import SVGComponent
 
-    <!-- 제목 -->
-    <text x="600" y="45" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="#1a1a2e" text-anchor="middle">
-        Python 버전별 릴리즈 및 EOL 타임라인
-    </text>
+        year_markers = [
+            (150, "2022"),
+            (300, "2023"),
+            (450, "2024"),
+            (600, "2025"),
+            (750, "2026"),
+            (900, "2027"),
+            (1050, "2028+"),
+        ]
+        versions = [
+            (
+                150,
+                90,
+                600,
+                35,
+                "#FFCDD2",
+                "#E57373",
+                2,
+                170,
+                115,
+                16,
+                "#C62828",
+                "Python 3.11",
+                450,
+                "2022.10 Release → 2027.10 EOL",
+                (750, 107, 8, "#E57373", 765, 112, "#C62828", "EOL"),
+                None,
+                None,
+            ),
+            (
+                300,
+                140,
+                750,
+                35,
+                "#FFE0B2",
+                "#FFB74D",
+                2,
+                320,
+                165,
+                16,
+                "#EF6C00",
+                "Python 3.12",
+                600,
+                "2023.10 Release → 2028.10 EOL",
+                (1050, 157, 8, "#FFB74D", 1065, 162, "#EF6C00", "EOL"),
+                None,
+                None,
+            ),
+            (
+                450,
+                190,
+                650,
+                35,
+                "#C8E6C9",
+                "#81C784",
+                2,
+                470,
+                215,
+                16,
+                "#2E7D32",
+                "Python 3.13",
+                700,
+                "2024.10 Release → 2029.10 EOL",
+                None,
+                None,
+                None,
+            ),
+            (
+                600,
+                240,
+                500,
+                45,
+                "#FFD43B",
+                "#3776AB",
+                3,
+                620,
+                270,
+                18,
+                "#3776AB",
+                "Python 3.14",
+                None,
+                None,
+                None,
+                (750, 270, 14, "#333333", '"Pi Release"'),
+                (900, 270, 12, "#666666", "2025.10 → 2030.10"),
+            ),
+        ]
 
-    <!-- 타임라인 축 -->
-    <line x1="100" y1="350" x2="1100" y2="350" stroke="#666666" stroke-width="3"/>
+        svg = SVGComponent.header(1200, 450)
+        svg += SVGComponent.background(1200, 450, fill="#ffffff")
+        svg += SVGComponent.title(1200, "Python 버전별 릴리즈 및 EOL 타임라인")
+        svg += '    <line x1="100" y1="350" x2="1100" y2="350" stroke="#666666" stroke-width="3"/>\n'
 
-    <!-- 년도 표시 -->
-    <text x="150" y="380" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">2022</text>
-    <text x="300" y="380" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">2023</text>
-    <text x="450" y="380" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">2024</text>
-    <text x="600" y="380" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">2025</text>
-    <text x="750" y="380" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">2026</text>
-    <text x="900" y="380" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">2027</text>
-    <text x="1050" y="380" font-family="Arial, sans-serif" font-size="14" fill="#666666" text-anchor="middle">2028+</text>
+        for x, label in year_markers:
+            svg += (
+                f'    <text x="{x}" y="380" font-family="Arial, sans-serif" '
+                f'font-size="14" fill="#666666" text-anchor="middle">{label}</text>\n'
+            )
+            svg += (
+                f'    <line x1="{x}" y1="340" x2="{x}" y2="360" '
+                'stroke="#999999" stroke-width="2"/>\n'
+            )
 
-    <!-- 년도 구분선 -->
-    <line x1="150" y1="340" x2="150" y2="360" stroke="#999999" stroke-width="2"/>
-    <line x1="300" y1="340" x2="300" y2="360" stroke="#999999" stroke-width="2"/>
-    <line x1="450" y1="340" x2="450" y2="360" stroke="#999999" stroke-width="2"/>
-    <line x1="600" y1="340" x2="600" y2="360" stroke="#999999" stroke-width="2"/>
-    <line x1="750" y1="340" x2="750" y2="360" stroke="#999999" stroke-width="2"/>
-    <line x1="900" y1="340" x2="900" y2="360" stroke="#999999" stroke-width="2"/>
-    <line x1="1050" y1="340" x2="1050" y2="360" stroke="#999999" stroke-width="2"/>
+        for version in versions:
+            (
+                bar_x,
+                bar_y,
+                bar_width,
+                bar_height,
+                bar_fill,
+                bar_stroke,
+                bar_stroke_width,
+                name_x,
+                name_y,
+                name_size,
+                name_fill,
+                name_text,
+                range_x,
+                range_text,
+                eol,
+                highlight,
+                period,
+            ) = version
+            svg += (
+                f'    <rect x="{bar_x}" y="{bar_y}" width="{bar_width}" height="{bar_height}" '
+                f'fill="{bar_fill}" stroke="{bar_stroke}" stroke-width="{bar_stroke_width}" rx="5"/>\n'
+            )
+            svg += (
+                f'    <text x="{name_x}" y="{name_y}" font-family="Arial, sans-serif" '
+                f'font-size="{name_size}" font-weight="bold" fill="{name_fill}">{name_text}</text>\n'
+            )
 
-    <!-- Python 3.11 (2022.10 ~ 2027.10) -->
-    <rect x="150" y="90" width="600" height="35" fill="#FFCDD2" stroke="#E57373" stroke-width="2" rx="5"/>
-    <text x="170" y="115" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#C62828">Python 3.11</text>
-    <text x="450" y="115" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="middle">2022.10 Release → 2027.10 EOL</text>
-    <circle cx="750" cy="107" r="8" fill="#E57373"/>
-    <text x="765" y="112" font-family="Arial, sans-serif" font-size="11" fill="#C62828">EOL</text>
+            if range_x is not None and range_text is not None:
+                svg += (
+                    f'    <text x="{range_x}" y="{name_y}" font-family="Arial, sans-serif" '
+                    f'font-size="12" fill="#666666" text-anchor="middle">{range_text}</text>\n'
+                )
 
-    <!-- Python 3.12 (2023.10 ~ 2028.10) -->
-    <rect x="300" y="140" width="750" height="35" fill="#FFE0B2" stroke="#FFB74D" stroke-width="2" rx="5"/>
-    <text x="320" y="165" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#EF6C00">Python 3.12</text>
-    <text x="600" y="165" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="middle">2023.10 Release → 2028.10 EOL</text>
-    <circle cx="1050" cy="157" r="8" fill="#FFB74D"/>
-    <text x="1065" y="162" font-family="Arial, sans-serif" font-size="11" fill="#EF6C00">EOL</text>
+            if eol is not None:
+                (
+                    eol_x,
+                    eol_y,
+                    eol_r,
+                    eol_fill,
+                    eol_text_x,
+                    eol_text_y,
+                    eol_text_fill,
+                    eol_text,
+                ) = eol
+                svg += f'    <circle cx="{eol_x}" cy="{eol_y}" r="{eol_r}" fill="{eol_fill}"/>\n'
+                svg += (
+                    f'    <text x="{eol_text_x}" y="{eol_text_y}" font-family="Arial, sans-serif" '
+                    f'font-size="11" fill="{eol_text_fill}">{eol_text}</text>\n'
+                )
 
-    <!-- Python 3.13 (2024.10 ~ 2029.10) -->
-    <rect x="450" y="190" width="650" height="35" fill="#C8E6C9" stroke="#81C784" stroke-width="2" rx="5"/>
-    <text x="470" y="215" font-family="Arial, sans-serif" font-size="16" font-weight="bold" fill="#2E7D32">Python 3.13</text>
-    <text x="700" y="215" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="middle">2024.10 Release → 2029.10 EOL</text>
+            if highlight is not None:
+                (
+                    highlight_x,
+                    highlight_y,
+                    highlight_size,
+                    highlight_fill,
+                    highlight_text,
+                ) = highlight
+                svg += (
+                    f'    <text x="{highlight_x}" y="{highlight_y}" font-family="Arial, sans-serif" '
+                    f'font-size="{highlight_size}" fill="{highlight_fill}">{highlight_text}</text>\n'
+                )
 
-    <!-- Python 3.14 (2025.10 ~ 2030.10) - 강조 -->
-    <rect x="600" y="240" width="500" height="45" fill="#FFD43B" stroke="#3776AB" stroke-width="3" rx="5"/>
-    <text x="620" y="270" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#3776AB">Python 3.14</text>
-    <text x="750" y="270" font-family="Arial, sans-serif" font-size="14" fill="#333333">"Pi Release"</text>
-    <text x="900" y="270" font-family="Arial, sans-serif" font-size="12" fill="#666666">2025.10 → 2030.10</text>
+            if period is not None:
+                period_x, period_y, period_size, period_fill, period_text = period
+                svg += (
+                    f'    <text x="{period_x}" y="{period_y}" font-family="Arial, sans-serif" '
+                    f'font-size="{period_size}" fill="{period_fill}">{period_text}</text>\n'
+                )
 
-    <!-- 현재 시점 표시 -->
-    <line x1="650" y1="80" x2="650" y2="350" stroke="#F44336" stroke-width="2" stroke-dasharray="5,5"/>
-    <text x="650" y="410" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#F44336" text-anchor="middle">현재 (2025.12)</text>
-
-    <!-- 범례 -->
-    <rect x="100" y="400" width="20" height="15" fill="#FFD43B" stroke="#3776AB" stroke-width="2"/>
-    <text x="130" y="412" font-family="Arial, sans-serif" font-size="12" fill="#333333">현재 사용 중</text>
-
-    <circle cx="250" cy="408" r="6" fill="#E57373"/>
-    <text x="265" y="412" font-family="Arial, sans-serif" font-size="12" fill="#666666">EOL (End of Life)</text>
-</svg>"""
+        svg += '    <line x1="650" y1="80" x2="650" y2="350" stroke="#F44336" stroke-width="2" stroke-dasharray="5,5"/>\n'
+        svg += (
+            '    <text x="650" y="410" font-family="Arial, sans-serif" font-size="14" '
+            'font-weight="bold" fill="#F44336" text-anchor="middle">현재 (2025.12)</text>\n'
+        )
+        svg += '    <rect x="100" y="400" width="20" height="15" fill="#FFD43B" stroke="#3776AB" stroke-width="2"/>\n'
+        svg += '    <text x="130" y="412" font-family="Arial, sans-serif" font-size="12" fill="#333333">현재 사용 중</text>\n'
+        svg += '    <circle cx="250" cy="408" r="6" fill="#E57373"/>\n'
+        svg += '    <text x="265" y="412" font-family="Arial, sans-serif" font-size="12" fill="#666666">EOL (End of Life)</text>\n'
+        svg += SVGComponent.footer()
+        return svg
 
     def create_performance_comparison(self) -> str:
         """성능 비교 그래프 (1200x500)"""
-        return """<?xml version="1.0" encoding="UTF-8"?>
-<svg width="1200" height="500" xmlns="http://www.w3.org/2000/svg">
-    <!-- 배경 -->
-    <rect width="1200" height="500" fill="#ffffff"/>
+        from blog.tools.components.base import SVGComponent
 
-    <!-- 제목 -->
-    <text x="600" y="40" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#1a1a2e" text-anchor="middle">
-        Python 3.13 vs 3.14 성능 비교
-    </text>
+        y_axis_labels = [
+            (90, "100%"),
+            (170, "80%"),
+            (250, "60%"),
+            (330, "40%"),
+            (400, "20%"),
+        ]
+        grid_lines = [90, 170, 250, 330]
+        categories = [
+            (
+                "앱 시작 시간",
+                (200, 90, 80, 310, "#81C784", "#388E3C", "2.298s", 240, 85, "#2E7D32"),
+                (
+                    290,
+                    108,
+                    80,
+                    292,
+                    "#FFD43B",
+                    "#3776AB",
+                    "2.156s",
+                    330,
+                    103,
+                    "#3776AB",
+                    "-6%",
+                    125,
+                ),
+                (285, 430),
+            ),
+            (
+                "테스트 실행",
+                (430, 90, 80, 310, "#81C784", "#388E3C", "17.91s", 470, 85, "#2E7D32"),
+                (
+                    520,
+                    102,
+                    80,
+                    298,
+                    "#FFD43B",
+                    "#3776AB",
+                    "17.12s",
+                    560,
+                    97,
+                    "#3776AB",
+                    "-4%",
+                    119,
+                ),
+                (515, 430),
+            ),
+            (
+                "API 응답 시간",
+                (660, 90, 80, 310, "#81C784", "#388E3C", "78.67ms", 700, 85, "#2E7D32"),
+                (
+                    750,
+                    103,
+                    80,
+                    297,
+                    "#FFD43B",
+                    "#3776AB",
+                    "75.23ms",
+                    790,
+                    98,
+                    "#3776AB",
+                    "-4%",
+                    120,
+                ),
+                (745, 430),
+            ),
+            (
+                "메모리 사용량",
+                (890, 90, 80, 310, "#81C784", "#388E3C", "138.7MB", 930, 85, "#2E7D32"),
+                (
+                    980,
+                    98,
+                    80,
+                    302,
+                    "#FFD43B",
+                    "#3776AB",
+                    "135.2MB",
+                    1020,
+                    93,
+                    "#3776AB",
+                    "-2.5%",
+                    115,
+                ),
+                (975, 430),
+            ),
+        ]
 
-    <!-- Y축 -->
-    <line x1="150" y1="80" x2="150" y2="400" stroke="#666666" stroke-width="2"/>
-    <text x="140" y="90" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="end">100%</text>
-    <text x="140" y="170" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="end">80%</text>
-    <text x="140" y="250" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="end">60%</text>
-    <text x="140" y="330" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="end">40%</text>
-    <text x="140" y="400" font-family="Arial, sans-serif" font-size="12" fill="#666666" text-anchor="end">20%</text>
+        svg = SVGComponent.header(1200, 500)
+        svg += SVGComponent.background(1200, 500, fill="#ffffff")
+        svg += SVGComponent.title(
+            1200, "Python 3.13 vs 3.14 성능 비교", y=40, font_size=24
+        )
+        svg += '    <line x1="150" y1="80" x2="150" y2="400" stroke="#666666" stroke-width="2"/>\n'
 
-    <!-- 그리드 라인 -->
-    <line x1="150" y1="90" x2="1100" y2="90" stroke="#e0e0e0" stroke-width="1"/>
-    <line x1="150" y1="170" x2="1100" y2="170" stroke="#e0e0e0" stroke-width="1"/>
-    <line x1="150" y1="250" x2="1100" y2="250" stroke="#e0e0e0" stroke-width="1"/>
-    <line x1="150" y1="330" x2="1100" y2="330" stroke="#e0e0e0" stroke-width="1"/>
+        for y, label in y_axis_labels:
+            svg += (
+                f'    <text x="140" y="{y}" font-family="Arial, sans-serif" '
+                f'font-size="12" fill="#666666" text-anchor="end">{label}</text>\n'
+            )
 
-    <!-- X축 -->
-    <line x1="150" y1="400" x2="1100" y2="400" stroke="#666666" stroke-width="2"/>
+        for y in grid_lines:
+            svg += (
+                f'    <line x1="150" y1="{y}" x2="1100" y2="{y}" '
+                'stroke="#e0e0e0" stroke-width="1"/>\n'
+            )
 
-    <!-- 카테고리 1: 앱 시작 시간 -->
-    <rect x="200" y="90" width="80" height="310" fill="#81C784" stroke="#388E3C" stroke-width="2"/>
-    <text x="240" y="85" font-family="Arial, sans-serif" font-size="11" fill="#2E7D32" text-anchor="middle">2.298s</text>
+        svg += '    <line x1="150" y1="400" x2="1100" y2="400" stroke="#666666" stroke-width="2"/>\n'
 
-    <rect x="290" y="108" width="80" height="292" fill="#FFD43B" stroke="#3776AB" stroke-width="2"/>
-    <text x="330" y="103" font-family="Arial, sans-serif" font-size="11" fill="#3776AB" text-anchor="middle">2.156s</text>
-    <text x="330" y="125" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#4CAF50" text-anchor="middle">-6%</text>
+        for category_label, py313, py314, label_pos in categories:
+            x, y, width, height, fill, stroke, value, value_x, value_y, value_fill = (
+                py313
+            )
+            svg += (
+                f'    <rect x="{x}" y="{y}" width="{width}" height="{height}" '
+                f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>\n'
+            )
+            svg += (
+                f'    <text x="{value_x}" y="{value_y}" font-family="Arial, sans-serif" '
+                f'font-size="11" fill="{value_fill}" text-anchor="middle">{value}</text>\n'
+            )
 
-    <text x="285" y="430" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">앱 시작 시간</text>
+            (
+                x,
+                y,
+                width,
+                height,
+                fill,
+                stroke,
+                value,
+                value_x,
+                value_y,
+                value_fill,
+                improvement,
+                improvement_y,
+            ) = py314
+            svg += (
+                f'    <rect x="{x}" y="{y}" width="{width}" height="{height}" '
+                f'fill="{fill}" stroke="{stroke}" stroke-width="2"/>\n'
+            )
+            svg += (
+                f'    <text x="{value_x}" y="{value_y}" font-family="Arial, sans-serif" '
+                f'font-size="11" fill="{value_fill}" text-anchor="middle">{value}</text>\n'
+            )
+            svg += (
+                f'    <text x="{value_x}" y="{improvement_y}" font-family="Arial, sans-serif" '
+                'font-size="11" font-weight="bold" fill="#4CAF50" text-anchor="middle">'
+                f"{improvement}</text>\n"
+            )
 
-    <!-- 카테고리 2: 테스트 실행 -->
-    <rect x="430" y="90" width="80" height="310" fill="#81C784" stroke="#388E3C" stroke-width="2"/>
-    <text x="470" y="85" font-family="Arial, sans-serif" font-size="11" fill="#2E7D32" text-anchor="middle">17.91s</text>
+            label_x, label_y = label_pos
+            svg += (
+                f'    <text x="{label_x}" y="{label_y}" font-family="Arial, sans-serif" '
+                f'font-size="13" fill="#333333" text-anchor="middle">{category_label}</text>\n'
+            )
 
-    <rect x="520" y="102" width="80" height="298" fill="#FFD43B" stroke="#3776AB" stroke-width="2"/>
-    <text x="560" y="97" font-family="Arial, sans-serif" font-size="11" fill="#3776AB" text-anchor="middle">17.12s</text>
-    <text x="560" y="119" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#4CAF50" text-anchor="middle">-4%</text>
-
-    <text x="515" y="430" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">테스트 실행</text>
-
-    <!-- 카테고리 3: API 응답 시간 -->
-    <rect x="660" y="90" width="80" height="310" fill="#81C784" stroke="#388E3C" stroke-width="2"/>
-    <text x="700" y="85" font-family="Arial, sans-serif" font-size="11" fill="#2E7D32" text-anchor="middle">78.67ms</text>
-
-    <rect x="750" y="103" width="80" height="297" fill="#FFD43B" stroke="#3776AB" stroke-width="2"/>
-    <text x="790" y="98" font-family="Arial, sans-serif" font-size="11" fill="#3776AB" text-anchor="middle">75.23ms</text>
-    <text x="790" y="120" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#4CAF50" text-anchor="middle">-4%</text>
-
-    <text x="745" y="430" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">API 응답 시간</text>
-
-    <!-- 카테고리 4: 메모리 사용량 -->
-    <rect x="890" y="90" width="80" height="310" fill="#81C784" stroke="#388E3C" stroke-width="2"/>
-    <text x="930" y="85" font-family="Arial, sans-serif" font-size="11" fill="#2E7D32" text-anchor="middle">138.7MB</text>
-
-    <rect x="980" y="98" width="80" height="302" fill="#FFD43B" stroke="#3776AB" stroke-width="2"/>
-    <text x="1020" y="93" font-family="Arial, sans-serif" font-size="11" fill="#3776AB" text-anchor="middle">135.2MB</text>
-    <text x="1020" y="115" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#4CAF50" text-anchor="middle">-2.5%</text>
-
-    <text x="975" y="430" font-family="Arial, sans-serif" font-size="13" fill="#333333" text-anchor="middle">메모리 사용량</text>
-
-    <!-- 범례 -->
-    <rect x="400" y="455" width="25" height="18" fill="#81C784" stroke="#388E3C" stroke-width="1"/>
-    <text x="435" y="470" font-family="Arial, sans-serif" font-size="14" fill="#333333">Python 3.13</text>
-
-    <rect x="560" y="455" width="25" height="18" fill="#FFD43B" stroke="#3776AB" stroke-width="1"/>
-    <text x="595" y="470" font-family="Arial, sans-serif" font-size="14" fill="#333333">Python 3.14</text>
-
-    <!-- 결론 -->
-    <text x="850" y="470" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#4CAF50">평균 4% 성능 향상</text>
-</svg>"""
+        svg += '    <rect x="400" y="455" width="25" height="18" fill="#81C784" stroke="#388E3C" stroke-width="1"/>\n'
+        svg += '    <text x="435" y="470" font-family="Arial, sans-serif" font-size="14" fill="#333333">Python 3.13</text>\n'
+        svg += '    <rect x="560" y="455" width="25" height="18" fill="#FFD43B" stroke="#3776AB" stroke-width="1"/>\n'
+        svg += '    <text x="595" y="470" font-family="Arial, sans-serif" font-size="14" fill="#333333">Python 3.14</text>\n'
+        svg += '    <text x="850" y="470" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#4CAF50">평균 4% 성능 향상</text>\n'
+        svg += SVGComponent.footer()
+        return svg
 
 
 if __name__ == "__main__":
