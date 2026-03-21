@@ -5,7 +5,7 @@ OHLCV line chart with optional Bollinger bands and EMA overlays.
 
 from __future__ import annotations
 
-from blog.tools.components.base import escape_xml
+from typing import Any
 
 
 class PriceChart:
@@ -17,9 +17,9 @@ class PriceChart:
         y: int,
         width: int,
         height: int,
-        ohlcv: list[dict],
-        bollinger: dict | None = None,
-        ema_values: dict[str, list] | None = None,
+        ohlcv: list[dict[str, Any]],
+        bollinger: dict[str, list[float]] | None = None,
+        ema_values: dict[str, list[float]] | None = None,
     ) -> str:
         """Render a price chart as an SVG fragment.
 
@@ -36,7 +36,7 @@ class PriceChart:
             SVG fragment string (no <svg> wrapper).
         """
         if not ohlcv:
-            return f'    <!-- Empty price chart at ({x}, {y}) -->\n'
+            return f"    <!-- Empty price chart at ({x}, {y}) -->\n"
 
         parts: list[str] = []
 
@@ -94,7 +94,7 @@ class PriceChart:
         # Draw EMA lines
         if ema_values:
             colors = ["#FF9800", "#4CAF50", "#9C27B0"]
-            for idx, (name, values) in enumerate(ema_values.items()):
+            for idx, (_name, values) in enumerate(ema_values.items()):
                 if len(values) == len(ohlcv):
                     ema_points = []
                     for i, val in enumerate(values):

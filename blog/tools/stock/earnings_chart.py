@@ -5,8 +5,10 @@ Annual earnings bar chart with quarterly margin subplot.
 
 from __future__ import annotations
 
+from typing import Any
+
 from blog.tools.components.bar_chart import BarChart
-from blog.tools.components.base import Colors, escape_xml, format_large
+from blog.tools.components.base import Colors
 
 
 class EarningsChart:
@@ -18,7 +20,7 @@ class EarningsChart:
         y: int,
         width: int,
         height: int,
-        financials: dict,
+        financials: dict[str, Any],
     ) -> str:
         """Render earnings chart as an SVG fragment.
 
@@ -42,7 +44,7 @@ class EarningsChart:
             f'    <text x="{x + width // 2}" y="{y + 20}" '
             f'font-family="Arial, sans-serif" font-size="16" '
             f'font-weight="bold" fill="#333333" text-anchor="middle">'
-            f'연간 영업이익 및 분기 영업이익률</text>'
+            f"연간 영업이익 및 분기 영업이익률</text>"
         )
 
         # Annual earnings (top half)
@@ -58,8 +60,13 @@ class EarningsChart:
 
             parts.append(
                 BarChart.create(
-                    x=x + 50, y=y + 40, width=width // 2 - 60, height=chart_h,
-                    data=data, direction="vertical", show_labels=True,
+                    x=x + 50,
+                    y=y + 40,
+                    width=width // 2 - 60,
+                    height=chart_h,
+                    data=data,
+                    direction="vertical",
+                    show_labels=True,
                 )
             )
 
@@ -77,13 +84,24 @@ class EarningsChart:
             for item in quarterly:
                 q = str(item.get("quarter", ""))
                 margin = item.get("margin", 0) * 100  # Convert to percentage
-                color = Colors.BULLISH if margin > 10 else Colors.NEUTRAL if margin > 5 else Colors.BEARISH
+                color = (
+                    Colors.BULLISH
+                    if margin > 10
+                    else Colors.NEUTRAL
+                    if margin > 5
+                    else Colors.BEARISH
+                )
                 margin_data.append((q, margin, color))
 
             parts.append(
                 BarChart.create(
-                    x=margin_x, y=y + 40, width=width // 2 - 40, height=height // 2 - 40,
-                    data=margin_data, direction="horizontal", show_labels=True,
+                    x=margin_x,
+                    y=y + 40,
+                    width=width // 2 - 40,
+                    height=height // 2 - 40,
+                    data=margin_data,
+                    direction="horizontal",
+                    show_labels=True,
                     chart_title="분기 영업이익률",
                 )
             )

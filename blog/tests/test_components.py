@@ -182,8 +182,12 @@ class TestInfoCard:
         from blog.tools.components.card import InfoCard
 
         svg = InfoCard.create(
-            x=0, y=0, width=300, height=160,
-            title="PER", value="30.38",
+            x=0,
+            y=0,
+            width=300,
+            height=160,
+            title="PER",
+            value="30.38",
             color="#4CAF50",
         )
         assert "<rect" in svg
@@ -194,8 +198,12 @@ class TestInfoCard:
         from blog.tools.components.card import InfoCard
 
         svg = InfoCard.create(
-            x=100, y=200, width=280, height=180,
-            title="RSI", value="57.16",
+            x=100,
+            y=200,
+            width=280,
+            height=180,
+            title="RSI",
+            value="57.16",
             description="중립 구간",
             color="#2196F3",
         )
@@ -207,12 +215,20 @@ class TestInfoCard:
         from blog.tools.components.card import InfoCard
 
         svg_normal = InfoCard.create(
-            x=0, y=0, width=300, height=160,
-            title="Test", value="100",
+            x=0,
+            y=0,
+            width=300,
+            height=160,
+            title="Test",
+            value="100",
         )
         svg_highlight = InfoCard.create(
-            x=0, y=0, width=300, height=160,
-            title="Test", value="100",
+            x=0,
+            y=0,
+            width=300,
+            height=160,
+            title="Test",
+            value="100",
             highlight=True,
         )
         # Highlighted card should have a thicker stroke or different style
@@ -230,8 +246,12 @@ class TestInfoCard:
         from blog.tools.components.card import InfoCard
 
         svg = InfoCard.create(
-            x=0, y=0, width=300, height=160,
-            title="A & B", value="<100>",
+            x=0,
+            y=0,
+            width=300,
+            height=160,
+            title="A & B",
+            value="<100>",
         )
         assert "&amp;" in svg
         assert "&lt;100&gt;" in svg
@@ -241,8 +261,12 @@ class TestInfoCard:
         from blog.tools.components.card import InfoCard
 
         svg = InfoCard.create(
-            x=0, y=0, width=300, height=200,
-            title="MACD", value="-527",
+            x=0,
+            y=0,
+            width=300,
+            height=200,
+            title="MACD",
+            value="-527",
             sub_items=[("Signal", "매도 신호"), ("Histogram", "음수")],
         )
         assert "Signal" in svg
@@ -256,7 +280,10 @@ class TestBarChart:
         from blog.tools.components.bar_chart import BarChart
 
         svg = BarChart.create(
-            x=60, y=100, width=600, height=300,
+            x=60,
+            y=100,
+            width=600,
+            height=300,
             data=[
                 ("2021", 51_633, "#4CAF50"),
                 ("2022", 43_376, "#4CAF50"),
@@ -272,7 +299,10 @@ class TestBarChart:
         from blog.tools.components.bar_chart import BarChart
 
         svg = BarChart.create(
-            x=60, y=100, width=500, height=200,
+            x=60,
+            y=100,
+            width=500,
+            height=200,
             data=[
                 ("외국인", -15234, "#e74c3c"),
                 ("기관", 8721, "#4CAF50"),
@@ -287,7 +317,10 @@ class TestBarChart:
         from blog.tools.components.bar_chart import BarChart
 
         svg = BarChart.create(
-            x=0, y=0, width=400, height=200,
+            x=0,
+            y=0,
+            width=400,
+            height=200,
             data=[("A", 100, "#ccc"), ("B", 200, "#ddd")],
             direction="vertical",
             show_labels=True,
@@ -299,7 +332,10 @@ class TestBarChart:
         from blog.tools.components.bar_chart import BarChart
 
         svg = BarChart.create(
-            x=0, y=0, width=400, height=200,
+            x=0,
+            y=0,
+            width=400,
+            height=200,
             data=[("X", 50, "#aaa")],
             direction="vertical",
             chart_title="매출 추이",
@@ -310,7 +346,10 @@ class TestBarChart:
         from blog.tools.components.bar_chart import BarChart
 
         svg = BarChart.create(
-            x=0, y=0, width=400, height=200,
+            x=0,
+            y=0,
+            width=400,
+            height=200,
             data=[],
             direction="vertical",
         )
@@ -325,7 +364,10 @@ class TestComparisonTable:
         from blog.tools.components.table import ComparisonTable
 
         svg = ComparisonTable.create(
-            x=60, y=100, width=800, height=300,
+            x=60,
+            y=100,
+            width=800,
+            height=300,
             headers=["기업", "시총", "PER", "PBR"],
             rows=[
                 ["삼성전자", "350조", "30.38", "1.82"],
@@ -341,7 +383,10 @@ class TestComparisonTable:
         from blog.tools.components.table import ComparisonTable
 
         svg = ComparisonTable.create(
-            x=0, y=0, width=600, height=200,
+            x=0,
+            y=0,
+            width=600,
+            height=200,
             headers=["Name", "Value"],
             rows=[["A", "1"], ["B", "2"]],
             highlight_row=0,
@@ -353,7 +398,10 @@ class TestComparisonTable:
         from blog.tools.components.table import ComparisonTable
 
         svg = ComparisonTable.create(
-            x=0, y=0, width=600, height=200,
+            x=0,
+            y=0,
+            width=600,
+            height=200,
             headers=["H1", "H2"],
             rows=[["a", "b"]],
             table_title="비교 테이블",
@@ -368,7 +416,10 @@ class TestEventTimeline:
         from blog.tools.components.timeline import EventTimeline
 
         svg = EventTimeline.create(
-            x=60, y=100, width=800, height=200,
+            x=60,
+            y=100,
+            width=800,
+            height=200,
             events=[
                 ("2024.01", "52주 신고가", "73,400", "#4CAF50", "above"),
                 ("2024.06", "실적 쇼크", "-35%", "#e74c3c", "below"),
@@ -420,7 +471,10 @@ class TestCodeBlock:
         from blog.tools.components.code_block import CodeBlock
 
         svg = CodeBlock.create(
-            x=60, y=100, width=600, height=200,
+            x=60,
+            y=100,
+            width=600,
+            height=200,
             code='def hello():\n    return "world"',
             language="python",
         )
@@ -433,8 +487,11 @@ class TestCodeBlock:
         from blog.tools.components.code_block import CodeBlock
 
         svg = CodeBlock.create(
-            x=0, y=0, width=400, height=100,
-            code='if a < b && c > d:',
+            x=0,
+            y=0,
+            width=400,
+            height=100,
+            code="if a < b && c > d:",
         )
         assert "&lt;" in svg
         assert "&amp;" in svg

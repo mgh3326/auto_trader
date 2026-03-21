@@ -42,7 +42,7 @@ class FlowDiagram:
                 # Adjust to edge of nodes
                 dx = x2 - x1
                 dy = y2 - y1
-                dist = (dx ** 2 + dy ** 2) ** 0.5
+                dist = (dx**2 + dy**2) ** 0.5
                 if dist > 0:
                     # Offset by half node size (approximate)
                     offset1 = min(fw, fh) // 2
@@ -89,7 +89,7 @@ class FlowDiagram:
                 f'    <text x="{x + w // 2}" y="{y + h // 2 + 5}" '
                 f'font-family="Arial, sans-serif" font-size="14" '
                 f'font-weight="bold" fill="#ffffff" text-anchor="middle">'
-                f'{safe_label}</text>'
+                f"{safe_label}</text>"
             )
 
         return "\n".join(parts) + "\n"

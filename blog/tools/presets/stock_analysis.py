@@ -11,6 +11,7 @@ Generates 5 SVG images from MCP API response data:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from blog.tools.components import SVGComponent, ThumbnailTemplate
 from blog.tools.components.base import format_price
@@ -32,7 +33,7 @@ class StockAnalysisPreset:
     def __init__(
         self,
         symbol: str,
-        data: dict,
+        data: dict[str, Any],
         output_dir: Path | None = None,
     ) -> None:
         self.symbol = symbol
@@ -111,7 +112,9 @@ class StockAnalysisPreset:
 
         # Indicator dashboard (right, ~35% width)
         indicators = self.data.get("indicators", {})
-        svg += IndicatorDashboard.create(x=880, y=95, width=480, height=350, indicators=indicators)
+        svg += IndicatorDashboard.create(
+            x=880, y=95, width=480, height=350, indicators=indicators
+        )
 
         # Support/resistance (bottom)
         sr = self.data.get("support_resistance", {})
@@ -128,12 +131,16 @@ class StockAnalysisPreset:
 
         # Valuation cards (top)
         valuation = self.data.get("valuation", {})
-        svg += ValuationCards.create(x=60, y=95, width=1300, height=180, valuation=valuation)
+        svg += ValuationCards.create(
+            x=60, y=95, width=1300, height=180, valuation=valuation
+        )
 
         # Earnings chart (middle)
         financials = self.data.get("financials", {})
         if financials:
-            svg += EarningsChart.create(x=60, y=310, width=1300, height=300, financials=financials)
+            svg += EarningsChart.create(
+                x=60, y=310, width=1300, height=300, financials=financials
+            )
 
         svg += SVGComponent.footer()
         return svg
@@ -145,11 +152,15 @@ class StockAnalysisPreset:
 
         # Investor flow (top)
         investor = self.data.get("investor_trends", {})
-        svg += InvestorFlow.create(x=60, y=95, width=1300, height=250, investor_trends=investor)
+        svg += InvestorFlow.create(
+            x=60, y=95, width=1300, height=250, investor_trends=investor
+        )
 
         # Opinion table (bottom)
         opinions = self.data.get("investment_opinions", {})
-        svg += OpinionTable.create(x=60, y=380, width=1300, height=380, opinions=opinions)
+        svg += OpinionTable.create(
+            x=60, y=380, width=1300, height=380, opinions=opinions
+        )
 
         svg += SVGComponent.footer()
         return svg
@@ -160,7 +171,10 @@ class StockAnalysisPreset:
         svg += SVGComponent.title(1400, f"{self.company_name} — 종합 분석 결론")
 
         svg += ConclusionCard.create(
-            x=60, y=95, width=1300, height=660,
+            x=60,
+            y=95,
+            width=1300,
+            height=660,
             data=self.data,
             company_name=self.company_name,
         )

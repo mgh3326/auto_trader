@@ -17,7 +17,9 @@ class EventTimeline:
         y: int,
         width: int,
         height: int,
-        events: list[tuple[str, str, str, str, str]],  # (date, label, value, color, position)
+        events: list[
+            tuple[str, str, str, str, str]
+        ],  # (date, label, value, color, position)
         axis_color: str = "#666666",
     ) -> str:
         """Render an event timeline as an SVG fragment.
@@ -86,7 +88,7 @@ class EventTimeline:
                 f'    <text x="{event_x}" y="{date_y}" '
                 f'font-family="Arial, sans-serif" font-size="11" '
                 f'font-weight="bold" fill="{color}" text-anchor="middle">'
-                f'{safe_date}</text>'
+                f"{safe_date}</text>"
             )
 
             # Event label
@@ -95,7 +97,7 @@ class EventTimeline:
                 f'    <text x="{event_x}" y="{label_y}" '
                 f'font-family="Arial, sans-serif" font-size="10" '
                 f'fill="#333333" text-anchor="middle">'
-                f'{safe_label}</text>'
+                f"{safe_label}</text>"
             )
 
             # Value label
@@ -104,7 +106,7 @@ class EventTimeline:
                 f'    <text x="{event_x}" y="{value_y}" '
                 f'font-family="Arial, sans-serif" font-size="10" '
                 f'fill="#666666" text-anchor="middle">'
-                f'{safe_value}</text>'
+                f"{safe_value}</text>"
             )
 
         return "\n".join(parts) + "\n"

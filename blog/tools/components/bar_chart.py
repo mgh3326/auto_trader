@@ -41,7 +41,7 @@ class BarChart:
             SVG fragment string (no <svg> wrapper).
         """
         if not data:
-            return f'    <!-- Empty bar chart at ({x}, {y}) -->\n'
+            return f"    <!-- Empty bar chart at ({x}, {y}) -->\n"
 
         parts: list[str] = []
 
@@ -54,7 +54,7 @@ class BarChart:
                 f'    <text x="{x + width // 2}" y="{y + 20}" '
                 f'font-family="Arial, sans-serif" font-size="16" '
                 f'font-weight="bold" fill="#333333" text-anchor="middle">'
-                f'{safe_title}</text>'
+                f"{safe_title}</text>"
             )
 
         # Calculate chart area (after title)
@@ -72,8 +72,14 @@ class BarChart:
 
             for i, (label, value, color) in enumerate(data):
                 bar_x = x + i * (bar_width + bar_gap) + bar_gap / 2
-                bar_h = abs(value) / max_val * (chart_height - 40)  # Leave room for labels
-                bar_y = chart_y + chart_height - 40 - bar_h if value >= 0 else chart_y + chart_height - 40
+                bar_h = (
+                    abs(value) / max_val * (chart_height - 40)
+                )  # Leave room for labels
+                bar_y = (
+                    chart_y + chart_height - 40 - bar_h
+                    if value >= 0
+                    else chart_y + chart_height - 40
+                )
 
                 parts.append(
                     f'    <rect x="{bar_x}" y="{bar_y}" width="{bar_width}" '
@@ -96,7 +102,11 @@ class BarChart:
                 max_abs = 1
 
             # Center line for zero
-            zero_x = x + width * (max_abs / (2 * max_abs)) if any(v < 0 for v in values) else x
+            zero_x = (
+                x + width * (max_abs / (2 * max_abs))
+                if any(v < 0 for v in values)
+                else x
+            )
 
             bar_height = chart_height / len(data) * (1 - bar_padding)
             bar_gap = chart_height / len(data) * bar_padding

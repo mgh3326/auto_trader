@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from blog.tools.components.base import Colors, format_price
 from blog.tools.components.card import InfoCard
 
@@ -18,7 +20,7 @@ class ValuationCards:
         y: int,
         width: int,
         height: int,
-        valuation: dict,
+        valuation: dict[str, Any],
     ) -> str:
         """Render valuation cards as an SVG fragment.
 
@@ -46,31 +48,57 @@ class ValuationCards:
         current = valuation.get("current_price", 0)
 
         # PER Card
-        per_color = Colors.BEARISH if per > 30 else Colors.BULLISH if per < 15 else Colors.NEUTRAL
+        per_color = (
+            Colors.BEARISH
+            if per > 30
+            else Colors.BULLISH
+            if per < 15
+            else Colors.NEUTRAL
+        )
         parts.append(
             InfoCard.create(
-                x=x, y=y, width=card_w, height=card_h,
-                title="PER", value=f"{per:.2f}",
+                x=x,
+                y=y,
+                width=card_w,
+                height=card_h,
+                title="PER",
+                value=f"{per:.2f}",
                 color=per_color,
             )
         )
 
         # PBR Card
-        pbr_color = Colors.BEARISH if pbr > 2 else Colors.BULLISH if pbr < 1 else Colors.NEUTRAL
+        pbr_color = (
+            Colors.BEARISH if pbr > 2 else Colors.BULLISH if pbr < 1 else Colors.NEUTRAL
+        )
         parts.append(
             InfoCard.create(
-                x=x + card_w + gap, y=y, width=card_w, height=card_h,
-                title="PBR", value=f"{pbr:.2f}",
+                x=x + card_w + gap,
+                y=y,
+                width=card_w,
+                height=card_h,
+                title="PBR",
+                value=f"{pbr:.2f}",
                 color=pbr_color,
             )
         )
 
         # ROE Card
-        roe_color = Colors.BULLISH if roe > 10 else Colors.NEUTRAL if roe > 5 else Colors.BEARISH
+        roe_color = (
+            Colors.BULLISH
+            if roe > 10
+            else Colors.NEUTRAL
+            if roe > 5
+            else Colors.BEARISH
+        )
         parts.append(
             InfoCard.create(
-                x=x + 2 * (card_w + gap), y=y, width=card_w, height=card_h,
-                title="ROE", value=f"{roe:.2f}%",
+                x=x + 2 * (card_w + gap),
+                y=y,
+                width=card_w,
+                height=card_h,
+                title="ROE",
+                value=f"{roe:.2f}%",
                 color=roe_color,
             )
         )
@@ -81,8 +109,12 @@ class ValuationCards:
             target_color = Colors.BULLISH if upside > 0 else Colors.BEARISH
             parts.append(
                 InfoCard.create(
-                    x=x + 3 * (card_w + gap), y=y, width=card_w, height=card_h,
-                    title="컨센서스 목표가", value=format_price(target),
+                    x=x + 3 * (card_w + gap),
+                    y=y,
+                    width=card_w,
+                    height=card_h,
+                    title="컨센서스 목표가",
+                    value=format_price(target),
                     description=f"{'+' if upside > 0 else ''}{upside:.1f}%",
                     color=target_color,
                 )
@@ -90,8 +122,12 @@ class ValuationCards:
         else:
             parts.append(
                 InfoCard.create(
-                    x=x + 3 * (card_w + gap), y=y, width=card_w, height=card_h,
-                    title="컨센서스 목표가", value="N/A",
+                    x=x + 3 * (card_w + gap),
+                    y=y,
+                    width=card_w,
+                    height=card_h,
+                    title="컨센서스 목표가",
+                    value="N/A",
                     color=Colors.TEXT_MUTED,
                 )
             )

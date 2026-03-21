@@ -50,7 +50,7 @@ class ComparisonTable:
                 f'    <text x="{x + width // 2}" y="{y + 20}" '
                 f'font-family="Arial, sans-serif" font-size="16" '
                 f'font-weight="bold" fill="#333333" text-anchor="middle">'
-                f'{safe_title}</text>'
+                f"{safe_title}</text>"
             )
 
         table_y = y + title_offset
@@ -77,7 +77,7 @@ class ComparisonTable:
                 f'y="{table_y + row_height / 2 + 5}" '
                 f'font-family="Arial, sans-serif" font-size="14" '
                 f'font-weight="bold" fill="#ffffff" text-anchor="middle">'
-                f'{safe_header}</text>'
+                f"{safe_header}</text>"
             )
 
         # Data rows
@@ -106,7 +106,7 @@ class ComparisonTable:
                         f'y="{row_y + row_height / 2 + 5}" '
                         f'font-family="Arial, sans-serif" font-size="12" '
                         f'fill="#333333" text-anchor="middle">'
-                        f'{safe_cell}</text>'
+                        f"{safe_cell}</text>"
                     )
 
         return "\n".join(parts) + "\n"

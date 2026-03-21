@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from blog.tools.components.base import Colors
 from blog.tools.components.card import InfoCard
 
@@ -18,7 +20,7 @@ class IndicatorDashboard:
         y: int,
         width: int,
         height: int,
-        indicators: dict,
+        indicators: dict[str, Any],
     ) -> str:
         """Render an indicator dashboard as an SVG fragment.
 
@@ -43,12 +45,23 @@ class IndicatorDashboard:
         # RSI Card
         rsi = indicators.get("rsi14", 50.0)
         rsi_zone = "과매수" if rsi > 70 else "과매도" if rsi < 30 else "중립"
-        rsi_color = Colors.BULLISH if rsi > 70 else Colors.BEARISH if rsi < 30 else Colors.NEUTRAL
+        rsi_color = (
+            Colors.BULLISH
+            if rsi > 70
+            else Colors.BEARISH
+            if rsi < 30
+            else Colors.NEUTRAL
+        )
         parts.append(
             InfoCard.create(
-                x=x, y=y, width=card_w, height=card_h,
-                title="RSI(14)", value=f"{rsi:.1f}",
-                description=rsi_zone, color=rsi_color,
+                x=x,
+                y=y,
+                width=card_w,
+                height=card_h,
+                title="RSI(14)",
+                value=f"{rsi:.1f}",
+                description=rsi_zone,
+                color=rsi_color,
             )
         )
 
@@ -58,9 +71,14 @@ class IndicatorDashboard:
         macd_color = Colors.BULLISH if macd_hist > 0 else Colors.BEARISH
         parts.append(
             InfoCard.create(
-                x=x + card_w + gap, y=y, width=card_w, height=card_h,
-                title="MACD", value=f"{macd_hist:,.0f}",
-                description=macd_signal, color=macd_color,
+                x=x + card_w + gap,
+                y=y,
+                width=card_w,
+                height=card_h,
+                title="MACD",
+                value=f"{macd_hist:,.0f}",
+                description=macd_signal,
+                color=macd_color,
             )
         )
 
@@ -72,9 +90,14 @@ class IndicatorDashboard:
         adx_color = Colors.TECHNICAL
         parts.append(
             InfoCard.create(
-                x=x, y=y + card_h + gap, width=card_w, height=card_h,
-                title="ADX", value=f"{adx:.1f}",
-                description=trend_strength, color=adx_color,
+                x=x,
+                y=y + card_h + gap,
+                width=card_w,
+                height=card_h,
+                title="ADX",
+                value=f"{adx:.1f}",
+                description=trend_strength,
+                color=adx_color,
                 sub_items=[("+DI", f"{plus_di:.1f}"), ("-DI", f"{minus_di:.1f}")],
             )
         )
@@ -82,13 +105,26 @@ class IndicatorDashboard:
         # StochRSI Card
         stoch_k = indicators.get("stoch_rsi_k", 0)
         stoch_d = indicators.get("stoch_rsi_d", 0)
-        stoch_zone = "과매수" if stoch_k > 0.8 else "과매도" if stoch_k < 0.2 else "중립"
-        stoch_color = Colors.BULLISH if stoch_k > 0.8 else Colors.BEARISH if stoch_k < 0.2 else Colors.NEUTRAL
+        stoch_zone = (
+            "과매수" if stoch_k > 0.8 else "과매도" if stoch_k < 0.2 else "중립"
+        )
+        stoch_color = (
+            Colors.BULLISH
+            if stoch_k > 0.8
+            else Colors.BEARISH
+            if stoch_k < 0.2
+            else Colors.NEUTRAL
+        )
         parts.append(
             InfoCard.create(
-                x=x + card_w + gap, y=y + card_h + gap, width=card_w, height=card_h,
-                title="StochRSI", value=f"{stoch_k:.2f}",
-                description=stoch_zone, color=stoch_color,
+                x=x + card_w + gap,
+                y=y + card_h + gap,
+                width=card_w,
+                height=card_h,
+                title="StochRSI",
+                value=f"{stoch_k:.2f}",
+                description=stoch_zone,
+                color=stoch_color,
                 sub_items=[("K", f"{stoch_k:.2f}"), ("D", f"{stoch_d:.2f}")],
             )
         )

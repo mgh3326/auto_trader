@@ -5,7 +5,7 @@ Horizontal support and resistance level visualization.
 
 from __future__ import annotations
 
-from blog.tools.components.base import Colors, escape_xml, format_price
+from blog.tools.components.base import Colors, format_price
 
 
 class SupportResistance:
@@ -42,20 +42,22 @@ class SupportResistance:
             f'    <text x="{x + width // 4}" y="{y + 20}" '
             f'font-family="Arial, sans-serif" font-size="14" '
             f'font-weight="bold" fill="{Colors.BULLISH}" text-anchor="middle">'
-            f'지지선 (Support)</text>'
+            f"지지선 (Support)</text>"
         )
         parts.append(
             f'    <text x="{x + 3 * width // 4}" y="{y + 20}" '
             f'font-family="Arial, sans-serif" font-size="14" '
             f'font-weight="bold" fill="{Colors.BEARISH}" text-anchor="middle">'
-            f'저항선 (Resistance)</text>'
+            f"저항선 (Resistance)</text>"
         )
 
         # Support levels
         start_y = y + 50
         for i, level in enumerate(supports[:3]):  # Max 3 levels
             level_y = start_y + i * 40
-            bar_width = (1 - abs(level - current_price) / current_price) * (width // 2 - 40)
+            bar_width = (1 - abs(level - current_price) / current_price) * (
+                width // 2 - 40
+            )
             bar_width = max(bar_width, 50)
 
             parts.append(
@@ -71,13 +73,15 @@ class SupportResistance:
                 f'    <text x="{x + width // 4}" y="{level_y + 4}" '
                 f'font-family="Arial, sans-serif" font-size="12" '
                 f'fill="{Colors.BULLISH}" text-anchor="middle">'
-                f'{format_price(level)}</text>'
+                f"{format_price(level)}</text>"
             )
 
         # Resistance levels
         for i, level in enumerate(resistances[:3]):  # Max 3 levels
             level_y = start_y + i * 40
-            bar_width = (1 - abs(level - current_price) / current_price) * (width // 2 - 40)
+            bar_width = (1 - abs(level - current_price) / current_price) * (
+                width // 2 - 40
+            )
             bar_width = max(bar_width, 50)
 
             parts.append(
@@ -94,7 +98,7 @@ class SupportResistance:
                 f'    <text x="{x + 3 * width // 4}" y="{level_y + 4}" '
                 f'font-family="Arial, sans-serif" font-size="12" '
                 f'fill="{Colors.BEARISH}" text-anchor="middle">'
-                f'{format_price(level)}</text>'
+                f"{format_price(level)}</text>"
             )
 
         # Current price indicator
@@ -102,7 +106,7 @@ class SupportResistance:
             f'    <text x="{x + width // 2}" y="{y + height - 20}" '
             f'font-family="Arial, sans-serif" font-size="14" '
             f'font-weight="bold" fill="#333333" text-anchor="middle">'
-            f'현재가: {format_price(current_price)}</text>'
+            f"현재가: {format_price(current_price)}</text>"
         )
 
         return "\n".join(parts) + "\n"
