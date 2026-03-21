@@ -980,6 +980,14 @@ class TestGetShortInterest:
         with pytest.raises(ValueError, match="Korean stocks"):
             await tools["get_short_interest"]("5930")
 
+    @pytest.mark.parametrize("symbol", ["AAPL", "SMCI", "KRW-BTC", "5930"])
+    async def test_get_short_interest_rejects_non_kr_equity_symbols(self, symbol):
+        """Test that get_short_interest rejects non-KR equity symbols."""
+        tools = build_tools()
+
+        with pytest.raises(ValueError, match="Korean stocks"):
+            await tools["get_short_interest"](symbol)
+
     async def test_days_limit_capped(self, monkeypatch):
         """Test that days parameter is capped at 60."""
         tools = build_tools()
