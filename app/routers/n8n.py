@@ -255,7 +255,9 @@ async def get_filled_orders(
     as_of = now_kst().replace(microsecond=0).isoformat()
     try:
         result = await fetch_filled_orders(
-            days=days, markets=markets, min_amount=min_amount,
+            days=days,
+            markets=markets,
+            min_amount=min_amount,
             include_indicators=include_indicators,
         )
     except Exception as exc:  # noqa: BLE001

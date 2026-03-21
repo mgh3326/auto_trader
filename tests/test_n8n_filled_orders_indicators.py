@@ -10,11 +10,12 @@ import pytest
 def _make_ohlcv_df(n: int = 250, base_close: float = 100_000_000) -> pd.DataFrame:
     """Create a synthetic OHLCV DataFrame with enough rows for all indicators."""
     # Use sine wave + trend to create both gains and losses for RSI calculation
-    import numpy as np
 
     t = np.linspace(0, 4 * np.pi, n)
     noise = np.random.RandomState(42).normal(0, 0.02, n)
-    close_values = base_close * (1 + 0.1 * np.sin(t) + 0.05 * np.linspace(0, 1, n) + noise)
+    close_values = base_close * (
+        1 + 0.1 * np.sin(t) + 0.05 * np.linspace(0, 1, n) + noise
+    )
     close = pd.Series(close_values, dtype=float)
 
     return pd.DataFrame(
@@ -216,8 +217,11 @@ class TestEnrichWithIndicators:
         )
 
         orders = [
-            {"symbol": "005930", "raw_symbol": "005930",
-             "instrument_type": "equity_kr"},
+            {
+                "symbol": "005930",
+                "raw_symbol": "005930",
+                "instrument_type": "equity_kr",
+            },
         ]
 
         mock_indicators = {"rsi_14": 55.0, "ema_20": 80_000.0}
@@ -231,7 +235,7 @@ class TestEnrichWithIndicators:
             patch(
                 "app.services.n8n_filled_orders_indicators.fetch_fear_greed",
                 new_callable=AsyncMock,
-            ) as mock_fg,
+            ) as _mock_fg,
         ):
             result = await _enrich_with_indicators(orders)
 
@@ -271,12 +275,13 @@ class TestEnrichWithIndicators:
         )
 
         orders = [
-            {"symbol": "BTC", "raw_symbol": "KRW-BTC",
-             "instrument_type": "crypto"},
-            {"symbol": "005930", "raw_symbol": "005930",
-             "instrument_type": "equity_kr"},
-            {"symbol": "NVDA", "raw_symbol": "NVDA",
-             "instrument_type": "equity_us"},
+            {"symbol": "BTC", "raw_symbol": "KRW-BTC", "instrument_type": "crypto"},
+            {
+                "symbol": "005930",
+                "raw_symbol": "005930",
+                "instrument_type": "equity_kr",
+            },
+            {"symbol": "NVDA", "raw_symbol": "NVDA", "instrument_type": "equity_us"},
         ]
 
         mock_indicators = {"rsi_14": 50.0, "ema_20": 100.0}
@@ -357,10 +362,15 @@ class TestFetchFilledOrdersWithIndicators:
         from app.services.n8n_filled_orders_service import fetch_filled_orders
 
         mock_orders = [
-            {"symbol": "BTC", "raw_symbol": "KRW-BTC",
-             "instrument_type": "crypto", "side": "buy",
-             "price": 100_000_000, "total_amount": 1_000_000,
-             "filled_at": "2026-03-22T10:00:00+09:00"},
+            {
+                "symbol": "BTC",
+                "raw_symbol": "KRW-BTC",
+                "instrument_type": "crypto",
+                "side": "buy",
+                "price": 100_000_000,
+                "total_amount": 1_000_000,
+                "filled_at": "2026-03-22T10:00:00+09:00",
+            },
         ]
 
         with (
@@ -394,10 +404,15 @@ class TestFetchFilledOrdersWithIndicators:
         from app.services.n8n_filled_orders_service import fetch_filled_orders
 
         mock_orders = [
-            {"symbol": "BTC", "raw_symbol": "KRW-BTC",
-             "instrument_type": "crypto", "side": "buy",
-             "price": 100_000_000, "total_amount": 1_000_000,
-             "filled_at": "2026-03-22T10:00:00+09:00"},
+            {
+                "symbol": "BTC",
+                "raw_symbol": "KRW-BTC",
+                "instrument_type": "crypto",
+                "side": "buy",
+                "price": 100_000_000,
+                "total_amount": 1_000_000,
+                "filled_at": "2026-03-22T10:00:00+09:00",
+            },
         ]
 
         with (
@@ -438,6 +453,7 @@ class TestFilledOrdersRouter:
         """Create TestClient with just n8n router (bypasses auth middleware)."""
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
+
         from app.routers.n8n import router
 
         app = FastAPI()
