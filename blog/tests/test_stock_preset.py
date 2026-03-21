@@ -135,3 +135,56 @@ class TestStockAnalysisPreset:
             content = tech.read_text()
             assert "RSI" in content
             assert "MACD" in content
+
+
+class TestSamsungAnalysisImages:
+    def test_import_and_instantiate(self) -> None:
+        from blog.images.samsung_analysis_images import SamsungAnalysisImages
+
+        gen = SamsungAnalysisImages()
+        assert gen.prefix == "samsung_analysis"
+        assert hasattr(gen, "get_images")
+
+    def test_get_images_returns_five(self) -> None:
+        from blog.images.samsung_analysis_images import SamsungAnalysisImages
+
+        gen = SamsungAnalysisImages()
+        images = gen.get_images()
+        assert len(images) == 5
+        names = [name for name, _, _, _ in images]
+        assert "thumbnail" in names
+        assert "technical" in names
+
+    def test_default_data_populated(self) -> None:
+        from blog.images.samsung_analysis_images import SamsungAnalysisImages
+
+        gen = SamsungAnalysisImages()
+        assert gen.data["company_profile"]["name"] == "삼성전자"
+        assert "indicators" in gen.data
+        assert "valuation" in gen.data
+
+    def test_custom_data_override(self) -> None:
+        from blog.images.samsung_analysis_images import SamsungAnalysisImages
+
+        custom = {
+            "company_profile": {
+                "name": "SK하이닉스",
+                "symbol": "000660",
+                "sector": "반도체",
+            }
+        }
+        gen = SamsungAnalysisImages(data=custom)
+        assert gen.data["company_profile"]["name"] == "SK하이닉스"
+
+    def test_generate_svgs_produces_valid_files(self) -> None:
+        from blog.images.samsung_analysis_images import SamsungAnalysisImages
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            gen = SamsungAnalysisImages(images_dir=Path(tmpdir))
+            paths = gen.generate_svgs()
+            assert len(paths) == 5
+            for p in paths:
+                assert p.exists()
+                content = p.read_text()
+                assert content.startswith("<?xml")
+                assert "</svg>" in content
