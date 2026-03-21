@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
@@ -53,6 +53,24 @@ def _normalize_upbit_filled(order: dict[str, Any]) -> dict[str, Any] | None:
         "order_id": str(order.get("uuid", "")),
         "filled_at": str(order.get("created_at", "")),
     }
+
+
+def _parse_filled_at_kst(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=KST)
+    else:
+        parsed = parsed.astimezone(KST)
+
+    return parsed
 
 
 def _normalize_kis_domestic_filled(order: dict[str, Any]) -> dict[str, Any] | None:
@@ -138,7 +156,22 @@ async def _fetch_upbit_filled(days: int) -> tuple[list[dict], list[dict]]:
         orders = [
             n for raw in closed if (n := _normalize_upbit_filled(raw)) is not None
         ]
-        return orders, []
+        cutoff = now_kst() - timedelta(days=days)
+        filtered_orders: list[dict[str, Any]] = []
+
+        for order in orders:
+            parsed_filled_at = _parse_filled_at_kst(order.get("filled_at", ""))
+            if parsed_filled_at is None:
+                logger.warning(
+                    "Upbit filled order skipped due to invalid filled_at: order_id=%s filled_at=%r",
+                    order.get("order_id"),
+                    order.get("filled_at"),
+                )
+                continue
+            if parsed_filled_at >= cutoff:
+                filtered_orders.append(order)
+
+        return filtered_orders, []
     except Exception as exc:
         logger.warning("Upbit filled-orders fetch failed: %s", exc)
         return [], [{"market": "crypto", "error": str(exc)}]

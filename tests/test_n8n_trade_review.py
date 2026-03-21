@@ -10,6 +10,94 @@ from fastapi.testclient import TestClient
 @pytest.mark.unit
 class TestFilledOrdersService:
     @pytest.mark.asyncio
+    async def test_fetch_upbit_filled_filters_orders_older_than_days(self):
+        from datetime import datetime
+
+        from app.core.timezone import KST
+        from app.services.n8n_filled_orders_service import _fetch_upbit_filled
+
+        mock_closed = [
+            {
+                "uuid": "recent-fill",
+                "side": "bid",
+                "price": "1000",
+                "state": "done",
+                "market": "KRW-XRP",
+                "executed_volume": "5",
+                "paid_fee": "2.5",
+                "created_at": "2026-03-20T10:00:00+09:00",
+            },
+            {
+                "uuid": "stale-fill",
+                "side": "ask",
+                "price": "1200",
+                "state": "done",
+                "market": "KRW-XRP",
+                "executed_volume": "3",
+                "paid_fee": "1.0",
+                "created_at": "2026-03-18T09:00:00+09:00",
+            },
+        ]
+
+        fixed_now = datetime(2026, 3, 21, 0, 0, 0, tzinfo=KST)
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                new_callable=AsyncMock,
+                return_value=mock_closed,
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service.now_kst",
+                return_value=fixed_now,
+            ),
+        ):
+            orders, errors = await _fetch_upbit_filled(days=1)
+
+        assert errors == []
+        assert [order["order_id"] for order in orders] == ["recent-fill"]
+
+    @pytest.mark.asyncio
+    async def test_fetch_upbit_filled_skips_unparseable_filled_at(self, caplog):
+        from datetime import datetime
+
+        from app.core.timezone import KST
+        from app.services.n8n_filled_orders_service import _fetch_upbit_filled
+
+        mock_closed = [
+            {
+                "uuid": "bad-fill",
+                "side": "bid",
+                "price": "1000",
+                "state": "done",
+                "market": "KRW-XRP",
+                "executed_volume": "1",
+                "paid_fee": "0.5",
+                "created_at": "not-a-datetime",
+            }
+        ]
+
+        fixed_now = datetime(2026, 3, 21, 0, 0, 0, tzinfo=KST)
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_service.upbit_service.fetch_closed_orders",
+                new_callable=AsyncMock,
+                return_value=mock_closed,
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service.now_kst",
+                return_value=fixed_now,
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            orders, errors = await _fetch_upbit_filled(days=1)
+
+        assert orders == []
+        assert errors == []
+        assert "Upbit filled order skipped due to invalid filled_at" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_no_orders(self):
         from app.services.n8n_filled_orders_service import fetch_filled_orders
 
@@ -37,6 +125,9 @@ class TestFilledOrdersService:
 
     @pytest.mark.asyncio
     async def test_filters_upbit_cancelled_orders(self):
+        from datetime import datetime
+
+        from app.core.timezone import KST
         from app.services.n8n_filled_orders_service import fetch_filled_orders
 
         mock_closed = [
@@ -65,6 +156,7 @@ class TestFilledOrdersService:
                 "created_at": "2026-03-17T15:00:00+09:00",
             },
         ]
+        fixed_now = datetime(2026, 3, 18, 0, 0, 0, tzinfo=KST)
 
         with (
             patch(
@@ -87,6 +179,10 @@ class TestFilledOrdersService:
                 new_callable=AsyncMock,
                 side_effect=lambda orders: orders,
             ),
+            patch(
+                "app.services.n8n_filled_orders_service.now_kst",
+                return_value=fixed_now,
+            ),
         ):
             result = await fetch_filled_orders(days=1, markets="crypto")
 
@@ -96,6 +192,9 @@ class TestFilledOrdersService:
 
     @pytest.mark.asyncio
     async def test_min_amount_filter(self):
+        from datetime import datetime
+
+        from app.core.timezone import KST
         from app.services.n8n_filled_orders_service import fetch_filled_orders
 
         mock_closed = [
@@ -112,6 +211,7 @@ class TestFilledOrdersService:
                 "created_at": "2026-03-17T14:30:00+09:00",
             },
         ]
+        fixed_now = datetime(2026, 3, 18, 0, 0, 0, tzinfo=KST)
 
         with (
             patch(
@@ -128,6 +228,10 @@ class TestFilledOrdersService:
                 "app.services.n8n_filled_orders_service._fetch_kis_overseas_filled",
                 new_callable=AsyncMock,
                 return_value=([], []),
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service.now_kst",
+                return_value=fixed_now,
             ),
         ):
             result = await fetch_filled_orders(
