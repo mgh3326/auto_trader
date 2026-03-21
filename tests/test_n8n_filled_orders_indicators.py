@@ -347,3 +347,86 @@ class TestFilledOrderSchema:
         )
         assert item.indicators is not None
         assert item.indicators.rsi_14 == 42.3
+
+
+@pytest.mark.unit
+class TestFetchFilledOrdersWithIndicators:
+    @pytest.mark.asyncio
+    async def test_include_indicators_false_skips_enrichment(self):
+        """Default behavior — no indicators attached."""
+        from app.services.n8n_filled_orders_service import fetch_filled_orders
+
+        mock_orders = [
+            {"symbol": "BTC", "raw_symbol": "KRW-BTC",
+             "instrument_type": "crypto", "side": "buy",
+             "price": 100_000_000, "total_amount": 1_000_000,
+             "filled_at": "2026-03-22T10:00:00+09:00"},
+        ]
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_service._fetch_upbit_filled",
+                new_callable=AsyncMock,
+                return_value=(mock_orders, []),
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service._fetch_kis_domestic_filled",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service._fetch_kis_overseas_filled",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service._enrich_with_current_prices",
+                new_callable=AsyncMock,
+                side_effect=lambda o: o,
+            ),
+        ):
+            result = await fetch_filled_orders(days=1, include_indicators=False)
+
+        assert "indicators" not in result["orders"][0]
+
+    @pytest.mark.asyncio
+    async def test_include_indicators_true_calls_enrichment(self):
+        from app.services.n8n_filled_orders_service import fetch_filled_orders
+
+        mock_orders = [
+            {"symbol": "BTC", "raw_symbol": "KRW-BTC",
+             "instrument_type": "crypto", "side": "buy",
+             "price": 100_000_000, "total_amount": 1_000_000,
+             "filled_at": "2026-03-22T10:00:00+09:00"},
+        ]
+
+        with (
+            patch(
+                "app.services.n8n_filled_orders_service._fetch_upbit_filled",
+                new_callable=AsyncMock,
+                return_value=(mock_orders, []),
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service._fetch_kis_domestic_filled",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service._fetch_kis_overseas_filled",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service._enrich_with_current_prices",
+                new_callable=AsyncMock,
+                side_effect=lambda o: o,
+            ),
+            patch(
+                "app.services.n8n_filled_orders_service._enrich_with_indicators",
+                new_callable=AsyncMock,
+                side_effect=lambda o: o,
+            ) as mock_enrich,
+        ):
+            await fetch_filled_orders(days=1, include_indicators=True)
+
+        mock_enrich.assert_called_once()
