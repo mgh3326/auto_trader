@@ -825,3 +825,82 @@ class TestGetOrderHistorySentryNoiseFilter:
         }
 
         assert sentry_module._before_send(event, {}) is not None
+
+
+@pytest.mark.unit
+class TestGetShortInterestSentryNoiseFilter:
+    """get_short_interest KR-only validation noise should be dropped in Sentry."""
+
+    def test_fastmcp_get_short_interest_kr_only_log_dropped(self):
+        """AUTO_TRADER-42: log path noise dropped."""
+        event: Event = {
+            "logger": "fastmcp.server.server",
+            "logentry": {
+                "message": (
+                    "Error calling tool 'get_short_interest': "
+                    "Short selling data is only available for Korean stocks "
+                    "(6-digit codes like '005930')"
+                ),
+                "formatted": (
+                    "Error calling tool 'get_short_interest': "
+                    "Short selling data is only available for Korean stocks "
+                    "(6-digit codes like '005930')"
+                ),
+            },
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_fastmcp_get_short_interest_kr_only_toolerror_dropped(self):
+        """AUTO_TRADER-43: ToolError exception path noise dropped."""
+        event: Event = {
+            "exception": {
+                "values": [
+                    {
+                        "type": "ToolError",
+                        "value": (
+                            "Error calling tool 'get_short_interest': "
+                            "Short selling data is only available for Korean stocks "
+                            "(6-digit codes like '005930')"
+                        ),
+                    }
+                ]
+            }
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_fastmcp_get_short_interest_kr_only_valueerror_dropped(self):
+        """ValueError path (direct implementation throw) also dropped."""
+        event: Event = {
+            "contexts": {
+                "mcp_tool_call": {
+                    "tool_name": "get_short_interest",
+                    "arguments": {"symbol": "SMCI", "days": 10},
+                }
+            },
+            "exception": {
+                "values": [
+                    {
+                        "type": "ValueError",
+                        "value": (
+                            "Short selling data is only available for Korean stocks "
+                            "(6-digit codes like '005930')"
+                        ),
+                    }
+                ]
+            },
+        }
+        assert sentry_module._before_send(event, {}) is None
+
+    def test_fastmcp_get_short_interest_runtime_error_kept(self):
+        """Real runtime errors in get_short_interest are still kept."""
+        event: Event = {
+            "exception": {
+                "values": [
+                    {
+                        "type": "ToolError",
+                        "value": "Error calling tool 'get_short_interest': upstream timeout",
+                    }
+                ]
+            }
+        }
+        assert sentry_module._before_send(event, {}) is not None
