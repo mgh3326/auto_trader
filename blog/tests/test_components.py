@@ -133,3 +133,43 @@ class TestSVGComponent:
         assert escape_xml("a < b > c") == "a &lt; b &gt; c"
         assert escape_xml('say "hello"') == "say &quot;hello&quot;"
         assert escape_xml("normal text") == "normal text"
+
+
+class TestThumbnailTemplate:
+    """Tests for ThumbnailTemplate component."""
+
+    def test_import_from_components(self) -> None:
+        """ThumbnailTemplate should be importable from components package."""
+        from blog.tools.components.thumbnail import ThumbnailTemplate
+
+        assert hasattr(ThumbnailTemplate, "create")
+
+    def test_backward_compat_import(self) -> None:
+        """Existing import path must still work."""
+        from blog.tools.image_generator import ThumbnailTemplate
+
+        assert hasattr(ThumbnailTemplate, "create")
+
+    def test_create_basic_thumbnail(self) -> None:
+        from blog.tools.components.thumbnail import ThumbnailTemplate
+
+        svg = ThumbnailTemplate.create(
+            title_line1="테스트 제목",
+            title_line2="부제목",
+            subtitle="설명 텍스트",
+        )
+        assert "<svg" in svg
+        assert "테스트 제목" in svg
+        assert "부제목" in svg
+        assert 'width="1200"' in svg
+        assert 'height="630"' in svg
+
+    def test_create_with_icons(self) -> None:
+        from blog.tools.components.thumbnail import ThumbnailTemplate
+
+        svg = ThumbnailTemplate.create(
+            title_line1="아이콘 테스트",
+            icons=[("📈", "Stock", "#2196F3"), ("🤖", "AI", "#4CAF50")],
+        )
+        assert "📈" in svg
+        assert "Stock" in svg
