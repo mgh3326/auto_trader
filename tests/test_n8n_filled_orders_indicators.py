@@ -301,3 +301,49 @@ class TestEnrichWithIndicators:
         assert result[0]["indicators"]["fear_greed"] == 40
         assert result[1]["indicators"].get("fear_greed") is None
         assert result[2]["indicators"].get("fear_greed") is None
+
+
+@pytest.mark.unit
+class TestFilledOrderSchema:
+    def test_indicators_field_is_optional_and_defaults_to_none(self):
+        from app.schemas.n8n.filled_orders import N8nFilledOrderItem
+
+        item = N8nFilledOrderItem(
+            symbol="BTC",
+            raw_symbol="KRW-BTC",
+            instrument_type="crypto",
+            side="buy",
+            price=100_000_000,
+            quantity=0.01,
+            total_amount=1_000_000,
+            fee=500,
+            currency="KRW",
+            account="upbit",
+            order_id="test-123",
+            filled_at="2026-03-22T10:00:00+09:00",
+        )
+        assert item.indicators is None
+
+    def test_indicators_field_accepts_valid_indicators(self):
+        from app.schemas.n8n.filled_orders import N8nFilledOrderItem
+        from app.schemas.n8n.trade_review import N8nTradeReviewIndicators
+
+        indicators = N8nTradeReviewIndicators(rsi_14=42.3, ema_20=106_000_000)
+
+        item = N8nFilledOrderItem(
+            symbol="BTC",
+            raw_symbol="KRW-BTC",
+            instrument_type="crypto",
+            side="buy",
+            price=100_000_000,
+            quantity=0.01,
+            total_amount=1_000_000,
+            fee=500,
+            currency="KRW",
+            account="upbit",
+            order_id="test-123",
+            filled_at="2026-03-22T10:00:00+09:00",
+            indicators=indicators,
+        )
+        assert item.indicators is not None
+        assert item.indicators.rsi_14 == 42.3
