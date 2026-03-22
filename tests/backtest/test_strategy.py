@@ -91,6 +91,29 @@ def _make_strong_bullish_setup(periods: int = 50) -> tuple[pd.DataFrame, float]:
     return history, closes[-1]
 
 
+def _make_strong_bearish_setup(periods: int = 50) -> tuple[pd.DataFrame, float]:
+    """Create a history with strong bearish setup (multiple bear signals).
+
+    Returns (history, current_price) tuple.
+    Creates conditions for: RSI overbought (> 46), EMA cross, momentum negative.
+    """
+    if periods < 40:
+        periods = 50
+
+    # Strong uptrend for overbought RSI, then sharp reversal
+    # This creates: RSI high, EMA fast below slow after reversal, negative momentum
+    uptrend = list(range(100, 180, 2))
+    reversal = list(range(180, 140, -3))
+    closes = uptrend + reversal
+    # Pad to required length
+    if len(closes) < periods:
+        closes = [100] * (periods - len(closes)) + closes
+    closes = closes[-periods:]
+
+    history = _make_history(closes)
+    return history, closes[-1]
+
+
 def _make_oversold_history(periods: int = 40) -> pd.DataFrame:
     """Create a history with oversold RSI pattern (downtrend then flat low)."""
     # Start high, decline sharply to create oversold condition
@@ -245,37 +268,30 @@ class TestVoteAssembly:
         """Test that bull votes are counted correctly for oversold uptrend conditions."""
         strat = strategy.Strategy()
 
-        # Create history: oversold (downtrend) with high volume
-        # Need at least 36 bars for all indicators (MACD_SLOW=26 + SIGNAL=9 + 1)
-        closes = list(range(200, 100, -3))  # ~34 bars of downtrend (oversold RSI)
-        # Pad to 40 bars to be safe
-        closes = [200] * 6 + closes
-        volumes = [2000.0] * len(closes)  # High volume
-        history = _make_history(closes, volumes)
-        bar = _make_bar_data("BTC", "2025-04-01", 103.0, history)
+        # Use strong bullish setup helper that creates multiple bull signals
+        history, current_price = _make_strong_bullish_setup(50)
+        bar = _make_bar_data("BTC", "2025-04-01", current_price, history)
 
         result = strat._evaluate_signals(bar)
 
         assert result is not None
-        assert result["bull_votes"] >= 0
-        assert "dual_rsi_oversold" in result["bull_flags"]
-        assert "volume_above_avg" in result["bull_flags"]
+        assert result["bull_votes"] >= strategy.MIN_VOTES
+        assert result["bull_flags"]["dual_rsi_oversold"]
+        assert result["bull_flags"]["volume_above_avg"]
 
     def test_bear_votes_counted_correctly_in_overbought_downtrend(self):
         """Test that bear votes are counted correctly for overbought downtrend conditions."""
         strat = strategy.Strategy()
 
-        # Create history: strong uptrend (overbought) with high RSI
-        # Need at least 36 bars
-        closes = list(range(100, 172))  # 72 bars of uptrend
-        history = _make_history(closes)
-        bar = _make_bar_data("BTC", "2025-04-01", 171.0, history)
+        # Use strong bearish setup that creates multiple bear signals
+        history, current_price = _make_strong_bearish_setup(50)
+        bar = _make_bar_data("BTC", "2025-04-01", current_price, history)
 
         result = strat._evaluate_signals(bar)
 
         assert result is not None
-        assert result["bear_votes"] >= 0
-        assert "rsi_slow_high" in result["bear_flags"]
+        assert result["bear_votes"] >= strategy.MIN_SELL_VOTES
+        assert result["bear_flags"]["rsi_slow_high"]
 
     def test_insufficient_history_returns_none(self):
         """Test that _evaluate_signals returns None with insufficient history."""
@@ -293,18 +309,17 @@ class TestVoteAssembly:
         """Test that sufficient bull votes produces buy-eligible setup."""
         strat = strategy.Strategy()
 
-        # Create strong oversold downtrend with high volume
-        # Need at least 36 bars for all indicators
-        closes = list(range(250, 100, -4))  # ~38 bars strong downtrend
-        volumes = [3000.0] * len(closes)  # High volume
-        history = _make_history(closes, volumes)
-        bar = _make_bar_data("BTC", "2025-04-01", 102.0, history)
+        # Use strong bullish setup helper
+        history, current_price = _make_strong_bullish_setup(50)
+        bar = _make_bar_data("BTC", "2025-04-01", current_price, history)
 
         result = strat._evaluate_signals(bar)
 
         assert result is not None
         # In strong oversold conditions with volume, should have multiple bull votes
-        assert result["bull_votes"] >= 0
+        assert result["bull_votes"] >= strategy.MIN_VOTES
+        assert result["bull_flags"]["dual_rsi_oversold"]
+        assert result["bull_flags"]["volume_above_avg"]
 
     def test_low_bull_votes_does_not_produce_buy(self):
         """Test that insufficient bull votes does not produce buy signal."""
@@ -319,25 +334,23 @@ class TestVoteAssembly:
         result = strat._evaluate_signals(bar)
 
         assert result is not None
-        # Flat price should have fewer bull votes
-        assert result["bull_votes"] <= 3
+        # Flat price should have fewer bull votes than threshold
+        assert result["bull_votes"] < strategy.MIN_VOTES
 
     def test_bear_votes_for_held_symbol_produces_sell_eligible(self):
         """Test that bear votes are tracked for held symbols."""
         strat = strategy.Strategy()
 
-        # Create strong uptrend (overbought)
-        # Need at least 36 bars
-        closes = list(range(100, 200))  # 100 bars strong uptrend
-        history = _make_history(closes)
-        bar = _make_bar_data("BTC", "2025-04-01", 199.0, history)
+        # Use strong bearish setup helper
+        history, current_price = _make_strong_bearish_setup(50)
+        bar = _make_bar_data("BTC", "2025-04-01", current_price, history)
 
         result = strat._evaluate_signals(bar)
 
         assert result is not None
         # Uptrend should have some bear signals (RSI high, etc.)
-        assert result["bear_votes"] >= 0
-        assert "rsi_slow_high" in result["bear_flags"]
+        assert result["bear_votes"] >= strategy.MIN_SELL_VOTES
+        assert result["bear_flags"]["rsi_slow_high"]
 
     def test_reason_string_includes_vote_count(self):
         """Test that signal reason strings include vote count information."""
