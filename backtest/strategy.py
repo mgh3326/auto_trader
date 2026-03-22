@@ -9,9 +9,9 @@ RSI_PERIOD_SLOW = 14
 RSI_OVERSOLD = 30
 RSI_EXIT = 50  # Exit when RSI recovers to neutral
 MAX_POSITIONS = 5
-POSITION_SIZE = 0.15
-HOLDING_DAYS = 14
-STOP_LOSS_PCT = 0.08  # Tighter stop-loss
+POSITION_SIZE = 0.10
+HOLDING_DAYS = 21
+STOP_LOSS_PCT = 0.08
 
 
 def _calc_rsi(closes: np.ndarray, period: int) -> float | None:
