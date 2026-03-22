@@ -10,6 +10,10 @@ from blog.tools.components.base import FONT_FAMILY
 KOREAN_BULLISH = "#ef5350"  # Red for up
 KOREAN_BEARISH = "#1565c0"  # Blue for down
 
+# Dark theme candle colors
+DARK_BULLISH = "#00c853"
+DARK_BEARISH = "#ff1744"
+
 # Theme colors
 LIGHT_GRID = "#e0e0e0"
 LIGHT_LABEL = "#666666"
@@ -18,6 +22,13 @@ DARK_LABEL = "#aaaaaa"
 
 # EMA colors
 EMA_COLORS = ["#FF9800", "#4CAF50", "#9C27B0"]
+
+
+def candle_color(is_bullish: bool, theme: str) -> str:
+    """Return the appropriate candle color based on theme and direction."""
+    if theme == "dark":
+        return DARK_BULLISH if is_bullish else DARK_BEARISH
+    return KOREAN_BULLISH if is_bullish else KOREAN_BEARISH
 
 
 class CandlestickChart:
@@ -31,7 +42,7 @@ class CandlestickChart:
         height: int,
         ohlcv: list[dict[str, Any]],
         volume: bool = False,
-        max_candles: int = 200,
+        max_candles: int = 60,
         ema_values: dict[str, list[float]] | None = None,
         bollinger: dict[str, list[float]] | None = None,
         theme: str = "light",
@@ -45,7 +56,7 @@ class CandlestickChart:
             height: Chart height.
             ohlcv: List of OHLCV dicts with 'date', 'open', 'high', 'low', 'close' keys.
             volume: Whether to show volume bars at the bottom.
-            max_candles: Maximum number of candles to render (truncates from end).
+            max_candles: Maximum number of candles to render (truncates from end). Defaults to 60.
             ema_values: Optional dict of EMA name -> value list.
             bollinger: Optional dict with 'upper', 'lower', 'middle' band values.
             theme: 'light' or 'dark' theme.
@@ -59,8 +70,9 @@ class CandlestickChart:
         # Filter and truncate data
         required_keys = {"open", "high", "low", "close"}
         rows = [row for row in ohlcv[-max_candles:] if required_keys <= row.keys()]
+        visible_count = len(rows)
 
-        if not rows:
+        if not visible_count:
             return f'    <text x="{x + width // 2}" y="{y + height // 2}" font-family="{FONT_FAMILY}" font-size="14" fill="{LIGHT_LABEL if theme == "light" else DARK_LABEL}" text-anchor="middle">Empty OHLCV</text>\n'
 
         parts: list[str] = []
@@ -108,17 +120,19 @@ class CandlestickChart:
         if bollinger and "upper" in bollinger and "lower" in bollinger:
             upper = bollinger["upper"]
             lower = bollinger["lower"]
-            if len(upper) == len(rows) and len(lower) == len(rows):
+            visible_upper = upper[-visible_count:] if len(upper) >= visible_count else upper
+            visible_lower = lower[-visible_count:] if len(lower) >= visible_count else lower
+            if len(visible_upper) == visible_count and len(visible_lower) == visible_count:
                 points = []
                 # Upper band (left to right)
-                for i, val in enumerate(upper):
-                    px = x + (i / (len(rows) - 1)) * width if len(rows) > 1 else x
+                for i, val in enumerate(visible_upper):
+                    px = x + (i / (visible_count - 1)) * width if visible_count > 1 else x
                     py = price_to_y(val)
                     points.append(f"{px},{py}")
                 # Lower band (right to left)
-                for i in range(len(lower) - 1, -1, -1):
-                    px = x + (i / (len(rows) - 1)) * width if len(rows) > 1 else x
-                    py = price_to_y(lower[i])
+                for i in range(len(visible_lower) - 1, -1, -1):
+                    px = x + (i / (visible_count - 1)) * width if visible_count > 1 else x
+                    py = price_to_y(visible_lower[i])
                     points.append(f"{px},{py}")
 
                 fill_color = "#e3f2fd" if theme == "light" else "#1a3a5c"
@@ -128,17 +142,20 @@ class CandlestickChart:
                 )
 
                 # Middle band (dashed line)
-                if "middle" in bollinger and len(bollinger["middle"]) == len(rows):
-                    middle_points = []
-                    for i, val in enumerate(bollinger["middle"]):
-                        px = x + (i / (len(rows) - 1)) * width if len(rows) > 1 else x
-                        py = price_to_y(val)
-                        middle_points.append(f"{px},{py}")
-                    parts.append(
-                        f'    <polyline points="{" ".join(middle_points)}" '
-                        f'fill="none" stroke="#2196F3" stroke-width="1.5" '
-                        f'stroke-dasharray="3,3"/>'
-                    )
+                if "middle" in bollinger:
+                    middle = bollinger["middle"]
+                    visible_middle = middle[-visible_count:] if len(middle) >= visible_count else middle
+                    if len(visible_middle) == visible_count:
+                        middle_points = []
+                        for i, val in enumerate(visible_middle):
+                            px = x + (i / (visible_count - 1)) * width if visible_count > 1 else x
+                            py = price_to_y(val)
+                            middle_points.append(f"{px},{py}")
+                        parts.append(
+                            f'    <polyline points="{" ".join(middle_points)}" '
+                            f'fill="none" stroke="#2196F3" stroke-width="1.5" '
+                            f'stroke-dasharray="3,3"/>'
+                        )
 
         # Draw horizontal grid lines (5 lines)
         for i in range(5):
@@ -180,7 +197,7 @@ class CandlestickChart:
 
             is_bullish = close_p > open_p
 
-            color = KOREAN_BULLISH if is_bullish else KOREAN_BEARISH
+            color = candle_color(is_bullish, theme)
 
             cx = x + i * slot_width + slot_width / 2
 
@@ -218,10 +235,11 @@ class CandlestickChart:
         # Draw EMA lines (over candles)
         if ema_values:
             for idx, (_name, values) in enumerate(ema_values.items()):
-                if len(values) == len(rows):
+                visible_values = values[-visible_count:] if len(values) >= visible_count else values
+                if len(visible_values) == visible_count:
                     ema_points = []
-                    for i, val in enumerate(values):
-                        px = x + (i / (len(rows) - 1)) * width if len(rows) > 1 else x
+                    for i, val in enumerate(visible_values):
+                        px = x + (i / (visible_count - 1)) * width if visible_count > 1 else x
                         py = price_to_y(val)
                         ema_points.append(f"{px},{py}")
 
