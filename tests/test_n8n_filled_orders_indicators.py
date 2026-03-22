@@ -467,16 +467,17 @@ class TestFetchFilledOrdersWithIndicators:
 
     @pytest.mark.asyncio
     async def test_include_indicators_true_calls_enrichment(self):
+        """Verify service passes orders with both stripped symbol and raw_symbol."""
         from app.services.n8n_filled_orders_service import fetch_filled_orders
 
         mock_orders = [
             {
-                "symbol": "BTC",
-                "raw_symbol": "KRW-BTC",
+                "symbol": "APT",
+                "raw_symbol": "KRW-APT",
                 "instrument_type": "crypto",
                 "side": "buy",
-                "price": 100_000_000,
-                "total_amount": 1_000_000,
+                "price": 100_000,
+                "total_amount": 100_000,
                 "filled_at": "2026-03-22T10:00:00+09:00",
             },
         ]
@@ -508,9 +509,12 @@ class TestFetchFilledOrdersWithIndicators:
                 side_effect=lambda o: o,
             ) as mock_enrich,
         ):
-            await fetch_filled_orders(days=1, include_indicators=True)
+            result = await fetch_filled_orders(days=1, include_indicators=True)
 
         mock_enrich.assert_called_once()
+        # Verify order shape includes both stripped symbol and raw_symbol for lookup
+        assert result["orders"][0]["raw_symbol"] == "KRW-APT"
+        assert result["orders"][0]["symbol"] == "APT"
 
 
 @pytest.mark.unit
