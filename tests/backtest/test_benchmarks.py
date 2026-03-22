@@ -142,8 +142,9 @@ class TestRandomBaseline:
             signals = strategy.on_bar(bar_data, portfolio)
             for signal in signals:
                 if signal.action == "sell":
-                    assert signal.symbol in portfolio.positions, \
+                    assert signal.symbol in portfolio.positions, (
                         f"Sell signal for unheld symbol: {signal.symbol}"
+                    )
 
     def test_only_buys_or_sells_held(self):
         """Test that strategy only buys or sells held positions."""
@@ -169,8 +170,10 @@ class TestRandomBaseline:
             for signal in signals:
                 if signal.action == "buy":
                     # Can only buy if not already held
-                    assert signal.symbol not in portfolio.positions or \
-                        portfolio.positions[signal.symbol] == 0
+                    assert (
+                        signal.symbol not in portfolio.positions
+                        or portfolio.positions[signal.symbol] == 0
+                    )
                 elif signal.action == "sell":
                     # Can only sell if held
                     assert signal.symbol in portfolio.positions

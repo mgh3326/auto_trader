@@ -14,20 +14,28 @@ import prepare
 import strategy
 
 
-def _make_bar_data(symbol: str, date: str, close: float, history_len: int = 20) -> prepare.BarData:
+def _make_bar_data(
+    symbol: str, date: str, close: float, history_len: int = 20
+) -> prepare.BarData:
     """Helper to create BarData with RSI-period history."""
     # Create history DataFrame with enough data for RSI calculation
     closes = [close] * (history_len + 1)
-    dates = pd.date_range(end=date, periods=history_len + 1, freq="D").strftime("%Y-%m-%d").tolist()
-    history = pd.DataFrame({
-        "date": dates,
-        "open": closes,
-        "high": closes,
-        "low": closes,
-        "close": closes,
-        "volume": [1000.0] * (history_len + 1),
-        "value": [100000.0] * (history_len + 1),
-    }).set_index("date")
+    dates = (
+        pd.date_range(end=date, periods=history_len + 1, freq="D")
+        .strftime("%Y-%m-%d")
+        .tolist()
+    )
+    history = pd.DataFrame(
+        {
+            "date": dates,
+            "open": closes,
+            "high": closes,
+            "low": closes,
+            "close": closes,
+            "volume": [1000.0] * (history_len + 1),
+            "value": [100000.0] * (history_len + 1),
+        }
+    ).set_index("date")
 
     return prepare.BarData(
         symbol=symbol,
@@ -47,8 +55,30 @@ class TestRSICalculation:
 
     def test_rsi_returns_finite_value_with_enough_history(self):
         """Test that RSI returns a finite value when there's enough history."""
-        closes = np.array([100.0, 102.0, 101.0, 103.0, 102.0, 104.0, 103.0, 105.0, 104.0, 106.0,
-                          105.0, 107.0, 106.0, 108.0, 107.0, 109.0, 108.0, 110.0, 109.0, 111.0])
+        closes = np.array(
+            [
+                100.0,
+                102.0,
+                101.0,
+                103.0,
+                102.0,
+                104.0,
+                103.0,
+                105.0,
+                104.0,
+                106.0,
+                105.0,
+                107.0,
+                106.0,
+                108.0,
+                107.0,
+                109.0,
+                108.0,
+                110.0,
+                109.0,
+                111.0,
+            ]
+        )
 
         rsi = strategy._calc_rsi(closes, period=14)
 
@@ -121,10 +151,21 @@ class TestBuySignals:
 
         portfolio = prepare.PortfolioState(
             cash=100000.0,
-            positions={"BTC": 1.0, "ETH": 1.0, "XRP": 1.0, "LINK": 1.0, "ADA": 1.0},  # At max
+            positions={
+                "BTC": 1.0,
+                "ETH": 1.0,
+                "XRP": 1.0,
+                "LINK": 1.0,
+                "ADA": 1.0,
+            },  # At max
             avg_prices={"BTC": 90.0, "ETH": 80.0, "XRP": 0.5, "LINK": 10.0, "ADA": 1.0},
-            position_dates={"BTC": "2025-03-25", "ETH": "2025-03-25", "XRP": "2025-03-25",
-                          "LINK": "2025-03-25", "ADA": "2025-03-25"},
+            position_dates={
+                "BTC": "2025-03-25",
+                "ETH": "2025-03-25",
+                "XRP": "2025-03-25",
+                "LINK": "2025-03-25",
+                "ADA": "2025-03-25",
+            },
             trade_log=[],
             equity=100000.0,
             date="2025-04-01",
@@ -200,7 +241,9 @@ class TestSellSignals:
             date="2025-04-08",
         )
 
-        with mock.patch.object(strat, "_get_rsi_from_history", return_value=50.0):  # Not overbought
+        with mock.patch.object(
+            strat, "_get_rsi_from_history", return_value=50.0
+        ):  # Not overbought
             signals = strat.on_bar(bar_data, portfolio)
 
         assert len(signals) == 1
@@ -222,7 +265,9 @@ class TestSellSignals:
             date="2025-04-08",
         )
 
-        with mock.patch.object(strat, "_get_rsi_from_history", return_value=50.0):  # Not overbought
+        with mock.patch.object(
+            strat, "_get_rsi_from_history", return_value=50.0
+        ):  # Not overbought
             signals = strat.on_bar(bar_data, portfolio)
 
         assert len(signals) == 0
@@ -236,18 +281,25 @@ class TestStrategyWithHistory:
         strat = strategy.Strategy()
 
         # Create bar with rising price history (RSI > 50)
-        dates = pd.date_range("2025-03-01", "2025-04-01", freq="D").strftime("%Y-%m-%d").tolist()
+        dates = (
+            pd.date_range("2025-03-01", "2025-04-01", freq="D")
+            .strftime("%Y-%m-%d")
+            .tolist()
+        )
         n_bars = len(dates)
         # Create strong uptrend (RSI should be high/overbought)
         closes = list(range(100, 100 + n_bars))
-        history = pd.DataFrame({
-            "open": closes,
-            "high": [c + 1 for c in closes],
-            "low": [c - 1 for c in closes],
-            "close": closes,
-            "volume": [1000.0] * n_bars,
-            "value": [100000.0] * n_bars,
-        }, index=dates)
+        history = pd.DataFrame(
+            {
+                "open": closes,
+                "high": [c + 1 for c in closes],
+                "low": [c - 1 for c in closes],
+                "close": closes,
+                "volume": [1000.0] * n_bars,
+                "value": [100000.0] * n_bars,
+            },
+            index=dates,
+        )
 
         bar_data = {
             "BTC": prepare.BarData(
@@ -285,14 +337,17 @@ class TestStrategyWithHistory:
         strat = strategy.Strategy()
 
         # Create bar with insufficient history (< RSI_PERIOD + 1)
-        history = pd.DataFrame({
-            "open": [100.0, 101.0],
-            "high": [101.0, 102.0],
-            "low": [99.0, 100.0],
-            "close": [100.0, 101.0],
-            "volume": [1000.0, 1000.0],
-            "value": [100000.0, 100000.0],
-        }, index=["2025-03-31", "2025-04-01"])
+        history = pd.DataFrame(
+            {
+                "open": [100.0, 101.0],
+                "high": [101.0, 102.0],
+                "low": [99.0, 100.0],
+                "close": [100.0, 101.0],
+                "volume": [1000.0, 1000.0],
+                "value": [100000.0, 100000.0],
+            },
+            index=["2025-03-31", "2025-04-01"],
+        )
 
         bar_data = {
             "BTC": prepare.BarData(

@@ -40,6 +40,7 @@ class TestContractDataclasses:
     def test_bar_data_has_symbol_and_history(self):
         """Test that BarData includes symbol and history fields."""
         import pandas as pd
+
         history = pd.DataFrame({"close": [100.0, 101.0, 102.0]})
         bar = prepare.BarData(
             symbol="BTC",
@@ -103,6 +104,7 @@ class TestContractStrategySignature:
 
     def test_strategy_on_bar_signature(self):
         """Test that strategy uses two-argument on_bar signature."""
+
         class TestStrategy:
             def on_bar(self, bar_data, portfolio):
                 return []
@@ -182,47 +184,57 @@ class TestLoadData:
         data_dir.mkdir()
 
         # Create BTC data (in range)
-        btc_df = pd.DataFrame({
-            "date": ["2025-04-01", "2025-04-02", "2025-04-03", "2025-04-04"],
-            "open": [100.0, 101.0, 102.0, 103.0],
-            "high": [105.0, 106.0, 107.0, 108.0],
-            "low": [95.0, 96.0, 97.0, 98.0],
-            "close": [102.0, 103.0, 104.0, 105.0],
-            "volume": [1000, 1100, 1200, 1300],
-            "value": [100000, 110000, 120000, 130000],
-        })
+        btc_df = pd.DataFrame(
+            {
+                "date": ["2025-04-01", "2025-04-02", "2025-04-03", "2025-04-04"],
+                "open": [100.0, 101.0, 102.0, 103.0],
+                "high": [105.0, 106.0, 107.0, 108.0],
+                "low": [95.0, 96.0, 97.0, 98.0],
+                "close": [102.0, 103.0, 104.0, 105.0],
+                "volume": [1000, 1100, 1200, 1300],
+                "value": [100000, 110000, 120000, 130000],
+            }
+        )
         btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
 
         # Create ETH data (in range)
-        eth_df = pd.DataFrame({
-            "date": ["2025-04-01", "2025-04-02", "2025-04-03", "2025-04-04"],
-            "open": [50.0, 51.0, 52.0, 53.0],
-            "high": [55.0, 56.0, 57.0, 58.0],
-            "low": [45.0, 46.0, 47.0, 48.0],
-            "close": [52.0, 53.0, 54.0, 55.0],
-            "volume": [2000, 2100, 2200, 2300],
-            "value": [200000, 210000, 220000, 230000],
-        })
+        eth_df = pd.DataFrame(
+            {
+                "date": ["2025-04-01", "2025-04-02", "2025-04-03", "2025-04-04"],
+                "open": [50.0, 51.0, 52.0, 53.0],
+                "high": [55.0, 56.0, 57.0, 58.0],
+                "low": [45.0, 46.0, 47.0, 48.0],
+                "close": [52.0, 53.0, 54.0, 55.0],
+                "volume": [2000, 2100, 2200, 2300],
+                "value": [200000, 210000, 220000, 230000],
+            }
+        )
         eth_df.to_parquet(data_dir / "KRW-ETH.parquet", index=False)
 
         # Create XRP data (not in DEFAULT_SYMBOLS - should be ignored)
-        xrp_df = pd.DataFrame({
-            "date": ["2025-04-01", "2025-04-02", "2025-04-03", "2025-04-04"],
-            "open": [1.0, 1.1, 1.2, 1.3],
-            "high": [1.5, 1.6, 1.7, 1.8],
-            "low": [0.5, 0.6, 0.7, 0.8],
-            "close": [1.2, 1.3, 1.4, 1.5],
-            "volume": [10000, 11000, 12000, 13000],
-            "value": [10000, 11000, 12000, 13000],
-        })
+        xrp_df = pd.DataFrame(
+            {
+                "date": ["2025-04-01", "2025-04-02", "2025-04-03", "2025-04-04"],
+                "open": [1.0, 1.1, 1.2, 1.3],
+                "high": [1.5, 1.6, 1.7, 1.8],
+                "low": [0.5, 0.6, 0.7, 0.8],
+                "close": [1.2, 1.3, 1.4, 1.5],
+                "volume": [10000, 11000, 12000, 13000],
+                "value": [10000, 11000, 12000, 13000],
+            }
+        )
         xrp_df.to_parquet(data_dir / "KRW-XRP.parquet", index=False)
 
         # Monkeypatch DATA_DIR
         monkeypatch.setattr(prepare, "DATA_DIR", data_dir)
         monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC", "ETH"])
-        monkeypatch.setattr(prepare, "SPLITS", {
-            "val": {"start": "2025-04-01", "end": "2025-04-02"},
-        })
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {
+                "val": {"start": "2025-04-01", "end": "2025-04-02"},
+            },
+        )
 
         data = prepare.load_data("val")
 
@@ -236,22 +248,34 @@ class TestLoadData:
         data_dir.mkdir()
 
         # Create BTC data in descending order
-        btc_df = pd.DataFrame({
-            "date": ["2025-04-05", "2025-04-04", "2025-04-03", "2025-04-02", "2025-04-01"],
-            "open": [100.0, 101.0, 102.0, 103.0, 104.0],
-            "high": [105.0, 106.0, 107.0, 108.0, 109.0],
-            "low": [95.0, 96.0, 97.0, 98.0, 99.0],
-            "close": [102.0, 103.0, 104.0, 105.0, 106.0],
-            "volume": [1000, 1100, 1200, 1300, 1400],
-            "value": [100000, 110000, 120000, 130000, 140000],
-        })
+        btc_df = pd.DataFrame(
+            {
+                "date": [
+                    "2025-04-05",
+                    "2025-04-04",
+                    "2025-04-03",
+                    "2025-04-02",
+                    "2025-04-01",
+                ],
+                "open": [100.0, 101.0, 102.0, 103.0, 104.0],
+                "high": [105.0, 106.0, 107.0, 108.0, 109.0],
+                "low": [95.0, 96.0, 97.0, 98.0, 99.0],
+                "close": [102.0, 103.0, 104.0, 105.0, 106.0],
+                "volume": [1000, 1100, 1200, 1300, 1400],
+                "value": [100000, 110000, 120000, 130000, 140000],
+            }
+        )
         btc_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
 
         monkeypatch.setattr(prepare, "DATA_DIR", data_dir)
         monkeypatch.setattr(prepare, "DEFAULT_SYMBOLS", ["BTC"])
-        monkeypatch.setattr(prepare, "SPLITS", {
-            "val": {"start": "2025-04-01", "end": "2025-04-05"},
-        })
+        monkeypatch.setattr(
+            prepare,
+            "SPLITS",
+            {
+                "val": {"start": "2025-04-01", "end": "2025-04-05"},
+            },
+        )
 
         data = prepare.load_data("val")
 
@@ -262,7 +286,9 @@ class TestLoadData:
 class TestWarmupHistory:
     """Tests for preserving pre-split warmup history."""
 
-    def test_run_backtest_includes_presplit_rows_in_history(self, tmp_path, monkeypatch):
+    def test_run_backtest_includes_presplit_rows_in_history(
+        self, tmp_path, monkeypatch
+    ):
         """Test that BarData.history includes pre-split rows for the first split bar."""
         data_dir = tmp_path / "data"
         data_dir.mkdir()
@@ -299,7 +325,9 @@ class TestWarmupHistory:
                     )
                 return []
 
-        result = prepare.run_backtest(prepare.load_data("val"), CaptureHistoryStrategy())
+        result = prepare.run_backtest(
+            prepare.load_data("val"), CaptureHistoryStrategy()
+        )
 
         assert result.num_trades == 0
         assert result.equity_curve
@@ -460,8 +488,21 @@ class TestExecutionCosts:
             trade_log=[],
         )
         import pandas as pd
+
         history = pd.DataFrame({"close": [100.0]})
-        bar_data = {"BTC": prepare.BarData(symbol="BTC", date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000, history=history)}
+        bar_data = {
+            "BTC": prepare.BarData(
+                symbol="BTC",
+                date="2025-04-01",
+                open=100.0,
+                high=110.0,
+                low=90.0,
+                close=100.0,
+                volume=1000,
+                value=100000,
+                history=history,
+            )
+        }
 
         result = prepare._execute_signal(signal, state, bar_data, 100000.0)
 
@@ -490,8 +531,21 @@ class TestExecutionCosts:
             trade_log=[],
         )
         import pandas as pd
+
         history = pd.DataFrame({"close": [100.0]})
-        bar_data = {"BTC": prepare.BarData(symbol="BTC", date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000, history=history)}
+        bar_data = {
+            "BTC": prepare.BarData(
+                symbol="BTC",
+                date="2025-04-01",
+                open=100.0,
+                high=110.0,
+                low=90.0,
+                close=100.0,
+                volume=1000,
+                value=100000,
+                history=history,
+            )
+        }
 
         result = prepare._execute_signal(signal, state, bar_data, 100000.0)
 
@@ -519,8 +573,21 @@ class TestExecutionCosts:
             trade_log=[],
         )
         import pandas as pd
+
         history = pd.DataFrame({"close": [100.0]})
-        bar_data = {"BTC": prepare.BarData(symbol="BTC", date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000, history=history)}
+        bar_data = {
+            "BTC": prepare.BarData(
+                symbol="BTC",
+                date="2025-04-01",
+                open=100.0,
+                high=110.0,
+                low=90.0,
+                close=100.0,
+                volume=1000,
+                value=100000,
+                history=history,
+            )
+        }
         initial_value = 100000.0
 
         result = prepare._execute_signal(signal, state, bar_data, initial_value)
@@ -547,8 +614,21 @@ class TestExecutionCosts:
             trade_log=[],
         )
         import pandas as pd
+
         history = pd.DataFrame({"close": [100.0]})
-        bar_data = {"BTC": prepare.BarData(symbol="BTC", date="2025-04-01", open=100.0, high=110.0, low=90.0, close=100.0, volume=1000, value=100000, history=history)}
+        bar_data = {
+            "BTC": prepare.BarData(
+                symbol="BTC",
+                date="2025-04-01",
+                open=100.0,
+                high=110.0,
+                low=90.0,
+                close=100.0,
+                volume=1000,
+                value=100000,
+                history=history,
+            )
+        }
 
         result = prepare._execute_signal(signal, state, bar_data, 300.0)
 
@@ -622,15 +702,17 @@ class TestRunBacktest:
         """Test that run_backtest properly executes strategy signals."""
         # Create simple mock data
         data = {
-            "BTC": pd.DataFrame({
-                "date": ["2025-04-01", "2025-04-02", "2025-04-03"],
-                "open": [100.0, 105.0, 110.0],
-                "high": [106.0, 111.0, 116.0],
-                "low": [95.0, 100.0, 105.0],
-                "close": [105.0, 110.0, 115.0],
-                "volume": [1000, 1100, 1200],
-                "value": [100000, 110000, 120000],
-            })
+            "BTC": pd.DataFrame(
+                {
+                    "date": ["2025-04-01", "2025-04-02", "2025-04-03"],
+                    "open": [100.0, 105.0, 110.0],
+                    "high": [106.0, 111.0, 116.0],
+                    "low": [95.0, 100.0, 105.0],
+                    "close": [105.0, 110.0, 115.0],
+                    "volume": [1000, 1100, 1200],
+                    "value": [100000, 110000, 120000],
+                }
+            )
         }
 
         # Create a simple strategy that buys on first day
@@ -642,7 +724,11 @@ class TestRunBacktest:
                 self.called = True
                 # Check if BTC is in bar_data and not already held
                 if "BTC" in bar_data and "BTC" not in portfolio.positions:
-                    return [prepare.Signal(symbol="BTC", action="buy", weight=0.95, reason="Test buy")]
+                    return [
+                        prepare.Signal(
+                            symbol="BTC", action="buy", weight=0.95, reason="Test buy"
+                        )
+                    ]
                 return []
 
         strategy = SimpleStrategy()
@@ -655,15 +741,17 @@ class TestRunBacktest:
     def test_run_backtest_updates_equity_curve(self):
         """Test that equity curve is properly updated."""
         data = {
-            "BTC": pd.DataFrame({
-                "date": ["2025-04-01", "2025-04-02", "2025-04-03"],
-                "open": [100.0, 105.0, 110.0],
-                "high": [106.0, 111.0, 116.0],
-                "low": [95.0, 100.0, 105.0],
-                "close": [105.0, 110.0, 115.0],
-                "volume": [1000, 1100, 1200],
-                "value": [100000, 110000, 120000],
-            })
+            "BTC": pd.DataFrame(
+                {
+                    "date": ["2025-04-01", "2025-04-02", "2025-04-03"],
+                    "open": [100.0, 105.0, 110.0],
+                    "high": [106.0, 111.0, 116.0],
+                    "low": [95.0, 100.0, 105.0],
+                    "close": [105.0, 110.0, 115.0],
+                    "volume": [1000, 1100, 1200],
+                    "value": [100000, 110000, 120000],
+                }
+            )
         }
 
         class NoOpStrategy:
@@ -679,24 +767,28 @@ class TestRunBacktest:
     def test_run_backtest_handles_missing_symbol_dates(self):
         """Test that missing symbol dates are handled gracefully."""
         data = {
-            "BTC": pd.DataFrame({
-                "date": ["2025-04-01", "2025-04-02"],
-                "open": [100.0, 105.0],
-                "high": [106.0, 111.0],
-                "low": [95.0, 100.0],
-                "close": [105.0, 110.0],
-                "volume": [1000, 1100],
-                "value": [100000, 110000],
-            }),
-            "ETH": pd.DataFrame({
-                "date": ["2025-04-02"],  # Missing 04-01
-                "open": [50.0],
-                "high": [55.0],
-                "low": [45.0],
-                "close": [52.0],
-                "volume": [2000],
-                "value": [200000],
-            })
+            "BTC": pd.DataFrame(
+                {
+                    "date": ["2025-04-01", "2025-04-02"],
+                    "open": [100.0, 105.0],
+                    "high": [106.0, 111.0],
+                    "low": [95.0, 100.0],
+                    "close": [105.0, 110.0],
+                    "volume": [1000, 1100],
+                    "value": [100000, 110000],
+                }
+            ),
+            "ETH": pd.DataFrame(
+                {
+                    "date": ["2025-04-02"],  # Missing 04-01
+                    "open": [50.0],
+                    "high": [55.0],
+                    "low": [45.0],
+                    "close": [52.0],
+                    "volume": [2000],
+                    "value": [200000],
+                }
+            ),
         }
 
         class NoOpStrategy:

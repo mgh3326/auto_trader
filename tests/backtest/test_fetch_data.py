@@ -20,9 +20,21 @@ class TestMarketSelection:
         """Test that only KRW markets are selected."""
         markets = [
             {"market": "KRW-BTC", "korean_name": "비트코인", "english_name": "Bitcoin"},
-            {"market": "KRW-ETH", "korean_name": "이더리움", "english_name": "Ethereum"},
-            {"market": "BTC-ETH", "korean_name": "이더리움", "english_name": "Ethereum"},  # Should be filtered
-            {"market": "USDT-BTC", "korean_name": "비트코인", "english_name": "Bitcoin"},  # Should be filtered
+            {
+                "market": "KRW-ETH",
+                "korean_name": "이더리움",
+                "english_name": "Ethereum",
+            },
+            {
+                "market": "BTC-ETH",
+                "korean_name": "이더리움",
+                "english_name": "Ethereum",
+            },  # Should be filtered
+            {
+                "market": "USDT-BTC",
+                "korean_name": "비트코인",
+                "english_name": "Bitcoin",
+            },  # Should be filtered
         ]
 
         result = fetch_data._filter_krw_markets(markets)
@@ -67,7 +79,9 @@ class TestMarketSelection:
             {"market": "KRW-F", "acc_trade_price_24h": 60},
             {"market": "KRW-G", "acc_trade_price_24h": 1_000},
         ]
-        ticker_values = {market["market"]: market["acc_trade_price_24h"] for market in markets}
+        ticker_values = {
+            market["market"]: market["acc_trade_price_24h"] for market in markets
+        }
         fetched_markets: list[str] = []
 
         class FakeResponse:
@@ -90,9 +104,11 @@ class TestMarketSelection:
 
             def get(self, url, params=None):
                 market = params["markets"]
-                return FakeResponse([
-                    {"acc_trade_price_24h": ticker_values[market]},
-                ])
+                return FakeResponse(
+                    [
+                        {"acc_trade_price_24h": ticker_values[market]},
+                    ]
+                )
 
         def fake_fetch_markets():
             return markets
@@ -145,7 +161,15 @@ class TestCandleNormalization:
 
         df = fetch_data._normalize_candles(api_rows)
 
-        assert df.columns.tolist() == ["date", "open", "high", "low", "close", "volume", "value"]
+        assert df.columns.tolist() == [
+            "date",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "value",
+        ]
         assert df["date"].tolist() == ["2026-03-20", "2026-03-21"]
         assert df["close"].tolist() == [50500.0, 51200.0]
 
@@ -156,93 +180,124 @@ class TestMergeDedupe:
     def test_merge_with_existing_data(self, tmp_path):
         """Test incremental merge behavior."""
         # Create existing parquet
-        existing_df = pd.DataFrame({
-            "date": ["2026-03-18", "2026-03-19", "2026-03-20"],
-            "open": [48000.0, 49000.0, 50000.0],
-            "high": [49000.0, 50000.0, 51000.0],
-            "low": [47000.0, 48000.0, 49000.0],
-            "close": [49000.0, 50000.0, 50500.0],
-            "volume": [80.0, 90.0, 100.0],
-            "value": [4000000.0, 4500000.0, 5000000.0],
-        })
+        existing_df = pd.DataFrame(
+            {
+                "date": ["2026-03-18", "2026-03-19", "2026-03-20"],
+                "open": [48000.0, 49000.0, 50000.0],
+                "high": [49000.0, 50000.0, 51000.0],
+                "low": [47000.0, 48000.0, 49000.0],
+                "close": [49000.0, 50000.0, 50500.0],
+                "volume": [80.0, 90.0, 100.0],
+                "value": [4000000.0, 4500000.0, 5000000.0],
+            }
+        )
         parquet_path = tmp_path / "test.parquet"
         existing_df.to_parquet(parquet_path, index=False)
 
         # New fetched data (overlapping)
-        new_df = pd.DataFrame({
-            "date": ["2026-03-19", "2026-03-20", "2026-03-21"],  # 03-19 and 03-20 overlap
-            "open": [49500.0, 50500.0, 51500.0],  # Different prices
-            "high": [50500.0, 51500.0, 52500.0],
-            "low": [48500.0, 49500.0, 50500.0],
-            "close": [50000.0, 51000.0, 52000.0],
-            "volume": [95.0, 105.0, 115.0],
-            "value": [4750000.0, 5250000.0, 5750000.0],
-        })
+        new_df = pd.DataFrame(
+            {
+                "date": [
+                    "2026-03-19",
+                    "2026-03-20",
+                    "2026-03-21",
+                ],  # 03-19 and 03-20 overlap
+                "open": [49500.0, 50500.0, 51500.0],  # Different prices
+                "high": [50500.0, 51500.0, 52500.0],
+                "low": [48500.0, 49500.0, 50500.0],
+                "close": [50000.0, 51000.0, 52000.0],
+                "volume": [95.0, 105.0, 115.0],
+                "value": [4750000.0, 5250000.0, 5750000.0],
+            }
+        )
 
         result = fetch_data._merge_with_existing(new_df, parquet_path)
 
         # Should have 4 unique dates
         assert len(result) == 4
-        assert result["date"].tolist() == ["2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21"]
+        assert result["date"].tolist() == [
+            "2026-03-18",
+            "2026-03-19",
+            "2026-03-20",
+            "2026-03-21",
+        ]
         # Newer data should replace old for overlapping dates
         assert result[result["date"] == "2026-03-20"]["close"].iloc[0] == 51000.0
 
     def test_merge_new_data_only(self, tmp_path):
         """Test merge with no overlapping dates."""
-        existing_df = pd.DataFrame({
-            "date": ["2026-03-18", "2026-03-19"],
-            "open": [48000.0, 49000.0],
-            "high": [49000.0, 50000.0],
-            "low": [47000.0, 48000.0],
-            "close": [49000.0, 50000.0],
-            "volume": [80.0, 90.0],
-            "value": [4000000.0, 4500000.0],
-        })
+        existing_df = pd.DataFrame(
+            {
+                "date": ["2026-03-18", "2026-03-19"],
+                "open": [48000.0, 49000.0],
+                "high": [49000.0, 50000.0],
+                "low": [47000.0, 48000.0],
+                "close": [49000.0, 50000.0],
+                "volume": [80.0, 90.0],
+                "value": [4000000.0, 4500000.0],
+            }
+        )
         parquet_path = tmp_path / "test.parquet"
         existing_df.to_parquet(parquet_path, index=False)
 
-        new_df = pd.DataFrame({
-            "date": ["2026-03-20", "2026-03-21"],
-            "open": [50000.0, 51000.0],
-            "high": [51000.0, 52000.0],
-            "low": [49000.0, 50000.0],
-            "close": [50500.0, 51500.0],
-            "volume": [100.0, 110.0],
-            "value": [5000000.0, 5500000.0],
-        })
+        new_df = pd.DataFrame(
+            {
+                "date": ["2026-03-20", "2026-03-21"],
+                "open": [50000.0, 51000.0],
+                "high": [51000.0, 52000.0],
+                "low": [49000.0, 50000.0],
+                "close": [50500.0, 51500.0],
+                "volume": [100.0, 110.0],
+                "value": [5000000.0, 5500000.0],
+            }
+        )
 
         result = fetch_data._merge_with_existing(new_df, parquet_path)
 
         assert len(result) == 4
-        assert result["date"].tolist() == ["2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21"]
+        assert result["date"].tolist() == [
+            "2026-03-18",
+            "2026-03-19",
+            "2026-03-20",
+            "2026-03-21",
+        ]
 
     def test_result_sorted_ascending(self, tmp_path):
         """Test that merged result is sorted ascending by date."""
-        existing_df = pd.DataFrame({
-            "date": ["2026-03-21", "2026-03-22"],
-            "open": [1.0, 2.0],
-            "high": [1.0, 2.0],
-            "low": [1.0, 2.0],
-            "close": [1.0, 2.0],
-            "volume": [1.0, 2.0],
-            "value": [1.0, 2.0],
-        })
+        existing_df = pd.DataFrame(
+            {
+                "date": ["2026-03-21", "2026-03-22"],
+                "open": [1.0, 2.0],
+                "high": [1.0, 2.0],
+                "low": [1.0, 2.0],
+                "close": [1.0, 2.0],
+                "volume": [1.0, 2.0],
+                "value": [1.0, 2.0],
+            }
+        )
         parquet_path = tmp_path / "test.parquet"
         existing_df.to_parquet(parquet_path, index=False)
 
-        new_df = pd.DataFrame({
-            "date": ["2026-03-19", "2026-03-20"],
-            "open": [1.0, 2.0],
-            "high": [1.0, 2.0],
-            "low": [1.0, 2.0],
-            "close": [1.0, 2.0],
-            "volume": [1.0, 2.0],
-            "value": [1.0, 2.0],
-        })
+        new_df = pd.DataFrame(
+            {
+                "date": ["2026-03-19", "2026-03-20"],
+                "open": [1.0, 2.0],
+                "high": [1.0, 2.0],
+                "low": [1.0, 2.0],
+                "close": [1.0, 2.0],
+                "volume": [1.0, 2.0],
+                "value": [1.0, 2.0],
+            }
+        )
 
         result = fetch_data._merge_with_existing(new_df, parquet_path)
 
-        assert result["date"].tolist() == ["2026-03-19", "2026-03-20", "2026-03-21", "2026-03-22"]
+        assert result["date"].tolist() == [
+            "2026-03-19",
+            "2026-03-20",
+            "2026-03-21",
+            "2026-03-22",
+        ]
 
 
 class TestIncrementalRefresh:
@@ -250,15 +305,17 @@ class TestIncrementalRefresh:
 
     def test_determine_refresh_days_uses_overlap_window(self):
         """Test that existing data triggers overlap-window refresh."""
-        existing_df = pd.DataFrame({
-            "date": ["2026-03-19", "2026-03-20", "2026-03-21", "2026-03-22"],
-            "open": [1.0, 1.0, 1.0, 1.0],
-            "high": [1.0, 1.0, 1.0, 1.0],
-            "low": [1.0, 1.0, 1.0, 1.0],
-            "close": [1.0, 1.0, 1.0, 1.0],
-            "volume": [1.0, 1.0, 1.0, 1.0],
-            "value": [1.0, 1.0, 1.0, 1.0],
-        })
+        existing_df = pd.DataFrame(
+            {
+                "date": ["2026-03-19", "2026-03-20", "2026-03-21", "2026-03-22"],
+                "open": [1.0, 1.0, 1.0, 1.0],
+                "high": [1.0, 1.0, 1.0, 1.0],
+                "low": [1.0, 1.0, 1.0, 1.0],
+                "close": [1.0, 1.0, 1.0, 1.0],
+                "volume": [1.0, 1.0, 1.0, 1.0],
+                "value": [1.0, 1.0, 1.0, 1.0],
+            }
+        )
 
         assert (
             fetch_data._determine_refresh_days(
@@ -271,15 +328,17 @@ class TestIncrementalRefresh:
 
     def test_determine_refresh_days_covers_gap_since_last_stored_date(self):
         """Test that refresh window covers the stale gap plus overlap days."""
-        existing_df = pd.DataFrame({
-            "date": ["2026-03-01"],
-            "open": [1.0],
-            "high": [1.0],
-            "low": [1.0],
-            "close": [1.0],
-            "volume": [1.0],
-            "value": [1.0],
-        })
+        existing_df = pd.DataFrame(
+            {
+                "date": ["2026-03-01"],
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [1.0],
+                "volume": [1.0],
+                "value": [1.0],
+            }
+        )
 
         refresh_days = fetch_data._determine_refresh_days(
             existing_df,
@@ -293,20 +352,22 @@ class TestIncrementalRefresh:
     def test_main_uses_overlap_window_for_existing_parquet(self, tmp_path, monkeypatch):
         """Test that reruns fetch only the overlap window when parquet exists."""
         today = datetime.now().date()
-        existing_df = pd.DataFrame({
-            "date": [
-                (today - timedelta(days=3)).strftime("%Y-%m-%d"),
-                (today - timedelta(days=2)).strftime("%Y-%m-%d"),
-                (today - timedelta(days=1)).strftime("%Y-%m-%d"),
-                today.strftime("%Y-%m-%d"),
-            ],
-            "open": [1.0, 1.0, 1.0, 1.0],
-            "high": [1.0, 1.0, 1.0, 1.0],
-            "low": [1.0, 1.0, 1.0, 1.0],
-            "close": [1.0, 1.0, 1.0, 1.0],
-            "volume": [1.0, 1.0, 1.0, 1.0],
-            "value": [1.0, 1.0, 1.0, 1.0],
-        })
+        existing_df = pd.DataFrame(
+            {
+                "date": [
+                    (today - timedelta(days=3)).strftime("%Y-%m-%d"),
+                    (today - timedelta(days=2)).strftime("%Y-%m-%d"),
+                    (today - timedelta(days=1)).strftime("%Y-%m-%d"),
+                    today.strftime("%Y-%m-%d"),
+                ],
+                "open": [1.0, 1.0, 1.0, 1.0],
+                "high": [1.0, 1.0, 1.0, 1.0],
+                "low": [1.0, 1.0, 1.0, 1.0],
+                "close": [1.0, 1.0, 1.0, 1.0],
+                "volume": [1.0, 1.0, 1.0, 1.0],
+                "value": [1.0, 1.0, 1.0, 1.0],
+            }
+        )
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         existing_df.to_parquet(data_dir / "KRW-BTC.parquet", index=False)
@@ -370,7 +431,9 @@ class TestCLIOptions:
 
     def test_symbols_arg(self):
         """Test --symbols argument."""
-        with mock.patch("sys.argv", ["fetch_data.py", "--symbols", "BTC", "ETH", "SOL"]):
+        with mock.patch(
+            "sys.argv", ["fetch_data.py", "--symbols", "BTC", "ETH", "SOL"]
+        ):
             args = fetch_data._parse_args()
             assert args.symbols == ["BTC", "ETH", "SOL"]
 
