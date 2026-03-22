@@ -143,6 +143,71 @@ class Strategy:
         except (ValueError, TypeError):
             return 999
 
+    def _evaluate_signals(self, bar: prepare.BarData) -> dict | None:
+        """Evaluate all technical signals and return vote counts.
+
+        Returns a dict with:
+        - rsi_fast, rsi_slow: RSI values
+        - bull_votes: count of bullish signals
+        - bear_votes: count of bearish signals
+        - bull_flags: dict of which bull signals triggered
+        - bear_flags: dict of which bear signals triggered
+        Returns None if insufficient history.
+        """
+        if len(bar.history) < max(RSI_PERIOD_SLOW, BB_PERIOD, EMA_SLOW, MACD_SLOW + MACD_SIGNAL) + 1:
+            return None
+
+        closes = bar.history["close"].values
+        volumes = bar.history["volume"].values
+
+        # Calculate indicators
+        rsi_fast = _calc_rsi(closes, RSI_PERIOD_FAST)
+        rsi_slow = _calc_rsi(closes, RSI_PERIOD_SLOW)
+        macd_result = _calc_macd(closes, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+        bb_result = _calc_bollinger(closes, BB_PERIOD, BB_STD)
+        ema_fast_result = _calc_ema(closes, EMA_FAST)
+        ema_slow_result = _calc_ema(closes, EMA_SLOW)
+        momentum = _calc_momentum(closes, MOMENTUM_PERIOD)
+        avg_volume = _calc_average_volume(volumes, VOLUME_LOOKBACK)
+
+        if rsi_slow is None:
+            return None
+
+        current_close = closes[-1]
+        current_volume = volumes[-1]
+
+        # Bull votes
+        bull_flags = {
+            "dual_rsi_oversold": rsi_slow <= RSI_OVERSOLD and (rsi_fast is not None and rsi_fast <= RSI_OVERSOLD),
+            "macd_histogram_positive": macd_result is not None and macd_result[2] > 0,  # histogram > 0
+            "close_below_bb_lower": bb_result is not None and current_close < bb_result[2],  # close < lower
+            "ema_fast_above_slow": ema_fast_result is not None and ema_slow_result is not None and ema_fast_result[-1] > ema_slow_result[-1],
+            "momentum_positive": momentum is not None and momentum > 0,
+            "volume_above_avg": avg_volume is not None and current_volume > avg_volume * VOLUME_THRESHOLD,
+        }
+        bull_votes = sum(1 for v in bull_flags.values() if v)
+
+        # Bear votes
+        bear_flags = {
+            "macd_histogram_negative": macd_result is not None and macd_result[2] < 0,  # histogram < 0
+            "close_above_bb_upper": bb_result is not None and current_close > bb_result[0],  # close > upper
+            "ema_fast_below_slow": ema_fast_result is not None and ema_slow_result is not None and ema_fast_result[-1] < ema_slow_result[-1],
+            "momentum_negative": momentum is not None and momentum < 0,
+            "rsi_slow_high": rsi_slow > RSI_EXIT,  # Slow RSI above exit threshold
+        }
+        bear_votes = sum(1 for v in bear_flags.values() if v)
+
+        return {
+            "rsi_fast": rsi_fast,
+            "rsi_slow": rsi_slow,
+            "bull_votes": bull_votes,
+            "bear_votes": bear_votes,
+            "bull_flags": bull_flags,
+            "bear_flags": bear_flags,
+            "macd": macd_result,
+            "bb": bb_result,
+        }
+
     def on_bar(
         self,
         bar_data: dict[str, prepare.BarData],
